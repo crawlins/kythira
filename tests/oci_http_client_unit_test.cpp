@@ -141,15 +141,51 @@ BOOST_AUTO_TEST_CASE(the_service_host_is_derived_from_the_region_unless_overridd
     cfg.endpoint_override.clear();
     const oci_http_client client(cfg);
 
-    BOOST_CHECK_EQUAL(client.host_for("iaas"), "iaas.us-phoenix-1.oraclecloud.com");
+    BOOST_CHECK_EQUAL(client.host_for("iaas"), "iaas.us-phoenix-1.oci.oraclecloud.com");
     BOOST_CHECK_EQUAL(client.host_for("certificatesmanagement"),
-                      "certificatesmanagement.us-phoenix-1.oraclecloud.com");
+                      "certificatesmanagement.us-phoenix-1.oci.oraclecloud.com");
 
     oci_client_config overridden = make_config(pem);
     overridden.endpoint_override = "http://127.0.0.1:9999";
     const oci_http_client mocked(overridden);
     BOOST_CHECK_EQUAL(mocked.host_for("iaas"), "http://127.0.0.1:9999");
     BOOST_CHECK_EQUAL(mocked.host_for("certificatesmanagement"), "http://127.0.0.1:9999");
+}
+
+/// The request sets `Host` **itself**, to exactly the string it signed.
+///
+/// This is the regression test for a defect that reached live OCI: `Host` is a
+/// signed header, and leaving cpp-httplib to supply it does not guarantee the
+/// two agree. httplib computes it in `ClientImpl`'s constructor initializer list
+/// via `make_host_and_port_string(host_, port, is_ssl())`, and `is_ssl()` is
+/// virtual — during base-class construction it resolves to the non-SSL override
+/// and returns `false`, so port 443 is not treated as default and `:443` is
+/// appended. The client signed the bare hostname, Oracle verified against
+/// `…:443`, and every real call came back `NotAuthenticated: Failed to verify
+/// the HTTP(S) Signature`.
+///
+/// Asserted against an https origin with no explicit port, because that is the
+/// only shape where httplib's default-port handling is in play — and note that
+/// no local server can stand in here: a mock necessarily listens on a
+/// non-default port, where both spellings agree and the bug is invisible. That
+/// is exactly why 31 green tests missed it. What makes this non-vacuous is the
+/// `Host` **key being present at all**: before the fix the map had none.
+BOOST_AUTO_TEST_CASE(the_request_sets_host_itself_to_the_string_it_signed) {
+    const auto pem = generate_rsa_key_pem();
+    oci_client_config cfg = make_config(pem);
+    cfg.endpoint_override.clear();
+    const oci_http_client client(cfg);
+
+    const auto headers =
+        client.prepared_headers(client.host_for("iaas"), "GET", "/20160918/instancePools/abc", "");
+
+    BOOST_REQUIRE_MESSAGE(headers.contains("Host"),
+                          "no explicit Host header — httplib would choose it, and for a default "
+                          "port it appends ':443' to a host the signature does not cover");
+    BOOST_CHECK_EQUAL(headers.at("Host"), "iaas.us-phoenix-1.oci.oraclecloud.com");
+    // ...and the signature must be over that same spelling, not the origin.
+    BOOST_CHECK(headers.at("authorization").find("headers=\"date (request-target) host\"") !=
+                std::string::npos);
 }
 
 /// Every request carries the signed headers, and the `host` that was signed is

@@ -12,13 +12,24 @@
 ///
 /// **What it models and what it does not.** It models *state machines and call
 /// sequences*: pool size drives instance creation, tags are replaced rather than
-/// merged, a detached instance terminates, a certificate becomes ACTIVE. It does
-/// not model signing beyond checking that an `authorization` header of the right
-/// shape arrived — the signature itself is already pinned by
-/// `oci_signing_unit_test.cpp` against golden vectors, and a mock that re-derived
-/// it would be verifying the client against a second copy of the client's own
-/// logic. It rejects an unsigned request, though: that is the one signing claim
-/// this file is in a position to make independently.
+/// merged, a detached instance terminates, a certificate becomes ACTIVE.
+///
+/// **It also verifies request signatures, which an earlier version deliberately
+/// did not.** That decision (`tasks.md` Task 4: "a mock that re-derived the
+/// signature would be verifying the client against a second copy of the
+/// client's own logic") is what let two real defects ship — the client signed
+/// one `Host` and sent another, and the endpoint domain was wrong for every
+/// service. Both were found only by calling live OCI, and both were invisible
+/// to 31 green tests.
+///
+/// The reasoning it replaces was subtly wrong. Verification here does not
+/// re-derive what the client *meant* to sign; it reconstructs the canonical
+/// string **from the bytes that actually arrived** — the `Host` header on the
+/// request, the raw request-target, the date the request carries — and checks
+/// the signature over that with the public key. So it answers a question the
+/// golden-vector tests structurally cannot: *does what we sent match what we
+/// signed?* That is the axis both defects lived on. A mismatched host, date,
+/// path, body hash or method casing now fails here rather than at Oracle.
 ///
 /// **Tag replacement is modelled faithfully on purpose.** `UpdateInstance` here
 /// *replaces* `freeformTags` exactly as OCI does. A mock that merged would make
@@ -34,14 +45,22 @@
 
 #include <boost/json.hpp>
 
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -122,6 +141,31 @@ public:
     [[nodiscard]] auto pool_id() const -> std::string { return _pool_id; }
     [[nodiscard]] auto certificate_authority_id() const -> std::string { return _ca_id; }
     [[nodiscard]] auto availability_domain() const -> std::string { return _availability_domain; }
+
+    /// @brief Teach the server which key requests must be signed with.
+    ///
+    /// Takes the same PEM the client is configured with — a private key, since
+    /// that is what a test already has to hand; only its public half is used.
+    /// Until this is called the server checks the shape of the `authorization`
+    /// header and no more, which is what makes it usable standalone; every test
+    /// in this tree calls it, because not calling it is how two real defects
+    /// shipped past a green suite.
+    auto set_signing_key_pem(const std::string& pem) -> void {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        std::unique_ptr<BIO, decltype(&BIO_free_all)> bio{
+            BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), &BIO_free_all};
+        EVP_PKEY* key = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr);
+        if (key == nullptr) {
+            // Try a public key PEM before giving up, so either form works.
+            std::unique_ptr<BIO, decltype(&BIO_free_all)> pub_bio{
+                BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), &BIO_free_all};
+            key = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
+        }
+        if (key == nullptr) {
+            throw std::runtime_error("oci_mock_server: could not read the signing key PEM");
+        }
+        _public_key.reset(key);
+    }
 
     /// @brief Whether growing the pool immediately materialises instances.
     ///
@@ -250,16 +294,118 @@ private:
         resp.set_content(boost::json::serialize(body), "application/json");
     }
 
-    /// Requirement 1.4's `authorization` header must be there and must look like
-    /// the scheme. Not a signature check — see the file comment.
-    static auto authorized(const httplib::Request& req, httplib::Response& resp) -> bool {
+    /// Extract one `name="value"` parameter from an `authorization` header.
+    [[nodiscard]] static auto auth_param(const std::string& header, const std::string& name)
+        -> std::string {
+        const auto key = name + "=\"";
+        const auto start = header.find(key);
+        if (start == std::string::npos) {
+            return {};
+        }
+        const auto from = start + key.size();
+        const auto end = header.find('"', from);
+        if (end == std::string::npos) {
+            return {};
+        }
+        return header.substr(from, end - from);
+    }
+
+    /// Rebuild the canonical string **from the received request**.
+    ///
+    /// Every value here comes off the wire — `Host` as the request carries it,
+    /// `req.target` rather than the decoded path, the date the request sent.
+    /// That is the whole point: it can disagree with what the client intended
+    /// to sign, and when it does, that disagreement is the bug.
+    [[nodiscard]] static auto canonical_string_of(const httplib::Request& req,
+                                                  const std::string& signed_headers)
+        -> std::string {
+        std::string out;
+        std::istringstream names(signed_headers);
+        std::string name;
+        bool first = true;
+        while (names >> name) {
+            std::string value;
+            if (name == "(request-target)") {
+                std::string method = req.method;
+                std::transform(method.begin(), method.end(), method.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                value = method + " " + (req.target.empty() ? req.path : req.target);
+            } else {
+                value = req.get_header_value(name.c_str());
+            }
+            if (!first) {
+                out += "\n";
+            }
+            out += name + ": " + value;
+            first = false;
+        }
+        return out;
+    }
+
+    [[nodiscard]] static auto base64_decode(const std::string& in) -> std::vector<unsigned char> {
+        std::vector<unsigned char> out(((in.size() + 3) / 4) * 3 + 1);
+        const int written =
+            EVP_DecodeBlock(out.data(), reinterpret_cast<const unsigned char*>(in.data()),
+                            static_cast<int>(in.size()));
+        if (written < 0) {
+            return {};
+        }
+        // EVP_DecodeBlock reports the padded length; trim the '=' bytes back off
+        // or the signature is the right bytes plus one or two zeros, which
+        // verifies as false and looks like a signing bug rather than a decode one.
+        std::size_t len = static_cast<std::size_t>(written);
+        for (auto it = in.rbegin(); it != in.rend() && *it == '='; ++it) {
+            --len;
+        }
+        out.resize(len);
+        return out;
+    }
+
+    /// The `authorization` header must be present, well formed, **and verify**.
+    auto authorized(const httplib::Request& req, httplib::Response& resp) const -> bool {
         const auto header = req.get_header_value("authorization");
-        if (header.starts_with(R"(Signature version="1",)")) {
+        if (!header.starts_with("Signature ")) {
+            error_reply(resp, 401, "NotAuthenticated",
+                        "request carried no OCI Request Signing v1 authorization header");
+            return false;
+        }
+        if (_public_key == nullptr) {
+            // No key configured: shape check only, so the server stays usable
+            // standalone. Every test in this tree sets one.
             return true;
         }
-        error_reply(resp, 401, "NotAuthenticated",
-                    "request carried no OCI Request Signing v1 authorization header");
-        return false;
+
+        const auto signed_headers = auth_param(header, "headers");
+        const auto signature_b64 = auth_param(header, "signature");
+        if (signed_headers.empty() || signature_b64.empty()) {
+            error_reply(resp, 401, "NotAuthenticated", "authorization header is malformed");
+            return false;
+        }
+        const auto signature = base64_decode(signature_b64);
+        const auto canonical = canonical_string_of(req, signed_headers);
+
+        EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+        bool ok = false;
+        if (ctx != nullptr) {
+            if (EVP_DigestVerifyInit(ctx, nullptr, EVP_sha256(), nullptr, _public_key.get()) == 1) {
+                ok = EVP_DigestVerify(ctx, signature.data(), signature.size(),
+                                      reinterpret_cast<const unsigned char*>(canonical.data()),
+                                      canonical.size()) == 1;
+            }
+            EVP_MD_CTX_free(ctx);
+        }
+        if (!ok) {
+            // Echo the string the *server* built. When this fires, the
+            // difference between it and what the client signed is the defect,
+            // and printing it is the difference between a five-minute fix and
+            // the afternoon a bare 401 costs.
+            error_reply(resp, 401, "NotAuthenticated",
+                        "Failed to verify the HTTP(S) Signature; server rebuilt this canonical "
+                        "string from the received request:\n" +
+                            canonical);
+            return false;
+        }
+        return true;
     }
 
     auto record_hit(const std::string& key) -> void { _hits[key]++; }
@@ -806,10 +952,19 @@ private:
         return out;
     }
 
+    struct evp_pkey_deleter {
+        void operator()(EVP_PKEY* p) const noexcept {
+            if (p != nullptr) {
+                EVP_PKEY_free(p);
+            }
+        }
+    };
+
     httplib::Server _server;
     std::thread _thread;
     std::uint16_t _port;
     std::string _availability_domain;
+    std::unique_ptr<EVP_PKEY, evp_pkey_deleter> _public_key;
 
     mutable std::mutex _mutex;
     std::string _pool_id{"ocid1.instancepool.oc1.phx.mock"};

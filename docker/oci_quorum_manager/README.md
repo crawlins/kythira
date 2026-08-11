@@ -249,5 +249,18 @@ issuance.
 - **No real-OCI integration test tier yet.** `tasks.md` Task 6 is open, and
   two of its inputs are still unresolved spike questions: OCI's exact
   out-of-capacity error shape and whether OCI federates GitHub Actions' OIDC
-  tokens to a Dynamic Group. Everything above is verified against the mock
-  server, not against a live tenancy.
+  tokens to a Dynamic Group.
+
+  What *has* been validated against a live tenancy (2026-08-11,
+  `spike-notes.md` Findings 5-7): request signing end to end, the per-service
+  host derivation, and the error unwrapping, via authenticated `ListRegions`
+  and `ListInstances` calls. That pass found two defects invisible to the whole
+  mock suite — the `oci` label missing from the endpoint domain, which meant
+  the certificates hostnames did not resolve at all, and a `Host` header that
+  disagreed with the signed one. Both are fixed.
+
+  What remains unvalidated against real OCI is everything that needs a
+  *resource*: `GetInstancePool`, the provisioning and decommission sequences,
+  and certificate issuance. Those are still mock-only, which is the position
+  AWS, Azure and GCP were each in before their first live run — and each of
+  those runs surfaced three or four real defects.
