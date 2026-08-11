@@ -269,6 +269,34 @@ oci certs-mgmt certificate-authority create-root-ca-by-generating-config-details
 
 Vault and CA creation are both slow — minutes each, not seconds.
 
+**And a fourth, the one that cost the most: the CA reaches its key as a
+*resource principal*, matched by a Dynamic Group.**
+
+```
+ALL {resource.type='certificateauthority', resource.compartment.id='<compartment ocid>'}
+```
+
+```
+Allow dynamic-group kythira-ci-ca-dg to use keys in compartment kythira-ci
+Allow dynamic-group kythira-ci-ca-dg to use vaults in compartment kythira-ci
+```
+
+`provision-ci-identity.sh` creates both when the `certificates` bundle is
+selected, so this is only worth knowing when something goes wrong — and it will
+go wrong *quietly*. Without the grant, `CreateCertificateAuthority` accepts the
+request and fails **asynchronously**: minutes later the CA sits in
+`lifecycle-state: FAILED` with `lifecycle-details: Authorization failed or
+requested resource not found: Key Id ...`. Nothing fails at request time, so
+`--wait-for-state ACTIVE` simply waits until the CA gives up.
+
+A service-principal statement is the *wrong mechanism* and looks plausible
+enough to burn an afternoon: three attempts with `Allow service certificates to
+use keys` — then `use vaults`, then `use key-delegate` — failed identically.
+The attempt that added the Dynamic Group succeeded. (`certificatesmanagement`
+is not a valid service principal at all, despite being the management API's
+hostname; OCI at least rejects that one immediately with `Service {x} does not
+exist.`)
+
 `oci_certificates_provider` issues with
 `configType = MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA`: the caller generates
 the key pair and submits **only the CSR**, so the private key never reaches

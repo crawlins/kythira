@@ -17,10 +17,42 @@
 #                                  manage: this provider never creates or
 #                                  deletes a CA, deliberately (Requirement 12.3)
 #
-# The CA itself is issued against a Vault master encryption key. Issuing does
-# not require `use keys` for the *caller* — OCI's Certificates service holds
-# that relationship — but creating the CA in the first place does, which is an
-# operator action outside this policy.
+# The CA is issued against a Vault master encryption key. The *caller* needs no
+# `use keys` grant — the CA reaches the key as a resource principal — but that
+# access is not automatic and is not a service-principal grant either. See the
+# Dynamic Group section at the bottom of this file.
 
 Allow group {GROUP} to manage leaf-certificate-family in compartment {COMPARTMENT}
 Allow group {GROUP} to read certificate-authority-family in compartment {COMPARTMENT}
+
+# THE CA AUTHENTICATES AS A RESOURCE PRINCIPAL, NOT A SERVICE PRINCIPAL.
+#
+# A certificate authority reaches its own Vault key as a *resource*, matched by
+# a Dynamic Group on `resource.type='certificateauthority'`. Without that grant
+# `CreateCertificateAuthority` accepts the request and then fails
+# asynchronously — minutes later the CA lands in `lifecycle-state: FAILED` with
+# `lifecycle-details: Authorization failed or requested resource not found: Key
+# Id ...`. Nothing fails at request time, so `--wait-for-state ACTIVE` simply
+# waits until the CA gives up.
+#
+# Verified the hard way: three attempts with `Allow service certificates to use
+# keys` (and `use vaults`, and `use key-delegate`) all failed identically. The
+# attempt that added the Dynamic Group succeeded. A service-principal statement
+# is the wrong mechanism here.
+#
+# The Dynamic Group is not a policy statement, so provision-ci-identity.sh
+# creates it separately when this bundle is selected:
+#
+#   ALL {resource.type='certificateauthority', resource.compartment.id='<ocid>'}
+#
+# The statement below is rendered against it. Note `dynamic-group`, not `group`
+# — {GROUP} is deliberately not substituted here.
+Allow dynamic-group {CA_DYNAMIC_GROUP} to use keys in compartment {COMPARTMENT}
+Allow dynamic-group {CA_DYNAMIC_GROUP} to use vaults in compartment {COMPARTMENT}
+
+# Retained from the working configuration, but **unproven in isolation**: it was
+# present in the three failing attempts too, so it is not sufficient, and
+# whether it is even necessary alongside the Dynamic Group was never tested
+# separately. Listed rather than dropped because that is the configuration
+# actually confirmed to work.
+Allow service certificates to use keys in compartment {COMPARTMENT}

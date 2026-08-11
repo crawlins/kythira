@@ -427,3 +427,61 @@ the window (`set_scaling_reads`).
 - **Pool scale-down terminates with a lag** of a minute or two after
   `UpdateInstancePool` returns. Long enough to look like a leak if audited
   immediately.
+
+### Finding 12: a Certificate Authority reaches its Vault key as a *resource principal*
+
+Creating a CA needs a Dynamic Group matching
+`resource.type='certificateauthority'`, and a policy granting **that** group
+`use keys` / `use vaults` on the compartment holding the key. A
+service-principal statement is the wrong mechanism.
+
+The failure mode is what makes this expensive. `CreateCertificateAuthority`
+**accepts the request**, and minutes later the CA lands in
+`lifecycle-state: FAILED` with `lifecycle-details: Authorization failed or
+requested resource not found: Key Id ...`. Nothing fails at request time, so
+`--wait-for-state ACTIVE` waits out the whole timeout before showing anything.
+
+Four attempts to get here, and the shape of the wrong turns is the useful part:
+
+| attempt | grant | result |
+|---|---|---|
+| 1 | none (AES key) | `InvalidParameter: ... invalid shape` — see below |
+| 2 | none (RSA key) | FAILED, key authorization |
+| 3 | `Allow service certificates to use keys` + `use vaults` | FAILED, identically |
+| 4 | ...plus `use key-delegate` | FAILED, identically |
+| 5 | **Dynamic Group on `resource.type='certificateauthority'`** | **ACTIVE** |
+
+`certificatesmanagement` is not a valid service principal at all, despite being
+the hostname the management API is served from — OCI rejects that one
+immediately with `Service {x} does not exist.`, which at least makes it cheap.
+
+**Not isolated, and the notes say so**: attempt 5 kept the
+`Allow service certificates to use keys` statement from the failing attempts.
+The Dynamic Group is therefore proven *necessary*; whether the service
+statement is also required was never tested separately, so it is retained in
+`policies/certificates.txt` with that caveat rather than dropped on a guess.
+
+Two smaller corrections from the same sequence:
+
+- The CA's master key must be **RSA**. `kms management key create` accepts
+  `{"algorithm":"AES","length":32}` and the CA then rejects it with
+  `InvalidParameter: The encryption key with the OCID ... has an invalid
+  shape.` — which never mentions the algorithm. The working shape is
+  `{"algorithm":"RSA","length":256}`; `length` is in **bytes**, so 256 is
+  RSA-2048.
+- The CLI subcommand is `create-root-ca-by-generating-config-details`. The CLI
+  does suggest the right name, but only after the vault and key it depends on
+  already exist.
+
+### Stage 5 confirmed: the `certificates` retrieval plane works
+
+With an ACTIVE CA, `GetCertificateAuthorityBundle` against
+`certificates.us-phoenix-1.oci.oraclecloud.com` returns the real bundle. That
+closes the last unverified path in `oci_certificates_provider`'s host
+derivation — Finding 10's table is now confirmed for all four services by a
+successful call rather than by DNS resolution alone.
+
+Every stage of `oci_tenancy_check` now passes against a live tenancy: signing,
+compartment access, `GetInstancePool`, `ListInstancePoolInstances`,
+`GetCertificateAuthorityBundle`, and the full provision/assess/decommission
+lifecycle.

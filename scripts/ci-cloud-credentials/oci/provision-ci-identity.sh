@@ -69,6 +69,24 @@ echo "compartment  ${COMPARTMENT_NAME} (${COMPARTMENT_ID})"
 echo "group        ${GROUP_NAME}"
 echo "bundles      ${BUNDLES}"
 
+# The certificates bundle needs a Dynamic Group as well as a policy: a
+# certificate authority reaches its Vault key as a *resource* principal, not
+# through any group or service statement. Created before the policy, since the
+# policy references it by name.
+CA_DYNAMIC_GROUP="${GROUP_NAME}-ca-dg"
+if [[ ",${BUNDLES}," == *",certificates,"* && "${DRY_RUN}" -eq 0 ]]; then
+    if [[ -z "$(oci iam dynamic-group list --name "${CA_DYNAMIC_GROUP}" \
+                  --query 'data[0].id' --raw-output 2>/dev/null || true)" ]]; then
+        echo "creating dynamic group ${CA_DYNAMIC_GROUP}"
+        oci iam dynamic-group create --name "${CA_DYNAMIC_GROUP}" \
+            --description "kythira CI certificate authorities" \
+            --matching-rule "ALL {resource.type='certificateauthority', resource.compartment.id='${COMPARTMENT_ID}'}" \
+            --query 'data.id' --raw-output >/dev/null
+    else
+        echo "dynamic group ${CA_DYNAMIC_GROUP} already exists"
+    fi
+fi
+
 STATEMENTS=()
 IFS=',' read -ra WANTED <<< "${BUNDLES}"
 for bundle in "${WANTED[@]}"; do
@@ -78,6 +96,7 @@ for bundle in "${WANTED[@]}"; do
         # Strip comments and blanks; substitute the two placeholders.
         [[ -z "${line}" || "${line}" == \#* ]] && continue
         line="${line//\{GROUP\}/${GROUP_NAME}}"
+        line="${line//\{CA_DYNAMIC_GROUP\}/${CA_DYNAMIC_GROUP}}"
         line="${line//\{COMPARTMENT\}/${COMPARTMENT_NAME}}"
         STATEMENTS+=("${line}")
     done < "${fragment}"
@@ -119,14 +138,18 @@ else
     # intended grant for the given bundles, and merging would silently keep a
     # permission from a bundle that has since been turned off.
     echo "updating policy ${POLICY_NAME} (statements are replaced, not merged)"
+    # --version-date is required alongside --statements, even to leave it
+    # unchanged: without it the CLI refuses with "If updating either statements
+    # or version date, both parameters must be specified."
     oci iam policy update --policy-id "${POLICY_ID}" --statements "${STATEMENTS_JSON}" \
-        --force >/dev/null
+        --version-date "" --force >/dev/null
 fi
 echo "  ${POLICY_ID}"
 
 cat <<EOF
 
-Done. The group and policy exist; **no credentials were created**.
+Done. The group, policy and (for the certificates bundle) the certificate
+authority Dynamic Group exist; **no credentials were created**.
 
 Next, and it is a decision rather than a command — see README.md, "Credentials":
   * Federated (preferred, Requirement 14.2): blocked on Task 0(f).
