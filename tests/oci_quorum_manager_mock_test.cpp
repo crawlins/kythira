@@ -81,7 +81,13 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 /// A fresh mock control plane plus a config pointed at it.
 struct MockFixture {
-    MockFixture() : server(test_port) { server.start(); }
+    MockFixture() : server(test_port) {
+        // Before start(): from here on the server verifies every signature
+        // against the key the client uses, so a request whose sent headers
+        // disagree with its signed ones fails here rather than at Oracle.
+        server.set_signing_key_pem(shared_key_pem());
+        server.start();
+    }
     ~MockFixture() { server.stop(); }
 
     MockFixture(const MockFixture&) = delete;

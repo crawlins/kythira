@@ -211,3 +211,101 @@ call `RevokeCertificateVersion`, not `ScheduleCertificateDeletion`.
   findings above against Oracle's prose documentation directly, though
   the SDK source is arguably the stronger primary source for wire-format
   details in any case (it is what actually executes).
+
+---
+
+## Second pass — August 11, 2026: against a **live tenancy**
+
+Method: an authenticated `ListRegions` from `include/raft/oci_http_client.hpp`
+against `us-phoenix-1`, with the OCI CLI (`oci iam region list --debug`) as a
+known-good oracle for comparison. This is the first time anything in this tree
+has made a real signed request to Oracle. Everything before it was verified
+against golden vectors read out of `oci-go-sdk` and against a mock that did
+not check signatures.
+
+It found two defects in code that had shipped green, and confirmed one earlier
+finding far more strongly than desk research could.
+
+### Finding 5: the endpoint domain is `{service}.{region}.oci.oraclecloud.com`
+
+The `oci` label is **not optional**, and `host_for()` omitted it. Of the four
+services these providers use, only two tolerate its absence:
+
+| host | resolves |
+|---|---|
+| `identity.us-phoenix-1.oraclecloud.com` | yes |
+| `iaas.us-phoenix-1.oraclecloud.com` | yes |
+| `certificatesmanagement.us-phoenix-1.oraclecloud.com` | **no DNS** |
+| `certificates.us-phoenix-1.oraclecloud.com` | **no DNS** |
+
+So `oci_certificates_provider` could never have reached OCI at all — not a
+subtle failure, a nonexistent hostname. `requirements.md` (1.7, 1.2's
+`endpoint_override` row, the Glossary's Certificates Management entry) and
+`design.md`'s canonical-form example all carried the wrong domain and are
+corrected in the same pass, per Requirement 1.1.
+
+The mock tier is structurally incapable of catching this: `endpoint_override`
+replaces the entire host, so no test ever exercises the derivation.
+
+### Finding 6: cpp-httplib appends `:443`, breaking every signature
+
+`Host` is one of the signed headers, so a request verifies only if the `Host`
+on the wire is byte-identical to the signed one. cpp-httplib builds its own in
+`ClientImpl`'s constructor initializer list:
+
+```cpp
+host_and_port_(detail::make_host_and_port_string(host_, port, is_ssl())),
+```
+
+`is_ssl()` is **virtual**. Called from a base-class constructor's initializer
+list it resolves to `ClientImpl::is_ssl()`, which returns `false` even when the
+object being constructed is an `SSLClient`. `make_host_and_port_string` then
+fails to recognise 443 as the default port and appends it. The client signed
+`identity.us-phoenix-1.oci.oraclecloud.com` and sent
+`identity.us-phoenix-1.oci.oraclecloud.com:443`, and Oracle answered
+`401 NotAuthenticated: Failed to verify the HTTP(S) Signature` — an error that
+names neither header nor cause.
+
+Fixed by setting `Host` from the same string that is signed, which retires the
+whole signs-one-thing-sends-another class rather than tracking httplib's idea
+of a default port.
+
+**No local test can reach this.** A mock server necessarily listens on a
+non-default port, where both spellings agree. Confirmed by mutation: removing
+the explicit `Host` fails the unit assertion on the header map and leaves the
+entire mock suite green.
+
+### Finding 7: Finding 1's canonical form is confirmed against a live signature
+
+Much stronger evidence than the original SDK-source reading, and it exonerates
+`oci_signing.hpp` completely:
+
+- The CLI's own live `authorization` signature **verifies** against the string
+  `build_signing_string()` produces — and against none of four plausible
+  reorderings. `date`, `(request-target)`, `host` is right.
+- Signing the CLI's exact request with `oci_signing::sign_request` yields a
+  **byte-identical** base64 signature. Key loading, RSA PKCS#1 v1.5 + SHA-256,
+  and the base64 encoding are all correct.
+- `authorization` **parameter order does not matter**: `version="1"` first (ours)
+  and last (the CLI's) both return HTTP 200 against the live service.
+
+So neither defect was in the signing. Both were in what surrounded it — which
+is precisely the gap golden vectors cannot cover.
+
+### What this changes about testing
+
+Task 4 had made signature verification in `oci_mock_server` explicitly
+optional, reasoning that "a mock that re-derived the signature would be
+verifying the client against a second copy of the client's own logic." That
+reasoning is wrong in one specific way, and it is the way that mattered: a mock
+can rebuild the canonical string **from the bytes that arrived** rather than
+from the client's intent, and then it is answering a different question —
+*does what we sent match what we signed?* Both defects lived on exactly that
+axis. Verification is now on by default and every test in the tree enables it.
+
+### Still open
+
+Task 0(b) (Instance Principal) and 0(f) (CI OIDC federation) are untouched by
+this pass. Task 0(g)'s capacity-error shape and pricing-API questions are also
+still open — they need launches, and this pass deliberately created no billable
+resource.

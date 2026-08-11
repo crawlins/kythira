@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -120,11 +121,52 @@ public:
     /// service rather than per service, which is what a single test server
     /// needs. Public so a test can assert the derivation without issuing a
     /// request.
+    /// The domain is `{service}.{region}.oci.oraclecloud.com`, **with** the
+    /// `oci` label. Confirmed against a live tenancy, not inferred: the OCI CLI
+    /// dials `identity.us-phoenix-1.oci.oraclecloud.com`, and of the four
+    /// services these providers use only two — `identity` and `iaas` — have a
+    /// hostname without it. `certificatesmanagement.{region}.oraclecloud.com`
+    /// and `certificates.{region}.oraclecloud.com` **do not resolve at all**,
+    /// so the certificate provider could never have reached OCI. The mock tier
+    /// cannot see this, because `endpoint_override` replaces the whole host.
     [[nodiscard]] auto host_for(std::string_view service) const -> std::string {
         if (!_cfg.endpoint_override.empty()) {
             return _cfg.endpoint_override;
         }
-        return std::string(service) + "." + _cfg.region + ".oraclecloud.com";
+        return std::string(service) + "." + _cfg.region + ".oci.oraclecloud.com";
+    }
+
+    /// @brief Every header a request will carry, `Host` included.
+    ///
+    /// Public because it is the one place the signed-versus-sent invariant can
+    /// be checked without a network: the `Host` here is both what goes into the
+    /// signature and what goes on the wire, and a test can assert they are the
+    /// same string.
+    ///
+    /// **`Host` is set explicitly, and that is load-bearing.** It is one of the
+    /// signed headers, so a request only verifies when the `Host` on the wire is
+    /// byte-identical to the signed one — and leaving httplib to choose it does
+    /// not give that. cpp-httplib builds its `Host` in `ClientImpl`'s
+    /// constructor initializer list via
+    /// `make_host_and_port_string(host_, port, is_ssl())`, where `is_ssl()` is
+    /// *virtual*: during base-class construction it resolves to
+    /// `ClientImpl::is_ssl()`, which is `false` even for an `SSLClient`. Port
+    /// 443 is therefore not recognised as the default and httplib appends
+    /// `:443`, while the signature covers the bare hostname. Every real OCI call
+    /// failed that way — `NotAuthenticated: Failed to verify the HTTP(S)
+    /// Signature` — and nothing local could see it, because the mock tier speaks
+    /// plain http on a non-default port, where the two spellings agree.
+    ///
+    /// httplib only supplies `Host` when the caller has not, so setting it here
+    /// wins, and removes the whole signs-one-thing-sends-another class rather
+    /// than tracking httplib's idea of a default port.
+    [[nodiscard]] auto prepared_headers(const std::string& host, std::string_view method,
+                                        std::string_view path, const std::string& body) const
+        -> std::map<std::string, std::string> {
+        const std::string host_header = host_header_for(host);
+        auto headers = oci_signing::sign_request(_cfg, method, path, host_header, body);
+        headers["Host"] = host_header;
+        return headers;
     }
 
 private:
@@ -180,11 +222,8 @@ private:
     [[nodiscard]] auto send_once(const std::string& host, std::string_view method,
                                  std::string_view path, const std::string& body) const
         -> httplib::Result {
-        auto signed_headers =
-            oci_signing::sign_request(_cfg, method, path, host_header_for(host), body);
-
         httplib::Headers headers;
-        for (const auto& [name, value] : signed_headers) {
+        for (const auto& [name, value] : prepared_headers(host, method, path, body)) {
             headers.emplace(name, value);
         }
 

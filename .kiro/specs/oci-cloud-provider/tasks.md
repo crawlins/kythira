@@ -445,11 +445,20 @@ Reference implementations to study before starting:
     `freeformTags`, synchronous `RUNNING` transition (no simulated boot
     delay), matching the LocalStack tier's instantaneous-transition
     behavior in the AWS spec.
-  - Request-signature verification in the mock is OPTIONAL for the initial
+  - ~~Request-signature verification in the mock is OPTIONAL for the initial
     version (accept any well-formed `authorization` header) — the signing
     logic itself is already covered by Task 1's golden-vector unit tests;
     the mock server's job is exercising the two components' call sequences
-    and state machines, not re-verifying signing.
+    and state machines, not re-verifying signing.~~ **Reversed, August 11,
+    2026.** That decision is what let two real defects ship past a green
+    suite (`spike-notes.md` Findings 5 and 6, found on the first live call).
+    Its reasoning was wrong in one specific way: a mock need not re-derive
+    what the client *meant* to sign — it can rebuild the canonical string
+    **from the bytes that arrived** and verify those, which answers a
+    question golden vectors structurally cannot: *does what we sent match
+    what we signed?* Both defects lived on exactly that axis. Verification
+    is now on whenever `set_signing_key_pem()` has been called, which every
+    test in the tree does.
   - Verify: mock server starts/stops cleanly in a standalone smoke test.
   - _Requirements: 13.5_
 

@@ -109,6 +109,9 @@ BOOST_GLOBAL_FIXTURE(FiuInitFixture);
 /// long history in this tree.
 struct MockServerFixture {
     MockServerFixture() : server(std::make_unique<kythira::testing::oci_mock_server>(test_port)) {
+        // Before start(), so every request this file makes is signature-verified
+        // against the same key the client signs with.
+        server->set_signing_key_pem(shared_key_pem());
         server->start();
     }
     ~MockServerFixture() { server->stop(); }
