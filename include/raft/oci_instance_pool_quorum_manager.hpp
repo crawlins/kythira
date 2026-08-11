@@ -546,6 +546,23 @@ public:
                     continue;
                 }
                 for (const auto& inst : snapshot) {
+                    // Untagged **and** settled. The instance shows up in the
+                    // pool listing the moment the pool starts building it, and
+                    // OCI refuses `UpdateInstance` on one it is still working
+                    // on: `409 Conflict: instance ... is currently being
+                    // modified, try again later`. Tagging is the very next
+                    // thing this function does, so taking the candidate any
+                    // earlier fails the provision outright — observed against
+                    // live OCI, and invisible to a mock that materialises
+                    // instances already RUNNING.
+                    //
+                    // Waiting for RUNNING also matches
+                    // `aws_asg_quorum_manager`, which only considers instances
+                    // that have reached `InService`, and it means the address
+                    // this returns belongs to an instance that is actually up.
+                    if (inst.lifecycle_state != "RUNNING") {
+                        continue;
+                    }
                     if (!inst.freeform_tags.contains(oci_detail::tag_node_id)) {
                         launched = inst;
                         break;
@@ -586,9 +603,23 @@ public:
             tags[oci_detail::tag_node_id] = node_id_str(new_id);
             tags[oci_detail::tag_group] = target_group;
             tags[oci_detail::tag_managed_by] = oci_detail::managed_by_value;
-            apply_tags(launched->id, tags);
+            try {
+                apply_tags(launched->id, tags);
+            } catch (...) {
+                best_effort_detach(launched->id);
+                throw;
+            }
 
-            const std::string private_ip = private_ip_of(launched->id);
+            std::string private_ip;
+            try {
+                private_ip = private_ip_of(launched->id);
+            } catch (...) {
+                // We own this instance now — it carries our tags and nobody
+                // else will reclaim it. Leaving it running on a failure path is
+                // how a provisioning bug becomes a bill.
+                best_effort_detach(launched->id);
+                throw;
+            }
             auto addr = static_cast<Address>(private_ip + ":" + std::to_string(_cfg.node_port));
             return future_factory_default::makeFuture(peer_info<NodeId, Address>{new_id, addr});
         } catch (const std::invalid_argument& ex) {
@@ -628,6 +659,10 @@ public:
             if (found->lifecycle_state == "TERMINATING" || found->lifecycle_state == "TERMINATED") {
                 return future_factory_default::makeFuture();
             }
+
+            // The pool must be RUNNING for a detach to be accepted, and it
+            // very often is not: whoever just provisioned left it SCALING.
+            await_pool_running(_cfg.provision_timeout);
 
             boost::json::object detach;
             detach["instanceId"] = found->id;
@@ -853,27 +888,120 @@ private:
                             boost::json::serialize(update));
     }
 
+    /// The instance's private IP, polled until OCI will actually answer.
+    ///
+    /// A single attempt is not enough, and the failure is misleading. An
+    /// instance reaches `RUNNING` before its VNIC is readable, and `GetVnic`
+    /// against one that is not yet visible answers **`404
+    /// NotAuthorizedOrNotFound`** — the same status and code OCI uses for a
+    /// missing permission, so a transient race reads exactly like a broken IAM
+    /// policy. Observed against live OCI: the very VNIC that 404'd here was
+    /// readable moments later, with the same credentials.
+    ///
+    /// So this polls rather than trusting the first answer, bounded by
+    /// `provision_timeout` and reporting the last error if it never resolves.
+    /// `aws_ec2_quorum_manager` does the equivalent — it keeps polling
+    /// `DescribeInstances` while the private IP is empty.
     [[nodiscard]] auto private_ip_of(const std::string& instance_id) const -> std::string {
-        const auto attachments =
-            _http.request("iaas", "GET",
-                          "/20160918/vnicAttachments?compartmentId=" + _cfg.compartment_id +
-                              "&instanceId=" + instance_id);
-        const auto* arr = attachments.if_array();
-        if (arr == nullptr || arr->empty()) {
-            throw std::runtime_error("no VNIC attachments for instance " + instance_id);
-        }
-        for (const auto& attachment : *arr) {
-            const auto vnic_id = oci_detail::json_string(attachment, "vnicId");
-            if (vnic_id.empty()) {
-                continue;
+        const auto deadline = std::chrono::steady_clock::now() + _cfg.provision_timeout;
+        std::string last_error;
+        for (;;) {
+            try {
+                const auto attachments =
+                    _http.request("iaas", "GET",
+                                  "/20160918/vnicAttachments?compartmentId=" + _cfg.compartment_id +
+                                      "&instanceId=" + instance_id);
+                if (const auto* arr = attachments.if_array(); arr != nullptr) {
+                    for (const auto& attachment : *arr) {
+                        const auto vnic_id = oci_detail::json_string(attachment, "vnicId");
+                        if (vnic_id.empty()) {
+                            continue;
+                        }
+                        try {
+                            const auto vnic =
+                                _http.request("iaas", "GET", "/20160918/vnics/" + vnic_id);
+                            auto ip = oci_detail::json_string(vnic, "privateIp");
+                            if (!ip.empty()) {
+                                return ip;
+                            }
+                        } catch (const std::exception& ex) {
+                            last_error = ex.what();
+                        }
+                    }
+                }
+            } catch (const std::exception& ex) {
+                last_error = ex.what();
             }
-            const auto vnic = _http.request("iaas", "GET", "/20160918/vnics/" + vnic_id);
-            auto ip = oci_detail::json_string(vnic, "privateIp");
-            if (!ip.empty()) {
-                return ip;
+            if (std::chrono::steady_clock::now() >= deadline) {
+                break;
             }
+            std::this_thread::sleep_for(_cfg.poll_interval);
         }
-        throw std::runtime_error("no VNIC of instance " + instance_id + " reported a privateIp");
+        throw std::runtime_error("no VNIC of instance " + instance_id +
+                                 " reported a privateIp within " +
+                                 std::to_string(_cfg.provision_timeout.count()) + "s" +
+                                 (last_error.empty() ? "" : "; last error: " + last_error));
+    }
+
+    /// Detach and terminate an instance we launched but could not finish
+    /// provisioning. Best-effort by definition: it runs on a path that is
+    /// already failing.
+    ///
+    /// Requirement 6.7 only mandates the size rollback for the launch-poll
+    /// timeout, which leaves every *later* failure — the tag write, the VNIC
+    /// lookup — returning an exceptional Future with a tagged, running,
+    /// **billed** instance still in the pool. Both of those failed against live
+    /// OCI on the way to getting this working, and both leaked an instance
+    /// until it was cleaned up by hand. Doing nothing here is not a neutral
+    /// choice.
+    auto best_effort_detach(const std::string& instance_id) const noexcept -> void {
+        try {
+            await_pool_running(_cfg.provision_timeout);
+            boost::json::object detach;
+            detach["instanceId"] = instance_id;
+            detach["isDecrementSize"] = true;
+            detach["isAutoTerminate"] = true;
+            (void)_http.request(
+                "iaas", "POST",
+                "/20160918/instancePools/" + _cfg.instance_pool_id + "/actions/detachInstance",
+                boost::json::serialize(detach));
+        } catch (const std::exception& ex) {
+            std::cerr << "[oci_instance_pool_quorum_manager::provision_node] could not clean up "
+                      << instance_id << " after a failed provision; it may still be running and "
+                      << "billing: " << ex.what() << "\n";
+        }
+    }
+
+    /// Wait for the pool to be `RUNNING` before acting on it.
+    ///
+    /// `DetachInstancePoolInstance` is refused while the pool is `SCALING`:
+    /// `409 IncorrectState: instancepool ... Must be in State 'Running'`. The
+    /// pool is left scaling by the size bump `provision_node` just made, so a
+    /// decommission that follows a provision closely — which is exactly what
+    /// `maintain_quorum` does, and what a replacement cycle *is* — fails
+    /// outright. Observed against live OCI on the first successful
+    /// provision/decommission pair.
+    ///
+    /// Bounded, and deliberately falls through rather than throwing on
+    /// expiry: if the pool never settles, the caller is better served by OCI's
+    /// own error from the real call than by this function's guess at why.
+    auto await_pool_running(std::chrono::seconds budget) const -> void {
+        const auto deadline = std::chrono::steady_clock::now() + budget;
+        for (;;) {
+            try {
+                const auto pool = _http.request("iaas", "GET",
+                                                "/20160918/instancePools/" + _cfg.instance_pool_id);
+                if (oci_detail::json_string(pool, "lifecycleState") == "RUNNING") {
+                    return;
+                }
+            } catch (const std::exception&) {
+                // A read failure is not a reason to stop waiting; the deadline is.
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return;
+            }
+            std::this_thread::sleep_for(_cfg.poll_interval);
+        }
     }
 
     auto set_pool_size(std::int64_t size) const -> void {

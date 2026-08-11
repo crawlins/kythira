@@ -170,7 +170,7 @@ for a `POST` with a body:
 ```
 date: {rfc1123 date}
 (request-target): post /20160918/instancePools/{id}
-host: iaas.{region}.oci.oraclecloud.com
+host: iaas.{region}.oraclecloud.com
 content-length: {body byte length}
 content-type: application/json
 x-content-sha256: {base64(sha256(body))}

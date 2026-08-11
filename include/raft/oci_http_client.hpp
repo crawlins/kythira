@@ -121,19 +121,47 @@ public:
     /// service rather than per service, which is what a single test server
     /// needs. Public so a test can assert the derivation without issuing a
     /// request.
-    /// The domain is `{service}.{region}.oci.oraclecloud.com`, **with** the
-    /// `oci` label. Confirmed against a live tenancy, not inferred: the OCI CLI
-    /// dials `identity.us-phoenix-1.oci.oraclecloud.com`, and of the four
-    /// services these providers use only two — `identity` and `iaas` — have a
-    /// hostname without it. `certificatesmanagement.{region}.oraclecloud.com`
-    /// and `certificates.{region}.oraclecloud.com` **do not resolve at all**,
-    /// so the certificate provider could never have reached OCI. The mock tier
-    /// cannot see this, because `endpoint_override` replaces the whole host.
+    /// The domain is **per service**, and cannot be derived from one template.
+    ///
+    /// Determined by probing a live tenancy, because guessing here is what
+    /// produced two separate defects. The matrix, for the four services these
+    /// providers use in `us-phoenix-1`:
+    ///
+    /// | service | `{svc}.{region}.oraclecloud.com` | `{svc}.{region}.oci.oraclecloud.com` |
+    /// |---|---|---|
+    /// | `iaas` | **works** | 404 on `GetVnic`/`GetSubnet` |
+    /// | `identity` | works | works |
+    /// | `certificatesmanagement` | **no DNS record** | works |
+    /// | `certificates` | **no DNS record** | works |
+    ///
+    /// So Core Services (`iaas`) predates the `oci` label and must **not**
+    /// carry it, while the certificate services only exist with it. `iaas` is
+    /// the trap: the `oci` form resolves and serves *some* operations — enough
+    /// that instances, instance pools and tags all worked — while 404ing
+    /// `GetVnic`, which `provision_node` needs to return an address at all. A
+    /// uniform template is wrong in one direction or the other whichever way it
+    /// is written.
+    ///
+    /// The mock tier cannot see any of this: `endpoint_override` replaces the
+    /// whole host, so the derivation is never exercised.
     [[nodiscard]] auto host_for(std::string_view service) const -> std::string {
         if (!_cfg.endpoint_override.empty()) {
             return _cfg.endpoint_override;
         }
-        return std::string(service) + "." + _cfg.region + ".oci.oraclecloud.com";
+        return std::string(service) + "." + _cfg.region + std::string(domain_suffix_for(service));
+    }
+
+    /// The realm suffix for one service — see @ref host_for for the evidence.
+    ///
+    /// Unknown services default to the `oci` form, which is the newer
+    /// convention and what every service here except Core uses. A service that
+    /// turns out to need the bare form belongs in the list, and until then
+    /// `endpoint_override` is the escape hatch.
+    [[nodiscard]] static auto domain_suffix_for(std::string_view service) -> std::string_view {
+        if (service == "iaas") {
+            return ".oraclecloud.com";
+        }
+        return ".oci.oraclecloud.com";
     }
 
     /// @brief Every header a request will carry, `Host` included.
@@ -224,6 +252,23 @@ private:
         -> httplib::Result {
         httplib::Headers headers;
         for (const auto& [name, value] : prepared_headers(host, method, path, body)) {
+            // `content-type` is deliberately withheld from httplib's header
+            // map. Every cpp-httplib body overload takes the content type as a
+            // separate argument and sets the header from it — there is no
+            // `Put(path, headers, body)` — so adding ours too puts **two**
+            // `Content-Type: application/json` headers on the wire, and OCI
+            // answers 400 with an empty body, which is as unhelpful as it
+            // sounds. The value is identical either way and the signature
+            // covers the value, not the header's letter case, so letting
+            // httplib own the header costs nothing.
+            //
+            // The mock tier cannot see this: cpp-httplib's *server* accepts
+            // duplicate headers, and `get_header_value` returns the first, so
+            // the POST test asserting `content-type == application/json`
+            // passed with both present.
+            if (name == "content-type") {
+                continue;
+            }
             headers.emplace(name, value);
         }
 
