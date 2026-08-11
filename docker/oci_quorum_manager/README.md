@@ -157,12 +157,28 @@ So, until that is closed:
 
 ## 5. Certificate Authority
 
+The CA needs a Vault and an **RSA** master key first. Three things bite here:
+the vault type (`DEFAULT`, not the much pricier `VIRTUAL_PRIVATE`), the key
+algorithm (an AES key is accepted by `key create` and then rejected by the CA
+with `InvalidParameter: ... has an invalid shape.`, which never mentions the
+algorithm), and the subcommand name (it ends in `-details`).
+
 ```bash
-oci certs-mgmt certificate-authority create-root-ca-by-generating-config \
-  --compartment-id "$COMPARTMENT_ID" \
-  --name kythira-ca \
-  --kms-key-id "$KMS_KEY_ID" \
-  --subject '{"commonName": "kythira root"}'
+VAULT_ID=$(oci kms management vault create --compartment-id "$COMPARTMENT_ID" \
+  --display-name kythira-vault --vault-type DEFAULT \
+  --wait-for-state ACTIVE --query 'data.id' --raw-output)
+EP=$(oci kms management vault get --vault-id "$VAULT_ID" \
+  --query 'data."management-endpoint"' --raw-output)
+
+# length is in BYTES: 256 = RSA-2048.
+KEY_ID=$(oci kms management key create --compartment-id "$COMPARTMENT_ID" \
+  --display-name kythira-ca-key --key-shape '{"algorithm":"RSA","length":256}' \
+  --endpoint "$EP" --wait-for-state ENABLED --query 'data.id' --raw-output)
+
+oci certs-mgmt certificate-authority create-root-ca-by-generating-config-details \
+  --compartment-id "$COMPARTMENT_ID" --name kythira-ca --kms-key-id "$KEY_ID" \
+  --subject '{"commonName": "kythira root"}' \
+  --wait-for-state ACTIVE --max-wait-seconds 1200
 ```
 
 `oci_certificates_provider` issues from this CA with
