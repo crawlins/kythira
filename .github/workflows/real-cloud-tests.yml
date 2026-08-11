@@ -913,17 +913,149 @@ jobs:
           scripts/run-real-cloud-suite.sh 'real-privateca' '^gcp_privateca_provider_real_test$' \
             "The fixture provisions its own CA pool when GCP_TEST_CA_POOL is unset, so a skip means the preflight could not reach CAS — check the service account's privateca roles and that the Certificate Authority Service API is enabled."
 
+  # ── OCI ──────────────────────────────────────────────────────────────────
+  # Single x64 leg, unlike the AWS job's x64+arm64 matrix: nothing in
+  # oci_instance_pool_quorum_manager or oci_certificates_provider branches on
+  # host architecture — there is no equivalent of the AMI/instance-type
+  # selection that made the AWS arm64 leg worth its runtime. The *instances*
+  # these tests launch may well be Ampere; that is the tenancy's Instance
+  # Configuration, not the runner's architecture.
   oci:
     name: Real Cloud Tests (OCI)
     runs-on: ubuntu-24.04
+    # Worst case: the quorum suite's provision/assess/decommission case waits
+    # up to 900s for an instance, plus the ladder walk and the certificates
+    # suite's issuance polls. 120 minutes is generous against a measured ~5
+    # minutes for both suites, which leaves room for a region under pressure
+    # without letting a wedged run hold a runner for six hours.
+    timeout-minutes: 120
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
     if: |
       (github.event.inputs.run_real_cloud_tests == 'true'
         || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
       && (github.event.inputs.oci_enabled == 'true'
         || (github.event.inputs.oci_enabled == null && vars.REAL_CLOUD_TESTS_OCI_ENABLED == 'true'))
+
+    env:
+      BUNDLE_INSTANCE_POOL: ${{ vars.REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED == 'true' }}
+      BUNDLE_CERTIFICATES: ${{ vars.REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED == 'true' }}
+      CCACHE_DIR: /home/runner/.ccache
+
     steps:
-      - name: No real-cloud tests implemented for OCI yet
-        run: echo "No real-cloud tests implemented for OCI yet — see doc/TODO.md Cloud Provider Support."
+      - uses: actions/checkout@v4
+
+      # Mirrors the AWS job's equivalent guard. A provider job with every
+      # bundle off would run zero tests and report success, which is the
+      # "green because nothing ran" failure this project keeps finding.
+      - name: Fail if no bundle is enabled
+        run: |
+          if [ "${BUNDLE_INSTANCE_POOL}" != "true" ] && [ "${BUNDLE_CERTIFICATES}" != "true" ]; then
+            echo "::error::The OCI job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED and/or REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED." >&2
+            exit 1
+          fi
+
+      # ── Credentials ──────────────────────────────────────────────────────
+      #
+      # THIS STEP IS THE ONE UNFINISHED PIECE OF THIS JOB.
+      #
+      # Requirement 14.2 wants keyless federation, and Task 0(f) confirmed it
+      # exists: OCI IAM Workload Identity Federation exchanges this job's
+      # GitHub OIDC JWT for a short-lived User Principal Session Token
+      # (spike-notes.md Finding 17). What has NOT been done is standing up an
+      # OCI IAM identity domain configured to trust this repository, and
+      # verifying the exchange end to end — neither of which can be done from
+      # the repo side alone.
+      #
+      # So this fails loudly rather than falling back to a long-lived API key
+      # in a secret. That fallback is exactly what Requirement 14.2 permits
+      # only "with explicit sign-off ... not a silent regression from the AWS
+      # job's stronger posture" — and since federation demonstrably exists,
+      # there is nothing left to sign off on. A job that quietly used a stored
+      # key would be the regression the requirement forbids.
+      #
+      # To finish: configure the identity domain per
+      # scripts/ci-cloud-credentials/oci/README.md, then replace this step
+      # with the token exchange and export the resulting session credentials
+      # as the KYTHIRA_OCI_* variables the suites read.
+      - name: Obtain OCI credentials (Workload Identity Federation)
+        run: |
+          echo "::error::OCI credential federation is not yet wired up. The mechanism is confirmed (OCI IAM Workload Identity Federation — see scripts/ci-cloud-credentials/oci/README.md and spike-notes.md Finding 17), but the identity-domain trust for this repository has not been created and the exchange has not been verified. This step deliberately fails rather than falling back to a long-lived API key, which Requirement 14.2 forbids as a silent regression." >&2
+          exit 1
+
+      - name: Install system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig
+
+      # Built as named targets rather than via `ctest`: neither real-OCI binary
+      # is registered with CTest at all (tests/CMakeLists.txt explains why), so
+      # there is no label to select and the job invokes them directly below.
+      - name: Build the real-OCI suites
+        run: |
+          targets=""
+          [ "${BUNDLE_INSTANCE_POOL}" = "true" ] && targets="$targets oci_quorum_manager_real_test"
+          [ "${BUNDLE_CERTIFICATES}" = "true" ] && targets="$targets oci_certificates_provider_real_test"
+          # shellcheck disable=SC2086
+          cmake --build build --target $targets
+
+      - name: Instance Pool bundle
+        if: env.BUNDLE_INSTANCE_POOL == 'true'
+        run: |
+          ./build/tests/oci_quorum_manager_real_test --log_level=test_suite
+          rc=$?
+          # 77 is the suites' "tenancy not configured" skip. In CI that is a
+          # misconfiguration, not a skip — the job was explicitly enabled.
+          if [ $rc -eq 77 ]; then
+            echo "::error::The suite skipped for want of tenancy configuration, but this bundle was enabled. Check the credential step and the KYTHIRA_OCI_* variables." >&2
+            exit 1
+          fi
+          exit $rc
+
+      - name: Certificates bundle
+        if: env.BUNDLE_CERTIFICATES == 'true'
+        run: |
+          ./build/tests/oci_certificates_provider_real_test --log_level=test_suite
+          rc=$?
+          if [ $rc -eq 77 ]; then
+            echo "::error::The suite skipped for want of tenancy configuration, but this bundle was enabled. Check the credential step and the KYTHIRA_OCI_* variables." >&2
+            exit 1
+          fi
+          exit $rc
+
+      # Requirement 13.10's audit, as a job step rather than trust in the
+      # fixtures. Both suites tear down unconditionally, including on a signal
+      # — but "the teardown ran" and "nothing is left running" are different
+      # claims, and every cloud provider in this project leaked something on
+      # its first live run.
+      - name: Audit for leaked instances
+        if: always()
+        run: |
+          echo "Post-run audit is not yet automated — it needs the OCI CLI and the"
+          echo "session credentials from the federation step above. Until then, check"
+          echo "the compartment by hand:"
+          echo "  oci compute instance list --compartment-id \$KYTHIRA_OCI_COMPARTMENT_ID \\"
+          echo "    --query 'data[?\"lifecycle-state\"!=\`TERMINATED\`]'"
 
   alibaba:
     name: Real Cloud Tests (Alibaba Cloud)

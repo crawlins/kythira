@@ -2471,6 +2471,39 @@ else()
     message(STATUS "oci_quorum_manager tests: skipped (requires OpenSSL and httplib)")
 endif()
 
+# ── Real-OCI integration tests (oci-cloud-provider spec, Task 6) ─────────────
+#
+# Compiled whenever OCI support is on, and **never registered with CTest**.
+# That is Task 6's own verify criterion ("when KYTHIRA_OCI_REAL_TESTS is unset,
+# both binaries compile but are not registered in CTest"), and it is the same
+# shape as oci_tenancy_check next door: a binary that needs a real tenancy can
+# only fail or skip as a test entry, but it still has to *compile*, or it rots
+# into a file that looks like it works.
+#
+# KYTHIRA_OCI_REAL_TESTS is a compile definition rather than a build gate for
+# the same reason: the code must keep building for everyone, and only the
+# decision to *run* it is opt-in. The suites skip themselves with exit code 77
+# when the tenancy env vars are absent, so running one by hand on a machine
+# with no OCI access is harmless.
+if(_KYTHIRA_GATE_OCI_QUORUM_MANAGER AND TARGET OpenSSL::SSL AND TARGET httplib::httplib)
+    kythira_add_oci_test(oci_quorum_manager_real_test)
+    target_compile_definitions(oci_quorum_manager_real_test PRIVATE KYTHIRA_OCI_REAL_TESTS)
+    message(STATUS "oci_quorum_manager_real_test: built, not registered with CTest "
+                   "(needs a live tenancy — see scripts/ci-cloud-credentials/oci/README.md)")
+endif()
+
+if(_KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER AND TARGET OpenSSL::SSL AND TARGET httplib::httplib)
+    kythira_add_oci_test(oci_certificates_provider_real_test)
+    target_compile_definitions(oci_certificates_provider_real_test
+                               PRIVATE KYTHIRA_OCI_REAL_TESTS)
+    # generate_key_and_csr() lives in the certificate-authority implementation,
+    # which network_simulator does not carry.
+    target_sources(oci_certificates_provider_real_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/certificate_authority.cpp)
+    message(STATUS "oci_certificates_provider_real_test: built, not registered with CTest "
+                   "(needs a live CA — see scripts/ci-cloud-credentials/oci/README.md)")
+endif()
+
 # The OCI tenancy validator (scripts/ci-cloud-credentials/oci/).
 #
 # Built, and deliberately **never** registered with add_test(): it needs real
