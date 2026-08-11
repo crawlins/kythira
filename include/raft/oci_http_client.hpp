@@ -35,12 +35,15 @@ namespace kythira {
 
 /// @brief Signed JSON requests against an OCI service endpoint.
 ///
-/// One instance is safe to share for sequential use; it holds no connection
-/// between calls, building a fresh `httplib::Client` per request the way the
-/// ACME provider does. That is deliberate for now: OCI control-plane calls are
-/// infrequent (a quorum poll, a certificate issue), so connection reuse would
-/// buy little and would add a pooling lifetime question to a class whose whole
-/// value is being obvious.
+/// One instance is safe to share across threads, and `request` is `const` to say
+/// so: it holds no connection between calls, building a fresh `httplib::Client`
+/// per request the way the ACME provider does, and reads nothing but the
+/// immutable config. Building a client per call is deliberate — OCI
+/// control-plane calls are infrequent (a quorum poll, a certificate issue), so
+/// connection reuse would buy little and would add a pooling lifetime question
+/// to a class whose whole value is being obvious. It is also what lets
+/// `oci_instance_pool_quorum_manager` fan `GetInstance` out across a worker pool
+/// (Requirement 5.2) without owning one client per worker.
 class oci_http_client {
 public:
     explicit oci_http_client(oci_client_config cfg) : _cfg(std::move(cfg)) {}
@@ -72,7 +75,7 @@ public:
     /// @throws std::invalid_argument via `oci_signing::sign_request` when the
     ///         config lacks a field the selected auth mode requires.
     [[nodiscard]] auto request(std::string_view service, std::string_view method,
-                               std::string_view path, const std::string& body = {})
+                               std::string_view path, const std::string& body = {}) const
         -> boost::json::value {
         const std::string host = host_for(service);
         auto result = send_once(host, method, path, body);
