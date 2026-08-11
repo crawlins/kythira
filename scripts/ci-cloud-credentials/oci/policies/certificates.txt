@@ -1,0 +1,26 @@
+# Bundle: certificates
+# CTest binary: oci_certificates_provider_real_test
+# Toggle: REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED
+#
+# Statements for oci_certificates_provider. Substitute {GROUP} and
+# {COMPARTMENT}; lines beginning with '#' are stripped by
+# provision-ci-identity.sh. See instance-pool.txt for why these are statements
+# rather than JSON, and for the same not-yet-verified-against-least-privilege
+# caveat.
+#
+#   leaf-certificate-family        CreateCertificate, GetCertificate,
+#                                  ListCertificates, ListCertificateVersions,
+#                                  RevokeCertificateVersion, and
+#                                  GetCertificateBundle on the retrieval plane
+#   certificate-authority-family   GetCertificateAuthorityBundle, which is all
+#                                  root_certificate_pem() needs — read, not
+#                                  manage: this provider never creates or
+#                                  deletes a CA, deliberately (Requirement 12.3)
+#
+# The CA itself is issued against a Vault master encryption key. Issuing does
+# not require `use keys` for the *caller* — OCI's Certificates service holds
+# that relationship — but creating the CA in the first place does, which is an
+# operator action outside this policy.
+
+Allow group {GROUP} to manage leaf-certificate-family in compartment {COMPARTMENT}
+Allow group {GROUP} to read certificate-authority-family in compartment {COMPARTMENT}

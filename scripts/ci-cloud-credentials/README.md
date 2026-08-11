@@ -48,7 +48,7 @@ bundles today:
 | AWS | Implemented | [`aws/README.md`](aws/README.md) |
 | Azure | Implemented | [`azure/README.md`](azure/README.md) |
 | GCP | Not yet implemented; see `doc/TODO.md` Cloud Provider Support | — |
-| OCI | Not yet implemented; see `doc/TODO.md` Cloud Provider Support | — |
+| OCI | Components implemented and validated against a live tenancy; the real-cloud CTest binaries themselves are still open (`tasks.md` Task 6) | [`oci/README.md`](oci/README.md) |
 | Alibaba Cloud | Not yet implemented; see `doc/TODO.md` Cloud Provider Support | — |
 
 ## Why AWS needs two provisioning scripts, not one
