@@ -297,6 +297,15 @@ is not a valid service principal at all, despite being the management API's
 hostname; OCI at least rejects that one immediately with `Service {x} does not
 exist.`)
 
+**Your CSRs must be RSA.** An OCI CA requires an RSA master key, and OCI
+rejects a certificate whose CSR key is from a different algorithm family —
+**asynchronously**, so `CreateCertificate` succeeds and the certificate lands in
+`lifecycleState: FAILED` minutes later with "The key algorithm is in a
+different algorithm family from the issuing certificate authority's algorithm
+family." This project's `leaf_certificate_options` defaults to **ECDSA P-256**,
+so a deployment using that default cannot use this CA without switching to
+`key_algorithm::rsa_2048` (`spike-notes.md` Finding 19).
+
 `oci_certificates_provider` issues with
 `configType = MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA`: the caller generates
 the key pair and submits **only the CSR**, so the private key never reaches
