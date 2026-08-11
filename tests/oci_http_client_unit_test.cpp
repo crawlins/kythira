@@ -414,6 +414,63 @@ BOOST_AUTO_TEST_CASE(an_empty_2xx_body_yields_null_rather_than_throwing,
 /// ...and a 2xx whose body is present but not JSON throws, rather than
 /// returning something the caller would then have to re-check. The two cases
 /// are stated together because it is the *distinction* that matters.
+/// Every OCI endpoint is https, and cpp-httplib only has an https client when
+/// it was compiled with `CPPHTTPLIB_OPENSSL_SUPPORT` — which in this tree only
+/// `CONFIG_HTTP_TRANSPORT_TLS` defines, via `network_simulator`'s interface.
+///
+/// This target deliberately does not link `network_simulator`, so it is one of
+/// the few places that can observe the TLS-less build at all. That matters:
+/// every *other* OCI test points `endpoint_override` at a plain-http local
+/// server, so the entire suite stays green in a configuration where no real OCI
+/// call could ever succeed. `configs/minimal_defconfig` sets
+/// `CONFIG_HTTP_TRANSPORT_TLS=n`, so this is a reachable configuration, not a
+/// hypothetical one.
+///
+/// The two branches are each other's control. Without TLS the failure must name
+/// the flag; with it, the same call must fail as an ordinary transport error and
+/// not trip the guard — a guard that fired in both builds would be worse than
+/// none, since it would send a reader to a flag that was already set.
+#ifndef CPPHTTPLIB_OPENSSL_SUPPORT
+BOOST_AUTO_TEST_CASE(an_https_endpoint_without_tls_support_names_the_flag_to_set,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    const auto pem = generate_rsa_key_pem();
+    oci_client_config cfg = make_config(pem);
+    cfg.endpoint_override = "https://iaas.us-phoenix-1.oraclecloud.com";
+    const oci_http_client client(cfg);
+
+    std::string what;
+    try {
+        (void)client.request("iaas", "GET", "/20160918/instancePools/abc");
+        BOOST_FAIL("expected an https origin to fail in a build without TLS support");
+    } catch (const std::exception& e) {
+        what = e.what();
+    }
+    BOOST_CHECK_MESSAGE(what.find("CONFIG_HTTP_TRANSPORT_TLS") != std::string::npos,
+                        "the error did not name the flag to set: " << what);
+    BOOST_CHECK_MESSAGE(what.find("oci_http_client") != std::string::npos,
+                        "the error did not say which component failed: " << what);
+}
+#else
+BOOST_AUTO_TEST_CASE(an_unreachable_https_endpoint_fails_as_transport_not_as_the_tls_guard,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    const auto pem = generate_rsa_key_pem();
+    oci_client_config cfg = make_config(pem);
+    // Port 1 refuses immediately; nothing here depends on network access.
+    cfg.endpoint_override = "https://127.0.0.1:1";
+    const oci_http_client client(cfg);
+
+    std::string what;
+    try {
+        (void)client.request("iaas", "GET", "/20160918/instancePools/abc");
+        BOOST_FAIL("expected a connection to port 1 to fail");
+    } catch (const std::exception& e) {
+        what = e.what();
+    }
+    BOOST_CHECK_MESSAGE(what.find("CONFIG_HTTP_TRANSPORT_TLS") == std::string::npos,
+                        "the TLS guard fired in a build that has TLS support: " << what);
+}
+#endif
+
 BOOST_AUTO_TEST_CASE(an_unparseable_2xx_body_throws,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     recording_server server([](const httplib::Request&, httplib::Response& resp) {

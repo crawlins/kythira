@@ -97,7 +97,8 @@ This document lists the dependencies required to build and use the network simul
 
 ### OCI (Oracle Cloud Infrastructure) — no new dependency
 - **Status**: Built by default; opt out with `CONFIG_OCI_QUORUM_MANAGER=n` and/or
-  `CONFIG_OCI_CERTIFICATES_PROVIDER=n`.
+  `CONFIG_OCI_CERTIFICATES_PROVIDER=n`. Both `depends on CONFIG_HTTP_TRANSPORT_TLS`, so
+  a configuration with that off (`configs/minimal_defconfig`) builds no OCI support at all.
 - **Purpose**: `oci_instance_pool_quorum_manager.hpp` and `oci_certificates_provider.hpp`.
 - **Notes**: Listed for discoverability rather than because anything must be installed.
   Unlike the AWS/GCP/Azure entries below, there is **no vendor SDK to detect** and no
@@ -105,6 +106,12 @@ This document lists the dependencies required to build and use the network simul
   over cpp-httplib, parsing responses with `boost::json` — all three already required above.
   The kconfig flags therefore select whether OCI support is *built*, not whether a dependency
   was *found*, so disabling them can never be the cause of a configure failure.
+
+  The `HTTP_TRANSPORT_TLS` dependency is not cosmetic. Every OCI endpoint is https, and
+  that symbol is the only thing in this tree that defines `CPPHTTPLIB_OPENSSL_SUPPORT` —
+  without which cpp-httplib rejects an https origin outright. OCI support would otherwise
+  build cleanly and fail on its first real call, with a whole green test suite behind it,
+  since every OCI test points `endpoint_override` at a plain-http local server.
 
 ### gRPC + Protocol Buffers — gRPC transport
 - **Status**: Optional — `raft_grpc_transport` target only compiled when detected

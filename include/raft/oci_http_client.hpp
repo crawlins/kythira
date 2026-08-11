@@ -132,12 +132,29 @@ private:
     /// localhost is the only case that is not `https`, and spelling the scheme
     /// into `endpoint_override` is how a caller asks for it — nothing here
     /// silently downgrades a real regional endpoint.
+    ///
+    /// The construction is wrapped because cpp-httplib **throws** on an https
+    /// origin when it was compiled without `CPPHTTPLIB_OPENSSL_SUPPORT`, and its
+    /// own message ("'https' scheme is not supported.") names neither this
+    /// client nor the switch that turns it on. Every OCI endpoint is https, so
+    /// in such a build every real call fails here — while the whole test suite
+    /// stays green, since it points `endpoint_override` at a plain-http local
+    /// server. Rethrowing with the flag named is the difference between a
+    /// one-line fix and an afternoon.
     [[nodiscard]] auto make_client(const std::string& host) const
         -> std::unique_ptr<httplib::Client> {
         const bool explicit_scheme = host.starts_with("http://") || host.starts_with("https://");
         const std::string origin = explicit_scheme ? host : "https://" + host;
 
-        auto client = std::make_unique<httplib::Client>(origin);
+        std::unique_ptr<httplib::Client> client;
+        try {
+            client = std::make_unique<httplib::Client>(origin);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(
+                "oci_http_client: could not create an HTTP client for " + origin + ": " + e.what() +
+                " — OCI endpoints are https, which needs cpp-httplib compiled with "
+                "CPPHTTPLIB_OPENSSL_SUPPORT (CONFIG_HTTP_TRANSPORT_TLS=y)");
+        }
         client->set_connection_timeout(static_cast<time_t>(_cfg.api_timeout.count()), 0);
         client->set_read_timeout(static_cast<time_t>(_cfg.api_timeout.count()), 0);
         return client;

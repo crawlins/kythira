@@ -290,9 +290,19 @@ menu "OCI Integration"
 # OCI support is *built*, not whether a dependency was *found* — which is why
 # neither has a KYTHIRA_HAS_* counterpart, and why turning one off cannot fail
 # a strict-mode configure the way GCP_SDK=y without the SDK does.
+#
+# Both depend on HTTP_TRANSPORT_TLS, which is not an aesthetic choice: every OCI
+# endpoint is https, and CPPHTTPLIB_OPENSSL_SUPPORT — which only that symbol
+# defines — is what gives cpp-httplib an https client at all. Without it
+# httplib::Client rejects an https origin outright, so OCI support would build
+# cleanly and then fail on its first real call. Nothing caught that, because
+# every OCI test points endpoint_override at a plain-http local server.
+# HTTP_TRANSPORT_TLS in turn depends on HTTP_TRANSPORT and OPENSSL, which is
+# also exactly right: the signing is OpenSSL EVP and the transport is httplib.
 
 config OCI_QUORUM_MANAGER
 	bool "OCI Instance Pool quorum manager"
+	depends on HTTP_TRANSPORT_TLS
 	default y
 	help
 	  Builds oci_instance_pool_quorum_manager and the OCI request-signing
@@ -300,8 +310,12 @@ config OCI_QUORUM_MANAGER
 	  OpenSSL, httplib and boost::json, all of which are unconditional
 	  dependencies already.
 
+	  Requires HTTP_TRANSPORT_TLS: OCI is https-only, and that symbol is
+	  what defines CPPHTTPLIB_OPENSSL_SUPPORT.
+
 config OCI_CERTIFICATES_PROVIDER
 	bool "OCI Certificates Management certificate provider"
+	depends on HTTP_TRANSPORT_TLS
 	default y
 	help
 	  Builds oci_certificates_provider. Independent of OCI_QUORUM_MANAGER
@@ -309,6 +323,9 @@ config OCI_CERTIFICATES_PROVIDER
 	  neither uses the other, mirroring how AWS_ACM_PCA is found separately
 	  from AWS_SDK, so a deployment can take certificates without quorum
 	  management or the reverse.
+
+	  Requires HTTP_TRANSPORT_TLS, for the same reason OCI_QUORUM_MANAGER
+	  does.
 
 endmenu # OCI Integration
 
