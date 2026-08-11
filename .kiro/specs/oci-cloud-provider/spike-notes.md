@@ -654,3 +654,74 @@ writing one, though it is third-party and unvetted.
 
 All seven sub-questions are resolved. (a), (c), (e) from the first pass;
 (b), (d), (f), (g) here. Task 6 is no longer blocked on Task 0 for anything.
+
+---
+
+## Fifth pass — August 11, 2026: the certificates provider's first live run
+
+Task 6's `oci_certificates_provider_real_test` against the CA built in the
+fourth pass. Two of its three cases passed on the **first** attempt —
+`root_certificate_pem` and `revoke` — which confirms the retrieval-plane host
+and the serial-search path were right. `sign_csr` failed twice, for two
+unrelated reasons.
+
+### Finding 18: `certificateConfig.validity` makes `CreateCertificate` unparseable
+
+Sending `certificateConfig.validity.timeOfValidityNotAfter` — an RFC 3339 stamp,
+well-formed JSON — is rejected with:
+
+```
+400 InvalidParameter: Unable to process JSON input
+```
+
+A **parser**-level error that names no field, so it reads as malformed JSON
+rather than as an unwanted one. Removing the field makes the byte-identical
+request succeed.
+
+`design.md`'s sketch of `sign_csr` lists only `configType`,
+`issuerCertificateAuthorityId` and `csrPem`; the `validity` object was added
+during implementation on the assumption it was an optional extra. It is not
+optional-and-ignored, it is fatal. `config.validity` and `options.validity` are
+consequently **not consulted** by `sign_csr` at all — the certificate takes the
+issuing CA's validity — and that is now stated where those fields are declared.
+
+### Finding 19: the CSR's key algorithm must match the CA's family
+
+With the request accepted, the certificate then failed **asynchronously**:
+
+```
+lifecycleState:   FAILED
+lifecycleDetails: The key algorithm is in a different algorithm family from
+                  the issuing certificate authority's algorithm family.
+```
+
+The CSR was ECDSA P-256 — this project's `leaf_certificate_options` default —
+against the RSA-2048 CA from Finding 12. That was a defect in the test, not in
+the provider, but it exposes a **deployment constraint worth stating plainly**:
+
+- An OCI Certificate Authority requires an **RSA** master key (Finding 12; an
+  AES key is rejected outright, and OCI's CA does not accept an EC master key
+  in the configuration this project uses).
+- A certificate issued by it must therefore be requested with an **RSA** CSR.
+- So a deployment whose nodes generate this project's *default* ECDSA keys
+  **cannot use such a CA** without changing `leaf_certificate_options::algorithm`
+  to `rsa_2048`/`rsa_4096`.
+
+Nothing in the provider can detect this — the mismatch is only visible to OCI,
+minutes after the request is accepted.
+
+### The pattern across Findings 12, 18 and 19
+
+All three fail in a way that defeats a synchronous reading:
+
+| finding | request | failure |
+|---|---|---|
+| 12 (CA key access) | accepted | `FAILED` minutes later, generic authorization text |
+| 18 (`validity`) | rejected | parser error naming no field |
+| 19 (key family) | accepted | `FAILED` minutes later |
+
+Two of the three surface only by polling the resource's `lifecycleDetails`
+after the call returns. Any OCI code path that creates a resource and trusts
+the 2xx is not actually checking anything — which is what
+`oci_certificates_provider::await_active_version` does correctly, and is why it
+caught Finding 19 at all.
