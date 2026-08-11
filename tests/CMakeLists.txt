@@ -2416,6 +2416,75 @@ elseif(NOT KYTHIRA_OCI_SHARED)
 else()
     message(STATUS "oci_http_client_unit_test: skipped (requires OpenSSL and httplib)")
 endif()
+
+# ── OCI provider tests (oci-cloud-provider spec, Tasks 4-5) ───────────────────
+#
+# Three targets, gated on their own Kconfig flag rather than on KYTHIRA_OCI_SHARED:
+# the flags are independent by design (a deployment can take certificates without
+# quorum management or the reverse), so the tests have to be too or turning one
+# off would fail the other's build.
+#
+# `network_simulator` carries the include path, Folly (which future_default needs
+# here, unlike the pure-signing test) and httplib; boost_json is linked
+# explicitly because network_simulator defines that target without linking it.
+function(kythira_add_oci_test target_name)
+    add_executable(${target_name} ${target_name}.cpp)
+    target_link_libraries(${target_name} PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        httplib::httplib
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+        target_link_libraries(${target_name} PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+    elseif(TARGET Boost::json)
+        target_link_libraries(${target_name} PRIVATE Boost::json)
+    endif()
+    if(FIU_FOUND)
+        target_compile_definitions(${target_name} PRIVATE FIU_ENABLE)
+        target_link_libraries(${target_name} PRIVATE ${FIU_LDFLAGS})
+        target_include_directories(${target_name} PRIVATE ${FIU_INCLUDE_DIRS})
+    endif()
+    target_include_directories(${target_name} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(${target_name} PRIVATE cxx_std_23)
+endfunction()
+
+if(_KYTHIRA_GATE_OCI_QUORUM_MANAGER AND TARGET OpenSSL::SSL AND TARGET httplib::httplib)
+    kythira_add_oci_test(oci_quorum_manager_unit_test)
+    add_test(NAME oci_quorum_manager_unit_test COMMAND oci_quorum_manager_unit_test)
+    set_tests_properties(oci_quorum_manager_unit_test PROPERTIES
+        TIMEOUT 300
+        LABELS "unit;oci;quorum_manager;cloud"
+    )
+
+    kythira_add_oci_test(oci_quorum_manager_mock_test)
+    add_test(NAME oci_quorum_manager_mock_test COMMAND oci_quorum_manager_mock_test)
+    set_tests_properties(oci_quorum_manager_mock_test PROPERTIES
+        TIMEOUT 600
+        LABELS "integration;oci;mock;quorum_manager;cloud"
+    )
+elseif(NOT _KYTHIRA_GATE_OCI_QUORUM_MANAGER)
+    message(STATUS "oci_quorum_manager tests: skipped (CONFIG_OCI_QUORUM_MANAGER disabled)")
+else()
+    message(STATUS "oci_quorum_manager tests: skipped (requires OpenSSL and httplib)")
+endif()
+
+if(_KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER AND TARGET OpenSSL::SSL AND TARGET httplib::httplib)
+    kythira_add_oci_test(oci_certificates_provider_mock_test)
+    add_test(NAME oci_certificates_provider_mock_test COMMAND oci_certificates_provider_mock_test)
+    set_tests_properties(oci_certificates_provider_mock_test PROPERTIES
+        TIMEOUT 600
+        LABELS "integration;oci;mock;certificates;cloud"
+    )
+elseif(NOT _KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER)
+    message(STATUS "oci_certificates_provider tests: skipped "
+                   "(CONFIG_OCI_CERTIFICATES_PROVIDER disabled)")
+else()
+    message(STATUS "oci_certificates_provider tests: skipped (requires OpenSSL and httplib)")
+endif()
+
 # HTTP SSL Context Configuration Unit Tests
 if(TARGET Folly::folly)
     add_executable(http_ssl_context_configuration_unit_test http_ssl_context_configuration_unit_test.cpp)

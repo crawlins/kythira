@@ -1,6 +1,104 @@
 # Implementation Plan — OCI Cloud Provider Support
 
-## Status: Task 1 partially complete (Task 0 partially complete — see `spike-notes.md`, dated 2026-07-28)
+## Status: Tasks 1-5 and 7 complete; Task 6 open, Task 0 partially complete
+
+**August 11, 2026.** Both components, the mock server, the test tier and the
+documentation are on `main`. **Task 6 — the real-OCI integration tier and CI
+wiring — is the one substantive item left**, and two of its inputs are
+themselves open Task 0 spike questions (see below). Requirement 1.6 (Instance
+Principal) remains a deliberate throwing stub, blocked on Task 0(b).
+
+What landed for Tasks 2-5 and 7, August 11:
+
+- `include/raft/oci_instance_pool_quorum_manager.hpp` (Task 2) — the full
+  class: constructor validation plus a single `GetInstancePool` to read the
+  pool's Availability Domains, `assess_quorum` with the `lifecycleState` +
+  heartbeat/grace-period rule, `provision_node` with the size bump,
+  untagged-instance poll, tag write and VNIC lookup, `decommission_node` with
+  its idempotent early exits and post-detach consistency poll,
+  `maintain_quorum`, `topology`, and all four fault points.
+- `include/raft/oci_certificates_provider.hpp` (Task 3) — `sign_csr` via
+  `MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA`, `root_certificate_pem` with its
+  cache, `revoke` via `RevokeCertificateVersion`, three fault points.
+- `tests/oci_mock_server.hpp` (Task 4) — an `httplib::Server` modelling the
+  IaaS and Certificates routes with in-memory state. It replaces
+  `freeformTags` rather than merging them, faithfully to OCI, which is what
+  makes Property 1 testable at all.
+- `tests/oci_quorum_manager_unit_test.cpp` (12 cases),
+  `tests/oci_quorum_manager_mock_test.cpp` (10),
+  `tests/oci_certificates_provider_mock_test.cpp` (9) — Task 5. All pass;
+  `ctest -R '^oci'` is 5/5 including the two Task-1 suites.
+- `docker/oci_quorum_manager/` (Task 7) — env example and README. This is the
+  **first** provider in the tree to satisfy `doc/TODO.md`'s standing
+  "every provider ships an example config" requirement; AWS, Azure and GCP
+  still do not.
+- `doc/TODO.md`'s OCI bullet is updated but **deliberately still `[ ]`**,
+  because Requirement 15.3 conditions the tick on `tasks.md` being complete
+  and Task 6 is not. The bullet says exactly what is missing.
+
+**Verified, not assumed.** The kconfig gates were checked by configuring with
+them off and counting: 5 targets and 5 CTest entries on, **0 and 0** off, and
+turning only `CONFIG_OCI_QUORUM_MANAGER` off leaves the certificates target
+and the two shared suites building — so the two flags are genuinely
+independent rather than jointly gating. Three behavioural claims were
+mutation-tested rather than only asserted: dropping the read half of
+`merged_tags` fails exactly the read-merge-write case; making `is_live` ignore
+the heartbeat fails exactly the stale-heartbeat case; deleting
+`provision_node`'s rollback fails exactly the timeout case. Each mutation
+killed its own case and no other.
+
+### Four more places the spec did not match the tree or the API
+
+Recorded in the same spirit as Requirement 11.3's correction below, because
+each was found by checking rather than by assuming.
+
+1. **Requirement 12.2's `subject`/`certificateRules` premise is wrong for the
+   config type this spec uses.** It says `options`' subject/SAN fields
+   populate `CreateCertificate`'s `subject`/`certificateRules`. Those fields
+   belong to `ISSUED_BY_INTERNAL_CA` — the config type that generates the key
+   internally. `MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA` carries
+   `issuerCertificateAuthorityId` and `csrPem` and nothing about the name
+   being certified, because the CSR *is* the name. Sending a second source of
+   truth alongside it would be ignored at best and a 400 at worst.
+   `sign_csr` therefore uses `options` for the validity window and for the
+   certificate *resource's* display name only; the header says so at the
+   function.
+2. **`aws_asg_quorum_manager::next_node_id()` does not exist.** `design.md`
+   and Requirements 6.4/7.1 all point at it as the pattern being mirrored.
+   The real `aws_asg_quorum_manager` derives its NodeId from the EC2 instance
+   ID via `aws_ec2_quorum_manager::ec2_id_to_node_id` and has no tag scan at
+   all. The *reasoning* the spec attributes to it is still sound — an OCID is
+   not a usable numeric seed — so the implementation does the max-of-parsed-
+   tags-plus-one scan the spec describes. It is simply not a port of existing
+   code, and a reader sent to that function to compare will not find one.
+3. **NodeIds are reused after a decommission**, and cannot not be. The scan
+   only sees instances the pool still lists, and `decommission_node` detaches
+   its target, so removing the highest-numbered node hands that number to the
+   next provision. Requirement 6.4 scopes the scan to
+   `ListInstancePoolInstances` and no OCI call exposes a detached instance's
+   tags, so this is a property of the design rather than a defect in the
+   implementation of it. Documented on `next_node_id` and pinned by
+   `maintain_quorum_replaces_a_dead_node_and_reports_pre_remediation_health`
+   so it stays a known limitation instead of a future surprise.
+4. **Requirement 13.5's mock route list is short by two.** `revoke` takes a
+   serial, and OCI addresses a certificate version by `(certificate OCID,
+   version number)` — a serial is neither. Resolving one to the other needs
+   `ListCertificates` and `ListCertificateVersions`, which the list omits, so
+   the mock implements them. The alternative was caching what `sign_csr`
+   issued, which works only until the process restarts — precisely when a
+   revocation is most likely to be needed.
+
+**One deliberate deviation from the spec's letter.** Requirements 13.2/13.6
+name the CTest targets `oci-quorum-manager-unit-tests`,
+`oci-quorum-manager-mock-tests` and `oci-certificates-provider-mock-tests`,
+with hyphens. **Zero** of this tree's existing `add_test` names use a hyphen,
+including `oci_signing_unit_test` and `oci_http_client_unit_test` from Task 1.
+They are registered as `oci_quorum_manager_unit_test`,
+`oci_quorum_manager_mock_test` and `oci_certificates_provider_mock_test`
+instead, matching the tree. Task 5's verify command becomes
+`ctest -R '^oci'` rather than `ctest -R oci-`. The labels are as specified.
+
+## Historical status: Task 1 (August 10, 2026)
 
 **Done, August 10, 2026** — the API-key signing path, which `spike-notes.md`
 Finding 1 unblocked:
@@ -45,8 +143,8 @@ that it is a compiled library — and the OCI consumers recorded against those a
 against OpenSSL. That is a documentation fix this spec happened to surface, not
 OCI-specific work.
 
-**Tasks 2–7 remain untouched**, and Requirement 1.6 (Instance Principal) is
-still blocked on Task 0(b) exactly as before.
+*(That paragraph was written when Tasks 2-7 were untouched; see the status
+block at the top of this file for where they actually stand now.)*
 
 ## Overview
 
@@ -207,7 +305,7 @@ Reference implementations to study before starting:
     by (b)/(d)/(f)/(g).
   - _Requirements: 1.1, 12.1, 13.14, 14.2_
 
-- [ ] 1. **Shared foundation**: `oci_client_config`, `oci_signing`,
+- [x] 1. **Shared foundation**: `oci_client_config`, `oci_signing`,
       `oci_http_client`
 
   - Create `include/raft/oci_client_config.hpp` (unconditional compilation,
@@ -243,7 +341,7 @@ Reference implementations to study before starting:
     stage — the real unit test lands in Task 5).
   - _Requirements: 1.1–1.9, 11.1–11.3_
 
-- [ ] 2. **Implement `oci_instance_pool_quorum_manager`**
+- [x] 2. **Implement `oci_instance_pool_quorum_manager`**
 
   Create `include/raft/oci_instance_pool_quorum_manager.hpp` with the full
   class body (always compiled; no SDK guard):
@@ -305,7 +403,7 @@ Reference implementations to study before starting:
   - _Requirements: 2.1–2.3, 3.1–3.4, 4.1–4.4, 5.1–5.8, 6.1–6.9, 7.1–7.8,
     8.1–8.2, 9.1–9.3, 10.1–10.4_
 
-- [ ] 3. **Implement `oci_certificates_provider`**
+- [x] 3. **Implement `oci_certificates_provider`**
 
   Create `include/raft/oci_certificates_provider.hpp`. **Task 0(e)
   confirmed** OCI accepts a caller-supplied CSR (`spike-notes.md` Finding
@@ -334,7 +432,7 @@ Reference implementations to study before starting:
   - Verify: `cmake --build build` succeeds.
   - _Requirements: 12.1–12.7_
 
-- [ ] 4. **Build `tests/oci_mock_server.hpp`**
+- [x] 4. **Build `tests/oci_mock_server.hpp`**
 
   - An `httplib::Server`-based mock implementing exactly the routes Task 2
     and Task 3 call: `GetInstancePool`, `ListInstancePoolInstances`,
@@ -355,7 +453,7 @@ Reference implementations to study before starting:
   - Verify: mock server starts/stops cleanly in a standalone smoke test.
   - _Requirements: 13.5_
 
-- [ ] 5. **Unit tests + mock-server tests**
+- [x] 5. **Unit tests + mock-server tests**
 
   - `tests/oci_quorum_manager_unit_test.cpp` (CTest target
     `oci-quorum-manager-unit-tests`, labels `unit;oci;quorum_manager`):
@@ -376,7 +474,8 @@ Reference implementations to study before starting:
       (mirroring the LocalStack tier's AWS test names, Req 13.6–13.7).
     - `oci_certificates_issue_and_cache_root`,
       `oci_certificates_revoke_idempotent`.
-  - Verify: `ctest -R oci-` passes; all existing tests pass unmodified.
+  - Verify: `ctest -R '^oci'` passes (see the CTest-naming deviation in the
+    status block at the top of this file); all existing tests pass unmodified.
   - _Requirements: 13.1–13.7_
 
 - [ ] 6. **Real-OCI integration tests + CI wiring**
@@ -427,7 +526,7 @@ Reference implementations to study before starting:
     but are not registered in CTest; all other tests pass unmodified.
   - _Requirements: 13.8–13.15, 14.1–14.5_
 
-- [ ] 7. **Documentation and example configuration**
+- [x] 7. **Documentation and example configuration**
 
   - `docker/oci_quorum_manager/oci_quorum_manager.env.example`, mirroring
     `docker/ca_cluster_node/ca_cluster_node.env.example`'s convention
