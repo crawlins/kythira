@@ -624,6 +624,45 @@ checked before every signing operation rather than on a timer. (The OAuth
 variant of the same client uses a 20-minute stale window; the X.509 path
 relies on the token's own validity.)
 
+**Addendum (August 11, 2026, while implementing Requirement 1.6)** — the
+remaining wire details, read out of the same `common/auth/` sources
+(`federation_client.go`, `utils.go`, `jwt.go`). Still source-derived, not
+live-probed: the metadata service only exists on a real instance, so unlike
+Findings 5-10 none of this has been confirmed against OCI itself yet.
+
+- **Every metadata request needs `Authorization: Bearer Oracle`** (`utils.go`
+  `httpGet`). The v2 metadata service rejects requests without it — the
+  original table above omitted this, and a client built from it alone would
+  401 on every real instance while passing any mock that didn't enforce the
+  header (the new mock does).
+- The exchange is `POST {auth}/v1/x509` with body fields `certificate`,
+  `publicKey`, `intermediateCertificates`, `fingerprintAlgorithm: "SHA256"`
+  — certificates with PEM armor and newlines stripped, the session public
+  key as base64 of its PKIX DER. No `purpose` field.
+- **The federation request's signed set has no `host`**: `date
+  (request-target) content-length content-type x-content-sha256`. The
+  go-sdk's ordinary signer includes `host`; its federation client's
+  `genericHeaders` list deliberately does not. The one place Instance
+  Principal departs from the canonical form.
+- The keyId fingerprint is SHA-256 over the leaf DER, formatted **lowercase
+  colon-separated** (`fmt.Sprintf("% x")` + space→colon). The tenancy OCID
+  comes out of the leaf certificate's subject, attribute value prefixed
+  `opc-tenant:`.
+- Response is `{"token": "<JWT>"}`; validity is the JWT `exp` with a
+  **5-minute buffer** (`bufferTimeBeforeTokenExpiration`), and each renewal
+  regenerates the session key pair (`sessionKeySupplier.Refresh()`).
+- The auth host uses the **bare** domain form (`auth.{region}.
+  oraclecloud.com`) — consistent with Finding 10's per-service rule; both
+  spellings currently resolve to the same addresses, and the go-sdk uses the
+  bare one. `/instance/region` may answer with a legacy short code (`phx`,
+  `iad`, `fra`, `lhr` — the only four `StringToRegion` short-maps).
+
+Implemented in `include/raft/oci_federation.hpp`
+(`oci_federation::instance_principal_signer`), selected by `oci_http_client`
+when `use_instance_principal` is set; the mock tier
+(`tests/oci_federation_unit_test.cpp`) verifies both signatures
+cryptographically from the wire artifacts and enforces the Bearer header.
+
 ### Finding 17 — 0(f): keyless CI federation exists, but not via Dynamic Groups
 
 OCI IAM **Workload Identity Federation** supports exchanging a third-party OIDC

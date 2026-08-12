@@ -234,13 +234,27 @@ certificate provider can be built on the same tested foundation.
    (**corrected by Task 0(b)** — `spike-notes.md` Finding 16). The flow is:
    read `/instance/region`, `/identity/cert.pem`, `/identity/key.pem` and
    `/identity/intermediate.pem` from `http://169.254.169.254/opc/v2`
-   (overridable via `OCI_METADATA_BASE_URL`); generate an **ephemeral session
-   key pair**; exchange the leaf certificate for a security token at the Auth
-   service's X.509 federation endpoint, signing that exchange with
-   `keyId = "{tenancy}/fed-x509-sha256/{fingerprint}"`; then sign ordinary API
-   requests with the **session** private key and `keyId = "ST$" + token`,
-   renewing whenever the token is no longer valid. The canonical string itself
-   is unchanged from the API-key path.
+   (overridable via `OCI_METADATA_BASE_URL`), every metadata request carrying
+   `Authorization: Bearer Oracle` (Finding 16 addendum — the v2 service
+   rejects requests without it); generate an **ephemeral session key pair**
+   (regenerated on every renewal); exchange the leaf certificate for a
+   security token at the Auth service's X.509 federation endpoint
+   (`POST https://auth.{region}.oraclecloud.com/v1/x509`, bare domain form),
+   signing that exchange with
+   `keyId = "{tenancy}/fed-x509-sha256/{fingerprint}"` — tenancy from the
+   leaf certificate's `opc-tenant:` subject attribute, fingerprint the
+   SHA-256 of the leaf DER as lowercase colon-separated hex — over the signed
+   set `date (request-target) content-length content-type x-content-sha256`
+   (**no `host`**, the one departure from the canonical form); then sign
+   ordinary API requests with the **session** private key and
+   `keyId = "ST$" + token`, renewing whenever the token is within five
+   minutes of its JWT `exp`. The canonical string for ordinary requests is
+   unchanged from the API-key path. Implemented by
+   `oci_federation::instance_principal_signer`
+   (`include/raft/oci_federation.hpp`), which `oci_http_client` selects
+   automatically; the wire contract is confirmed against `oci-go-sdk`'s
+   `common/auth/` and the mock tier, **not yet against a real instance** —
+   the metadata service exists nowhere else.
 7. An `oci_http_client` component (`include/raft/oci_http_client.hpp`) SHALL
    wrap `httplib::Client` (the same library `acme_certificate_provider`
    already depends on) and expose:

@@ -16,6 +16,7 @@
 /// and the two have no reason to differ.
 
 #include <raft/oci_client_config.hpp>
+#include <raft/oci_federation.hpp>
 #include <raft/oci_signing.hpp>
 
 #include <boost/json.hpp>
@@ -44,10 +45,20 @@ namespace kythira {
 /// connection reuse would buy little and would add a pooling lifetime question
 /// to a class whose whole value is being obvious. It is also what lets
 /// `oci_instance_pool_quorum_manager` fan `GetInstance` out across a worker pool
-/// (Requirement 5.2) without owning one client per worker.
+/// (Requirement 5.2) without owning one client per worker. The one piece of
+/// mutable state — Instance Principal's cached federation token — lives behind
+/// `instance_principal_signer`'s own mutex, so the sharing claim survives it.
 class oci_http_client {
 public:
-    explicit oci_http_client(oci_client_config cfg) : _cfg(std::move(cfg)) {}
+    explicit oci_http_client(oci_client_config cfg) : _cfg(std::move(cfg)) {
+        // Constructed eagerly (though it does no I/O until the first sign)
+        // so the auth-mode decision is taken exactly once, here, rather than
+        // re-derived per request.
+        if (_cfg.use_instance_principal) {
+            _instance_principal = std::make_shared<oci_federation::instance_principal_signer>(
+                oci_federation::instance_principal_signer::options_from(_cfg));
+        }
+    }
 
     /// @brief Send a signed request and return the parsed JSON response.
     ///
@@ -192,7 +203,13 @@ public:
                                         std::string_view path, const std::string& body) const
         -> std::map<std::string, std::string> {
         const std::string host_header = host_header_for(host);
-        auto headers = oci_signing::sign_request(_cfg, method, path, host_header, body);
+        // The auth-mode fork, in exactly one place: Instance Principal signs
+        // with the federated session token (oci_federation.hpp), API keys
+        // with the config's own key. Everything after the signature — Host,
+        // the content-type handling below — is identical.
+        auto headers = _instance_principal
+                           ? _instance_principal->sign(method, path, host_header, body)
+                           : oci_signing::sign_request(_cfg, method, path, host_header, body);
         headers["Host"] = host_header;
         return headers;
     }
@@ -367,6 +384,11 @@ private:
     static constexpr const char* json_content_type = "application/json";
 
     oci_client_config _cfg;
+
+    /// Non-null exactly when `_cfg.use_instance_principal`. A `shared_ptr` so
+    /// `prepared_headers` can stay `const` while the signer maintains its
+    /// token cache behind its own mutex.
+    std::shared_ptr<oci_federation::instance_principal_signer> _instance_principal;
 };
 
 }  // namespace kythira

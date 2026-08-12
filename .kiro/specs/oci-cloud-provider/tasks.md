@@ -24,9 +24,18 @@ closed on the same day (Findings 13-17), including both of the ones Task 6
 depended on: the out-of-host-capacity classifier and the CI federation
 mechanism.
 
-Requirement 1.6 (Instance Principal) is still a deliberate throwing stub, but
-the reason has changed: the contract is now known (Finding 16), so what remains
-is writing a federation client rather than discovering how one would work.
+Requirement 1.6 (Instance Principal) is **implemented** (August 11):
+`oci_federation::instance_principal_signer` in
+`include/raft/oci_federation.hpp` is the federation client Finding 16
+describes — metadata fetch (with the `Bearer Oracle` header the Finding 16
+addendum records), ephemeral session key, `v1/x509` exchange signed without
+`host`, `ST$` keyId, five-minute-buffer renewal with per-renewal key
+regeneration. `oci_http_client` selects it when `use_instance_principal` is
+set; `tests/oci_federation_unit_test.cpp` (11 cases) verifies both signatures
+cryptographically against the wire artifacts. The honest caveat: the contract
+is confirmed against `oci-go-sdk` source and the mock tier, **not yet against
+a real instance** — the metadata service exists nowhere else, so this is the
+one OCI component whose live tier does not exist yet.
 
 What landed for Tasks 2-5 and 7, August 11:
 
@@ -129,8 +138,10 @@ Finding 1 unblocked:
   (Requirements 1.4–1.5), plus `build_signing_string` and
   `signed_header_names` split out so the canonical form is directly
   assertable rather than only observable through a signature.
-  `instance_principal_signer` is the named stub Requirement 1.6 asks for
-  and throws pointing at `spike-notes.md` Task 0(b).
+  `sign_request` refuses `use_instance_principal` loudly, pointing at the
+  real signer — `oci_federation::instance_principal_signer`
+  (`oci_federation.hpp`), which replaced the original throwing stub when
+  Requirement 1.6 was implemented.
 - `tests/oci_signing_unit_test.cpp` — 8 cases. This is Task 5 work pulled
   forward on purpose: nothing else in the build compiles these headers, so
   without it they would sit in the tree unbuilt by CI, which is

@@ -270,13 +270,15 @@ BOOST_AUTO_TEST_CASE(each_missing_api_key_field_is_rejected_by_name) {
     BOOST_CHECK(rejects([](auto& c) { c.private_key_pem.clear(); }, "private_key_pem"));
 }
 
-/// Instance Principal signing is a stub, and this pins that it *fails loudly*
-/// rather than silently signing with something else. Requirement 1.6 stays
-/// blocked until the metadata-service contract is confirmed
-/// (`spike-notes.md`, Task 0(b)); the risk being guarded against is a later
-/// change that makes `use_instance_principal` quietly fall back to the API-key
-/// path, which would authenticate as the wrong principal instead of erroring.
-BOOST_AUTO_TEST_CASE(instance_principal_signing_fails_loudly_while_unimplemented) {
+/// `sign_request` is the API-key path only, and this pins that it *fails
+/// loudly* under `use_instance_principal` rather than silently signing with
+/// the API-key fields. Instance Principal is implemented — in
+/// `oci_federation::instance_principal_signer`, which `oci_http_client`
+/// selects — but it is stateful (a cached federation token) and cannot live
+/// behind this pure function; the risk guarded here is a later change that
+/// makes the flag quietly fall through to the API-key path, which would
+/// authenticate as the wrong principal instead of erroring.
+BOOST_AUTO_TEST_CASE(sign_request_refuses_instance_principal_and_names_the_real_signer) {
     const auto pem = generate_rsa_key_pem();
     oci_client_config cfg = make_config(pem);
     cfg.use_instance_principal = true;
@@ -285,18 +287,14 @@ BOOST_AUTO_TEST_CASE(instance_principal_signing_fails_loudly_while_unimplemented
         (void)signing::sign_request(cfg, "GET", test_target, test_host, "", fixed_time),
         std::runtime_error);
 
-    bool names_the_reason = false;
+    bool names_the_signer = false;
     try {
         (void)signing::sign_request(cfg, "GET", test_target, test_host, "", fixed_time);
     } catch (const std::runtime_error& e) {
-        names_the_reason = std::string(e.what()).find("not yet implemented") != std::string::npos;
+        names_the_signer = std::string(e.what()).find("oci_federation") != std::string::npos;
     }
-    BOOST_CHECK_MESSAGE(names_the_reason,
-                        "the error should say it is unimplemented, not just fail");
-
-    BOOST_CHECK_THROW(
-        (void)signing::instance_principal_signer::sign(cfg, "GET", test_target, test_host, ""),
-        std::runtime_error);
+    BOOST_CHECK_MESSAGE(names_the_signer,
+                        "the error should point at oci_federation's signer, not just fail");
 }
 
 /// A passphrase-protected key is read with its passphrase. Worth its own case
