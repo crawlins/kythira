@@ -1,0 +1,47 @@
+# Bundle: heartbeat (Requirement 4.4 — nodes write their own
+# kythira-last-heartbeat tag via Instance Principal)
+# Consumer: oci_heartbeat_writer (include/raft/oci_heartbeat_writer.hpp),
+#           running ON a pool instance, not in CI
+# Provisioned live: August 12, 2026 (policies kythira-ci-instance-hb and
+#           kythira-ci-artifacts, dynamic group kythira-ci-instance-dg,
+#           bucket kythira-ci-artifacts, service gateway kythira-ci-sgw +
+#           route rule)
+#
+# Two principals are involved, and they are different kinds of thing:
+#
+#   1. The INSTANCE, as an Instance Principal, matched by the dynamic group
+#      kythira-ci-instance-dg:
+#        Any {instance.compartment.id = '<compartment OCID>'}
+#      (Dynamic-group rule values are QUOTED. Do not carry over the WIF
+#      trust rule's unquoted-value requirement — that quirk is specific to
+#      identity-domain impersonation rules, and quoting is mandatory here.)
+#
+#   2. The CI GROUP (kythira-ci), which delivers the writer binary: upload
+#      to the bucket, create a pre-authenticated request, hand the PAR URL
+#      to the instance through a freeform tag the static cloud-init script
+#      polls the metadata service for.
+#
+# Policy kythira-ci-instance-hb (compartment):
+Allow dynamic-group kythira-ci-instance-dg to read instances in compartment {COMPARTMENT}
+Allow dynamic-group kythira-ci-instance-dg to use instances in compartment {COMPARTMENT}
+# `use instances` is what covers UpdateInstance — the tag write. Same
+# verb-family trap instance-pool.txt documents: reads pass without it and the
+# failure is a 404 that looks like a wrong OCID.
+#
+# NOT yet narrowed with `where request.principal.id = target.instance.id`
+# (instance can only update itself). Deliberate: land the broad grant first,
+# verify the whole path on a real instance, then tighten and re-verify —
+# a least-privilege `where` clause that was never exercised is a claim, not
+# a policy (this file's own August 12 lesson, above bundle).
+#
+# Policy kythira-ci-artifacts (compartment):
+Allow group {GROUP} to manage object-family in compartment {COMPARTMENT}
+# `manage` rather than `use`: creating a pre-authenticated request needs
+# PAR_MANAGE, which only the manage verb carries. Scoped to the compartment,
+# which holds nothing but CI resources.
+#
+# Exercised by a least-privilege principal: NOT YET for either policy — the
+# instance-side grants have never been exercised at all (no code path has
+# run on an OCI instance yet; that is exactly what this bundle exists to
+# enable), and the group-side grant awaits the first CI run that uploads a
+# binary. Update this line when each happens, per this directory's rule.

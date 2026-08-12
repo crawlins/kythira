@@ -160,13 +160,40 @@ SUBNET_ID=$(oci network subnet create --compartment-id "$COMPARTMENT_ID" --vcn-i
   --wait-for-state AVAILABLE --query 'data.id' --raw-output)
 ```
 
-**No gateways.** With `heartbeat_timeout = 0` the instances make no outbound
-call at all — the manager talks to OCI's control plane from wherever *it* runs,
-not from the instance. So no NAT Gateway (which bills hourly for as long as it
-exists), no Service Gateway, no Internet Gateway. Add a **Service** Gateway
-only if you later want nodes writing their own `kythira-last-heartbeat` tag
-from inside the instance; that is the case a NAT Gateway is *not* the right
-answer to.
+**Gateways: a Service Gateway and nothing else.** With `heartbeat_timeout =
+0` the instances make no outbound call at all — the manager talks to OCI's
+control plane from wherever *it* runs, not from the instance — so this setup
+originally had no gateways whatsoever. The heartbeat work (Requirement 4.4,
+nodes writing their own `kythira-last-heartbeat` tag from inside the
+instance) is exactly the case that changes that, and a Service Gateway is
+its answer: free, keeps the subnet private, and routes only to OCI services
+(the API endpoints the Instance Principal writer calls, and Object Storage
+for fetching the writer binary). Provisioned live August 12, 2026
+(`kythira-ci-sgw`, plus the route rule below — the route table's first and
+only rule). Still no NAT Gateway (bills hourly for as long as it exists) and
+no Internet Gateway.
+
+```bash
+SGW_ID=$(oci network service-gateway create --compartment-id "$COMPARTMENT_ID" \
+  --vcn-id "$VCN_ID" --display-name kythira-ci-sgw \
+  --services "[{\"serviceId\":\"$(oci network service list \
+    --query 'data[?contains(name, `All`)].id | [0]' --raw-output)\"}]" \
+  --query 'data.id' --raw-output)
+RT_ID=$(oci network vcn get --vcn-id "$VCN_ID" --query 'data."default-route-table-id"' --raw-output)
+oci network route-table update --rt-id "$RT_ID" --force --route-rules "[{
+  \"destination\": \"all-phx-services-in-oracle-services-network\",
+  \"destinationType\": \"SERVICE_CIDR_BLOCK\",
+  \"networkEntityId\": \"$SGW_ID\"}]"
+```
+
+(The `destination` string is region-specific — read the exact value from
+`oci network service list`'s `cidr-block` field for your region.)
+
+The heartbeat bundle's other artifacts — dynamic group
+`kythira-ci-instance-dg`, policies `kythira-ci-instance-hb` and
+`kythira-ci-artifacts`, bucket `kythira-ci-artifacts` — are documented with
+their reasoning in `policies/heartbeat.txt`, all provisioned live the same
+day.
 
 The default security list is fine. Nothing in these tests connects *to* the
 instances — the manager only calls the REST API.
