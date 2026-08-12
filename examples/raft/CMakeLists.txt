@@ -151,6 +151,15 @@ if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
     if(TARGET OpenSSL::SSL)
         target_link_libraries(http_transport_comparison_benchmark PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     endif()
+    # gRPC as a fourth row (.kiro/specs/grpc-transport/ Task 13.4's
+    # performance sanity pass) whenever the transport target exists — its
+    # availability is independent of the two HTTP-transport flags gating
+    # this binary, hence a definition rather than a third flag in the outer
+    # condition: the three-transport comparison still builds without gRPC.
+    if(TARGET raft_grpc_transport)
+        target_compile_definitions(http_transport_comparison_benchmark PRIVATE KYTHIRA_BENCH_HAS_GRPC)
+        target_link_libraries(http_transport_comparison_benchmark PRIVATE raft_grpc_transport)
+    endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_link_libraries(http_transport_comparison_benchmark PRIVATE atomic)
     endif()

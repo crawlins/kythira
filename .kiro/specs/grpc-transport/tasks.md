@@ -17,8 +17,12 @@ Tasks 1–12 are implemented in the tree:
   `examples/grpc_transport_example.cpp`, and README + `doc/grpc_transport_README.md`
   (Tasks 10–12).
 
-**Status as of the August 4, 2026 reconciliation: 63/67 checkboxes, Tasks
-1–12 complete and CI-verified, Task 13 partly open.**
+**Status as of August 12, 2026: 67/67 checkboxes — Tasks 1–13 all
+complete.** The August 4 reconciliation below (then 63/67, Task 13 partly
+open) is kept for the record; 13.2/13.3 were verified August 10 (the
+negative-configuration probes, see those checkboxes) and 13.4's
+performance sanity pass was measured August 12
+(`doc/http_transport_performance_comparison.md` `## gRPC`).
 
 This section previously said Tasks 1.5 and 13 "require a build machine with
 gRPC/Protobuf present and are validated in CI where the `grpc` vcpkg port is
@@ -43,22 +47,17 @@ halves were misleading, in opposite directions:
   `raft.grpc.pb.h` must compile for those binaries to link at all) and Task
   **13.1** (the full suite runs green with the transport enabled).
 
-**What genuinely remains — Tasks 13.2, 13.3 and 13.4**, none of which any
-existing CI job exercises:
-
-- **13.2 graceful degradation**: no job configures with gRPC *absent*, so
-  the skip path is asserted but untested. The cheapest check is a configure
-  run with `-DCMAKE_DISABLE_FIND_PACKAGE_gRPC=ON`, mirroring the
-  `-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON` probe the Folly-decoupling work
-  used — that technique is what found the real breakage there, rather than
-  inspection.
-- **13.3 `KYTHIRA_KCONFIG_STRICT` failure path**: needs a configure with
-  `CONFIG_GRPC_TRANSPORT=y` and gRPC hidden, asserting CMake fails loudly.
-- **13.4 performance sanity pass**: no throughput/latency numbers recorded
-  yet. Note that `doc/protobuf_serializer_performance_comparison.md` covers
-  the *serializer*, not this transport — they are deliberately independent
-  (distinct `.proto` packages, no gRPC dependency), so it does not satisfy
-  this item.
+**What genuinely remained after that reconciliation — Tasks 13.2, 13.3 and
+13.4 — has since closed** (August 10 for the two negative-configuration
+probes, August 12 for the measurement; details on the checkboxes
+themselves, below). The paragraph is kept because its framing was the
+to-do list that got them done: none of the three was exercised by any CI
+job, 13.2/13.3 needed a configure with gRPC deliberately hidden
+(`-DCMAKE_DISABLE_FIND_PACKAGE_gRPC=ON`, mirroring the
+`-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON` probe technique), and 13.4 needed
+transport-level numbers that
+`doc/protobuf_serializer_performance_comparison.md` — the *serializer*'s
+document — could not satisfy.
 
 ## Overview
 
@@ -381,20 +380,39 @@ parity with the HTTP and CoAP transports.*
     - Common gRPC/protoc/vcpkg build issues, TLS/certificate issues, deadline tuning
     - _Requirements: All (documentation only; not required for this spec itself)_
 
-- [ ] 13. Final validation
+- [x] 13. Final validation
   - [x] 13.1 Run the full test suite with `GRPC_TRANSPORT` enabled
     - All unit, property, and integration tests compile and pass under CTest
     - _Requirements: 19.1-19.6_
-  - [ ] 13.2 Confirm graceful degradation with `GRPC_TRANSPORT` unset/gRPC absent
+  - [x] 13.2 Confirm graceful degradation with `GRPC_TRANSPORT` unset/gRPC absent
     - Rest of the project configures and builds unaffected
+    - Verified August 10, 2026 with `-DCMAKE_DISABLE_FIND_PACKAGE_gRPC=ON`:
+      configure succeeds, transport/tests/example skip with named messages,
+      and the target list drops 518 → 505 with 0 of the 10 `grpc`-named
+      targets present (counted, not read off the skip message) — see
+      `doc/TODO.md`'s grpc-transport row for the full record.
     - _Requirements: 18.1_
-  - [ ] 13.3 Confirm `KYTHIRA_KCONFIG_STRICT` failure path
+  - [x] 13.3 Confirm `KYTHIRA_KCONFIG_STRICT` failure path
     - Configuration fails loudly when `GRPC_TRANSPORT` is selected but gRPC/Protobuf are
       missing
+    - Verified August 10, 2026 as a matched pair: strict +
+      `CONFIG_GRPC_TRANSPORT=y` + the same disable fails with
+      `CONFIG_GRPC_TRANSPORT=y (strict mode) but grpc was not found`, and
+      the identical configure without the disable passes that check — the
+      check fires on the condition it names (`doc/TODO.md`, same row).
     - _Requirements: 18.2_
-  - [ ] 13.4 Performance sanity pass
+  - [x] 13.4 Performance sanity pass
     - Basic throughput/latency numbers recorded (not necessarily a full comparison
       report) before declaring the transport production-ready
+    - Measured August 12, 2026: gRPC is a fourth row in
+      `examples/raft/http_transport_comparison_benchmark.cpp` (guarded by
+      `KYTHIRA_BENCH_HAS_GRPC`). Small RequestVote ping-pong: 3,349
+      ops/sec, p50 228µs (vs. Beast 6,302 / Proxygen 5,872 on the same
+      run). 1 MiB `install_snapshot`: **657 ops/sec, p50 1.4ms — ~19–24x
+      the HTTP transports' 27–35 ops/sec**, the protobuf-`bytes`-vs-JSON
+      body-encoding divergence made measurable. Full tables and
+      interpretation in `doc/http_transport_performance_comparison.md`'s
+      `## gRPC` section.
     - _Requirements: (Performance Considerations, design.md)_
 
 ## Notes

@@ -1,10 +1,10 @@
 # HTTP Transport Performance Comparison
 
-**Last Updated**: July 30, 2026 (Requirement 17.1/17.3's
-generic-bridge-vs-fast-path and large-body scenarios, added July 29, 2026,
-now measured — see `## Generic bridge vs. fast path, and large-body
-scenarios` below. `## Results` below is still the original July 28, 2026
-run, on a different host — not re-measured this pass)
+**Last Updated**: August 12, 2026 (gRPC added as a fourth transport row —
+`.kiro/specs/grpc-transport/` Task 13.4's performance sanity pass; see
+`## gRPC` below for the full re-measured run. `## Results` below is still
+the original July 28, 2026 three-transport run; the `## Generic bridge vs.
+fast path` section's numbers are from July 30, 2026, on a CI host)
 
 ## Overview
 
@@ -238,6 +238,65 @@ Task 12's own test coverage (`generic_bridge_forced_matches_fast_path_result`,
 `tests/proxygen_transport_test.cpp`) already confirms both paths are
 correct; this section is about their relative cost, and on this run, cost
 was a wash.
+
+## gRPC (Task 13.4's transport-level sanity pass)
+
+`.kiro/specs/grpc-transport/` Task 13.4 asks for throughput/latency
+numbers for the gRPC transport itself —
+`doc/protobuf_serializer_performance_comparison.md` measures the
+*serializer* and explicitly does not satisfy it. The benchmark now carries
+gRPC as a fourth row (`bench_grpc`), plus a gRPC row in the 1 MiB
+`install_snapshot` table (`bench_grpc_large_snapshot_body`), guarded by
+`KYTHIRA_BENCH_HAS_GRPC` so the three-transport comparison still builds
+where gRPC is absent. gRPC is not an HTTP-transport sibling in the code —
+it owns its framing and codegen — but it answers the same question this
+program exists for, so it is a row here rather than a second harness.
+
+**Measured** (August 12, 2026, development host: 4 logical cores, g++-13
+`-O3` Release, loopback, `KYTHIRA_DEFAULT_FUTURE_BACKEND=folly`). All rows
+below are from this single run, so they are comparable to each other but
+not number-for-number to the July tables above (different host/day):
+
+| Transport | ops/sec | p50 (µs) | p95 (µs) | p99 (µs) |
+|---|---:|---:|---:|---:|
+| cpp-httplib | 12 | 82,971.1 | 84,088.0 | 85,076.0 |
+| Boost.Beast | 6,302 | 131.9 | 238.8 | 715.1 |
+| Proxygen (Folly fast path) | 5,872 | 147.8 | 231.2 | 821.1 |
+| **gRPC** | **3,349** | **228.2** | **514.3** | **1,236.8** |
+
+| Transport | ops/sec | p50 (µs) | p95 (µs) | p99 (µs) |
+|---|---:|---:|---:|---:|
+| Proxygen 1 MiB snapshot (generic bridge) | 27 | 34,750.4 | 56,004.6 | 70,996.7 |
+| Proxygen 1 MiB snapshot (fast path) | 35 | 27,581.6 | 35,707.5 | 37,619.1 |
+| **gRPC 1 MiB snapshot** | **657** | **1,379.3** | **2,619.2** | **3,222.0** |
+
+(The same run's within-Proxygen small-RPC pair read generic bridge 6,734
+vs. fast path 5,691 ops/sec — the *opposite* ordering of the July 30 CI
+run's wash. Treated as run-to-run variance on a 4-core host, consistent
+with that section's own conclusion that the two paths' cost difference is
+below this benchmark's noise floor at this body size.)
+
+**Interpreting the gRPC rows:**
+
+- **Small RPCs: gRPC is ~half the throughput of Beast/Proxygen here**
+  (3,349 vs. 5,872–6,302 ops/sec; p50 228µs vs. 132–148µs). A
+  single-connection, strictly-serialized ping-pong is close to a
+  worst case for gRPC's machinery — every call pays HTTP/2 framing,
+  protobuf encode/decode, completion-queue dispatch, and the transport's
+  own executor hop, with none of the multiplexing that machinery buys
+  anything on. This is a floor-shape sanity number, not a verdict on
+  loaded behavior — matching this document's comparison-not-winner stance.
+- **Large bodies: gRPC is ~19–24x faster than either Proxygen path**
+  (657 vs. 27–35 ops/sec; p50 1.4ms vs. 27.6–34.8ms), and this *is* a
+  structural difference, not noise: the HTTP transports JSON-encode the
+  snapshot's 1 MiB byte vector through the `serializer_type` seam (text
+  inflation plus per-byte encoding on both ends), while gRPC carries it as
+  a protobuf `bytes` field over its own binary framing. For
+  `install_snapshot`-shaped traffic, the transport's body encoding
+  dominates everything else this document measures.
+- The gRPC scenarios bind port 0 and read `bound_port()` back rather than
+  taking a fixed 2809x port like the HTTP scenarios — `grpc_server`
+  supports it, and it sidesteps the port-collision class entirely.
 
 ## Non-goals
 

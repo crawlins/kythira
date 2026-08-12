@@ -1,10 +1,22 @@
-// A real, measured throughput/latency comparison of this project's three
-// HTTP transports -- cpp-httplib (include/raft/http_transport.hpp),
-// Boost.Beast (include/raft/beast_http_transport.hpp), and Proxygen
-// (include/raft/proxygen_http_transport.hpp) -- running the *same*
-// RequestVote RPC workload against each in turn, all in one process. See
+// A real, measured throughput/latency comparison of this project's RPC
+// transports -- cpp-httplib (include/raft/http_transport.hpp),
+// Boost.Beast (include/raft/beast_http_transport.hpp), Proxygen
+// (include/raft/proxygen_http_transport.hpp), and, when built with it,
+// gRPC (include/raft/grpc_transport.hpp, .kiro/specs/grpc-transport/
+// Task 13.4's performance sanity pass) -- running the *same* RequestVote
+// RPC workload against each in turn, all in one process. See
 // doc/http_transport_performance_comparison.md for the methodology write-up
 // and the measured numbers this program produced.
+//
+// gRPC is not an HTTP-transport sibling in the code (it owns its framing
+// and codegen rather than pairing a serializer_type with an HTTP client),
+// but it answers to the same question this program exists for -- "what does
+// one RequestVote round trip cost on each thing that can carry one?" -- so
+// it is a fourth row here rather than a second program duplicating the
+// harness. Guarded by KYTHIRA_BENCH_HAS_GRPC (set in
+// examples/raft/CMakeLists.txt when raft_grpc_transport exists) because
+// gRPC availability is independent of the two HTTP-transport flags that
+// gate this binary.
 //
 // This is a comparison, not a sanity floor: it does not gate CI on any
 // transport beating another by a specific margin (matching
@@ -13,7 +25,7 @@
 // performance is expected to shift across hardware/compiler/library
 // versions. Only built when both KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and
 // KYTHIRA_BUILD_PROXYGEN_TRANSPORT are enabled (examples/raft/CMakeLists.txt),
-// since it needs all three transports available in the same binary.
+// since it needs all three HTTP transports available in the same binary.
 
 #include <raft/http_transport.hpp>
 #include <raft/http_transport_impl.hpp>
@@ -24,6 +36,13 @@
 #include <raft/json_serializer.hpp>
 #include <raft/metrics.hpp>
 #include <raft/executor_default.hpp>
+
+#if defined(KYTHIRA_BENCH_HAS_GRPC)
+#include <raft/grpc_transport.hpp>
+#include <raft/grpc_transport_impl.hpp>
+
+#include <folly/executors/CPUThreadPoolExecutor.h>
+#endif
 
 #include <folly/executors/IOThreadPoolExecutor.h>
 
@@ -350,6 +369,114 @@ auto bench_proxygen(std::uint16_t port) -> scenario_result {
     return summarize("Proxygen (Folly fast path)", std::move(samples_us), elapsed);
 }
 
+#if defined(KYTHIRA_BENCH_HAS_GRPC)
+// Task 13.4 (.kiro/specs/grpc-transport/): the transport-level performance
+// sanity pass -- doc/protobuf_serializer_performance_comparison.md measures
+// the *serializer* and explicitly does not satisfy this. Same workload and
+// measurement discipline as the three HTTP scenarios above; the differences
+// are the transport's own: gRPC carries protobuf over its own HTTP/2
+// framing (no serializer_type/JSON involved), the endpoint is a bare
+// host:port, and the client wants a CPU executor for its completion hops.
+//
+// Port 0 rather than a fixed 2809x port: grpc_server supports bind-0 +
+// bound_port() (the same SO_REUSEADDR silent-port-steal reasoning as
+// examples/grpc_transport_example.cpp), and nothing here needs the port
+// known in advance.
+auto bench_grpc() -> scenario_result {
+    using grpc_types = kythira::grpc_kythira_transport_types;
+    folly::CPUThreadPoolExecutor exec(4);
+
+    kythira::grpc_server<grpc_types> server("127.0.0.1", 0, {}, kythira::noop_metrics{}, exec);
+    server.register_request_vote_handler(
+        [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+            return {._term = req.term(), ._vote_granted = true};
+        });
+    server.start();
+
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {node_id, "127.0.0.1:" + std::to_string(server.bound_port())}};
+    kythira::grpc_client<grpc_types> client(node_map, {}, kythira::noop_metrics{}, exec);
+
+    kythira::request_vote_request<> req{};
+    req._term = 1;
+    for (int i = 0; i < warmup_iterations; ++i) {
+        std::move(client.send_request_vote(node_id, req, rpc_timeout)).get();
+    }
+
+    std::vector<double> samples_us;
+    samples_us.reserve(measured_iterations);
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < measured_iterations; ++i) {
+        auto call_start = std::chrono::steady_clock::now();
+        std::move(client.send_request_vote(node_id, req, rpc_timeout)).get();
+        auto call_end = std::chrono::steady_clock::now();
+        samples_us.push_back(std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(
+                                 call_end - call_start)
+                                 .count());
+    }
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    server.stop();
+    return summarize("gRPC", std::move(samples_us), elapsed);
+}
+
+// The gRPC row for the 1 MiB install_snapshot table: same body size and
+// iteration counts as bench_proxygen_large_snapshot_body, so the three rows
+// of that table are directly comparable. Worth measuring separately from
+// the small-RequestVote scenario because this is where the transports'
+// body-handling actually diverges: both Proxygen paths JSON-encode the
+// snapshot's byte vector (base64-ish inflation through boost::json), while
+// gRPC carries it as a protobuf `bytes` field over its own framing.
+auto bench_grpc_large_snapshot_body() -> scenario_result {
+    constexpr std::size_t body_size = 1024 * 1024;
+    constexpr int large_body_warmup_iterations = 20;
+    constexpr int large_body_measured_iterations = 200;
+
+    using grpc_types = kythira::grpc_kythira_transport_types;
+    folly::CPUThreadPoolExecutor exec(4);
+
+    kythira::grpc_server<grpc_types> server("127.0.0.1", 0, {}, kythira::noop_metrics{}, exec);
+    server.register_install_snapshot_handler(
+        [](const kythira::install_snapshot_request<>& req) -> kythira::install_snapshot_response<> {
+            return {._term = req.term()};
+        });
+    server.start();
+
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {node_id, "127.0.0.1:" + std::to_string(server.bound_port())}};
+    kythira::grpc_client<grpc_types> client(node_map, {}, kythira::noop_metrics{}, exec);
+
+    kythira::install_snapshot_request<> req{};
+    req._term = 1;
+    req._leader_id = node_id;
+    req._last_included_index = 1;
+    req._last_included_term = 1;
+    req._offset = 0;
+    req._data.assign(body_size, std::byte{0x42});
+    req._done = true;
+
+    for (int i = 0; i < large_body_warmup_iterations; ++i) {
+        std::move(client.send_install_snapshot(node_id, req, rpc_timeout)).get();
+    }
+
+    std::vector<double> samples_us;
+    samples_us.reserve(large_body_measured_iterations);
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < large_body_measured_iterations; ++i) {
+        auto call_start = std::chrono::steady_clock::now();
+        std::move(client.send_install_snapshot(node_id, req, rpc_timeout)).get();
+        auto call_end = std::chrono::steady_clock::now();
+        samples_us.push_back(std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(
+                                 call_end - call_start)
+                                 .count());
+    }
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    server.stop();
+    return summarize("gRPC 1MiB snapshot", std::move(samples_us), elapsed);
+}
+#endif  // KYTHIRA_BENCH_HAS_GRPC
+
 auto print_table(const std::vector<scenario_result>& results) -> void {
     std::cout << "\n";
     std::cout << std::left << std::setw(30) << "Transport" << std::right << std::setw(14)
@@ -377,7 +504,11 @@ auto main(int argc, char** argv) -> int {
         }
     }
 
-    std::cout << "HTTP transport comparison benchmark: cpp-httplib vs. Boost.Beast vs. Proxygen\n";
+    std::cout << "Transport comparison benchmark: cpp-httplib vs. Boost.Beast vs. Proxygen"
+#if defined(KYTHIRA_BENCH_HAS_GRPC)
+                 " vs. gRPC"
+#endif
+                 "\n";
     std::cout << "RequestVote RPC round trip, " << warmup_iterations << " warmup + "
               << measured_iterations
               << " measured iterations, single connection reused throughout.\n";
@@ -386,6 +517,9 @@ auto main(int argc, char** argv) -> int {
     results.push_back(bench_cpp_httplib(28090));
     results.push_back(bench_beast(28091));
     results.push_back(bench_proxygen(28092));
+#if defined(KYTHIRA_BENCH_HAS_GRPC)
+    results.push_back(bench_grpc());
+#endif
     print_table(results);
 
     // Requirement 17.1: generic bridge vs. Folly fast path, same RPC shape,
@@ -407,6 +541,12 @@ auto main(int argc, char** argv) -> int {
     large_body_results.push_back(
         bench_proxygen_large_snapshot_body(28095, /*use_fast_path=*/false));
     large_body_results.push_back(bench_proxygen_large_snapshot_body(28096, /*use_fast_path=*/true));
+#if defined(KYTHIRA_BENCH_HAS_GRPC)
+    // Task 13.4's large-body row, in this table rather than a fourth one:
+    // the question a reader has is "against the best HTTP path", and this
+    // is the table holding that comparison at the same body size.
+    large_body_results.push_back(bench_grpc_large_snapshot_body());
+#endif
     print_table(large_body_results);
 
     return 0;
