@@ -2526,18 +2526,24 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   discovers its own OCID from the metadata service, and is mock-verified
   (`oci_heartbeat_writer_unit_test`, ports 18325/18326). Running it under
   real Instance Principal on a pool instance — which would also close the
-  caveat above — is blocked on tenancy prerequisites, all verified absent
-  on August 12, 2026: the CI subnet's route table is **empty** (no service
-  gateway, so no on-instance code can reach the OCI API at all), the pool
-  image is Oracle Linux 9 (glibc 2.34 — a CI-built Ubuntu 24.04 binary
-  will not run on it), and there is no artifact channel or
-  instance-principal Dynamic Group/policy. The worked plan: service
-  gateway + route rule (free, subnet stays private), an artifacts bucket
-  CI can write (binary delivered by pre-authenticated request URL, handed
-  to the instance through a freeform tag the static cloud-init script
-  polls the metadata service for), a DG matching compartment instances
-  with read+use on instances, and the pool switched to an Ubuntu 24.04
-  image via a new instance configuration.
+  caveat above — was blocked on tenancy prerequisites, all verified absent
+  on August 12, 2026 (empty route table, OL9 pool image incompatible with a
+  CI-built binary's glibc, no artifact channel, no instance-principal
+  DG/policy). **Later the same day, all but the image switch were
+  provisioned live** with the user driving the permission grants: service
+  gateway `kythira-ci-sgw` + the route table's first rule (subnet stays
+  private, OCI services reachable), bucket `kythira-ci-artifacts` + policy
+  for the CI group (`manage object-family` — PAR creation needs the manage
+  verb), and dynamic group `kythira-ci-instance-dg` + policy
+  `kythira-ci-instance-hb` (`read`+`use instances`; deliberately not yet
+  narrowed to self-only — land broad, verify on a real instance, then
+  tighten, per `policies/heartbeat.txt` where all of this is recorded with
+  its reasoning). **What remains**: the pool image → Ubuntu 24.04 via a new
+  instance configuration carrying the static cloud-init (poll own freeform
+  tags for a PAR URL, fetch the writer binary, run it), the CI wiring that
+  uploads the binary and writes that tag, and the real-suite phase that
+  watches `kythira-last-heartbeat` appear and `assess_quorum` classify on
+  it. None of the existing green-path artifacts were touched.
 - [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
   a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
 
