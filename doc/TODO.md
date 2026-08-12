@@ -1256,9 +1256,26 @@ unverified completion claim.
     from the same configure command. `cmake/Kconfig.cmake` now `FATAL_ERROR`s
     when an explicitly passed config file cannot be applied (kconfiglib
     missing), so a job that misses the pip install fails at configure instead
-    of silently reverting to autodetect. **Strict mode remains unwired** —
-    reconciling `GCP_SDK`'s default-`y` with what each job installs is still
-    the blocker for Requirement 5.1, exactly as described above.
+    of silently reverting to autodetect.
+  - **Update August 12, 2026: strict mode is wired — Requirement 5.1 is in
+    force.** The reconciliation the entry above called for: the four
+    `default y` symbols whose dependencies the edhoc-feature image does not
+    install (`GCP_SDK`, `GCP_PRIVATECA`, `DNS_DISCOVERY`, `POCO_DISCOVERY` —
+    each read off green run 31569941823's "not found" configure lines, not
+    inferred) are now explicitly off in `ci_full_defconfig`, and the GCP SDK
+    Build job gets its own `configs/ci_gcp_defconfig` (GCP symbols on,
+    **EDHOC off** — that job installs `--x-feature=gcp` only, so it never
+    had lakers; under the old shared defconfig `CONFIG_EDHOC=y` was silently
+    degrading there). All six configure sites in `ci.yml` now pass
+    `-DKYTHIRA_KCONFIG_STRICT=ON`. Verified locally as a matched pair:
+    strict + `ci_full_defconfig` configures clean, and strict +
+    `ci_gcp_defconfig` against a tree without google-cloud-cpp fails with
+    `CONFIG_GCP_SDK=y (strict mode) but google-cloud-cpp compute components
+    not found` — the check fires on the condition it names. Note
+    `DNS_DISCOVERY`/`POCO_DISCOVERY` were never built in CI (their deps are
+    in no CI image); the defconfig now records that honestly, and a local
+    build that wants them should configure without the CI defconfig (or with
+    its own) rather than assume "full" includes them.
 - **`CONFIG_PROTOBUF_SERIALIZER` did nothing — FIXED August 10, 2026.** The
   Kconfig gate is applied (`CMakeLists.txt:394`) but the *enabling* condition
   at `:512` is `if(Protobuf_FOUND)`, and `Protobuf_FOUND` is already set by the

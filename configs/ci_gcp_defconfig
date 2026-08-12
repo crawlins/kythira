@@ -1,0 +1,30 @@
+# ci_gcp_defconfig — the feature set the GCP SDK Build job resolves. That
+# job's vcpkg install is `--x-feature=gcp` and nothing else, so its image is
+# NOT a superset of the edhoc image ci_full_defconfig models: google-cloud-cpp
+# is present and lakers is absent. Written, like ci_full_defconfig, against
+# `-DKYTHIRA_KCONFIG_STRICT=ON` (Requirement 5.1) — see that file's header
+# for the reasoning; only the differences are annotated here.
+#
+#   GCP_SDK, GCP_PRIVATECA  — the point of the job: --x-feature=gcp installs
+#                             google-cloud-cpp's compute and privateca
+#                             components. Explicit rather than left to their
+#                             Kconfig default-y so this file states what the
+#                             job requires, not what it inherits.
+#   EDHOC off               — lakers comes from the opt-in `edhoc` vcpkg
+#                             feature, which this job does not install (the
+#                             gcp and edhoc features are independent;
+#                             vcpkg.json's gcp feature depends only on
+#                             google-cloud-cpp). Default-y-shaped trap of the
+#                             same kind as GCP_SDK's on the main legs.
+#   DNS_DISCOVERY,          — libldns and Poco DNSSD are in no CI image;
+#   POCO_DISCOVERY            same as ci_full_defconfig.
+CONFIG_GCP_SDK=y
+CONFIG_GCP_PRIVATECA=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
+CONFIG_BOOST_BEAST_TRANSPORT=y
+CONFIG_PROXYGEN_TRANSPORT=y
+CONFIG_PROTOBUF_SERIALIZER=y
+# CONFIG_EDHOC is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set
