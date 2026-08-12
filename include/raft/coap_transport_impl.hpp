@@ -238,28 +238,33 @@ coap_client<Types>::coap_client(
     // libcoap only reads/writes sockets and dispatches PDUs to registered
     // handlers from inside coap_io_process(), which nothing else here ever
     // calls. Every future send_rpc() returns would otherwise hang forever
-    // regardless of what the peer does. Locking around each poll (short,
-    // 20ms chunks rather than one long call) lets send_rpc()'s own libcoap
-    // calls (session creation, coap_send) interleave promptly instead of
-    // queueing behind a single long-held lock -- see _mutex's own comment
-    // for why it's a recursive_mutex.
+    // regardless of what the peer does.
+    //
+    // _mutex must never be held across a *blocking* coap_io_process() call.
+    // An earlier version of this loop held it around coap_io_process(ctx, 20)
+    // -- a 20ms blocking wait -- so this thread owned the lock for ~100% of
+    // wall time and send_rpc() could only win it in the instant between
+    // unlock and relock. A non-fair mutex under a ~100%-duty-cycle holder
+    // produces a geometric waiting-time tail: the send-path probe measured
+    // send_rpc() lock_wait_ms of 35ms-3.6s locally and min 40ms / median
+    // 19,881ms / max 372,109ms on an idle CI runner (run 31457419633), with
+    // every other send step at 0. A yield() after unlock was an earlier
+    // round of the same starvation and only narrowed the window. Instead:
+    // drain ready I/O without blocking under the lock (microseconds when
+    // idle), and pace *outside* it, so the lock is free for essentially the
+    // whole sleep. The trade-off is that an incoming PDU can now sit for up
+    // to the pacing interval before dispatch, where the blocking call woke
+    // on socket activity immediately -- 5ms of bounded response latency
+    // against an unbounded send-path stall.
     _io_thread = std::jthread([this](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
             {
                 std::lock_guard lock(_mutex);
                 if (_coap_context) {
-                    coap_io_process(_coap_context, 20);
+                    coap_io_process(_coap_context, COAP_IO_NO_WAIT);
                 }
             }
-            // Yield after releasing the lock, before immediately trying to
-            // reacquire it on the next iteration. Without this, a thread
-            // that just unlocked a mutex is often the same thread the OS
-            // schedules to relock it first (cache locality/scheduler bias,
-            // worse still under few CPU cores), so send_rpc()'s own lock
-            // acquisition can be starved for seconds at a time even though
-            // it's a fair contender -- observed directly as multi-second
-            // per-call delays under concurrent load.
-            std::this_thread::yield();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     });
 #else
@@ -2329,9 +2334,9 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         // send_ms median 19,881, max 372,109, on an idle box), and this
         // function's synchronous body has exactly five places that much time
         // could hide: the _mutex acquisition below (which contends with
-        // _io_thread holding the same mutex around a 20ms-blocking
-        // coap_io_process() ~100% of wall time -- the yield() in that loop
-        // was an earlier round of exactly this starvation), address
+        // _io_thread -- at the time of that run it held the same mutex
+        // around a 20ms-blocking coap_io_process() ~100% of wall time, the
+        // starvation since fixed in the io-thread loop itself), address
         // resolution, session acquisition, PDU construction, and coap_send()
         // itself (the retransmission theory). One line per send splits them.
         // Timestamps are always captured (five steady_clock reads, ~ns each);

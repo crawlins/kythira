@@ -1415,8 +1415,14 @@ unverified completion claim.
     broke the cycle.
 
 - **`coap_concurrent_processing_property_test` stalls at its 720s budget —
-  OPEN, three times now. The starvation reading below is DISPROVEN as of
-  August 9, 2026; the time is inside the iteration body on an idle runner.**
+  ROOT-CAUSED AND FIXED, August 12, 2026: client-wide `_mutex` starvation
+  by the io-pump thread's 20ms-blocking `coap_io_process()` (see "The fix
+  this points at — MADE and measured" below for the fix and the 20/20-green
+  after-measure). The entry's investigation history is kept in full — three
+  instruments in a row disproved the prose they were built to confirm, and
+  that chain is the durable knowledge here. (The *runner*-starvation
+  reading below was DISPROVEN August 9; the lock-starvation finding that
+  replaced it is what held.)**
   The crash pattern in this test was fixed in `1a52e1f` (see the sweep above);
   this is a *different* failure in the same test, and it has recurred:
 
@@ -1596,14 +1602,37 @@ unverified completion claim.
   CI; 35ms–3.6s locally on the very first instrumented run). The
   retransmission theory is dead — `coap_send_ms=0` in every sample.
 
-  **The fix this points at** (not yet made): stop holding `_mutex` across
-  the *blocking* part of the io pump — e.g. `coap_io_process(ctx,
-  COAP_IO_NO_WAIT)` under the lock, with the pacing sleep *outside* it, so
-  the lock is held for microseconds per iteration instead of the full 20ms
-  window. Do it as its own change, measured before/after with
-  `coap-flake-measure` per this file's own rule — and CI confirmation that
-  `lock_wait_ms` carries the minutes there too should come first (the
-  breakdown probe is in the tree for exactly that run).
+  **The fix this points at — MADE and measured, August 12, 2026.** The
+  client's `_io_thread` now holds `_mutex` only across `coap_io_process(ctx,
+  COAP_IO_NO_WAIT)` (drains ready I/O in microseconds) and paces with a 5ms
+  sleep *outside* the lock; the earlier `yield()` — a previous round of the
+  same starvation that only narrowed the window — is gone with the blocking
+  wait it was compensating for. The trade-off is stated at the loop: an
+  incoming PDU can now wait up to 5ms for dispatch where the blocking call
+  woke immediately — bounded response latency against an unbounded
+  send-path stall.
+  - **First instrumented local run after the change: `lock_wait_ms=0` on
+    every send** (was 35ms–3.6s on the very first probe run), whole case
+    84ms. The uniform `send_ms=5` remaining is the test's own deliberate
+    5ms sleep inside that bracket, not a residual stall.
+  - **Before/after per this file's own working rule** — 20 iterations each,
+    same selection (`-L coap`), same runner class, release/clang++-18/x64
+    (`coap-flake-measure` runs 31594502344 baseline @ `e2a6373`,
+    31597565150 after): baseline failed **27 test-runs across four tests**
+    (`coap_duplicate_detection_property_test` 45%,
+    `coap_confirmable_message_property_test` 40%,
+    `coap_thread_safety_property_test` 25%,
+    `coap_negotiation_failure_test` 25%); after, **zero failures in any
+    run**. A 45%→0/20 shift is ~6×10⁻⁶ under binomial noise — far outside
+    the one-or-two-run band the rule says to ignore. The starvation was
+    not just this stall's cause: it was carrying a broad share of the CoAP
+    suite's flakiness.
+  - The CI reading of `lock_wait_ms` that the entry above wanted first
+    never arrived on its own terms — the probe only reaches CI logs on a
+    *failure*, and no instrumented failure occurred between the probe
+    landing and the fix. The 20/20-green after-measure stands in for it:
+    the phenomenon the probe was built to attribute no longer occurs to
+    attribute.
 
   Related but distinct: the backoff-tolerance flakes fixed in
   [#194](https://github.com/crawlins/kythira/pull/194) were percentage bounds
