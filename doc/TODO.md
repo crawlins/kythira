@@ -880,10 +880,31 @@ unverified completion claim.
     `http_content_negotiation_unit_test`. Each half was mutation tested
     separately — server stops advertising, client stops reading — and each
     failure was attributed to the half that caused it.
-  - **Not measured**: whether the saved round trip is worth anything under load.
-    The unmeasured-latency gap recorded against the retry itself applies here
-    unchanged, and this narrows it only in the sense of making the worst case
-    shorter.
+  - **Measured — August 12, 2026** (`examples/raft/accept_post_retry_benchmark.cpp`,
+    registered as `accept_post_retry_benchmark_test`): four arms against one
+    raw single-JSON peer that differs only in whether its 415 carries the
+    header (raw `httplib::Server`, because the shipped servers always
+    advertise — an absent header *is* the shipped client's blind-walk path,
+    so both arms exercise production client code). Beast client, loopback,
+    4-core dev host, 300 samples/arm, first-call arms on a fresh client per
+    sample so the capability cache cannot erase the thing being measured:
+    matched 240µs p50; **informed `Accept-Post` 537µs; blind walk 840µs** —
+    the header saves almost exactly one ~300µs round trip out of the
+    mismatch penalty; renegotiated steady state (same client, cache
+    populated) **158µs p50**, cheaper than even the matched first call since
+    it also reuses the connection — the "costs once per peer, not per call"
+    amortisation claim measured rather than asserted. A second full run
+    confirmed the ordering and the one-round-trip-per-step shape
+    (393/872/1,458/204µs) while the absolutes moved ~1.5x with machine
+    load — read the differences, not the floor, as the program's own
+    banner says. Two raw-server
+    defaults had to be overridden to make the numbers honest, both observed
+    first: no TCP_NODELAY put a ~41ms Nagle/delayed-ACK signature on the
+    steady-state arm (the same artifact
+    `doc/http_transport_performance_comparison.md` documents for
+    cpp-httplib), and the default keep-alive request cap closed the reused
+    connection mid-arm (surfacing as a Beast end-of-stream crash at full
+    sample counts that a 3-sample run never hit).
   - **A peer that 415s *intermittently* is now covered — August 10, 2026.**
     Every other suite drives a peer whose decodable set is fixed for the life
     of the test, because `cpp_httplib_server` derives what it decodes from its
