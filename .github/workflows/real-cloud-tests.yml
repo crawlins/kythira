@@ -1209,14 +1209,68 @@ jobs:
       # — but "the teardown ran" and "nothing is left running" are different
       # claims, and every cloud provider in this project leaked something on
       # its first live run.
+      #
+      # Runs on the same UPST the suites used: the OCI CLI's security_token
+      # auth takes the token from a file plus the session private key, and
+      # the tenancy OCID the CLI's config insists on is read out of the
+      # UPST's own `tenant` claim rather than kept as one more repo variable
+      # that could drift from the credential actually in hand. `if: always()`
+      # so a failed suite still gets audited — that is the run most likely
+      # to have leaked — but if the credentials step itself failed there is
+      # no token to audit with, so that case reports itself and exits 0
+      # rather than burying the real failure under a second one.
       - name: Audit for leaked instances
         if: always()
         run: |
-          echo "Post-run audit is not yet automated — it needs the OCI CLI and the"
-          echo "session credentials from the federation step above. Until then, check"
-          echo "the compartment by hand:"
-          echo "  oci compute instance list --compartment-id \$KYTHIRA_OCI_COMPARTMENT_ID \\"
-          echo "    --query 'data[?\"lifecycle-state\"!=\`TERMINATED\`]'"
+          if [ -z "${KYTHIRA_OCI_SECURITY_TOKEN:-}" ]; then
+            echo "No UPST in the environment (the credentials step failed or never ran) — nothing to audit with."
+            exit 0
+          fi
+          pip3 install --user --quiet oci-cli
+          export PATH="$HOME/.local/bin:$PATH"
+
+          umask 077
+          printf '%s' "$KYTHIRA_OCI_SECURITY_TOKEN" > /tmp/oci-audit-upst.token
+          printf '%s\n' "$KYTHIRA_OCI_PRIVATE_KEY_PEM" > /tmp/oci-audit-session.pem
+
+          payload=$(printf '%s' "$KYTHIRA_OCI_SECURITY_TOKEN" | cut -d. -f2 | tr '_-' '/+')
+          pad=$(( (4 - ${#payload} % 4) % 4 ))
+          [ $pad -gt 0 ] && payload="$payload$(printf '=%.0s' $(seq $pad))"
+          tenancy=$(printf '%s' "$payload" | base64 -d 2>/dev/null | jq -r '.tenant // empty')
+          if [ -z "$tenancy" ]; then
+            echo "::error::The UPST carries no tenant claim — cannot build a CLI config to audit with." >&2
+            exit 1
+          fi
+
+          # printf, not a heredoc: these lines are indented for YAML, and a
+          # heredoc would carry that indentation into the file, where the
+          # CLI's configparser reads an indented line as a continuation of
+          # the previous key — a silently broken config.
+          mkdir -p ~/.oci
+          printf '%s\n' \
+            '[DEFAULT]' \
+            "region=${KYTHIRA_OCI_REGION}" \
+            "tenancy=${tenancy}" \
+            'security_token_file=/tmp/oci-audit-upst.token' \
+            'key_file=/tmp/oci-audit-session.pem' \
+            > ~/.oci/config
+
+          leaked=$(oci --auth security_token compute instance list \
+            --compartment-id "$KYTHIRA_OCI_COMPARTMENT_ID" --all \
+            --query 'data[?"lifecycle-state"!=`TERMINATED` && "lifecycle-state"!=`TERMINATING`].{id:id, state:"lifecycle-state", name:"display-name", created:"time-created"}' \
+            --output json)
+          rm -f /tmp/oci-audit-upst.token /tmp/oci-audit-session.pem
+
+          # An empty match prints nothing at all (not []), and a bare jq on
+          # empty input errors — both spellings of "clean" have to count 0.
+          count=$(printf '%s' "$leaked" | jq 'if . == null then 0 else length end' 2>/dev/null || echo 0)
+          [ -z "$count" ] && count=0
+          if [ "$count" -ne 0 ]; then
+            echo "::error::Post-run audit found $count non-terminated instance(s) in the compartment:" >&2
+            echo "$leaked" | jq . >&2
+            exit 1
+          fi
+          echo "Post-run audit clean: no non-terminated instances in the compartment."
 
   alibaba:
     name: Real Cloud Tests (Alibaba Cloud)
