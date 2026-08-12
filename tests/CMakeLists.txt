@@ -2499,6 +2499,16 @@ if(_KYTHIRA_GATE_OCI_QUORUM_MANAGER AND TARGET OpenSSL::SSL AND TARGET httplib::
         TIMEOUT 600
         LABELS "integration;oci;mock;quorum_manager;cloud"
     )
+    # The node-side half of the heartbeat protocol (Requirement 4.4). Gated
+    # with the quorum manager because the two are one protocol: the writer
+    # stamps the tag `assess_quorum` reads, and it reuses the manager header's
+    # tag constants and parsing helpers.
+    kythira_add_oci_test(oci_heartbeat_writer_unit_test)
+    add_test(NAME oci_heartbeat_writer_unit_test COMMAND oci_heartbeat_writer_unit_test)
+    set_tests_properties(oci_heartbeat_writer_unit_test PROPERTIES
+        TIMEOUT 300
+        LABELS "unit;oci;quorum_manager;cloud"
+    )
 elseif(NOT _KYTHIRA_GATE_OCI_QUORUM_MANAGER)
     message(STATUS "oci_quorum_manager tests: skipped (CONFIG_OCI_QUORUM_MANAGER disabled)")
 else()
