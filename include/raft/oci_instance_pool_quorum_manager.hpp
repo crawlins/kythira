@@ -322,11 +322,19 @@ public:
             throw std::invalid_argument(
                 "oci_instance_pool_quorum_manager: node_port must be non-zero");
         }
-        if (!_cfg.oci.use_instance_principal) {
+        // Three auth modes (oci_client_config): Instance Principal and a
+        // caller-supplied security token each carry their own credentials,
+        // so the API-key triple is only required when neither is selected.
+        // A token still needs the session private key it was bound to —
+        // found live on the first WIF CI run, where this gate demanded a
+        // tenancy_id the token mode deliberately does not have.
+        if (!_cfg.oci.use_instance_principal && _cfg.oci.security_token.empty()) {
             require(_cfg.oci.tenancy_id, "oci.tenancy_id");
             require(_cfg.oci.user_id, "oci.user_id");
             require(_cfg.oci.fingerprint, "oci.fingerprint");
             require(_cfg.oci.private_key_pem, "oci.private_key_pem");
+        } else if (!_cfg.oci.security_token.empty()) {
+            require(_cfg.oci.private_key_pem, "oci.private_key_pem (the session key)");
         }
 
         boost::json::value pool;

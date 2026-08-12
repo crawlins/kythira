@@ -326,36 +326,83 @@ cheapest version of the audit that catches it.
 
 ## Credentials
 
-**Use federation. It exists, and no long-lived key is needed** — Task 0(f) is
-closed (`spike-notes.md` Finding 17). OCI IAM **Workload Identity Federation**
-exchanges a third-party OIDC JWT — GitHub Actions' included — plus a locally
-generated public key, for a short-lived **User Principal Session Token**
-(UPST) via the Token Exchange grant. The job then signs OCI API calls with the
-matching private key.
+**Federation is provisioned and wired** (Requirement 14.2, `spike-notes.md`
+Finding 17). OCI IAM **Workload Identity Federation** exchanges the CI job's
+GitHub OIDC JWT plus a locally generated public key for a short-lived **User
+Principal Session Token** (UPST) via the Token Exchange grant; the job then
+signs OCI API calls with the matching session private key
+(`oci_client_config::security_token` — `keyId = "ST$" + token`). No
+long-lived key exists anywhere in the path, which is exactly the posture
+Requirement 14.2 wanted; its API-key fallback was never needed.
 
-Two things worth knowing before wiring it:
+What exists in the tenancy's **Default identity domain** (created August 12,
+2026, via the identity-domains CLI):
 
-- It is an **identity-domain** mechanism producing a *User* Principal Session
-  Token, so policy targets a user/group principal. It is **not** the Dynamic
-  Group model Requirement 14.2 originally assumed — Dynamic Groups are the
-  right model for the certificate authority's resource principal (see
-  [`policies/certificates.txt`](policies/certificates.txt)), and conflating
-  the two will waste an afternoon.
-- An off-the-shelf action implementing the exchange exists
-  (`gtrevorrow/oci-token-exchange-action`). It is third-party and unvetted;
-  worth evaluating before writing one, not before reading one.
+| artifact | value |
+|---|---|
+| service user | `kythira-ci-wif` (SCIM id `dd1458d3b03b45a5a352caf52b2d0a5f`, `serviceUser: true`), member of `kythira-ci` |
+| confidential app | `kythira-ci-token-exchange`, client_id `2638970cead24539a393a19765fb6b6e` |
+| trust | `github-actions-kythira` (id `21dc4fc815454c7a93dd34e45400cdca`): issuer `https://token.actions.githubusercontent.com`, JWKS `…/.well-known/jwks`, rule `sub eq repo:crawlins/kythira:environment:real-cloud-tests` → impersonates the service user |
 
-**The long-lived API key fallback is no longer on the table.** Requirement 14.2
-permitted it only if no federation mechanism existed, and only with explicit
-sign-off. One exists, so neither applies. `provision-ci-identity.sh` still
-issues no credentials — that remains correct, since the UPST exchange happens
-in the job, not at provisioning time.
+Two facts about the trust that cost a live dispatch each to learn:
 
-**Instance Principal is not implemented** (`oci_client_config::
-use_instance_principal`). Setting it throws a named error rather than silently
-falling back to the API key, which would authenticate as the wrong principal.
-What is missing is a contract — the metadata-service endpoints and refresh
-cadence — not code; see `spike-notes.md` Task 0(b).
+- **The impersonation rule's value must be unquoted.** Both
+  `sub eq "repo:…"` and `sub eq 'repo:…'` fail to match with
+  `unauthorized_client: No rules matched from given token to find
+  impersonation user` — the same error a wrong value gives, so the
+  workflow's failure path prints the JWT's decoded `sub` claim alongside
+  OCI's response to keep the two distinguishable.
+- **The impersonated user must be a genuine `serviceUser`.** A regular user
+  with every credential capability disabled is rejected at exchange time
+  with `unauthorized_client: User requesting is not a service user`. (A
+  leftover regular user `kythira-ci-federation` from that attempt may still
+  exist; it holds no credentials and can be deleted.)
+
+What the workflow consumes: `real-cloud-tests` **environment secrets**
+`OCI_DOMAIN_URL`, `OCI_WIF_CLIENT_ID`, `OCI_WIF_CLIENT_SECRET`, and
+**repository variables** `OCI_CI_REGION` / `OCI_CI_COMPARTMENT_ID` /
+`OCI_CI_INSTANCE_POOL_ID` / `OCI_CI_CERTIFICATE_AUTHORITY_ID` plus the
+`REAL_CLOUD_TESTS_OCI_*` toggles. The toggles must be **repository**
+variables: the job's gate is a job-level `if:`, which is evaluated before
+the environment binds, so environment-scoped toggles read as unset and the
+job silently never runs.
+
+Domain-side notes that cost time to learn (all via
+`oci identity-domains …`, which signs with an ordinary API key):
+
+- `--from-json` wants the **CLI model key names**
+  (`--generate-full-command-json-input` shows them), not raw SCIM URNs —
+  URN-keyed attributes are **silently dropped**. That silently produced a
+  non-service user twice; and since `serviceUser` is immutable post-create,
+  the fix was not a patch but a recreate via **`oci raw-request`** (`POST
+  {domain}/admin/v1/Users` with the raw SCIM body), which bypasses the CLI
+  model entirely and is how `kythira-ci-wif` was made.
+- `impersonationServiceUsers` is a returned-on-request attribute: a bare GET
+  on the trust shows `null`. Pass `--attributes impersonationServiceUsers
+  --attribute-sets request` before concluding the rule is missing.
+- The App schema rejects the token-exchange grant in `allowedGrants` —
+  exchange authorization comes from the trust's `oauthClients` list; the
+  confidential app needs only `client_credentials`.
+- The client_id:client_secret pair is not a stored OCI credential: alone it
+  authenticates as nothing, and only authorises presenting a valid
+  GitHub-signed JWT (matching the trust rule above) to the exchange.
+
+Two things that remain true from the original wiring notes:
+
+- This is an **identity-domain** mechanism producing a *User* Principal
+  Session Token, so policy targets a user/group principal. It is **not** the
+  Dynamic Group model Requirement 14.2 originally assumed — Dynamic Groups
+  remain the model for the certificate authority's resource principal (see
+  [`policies/certificates.txt`](policies/certificates.txt)).
+- `provision-ci-identity.sh` still issues no credentials; the UPST exchange
+  happens in the job, not at provisioning time.
+
+**Instance Principal is implemented** (`oci_federation::
+instance_principal_signer`, `include/raft/oci_federation.hpp`) — the auth
+mode for a kythira process running *on* an OCI instance, verified against
+the mock tier and `oci-go-sdk`'s contract but not yet on a real instance.
+It is unrelated to CI federation: a GitHub runner is not an OCI instance
+and has no metadata service.
 
 ## Operational notes from real runs
 

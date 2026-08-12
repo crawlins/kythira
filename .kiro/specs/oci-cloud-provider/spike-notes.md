@@ -764,3 +764,49 @@ after the call returns. Any OCI code path that creates a resource and trusts
 the 2xx is not actually checking anything — which is what
 `oci_certificates_provider::await_active_version` does correctly, and is why it
 caught Finding 19 at all.
+
+### Finding 20: what the first least-privilege principal surfaced (the WIF CI bring-up, August 12, 2026)
+
+Twelve dispatches from the deliberately-failing credentials step to a green
+`oci` job (run 31564877239). Every prior live run had used a tenancy
+administrator; the first non-admin caller — the impersonated service user
+`kythira-ci-wif` via UPST — found five gaps, none reachable by any earlier
+tier. The two that are OCI knowledge rather than local bugs:
+
+- **Instance pools are resource principals on the new authorization path.**
+  OCI moved pool workflows off the service-principal fallback in early
+  August 2026 (announced for OKE node pools as "Prepare OKE Node Pool IAM
+  Policies for an Authorization Path Update"; observed here for plain
+  Compute pools). The audit log shows every call emitting paired v1/V2
+  events: `UpdateInstancePoolV2` was denied 404 **deterministically**
+  through three caller-policy variants up to the full
+  `manage compute-management-family` aggregate, while v1 reads succeeded
+  and `GetInstancePoolV2` failed only **intermittently** — a partial
+  rollout masquerading as flakiness until the audit log named the paired
+  events. The fix is Finding 12's shape one resource type over: a Dynamic
+  Group matching the pool (`kythira-ci-pool-dg`; both `resource.type`
+  spellings `instancepool`/`computeinstancepool` matched, since a wrong
+  name matches nothing silently) with launch grants (`manage
+  instance-family`, `read instance-configurations`, `use
+  subnets`/`vnics`/`volume-family`, `read instance-images`) plus the
+  tenancy-root `Oracle-Tags` tag-namespace statement — default tags are
+  applied to every launched instance and the launching principal needs
+  `use tag-namespaces` on a namespace no compartment policy can grant.
+- **`CreateCertificate` needs the delegate grant, not just
+  `manage leaf-certificate-family`.** Issuing makes the CA sign on the
+  caller's behalf: `use certificate-authority-delegate`. Oracle's own
+  CertificateAdmins example carries it; every read passes without it, and
+  the POST answers the same 404 NotAuthorizedOrNotFound a wrong OCID gives.
+
+The three local-side gaps, for completeness: a secret pasted with a
+trailing newline (curl exit 3 — the workflow now strips whitespace), the
+oci job never having had vcpkg/prefix-path plumbing (invisible while its
+credentials step failed by design — "a task whose CI job cannot execute is
+not complete" proved literally), and the quorum manager's constructor gate
+demanding the API-key triple in token mode. The diagnostic that broke the
+policy impasse was `oci audit event list` — it names the denied operation
+and the principal, and it is the only place the v1/V2 pairing is visible.
+
+Total bring-up spend: one instance-minute per successful dispatch
+(~$0.0006 each); the audit step confirmed zero leaked instances after
+every run.

@@ -957,33 +957,22 @@ jobs:
             exit 1
           fi
 
-      # ── Credentials ──────────────────────────────────────────────────────
-      #
-      # THIS STEP IS THE ONE UNFINISHED PIECE OF THIS JOB.
-      #
-      # Requirement 14.2 wants keyless federation, and Task 0(f) confirmed it
-      # exists: OCI IAM Workload Identity Federation exchanges this job's
-      # GitHub OIDC JWT for a short-lived User Principal Session Token
-      # (spike-notes.md Finding 17). What has NOT been done is standing up an
-      # OCI IAM identity domain configured to trust this repository, and
-      # verifying the exchange end to end — neither of which can be done from
-      # the repo side alone.
-      #
-      # So this fails loudly rather than falling back to a long-lived API key
-      # in a secret. That fallback is exactly what Requirement 14.2 permits
-      # only "with explicit sign-off ... not a silent regression from the AWS
-      # job's stronger posture" — and since federation demonstrably exists,
-      # there is nothing left to sign off on. A job that quietly used a stored
-      # key would be the regression the requirement forbids.
-      #
-      # To finish: configure the identity domain per
-      # scripts/ci-cloud-credentials/oci/README.md, then replace this step
-      # with the token exchange and export the resulting session credentials
-      # as the KYTHIRA_OCI_* variables the suites read.
-      - name: Obtain OCI credentials (Workload Identity Federation)
+      # Mirrors the AWS job's AWS_CI_ROLE_ARN guard: an unset resource
+      # variable would surface as the suites' exit-77 skip, which the bundle
+      # steps below already convert to a failure — but failing here names the
+      # actual variable instead of leaving a scavenger hunt.
+      - name: Fail closed if a resource variable is unset
         run: |
-          echo "::error::OCI credential federation is not yet wired up. The mechanism is confirmed (OCI IAM Workload Identity Federation — see scripts/ci-cloud-credentials/oci/README.md and spike-notes.md Finding 17), but the identity-domain trust for this repository has not been created and the exchange has not been verified. This step deliberately fails rather than falling back to a long-lived API key, which Requirement 14.2 forbids as a silent regression." >&2
-          exit 1
+          fail=0
+          [ -z "${{ vars.OCI_CI_REGION }}" ] && { echo "::error::OCI_CI_REGION repository variable is unset." >&2; fail=1; }
+          [ -z "${{ vars.OCI_CI_COMPARTMENT_ID }}" ] && { echo "::error::OCI_CI_COMPARTMENT_ID repository variable is unset." >&2; fail=1; }
+          if [ "${BUNDLE_INSTANCE_POOL}" = "true" ] && [ -z "${{ vars.OCI_CI_INSTANCE_POOL_ID }}" ]; then
+            echo "::error::OCI_CI_INSTANCE_POOL_ID repository variable is unset but the instance-pool bundle is enabled." >&2; fail=1
+          fi
+          if [ "${BUNDLE_CERTIFICATES}" = "true" ] && [ -z "${{ vars.OCI_CI_CERTIFICATE_AUTHORITY_ID }}" ]; then
+            echo "::error::OCI_CI_CERTIFICATE_AUTHORITY_ID repository variable is unset but the certificates bundle is enabled." >&2; fail=1
+          fi
+          exit $fail
 
       - name: Install system dependencies
         run: |
@@ -1010,10 +999,59 @@ jobs:
       - name: Install kconfiglib
         run: pip3 install --user -r scripts/kconfig/requirements.txt
 
+      # The dependency tree this job needs is exactly build-and-test's
+      # (edhoc feature, x64) — same cache key on purpose, so the first oci
+      # run restores the tree those jobs already built instead of
+      # cold-building ~40 minutes of ports. This job never got past its
+      # credentials step before that step worked, which is how "the job has
+      # no vcpkg install at all" stayed invisible until the first real
+      # configure ran.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
+      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
+      # to `run:` steps. This re-exports them so the vcpkg invocation below can
+      # reach the cache.
+      - name: Export Actions cache credentials for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-realcloud-oci-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-realcloud-oci-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-realcloud-oci-${{ runner.os }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig
 
       # Built as named targets rather than via `ctest`: neither real-OCI binary
@@ -1027,11 +1065,126 @@ jobs:
           # shellcheck disable=SC2086
           cmake --build build --target $targets
 
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-realcloud-oci-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      # ── Credentials (Requirement 14.2 — keyless federation) ──────────────
+      #
+      # Deliberately placed AFTER the build, immediately before the test
+      # steps — the same hard-won ordering the azure job documents: its
+      # login originally ran at the top of the job, an 84-minute cold
+      # build followed, and the credentials were expired before the first
+      # test step ran. The UPST minted here has the same shape of budget,
+      # so the gap between minting and using it is kept to seconds.
+      #
+      # OCI IAM Workload Identity Federation: this job's GitHub OIDC JWT plus
+      # a freshly generated session key are exchanged for a short-lived User
+      # Principal Session Token (spike-notes.md Finding 17). The identity-
+      # domain side — the trust `github-actions-kythira`, its confidential
+      # OAuth client, and the impersonated service user
+      # `kythira-ci-federation` — is documented in
+      # scripts/ci-cloud-credentials/oci/README.md.
+      #
+      # The exchange is ~10 lines of openssl + curl, done inline rather than
+      # via the third-party action the spike evaluated
+      # (gtrevorrow/oci-token-exchange-action): the client secret and the
+      # minted token stay inside this step, and the wire contract is small
+      # enough that owning it beats auditing someone else's implementation
+      # of it.
+      #
+      # No long-lived API key exists anywhere in this path: the OIDC JWT is
+      # minted per run by GitHub, the session key pair is generated below and
+      # never leaves the runner, and the UPST expires on its own. The
+      # OCI_WIF_CLIENT_* pair is not a credential for any OCI principal — it
+      # only authorises *presenting* a valid GitHub-signed JWT to the
+      # exchange endpoint.
+      - name: Obtain OCI credentials (Workload Identity Federation)
+        env:
+          OCI_DOMAIN_URL: ${{ secrets.OCI_DOMAIN_URL }}
+          OCI_WIF_CLIENT_ID: ${{ secrets.OCI_WIF_CLIENT_ID }}
+          OCI_WIF_CLIENT_SECRET: ${{ secrets.OCI_WIF_CLIENT_SECRET }}
+        run: |
+          for v in OCI_DOMAIN_URL OCI_WIF_CLIENT_ID OCI_WIF_CLIENT_SECRET; do
+            if [ -z "$(eval echo "\$$v")" ]; then
+              echo "::error::The $v secret is unset in the real-cloud-tests environment. See scripts/ci-cloud-credentials/oci/README.md (Credentials)." >&2
+              exit 1
+            fi
+          done
+          # A secret pasted with a trailing newline turns the exchange URL
+          # into two lines and curl answers exit 3 ("URL rejected: Malformed
+          # input") — observed on this job's first live run. None of these
+          # three values legitimately contains whitespace, so strip it all
+          # rather than asking every future paste to be perfect.
+          OCI_DOMAIN_URL=$(printf '%s' "$OCI_DOMAIN_URL" | tr -d '[:space:]')
+          OCI_WIF_CLIENT_ID=$(printf '%s' "$OCI_WIF_CLIENT_ID" | tr -d '[:space:]')
+          OCI_WIF_CLIENT_SECRET=$(printf '%s' "$OCI_WIF_CLIENT_SECRET" | tr -d '[:space:]')
+
+          # The ephemeral session key pair the UPST will be bound to. The
+          # exchange wants the public half as base64 PKIX DER (the same
+          # sanitized form the Instance Principal federation body uses).
+          openssl genrsa -out /tmp/oci-session-key.pem 2048 2>/dev/null
+          public_key=$(openssl rsa -in /tmp/oci-session-key.pem -pubout -outform DER 2>/dev/null | base64 -w0)
+
+          # This job's own GitHub OIDC JWT. The audience is the convention the
+          # exchange tooling expects; the trust validates issuer, signature
+          # (via GitHub's JWKS) and the sub claim, which for this job is
+          # repo:crawlins/kythira:environment:real-cloud-tests.
+          jwt=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://cloud.oracle.com" | jq -r '.value')
+          if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
+            echo "::error::Could not obtain a GitHub OIDC token — is 'id-token: write' still in this job's permissions?" >&2
+            exit 1
+          fi
+
+          response=$(curl -sS -u "$OCI_WIF_CLIENT_ID:$OCI_WIF_CLIENT_SECRET" \
+            "$OCI_DOMAIN_URL/oauth2/v1/token" \
+            --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+            --data-urlencode 'requested_token_type=urn:oci:token-type:oci-upst' \
+            --data-urlencode 'subject_token_type=jwt' \
+            --data-urlencode "subject_token=$jwt" \
+            --data-urlencode "public_key=$public_key")
+          token=$(echo "$response" | jq -r '.token // empty')
+          if [ -z "$token" ]; then
+            # The response carries OCI's error json and no secrets — the one
+            # thing worth having in the log when the exchange fails. The
+            # decoded sub claim is printed alongside it because the trust's
+            # impersonation rule matches on exactly that string, and "No
+            # rules matched" names neither side of the comparison; sub is
+            # repo/environment metadata, not a credential.
+            sub_payload=$(echo "$jwt" | cut -d. -f2 | tr '_-' '/+')
+            pad=$(( (4 - ${#sub_payload} % 4) % 4 ))
+            [ $pad -gt 0 ] && sub_payload="$sub_payload$(printf '=%.0s' $(seq $pad))"
+            echo "::error::The UPST exchange failed: $response (JWT sub: $(echo "$sub_payload" | base64 -d 2>/dev/null | jq -r '.sub // "undecodable"'))" >&2
+            exit 1
+          fi
+          echo "::add-mask::$token"
+
+          {
+            echo "KYTHIRA_OCI_SECURITY_TOKEN=$token"
+            echo "KYTHIRA_OCI_PRIVATE_KEY_PEM<<KYTHIRA_SESSION_KEY_EOF"
+            cat /tmp/oci-session-key.pem
+            echo "KYTHIRA_SESSION_KEY_EOF"
+            echo "KYTHIRA_OCI_REGION=${{ vars.OCI_CI_REGION }}"
+            echo "KYTHIRA_OCI_COMPARTMENT_ID=${{ vars.OCI_CI_COMPARTMENT_ID }}"
+            echo "KYTHIRA_OCI_INSTANCE_POOL_ID=${{ vars.OCI_CI_INSTANCE_POOL_ID }}"
+            echo "KYTHIRA_OCI_CERTIFICATE_AUTHORITY_ID=${{ vars.OCI_CI_CERTIFICATE_AUTHORITY_ID }}"
+          } >> "$GITHUB_ENV"
+          rm -f /tmp/oci-session-key.pem
+          echo "UPST obtained (${#token} chars); session key exported to the suite environment."
+
+      # `|| rc=$?`, not `; rc=$?`: GitHub run steps execute under `bash -e`,
+      # so a bare failing command ends the step before the rc check ever
+      # runs — the step still failed, but with the suite's raw exit code
+      # instead of the explanatory error the check exists to print.
       - name: Instance Pool bundle
         if: env.BUNDLE_INSTANCE_POOL == 'true'
         run: |
-          ./build/tests/oci_quorum_manager_real_test --log_level=test_suite
-          rc=$?
+          rc=0
+          ./build/tests/oci_quorum_manager_real_test --log_level=test_suite || rc=$?
           # 77 is the suites' "tenancy not configured" skip. In CI that is a
           # misconfiguration, not a skip — the job was explicitly enabled.
           if [ $rc -eq 77 ]; then
@@ -1043,8 +1196,8 @@ jobs:
       - name: Certificates bundle
         if: env.BUNDLE_CERTIFICATES == 'true'
         run: |
-          ./build/tests/oci_certificates_provider_real_test --log_level=test_suite
-          rc=$?
+          rc=0
+          ./build/tests/oci_certificates_provider_real_test --log_level=test_suite || rc=$?
           if [ $rc -eq 77 ]; then
             echo "::error::The suite skipped for want of tenancy configuration, but this bundle was enabled. Check the credential step and the KYTHIRA_OCI_* variables." >&2
             exit 1

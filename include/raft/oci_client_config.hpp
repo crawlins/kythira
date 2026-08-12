@@ -71,6 +71,23 @@ struct oci_client_config {
     /// API-key fields are ignored.
     bool use_instance_principal{false};
 
+    /// A pre-obtained federated security token (a User Principal Session
+    /// Token, as issued by OCI IAM's token-exchange grant — Requirement 14.2,
+    /// `spike-notes.md` Finding 17). When non-empty, requests are signed with
+    /// @ref private_key_pem — which must then hold the **session private key**
+    /// whose public half was submitted in the exchange — under
+    /// `keyId = "ST$" + security_token`; @ref tenancy_id, @ref user_id and
+    /// @ref fingerprint are unused.
+    ///
+    /// This is the third auth mode, distinct from the other two on both axes
+    /// that matter: unlike API keys nothing here is long-lived (the UPST and
+    /// its session key expire together), and unlike @ref
+    /// use_instance_principal the token is obtained by the *caller* (CI's
+    /// GitHub-OIDC exchange), not by this library — there is no metadata
+    /// service in a CI runner to fetch anything from. Ignored when
+    /// @ref use_instance_principal is set, which performs its own exchange.
+    std::string security_token;
+
     /// When non-empty, overrides the derived service endpoint host. Points the
     /// providers at a mock server during tests, the same way
     /// `aws_client_config::endpoint_override` points them at LocalStack.

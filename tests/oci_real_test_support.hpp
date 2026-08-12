@@ -475,6 +475,7 @@ struct real_test_config {
     std::string user_id;
     std::string fingerprint;
     std::string private_key_pem;
+    std::string security_token;
     std::string compartment_id;
     std::string instance_pool_id;
     std::string certificate_authority_id;
@@ -487,6 +488,7 @@ struct real_test_config {
             .user_id = env("KYTHIRA_OCI_USER_ID"),
             .fingerprint = env("KYTHIRA_OCI_FINGERPRINT"),
             .private_key_pem = env("KYTHIRA_OCI_PRIVATE_KEY_PEM"),
+            .security_token = env("KYTHIRA_OCI_SECURITY_TOKEN"),
             .compartment_id = env("KYTHIRA_OCI_COMPARTMENT_ID"),
             .instance_pool_id = env("KYTHIRA_OCI_INSTANCE_POOL_ID"),
             .certificate_authority_id = env("KYTHIRA_OCI_CERTIFICATE_AUTHORITY_ID"),
@@ -494,10 +496,34 @@ struct real_test_config {
         };
     }
 
-    /// The credentials every suite needs, regardless of which resources it uses.
+    /// The credentials every suite needs, regardless of which resources it
+    /// uses: a region and a private key, plus either a federated security
+    /// token (KYTHIRA_OCI_SECURITY_TOKEN — CI's WIF exchange, where the key
+    /// is the exchange's session key and no user identity exists) or the
+    /// full API-key triple (a developer's ~/.oci/config).
     [[nodiscard]] auto has_credentials() const -> bool {
-        return !region.empty() && !tenancy_id.empty() && !user_id.empty() && !fingerprint.empty() &&
-               !private_key_pem.empty();
+        if (region.empty() || private_key_pem.empty()) {
+            return false;
+        }
+        if (!security_token.empty()) {
+            return true;
+        }
+        return !tenancy_id.empty() && !user_id.empty() && !fingerprint.empty();
+    }
+
+    /// The oci_client_config both fixtures build — centralised so the two
+    /// suites cannot drift on which auth fields they forward (forgetting
+    /// `security_token` in one fixture would skip-or-401 only in CI, the
+    /// place nobody runs a debugger).
+    [[nodiscard]] auto client_config() const -> kythira::oci_client_config {
+        kythira::oci_client_config oci;
+        oci.region = region;
+        oci.tenancy_id = tenancy_id;
+        oci.user_id = user_id;
+        oci.fingerprint = fingerprint;
+        oci.private_key_pem = private_key_pem;
+        oci.security_token = security_token;
+        return oci;
     }
 };
 

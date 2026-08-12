@@ -89,20 +89,33 @@ auto optional_probe(const kythira::oci_http_client& client, const kythira::oci_c
 auto main() -> int {
     kythira::oci_client_config cfg;
     cfg.region = require_env("KYTHIRA_OCI_REGION");
-    cfg.tenancy_id = require_env("KYTHIRA_OCI_TENANCY_ID");
-    cfg.user_id = require_env("KYTHIRA_OCI_USER_ID");
-    cfg.fingerprint = require_env("KYTHIRA_OCI_FINGERPRINT");
+    // Two credential shapes (matching tests/oci_real_test_support.hpp): a
+    // federated security token (CI's WIF exchange — the key is then the
+    // exchange's session key, and no user identity exists to name), or the
+    // API-key triple from a developer's ~/.oci/config.
+    cfg.security_token = env("KYTHIRA_OCI_SECURITY_TOKEN");
+    if (cfg.security_token.empty()) {
+        cfg.tenancy_id = require_env("KYTHIRA_OCI_TENANCY_ID");
+        cfg.user_id = require_env("KYTHIRA_OCI_USER_ID");
+        cfg.fingerprint = require_env("KYTHIRA_OCI_FINGERPRINT");
+    }
     cfg.private_key_pem = require_env("KYTHIRA_OCI_PRIVATE_KEY_PEM");
     cfg.private_key_passphrase = env("KYTHIRA_OCI_PRIVATE_KEY_PASSPHRASE");
     cfg.api_timeout = std::chrono::seconds{30};
 
     const kythira::oci_http_client client{cfg};
 
-    std::cout << "region      " << cfg.region << "\n"
-              << "tenancy     " << cfg.tenancy_id << "\n"
-              << "user        " << cfg.user_id << "\n"
-              << "fingerprint " << cfg.fingerprint << "\n"
-              << "key         " << cfg.private_key_pem.size() << " bytes\n";
+    std::cout << "region      " << cfg.region << "\n";
+    if (cfg.security_token.empty()) {
+        std::cout << "auth        API key\n"
+                  << "tenancy     " << cfg.tenancy_id << "\n"
+                  << "user        " << cfg.user_id << "\n"
+                  << "fingerprint " << cfg.fingerprint << "\n";
+    } else {
+        std::cout << "auth        federated security token (" << cfg.security_token.size()
+                  << " bytes)\n";
+    }
+    std::cout << "key         " << cfg.private_key_pem.size() << " bytes\n";
 
     // Stage 1 — signing itself. `ListRegions` is the call Requirement 13.9
     // names for the real fixture's preflight: authenticated, read-only, and

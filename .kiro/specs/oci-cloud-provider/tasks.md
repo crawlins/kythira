@@ -18,11 +18,13 @@ its code is.
 documentation are on `main`, and every one of them has been exercised against a
 **live OCI tenancy** — see `spike-notes.md`'s second, third and fourth passes.
 
-**Task 6 — the real-OCI integration tier and CI wiring — is the only task left,
-and it is no longer blocked on anything.** Task 0's last four sub-questions were
-closed on the same day (Findings 13-17), including both of the ones Task 6
-depended on: the out-of-host-capacity classifier and the CI federation
-mechanism.
+**Every task, 0 through 7, is now complete.** Task 6 — the last one — closed
+on August 12, 2026 with a green `oci` CI job running both real suites under
+keyless Workload Identity Federation (run 31564877239; see the Task 6 entry
+below for what the twelve-dispatch bring-up surfaced). Task 0's last four
+sub-questions had been closed the day before (Findings 13-17), including
+both of the ones Task 6 depended on: the out-of-host-capacity classifier and
+the CI federation mechanism.
 
 Requirement 1.6 (Instance Principal) is **implemented** (August 11):
 `oci_federation::instance_principal_signer` in
@@ -539,7 +541,17 @@ Reference implementations to study before starting:
     status block at the top of this file); all existing tests pass unmodified.
   - _Requirements: 13.1–13.7_
 
-- [ ] 6. **Real-OCI integration tests + CI wiring**
+- [x] 6. **Real-OCI integration tests + CI wiring** — ticked August 12,
+  2026, on the evidence this checkbox was held open for: **a green `oci` CI
+  job** (run 31564877239) executing the whole chain keylessly — GitHub OIDC
+  → UPST exchange against the `github-actions-kythira` trust → both real
+  suites (`*** No errors detected` twice: provision → assess → decommission
+  of a live instance, $0.000605 reported; root-fetch → CSR issuance →
+  revoke) → leak audit. Getting there took twelve dispatches and surfaced
+  five defects/gaps no local tier could see (a pasted-secret newline, the
+  job's missing build plumbing, the token-mode constructor gate, and two
+  least-privilege IAM gaps including OCI's August 2026 authorization-path
+  migration) — see spike-notes.md Finding 20 and the credentials README.
 
   - `tests/oci_quorum_manager_real_test.cpp` /
     `tests/oci_certificates_provider_real_test.cpp`, guarded by

@@ -99,11 +99,7 @@ struct RealCertificatesFixture {
         }
 
         oci_certificates_provider_config provider_cfg;
-        provider_cfg.oci.region = cfg.region;
-        provider_cfg.oci.tenancy_id = cfg.tenancy_id;
-        provider_cfg.oci.user_id = cfg.user_id;
-        provider_cfg.oci.fingerprint = cfg.fingerprint;
-        provider_cfg.oci.private_key_pem = cfg.private_key_pem;
+        provider_cfg.oci = cfg.client_config();
         // Issuance is not instant, and this timeout bounds the ACTIVE poll as
         // well as each HTTP call.
         provider_cfg.oci.api_timeout = std::chrono::seconds{300};

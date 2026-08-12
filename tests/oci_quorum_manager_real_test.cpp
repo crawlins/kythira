@@ -91,17 +91,14 @@ struct RealOciFixture : signal_cleanup_target {
 
     RealOciFixture() {
         if (!cfg.has_credentials() || cfg.compartment_id.empty() || cfg.instance_pool_id.empty()) {
-            std::cerr << "[oci-real] SKIP: set KYTHIRA_OCI_REGION/TENANCY_ID/USER_ID/"
-                         "FINGERPRINT/PRIVATE_KEY_PEM/COMPARTMENT_ID/INSTANCE_POOL_ID. "
+            std::cerr << "[oci-real] SKIP: set KYTHIRA_OCI_REGION/PRIVATE_KEY_PEM plus either "
+                         "SECURITY_TOKEN (WIF) or TENANCY_ID/USER_ID/FINGERPRINT (API key), "
+                         "and COMPARTMENT_ID/INSTANCE_POOL_ID. "
                          "See scripts/ci-cloud-credentials/oci/README.md.\n";
             std::exit(kSkipExitCode);
         }
 
-        manager_cfg.oci.region = cfg.region;
-        manager_cfg.oci.tenancy_id = cfg.tenancy_id;
-        manager_cfg.oci.user_id = cfg.user_id;
-        manager_cfg.oci.fingerprint = cfg.fingerprint;
-        manager_cfg.oci.private_key_pem = cfg.private_key_pem;
+        manager_cfg.oci = cfg.client_config();
         manager_cfg.oci.api_timeout = std::chrono::seconds{60};
         manager_cfg.compartment_id = cfg.compartment_id;
         manager_cfg.instance_pool_id = cfg.instance_pool_id;

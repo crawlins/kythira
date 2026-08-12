@@ -293,10 +293,15 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
     return out;
 }
 
-/// @brief Sign a request with API-key credentials, returning every header the
-///        caller must add.
+/// @brief Sign a request with the config's credentials — API key, or a
+///        caller-supplied federated security token — returning every header
+///        the caller must add.
 ///
 /// @param cfg            Auth material. Validated here, not in the config type.
+///                       A non-empty `security_token` selects UPST signing
+///                       (`keyId = "ST$" + token`, `private_key_pem` holding
+///                       the session key); otherwise the four API-key fields
+///                       apply.
 /// @param method         HTTP method; case-insensitive, lowercased for the
 ///                       `(request-target)` pseudo-header.
 /// @param request_target Path *and query* exactly as it will go on the wire.
@@ -327,12 +332,32 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
             "oci_http_client selects automatically when use_instance_principal is set");
     }
 
+    // UPST mode: the caller already holds a federated token (CI's GitHub-OIDC
+    // exchange, Requirement 14.2) bound to the session key in
+    // private_key_pem. Same keyId scheme Instance Principal uses — "ST$" plus
+    // the token — because it is the same kind of token; what differs is who
+    // performed the exchange. Checked before the API-key validation so a
+    // token-mode config is not forced to carry vestigial tenancy/user/
+    // fingerprint values just to pass a gate that does not apply to it.
+    if (!cfg.security_token.empty()) {
+        if (cfg.private_key_pem.empty()) {
+            throw std::invalid_argument(
+                "oci_signing: private_key_pem must hold the session private key whose "
+                "public half was submitted in the token exchange when security_token "
+                "is set");
+        }
+        return sign_request_with_key("ST$" + cfg.security_token, cfg.private_key_pem,
+                                     cfg.private_key_passphrase, method, request_target, host, body,
+                                     when);
+    }
+
     // Named individually rather than as "credentials are incomplete", because
     // the whole failure mode here is a config with one field left blank.
     const auto require = [](const std::string& value, const char* field) {
         if (value.empty()) {
             throw std::invalid_argument(std::string("oci_signing: ") + field +
-                                        " is required when use_instance_principal is false");
+                                        " is required when neither use_instance_principal "
+                                        "nor security_token is set");
         }
     };
     require(cfg.tenancy_id, "tenancy_id");
