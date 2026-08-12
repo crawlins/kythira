@@ -24,6 +24,15 @@
 
 Allow group {GROUP} to manage leaf-certificate-family in compartment {COMPARTMENT}
 Allow group {GROUP} to read certificate-authority-family in compartment {COMPARTMENT}
+# The delegate grant is what lets a caller have a CA *sign* on its behalf —
+# `manage leaf-certificate-family` alone passes every read and then 404s
+# CreateCertificate (found by the first least-privilege run of
+# oci_certificates_provider_real_test; an admin's blanket grants masked it,
+# same as the instance-pool bundle's launch grants). Oracle's own
+# CertificateAdmins example carries it: "enables the group to use any CA in
+# the compartment to sign a certificate, but not to create, update, or
+# delete CAs" — which is precisely sign_csr's contract.
+Allow group {GROUP} to use certificate-authority-delegate in compartment {COMPARTMENT}
 
 # THE CA AUTHENTICATES AS A RESOURCE PRINCIPAL, NOT A SERVICE PRINCIPAL.
 #

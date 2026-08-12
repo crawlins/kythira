@@ -2449,7 +2449,7 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   while CTest reported the skip as a pass, and `provision_timeout_cleanup`
   never timing out while leaking its instance). Like AWS and Azure, still
   missing the example config file documented at the top of this section.
-- [ ] **Oracle Cloud Infrastructure (OCI)** — `oci_instance_pool_quorum_manager`
+- [x] **Oracle Cloud Infrastructure (OCI)** — `oci_instance_pool_quorum_manager`
   (Instance Pool `size` for provisioning, `DetachInstancePoolInstance` for
   decommission, tag-scan `next_node_id()` since an OCID's trailing segment is
   not hex-decodable, `lifecycleState` + a `kythira-last-heartbeat` freeform
@@ -2466,20 +2466,22 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   **This is the first provider to ship the example config file this section
   requires** (`docker/oci_quorum_manager/`), which AWS, Azure and GCP still
   lack.
-  Still open, and the reason this stays unticked: **Task 6, the real-OCI
-  integration tier and CI wiring**. Everything above is verified against
-  `tests/oci_mock_server.hpp` — 31 cases across five CTest entries, with the
-  tag read-merge-write, heartbeat and provision-rollback claims each
-  mutation-tested — but never against a live tenancy, so it is in the same
-  position AWS/Azure/GCP were in before their first live run, each of which
-  surfaced three or four real defects. Two of Task 6's inputs are themselves
-  unresolved Task 0 spike questions: OCI's exact out-of-host-capacity error
-  shape (the escalation ladder's classifier is a string match and cannot be
-  written from inspection) and whether OCI federates GitHub Actions' OIDC
-  tokens to a Dynamic Group. **Instance Principal auth (Requirement 1.6) is
-  also still a deliberate throwing stub** — the metadata-service contract is
-  unconfirmed, and guessing it would yield a client that passes against a
-  mock built from the same guess.
+  **Ticked August 12, 2026 — every task (0–7) complete, including Task 6's
+  real-OCI tier and CI wiring.** The mock tier's 31 cases were later joined
+  by live verification of both providers against a real tenancy, and
+  finally by the evidence the tick was held for: **a green `oci` CI job
+  (run 31564877239) under keyless Workload Identity Federation** — GitHub
+  OIDC → UPST exchange → provision/assess/decommission of a live instance
+  ($0.000605 reported) and root-fetch/CSR-issuance/revoke, then a leak
+  audit. The prediction that the first live runs would surface defects no
+  mock could see held every time: four defects on the first live campaign
+  (spike-notes Findings 5–8), and five more on the CI bring-up's twelve
+  dispatches (Finding 20 — among them OCI's August 2026 authorization-path
+  migration, which makes the instance pool itself a resource principal
+  needing its own Dynamic Group). Instance Principal auth (Requirement 1.6)
+  is implemented (`oci_federation.hpp`), verified against the go-sdk
+  contract and a cryptographic mock tier; its one remaining caveat is that
+  no code path has yet run *on* an OCI instance.
 - [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
   a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
 

@@ -29,16 +29,72 @@
 #   instance-configurations the pool launches from one; the pool needs to read it
 #   subnets / vnics         placing the launched instance's primary VNIC
 #
-# CAVEAT, and it is a real one: this list is derived from the operations the
-# code actually calls, and has **not** been verified against a least-privilege
-# user. Every live run so far used a tenancy administrator, so an over-broad
-# grant would not have been noticed. Verify by creating the group below,
-# putting a non-admin user in it, and running oci_tenancy_check with
-# KYTHIRA_OCI_ALLOW_LAUNCH=1.
+# The list below HAS now been exercised by a least-privilege principal — the
+# WIF service user kythira-ci-wif on the first real CI runs (August 12,
+# 2026) — and that exercise found it incomplete in exactly the way the old
+# caveat here predicted an admin user would mask. `UpdateInstancePool` to a
+# larger size *launches instances*, and the caller needs the launch-adjacent
+# grants for everything a launch touches: the boot volume (`use
+# volume-family`) and the image the Instance Configuration names (`read
+# instance-images`). Without them the resize PUT answers 404
+# NotAuthorizedOrNotFound — the same status a wrong OCID gives — while every
+# read in the suite works fine. Whether the two verbs below are *minimal* is
+# still unverified; that they are *necessary* was observed directly.
 
-Allow group {GROUP} to manage instance-pools in compartment {COMPARTMENT}
+# `manage compute-management-family` matches Oracle's own common policy for
+# instance-pool administrators ("Let users manage Compute instance
+# configurations, instance pools, and cluster networks").
+Allow group {GROUP} to manage compute-management-family in compartment {COMPARTMENT}
+
+# THE POOL ITSELF IS A RESOURCE PRINCIPAL ON THE NEW AUTHORIZATION PATH —
+# the same shape as the certificate authority reaching its Vault key
+# (certificates.txt, spike-notes Finding 12), rediscovered for pools during
+# the first WIF CI bring-up (August 2026). OCI moved pool workflows off the
+# service-principal fallback in early August 2026 (see Oracle's "Prepare
+# OKE Node Pool IAM Policies for an Authorization Path Update" for the
+# announcement of this pattern): the audit log shows every call emitting
+# paired v1/V2 events, with `UpdateInstancePoolV2` denied 404
+# deterministically for a least-privilege caller — through THREE caller-
+# policy variants up to and including the full family aggregate — while
+# every v1 read succeeded, and `GetInstancePoolV2` failed only
+# intermittently (the migration's partial rollout, indistinguishable from
+# flakiness until the audit log named the paired events).
+#
+# So the pool needs its own Dynamic Group and grants to launch on resize.
+# Both plausible resource.type spellings are matched, since a wrong name in
+# a matching rule matches nothing, silently:
+#
+#   Dynamic Group {POOL_DYNAMIC_GROUP}:
+#     Any {ALL {resource.type='instancepool', resource.compartment.id='<ocid>'},
+#          ALL {resource.type='computeinstancepool', resource.compartment.id='<ocid>'}}
+#
+Allow dynamic-group {POOL_DYNAMIC_GROUP} to manage instance-family in compartment {COMPARTMENT}
+Allow dynamic-group {POOL_DYNAMIC_GROUP} to read instance-configurations in compartment {COMPARTMENT}
+Allow dynamic-group {POOL_DYNAMIC_GROUP} to use subnets in compartment {COMPARTMENT}
+Allow dynamic-group {POOL_DYNAMIC_GROUP} to use vnics in compartment {COMPARTMENT}
+Allow dynamic-group {POOL_DYNAMIC_GROUP} to use volume-family in compartment {COMPARTMENT}
+Allow dynamic-group {POOL_DYNAMIC_GROUP} to read instance-images in compartment {COMPARTMENT}
+# ...plus, at tenancy root alongside the group's own Oracle-Tags statement:
+#   Allow dynamic-group {POOL_DYNAMIC_GROUP} to use tag-namespaces in tenancy where target.tag-namespace.name = 'Oracle-Tags'
 Allow group {GROUP} to manage instance-family in compartment {COMPARTMENT}
 Allow group {GROUP} to read virtual-network-family in compartment {COMPARTMENT}
-Allow group {GROUP} to use instance-configurations in compartment {COMPARTMENT}
 Allow group {GROUP} to use subnets in compartment {COMPARTMENT}
 Allow group {GROUP} to use vnics in compartment {COMPARTMENT}
+Allow group {GROUP} to use volume-family in compartment {COMPARTMENT}
+Allow group {GROUP} to read instance-images in compartment {COMPARTMENT}
+
+# ONE STATEMENT LIVES OUTSIDE THIS FILE'S {COMPARTMENT} SCOPE, at tenancy
+# root (policy `kythira-ci-launch-tags` in this tenancy). Most tenancies
+# carry active tag defaults — Oracle-Tags.CreatedBy/CreatedOn, present here
+# since tenancy creation — which are applied as *defined tags* to every
+# instance a pool resize launches, and the launching principal needs `use
+# tag-namespaces` on that namespace. The namespace is a tenancy-root
+# resource, so the statement cannot be granted from inside {COMPARTMENT}:
+#
+#   Allow group {GROUP} to use tag-namespaces in tenancy where target.tag-namespace.name = 'Oracle-Tags'
+#
+# This is Oracle's own "Let users manage Compute instance configurations,
+# instance pools, and cluster networks" common-policy addendum, rediscovered
+# here as a deterministic 404 NotAuthorizedOrNotFound on the resize PUT —
+# while every read succeeded — under the first least-privilege principal to
+# run the suite.

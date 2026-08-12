@@ -297,6 +297,41 @@ BOOST_AUTO_TEST_CASE(sign_request_refuses_instance_principal_and_names_the_real_
                         "the error should point at oci_federation's signer, not just fail");
 }
 
+/// The third auth mode: a caller-supplied federated security token (a UPST,
+/// as CI's GitHub-OIDC exchange produces — Requirement 14.2). What is pinned:
+/// the keyId is exactly "ST$" + token; the output is byte-identical to
+/// sign_request_with_key under the same inputs (token mode adds routing, not
+/// a second signing path that could drift); the API-key fields are NOT
+/// required — a token-mode config carrying no tenancy/user/fingerprint must
+/// sign, since CI never has those — and the one field it does need, the
+/// session key, is named when missing.
+BOOST_AUTO_TEST_CASE(a_security_token_signs_with_the_session_key_and_st_key_id) {
+    const auto pem = generate_rsa_key_pem();
+    oci_client_config cfg = make_config(pem);
+    cfg.security_token = "hdr.payload.sig";
+    cfg.tenancy_id.clear();
+    cfg.user_id.clear();
+    cfg.fingerprint.clear();
+
+    const auto headers = signing::sign_request(cfg, "GET", test_target, test_host, "", fixed_time);
+    BOOST_CHECK(headers.at("authorization").find("keyId=\"ST$hdr.payload.sig\"") !=
+                std::string::npos);
+
+    const auto direct = signing::sign_request_with_key("ST$hdr.payload.sig", pem, "", "GET",
+                                                       test_target, test_host, "", fixed_time);
+    BOOST_CHECK(headers == direct);
+
+    cfg.private_key_pem.clear();
+    bool names_the_session_key = false;
+    try {
+        (void)signing::sign_request(cfg, "GET", test_target, test_host, "", fixed_time);
+    } catch (const std::invalid_argument& e) {
+        names_the_session_key = std::string(e.what()).find("session") != std::string::npos;
+    }
+    BOOST_CHECK_MESSAGE(names_the_session_key,
+                        "missing session key should be named, not a generic failure");
+}
+
 /// A passphrase-protected key is read with its passphrase. Worth its own case
 /// because OpenSSL's default behaviour on a missing passphrase is to *prompt on
 /// the terminal*, which in a server process is a hang rather than an error —

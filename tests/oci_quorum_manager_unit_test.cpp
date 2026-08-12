@@ -228,6 +228,27 @@ BOOST_AUTO_TEST_CASE(a_missing_api_key_field_throws_when_instance_principal_is_o
     }
 }
 
+/// The security-token mode passes constructor validation without any of the
+/// API-key triple — pinned because the first WIF CI run failed exactly here:
+/// the gate demanded a tenancy_id that token mode deliberately does not
+/// have. Construction still proceeds to GetInstancePool against the mock
+/// (which does not verify signatures), so what this asserts is the gate,
+/// not the signing. The session key stays required: a token with no key to
+/// sign with is named at construction, not discovered as a 401.
+BOOST_AUTO_TEST_CASE(a_security_token_passes_validation_without_the_api_key_triple,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    auto cfg = valid_config();
+    cfg.oci.tenancy_id.clear();
+    cfg.oci.user_id.clear();
+    cfg.oci.fingerprint.clear();
+    cfg.oci.security_token = "hdr.payload.sig";
+    oci_instance_pool_quorum_manager<> mgr{cfg};
+    BOOST_CHECK_EQUAL(mgr.availability_domains().size(), 1U);
+
+    cfg.oci.private_key_pem.clear();
+    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+}
+
 /// Requirement 2.3: an unreachable or unknown pool is a construction failure,
 /// not a manager that fails later. `std::runtime_error` rather than
 /// `std::invalid_argument` distinguishes "your config is wrong" from "OCI said
