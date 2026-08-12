@@ -1,13 +1,19 @@
-# ci_full_defconfig — every optional dependency that the CI image actually
-# installs, selected (y). Every other symbol keeps its Kconfig-declared
-# default.
+# ci_full_defconfig — the feature set every non-GCP CMake-configuring CI job
+# resolves (the four Build & Test legs, Coverage, ThreadSanitizer, both
+# Full-suite legs; coap-flake-measure.yml configures without any Kconfig
+# flag, i.e. autodetect, and models the pre-#218 legs). "Full" means "every
+# optional dependency the edhoc-feature CI image actually installs" — not
+# every symbol y, and the difference is exactly what strict mode enforces.
 #
-# The list below is the complete set of `default n` bool symbols this file
-# turns on. Getting that set right matters, because a symbol that defaults n
-# and is not listed here is *off* in this configuration — which is the opposite
-# of what "full" suggests. Four symbols default n and are deliberately NOT
-# listed; each is excluded for its own reason, and none of them is an
-# oversight:
+# This file is written against `-DKYTHIRA_KCONFIG_STRICT=ON` (Requirement
+# 5.1): a symbol set y whose dependency the image cannot satisfy is a
+# configure FATAL_ERROR, so a dependency silently vanishing from the CI
+# image fails fast instead of silently shrinking the test suite. That cuts
+# both ways — a symbol enabled here that the image does NOT install would
+# break every leg — which is why the exact set below is load-bearing in both
+# directions.
+#
+# `default n` symbols deliberately NOT selected:
 #
 #   COVERAGE                — forcing it on would require Clang and
 #                             CMAKE_BUILD_TYPE=Debug project-wide, breaking the
@@ -24,18 +30,20 @@
 #   COAP_TRANSPORT_CANTCOAP   and opt-in `coap-cantcoap`; neither is installed
 #                             by any CI job.
 #
-# GCP_SDK is a related trap in the other direction: it defaults **y**, but
-# google-cloud-cpp is installed only by the dedicated GCP job
-# (--x-feature=gcp), so this defconfig under strict mode cannot pass on the
-# main legs as things stand.
+# `default y` symbols explicitly turned OFF, because the edhoc-feature image
+# does not install their dependency and under strict mode default-y would be
+# a FATAL_ERROR (each was read off a green run's configure log — "not found",
+# run 31569941823 — not inferred from vcpkg.json):
 #
-# Every CMake-configuring job in ci.yml passes -DKYTHIRA_KCONFIG= this file
-# (and installs kconfiglib so the flag takes effect — cmake/Kconfig.cmake
-# FATAL_ERRORs on an explicit flag it cannot apply), so CI and a
-# kconfiglib-equipped local machine resolve the same feature set from the
-# same command. -DKYTHIRA_KCONFIG_STRICT=ON is still not passed anywhere:
-# the GCP_SDK default-y trap above means strict mode cannot pass on the
-# main legs as things stand, per Requirement 5.1 — see doc/TODO.md.
+#   GCP_SDK, GCP_PRIVATECA  — google-cloud-cpp comes only from the opt-in
+#                             `gcp` vcpkg feature, installed only by the GCP
+#                             SDK Build job, which uses ci_gcp_defconfig (its
+#                             own reconciliation of this same trade).
+#   DNS_DISCOVERY           — libldns is in no CI image; the rfc1035/rfc2136
+#                             discovery tests have never run in CI. Turning
+#                             the symbol off records that honestly instead of
+#                             leaving it to silent autodetect degradation.
+#   POCO_DISCOVERY          — Poco DNSSD, same situation as libldns.
 CONFIG_EDHOC=y
 CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y
@@ -47,3 +55,7 @@ CONFIG_PROXYGEN_TRANSPORT=y
 # feature enabled itself off the gRPC block's Protobuf_FOUND regardless), so
 # the omission had no visible effect. Honouring the gate made it load-bearing.
 CONFIG_PROTOBUF_SERIALIZER=y
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set

@@ -222,6 +222,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
 
       - name: Check formatting
@@ -265,6 +266,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -447,7 +449,8 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG=configs/ci_gcp_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DKYTHIRA_GCP_REAL_TESTS=ON \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -629,6 +632,7 @@ jobs:
             -DENABLE_COVERAGE=ON \
             -DCMAKE_BUILD_TYPE=Debug \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
@@ -957,6 +961,7 @@ jobs:
             -DKYTHIRA_SANITIZER=thread \
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       - name: Assert ThreadSanitizer was requested
@@ -1247,6 +1252,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_DEFAULT_FUTURE_BACKEND=${{ matrix.backend }} \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
