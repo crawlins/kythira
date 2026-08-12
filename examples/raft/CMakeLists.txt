@@ -130,6 +130,28 @@ add_raft_example(http_transport_example http_transport_example.cpp)
 
 if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
     add_raft_example(beast_transport_example beast_transport_example.cpp)
+
+    # Measures the media-type negotiation retry's wire cost and what
+    # Accept-Post saves (the number the negotiation entries in doc/TODO.md
+    # recorded as unmeasured). Beast client only — the fast per-round-trip
+    # transport is the one where a saved round trip is visible — against a
+    # raw httplib JSON-only peer (raw so the no-Accept-Post arm exists; the
+    # shipped servers always advertise on 415).
+    add_raft_example(accept_post_retry_benchmark accept_post_retry_benchmark.cpp)
+    target_link_libraries(accept_post_retry_benchmark PRIVATE Boost::beast)
+    if(TARGET httplib::httplib)
+        target_link_libraries(accept_post_retry_benchmark PRIVATE httplib::httplib)
+    endif()
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(accept_post_retry_benchmark PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_link_libraries(accept_post_retry_benchmark PRIVATE atomic)
+    endif()
+    set_tests_properties(accept_post_retry_benchmark_test PROPERTIES
+        TIMEOUT 300
+        LABELS "example;raft;performance;slow"
+    )
 else()
     message(STATUS "beast_transport_example: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
 endif()
