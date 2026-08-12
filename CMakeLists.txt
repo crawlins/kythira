@@ -1427,6 +1427,13 @@ if(NOT ENABLE_COVERAGE)
         add_subdirectory(cmd/dns_discovery_node)
         add_subdirectory(cmd/dns_sd_discovery_node)
     endif()
+    # The Requirement 4.4 on-instance heartbeat process. Same gate as the
+    # OCI quorum-manager tests, because the writer header includes the
+    # manager's (tag constants, parsing helpers) — one feature, one gate.
+    if(_KYTHIRA_GATE_OCI_QUORUM_MANAGER AND TARGET OpenSSL::SSL AND TARGET httplib::httplib
+       AND KYTHIRA_FUTURE_BACKEND_AVAILABLE)
+        add_subdirectory(cmd/oci_heartbeat_writer)
+    endif()
 endif()
 # folly_FOUND, not KYTHIRA_FUTURE_BACKEND_AVAILABLE: unlike tests/ and
 # certificate_authority, every example program calls folly::init()/

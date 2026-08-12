@@ -2588,12 +2588,28 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   `kythira-ci-instance-hb` (`read`+`use instances`; deliberately not yet
   narrowed to self-only — land broad, verify on a real instance, then
   tighten, per `policies/heartbeat.txt` where all of this is recorded with
-  its reasoning). **What remains**: the pool image → Ubuntu 24.04 via a new
-  instance configuration carrying the static cloud-init (poll own freeform
-  tags for a PAR URL, fetch the writer binary, run it), the CI wiring that
-  uploads the binary and writes that tag, and the real-suite phase that
-  watches `kythira-last-heartbeat` appear and `assess_quorum` classify on
-  it. None of the existing green-path artifacts were touched.
+  its reasoning). **Same day, later: DONE end to end — the caveat is
+  closed.** The pool launches Ubuntu 24.04 with the static cloud-init
+  (`kythira-ci-config-ubuntu24-heartbeat-v3`), the oci CI job builds and
+  publishes the writer behind a PAR, and the real suite's provision case
+  writes the artifact-url tag, observes `kythira-last-heartbeat` appear,
+  and — for the first time under a non-zero `heartbeat_timeout` — has
+  `assess_quorum` classify the node live off a real on-instance heartbeat
+  written under Instance Principal. Verified by a green local suite run
+  against the live tenancy ($0.001226) and a green CI dispatch. Getting
+  there took five instrumented instance boots and found two defects
+  invisible from the mock tier: the clang CI binary's **dynamic libatomic**
+  does not exist on Canonical cloud images (fixed: static archive-first
+  link + `--as-needed`, `cmd/oci_heartbeat_writer/CMakeLists.txt`), and
+  **cloud-init 26.1 silently drops a bare non-ASCII user-data shellscript**
+  (valid UTF-8, correct `#!`, classified fine by the same version's
+  `UserDataProcessor` in isolation) while MIME-wrapped or pure-ASCII
+  content runs — the cloud-init script is now ASCII-only by hard rule, and
+  every bootstrap milestone is mirrored to the serial console, the only
+  external read on a private no-SSH subnet. Debug leftovers to prune when
+  convenient: instance configurations `kythira-ci-config-userdata-probe`,
+  `-diag2`, `-mime-diag`, `-mime-diag2`, `-ubuntu24-heartbeat` (v1), `-v2`,
+  and the bucket object `heartbeat/local-debug/`.
 - [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
   a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
 

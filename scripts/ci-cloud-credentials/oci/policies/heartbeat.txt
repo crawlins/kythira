@@ -40,8 +40,15 @@ Allow group {GROUP} to manage object-family in compartment {COMPARTMENT}
 # PAR_MANAGE, which only the manage verb carries. Scoped to the compartment,
 # which holds nothing but CI resources.
 #
-# Exercised by a least-privilege principal: NOT YET for either policy — the
-# instance-side grants have never been exercised at all (no code path has
-# run on an OCI instance yet; that is exactly what this bundle exists to
-# enable), and the group-side grant awaits the first CI run that uploads a
-# binary. Update this line when each happens, per this directory's rule.
+# Exercised by a least-privilege principal: YES for both, August 12, 2026.
+# Instance side: a pool instance running oci_heartbeat_writer_node under
+# Instance Principal performed GetInstance + UpdateInstance (the heartbeat
+# tag write) against itself — the first code from this tree ever to run on
+# an OCI instance. Group side: the kythira-ci-wif service user (via the CI
+# job's UPST) uploaded the writer binary and minted the PAR on the same
+# day's real-cloud dispatch. The bring-up chain that got there — a
+# dynamically-linked libatomic absent from the cloud image, and cloud-init
+# silently dropping non-ASCII bare user_data — is recorded in
+# heartbeat-cloud-init.sh's header and cmd/oci_heartbeat_writer/'s
+# CMakeLists; neither was a policy problem, and no policy statement here
+# needed to change from its first draft.
