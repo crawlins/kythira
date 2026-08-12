@@ -1060,7 +1060,13 @@ jobs:
       - name: Build the real-OCI suites
         run: |
           targets=""
-          [ "${BUNDLE_INSTANCE_POOL}" = "true" ] && targets="$targets oci_quorum_manager_real_test"
+          # The instance-pool bundle also builds the on-instance heartbeat
+          # binary (Requirement 4.4): it is uploaded to the artifacts bucket
+          # after the credentials step and executed ON the provisioned pool
+          # instance by its cloud-init, which makes this runner's glibc a
+          # wire-format constraint — ubuntu-24.04 here must not run ahead of
+          # the pool image's Ubuntu 24.04 (see cmd/oci_heartbeat_writer/).
+          [ "${BUNDLE_INSTANCE_POOL}" = "true" ] && targets="$targets oci_quorum_manager_real_test oci_heartbeat_writer_node"
           [ "${BUNDLE_CERTIFICATES}" = "true" ] && targets="$targets oci_certificates_provider_real_test"
           # shellcheck disable=SC2086
           cmake --build build --target $targets
@@ -1175,6 +1181,61 @@ jobs:
           } >> "$GITHUB_ENV"
           rm -f /tmp/oci-session-key.pem
           echo "UPST obtained (${#token} chars); session key exported to the suite environment."
+
+      # Requirement 4.4's artifact delivery: ship the on-instance heartbeat
+      # binary to the kythira-ci-artifacts bucket and mint a short-lived
+      # read-only pre-authenticated request URL for it. The URL reaches the
+      # instance as a freeform tag (written by the suite after provisioning),
+      # is read back through the metadata service by the static cloud-init in
+      # the pool's instance configuration, and is fetched through the VCN's
+      # service gateway — the subnet has no internet route. The same UPST the
+      # suites use authenticates the CLI here (--auth security_token, tenancy
+      # from the token's own tenant claim — the audit step's pattern).
+      #
+      # NOTE the session key: the credentials step deleted its /tmp copy, so
+      # this reads it back from the GITHUB_ENV-exported variable. The PAR
+      # itself carries no credentials — anyone with the URL can read that one
+      # object until expiry, which is the point (cloud-init has no principal
+      # yet when it runs).
+      - name: Publish heartbeat binary for the instance (Requirement 4.4)
+        if: env.BUNDLE_INSTANCE_POOL == 'true'
+        run: |
+          pip3 install --user --quiet oci-cli
+          export PATH="$HOME/.local/bin:$PATH"
+          umask 077
+          printf '%s' "$KYTHIRA_OCI_SECURITY_TOKEN" > /tmp/oci-pub-upst.token
+          printf '%s\n' "$KYTHIRA_OCI_PRIVATE_KEY_PEM" > /tmp/oci-pub-session.pem
+          payload=$(printf '%s' "$KYTHIRA_OCI_SECURITY_TOKEN" | cut -d. -f2 | tr '_-' '/+')
+          pad=$(( (4 - ${#payload} % 4) % 4 ))
+          [ $pad -gt 0 ] && payload="$payload$(printf '=%.0s' $(seq $pad))"
+          tenancy=$(printf '%s' "$payload" | base64 -d 2>/dev/null | jq -r '.tenant // empty')
+          mkdir -p ~/.oci
+          printf '%s\n' \
+            '[DEFAULT]' \
+            "region=${KYTHIRA_OCI_REGION}" \
+            "tenancy=${tenancy}" \
+            'security_token_file=/tmp/oci-pub-upst.token' \
+            'key_file=/tmp/oci-pub-session.pem' \
+            > ~/.oci/config
+
+          object="heartbeat/${GITHUB_RUN_ID}/oci_heartbeat_writer_node"
+          oci --auth security_token os object put \
+            --bucket-name kythira-ci-artifacts --name "$object" \
+            --file build/cmd/oci_heartbeat_writer/oci_heartbeat_writer_node --force
+
+          expires=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
+          access_uri=$(oci --auth security_token os preauth-request create \
+            --bucket-name kythira-ci-artifacts \
+            --name "heartbeat-${GITHUB_RUN_ID}" \
+            --access-type ObjectRead --object-name "$object" \
+            --time-expires "$expires" \
+            --query 'data."access-uri"' --raw-output)
+          rm -f /tmp/oci-pub-upst.token /tmp/oci-pub-session.pem
+          url="https://objectstorage.${KYTHIRA_OCI_REGION}.oraclecloud.com${access_uri}"
+          # The URL is a capability; mask it like the token it effectively is.
+          echo "::add-mask::$url"
+          echo "KYTHIRA_OCI_HEARTBEAT_ARTIFACT_URL=$url" >> "$GITHUB_ENV"
+          echo "heartbeat binary published; PAR expires $expires"
 
       # `|| rc=$?`, not `; rc=$?`: GitHub run steps execute under `bash -e`,
       # so a bare failing command ends the step before the rc check ever

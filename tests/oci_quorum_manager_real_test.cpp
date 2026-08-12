@@ -36,10 +36,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <ctime>
 #include <optional>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -291,6 +293,120 @@ BOOST_AUTO_TEST_CASE(provision_assess_decommission,
     BOOST_CHECK_EQUAL(health.live_node_count, 1U);
     BOOST_CHECK_EQUAL(health.total_node_count, 1U);
     BOOST_CHECK(health.unreachable_nodes.empty());
+
+    // ── Requirement 4.4, on the real instance ────────────────────────────
+    //
+    // The first time any code in this tree runs ON an OCI instance. The CI
+    // job published the heartbeat binary behind a pre-authenticated request
+    // URL (see real-cloud-tests.yml's "Publish heartbeat binary" step); the
+    // pool's instance configuration carries a static cloud-init that polls
+    // the instance's own freeform tags for that URL. This phase supplies
+    // the missing link — writes the `kythira-artifact-url` tag — then
+    // watches for what only on-instance code under Instance Principal can
+    // produce: the `kythira-last-heartbeat` tag appearing, and
+    // `assess_quorum` classifying the node live under a *non-zero*
+    // heartbeat_timeout (Requirement 5.3's heartbeat rule, which every
+    // earlier live run bypassed with timeout 0).
+    //
+    // Skips quietly when the URL is absent from the environment: a local
+    // run has no published artifact, and this phase failing there would
+    // say nothing about the code.
+    if (const char* artifact_url = std::getenv("KYTHIRA_OCI_HEARTBEAT_ARTIFACT_URL");
+        artifact_url != nullptr && *artifact_url != '\0') {
+        std::cerr << "[oci-real] heartbeat phase: artifact URL present, tagging instance\n";
+        kythira::oci_http_client http{manager_cfg.oci};
+
+        // The instance OCID, from the pool listing by node-id tag — the same
+        // route price_from_live_instance takes, because the manager's own
+        // lookup is deliberately not part of its public surface.
+        std::string instance_id;
+        {
+            const auto listed =
+                http.request("iaas", "GET",
+                             "/20160918/instancePools/" + manager_cfg.instance_pool_id +
+                                 "/instances?compartmentId=" + manager_cfg.compartment_id);
+            const auto* arr = listed.if_array();
+            BOOST_REQUIRE(arr != nullptr);
+            for (const auto& summary : *arr) {
+                const auto id = kythira::oci_detail::json_string(summary, "id");
+                if (id.empty()) {
+                    continue;
+                }
+                const auto inst = http.request("iaas", "GET", "/20160918/instances/" + id);
+                const auto tags = kythira::oci_detail::freeform_tags_of(inst);
+                const auto node_tag = tags.find("kythira-node-id");
+                if (node_tag != tags.end() && node_tag->second == std::to_string(peer.node_id)) {
+                    instance_id = id;
+                    break;
+                }
+            }
+        }
+        BOOST_REQUIRE_MESSAGE(!instance_id.empty(),
+                              "could not resolve the provisioned node's instance OCID");
+
+        // Requirement 4.2's read-merge-write, same as every tag write.
+        {
+            const auto inst = http.request("iaas", "GET", "/20160918/instances/" + instance_id);
+            auto tags = kythira::oci_detail::freeform_tags_of(inst);
+            tags["kythira-artifact-url"] = artifact_url;
+            boost::json::object merged;
+            for (const auto& [key, value] : tags) {
+                merged[key] = value;
+            }
+            boost::json::object update;
+            update["freeformTags"] = std::move(merged);
+            (void)http.request("iaas", "PUT", "/20160918/instances/" + instance_id,
+                               boost::json::serialize(update));
+        }
+
+        // Now the instance does the rest: cloud-init sees the tag, fetches
+        // the binary through the service gateway, and the writer stamps
+        // kythira-last-heartbeat under Instance Principal. Budget: the
+        // cloud-init poller runs from boot with a ~10 minute window and the
+        // instance has been up for the provisioning poll's duration already;
+        // seven minutes here is generous without being open-ended.
+        std::string beat_value;
+        const auto beat_deadline = std::chrono::steady_clock::now() + std::chrono::minutes{7};
+        while (std::chrono::steady_clock::now() < beat_deadline) {
+            const auto inst = http.request("iaas", "GET", "/20160918/instances/" + instance_id);
+            const auto tags = kythira::oci_detail::freeform_tags_of(inst);
+            if (const auto beat = tags.find("kythira-last-heartbeat"); beat != tags.end()) {
+                beat_value = beat->second;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds{10});
+        }
+        BOOST_REQUIRE_MESSAGE(!beat_value.empty(),
+                              "kythira-last-heartbeat never appeared — check "
+                              "/var/log/kythira-heartbeat-bootstrap.log semantics via the "
+                              "instance console history");
+        std::cerr << "[oci-real] on-instance heartbeat observed: " << beat_value << "\n";
+
+        // The value is a decimal Unix timestamp near now. ±5 minutes absorbs
+        // instance/runner clock skew without accepting a stale stamp.
+        const auto beat_time = static_cast<std::time_t>(std::stoll(beat_value));
+        const auto now = std::time(nullptr);
+        BOOST_CHECK_MESSAGE(std::llabs(static_cast<long long>(now - beat_time)) < 300,
+                            "heartbeat timestamp " << beat_time << " is not near now " << now);
+
+        // Requirement 5.3's heartbeat rule against a real, on-instance
+        // writer: a second manager with a non-zero heartbeat_timeout must
+        // classify the node live — and would classify it stale if the tag
+        // were absent or old, which is what every heartbeat_timeout=0 run
+        // structurally could not check.
+        auto beat_cfg = manager_cfg;
+        beat_cfg.heartbeat_timeout = std::chrono::seconds{60};
+        kythira::oci_instance_pool_quorum_manager<> beat_manager{beat_cfg};
+        auto beat_health = std::move(beat_manager.assess_quorum(cluster)).get();
+        BOOST_CHECK_EQUAL(beat_health.live_node_count, 1U);
+        BOOST_CHECK_MESSAGE(beat_health.unreachable_nodes.empty(),
+                            "node classified unreachable under heartbeat_timeout=60s despite a "
+                            "fresh on-instance heartbeat");
+        std::cerr << "[oci-real] assess_quorum(heartbeat_timeout=60s) classifies the node live\n";
+    } else {
+        std::cerr << "[oci-real] heartbeat phase skipped: KYTHIRA_OCI_HEARTBEAT_ARTIFACT_URL "
+                     "not set (expected outside the CI pipeline)\n";
+    }
 
     // Decommission here rather than leaving it to teardown, so the *test*
     // asserts it worked. Teardown still runs and is idempotent.
