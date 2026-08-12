@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
 
 // Network includes for server binding
 #ifdef LIBCOAP_AVAILABLE
@@ -2320,6 +2323,21 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
 
     try {
 #ifdef LIBCOAP_AVAILABLE
+        // Send-path breakdown probe (KYTHIRA_COAP_SEND_PROBE=1): the
+        // concurrent-processing stall investigation measured its entire
+        // multi-second budget inside one send_rpc() call (run 31457419633:
+        // send_ms median 19,881, max 372,109, on an idle box), and this
+        // function's synchronous body has exactly five places that much time
+        // could hide: the _mutex acquisition below (which contends with
+        // _io_thread holding the same mutex around a 20ms-blocking
+        // coap_io_process() ~100% of wall time -- the yield() in that loop
+        // was an earlier round of exactly this starvation), address
+        // resolution, session acquisition, PDU construction, and coap_send()
+        // itself (the retransmission theory). One line per send splits them.
+        // Timestamps are always captured (five steady_clock reads, ~ns each);
+        // only the emit is gated.
+        static const bool send_probe_enabled = std::getenv("KYTHIRA_COAP_SEND_PROBE") != nullptr;
+        const auto probe_entered = std::chrono::steady_clock::now();
         // Serializes every libcoap call this function makes (session
         // creation, coap_send) against _io_thread's own coap_io_process()
         // calls on the same _coap_context -- libcoap's C API is not safe to
@@ -2327,6 +2345,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         // recursive so this nests safely with get_or_create_session()'s/
         // create_new_session()'s own inner locks below.
         std::lock_guard lock(_mutex);
+        const auto probe_locked = std::chrono::steady_clock::now();
         // Real libcoap implementation
         // Get endpoint URI for target node
         auto endpoint_uri = get_endpoint_uri(target);
@@ -2353,6 +2372,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         }
         coap_address_t dst_addr = addr_info->addr;
         coap_free_address_info(addr_info);
+        const auto probe_resolved = std::chrono::steady_clock::now();
 
         // Create or reuse session with proper session management
         coap_session_t* session = nullptr;
@@ -2361,6 +2381,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         } else {
             session = create_new_session(&dst_addr, &uri);
         }
+        const auto probe_session = std::chrono::steady_clock::now();
 
         if (!session) {
             _metrics.add_dimension("error_type", "coap_session_creation_errors");
@@ -2601,7 +2622,27 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         }
 
         // Send the PDU
+        const auto probe_pdu_built = std::chrono::steady_clock::now();
         coap_mid_t mid = coap_send(session, pdu);
+        const auto probe_sent = std::chrono::steady_clock::now();
+        if (send_probe_enabled) {
+            const auto ms = [](auto from, auto to) {
+                return std::to_string(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count());
+            };
+            // The same "[stall-probe]" prefix and stream the concurrent-
+            // processing test's own probe lines use, so the two interleave
+            // in one log and a test-side send_ms line can be decomposed by
+            // matching on the token.
+            std::cout << ("[stall-probe] send_rpc token=" + token +
+                          " target=" + std::to_string(target) +
+                          " lock_wait_ms=" + ms(probe_entered, probe_locked) +
+                          " resolve_ms=" + ms(probe_locked, probe_resolved) +
+                          " session_ms=" + ms(probe_resolved, probe_session) +
+                          " encode_pdu_ms=" + ms(probe_session, probe_pdu_built) +
+                          " coap_send_ms=" + ms(probe_pdu_built, probe_sent) + "\n")
+                      << std::flush;
+        }
         if (mid == COAP_INVALID_MID) {
             // Remove from pending requests
             {

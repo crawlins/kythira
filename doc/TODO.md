@@ -1511,6 +1511,51 @@ unverified completion claim.
   - Do **not** simply raise the timeout. That is the fifth iteration of the
     cycle documented in the sweep above, and it has never removed a failure.
 
+  **August 11 (run 31457419633, g++-13 x64): the CI reading arrived, and it
+  is the body's send.** 30 samples across three attempts: `acquire_ms=0
+  release_ms=0 gap_ms=0` in **all** samples, 1-minute loadavg 0.00–0.08
+  throughout, and `send_ms` min=40 / median=19,881 / **max=372,109**. Lock
+  contention on the slot, scheduler starvation and CPU load are all ruled
+  out; the entire stall is inside a single `send_request_vote` call on an
+  idle machine. (The interleaved "resource exhaustion" warnings counting
+  0,1,2,…,11 with connection count are the test exercising the handler —
+  expected, not a finding.)
+
+  **Same day: the send split one level finer, and the first reading names
+  the step.** `send_rpc()` in `coap_transport_impl.hpp` now carries its own
+  probe (enabled by `KYTHIRA_COAP_SEND_PROBE=1`, which this test sets),
+  emitting one `[stall-probe] send_rpc token=… lock_wait_ms=… resolve_ms=…
+  session_ms=… encode_pdu_ms=… coap_send_ms=…` line per send — the five
+  places a synchronous stall could hide. First local run (4 cores, idle):
+
+  ```
+  lock_wait_ms=1186 resolve_ms=0 session_ms=0 encode_pdu_ms=0 coap_send_ms=0
+  lock_wait_ms=298  …all others 0…
+  lock_wait_ms=3586 …all others 0…
+  ```
+
+  **Every millisecond is `lock_wait_ms` — the client-wide `_mutex`, not the
+  socket.** Which fits the structure exactly: the client's `_io_thread` holds
+  that same mutex around a 20ms-*blocking* `coap_io_process()` call in a
+  tight loop, so the lock is held for ~100% of wall time and a sender can
+  only win it in the instant between unlock and relock. The `yield()` in
+  that loop was an earlier round of exactly this starvation ("observed
+  directly as multi-second per-call delays under concurrent load" — its own
+  comment), and it narrowed the window without closing it: a non-fair mutex
+  plus a ~100%-duty-cycle holder produces a geometric waiting-time tail,
+  which is precisely the observed shape (min 40ms, median 20s, max 372s on
+  CI; 35ms–3.6s locally on the very first instrumented run). The
+  retransmission theory is dead — `coap_send_ms=0` in every sample.
+
+  **The fix this points at** (not yet made): stop holding `_mutex` across
+  the *blocking* part of the io pump — e.g. `coap_io_process(ctx,
+  COAP_IO_NO_WAIT)` under the lock, with the pacing sleep *outside* it, so
+  the lock is held for microseconds per iteration instead of the full 20ms
+  window. Do it as its own change, measured before/after with
+  `coap-flake-measure` per this file's own rule — and CI confirmation that
+  `lock_wait_ms` carries the minutes there too should come first (the
+  breakdown probe is in the tree for exactly that run).
+
   Related but distinct: the backoff-tolerance flakes fixed in
   [#194](https://github.com/crawlins/kythira/pull/194) were percentage bounds
   too tight for scheduler jitter (`error_handler_async_retry_property_test`,

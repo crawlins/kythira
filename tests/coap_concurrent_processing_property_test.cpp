@@ -18,6 +18,7 @@
 #include "coap_test_support.hpp"
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -144,6 +145,18 @@ BOOST_AUTO_TEST_SUITE(coap_concurrent_processing_property_tests)
  */
 BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(180))) {
+    // Turn on the transport's own send-path breakdown probe (see send_rpc()
+    // in coap_transport_impl.hpp) before any client exists: the probe's
+    // enable flag is latched on first use. The run-31457419633 reading put
+    // this case's entire stall inside one send_rpc() call (send_ms up to
+    // 372s on an idle box); the per-send "[stall-probe] send_rpc" lines this
+    // enables split that interval at the five places it could hide — most
+    // importantly the client-wide _mutex acquisition, which the io thread
+    // holds around a 20ms-blocking coap_io_process() for ~100% of wall
+    // time, and which the earlier acquire_ms/release_ms probes could not
+    // see (they bracket the concurrency *slot*, not the libcoap mutex).
+    setenv("KYTHIRA_COAP_SEND_PROBE", "1", 1);
+
     // Create CoAP client and server configurations with concurrent processing enabled
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
