@@ -1168,6 +1168,13 @@ jobs:
             exit 1
           fi
           echo "::add-mask::$token"
+          # Mask the session key line by line: values appended to GITHUB_ENV
+          # are NOT auto-masked the way `secrets` are, and every later step
+          # that declares this env var gets it echoed verbatim into the log's
+          # env dump. add-mask only takes single-line values, hence per-line.
+          while IFS= read -r keyline; do
+            [ -n "$keyline" ] && echo "::add-mask::$keyline"
+          done < /tmp/oci-session-key.pem
 
           {
             echo "KYTHIRA_OCI_SECURITY_TOKEN=$token"
