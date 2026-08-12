@@ -2482,6 +2482,24 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   is implemented (`oci_federation.hpp`), verified against the go-sdk
   contract and a cryptographic mock tier; its one remaining caveat is that
   no code path has yet run *on* an OCI instance.
+  **Requirement 4.4's node-side half now exists in code**:
+  `oci_heartbeat_writer` (`include/raft/oci_heartbeat_writer.hpp`) stamps
+  `kythira-last-heartbeat` via the Requirement 4.2 read-merge-write cycle,
+  discovers its own OCID from the metadata service, and is mock-verified
+  (`oci_heartbeat_writer_unit_test`, ports 18325/18326). Running it under
+  real Instance Principal on a pool instance — which would also close the
+  caveat above — is blocked on tenancy prerequisites, all verified absent
+  on August 12, 2026: the CI subnet's route table is **empty** (no service
+  gateway, so no on-instance code can reach the OCI API at all), the pool
+  image is Oracle Linux 9 (glibc 2.34 — a CI-built Ubuntu 24.04 binary
+  will not run on it), and there is no artifact channel or
+  instance-principal Dynamic Group/policy. The worked plan: service
+  gateway + route rule (free, subnet stays private), an artifacts bucket
+  CI can write (binary delivered by pre-authenticated request URL, handed
+  to the instance through a freeform tag the static cloud-init script
+  polls the metadata service for), a DG matching compartment instances
+  with read+use on instances, and the pool switched to an Ubuntu 24.04
+  image via a new instance configuration.
 - [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
   a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
 
