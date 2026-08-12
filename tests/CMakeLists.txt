@@ -2417,6 +2417,40 @@ else()
     message(STATUS "oci_http_client_unit_test: skipped (requires OpenSSL and httplib)")
 endif()
 
+# OCI Instance Principal federation tests (Requirement 1.6)
+#
+# Same dependency set as the http client's: the signer is OpenSSL + httplib +
+# Boost.JSON, and the tests stand up a local server playing both the instance
+# metadata service and the Auth service — including the `Bearer Oracle`
+# enforcement the real v2 metadata service does, so a client that forgot the
+# header fails here rather than only on a real instance.
+if(TARGET OpenSSL::SSL AND TARGET httplib::httplib AND KYTHIRA_OCI_SHARED)
+    add_executable(oci_federation_unit_test oci_federation_unit_test.cpp)
+    target_link_libraries(oci_federation_unit_test PRIVATE
+        Boost::unit_test_framework
+        httplib::httplib
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+        target_link_libraries(oci_federation_unit_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+    elseif(TARGET Boost::json)
+        target_link_libraries(oci_federation_unit_test PRIVATE Boost::json)
+    endif()
+    target_include_directories(oci_federation_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(oci_federation_unit_test PRIVATE cxx_std_23)
+    add_test(NAME oci_federation_unit_test COMMAND oci_federation_unit_test)
+    set_tests_properties(oci_federation_unit_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;oci;cloud;http"
+    )
+elseif(NOT KYTHIRA_OCI_SHARED)
+    message(STATUS "oci_federation_unit_test: skipped (OCI support disabled by Kconfig)")
+else()
+    message(STATUS "oci_federation_unit_test: skipped (requires OpenSSL and httplib)")
+endif()
+
 # ── OCI provider tests (oci-cloud-provider spec, Tasks 4-5) ───────────────────
 #
 # Three targets, gated on their own Kconfig flag rather than on KYTHIRA_OCI_SHARED:

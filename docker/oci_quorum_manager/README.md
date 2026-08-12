@@ -127,37 +127,37 @@ Allow group kythira-operators to read certificate-authority-family in compartmen
 
 ## 4. Choosing between API-key and Instance Principal auth
 
-**Use API-key auth today.** Instance Principal is defined in the config
-surface (`oci_client_config::use_instance_principal`) but is **not
-implemented**: setting it makes every signing attempt throw a named error.
+Both are implemented. The decision is about *where the process runs*:
 
-The stub throws rather than silently falling back to the API-key path, which
-would authenticate as the wrong principal — an authorization decision made by
-accident.
+- **On an OCI instance** — set `use_instance_principal = true` and leave the
+  four API-key fields empty. The signer
+  (`oci_federation::instance_principal_signer`) reads the instance identity
+  from the local metadata service, exchanges it for a federated security
+  token at the Auth service, and signs with an ephemeral session key under
+  `keyId = "ST$" + token` — requests are never signed with the instance
+  certificate itself (`spike-notes.md` Finding 16). The instance must be
+  matched by a Dynamic Group with a policy granting what the process does;
+  the statements above work with `dynamic-group` in place of `group`. One
+  honest caveat: this path is verified against the go-sdk's contract and a
+  cryptographic mock tier, but has not yet run on a real instance — prove it
+  in your tenancy before trusting it in anger.
+- **Anywhere else** (your laptop, CI, a non-OCI host) — API-key auth: a
+  dedicated IAM user holding only the policy above. Setting
+  `use_instance_principal` off-instance fails loudly at the metadata fetch,
+  not silently — there is no fallback to the API-key path, which would
+  authenticate as the wrong principal.
 
-**The contract is now known** (`spike-notes.md` Finding 16, Task 0(b) closed),
-so this is unimplemented rather than unknown. It is also a bigger job than it
-first looked: requests are not signed with the instance certificate at all.
-The cert, key and intermediate come from `http://169.254.169.254/opc/v2`, an
-ephemeral session key pair is generated locally, the leaf certificate is
-exchanged for a security token at the Auth service's X.509 federation
-endpoint, and ordinary requests are then signed with the *session* key and
-`keyId = "ST$" + token`.
+Rotation still favours API keys held as config: the key is read from
+`oci_client_config::private_key_pem` as a string, so a rotation is a config
+reload, not a restart. Instance Principal removes the rotation question
+entirely — the token renews itself (five minutes before its own expiry) and
+the session key is regenerated with every renewal.
 
-So, until that is closed:
-
-- **Control-plane processes** (whatever calls `maintain_quorum`) use an API
-  key belonging to a dedicated IAM user, with the policy above and nothing
-  else. Rotate it on whatever schedule your tenancy mandates; the key is read
-  from `oci_client_config::private_key_pem` as a string, so a rotation is a
-  config reload, not a restart.
-- **The nodes themselves** write their own `kythira-last-heartbeat` tag.
-  Requirement 4.4 has that done by the kythira process from inside the
-  instance, which is exactly the case Instance Principal exists for. Until it
-  lands, either give the node image its own scoped API key, or run with
-  `OCI_HEARTBEAT_TIMEOUT_SECONDS=0` and accept `lifecycleState`-only
-  liveness — which detects a stopped or terminated VM but not a wedged
-  kythira process on a healthy one.
+**The nodes themselves** can now write their own `kythira-last-heartbeat`
+tag the way Requirement 4.4 intends: the kythira process on the instance
+uses Instance Principal, which is exactly the case it exists for. The
+`OCI_HEARTBEAT_TIMEOUT_SECONDS=0` / `lifecycleState`-only fallback remains
+available where you would rather not grant nodes tag-write permission.
 
 ## 5. Certificate Authority
 

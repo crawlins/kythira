@@ -216,6 +216,18 @@ The canonical string is unchanged — that much the original draft had right.
 client, not a credential swap, and Task 0(b) is no longer a blocker on
 implementing Requirement 1.6.
 
+**Implemented** as `oci_federation::instance_principal_signer` in
+`include/raft/oci_federation.hpp` — its own header rather than
+`oci_signing.hpp`, because federation needs HTTP and JSON while signing stays
+pure OpenSSL-over-strings. `oci_http_client` selects it automatically when
+`use_instance_principal` is set; `oci_signing::sign_request` remains the
+API-key path only and refuses the flag loudly. The wire details beyond the
+flow above (the `Bearer Oracle` metadata header, the no-`host` signed set for
+the exchange, the lowercase colon-separated SHA-256 fingerprint, the
+five-minute expiry buffer, per-renewal session-key regeneration) are in
+Finding 16's addendum, confirmed against the go-sdk source and the mock tier
+but not yet against a real instance.
+
 ## Components and Interfaces
 
 ### 1. `include/raft/oci_signing.hpp`
@@ -241,27 +253,35 @@ namespace kythira::oci_signing {
                                 const std::string& body)
     -> std::map<std::string, std::string>;
 
-// Instance Principal support: fetches/caches/refreshes the short-lived
-// signing certificate from the local instance metadata service. Only
-// exercised when cfg.use_instance_principal is true.
-class instance_principal_signer {
-public:
-    [[nodiscard]] auto current_key_and_cert() -> std::pair<std::string, std::string>;
-private:
-    std::string _cached_key_pem;
-    std::string _cached_cert_pem;
-    std::chrono::system_clock::time_point _expiry;
-};
+// The shared core both auth modes reduce to: an explicit keyId plus the
+// key that signs. API-key passes {tenancy}/{user}/{fingerprint}; Instance
+// Principal passes "ST$" + token with the ephemeral session key.
+[[nodiscard]] auto sign_request_with_key(std::string_view key_id,
+                                         const std::string& private_key_pem,
+                                         const std::string& passphrase,
+                                         std::string_view method,
+                                         std::string_view request_target,
+                                         std::string_view host,
+                                         const std::string& body)
+    -> std::map<std::string, std::string>;
 
 }  // namespace kythira::oci_signing
 ```
 
+Instance Principal support lives in `include/raft/oci_federation.hpp`
+(`oci_federation::instance_principal_signer`), not here — an earlier draft
+of this section sketched it as a certificate cache inside `oci_signing`,
+which is the pre-Finding-16 misunderstanding (requests are never signed
+with the instance certificate). The real signer is a federation client: it
+holds the cached security token and session key behind a mutex, and
+`oci_http_client` routes to it when `use_instance_principal` is set.
+
 `sign_request` is pure and side-effect-free for the API-key path, making it
 directly unit-testable against golden fixed inputs (Requirement 13.3) the
 same way `acme_jws.hpp`'s JWS construction is unit-tested against known
-vectors. `instance_principal_signer` is the one stateful piece (it caches a
-short-lived credential), isolated into its own small class so the pure
-signing logic stays trivially testable independent of it.
+vectors. The stateful piece — `oci_federation::instance_principal_signer`'s
+token cache — lives in its own header entirely, so the pure signing logic
+stays trivially testable independent of it.
 
 ### 2. `include/raft/oci_http_client.hpp`
 

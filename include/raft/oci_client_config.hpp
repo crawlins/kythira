@@ -56,13 +56,19 @@ struct oci_client_config {
     /// Passphrase for @ref private_key_pem. Empty means the key is unencrypted.
     std::string private_key_passphrase;
 
-    /// Sign with an Instance Principal certificate obtained from the local
-    /// instance metadata service instead of the API-key fields above.
+    /// Authenticate as the instance this process runs on, instead of with the
+    /// API-key fields above (Requirement 1.6).
     ///
-    /// **Not yet implemented** — `oci_signing::instance_principal_signer`
-    /// throws. The metadata-service and federation contract is now confirmed
-    /// (`.kiro/specs/oci-cloud-provider/spike-notes.md` Finding 16); what is
-    /// missing is the federation client itself, not the knowledge to write it.
+    /// Implemented by `oci_federation::instance_principal_signer`
+    /// (`include/raft/oci_federation.hpp`), which `oci_http_client` selects
+    /// automatically: it reads the instance identity from the local metadata
+    /// service, exchanges it for a federated security token at the Auth
+    /// service, and signs API calls with an ephemeral session key under
+    /// `keyId = "ST$" + token` (`spike-notes.md` Finding 16). Only meaningful
+    /// on an OCI compute instance — anywhere else the metadata fetch fails,
+    /// loudly. @ref region should still be set (it spares the signer a
+    /// metadata round-trip and the legacy short-code mapping); the four
+    /// API-key fields are ignored.
     bool use_instance_principal{false};
 
     /// When non-empty, overrides the derived service endpoint host. Points the

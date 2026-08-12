@@ -241,55 +241,28 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
     return out.str();
 }
 
-/// @brief Sign a request, returning every header the caller must add.
+/// @brief Sign a request with an explicit key and `keyId` — the shared core
+///        of the API-key path and the Instance Principal session-token path.
 ///
-/// @param cfg            Auth material. Validated here, not in the config type.
-/// @param method         HTTP method; case-insensitive, lowercased for the
-///                       `(request-target)` pseudo-header.
-/// @param request_target Path *and query* exactly as it will go on the wire.
-///                       Signed verbatim: this is a signature over the bytes,
-///                       so a caller that signs a decoded path and sends an
-///                       encoded one gets a 401.
-/// @param host           The `Host` header value the request will carry.
-/// @param body           Request body; empty selects the three-header form.
-/// @param when           Timestamp for the `date` header, injectable so a test
-///                       can pin a signature. Defaults to now.
-///
-/// @throws std::invalid_argument when @p cfg lacks a field the selected auth
-///         mode requires (Requirement 1.5).
-/// @throws std::runtime_error when `use_instance_principal` is set — see
-///         @ref instance_principal_signer.
-[[nodiscard]] inline auto sign_request(const oci_client_config& cfg, std::string_view method,
-                                       std::string_view request_target, std::string_view host,
-                                       const std::string& body,
-                                       std::time_t when = std::time(nullptr))
-    -> std::map<std::string, std::string> {
-    if (cfg.use_instance_principal) {
-        throw std::runtime_error(
-            "oci_signing: Instance Principal signing is not yet implemented — the "
-            "contract is known (see .kiro/specs/oci-cloud-provider/spike-notes.md "
-            "Finding 16); the federation client has simply not been written");
-    }
-
-    // Named individually rather than as "credentials are incomplete", because
-    // the whole failure mode here is a config with one field left blank.
-    const auto require = [](const std::string& value, const char* field) {
-        if (value.empty()) {
-            throw std::invalid_argument(std::string("oci_signing: ") + field +
-                                        " is required when use_instance_principal is false");
-        }
-    };
-    require(cfg.tenancy_id, "tenancy_id");
-    require(cfg.user_id, "user_id");
-    require(cfg.fingerprint, "fingerprint");
-    require(cfg.private_key_pem, "private_key_pem");
-
+/// The two auth modes differ *only* here: which private key signs and what
+/// the `keyId` says. API-key signing passes
+/// `{tenancy}/{user}/{fingerprint}`; Instance Principal passes
+/// `"ST$" + token` with the ephemeral session key
+/// (`oci_federation::instance_principal_signer` owns that flow). The
+/// canonical string, the signed set and the header shapes are identical —
+/// confirmed by Task 0(b), and the reason this is one function rather than
+/// two near-copies that could drift.
+[[nodiscard]] inline auto sign_request_with_key(
+    std::string_view key_id, const std::string& private_key_pem,
+    const std::string& private_key_passphrase, std::string_view method,
+    std::string_view request_target, std::string_view host, const std::string& body,
+    std::time_t when = std::time(nullptr)) -> std::map<std::string, std::string> {
     const bool has_body = !body.empty();
     const std::string date_header = detail::rfc1123_now(when);
     const std::string signing_string =
         build_signing_string(method, request_target, host, body, date_header);
 
-    auto key = detail::load_private_key(cfg.private_key_pem, cfg.private_key_passphrase);
+    auto key = detail::load_private_key(private_key_pem, private_key_passphrase);
     const std::string signature = detail::rsa_sha256_sign(key.get(), signing_string);
 
     std::ostringstream headers_list;
@@ -305,8 +278,7 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
     std::ostringstream authorization;
     authorization << "Signature version=\"1\","
                   << "headers=\"" << headers_list.str() << "\","
-                  << "keyId=\"" << cfg.tenancy_id << "/" << cfg.user_id << "/" << cfg.fingerprint
-                  << "\","
+                  << "keyId=\"" << key_id << "\","
                   << "algorithm=\"rsa-sha256\","
                   << "signature=\"" << signature << "\"";
 
@@ -321,41 +293,56 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
     return out;
 }
 
-/// @brief Instance Principal signing — **not yet implemented**.
+/// @brief Sign a request with API-key credentials, returning every header the
+///        caller must add.
 ///
-/// Kept as a named type rather than left out entirely so the call sites and the
-/// config flag that select it exist and compile, and so the reason it throws is
-/// attached to the thing that throws rather than living only in a spec.
+/// @param cfg            Auth material. Validated here, not in the config type.
+/// @param method         HTTP method; case-insensitive, lowercased for the
+///                       `(request-target)` pseudo-header.
+/// @param request_target Path *and query* exactly as it will go on the wire.
+///                       Signed verbatim: this is a signature over the bytes,
+///                       so a caller that signs a decoded path and sends an
+///                       encoded one gets a 401.
+/// @param host           The `Host` header value the request will carry.
+/// @param body           Request body; empty selects the three-header form.
+/// @param when           Timestamp for the `date` header, injectable so a test
+///                       can pin a signature. Defaults to now.
 ///
-/// **The contract is now known** (`spike-notes.md` Finding 16, Task 0(b) —
-/// closed) and it is larger than this stub's original note assumed. Requests
-/// are *not* signed with the instance certificate at all:
-///
-///   1. Read `/instance/region`, `/identity/cert.pem`, `/identity/key.pem` and
-///      `/identity/intermediate.pem` from `http://169.254.169.254/opc/v2`
-///      (overridable via `OCI_METADATA_BASE_URL`).
-///   2. Generate an ephemeral **session key pair**.
-///   3. Exchange the leaf certificate for a security token at the Auth
-///      service's X.509 federation endpoint, signing that exchange with
-///      `keyId = "{tenancy}/fed-x509-sha256/{fingerprint}"`.
-///   4. Sign ordinary requests with the **session** key and
-///      `keyId = "ST$" + token`, renewing when the token stops being valid.
-///
-/// So what lands here is a federation client and a second keyId scheme, not
-/// "the credential fetch and its refresh" as originally supposed. The
-/// canonical string is unchanged — that part was right. This remains a stub
-/// because the work has not been done, **not** because anything is unknown.
-class instance_principal_signer {
-public:
-    [[noreturn]] static auto sign(const oci_client_config& /*cfg*/, std::string_view /*method*/,
-                                  std::string_view /*request_target*/, std::string_view /*host*/,
-                                  const std::string& /*body*/)
-        -> std::map<std::string, std::string> {
+/// @throws std::invalid_argument when @p cfg lacks a field the selected auth
+///         mode requires (Requirement 1.5).
+/// @throws std::runtime_error when `use_instance_principal` is set — that
+///         mode is stateful (a cached federation token) and cannot live
+///         behind a pure function; `oci_http_client` routes it to
+///         `oci_federation::instance_principal_signer` instead of here.
+[[nodiscard]] inline auto sign_request(const oci_client_config& cfg, std::string_view method,
+                                       std::string_view request_target, std::string_view host,
+                                       const std::string& body,
+                                       std::time_t when = std::time(nullptr))
+    -> std::map<std::string, std::string> {
+    if (cfg.use_instance_principal) {
         throw std::runtime_error(
-            "oci_signing: Instance Principal signing is not yet implemented — the "
-            "contract is known (see .kiro/specs/oci-cloud-provider/spike-notes.md "
-            "Finding 16); the federation client has simply not been written");
+            "oci_signing: sign_request only implements API-key signing — Instance "
+            "Principal auth is stateful and lives in oci_federation::"
+            "instance_principal_signer (include/raft/oci_federation.hpp), which "
+            "oci_http_client selects automatically when use_instance_principal is set");
     }
-};
+
+    // Named individually rather than as "credentials are incomplete", because
+    // the whole failure mode here is a config with one field left blank.
+    const auto require = [](const std::string& value, const char* field) {
+        if (value.empty()) {
+            throw std::invalid_argument(std::string("oci_signing: ") + field +
+                                        " is required when use_instance_principal is false");
+        }
+    };
+    require(cfg.tenancy_id, "tenancy_id");
+    require(cfg.user_id, "user_id");
+    require(cfg.fingerprint, "fingerprint");
+    require(cfg.private_key_pem, "private_key_pem");
+
+    return sign_request_with_key(cfg.tenancy_id + "/" + cfg.user_id + "/" + cfg.fingerprint,
+                                 cfg.private_key_pem, cfg.private_key_passphrase, method,
+                                 request_target, host, body, when);
+}
 
 }  // namespace kythira::oci_signing
