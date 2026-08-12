@@ -98,7 +98,20 @@ unambiguous at a glance.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| `oci-cloud-provider` | 0/8 | Task 0 spike only (`spike-notes.md`); `oci_instance_pool_quorum_manager`/`oci_certificates_provider` |
+| _(none)_ | | |
+
+`oci-cloud-provider` came **off** this table on August 12, 2026 — the fifth
+spec caught by the drift pattern this table documents below, and the most
+extreme case: the row still read "0/8, Task 0 spike only" while its own
+`tasks.md` reads 8/8 with every task not merely implemented but
+**live-verified** — both real-OCI suites green against a real tenancy, the
+`oci` CI job running keyless under Workload Identity Federation (first green
+run 31564877239, August 12), and the same day's Requirement 4.4 close-out
+putting the first code from this tree onto a real OCI instance (PR #229;
+see the Cloud Provider Support section's OCI bullet for the full account).
+`include/raft/oci_instance_pool_quorum_manager.hpp`,
+`oci_certificates_provider.hpp`, the mock tier, and nine `oci_*` test
+binaries all exist in-tree.
 
 `protobuf-rpc-serializer` came **off** this table on August 4, 2026 — it was
 listed here as "0/44 design-only" long after it had actually shipped. Its
@@ -2585,10 +2598,13 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   private, OCI services reachable), bucket `kythira-ci-artifacts` + policy
   for the CI group (`manage object-family` — PAR creation needs the manage
   verb), and dynamic group `kythira-ci-instance-dg` + policy
-  `kythira-ci-instance-hb` (`read`+`use instances`; deliberately not yet
-  narrowed to self-only — land broad, verify on a real instance, then
-  tighten, per `policies/heartbeat.txt` where all of this is recorded with
-  its reasoning). **Same day, later: DONE end to end — the caveat is
+  `kythira-ci-instance-hb` (`read`+`use instances`; the planned self-only
+  narrowing was attempted after the on-instance verification and **backed
+  out the same hour** — the `where request.principal.id =
+  target.instance.id` clause broke the CI group's bucket upload
+  cross-principal while compute calls kept working; the broad grant is
+  now deliberate and permanent-until-Oracle-fixes-it, with the evidence
+  and a re-attempt checklist in `policies/heartbeat.txt`). **Same day, later: DONE end to end — the caveat is
   closed.** The pool launches Ubuntu 24.04 with the static cloud-init
   (`kythira-ci-config-ubuntu24-heartbeat-v3`), the oci CI job builds and
   publishes the writer behind a PAR, and the real suite's provision case
@@ -2608,8 +2624,8 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   every bootstrap milestone is mirrored to the serial console, the only
   external read on a private no-SSH subnet. Debug leftovers to prune when
   convenient: instance configurations `kythira-ci-config-userdata-probe`,
-  `-diag2`, `-mime-diag`, `-mime-diag2`, `-ubuntu24-heartbeat` (v1), `-v2`,
-  and the bucket object `heartbeat/local-debug/`.
+  `-diag2`, `-mime-diag`, `-mime-diag2`, `-ubuntu24-heartbeat` (v1), `-v2`
+  (the bucket object `heartbeat/local-debug/` is already deleted).
 - [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
   a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
 
