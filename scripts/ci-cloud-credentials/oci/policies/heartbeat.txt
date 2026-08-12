@@ -28,11 +28,33 @@ Allow dynamic-group kythira-ci-instance-dg to use instances in compartment {COMP
 # verb-family trap instance-pool.txt documents: reads pass without it and the
 # failure is a 404 that looks like a wrong OCID.
 #
-# NOT yet narrowed with `where request.principal.id = target.instance.id`
-# (instance can only update itself). Deliberate: land the broad grant first,
-# verify the whole path on a real instance, then tighten and re-verify —
-# a least-privilege `where` clause that was never exercised is a claim, not
-# a policy (this file's own August 12 lesson, above bundle).
+# DELIBERATELY NOT narrowed to self-only. The obvious clause —
+#   where request.principal.id = target.instance.id
+# — was applied on August 12, 2026 and REVERTED the same hour, because it
+# broke an unrelated principal in the same compartment: with the clause in
+# place, the CI group's put_object to the kythira-ci-artifacts bucket failed
+# with BucketNotFound/404 ("...or you are not authorized") on two consecutive
+# dispatches (runs 31641076068 and 31641860637, 4 and 13 minutes after the
+# policy write), while the same UPST's compute calls (ListInstances) kept
+# succeeding — and the compartment audit log shows the policy update as the
+# ONLY mutation between the last green run and the failures. The mechanism
+# is a sharper version of the documented one (Policy Advanced Features,
+# "Variables that Aren't Applicable to a Request Result in a Declined
+# Request"): a condition variable that is inapplicable to a request declines
+# the request rather than merely not matching the statement — and the
+# services evaluate this inconsistently: Compute tolerated the clause for
+# requests with no target.instance.id (ListInstances passed), Object Storage
+# failed closed for a DIFFERENT principal covered by a DIFFERENT,
+# unconditional policy. Variable-to-variable comparison is additionally
+# undocumented (the syntax reference only shows variable-to-literal), so the
+# write-time validator accepting it proves nothing.
+# Consequence: any instance in the pool can read/tag-write ANY instance in
+# this compartment. Accepted: the compartment holds nothing but CI
+# resources, and the alternative demonstrably breaks the artifact-delivery
+# path for everyone else in the compartment. Anyone re-attempting this must
+# verify put_object BY THE CI GROUP still works afterwards, not just the
+# heartbeat path — that is exactly the cross-principal breakage that made
+# the first attempt look like a bucket outage.
 #
 # Policy kythira-ci-artifacts (compartment):
 Allow group {GROUP} to manage object-family in compartment {COMPARTMENT}
@@ -40,7 +62,9 @@ Allow group {GROUP} to manage object-family in compartment {COMPARTMENT}
 # PAR_MANAGE, which only the manage verb carries. Scoped to the compartment,
 # which holds nothing but CI resources.
 #
-# Exercised by a least-privilege principal: YES for both, August 12, 2026.
+# Exercised by a least-privilege principal: YES for both, August 12, 2026,
+# at the granted (broad) scope — see above for why the self-only narrowing
+# was attempted, measured, and backed out the same day.
 # Instance side: a pool instance running oci_heartbeat_writer_node under
 # Instance Principal performed GetInstance + UpdateInstance (the heartbeat
 # tag write) against itself — the first code from this tree ever to run on
