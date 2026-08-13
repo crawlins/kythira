@@ -1,0 +1,58 @@
+# docker/prometheus-metrics-compose.yml — one chaos_node instance exposing
+# the Prometheus scrape endpoint, plus a real Prometheus server scraping it.
+#
+# Used by tests/docker_chaos/prometheus_metrics_scenario_test.cpp
+# (doc/TODO.md "Metrics Backends" testing requirement, Docker tier) to prove
+# the full pull path — recording call -> registry -> /metrics text
+# exposition -> real Prometheus scrape -> real Prometheus parse/ingest —
+# works end to end, not just that the exposition this project renders
+# matches what it believes the format to be. The test asserts through
+# Prometheus's own query API, so a sample must have made the whole trip.
+#
+# A single node is sufficient (majority of 1, self-elects) — same rationale
+# as otlp-collector-compose.yml.
+#
+# No static IPs (CLAUDE.md container-runtime-compatibility rule): Prometheus
+# reaches the node by compose service name only.
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    container_name: prometheus-metrics-test-prometheus
+    hostname: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9096:9090"   # Prometheus query API, for the test's assertions
+    networks:
+      - prometheus-metrics-net
+
+  node1:
+    image: kythira-chaos-node:dev
+    # The entrypoint's iptables CHAOS-chain setup needs NET_ADMIN; without
+    # it the container exits before chaos_node ever starts (found by the
+    # metrics scenario tests' log dump: "iptables ... you must be root",
+    # Exited (4)). Same grant docker-compose.yml gives every node.
+    cap_add:
+      - NET_ADMIN
+    container_name: prometheus-metrics-test-node1
+    hostname: node1
+    environment:
+      NODE_ID: "1"
+      PEERS: ""
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+      PROMETHEUS_METRICS_PORT: "9464"
+    ports:
+      - "8092:8080"   # HTTP control plane
+    networks:
+      - prometheus-metrics-net
+
+networks:
+  prometheus-metrics-net:
+    driver: bridge

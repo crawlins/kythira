@@ -1,0 +1,64 @@
+# docker/telegraf-metrics-compose.yml — one chaos_node instance emitting
+# InfluxDB line protocol over UDP to a real Telegraf agent.
+#
+# Used by tests/docker_chaos/telegraf_metrics_scenario_test.cpp
+# (doc/TODO.md "Metrics Backends" testing requirement, Docker tier) to prove
+# the full push path — recording call -> line rendering -> real UDP datagram
+# -> real Telegraf socket_listener parse -> a Telegraf output — works end to
+# end. The test asserts against Telegraf's file output (read back via
+# `<runtime> exec cat`, same as the OTLP scenario test), which unparseable
+# input never reaches.
+#
+# A single node is sufficient (majority of 1, self-elects) — same rationale
+# as otlp-collector-compose.yml.
+#
+# No static IPs (CLAUDE.md container-runtime-compatibility rule): the node
+# reaches Telegraf by compose service name only.
+
+services:
+  telegraf:
+    image: telegraf:1.31
+    container_name: telegraf-metrics-test-telegraf
+    hostname: telegraf
+    # No user override and no output volume: the telegraf image's entrypoint
+    # drops root to the `telegraf` user regardless of the container user, so
+    # a root-owned volume is unwritable either way (run-4 scenario-test
+    # evidence). The file output writes to /tmp inside the container and the
+    # test reads it back via `<runtime> exec cat`.
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    networks:
+      - telegraf-metrics-net
+
+  node1:
+    image: kythira-chaos-node:dev
+    # The entrypoint's iptables CHAOS-chain setup needs NET_ADMIN; without
+    # it the container exits before chaos_node ever starts (found by the
+    # metrics scenario tests' log dump: "iptables ... you must be root",
+    # Exited (4)). Same grant docker-compose.yml gives every node.
+    cap_add:
+      - NET_ADMIN
+    container_name: telegraf-metrics-test-node1
+    hostname: node1
+    environment:
+      NODE_ID: "1"
+      PEERS: ""
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+      TELEGRAF_ENDPOINT: "telegraf:8094"
+      TELEGRAF_PROTOCOL: "udp"
+    ports:
+      - "8094:8080"   # HTTP control plane
+    depends_on:
+      - telegraf
+    networks:
+      - telegraf-metrics-net
+
+networks:
+  telegraf-metrics-net:
+    driver: bridge

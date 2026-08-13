@@ -111,6 +111,23 @@ add_docker_chaos_scenario_test(docker_dns_sd_discovery_test
 add_docker_chaos_scenario_test(docker_otlp_collector_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/otlp_collector_test.cpp")
 
+# ── Self-hosted metrics backend scenario tests (doc/TODO.md "Metrics
+# Backends", Docker tier). Each pairs a real chaos_node (wired to the
+# backend via its env var) with the real agent's stock upstream image —
+# no custom Dockerfiles, same as the OTLP collector above.
+
+add_docker_chaos_scenario_test(docker_prometheus_metrics_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/prometheus_metrics_scenario_test.cpp")
+
+add_docker_chaos_scenario_test(docker_victoriametrics_metrics_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/victoriametrics_metrics_scenario_test.cpp")
+
+add_docker_chaos_scenario_test(docker_telegraf_metrics_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/telegraf_metrics_scenario_test.cpp")
+
+add_docker_chaos_scenario_test(docker_netdata_metrics_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/netdata_metrics_scenario_test.cpp")
+
 # ── Container runtime detection ───────────────────────────────────────────────
 #
 # CONTAINER_RUNTIME  — CMake cache variable; empty = auto-detect (docker then podman).
@@ -150,6 +167,10 @@ if(_RUNTIME_EXE)
     set(_DNS_SD_DISCOVERY_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/dns-sd-discovery-compose.yml")
     set(_DNS_SD_DISCOVERY_DOCKERFILE     "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/Dockerfile")
     set(_OTLP_COLLECTOR_COMPOSE_FILE     "${CMAKE_SOURCE_DIR}/docker/otlp-collector-compose.yml")
+    set(_PROMETHEUS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/prometheus-metrics-compose.yml")
+    set(_VICTORIAMETRICS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/victoriametrics-metrics-compose.yml")
+    set(_TELEGRAF_METRICS_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/telegraf-metrics-compose.yml")
+    set(_NETDATA_METRICS_COMPOSE_FILE    "${CMAKE_SOURCE_DIR}/docker/netdata-metrics-compose.yml")
 
     # Env-var prefix injected into every scenario-test invocation.
     set(_RT_ENV
@@ -374,6 +395,52 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    # Agent images are pulled directly (no custom Dockerfiles) — these
+    # targets only need the existing chaos-node image, same as OTLP above.
+    add_custom_target(docker-prometheus-metrics-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_PROMETHEUS_METRICS_COMPOSE_FILE=${_PROMETHEUS_METRICS_COMPOSE_FILE}
+                $<TARGET_FILE:docker_prometheus_metrics_test>
+                --log_level=message
+        DEPENDS docker-chaos-image docker_prometheus_metrics_test
+        COMMENT "Running Prometheus metrics backend scenario test (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_custom_target(docker-victoriametrics-metrics-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_VICTORIAMETRICS_METRICS_COMPOSE_FILE=${_VICTORIAMETRICS_METRICS_COMPOSE_FILE}
+                $<TARGET_FILE:docker_victoriametrics_metrics_test>
+                --log_level=message
+        DEPENDS docker-chaos-image docker_victoriametrics_metrics_test
+        COMMENT "Running VictoriaMetrics metrics backend scenario test (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_custom_target(docker-telegraf-metrics-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_TELEGRAF_METRICS_COMPOSE_FILE=${_TELEGRAF_METRICS_COMPOSE_FILE}
+                $<TARGET_FILE:docker_telegraf_metrics_test>
+                --log_level=message
+        DEPENDS docker-chaos-image docker_telegraf_metrics_test
+        COMMENT "Running Telegraf metrics backend scenario test (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_custom_target(docker-netdata-metrics-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_NETDATA_METRICS_COMPOSE_FILE=${_NETDATA_METRICS_COMPOSE_FILE}
+                $<TARGET_FILE:docker_netdata_metrics_test>
+                --log_level=message
+        DEPENDS docker-chaos-image docker_netdata_metrics_test
+        COMMENT "Running NetData metrics backend scenario test (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
     message(STATUS
         "Container runtime: ${_RUNTIME_EXE} — "
         "docker-chaos-image, docker-chaos-tests, "
@@ -381,7 +448,9 @@ if(_RUNTIME_EXE)
         "docker-bind9-image, "
         "docker-dns-discovery-image, docker-dns-discovery-tests, "
         "docker-dns-sd-discovery-image, docker-dns-sd-discovery-tests, "
-        "docker-otlp-collector-tests targets available")
+        "docker-otlp-collector-tests, "
+        "docker-prometheus-metrics-tests, docker-victoriametrics-metrics-tests, "
+        "docker-telegraf-metrics-tests, docker-netdata-metrics-tests targets available")
 else()
     foreach(_t
         docker-chaos-image docker-chaos-tests
@@ -390,7 +459,9 @@ else()
         docker-bind9-image
         docker-dns-discovery-image docker-dns-discovery-tests
         docker-dns-sd-discovery-image docker-dns-sd-discovery-tests
-        docker-otlp-collector-tests)
+        docker-otlp-collector-tests
+        docker-prometheus-metrics-tests docker-victoriametrics-metrics-tests
+        docker-telegraf-metrics-tests docker-netdata-metrics-tests)
         add_custom_target(${_t}
             COMMAND ${CMAKE_COMMAND} -E echo
                     "'${_t}' requires docker or podman on PATH"

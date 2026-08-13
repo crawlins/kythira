@@ -1,0 +1,19 @@
+# docker/prometheus/prometheus.yml — example scrape configuration for the
+# Prometheus metrics backend (include/raft/prometheus_metrics.hpp,
+# doc/prometheus_metrics_backend.md).
+#
+# The node exposes text exposition format on PROMETHEUS_METRICS_PORT
+# (chaos_node) or wherever the embedding application mounts a
+# prometheus_scrape_server. Address the node by compose service name — no
+# static IPs (CLAUDE.md container-runtime-compatibility rule).
+#
+# The 2s interval is test-tuned so the scenario test observes samples
+# quickly; production deployments typically use 15-60s.
+
+global:
+  scrape_interval: 2s
+
+scrape_configs:
+  - job_name: kythira
+    static_configs:
+      - targets: ["node1:9464"]

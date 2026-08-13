@@ -1,0 +1,66 @@
+# docker/netdata-metrics-compose.yml — one chaos_node instance emitting
+# StatsD datagrams to a real NetData container's built-in StatsD collector.
+#
+# Used by tests/docker_chaos/netdata_metrics_scenario_test.cpp
+# (doc/TODO.md "Metrics Backends" testing requirement, Docker tier) to prove
+# the full push path — recording call -> StatsD line -> real UDP datagram ->
+# real NetData statsd.plugin parse -> a NetData chart — works end to end.
+# The test asserts through NetData's own REST API (/api/v1/allmetrics), so a
+# metric must have been parsed into a chart to be seen.
+#
+# A single node is sufficient (majority of 1, self-elects) — same rationale
+# as otlp-collector-compose.yml.
+#
+# NetData's image documents extra mounts/capabilities for full host
+# monitoring; none are needed for the StatsD collector, and CLAUDE.md's
+# container rules forbid --privileged anyway, so this runs it plain.
+#
+# No static IPs (CLAUDE.md container-runtime-compatibility rule): the node
+# reaches NetData by compose service name only.
+
+services:
+  netdata:
+    image: netdata/netdata:v1.47.5
+    container_name: netdata-metrics-test-netdata
+    hostname: netdata
+    environment:
+      # Keep the test hermetic: no anonymous telemetry, no cloud claiming.
+      DISABLE_TELEMETRY: "1"
+    volumes:
+      - ./netdata/netdata.conf:/etc/netdata/netdata.conf:ro
+    ports:
+      - "19999:19999"   # REST API, for the test's assertions
+    networks:
+      - netdata-metrics-net
+
+  node1:
+    image: kythira-chaos-node:dev
+    # The entrypoint's iptables CHAOS-chain setup needs NET_ADMIN; without
+    # it the container exits before chaos_node ever starts (found by the
+    # metrics scenario tests' log dump: "iptables ... you must be root",
+    # Exited (4)). Same grant docker-compose.yml gives every node.
+    cap_add:
+      - NET_ADMIN
+    container_name: netdata-metrics-test-node1
+    hostname: node1
+    environment:
+      NODE_ID: "1"
+      PEERS: ""
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+      NETDATA_STATSD_ENDPOINT: "netdata:8125"
+    ports:
+      - "8095:8080"   # HTTP control plane
+    depends_on:
+      - netdata
+    networks:
+      - netdata-metrics-net
+
+networks:
+  netdata-metrics-net:
+    driver: bridge

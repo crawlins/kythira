@@ -189,6 +189,36 @@ jobs:
         continue-on-error: true
         run: cmake --build build --target docker-dns-sd-discovery-tests -j$(nproc)
 
+      # No longer continue-on-error: that mask let this step report success
+      # while its node container was exiting at the entrypoint (missing
+      # NET_ADMIN in otlp-collector-compose.yml — fixed alongside the metrics
+      # scenario compose files, which failed identically and, not being
+      # masked, are what surfaced it). Unlike the poco/dns steps above, this
+      # one has no documented known-flake rationale to tolerate.
       - name: Run docker-otlp-collector-tests (chaos_node image + real OTel Collector)
-        continue-on-error: true
+        if: success() || failure()
         run: cmake --build build --target docker-otlp-collector-tests -j$(nproc)
+
+      # Self-hosted metrics backend scenario tests (doc/TODO.md "Metrics
+      # Backends", Docker tier). Like the OTLP step above, each reuses the
+      # chaos_node image and pulls the agent's stock upstream image directly.
+      # NOT continue-on-error: these four are new and have no known
+      # arm64-specific flake to tolerate — a failure here is a finding. The
+      # `if: success() || failure()` on the later three keeps them running
+      # after an earlier one fails (the job still ends red), so one dispatch
+      # yields all four verdicts instead of one failure masking three.
+      - name: Run docker-prometheus-metrics-tests (chaos_node image + real Prometheus)
+        if: success() || failure()
+        run: cmake --build build --target docker-prometheus-metrics-tests -j$(nproc)
+
+      - name: Run docker-victoriametrics-metrics-tests (chaos_node image + real VictoriaMetrics)
+        if: success() || failure()
+        run: cmake --build build --target docker-victoriametrics-metrics-tests -j$(nproc)
+
+      - name: Run docker-telegraf-metrics-tests (chaos_node image + real Telegraf)
+        if: success() || failure()
+        run: cmake --build build --target docker-telegraf-metrics-tests -j$(nproc)
+
+      - name: Run docker-netdata-metrics-tests (chaos_node image + real NetData)
+        if: success() || failure()
+        run: cmake --build build --target docker-netdata-metrics-tests -j$(nproc)
