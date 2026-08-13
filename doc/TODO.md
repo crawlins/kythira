@@ -2806,31 +2806,67 @@ as the Cloud Provider Support requirement above.
   in it. All three fixed (capability granted, read-back via `docker cp`,
   step unmasked); run 31653717200 is this scenario's first verifiable pass.
   The unit tiers were never affected.
-- [ ] **AWS CloudWatch** — example monitoring configuration (e.g. an
-  OpenTelemetry Collector `awscloudwatch`/`awsemf` exporter config, or the
-  CloudWatch agent's own config) routing Kythira's exported telemetry to
-  CloudWatch, plus documentation — not a bespoke `kythira::metrics`
-  implementation (see the section-level note above); natural pairing with
-  `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`, already implemented
-  (Cloud Provider Support, above)
-- [ ] **Azure Monitor** — example monitoring configuration (e.g. an
-  OpenTelemetry Collector `azuremonitor` exporter config) routing to Azure
-  Monitor's custom-metrics API, plus documentation — not a bespoke
-  `kythira::metrics` implementation; pairs with the Azure quorum
-  manager/certificate provider entry above
-- [ ] **GCP Cloud Monitoring** — example monitoring configuration (e.g. an
-  OpenTelemetry Collector `googlecloud` exporter config) routing to Cloud
-  Monitoring's `timeSeries.create` API, plus documentation — not a bespoke
-  `kythira::metrics` implementation; pairs with the GCP quorum
-  manager/certificate provider entry above
-- [ ] **OCI Monitoring** — example monitoring configuration routing to OCI
-  Monitoring's `PostMetricData` API, plus documentation — not a bespoke
-  `kythira::metrics` implementation; pairs with the OCI quorum
-  manager/certificate provider entry above
-- [ ] **Alibaba Cloud CloudMonitor** — example monitoring configuration
-  routing to CloudMonitor's custom-metrics API, plus documentation — not a
-  bespoke `kythira::metrics` implementation; pairs with the Alibaba Cloud
-  quorum manager/certificate provider entry above
+- [x] **AWS CloudWatch** — example OpenTelemetry Collector config
+  (`docker/cloud-monitoring/cloudwatch-collector-config.yaml`): `awsemf`
+  (metrics as EMF documents into CloudWatch Logs, extracted server-side
+  into the `Kythira/ChaosNode` namespace) + `awscloudwatchlogs` (logs);
+  docs `doc/cloud_vendor_monitoring.md`; natural pairing with
+  `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`. Docker tier: the one
+  vendor entry with a self-hostable emulator of its ingestion API
+  (LocalStack, mirroring `aws_quorum_manager_localstack_test.cpp`), so a
+  full round-trip — chaos_node → Collector running the unmodified example
+  config → LocalStack, read back through the CloudWatch Logs API
+  (`docker-cloudwatch-metrics-tests`,
+  `tests/docker_chaos/cloudwatch_metrics_scenario_test.cpp`). Real-cloud
+  tier: `aws-monitoring` job (`scripts/real-cloud-monitoring/aws-cloudwatch.sh`),
+  disabled by default behind `REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED`;
+  CI-role bundle `cloudwatch-monitoring`.
+- [x] **Azure Monitor** — example OpenTelemetry Collector config
+  (`docker/cloud-monitoring/azure-monitor-collector-config.yaml`):
+  `azuremonitor` exporter, metrics + logs into an Application Insights
+  resource; docs `doc/cloud_vendor_monitoring.md`. Docker tier: no
+  self-hostable emulator of the ingestion API exists, so the config is
+  validated with the Collector's own `validate`
+  (`docker-cloud-monitoring-config-tests`). Real-cloud tier:
+  `azure-monitoring` job, disabled by default behind
+  `REAL_CLOUD_TESTS_AZURE_MONITORING_ENABLED` (needs the two
+  monitoring-specific values in `scripts/ci-cloud-credentials/azure/README.md`).
+- [x] **GCP Cloud Monitoring** — example OpenTelemetry Collector config
+  (`docker/cloud-monitoring/gcp-cloud-monitoring-collector-config.yaml`):
+  `googlecloud` exporter, metrics via `timeSeries.create`
+  (`workload.googleapis.com/*`) + logs via Cloud Logging; docs
+  `doc/cloud_vendor_monitoring.md`. Docker tier: Collector `validate`
+  (no emulator of the ingestion API). Real-cloud tier: `gcp-monitoring`
+  job, disabled by default behind `REAL_CLOUD_TESTS_GCP_MONITORING_ENABLED`
+  (three extra roles for the CI service account —
+  `scripts/ci-cloud-credentials/gcp/README.md`).
+- [x] **OCI Monitoring** — example config for the vendor's own agent
+  (`docker/cloud-monitoring/oci-management-agent-prometheus-emitter.properties`):
+  opentelemetry-collector-contrib has no OCI Monitoring exporter (checked
+  at v0.116), so the Management Agent's PrometheusEmitter scrapes the
+  node's existing Prometheus endpoint (`PROMETHEUS_METRICS_PORT`) and
+  posts via `PostMetricData` under namespace `kythira_chaos_node`; docs
+  `doc/cloud_vendor_monitoring.md` (OCI-side logging documented
+  out-of-scope, same reasoning as the NetData logging leg). Docker tier:
+  required-key validation of the `.properties` (no vendor validator or
+  emulator exists). Real-cloud tier: `oci-monitoring` job — full
+  agent-in-container install + query-back, wired and fail-closed behind
+  `REAL_CLOUD_TESTS_OCI_MONITORING_ENABLED`, but **never yet run live**:
+  the installer URL/install key are unprovisioned
+  (`scripts/ci-cloud-credentials/oci/README.md`, Monitoring).
+- [x] **Alibaba Cloud CloudMonitor** — example OpenTelemetry Collector
+  config (`docker/cloud-monitoring/alibaba-cloudmonitor-collector-config.yaml`):
+  `prometheusremotewrite` into a CloudMonitor 2.0 Prometheus instance —
+  the entry's original target, CloudMonitor's custom-metrics upload API,
+  was deprecated by Alibaba in September 2024 in favour of exactly this
+  Prometheus-compatible ingestion, so the config targets the successor
+  API; docs `doc/cloud_vendor_monitoring.md` (logs documented
+  out-of-scope: CloudMonitor does not ingest logs; SLS is the vendor's
+  log product). Docker tier: Collector `validate`. Real-cloud tier:
+  `alibaba-monitoring` job, wired and fail-closed behind
+  `REAL_CLOUD_TESTS_ALIBABA_MONITORING_ENABLED`, but **never yet run
+  live**: no Alibaba account exists for this project
+  (`scripts/ci-cloud-credentials/alibaba/README.md`).
 - [x] **Prometheus** — `prometheus_metrics` + `prometheus_scrape_server`
   (`include/raft/prometheus_metrics.hpp`): shared-registry aggregation
   (copyable handle, so the HTTP transports' copy-per-emission idiom works —
