@@ -47,6 +47,15 @@ struct node_config {
     std::optional<std::pair<std::string, std::uint16_t>>
         netdata_endpoint;  ///< NETDATA_STATSD_ENDPOINT
 
+    // Logging alongside the metrics backends (doc/TODO.md's
+    // logging-alongside-backends item). Each logger PAIRS with its
+    // ecosystem's metrics backend and is only valid alongside it —
+    // from_env() rejects an unpaired logger with a message naming the
+    // required metrics env var, rather than silently running half a stack.
+    std::optional<std::string> loki_endpoint;          ///< LOKI_ENDPOINT (needs prometheus)
+    std::optional<std::string> victorialogs_endpoint;  ///< VICTORIALOGS_ENDPOINT (needs vm)
+    bool telegraf_logs{false};  ///< TELEGRAF_LOGS=on (needs TELEGRAF_ENDPOINT)
+
     // Parse from environment variables.
     // Throws std::invalid_argument if NODE_ID or PEERS are missing / malformed.
     static auto from_env() -> node_config {
@@ -164,6 +173,39 @@ struct node_config {
 
         if (std::string nd_str = get_opt("NETDATA_STATSD_ENDPOINT", ""); !nd_str.empty()) {
             cfg.netdata_endpoint = parse_host_port(nd_str, "NETDATA_STATSD_ENDPOINT");
+        }
+
+        // Paired loggers — each requires its ecosystem's metrics backend.
+        if (std::string loki_str = get_opt("LOKI_ENDPOINT", ""); !loki_str.empty()) {
+            if (!cfg.prometheus_metrics_port) {
+                throw std::invalid_argument(
+                    "chaos_node: LOKI_ENDPOINT pairs with the Prometheus metrics backend — "
+                    "set PROMETHEUS_METRICS_PORT too");
+            }
+            cfg.loki_endpoint = std::move(loki_str);
+        }
+
+        if (std::string vl_str = get_opt("VICTORIALOGS_ENDPOINT", ""); !vl_str.empty()) {
+            if (!cfg.victoriametrics_endpoint) {
+                throw std::invalid_argument(
+                    "chaos_node: VICTORIALOGS_ENDPOINT pairs with the VictoriaMetrics metrics "
+                    "backend — set VICTORIAMETRICS_ENDPOINT too");
+            }
+            cfg.victorialogs_endpoint = std::move(vl_str);
+        }
+
+        std::string tg_logs = get_opt("TELEGRAF_LOGS", "off");
+        if (tg_logs != "on" && tg_logs != "off") {
+            throw std::invalid_argument("chaos_node: TELEGRAF_LOGS must be on or off, got: " +
+                                        tg_logs);
+        }
+        if (tg_logs == "on") {
+            if (!cfg.telegraf_endpoint) {
+                throw std::invalid_argument(
+                    "chaos_node: TELEGRAF_LOGS=on pairs with the Telegraf metrics backend — "
+                    "set TELEGRAF_ENDPOINT too");
+            }
+            cfg.telegraf_logs = true;
         }
 
         return cfg;
