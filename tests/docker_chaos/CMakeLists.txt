@@ -128,6 +128,19 @@ add_docker_chaos_scenario_test(docker_telegraf_metrics_test
 add_docker_chaos_scenario_test(docker_netdata_metrics_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/netdata_metrics_scenario_test.cpp")
 
+# ── Cloud-vendor monitoring configs (doc/TODO.md "Metrics Backends",
+# cloud-vendor entries, Docker tier). These entries are config-only — no
+# bespoke kythira::metrics per vendor — so their Docker tier checks the
+# shipped example configs (docker/cloud-monitoring/): a full LocalStack
+# round-trip for CloudWatch (the one vendor with a self-hostable emulator
+# of its ingestion API), Collector-`validate` schema checks for the rest.
+
+add_docker_chaos_scenario_test(docker_cloudwatch_metrics_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/cloudwatch_metrics_scenario_test.cpp")
+
+add_docker_chaos_scenario_test(docker_cloud_monitoring_config_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/cloud_monitoring_config_validation_test.cpp")
+
 # ── Container runtime detection ───────────────────────────────────────────────
 #
 # CONTAINER_RUNTIME  — CMake cache variable; empty = auto-detect (docker then podman).
@@ -171,6 +184,8 @@ if(_RUNTIME_EXE)
     set(_VICTORIAMETRICS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/victoriametrics-metrics-compose.yml")
     set(_TELEGRAF_METRICS_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/telegraf-metrics-compose.yml")
     set(_NETDATA_METRICS_COMPOSE_FILE    "${CMAKE_SOURCE_DIR}/docker/netdata-metrics-compose.yml")
+    set(_CLOUDWATCH_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/cloudwatch-localstack-compose.yml")
+    set(_CLOUD_MONITORING_CONFIG_DIR     "${CMAKE_SOURCE_DIR}/docker/cloud-monitoring")
 
     # Env-var prefix injected into every scenario-test invocation.
     set(_RT_ENV
@@ -441,6 +456,31 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    add_custom_target(docker-cloudwatch-metrics-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_CLOUDWATCH_METRICS_COMPOSE_FILE=${_CLOUDWATCH_METRICS_COMPOSE_FILE}
+                $<TARGET_FILE:docker_cloudwatch_metrics_test>
+                --log_level=message
+        DEPENDS docker-chaos-image docker_cloudwatch_metrics_test
+        COMMENT "Running CloudWatch (LocalStack) monitoring config scenario test (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    # No chaos-node image needed: this target only shells the Collector
+    # image's `validate` against the example configs (plus the OCI
+    # .properties key check, which is pure file inspection).
+    add_custom_target(docker-cloud-monitoring-config-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_CLOUD_MONITORING_CONFIG_DIR=${_CLOUD_MONITORING_CONFIG_DIR}
+                $<TARGET_FILE:docker_cloud_monitoring_config_test>
+                --log_level=message
+        DEPENDS docker_cloud_monitoring_config_test
+        COMMENT "Validating cloud-vendor monitoring example configs (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
     message(STATUS
         "Container runtime: ${_RUNTIME_EXE} — "
         "docker-chaos-image, docker-chaos-tests, "
@@ -450,7 +490,8 @@ if(_RUNTIME_EXE)
         "docker-dns-sd-discovery-image, docker-dns-sd-discovery-tests, "
         "docker-otlp-collector-tests, "
         "docker-prometheus-metrics-tests, docker-victoriametrics-metrics-tests, "
-        "docker-telegraf-metrics-tests, docker-netdata-metrics-tests targets available")
+        "docker-telegraf-metrics-tests, docker-netdata-metrics-tests, "
+        "docker-cloudwatch-metrics-tests, docker-cloud-monitoring-config-tests targets available")
 else()
     foreach(_t
         docker-chaos-image docker-chaos-tests
@@ -461,7 +502,8 @@ else()
         docker-dns-sd-discovery-image docker-dns-sd-discovery-tests
         docker-otlp-collector-tests
         docker-prometheus-metrics-tests docker-victoriametrics-metrics-tests
-        docker-telegraf-metrics-tests docker-netdata-metrics-tests)
+        docker-telegraf-metrics-tests docker-netdata-metrics-tests
+        docker-cloudwatch-metrics-tests docker-cloud-monitoring-config-tests)
         add_custom_target(${_t}
             COMMAND ${CMAKE_COMMAND} -E echo
                     "'${_t}' requires docker or podman on PATH"

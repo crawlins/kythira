@@ -222,3 +222,19 @@ jobs:
       - name: Run docker-netdata-metrics-tests (chaos_node image + real NetData)
         if: success() || failure()
         run: cmake --build build --target docker-netdata-metrics-tests -j$(nproc)
+
+      # Cloud-vendor monitoring configs (doc/TODO.md "Metrics Backends",
+      # config-only entries). CloudWatch is the one vendor with a
+      # self-hostable emulator of its ingestion API, so it gets a full
+      # chaos_node -> Collector (unmodified example config) -> LocalStack
+      # round-trip; the config-validation target checks the other vendors'
+      # example configs with the Collector's own `validate` (plus the OCI
+      # .properties required-key check). Not continue-on-error — a failure
+      # here is a finding, same as the four self-hosted backends above.
+      - name: Run docker-cloudwatch-metrics-tests (chaos_node image + Collector + LocalStack)
+        if: success() || failure()
+        run: cmake --build build --target docker-cloudwatch-metrics-tests -j$(nproc)
+
+      - name: Run docker-cloud-monitoring-config-tests (Collector validate on example configs)
+        if: success() || failure()
+        run: cmake --build build --target docker-cloud-monitoring-config-tests -j$(nproc)
