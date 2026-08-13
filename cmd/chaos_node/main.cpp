@@ -5,6 +5,7 @@
 #include <raft/docker_quorum_manager.hpp>
 #include <raft/file_persistence.hpp>
 #include <raft/membership.hpp>
+#include <raft/loki_logger.hpp>
 #include <raft/metrics.hpp>
 #include <raft/netdata_metrics.hpp>
 #include <raft/otlp_logger.hpp>
@@ -14,7 +15,9 @@
 #include <raft/telegraf_metrics.hpp>
 #include <raft/tcp_raft_types.hpp>
 #include <raft/tcp_rpc.hpp>
+#include <raft/telegraf_logger.hpp>
 #include <raft/test_state_machine.hpp>
+#include <raft/victorialogs_logger.hpp>
 #include <raft/victoriametrics_metrics.hpp>
 
 #ifdef KYTHIRA_FAULT_INJECTION
@@ -77,6 +80,20 @@ struct tcp_raft_types_with_victoriametrics : kythira::tcp_raft_types {
 };
 struct tcp_raft_types_with_telegraf : kythira::tcp_raft_types {
     using metrics_type = kythira::telegraf_metrics;
+};
+
+// Paired logger bundles (doc/TODO.md's logging-alongside-backends item):
+// each ecosystem's logger is only selectable together with its metrics
+// backend — config.hpp rejects an unpaired logger env var — so exactly
+// three logger-bearing combinations exist, not a full logger×metrics matrix.
+struct tcp_raft_types_with_prometheus_loki : tcp_raft_types_with_prometheus {
+    using logger_type = kythira::loki_logger;
+};
+struct tcp_raft_types_with_victoriametrics_victorialogs : tcp_raft_types_with_victoriametrics {
+    using logger_type = kythira::victorialogs_logger;
+};
+struct tcp_raft_types_with_telegraf_logs : tcp_raft_types_with_telegraf {
+    using logger_type = kythira::telegraf_logger;
 };
 struct tcp_raft_types_with_netdata : kythira::tcp_raft_types {
     using metrics_type = kythira::netdata_metrics;
@@ -220,6 +237,29 @@ int main(int argc, char** argv) {
         kythira::prometheus_scrape_server scrape(registry, "0.0.0.0", *cfg.prometheus_metrics_port);
         std::cerr << "[info] telemetry: prometheus (scrape :" << scrape.port() << "/metrics)\n";
 
+        if (cfg.loki_endpoint) {
+            // The paired logging leg: same ctor shape as otlp_logger, with
+            // the resource supplying the job/instance/… stream labels.
+            kythira::otlp_export_config loki_cfg;
+            loki_cfg.endpoint_base_url = *cfg.loki_endpoint;
+            kythira::otlp_resource loki_res;
+            loki_res.service_name = cfg.otlp_service_name;
+            loki_res.service_instance_id = std::to_string(cfg.node_id);
+            std::cerr << "[info] logging: loki (" << *cfg.loki_endpoint << ")\n";
+
+            kythira::node_config<tcp_raft_types_with_prometheus_loki> ncfg{
+                .node_id = cfg.node_id,
+                .network_client = std::move(client),
+                .network_server = std::move(server),
+                .persistence = std::move(persistence),
+                .logger = kythira::loki_logger{loki_cfg, loki_res},
+                .metrics = kythira::prometheus_metrics{registry},
+                .membership = kythira::default_membership_manager<std::uint64_t>{},
+                .config = raft_cfg,
+            };
+            return run_node<tcp_raft_types_with_prometheus_loki>(cfg, std::move(ncfg));
+        }
+
         kythira::node_config<tcp_raft_types_with_prometheus> ncfg{
             .node_id = cfg.node_id,
             .network_client = std::move(client),
@@ -243,6 +283,26 @@ int main(int argc, char** argv) {
         std::cerr << "[info] telemetry: victoriametrics (" << *cfg.victoriametrics_endpoint
                   << ")\n";
 
+        if (cfg.victorialogs_endpoint) {
+            kythira::victorialogs_config vl_cfg;
+            vl_cfg.endpoint_base_url = *cfg.victorialogs_endpoint;
+            vl_cfg.job = cfg.otlp_service_name;
+            vl_cfg.instance = std::to_string(cfg.node_id);
+            std::cerr << "[info] logging: victorialogs (" << *cfg.victorialogs_endpoint << ")\n";
+
+            kythira::node_config<tcp_raft_types_with_victoriametrics_victorialogs> ncfg{
+                .node_id = cfg.node_id,
+                .network_client = std::move(client),
+                .network_server = std::move(server),
+                .persistence = std::move(persistence),
+                .logger = kythira::victorialogs_logger{vl_cfg},
+                .metrics = kythira::victoriametrics_metrics{vm_cfg},
+                .membership = kythira::default_membership_manager<std::uint64_t>{},
+                .config = raft_cfg,
+            };
+            return run_node<tcp_raft_types_with_victoriametrics_victorialogs>(cfg, std::move(ncfg));
+        }
+
         kythira::node_config<tcp_raft_types_with_victoriametrics> ncfg{
             .node_id = cfg.node_id,
             .network_client = std::move(client),
@@ -264,6 +324,29 @@ int main(int argc, char** argv) {
             cfg.telegraf_tcp ? kythira::telegraf_protocol::tcp : kythira::telegraf_protocol::udp;
         std::cerr << "[info] telemetry: telegraf (" << tg_cfg.host << ":" << tg_cfg.port << " "
                   << (cfg.telegraf_tcp ? "tcp" : "udp") << ")\n";
+
+        if (cfg.telegraf_logs) {
+            // Same agent, same listener, same protocol — log events ride the
+            // metrics leg's socket as line-protocol records.
+            kythira::telegraf_logger_config tl_cfg;
+            tl_cfg.host = tg_cfg.host;
+            tl_cfg.port = tg_cfg.port;
+            tl_cfg.protocol = tg_cfg.protocol;
+            tl_cfg.constant_tags = {{"node_id", std::to_string(cfg.node_id)}};
+            std::cerr << "[info] logging: telegraf (same listener)\n";
+
+            kythira::node_config<tcp_raft_types_with_telegraf_logs> ncfg{
+                .node_id = cfg.node_id,
+                .network_client = std::move(client),
+                .network_server = std::move(server),
+                .persistence = std::move(persistence),
+                .logger = kythira::telegraf_logger{tl_cfg},
+                .metrics = kythira::telegraf_metrics{tg_cfg},
+                .membership = kythira::default_membership_manager<std::uint64_t>{},
+                .config = raft_cfg,
+            };
+            return run_node<tcp_raft_types_with_telegraf_logs>(cfg, std::move(ncfg));
+        }
 
         kythira::node_config<tcp_raft_types_with_telegraf> ncfg{
             .node_id = cfg.node_id,
