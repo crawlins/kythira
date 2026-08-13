@@ -29,6 +29,17 @@ services:
     networks:
       - victoriametrics-metrics-net
 
+  # The ecosystem's logging leg (victorialogs_logger — doc/TODO.md's
+  # logging-alongside-backends item). Single-binary, zero config.
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.0.0-victorialogs
+    container_name: victoriametrics-metrics-test-victorialogs
+    hostname: victorialogs
+    ports:
+      - "9429:9428"   # LogsQL query API, for the test's assertions
+    networks:
+      - victoriametrics-metrics-net
+
   node1:
     image: kythira-chaos-node:dev
     # The entrypoint's iptables CHAOS-chain setup needs NET_ADMIN; without
@@ -50,10 +61,12 @@ services:
       ELECTION_TIMEOUT_MAX_MS: "300"
       HEARTBEAT_INTERVAL_MS: "50"
       VICTORIAMETRICS_ENDPOINT: "http://victoriametrics:8428"
+      VICTORIALOGS_ENDPOINT: "http://victorialogs:9428"
     ports:
       - "8093:8080"   # HTTP control plane
     depends_on:
       - victoriametrics
+      - victorialogs
     networks:
       - victoriametrics-metrics-net
 
