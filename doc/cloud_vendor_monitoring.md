@@ -123,8 +123,12 @@ two tiers:
   arrival through the vendor's own query API. See
   `scripts/real-cloud-monitoring/` and
   `scripts/ci-cloud-credentials/README.md` for provisioning. As of August
-  2026 the AWS/Azure/GCP jobs are runnable once their (documented)
-  monitoring-specific variables are set; the OCI and Alibaba jobs are
-  fully wired but have never run against the live services — their
-  credentials/resources are not provisioned yet, and each fails closed
-  naming exactly what is missing.
+  13, 2026: the **AWS job is verified against the real service** (run
+  31711151464 — probe metric extracted into `Kythira/ChaosNode` by real
+  CloudWatch 9 s after ingestion, log record confirmed at 10 s; the
+  `cloudwatch-monitoring` bundle is provisioned on the CI role). The
+  Azure/GCP jobs are runnable once their (documented) monitoring-specific
+  variables are set; the OCI and Alibaba jobs are fully wired but have
+  never run against the live services — their credentials/resources are
+  not provisioned yet, and each fails closed naming exactly what is
+  missing.
