@@ -69,6 +69,32 @@ on:
         description: "Alibaba Cloud (not yet implemented — see doc/TODO.md Cloud Provider Support)"
         type: boolean
         required: false
+      # Cloud-vendor monitoring-config tests (doc/TODO.md "Metrics
+      # Backends", real-cloud tier): each stands up the routing mechanism
+      # its example config in docker/cloud-monitoring/ describes against
+      # the real vendor service — no C++ build involved, so these are their
+      # own lightweight jobs with their own toggles rather than bundles
+      # inside the provider test jobs above.
+      aws_monitoring_enabled:
+        description: "AWS CloudWatch monitoring config (overrides REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED for this run only)"
+        type: boolean
+        required: false
+      azure_monitoring_enabled:
+        description: "Azure Monitor monitoring config (overrides REAL_CLOUD_TESTS_AZURE_MONITORING_ENABLED for this run only)"
+        type: boolean
+        required: false
+      gcp_monitoring_enabled:
+        description: "GCP Cloud Monitoring monitoring config (overrides REAL_CLOUD_TESTS_GCP_MONITORING_ENABLED for this run only)"
+        type: boolean
+        required: false
+      oci_monitoring_enabled:
+        description: "OCI Monitoring monitoring config (overrides REAL_CLOUD_TESTS_OCI_MONITORING_ENABLED for this run only)"
+        type: boolean
+        required: false
+      alibaba_monitoring_enabled:
+        description: "Alibaba CloudMonitor monitoring config (overrides REAL_CLOUD_TESTS_ALIBABA_MONITORING_ENABLED for this run only)"
+        type: boolean
+        required: false
   schedule:
     # Monday 06:00 UTC — balances catching real-infrastructure drift early
     # against not incurring real cloud spend needlessly. Adjust freely.
@@ -1351,3 +1377,253 @@ jobs:
     steps:
       - name: No real-cloud tests implemented for Alibaba Cloud yet
         run: echo "No real-cloud tests implemented for Alibaba Cloud yet — see doc/TODO.md Cloud Provider Support."
+
+  # ── Cloud-vendor monitoring configs (doc/TODO.md "Metrics Backends") ─────
+  # Each job below exercises one example config from docker/cloud-monitoring/
+  # against the real vendor service: a real OpenTelemetry Collector (or, for
+  # OCI, the vendor's own Management Agent) runs the unmodified example
+  # config, one synthetic OTLP metric goes in, and the vendor's own query
+  # API confirms arrival. See scripts/real-cloud-monitoring/ and
+  # doc/cloud_vendor_monitoring.md. No C++ build — these are minutes-scale
+  # jobs, gated (like everything here) on the master switch plus their own
+  # REAL_CLOUD_TESTS_<PROVIDER>_MONITORING_ENABLED toggle, and all disabled
+  # by default because they write to (and cost against) real vendor
+  # services.
+
+  aws-monitoring:
+    name: Monitoring config (AWS CloudWatch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.aws_monitoring_enabled == 'true'
+        || (github.event.inputs.aws_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED == 'true'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail closed if AWS_CI_ROLE_ARN is unset
+        if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
+        run: |
+          echo "::error::REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED is true but the AWS_CI_ROLE_ARN repository variable is unset. See scripts/ci-cloud-credentials/aws/README.md." >&2
+          exit 1
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-monitoring-aws
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
+      # The CI role needs the cloudwatch-monitoring policy bundle — re-run
+      # scripts/ci-cloud-credentials/aws/provision-oidc-role.sh with it in
+      # --bundles if this step fails AccessDenied.
+      - name: Run the CloudWatch monitoring-config test
+        run: scripts/real-cloud-monitoring/aws-cloudwatch.sh
+
+  azure-monitoring:
+    name: Monitoring config (Azure Monitor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.azure_monitoring_enabled == 'true'
+        || (github.event.inputs.azure_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_AZURE_MONITORING_ENABLED == 'true'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail closed if Azure monitoring variables are unset
+        if: ${{ vars.AZURE_CI_CLIENT_ID == '' || vars.AZURE_CI_TENANT_ID == '' || vars.AZURE_CI_SUBSCRIPTION_ID == '' || vars.AZURE_MONITORING_APP_ID == '' }}
+        run: |
+          echo "::error::REAL_CLOUD_TESTS_AZURE_MONITORING_ENABLED is true but AZURE_CI_CLIENT_ID/AZURE_CI_TENANT_ID/AZURE_CI_SUBSCRIPTION_ID/AZURE_MONITORING_APP_ID are not all set. See scripts/ci-cloud-credentials/azure/README.md (Monitoring)." >&2
+          exit 1
+
+      - name: Azure login (Workload Identity Federation)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_CI_SUBSCRIPTION_ID }}
+
+      - name: Run the Azure Monitor monitoring-config test
+        env:
+          APPLICATIONINSIGHTS_CONNECTION_STRING: ${{ secrets.AZURE_MONITORING_CONNECTION_STRING }}
+          AZURE_MONITORING_APP_ID: ${{ vars.AZURE_MONITORING_APP_ID }}
+        run: scripts/real-cloud-monitoring/azure-monitor.sh
+
+  gcp-monitoring:
+    name: Monitoring config (GCP Cloud Monitoring)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.gcp_monitoring_enabled == 'true'
+        || (github.event.inputs.gcp_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_GCP_MONITORING_ENABLED == 'true'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail closed if GCP WIF variables are unset
+        if: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER == '' || vars.GCP_CI_SERVICE_ACCOUNT == '' || vars.GCP_REAL_CLOUD_TESTS_PROJECT == '' }}
+        run: |
+          echo "::error::REAL_CLOUD_TESTS_GCP_MONITORING_ENABLED is true but GCP_CI_WORKLOAD_IDENTITY_PROVIDER/GCP_CI_SERVICE_ACCOUNT/GCP_REAL_CLOUD_TESTS_PROJECT are not all set. See scripts/ci-cloud-credentials/gcp/README.md." >&2
+          exit 1
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+
+      # gcloud supplies the access token for the script's query-side
+      # assertion; auth@v2 above wires its credential file into gcloud.
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Run the GCP Cloud Monitoring monitoring-config test
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_REAL_CLOUD_TESTS_PROJECT }}
+        run: scripts/real-cloud-monitoring/gcp-cloud-monitoring.sh
+
+  oci-monitoring:
+    name: Monitoring config (OCI Monitoring)
+    runs-on: ubuntu-24.04
+    # The Management Agent's install + registration + first Prometheus
+    # scrape cycle dominates; the script's own assertion deadline is 900s.
+    timeout-minutes: 45
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.oci_monitoring_enabled == 'true'
+        || (github.event.inputs.oci_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_OCI_MONITORING_ENABLED == 'true'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail closed if OCI monitoring variables are unset
+        run: |
+          fail=0
+          [ -z "${{ vars.OCI_CI_REGION }}" ] && { echo "::error::OCI_CI_REGION repository variable is unset." >&2; fail=1; }
+          [ -z "${{ vars.OCI_CI_COMPARTMENT_ID }}" ] && { echo "::error::OCI_CI_COMPARTMENT_ID repository variable is unset." >&2; fail=1; }
+          [ -z "${{ vars.OCI_MGMT_AGENT_INSTALLER_URL }}" ] && { echo "::error::OCI_MGMT_AGENT_INSTALLER_URL repository variable is unset — see scripts/ci-cloud-credentials/oci/README.md (Monitoring)." >&2; fail=1; }
+          exit $fail
+
+      # Same inline UPST exchange as the oci job above (its comment carries
+      # the full rationale); kept immediately before the test so the
+      # short-lived token's window matches its use.
+      - name: Obtain OCI credentials (Workload Identity Federation)
+        env:
+          OCI_DOMAIN_URL: ${{ secrets.OCI_DOMAIN_URL }}
+          OCI_WIF_CLIENT_ID: ${{ secrets.OCI_WIF_CLIENT_ID }}
+          OCI_WIF_CLIENT_SECRET: ${{ secrets.OCI_WIF_CLIENT_SECRET }}
+        run: |
+          for v in OCI_DOMAIN_URL OCI_WIF_CLIENT_ID OCI_WIF_CLIENT_SECRET; do
+            if [ -z "$(eval echo "\$$v")" ]; then
+              echo "::error::The $v secret is unset in the real-cloud-tests environment. See scripts/ci-cloud-credentials/oci/README.md (Credentials)." >&2
+              exit 1
+            fi
+          done
+          OCI_DOMAIN_URL=$(printf '%s' "$OCI_DOMAIN_URL" | tr -d '[:space:]')
+          OCI_WIF_CLIENT_ID=$(printf '%s' "$OCI_WIF_CLIENT_ID" | tr -d '[:space:]')
+          OCI_WIF_CLIENT_SECRET=$(printf '%s' "$OCI_WIF_CLIENT_SECRET" | tr -d '[:space:]')
+
+          openssl genrsa -out /tmp/oci-session-key.pem 2048 2>/dev/null
+          public_key=$(openssl rsa -in /tmp/oci-session-key.pem -pubout -outform DER 2>/dev/null | base64 -w0)
+
+          jwt=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://cloud.oracle.com" | jq -r '.value')
+          if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
+            echo "::error::Could not obtain a GitHub OIDC token — is 'id-token: write' still in this job's permissions?" >&2
+            exit 1
+          fi
+
+          response=$(curl -sS -u "$OCI_WIF_CLIENT_ID:$OCI_WIF_CLIENT_SECRET" \
+            "$OCI_DOMAIN_URL/oauth2/v1/token" \
+            --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+            --data-urlencode 'requested_token_type=urn:oci:token-type:oci-upst' \
+            --data-urlencode 'subject_token_type=jwt' \
+            --data-urlencode "subject_token=$jwt" \
+            --data-urlencode "public_key=$public_key")
+          token=$(echo "$response" | jq -r '.token // empty')
+          if [ -z "$token" ]; then
+            sub_payload=$(echo "$jwt" | cut -d. -f2 | tr '_-' '/+')
+            pad=$(( (4 - ${#sub_payload} % 4) % 4 ))
+            [ $pad -gt 0 ] && sub_payload="$sub_payload$(printf '=%.0s' $(seq $pad))"
+            echo "::error::The UPST exchange failed: $response (JWT sub: $(echo "$sub_payload" | base64 -d 2>/dev/null | jq -r '.sub // "undecodable"'))" >&2
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          while IFS= read -r keyline; do
+            [ -n "$keyline" ] && echo "::add-mask::$keyline"
+          done < /tmp/oci-session-key.pem
+
+          {
+            echo "KYTHIRA_OCI_SECURITY_TOKEN=$token"
+            echo "KYTHIRA_OCI_PRIVATE_KEY_PEM<<KYTHIRA_SESSION_KEY_EOF"
+            cat /tmp/oci-session-key.pem
+            echo "KYTHIRA_SESSION_KEY_EOF"
+            echo "KYTHIRA_OCI_REGION=${{ vars.OCI_CI_REGION }}"
+            echo "KYTHIRA_OCI_COMPARTMENT_ID=${{ vars.OCI_CI_COMPARTMENT_ID }}"
+          } >> "$GITHUB_ENV"
+          rm -f /tmp/oci-session-key.pem
+          echo "UPST obtained (${#token} chars)."
+
+      - name: Run the OCI Monitoring monitoring-config test
+        env:
+          OCI_MGMT_AGENT_INSTALL_KEY: ${{ secrets.OCI_MGMT_AGENT_INSTALL_KEY }}
+          OCI_MGMT_AGENT_INSTALLER_URL: ${{ vars.OCI_MGMT_AGENT_INSTALLER_URL }}
+        run: scripts/real-cloud-monitoring/oci-monitoring.sh
+
+  alibaba-monitoring:
+    name: Monitoring config (Alibaba CloudMonitor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: real-cloud-tests
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.alibaba_monitoring_enabled == 'true'
+        || (github.event.inputs.alibaba_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_ALIBABA_MONITORING_ENABLED == 'true'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail closed if Alibaba monitoring variables are unset
+        if: ${{ vars.ALIBABA_CMS_REMOTE_WRITE_URL == '' || vars.ALIBABA_CMS_PROM_QUERY_URL == '' }}
+        run: |
+          echo "::error::REAL_CLOUD_TESTS_ALIBABA_MONITORING_ENABLED is true but ALIBABA_CMS_REMOTE_WRITE_URL/ALIBABA_CMS_PROM_QUERY_URL are not both set. See scripts/ci-cloud-credentials/alibaba/README.md." >&2
+          exit 1
+
+      # CloudMonitor's Prometheus remote-write authenticates with a RAM
+      # AccessKey pair over HTTP Basic — no OIDC-federated equivalent
+      # exists for this ingestion path, so unlike every other provider here
+      # these ARE stored credentials: scope the RAM user to the one
+      # CloudMonitor instance (see scripts/ci-cloud-credentials/alibaba/
+      # README.md for the deviation writeup).
+      - name: Run the Alibaba CloudMonitor monitoring-config test
+        env:
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+          KYTHIRA_CMS_REMOTE_WRITE_URL: ${{ vars.ALIBABA_CMS_REMOTE_WRITE_URL }}
+          KYTHIRA_CMS_PROM_QUERY_URL: ${{ vars.ALIBABA_CMS_PROM_QUERY_URL }}
+        run: scripts/real-cloud-monitoring/alibaba-cloudmonitor.sh

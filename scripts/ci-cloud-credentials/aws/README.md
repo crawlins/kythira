@@ -71,6 +71,14 @@ gh variable set REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED --body true
 Optionally also set `AWS_REAL_CLOUD_TESTS_REGION` (defaults to
 `us-east-1` if unset).
 
+The CloudWatch monitoring-config test (`aws-monitoring` job;
+`scripts/real-cloud-monitoring/aws-cloudwatch.sh`) uses the same CI role
+but its own toggle, `REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED` — include
+`cloudwatch-monitoring` in `--bundles` when provisioning if you enable it.
+Its permissions are CloudWatch Logs ingest/read scoped to the
+`/kythira/chaos-node/*` log groups plus `cloudwatch:ListMetrics`; cost per
+run is effectively zero (a handful of log events, deleted afterwards).
+
 ## Adding or removing a bundle later
 
 Re-run `provision-oidc-role.sh` with the full new `--bundles` list — it

@@ -1,0 +1,33 @@
+[
+  {
+    "Sid": "CloudWatchMonitoringLogIngest",
+    "Effect": "Allow",
+    "Action": [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:PutRetentionPolicy",
+      "logs:DescribeLogGroups",
+      "logs:DescribeLogStreams",
+      "logs:FilterLogEvents",
+      "logs:DeleteLogGroup"
+    ],
+    "Resource": "arn:aws:logs:*:{{ACCOUNT_ID}}:log-group:/kythira/chaos-node/*"
+  },
+  {
+    "Sid": "CloudWatchMonitoringDescribeGroups",
+    "Effect": "Allow",
+    "Action": [
+      "logs:DescribeLogGroups"
+    ],
+    "Resource": "*"
+  },
+  {
+    "Sid": "CloudWatchMonitoringListMetrics",
+    "Effect": "Allow",
+    "Action": [
+      "cloudwatch:ListMetrics"
+    ],
+    "Resource": "*"
+  }
+]
