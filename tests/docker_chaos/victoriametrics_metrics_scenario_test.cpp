@@ -17,8 +17,9 @@ using namespace std::chrono_literals;
 
 namespace {
 
-constexpr int k_node_http_port = 8093;  // victoriametrics-metrics-compose.yml
-constexpr int k_vm_port = 8429;         // host-mapped VictoriaMetrics API
+constexpr int k_node_http_port = 8093;     // victoriametrics-metrics-compose.yml
+constexpr int k_vm_port = 8429;            // host-mapped VictoriaMetrics API
+constexpr int k_victorialogs_port = 9429;  // host-mapped VictoriaLogs API
 
 auto compose() -> std::string {
     return metrics_scenario::compose_file("KYTHIRA_VICTORIAMETRICS_METRICS_COMPOSE_FILE",
@@ -52,6 +53,30 @@ BOOST_FIXTURE_TEST_CASE(pushed_sample_is_queryable_with_identity_labels, Victori
         },
         30s, [&] { return metrics_scenario::http_get_body(k_vm_port, query); },
         "raft_heartbeat_sent_total{job,instance} never became queryable in VictoriaMetrics");
+}
+
+// The logging leg: the node's diagnostic_logger output (victorialogs_logger)
+// must be queryable back out of VictoriaLogs via LogsQL, structured fields
+// included.
+BOOST_FIXTURE_TEST_CASE(pushed_logs_are_queryable_in_victorialogs, VictoriaMetricsFixture,
+                        *boost::unit_test::timeout(120)) {
+    drive_activity("victorialogs-test-key");
+
+    // LogsQL: lines from our stream containing the word Raft — querying for
+    // the content directly, rather than sampling the stream and hoping the
+    // startup lines aren't crowded out of the limit by heartbeat-debug spam
+    // (they were, in the first verification run). Response is ND-JSON.
+    const std::string query =
+        "/select/logsql/query?query=job%3A%22kythira-chaos-node%22%20Raft&limit=10";
+    require_eventually(
+        [&] {
+            auto body = metrics_scenario::http_get_body(k_victorialogs_port, query);
+            return body.find("\"_msg\"") != std::string::npos &&
+                   body.find("Raft") != std::string::npos &&
+                   body.find("\"instance\":\"1\"") != std::string::npos;
+        },
+        30s, [&] { return metrics_scenario::http_get_body(k_victorialogs_port, query); },
+        "the node's Raft log lines never became queryable in VictoriaLogs");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

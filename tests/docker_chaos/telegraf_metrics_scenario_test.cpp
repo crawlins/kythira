@@ -60,4 +60,23 @@ BOOST_FIXTURE_TEST_CASE(lines_are_parsed_and_reach_an_output, TelegrafFixture,
         "raft_heartbeat_sent with node_id=1 never appeared in Telegraf's file output");
 }
 
+// The logging leg (telegraf_logger, TELEGRAF_LOGS=on in the compose file):
+// log events ride the same socket_listener as line-protocol records, so the
+// same file output proves the parse — measurement, level tag, and the msg
+// string field surviving re-serialization.
+BOOST_FIXTURE_TEST_CASE(log_events_are_parsed_and_reach_an_output, TelegrafFixture,
+                        *boost::unit_test::timeout(120)) {
+    drive_activity("telegraf-logs-test-key");
+
+    require_eventually(
+        [&] {
+            auto out = read_telegraf_output();
+            return out.find("kythira_log") != std::string::npos &&
+                   out.find("level=info") != std::string::npos &&
+                   out.find("msg=") != std::string::npos;
+        },
+        30s, [&] { return "output file tail:\n" + read_telegraf_output().substr(0, 4000); },
+        "kythira_log events never appeared in Telegraf's file output");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

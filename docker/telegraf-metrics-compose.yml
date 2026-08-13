@@ -52,6 +52,7 @@ services:
       HEARTBEAT_INTERVAL_MS: "50"
       TELEGRAF_ENDPOINT: "telegraf:8094"
       TELEGRAF_PROTOCOL: "udp"
+      TELEGRAF_LOGS: "on"   # Logging leg: log events on the same listener.
     ports:
       - "8094:8080"   # HTTP control plane
     depends_on:

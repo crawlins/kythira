@@ -27,6 +27,19 @@ services:
     networks:
       - prometheus-metrics-net
 
+  # The ecosystem's logging leg (loki_logger — doc/TODO.md's
+  # logging-alongside-backends item). The image's bundled
+  # local-config.yaml (filesystem storage, auth disabled) is exactly
+  # right for a scenario test; no config mount needed.
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: prometheus-metrics-test-loki
+    hostname: loki
+    ports:
+      - "3101:3100"   # Loki query API, for the test's assertions
+    networks:
+      - prometheus-metrics-net
+
   node1:
     image: kythira-chaos-node:dev
     # The entrypoint's iptables CHAOS-chain setup needs NET_ADMIN; without
@@ -48,8 +61,11 @@ services:
       ELECTION_TIMEOUT_MAX_MS: "300"
       HEARTBEAT_INTERVAL_MS: "50"
       PROMETHEUS_METRICS_PORT: "9464"
+      LOKI_ENDPOINT: "http://loki:3100"
     ports:
       - "8092:8080"   # HTTP control plane
+    depends_on:
+      - loki
     networks:
       - prometheus-metrics-net
 
