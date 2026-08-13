@@ -8,6 +8,8 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -72,13 +74,22 @@ bool wait_for_leader_and_submit(const std::string& key, const std::string& value
     return false;
 }
 
-// Reads the Collector's exported file via `<runtime> exec` rather than a
-// host bind-mount, so this works identically under Docker and rootless
-// Podman without depending on host-vs-container UID mapping.
+// Reads the Collector's exported file via `<runtime> cp` rather than a host
+// bind-mount (host-vs-container UID mapping) or `exec cat`: the
+// otel/opentelemetry-collector-contrib image is distroless — there is no
+// `cat` (or any shell) to exec, which is why the exec-based read-back could
+// never have passed against this image. `cp` needs no in-container binary
+// and works identically under Docker and rootless Podman.
 std::string read_collector_export() {
-    auto result = docker_chaos::os::real_exec({docker_chaos::os::container_runtime(), "exec",
-                                               k_collector_container, "cat", k_export_path});
-    return result.out;
+    const std::string host_copy = "/tmp/otlp-export-readback.jsonl";
+    auto result = docker_chaos::os::real_exec(
+        {docker_chaos::os::container_runtime(), "cp",
+         std::string(k_collector_container) + ":" + k_export_path, host_copy});
+    if (result.code != 0) return result.out;  // Error text, printed by the caller's dump.
+    std::ifstream in(host_copy);
+    std::stringstream content;
+    content << in.rdbuf();
+    return content.str();
 }
 
 }  // namespace
@@ -127,6 +138,10 @@ BOOST_FIXTURE_TEST_CASE(real_metrics_and_logs_reach_the_collector, OtlpCollector
 
     std::string exported = read_collector_export();
     BOOST_REQUIRE_MESSAGE(!exported.empty(), "Collector's export file is empty");
+    // real_exec merges stderr, so on an exec failure `exported` is a docker
+    // error string rather than file content — print what was actually read
+    // so a failure below is diagnosable from the CI log alone.
+    BOOST_TEST_MESSAGE("collector export head:\n" << exported.substr(0, 2000));
 
     BOOST_TEST(exported.find("\"resourceMetrics\"") != std::string::npos);
     BOOST_TEST(exported.find("\"resourceLogs\"") != std::string::npos);

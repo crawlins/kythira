@@ -36,6 +36,12 @@ services:
 
   node1:
     image: kythira-chaos-node:dev
+    # The entrypoint's iptables CHAOS-chain setup needs NET_ADMIN; without
+    # it the container exits before chaos_node ever starts (found by the
+    # metrics scenario tests' log dump: "iptables ... you must be root",
+    # Exited (4)). Same grant docker-compose.yml gives every node.
+    cap_add:
+      - NET_ADMIN
     container_name: otlp-collector-test-node1
     hostname: node1
     environment:
