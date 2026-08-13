@@ -1,0 +1,57 @@
+# docker/cloud-monitoring/cloudwatch-collector-config.yaml — example
+# OpenTelemetry Collector config routing Kythira's telemetry to AWS
+# CloudWatch (doc/TODO.md "Metrics Backends", AWS CloudWatch entry;
+# operator docs in doc/cloud_vendor_monitoring.md).
+#
+# Kythira deliberately ships no bespoke CloudWatch kythira::metrics
+# implementation — the node emits OTLP/HTTP JSON (otlp_metrics/otlp_logger,
+# enabled via OTLP_ENDPOINT) and this Collector config owns the vendor
+# integration:
+#
+#   - metrics: awsemf renders each export as CloudWatch Embedded Metric
+#     Format JSON and PutLogEvents it into a log group; CloudWatch extracts
+#     the metrics server-side into the `Kythira/ChaosNode` namespace.
+#   - logs: awscloudwatchlogs delivers the node's diagnostic_logger output
+#     to a second log group.
+#
+# Credentials/region follow the AWS SDK's default resolution (env vars,
+# instance profile, ...) — nothing secret lives in this file.
+#
+# KYTHIRA_CLOUDWATCH_ENDPOINT overrides the CloudWatch Logs endpoint; leave
+# it unset/empty for real AWS (empty string is the exporters' own default).
+# docker/cloudwatch-localstack-compose.yml points it at a LocalStack
+# container, which is how tests/docker_chaos/cloudwatch_metrics_scenario_
+# test.cpp round-trips this exact file without a real AWS account, and
+# scripts/real-cloud-monitoring/aws-cloudwatch.sh runs it unset against the
+# real service.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  awsemf:
+    namespace: Kythira/ChaosNode
+    log_group_name: /kythira/chaos-node/metrics
+    log_stream_name: kythira-otel
+    # Resource attributes (service.name, service.instance.id — the node ID)
+    # become EMF dimensions too, matching how every other Kythira backend
+    # labels series by node identity.
+    resource_to_telemetry_conversion:
+      enabled: true
+    endpoint: "${env:KYTHIRA_CLOUDWATCH_ENDPOINT}"
+  awscloudwatchlogs:
+    log_group_name: /kythira/chaos-node/logs
+    log_stream_name: kythira-otel
+    endpoint: "${env:KYTHIRA_CLOUDWATCH_ENDPOINT}"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [awsemf]
+    logs:
+      receivers: [otlp]
+      exporters: [awscloudwatchlogs]

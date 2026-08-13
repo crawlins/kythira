@@ -1,0 +1,46 @@
+# docker/cloud-monitoring/gcp-cloud-monitoring-collector-config.yaml —
+# example OpenTelemetry Collector config routing Kythira's telemetry to
+# Google Cloud (doc/TODO.md "Metrics Backends", GCP Cloud Monitoring entry;
+# operator docs in doc/cloud_vendor_monitoring.md).
+#
+# Kythira deliberately ships no bespoke Cloud Monitoring kythira::metrics
+# implementation — the node emits OTLP/HTTP JSON (enabled via
+# OTLP_ENDPOINT) and the googlecloud exporter writes metrics through Cloud
+# Monitoring's timeSeries.create API (as workload.googleapis.com/* custom
+# metrics) and logs through Cloud Logging.
+#
+# Authentication is Application Default Credentials: point
+# GOOGLE_APPLICATION_CREDENTIALS at a service-account or workload-identity
+# credential file (roles/monitoring.metricWriter + roles/logging.logWriter),
+# or run where ADC is ambient (GCE/GKE). GCP_PROJECT_ID may be left empty
+# to take the project from the credentials.
+#
+# Validated (syntax/schema) by tests/docker_chaos/
+# cloud_monitoring_config_validation_test.cpp: Cloud Monitoring has no
+# self-hostable emulator of its ingestion API to round-trip against, so the
+# Docker tier validates this file with the Collector's own `validate`
+# command; scripts/real-cloud-monitoring/gcp-cloud-monitoring.sh exercises
+# it against the real service.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  googlecloud:
+    project: "${env:GCP_PROJECT_ID}"
+    log:
+      # Log entries without a gcp.log_name attribute (Kythira's logger sets
+      # none) need a default log name to land under in Cloud Logging.
+      default_log_name: kythira-chaos-node
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [googlecloud]
+    logs:
+      receivers: [otlp]
+      exporters: [googlecloud]
