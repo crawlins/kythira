@@ -1733,6 +1733,40 @@ target_compile_features(victoriametrics_metrics_test PRIVATE cxx_std_23)
 add_test(NAME victoriametrics_metrics_test COMMAND victoriametrics_metrics_test)
 set_tests_properties(victoriametrics_metrics_test PROPERTIES TIMEOUT 60 LABELS "unit")
 
+# ── Logging alongside the self-hosted metrics backends (doc/TODO.md) ─────────
+
+# loki_logger: push path, stream labels/grouping, logfmt rendering,
+# min-level filtering — via the injected poster seam (otlp_test_support.hpp,
+# hence boost_json; see the otlp blocks above).
+add_executable(loki_logger_test loki_logger_test.cpp)
+target_link_libraries(loki_logger_test PRIVATE
+    network_simulator
+    boost_json
+)
+target_compile_features(loki_logger_test PRIVATE cxx_std_23)
+add_test(NAME loki_logger_test COMMAND loki_logger_test)
+set_tests_properties(loki_logger_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# victorialogs_logger: ND-JSON line shape, structural JSON escaping,
+# min-level filtering — via the injected line-sender seam.
+add_executable(victorialogs_logger_test victorialogs_logger_test.cpp)
+target_link_libraries(victorialogs_logger_test PRIVATE
+    network_simulator
+    boost_json
+)
+target_compile_features(victorialogs_logger_test PRIVATE cxx_std_23)
+add_test(NAME victorialogs_logger_test COMMAND victorialogs_logger_test)
+set_tests_properties(victorialogs_logger_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# telegraf_logger: line-protocol log-event shape and string-field escaping.
+add_executable(telegraf_logger_test telegraf_logger_test.cpp)
+target_link_libraries(telegraf_logger_test PRIVATE
+    network_simulator
+)
+target_compile_features(telegraf_logger_test PRIVATE cxx_std_23)
+add_test(NAME telegraf_logger_test COMMAND telegraf_logger_test)
+set_tests_properties(telegraf_logger_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
 # Membership manager concept test
 add_executable(membership_concept_test membership_concept_test.cpp)
 target_link_libraries(membership_concept_test PRIVATE
