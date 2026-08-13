@@ -6,12 +6,16 @@
 #include <raft/file_persistence.hpp>
 #include <raft/membership.hpp>
 #include <raft/metrics.hpp>
+#include <raft/netdata_metrics.hpp>
 #include <raft/otlp_logger.hpp>
 #include <raft/otlp_metrics.hpp>
+#include <raft/prometheus_metrics.hpp>
 #include <raft/raft.hpp>
+#include <raft/telegraf_metrics.hpp>
 #include <raft/tcp_raft_types.hpp>
 #include <raft/tcp_rpc.hpp>
 #include <raft/test_state_machine.hpp>
+#include <raft/victoriametrics_metrics.hpp>
 
 #ifdef KYTHIRA_FAULT_INJECTION
 #include <fiu.h>
@@ -60,6 +64,22 @@ struct tcp_raft_types_with_docker_qm : kythira::tcp_raft_types {
 struct tcp_raft_types_with_otlp : kythira::tcp_raft_types {
     using logger_type = kythira::otlp_logger;
     using metrics_type = kythira::otlp_metrics;
+};
+
+// Self-hosted metrics backends (doc/TODO.md "Metrics Backends"). Same
+// swap-one-alias pattern as tcp_raft_types_with_otlp; logger stays the
+// default console_logger — these backends are metrics-only.
+struct tcp_raft_types_with_prometheus : kythira::tcp_raft_types {
+    using metrics_type = kythira::prometheus_metrics;
+};
+struct tcp_raft_types_with_victoriametrics : kythira::tcp_raft_types {
+    using metrics_type = kythira::victoriametrics_metrics;
+};
+struct tcp_raft_types_with_telegraf : kythira::tcp_raft_types {
+    using metrics_type = kythira::telegraf_metrics;
+};
+struct tcp_raft_types_with_netdata : kythira::tcp_raft_types {
+    using metrics_type = kythira::netdata_metrics;
 };
 
 // Core startup logic templated on the raft types.  Both the plain and the
@@ -185,6 +205,97 @@ int main(int argc, char** argv) {
         };
 
         return run_node<tcp_raft_types_with_otlp>(cfg, std::move(ncfg));
+    }
+
+    // ── Self-hosted metrics backends (doc/TODO.md "Metrics Backends") ─────────
+    // Same opt-in shape as OTLP above; one backend per run, checked in this
+    // fixed precedence order (OTLP > Prometheus > VictoriaMetrics > Telegraf >
+    // NetData), each branch returning so a second selection is unreachable
+    // rather than silently ignored. Logger stays console_logger on all four.
+
+    if (cfg.prometheus_metrics_port) {
+        auto registry = std::make_shared<kythira::prometheus_registry>();
+        // The scrape server must outlive run_node(); constructing it in this
+        // block keeps it alive until the node has fully shut down.
+        kythira::prometheus_scrape_server scrape(registry, "0.0.0.0", *cfg.prometheus_metrics_port);
+        std::cerr << "[info] telemetry: prometheus (scrape :" << scrape.port() << "/metrics)\n";
+
+        kythira::node_config<tcp_raft_types_with_prometheus> ncfg{
+            .node_id = cfg.node_id,
+            .network_client = std::move(client),
+            .network_server = std::move(server),
+            .persistence = std::move(persistence),
+            .logger = kythira::console_logger{},
+            .metrics = kythira::prometheus_metrics{registry},
+            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .config = raft_cfg,
+        };
+        return run_node<tcp_raft_types_with_prometheus>(cfg, std::move(ncfg));
+    }
+
+    if (cfg.victoriametrics_endpoint) {
+        kythira::victoriametrics_config vm_cfg;
+        vm_cfg.endpoint_base_url = *cfg.victoriametrics_endpoint;
+        // Pushed series have no scrape target to inherit identity from —
+        // job/instance travel as constant labels (victoriametrics_metrics.hpp).
+        vm_cfg.constant_labels = {{"job", cfg.otlp_service_name},
+                                  {"instance", std::to_string(cfg.node_id)}};
+        std::cerr << "[info] telemetry: victoriametrics (" << *cfg.victoriametrics_endpoint
+                  << ")\n";
+
+        kythira::node_config<tcp_raft_types_with_victoriametrics> ncfg{
+            .node_id = cfg.node_id,
+            .network_client = std::move(client),
+            .network_server = std::move(server),
+            .persistence = std::move(persistence),
+            .logger = kythira::console_logger{},
+            .metrics = kythira::victoriametrics_metrics{vm_cfg},
+            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .config = raft_cfg,
+        };
+        return run_node<tcp_raft_types_with_victoriametrics>(cfg, std::move(ncfg));
+    }
+
+    if (cfg.telegraf_endpoint) {
+        kythira::telegraf_metrics_config tg_cfg;
+        tg_cfg.host = cfg.telegraf_endpoint->first;
+        tg_cfg.port = cfg.telegraf_endpoint->second;
+        tg_cfg.protocol =
+            cfg.telegraf_tcp ? kythira::telegraf_protocol::tcp : kythira::telegraf_protocol::udp;
+        std::cerr << "[info] telemetry: telegraf (" << tg_cfg.host << ":" << tg_cfg.port << " "
+                  << (cfg.telegraf_tcp ? "tcp" : "udp") << ")\n";
+
+        kythira::node_config<tcp_raft_types_with_telegraf> ncfg{
+            .node_id = cfg.node_id,
+            .network_client = std::move(client),
+            .network_server = std::move(server),
+            .persistence = std::move(persistence),
+            .logger = kythira::console_logger{},
+            .metrics = kythira::telegraf_metrics{tg_cfg},
+            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .config = raft_cfg,
+        };
+        return run_node<tcp_raft_types_with_telegraf>(cfg, std::move(ncfg));
+    }
+
+    if (cfg.netdata_endpoint) {
+        kythira::netdata_metrics_config nd_cfg;
+        nd_cfg.host = cfg.netdata_endpoint->first;
+        nd_cfg.port = cfg.netdata_endpoint->second;
+        std::cerr << "[info] telemetry: netdata statsd (" << nd_cfg.host << ":" << nd_cfg.port
+                  << ")\n";
+
+        kythira::node_config<tcp_raft_types_with_netdata> ncfg{
+            .node_id = cfg.node_id,
+            .network_client = std::move(client),
+            .network_server = std::move(server),
+            .persistence = std::move(persistence),
+            .logger = kythira::console_logger{},
+            .metrics = kythira::netdata_metrics{nd_cfg},
+            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .config = raft_cfg,
+        };
+        return run_node<tcp_raft_types_with_netdata>(cfg, std::move(ncfg));
     }
 
     std::cerr << "[info] telemetry: console/noop\n";
