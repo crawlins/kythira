@@ -1,0 +1,42 @@
+# docker/cloud-monitoring/azure-monitor-collector-config.yaml — example
+# OpenTelemetry Collector config routing Kythira's telemetry to Azure
+# Monitor (doc/TODO.md "Metrics Backends", Azure Monitor entry; operator
+# docs in doc/cloud_vendor_monitoring.md).
+#
+# Kythira deliberately ships no bespoke Azure Monitor kythira::metrics
+# implementation — the node emits OTLP/HTTP JSON (enabled via
+# OTLP_ENDPOINT) and the azuremonitor exporter delivers metrics and logs
+# into an Application Insights resource (Azure Monitor's application
+# telemetry ingestion path; metrics land as customMetrics, logs as traces
+# records, queryable via KQL and chartable in Metrics Explorer).
+#
+# APPLICATIONINSIGHTS_CONNECTION_STRING is the resource's connection string
+# ("InstrumentationKey=<uuid>;IngestionEndpoint=https://...") from the
+# Azure portal. It authorizes ingestion, so treat it as a secret — pass it
+# via the environment, never commit a real one.
+#
+# Validated (syntax/schema) by tests/docker_chaos/
+# cloud_monitoring_config_validation_test.cpp: Azure Monitor has no
+# self-hostable emulator of its ingestion API to round-trip against, so the
+# Docker tier validates this file with the Collector's own `validate`
+# command; scripts/real-cloud-monitoring/azure-monitor.sh exercises it
+# against the real service.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  azuremonitor:
+    connection_string: "${env:APPLICATIONINSIGHTS_CONNECTION_STRING}"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [azuremonitor]
+    logs:
+      receivers: [otlp]
+      exporters: [azuremonitor]

@@ -1,0 +1,63 @@
+# docker/cloud-monitoring/alibaba-cloudmonitor-collector-config.yaml —
+# example OpenTelemetry Collector config routing Kythira's metrics to
+# Alibaba Cloud CloudMonitor (doc/TODO.md "Metrics Backends", Alibaba Cloud
+# CloudMonitor entry; operator docs in doc/cloud_vendor_monitoring.md).
+#
+# Kythira deliberately ships no bespoke CloudMonitor kythira::metrics
+# implementation — the node emits OTLP/HTTP JSON (enabled via
+# OTLP_ENDPOINT) and this config forwards it on.
+#
+# Ingestion path: CloudMonitor's legacy custom-metrics upload API
+# (metrichub .../metric/custom/upload) was deprecated by Alibaba in
+# September 2024 in favour of CloudMonitor 2.0's Prometheus-compatible
+# ingestion (Hybrid Cloud Monitoring / Managed Service for Prometheus),
+# whose documented Collector integration is exactly this: the
+# prometheusremotewrite exporter pointed at the instance's remote-write
+# URL. KYTHIRA_CMS_REMOTE_WRITE_URL comes from the CloudMonitor console
+# (instance settings → remote write endpoint, .../api/v3/write).
+#
+# Authentication is HTTP Basic with an Alibaba Cloud AccessKey pair
+# (password-free VPC-internal writes need no auth block at all — see the
+# operator docs). Pass both via the environment; never commit real keys.
+#
+# Logs: CloudMonitor does not ingest logs; Alibaba's log product is Log
+# Service (SLS), reachable from a Collector via the alibabacloudlogservice
+# exporter — see doc/cloud_vendor_monitoring.md for why no logs pipeline
+# ships here.
+#
+# Validated (syntax/schema) by tests/docker_chaos/
+# cloud_monitoring_config_validation_test.cpp: CloudMonitor has no
+# self-hostable emulator of its ingestion API to round-trip against, so the
+# Docker tier validates this file with the Collector's own `validate`
+# command; scripts/real-cloud-monitoring/alibaba-cloudmonitor.sh exercises
+# it against the real service.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+extensions:
+  basicauth/cms:
+    client_auth:
+      username: "${env:ALIBABA_CLOUD_ACCESS_KEY_ID}"
+      password: "${env:ALIBABA_CLOUD_ACCESS_KEY_SECRET}"
+
+exporters:
+  prometheusremotewrite:
+    endpoint: "${env:KYTHIRA_CMS_REMOTE_WRITE_URL}"
+    auth:
+      authenticator: basicauth/cms
+    # Resource attributes (service.name, service.instance.id — the node ID)
+    # become series labels, matching how every other Kythira backend labels
+    # series by node identity.
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  extensions: [basicauth/cms]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheusremotewrite]

@@ -1,0 +1,94 @@
+# docker/cloudwatch-localstack-compose.yml — one chaos_node instance
+# emitting OTLP to a real OpenTelemetry Collector configured per the AWS
+# CloudWatch example config, delivering into a LocalStack CloudWatch.
+#
+# Used by tests/docker_chaos/cloudwatch_metrics_scenario_test.cpp
+# (doc/TODO.md "Metrics Backends" testing requirement, Docker tier, AWS
+# CloudWatch entry) to prove the example config really routes Kythira's
+# telemetry through the CloudWatch ingestion API — recording call ->
+# otlp_exporter -> Collector OTLP receiver -> awsemf/awscloudwatchlogs
+# exporter -> real PutLogEvents against LocalStack's CloudWatch Logs — not
+# just that the config parses. CloudWatch is the one cloud-vendor
+# monitoring entry with a self-hostable emulator of its ingestion API
+# (LocalStack, the same emulator aws_quorum_manager_localstack_test.cpp
+# uses), so it gets a full data round-trip where the other four vendors
+# get config validation (see cloud_monitoring_config_validation_test.cpp).
+#
+# The Collector runs the UNMODIFIED example config
+# (cloud-monitoring/cloudwatch-collector-config.yaml): LocalStack redirect
+# and dummy credentials arrive purely through the environment, so the file
+# the test exercises is byte-for-byte the file operators deploy.
+#
+# A single node is sufficient (majority of 1, self-elects) — same
+# rationale as otlp-collector-compose.yml.
+#
+# No static IPs (CLAUDE.md container-runtime-compatibility rule): services
+# address each other by compose service name only.
+
+services:
+  localstack:
+    # 4.x, NOT the newer date-versioned tags (2026.x): those are the
+    # licensed distribution and exit 55 ("License activation failed ...
+    # set the LOCALSTACK_AUTH_TOKEN variable") without a paid auth token —
+    # observed on this test's first smoke dispatch (run 31702470663). The
+    # 4.x line is the free community edition, and CloudWatch Logs +
+    # CloudWatch are community-tier services.
+    image: localstack/localstack:4.14.0
+    container_name: cloudwatch-localstack-test-localstack
+    hostname: localstack
+    environment:
+      # Eager-load just the two services this test touches; everything else
+      # stays cold for a faster, smaller emulator.
+      SERVICES: "cloudwatch,logs"
+    networks:
+      - cloudwatch-localstack-net
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    container_name: cloudwatch-localstack-test-collector
+    hostname: otel-collector
+    volumes:
+      - ./cloud-monitoring/cloudwatch-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      # LocalStack accepts any well-formed static credentials.
+      AWS_ACCESS_KEY_ID: "test"
+      AWS_SECRET_ACCESS_KEY: "test"
+      AWS_REGION: "us-east-1"
+      KYTHIRA_CLOUDWATCH_ENDPOINT: "http://localstack:4566"
+    depends_on:
+      - localstack
+    networks:
+      - cloudwatch-localstack-net
+
+  node1:
+    image: kythira-chaos-node:dev
+    # The entrypoint's iptables CHAOS-chain setup needs NET_ADMIN; without
+    # it the container exits before chaos_node ever starts (found by the
+    # metrics scenario tests' log dump: "iptables ... you must be root",
+    # Exited (4)). Same grant docker-compose.yml gives every node.
+    cap_add:
+      - NET_ADMIN
+    container_name: cloudwatch-localstack-test-node1
+    hostname: node1
+    environment:
+      NODE_ID: "1"
+      PEERS: ""
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+      OTLP_ENDPOINT: "http://otel-collector:4318"
+      OTLP_SERVICE_NAME: "kythira-chaos-node"
+    ports:
+      - "8096:8080"   # HTTP control plane, for the test's health/command probes
+    depends_on:
+      - otel-collector
+    networks:
+      - cloudwatch-localstack-net
+
+networks:
+  cloudwatch-localstack-net:
+    driver: bridge
