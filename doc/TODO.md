@@ -2626,8 +2626,19 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   convenient: instance configurations `kythira-ci-config-userdata-probe`,
   `-diag2`, `-mime-diag`, `-mime-diag2`, `-ubuntu24-heartbeat` (v1), `-v2`
   (the bucket object `heartbeat/local-debug/` is already deleted).
-- [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
-  a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
+- [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group.
+  **Spec authored August 13, 2026** (`.kiro/specs/alibaba-cloud-services/`):
+  `alibaba_ess_quorum_manager` (ESS capacity + ECS tags, mirroring
+  `aws_asg_quorum_manager` semantics) and — per the persistence entry's
+  mandate below — `alibaba_oss_persistence_engine`, on hand-rolled
+  ACS3-HMAC-SHA256 / OSS-V4 signing following the OCI no-SDK shape.
+  **The certificate provider this entry originally named (CAS Private CA)
+  was descoped the same day by operator decision, on cost grounds — no
+  Alibaba CA, private or public, will be purchased; revivable under the
+  right conditions** (the spec's Requirement 12 records the rationale,
+  the revival conditions, and where the drafted requirements live).
+  Implementation not started; the real-cloud tier is specced fail-closed
+  because no Alibaba account exists yet.
 - [ ] **Cloud key-object persistence engines — write the spec** (a new
   `.kiro/specs/` directory): one `kythira::persistence_engine`
   (`include/raft/persistence.hpp`) implementation per implemented cloud
@@ -2643,11 +2654,14 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   before returning; per-object PUT latency puts that on the hot election
   path) and say explicitly what the per-provider consistency model
   guarantees (S3/GCS/OCI strong read-after-write vs. what the engine
-  actually needs). No Alibaba spec exists yet — **whichever spec introduces
-  Alibaba Cloud support (its entry above) SHALL include an Alibaba OSS
-  key-object persistence engine in scope**, so the provider lands with
-  parity instead of joining the example-config debt documented at this
-  section's top.
+  actually needs). **The Alibaba requirement is discharged**: the mandate
+  that whichever spec introduces Alibaba Cloud support SHALL include an
+  Alibaba OSS key-object persistence engine in scope is now met by
+  `.kiro/specs/alibaba-cloud-services/` (Requirements 14–15), whose engine
+  keeps deliberate single-slot parity with `file_persistence_engine` and
+  defers retention/backup/restore/fencing decisions to THIS spec so they
+  can be made uniformly across providers — write this spec before (or
+  with) that engine's cross-provider follow-ons.
 
 ### RPC Serializer Implementations
 
