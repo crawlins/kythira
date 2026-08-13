@@ -1678,6 +1678,61 @@ target_compile_features(otlp_logger_test PRIVATE cxx_std_23)
 add_test(NAME otlp_logger_test COMMAND otlp_logger_test)
 set_tests_properties(otlp_logger_test PROPERTIES TIMEOUT 60 LABELS "unit")
 
+# ── Self-hosted metrics backends (doc/TODO.md "Metrics Backends") ────────────
+
+# prometheus_metrics: registry aggregation across copied handles, text
+# exposition rendering, sanitization/escaping, and a real ephemeral-port
+# scrape against prometheus_scrape_server. httplib comes in transitively
+# through network_simulator (same as the transports).
+add_executable(prometheus_metrics_test prometheus_metrics_test.cpp)
+target_link_libraries(prometheus_metrics_test PRIVATE
+    network_simulator
+)
+target_compile_features(prometheus_metrics_test PRIVATE cxx_std_23)
+add_test(NAME prometheus_metrics_test COMMAND prometheus_metrics_test)
+set_tests_properties(prometheus_metrics_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# metrics_line_exporter: payload packing under max_payload_bytes, drop-oldest
+# overflow, send-failure accounting, final-flush-on-destruction — all with an
+# injected sender, no real sockets.
+add_executable(metrics_line_exporter_unit_test metrics_line_exporter_unit_test.cpp)
+target_link_libraries(metrics_line_exporter_unit_test PRIVATE
+    network_simulator
+)
+target_compile_features(metrics_line_exporter_unit_test PRIVATE cxx_std_23)
+add_test(NAME metrics_line_exporter_unit_test COMMAND metrics_line_exporter_unit_test)
+set_tests_properties(metrics_line_exporter_unit_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# telegraf_metrics: InfluxDB line-protocol rendering and escaping.
+add_executable(telegraf_metrics_test telegraf_metrics_test.cpp)
+target_link_libraries(telegraf_metrics_test PRIVATE
+    network_simulator
+)
+target_compile_features(telegraf_metrics_test PRIVATE cxx_std_23)
+add_test(NAME telegraf_metrics_test COMMAND telegraf_metrics_test)
+set_tests_properties(telegraf_metrics_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# netdata_metrics: StatsD rendering, DataDog-style tags, sanitization.
+add_executable(netdata_metrics_test netdata_metrics_test.cpp)
+target_link_libraries(netdata_metrics_test PRIVATE
+    network_simulator
+)
+target_compile_features(netdata_metrics_test PRIVATE cxx_std_23)
+add_test(NAME netdata_metrics_test COMMAND netdata_metrics_test)
+set_tests_properties(netdata_metrics_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# victoriametrics_metrics: cumulative-exposition pushes via the injected
+# http_poster_fn seam (reused from otlp_test_support.hpp, hence boost_json —
+# otlp_exporter.hpp pulls Boost.JSON in; see the otlp blocks above).
+add_executable(victoriametrics_metrics_test victoriametrics_metrics_test.cpp)
+target_link_libraries(victoriametrics_metrics_test PRIVATE
+    network_simulator
+    boost_json
+)
+target_compile_features(victoriametrics_metrics_test PRIVATE cxx_std_23)
+add_test(NAME victoriametrics_metrics_test COMMAND victoriametrics_metrics_test)
+set_tests_properties(victoriametrics_metrics_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
 # Membership manager concept test
 add_executable(membership_concept_test membership_concept_test.cpp)
 target_link_libraries(membership_concept_test PRIVATE
