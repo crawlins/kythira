@@ -2820,7 +2820,10 @@ as the Cloud Provider Support requirement above.
   `tests/docker_chaos/cloudwatch_metrics_scenario_test.cpp`). Real-cloud
   tier: `aws-monitoring` job (`scripts/real-cloud-monitoring/aws-cloudwatch.sh`),
   disabled by default behind `REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED`;
-  CI-role bundle `cloudwatch-monitoring`.
+  CI-role bundle `cloudwatch-monitoring` (provisioned August 13, 2026).
+  **Verified against the real service** the same day (dispatch run
+  31711151464): probe metric extracted into `Kythira/ChaosNode` by real
+  CloudWatch 9 s after ingestion, log record confirmed at 10 s.
 - [x] **Azure Monitor** — example OpenTelemetry Collector config
   (`docker/cloud-monitoring/azure-monitor-collector-config.yaml`):
   `azuremonitor` exporter, metrics + logs into an Application Insights
