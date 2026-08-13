@@ -1,8 +1,14 @@
 # Implementation Plan — Alibaba Cloud Services
 
-## Status: Not started (spec authored August 13, 2026; certificate
-provider descoped same day on cost grounds — see requirements.md
-Requirement 12, which also records the revival conditions)
+## Status: Wave 1 complete (August 13, 2026)
+
+Tasks 0 (partially — see spike-notes.md for what is documentation-deep vs
+live-verified), 1 and 2 are done: the shared control-plane foundation
+(`alibaba_client_config`, `alibaba_signing`, `alibaba_http_client`), the OSS
+data-plane client, the Kconfig menu + CMake gates, and 33 unit cases across
+three binaries, all green locally. The certificate provider was descoped the
+same day on cost grounds — see requirements.md Requirement 12, which also
+records the revival conditions.
 
 No Alibaba Cloud account exists for this project yet
 (`scripts/ci-cloud-credentials/alibaba/README.md`). Task 10 is the
@@ -54,12 +60,12 @@ Reference implementations to study before starting:
   CONFIRMED/CORRECTED/WAS format, folding corrections back into
   requirements.md/design.md in place.
 
-  - [ ] 0.1 **V3 signing canonical form** — capture one known-good signed
+  - [x] 0.1 **V3 signing canonical form** — CONFIRMED, fully reproducible (spike-notes.md Finding 1); golden vectors pinned in alibaba_signing_unit_test. — capture one known-good signed
         exchange (any trivial RPC call, e.g. `DescribeRegions`); derive
         golden vectors (canonical request, string-to-sign, Authorization)
         for the unit tests. Confirm percent-encoding rules and the signed
         header set with/without `x-acs-security-token`.
-  - [ ] 0.2 **OSS V4 signing canonical form** — same treatment for
+  - [~] 0.2 **OSS V4 signing canonical form** — canonical form CONFIRMED; final signature OPEN (vendor masked the example's secret — Finding 2). Live PutObject is the highest-value first-account check. — same treatment for
         PutObject/GetObject/ListObjectsV2; confirm the path-style
         addressing behavior the mock tier depends on (Requirement 2.3),
         and confirm the documented durability/consistency statements cited
@@ -71,7 +77,7 @@ Reference implementations to study before starting:
         shrink capacity atomically); confirm `DescribeScalingInstances`
         pagination and lifecycle-state vocabulary; confirm ECS
         `DescribeInstances` batch ID limit (Requirement 6.1).
-  - [ ] 0.4 **SDK decision checkpoint** — if 0.1/0.2 surface material
+  - [x] 0.4 **SDK decision checkpoint** — CONFIRMED no-SDK (Finding 5). — if 0.1/0.2 surface material
         problems with hand-rolled signing, record the fallback decision to
         adopt vcpkg `aliyun-oss-cpp-sdk` for the data plane only, and why;
         otherwise record CONFIRMED for the no-SDK path.
@@ -83,7 +89,7 @@ Reference implementations to study before starting:
     CORRECTED item's requirements/design text updated in place.
   - _Requirements: 1.3, 2.2, 6.1, 7.1, 8.1, 17.2_
 
-- [ ] 1. **Shared control-plane foundation**: `alibaba_client_config`,
+- [x] 1. **Shared control-plane foundation**: `alibaba_client_config`,
       `alibaba_signing`, `alibaba_http_client`
 
   - Create `include/raft/alibaba_client_config.hpp` (unconditional
@@ -103,7 +109,7 @@ Reference implementations to study before starting:
     them with a configure-time STATUS message (the OCI CMake pattern).
   - _Requirements: 1.1–1.9, 11.1–11.2, 16.2–16.3_
 
-- [ ] 2. **OSS data-plane client**: `alibaba_oss_client`
+- [x] 2. **OSS data-plane client**: `alibaba_oss_client`
 
   - Create `include/raft/alibaba_oss_client.hpp` per design: V4 signing
     (Task 0.2 vectors), four operations, path-style under override, XML
