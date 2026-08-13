@@ -1,0 +1,62 @@
+# docker/victoriametrics-metrics-compose.yml — one chaos_node instance
+# pushing its cumulative Prometheus exposition to a real VictoriaMetrics
+# single-node container.
+#
+# Used by tests/docker_chaos/victoriametrics_metrics_scenario_test.cpp
+# (doc/TODO.md "Metrics Backends" testing requirement, Docker tier) to prove
+# the full push path — recording call -> shared registry -> rendered text
+# exposition -> real POST to /api/v1/import/prometheus -> real
+# VictoriaMetrics parse/ingest — works end to end. The test asserts through
+# VictoriaMetrics' Prometheus-compatible query API, so a sample must have
+# made the whole trip, constant job/instance labels included.
+#
+# A single node is sufficient (majority of 1, self-elects) — same rationale
+# as otlp-collector-compose.yml.
+#
+# No static IPs (CLAUDE.md container-runtime-compatibility rule): the node
+# reaches VictoriaMetrics by compose service name only.
+
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.103.0
+    container_name: victoriametrics-metrics-test-vm
+    hostname: victoriametrics
+    # Flush ingested samples to the queryable index quickly; the default
+    # (up to ~30s) would force the test to oversleep.
+    command: ["--search.latencyOffset=1s"]
+    ports:
+      - "8429:8428"   # HTTP API (import + query), for the test's assertions
+    networks:
+      - victoriametrics-metrics-net
+
+  node1:
+    image: kythira-chaos-node:dev
+    # The entrypoint's iptables CHAOS-chain setup needs NET_ADMIN; without
+    # it the container exits before chaos_node ever starts (found by the
+    # metrics scenario tests' log dump: "iptables ... you must be root",
+    # Exited (4)). Same grant docker-compose.yml gives every node.
+    cap_add:
+      - NET_ADMIN
+    container_name: victoriametrics-metrics-test-node1
+    hostname: node1
+    environment:
+      NODE_ID: "1"
+      PEERS: ""
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+      VICTORIAMETRICS_ENDPOINT: "http://victoriametrics:8428"
+    ports:
+      - "8093:8080"   # HTTP control plane
+    depends_on:
+      - victoriametrics
+    networks:
+      - victoriametrics-metrics-net
+
+networks:
+  victoriametrics-metrics-net:
+    driver: bridge
