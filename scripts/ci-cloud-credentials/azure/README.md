@@ -89,3 +89,22 @@ The script prints the exact `gh variable set` commands to run — set
   variables) and a repository secret holding the CA certificate PEM,
   written to a file the workflow points
   `AZURE_TEST_KEY_VAULT_CA_CERT_FILE` at — `key-vault` bundle.
+
+## Monitoring-config test
+
+The Azure Monitor monitoring-config test (`azure-monitoring` job;
+`scripts/real-cloud-monitoring/azure-monitor.sh`; doc/TODO.md "Metrics
+Backends") reuses the same federated CI identity but has its own toggle,
+`REAL_CLOUD_TESTS_AZURE_MONITORING_ENABLED`, and needs two extra values:
+
+- an **Application Insights resource** (create one once, any workspace-based
+  resource is fine):
+  - its connection string → repository secret
+    `AZURE_MONITORING_CONNECTION_STRING` (it authorizes ingestion);
+  - its Application ID (API Access blade) → repository variable
+    `AZURE_MONITORING_APP_ID` (used for the query-side assertion);
+- a role assignment letting the CI service principal *read* the resource
+  (`Monitoring Reader` on it, or Reader on its resource group).
+
+Cost per run is effectively zero (one custom metric datapoint); ingestion
+into the resource is billed by volume, and nothing needs teardown.

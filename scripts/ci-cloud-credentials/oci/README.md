@@ -110,6 +110,37 @@ Both sit under `REAL_CLOUD_TESTS_OCI_ENABLED` and the master
 model. **Neither test binary exists yet** — Task 6 is open; the bundles are
 defined here so the policy and toggles are ready when it lands.
 
+## Monitoring-config test
+
+The OCI Monitoring monitoring-config test (`oci-monitoring` job;
+`scripts/real-cloud-monitoring/oci-monitoring.sh`; doc/TODO.md "Metrics
+Backends") is separate from the bundles above: it installs the vendor's
+**Management Agent** (in an `oraclelinux:8` container on the runner),
+points its PrometheusEmitter at a static exposition via the example config
+`docker/cloud-monitoring/oci-management-agent-prometheus-emitter.properties`,
+and confirms through `summarize-metrics-data` that the metric reached OCI
+Monitoring under the `kythira_chaos_node` namespace. Toggle:
+`REAL_CLOUD_TESTS_OCI_MONITORING_ENABLED`. It reuses the WIF credentials
+above plus:
+
+- secret `OCI_MGMT_AGENT_INSTALL_KEY` — a Management Agent install key
+  (console: Management Agents → Downloads and Keys), whose configured
+  compartment should be `OCI_CI_COMPARTMENT_ID`;
+- variable `OCI_MGMT_AGENT_INSTALLER_URL` — a URL for the Linux x86_64 ZIP
+  installer (download it once from the console and, e.g., publish it to
+  the `kythira-ci-artifacts` bucket behind a pre-authenticated request);
+- a policy allowing the agents' dynamic group to post metrics, e.g.
+  `Allow dynamic-group MgmtAgentGroup to use metrics in compartment <c>
+  where target.metrics.namespace='kythira_chaos_node'`;
+- the CI service user's group needs `read metrics` in the compartment for
+  the query-side assertion, and `manage management-agents` (delete) for
+  the post-run deregistration.
+
+**This test has never run against a live tenancy** — the installer URL and
+install key are not provisioned. On first use, check the response-file keys
+the script writes against the `input.rsp.example` inside the downloaded
+installer ZIP; the script comments flag the same caveat.
+
 ## Tenancy setup
 
 ### 1. Compartment

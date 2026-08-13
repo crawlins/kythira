@@ -26,6 +26,17 @@ run only:
 A repo admin can additionally require manual approval on top of all three
 toggles via the `real-cloud-tests` GitHub Environment.
 
+The cloud-vendor **monitoring-config tests** (doc/TODO.md "Metrics
+Backends"; `scripts/real-cloud-monitoring/`) are two-level rather than
+three: each is a single-purpose job gated by the master switch plus its own
+`REAL_CLOUD_TESTS_<PROVIDER>_MONITORING_ENABLED` toggle (with a matching
+`<provider>_monitoring_enabled` dispatch input). There is no bundle layer
+because each job runs exactly one test, and they sit outside the provider
+test jobs because they build no C++ at all — a real OpenTelemetry Collector
+(or, for OCI, the vendor's own Management Agent) runs the unmodified
+example config from `docker/cloud-monitoring/` and the vendor's query API
+confirms one synthetic metric arrived.
+
 ## Service bundles
 
 A "bundle" is a named group of cloud-provider permissions mapped 1:1 to one
@@ -40,6 +51,7 @@ bundles today:
 | `ca-cluster-node` | `ca_cluster_node_real_ec2_test` | EC2 lifecycle only |
 | `ca-cluster-node-rpc-tls` | `ca_cluster_node_rpc_tls_real_ec2_test` | EC2 lifecycle + Network ACL actions |
 | `ami-build` | *(no dedicated ctest binary — runs `packer build`)* | EC2 instance lifecycle + AMI/snapshot creation ([`packer/ca_cluster_node/`](../../packer/ca_cluster_node/)) |
+| `cloudwatch-monitoring` | *(no ctest binary — runs `scripts/real-cloud-monitoring/aws-cloudwatch.sh`)* | CloudWatch Logs ingest/read scoped to `/kythira/chaos-node/*` + `cloudwatch:ListMetrics` |
 
 ## Providers
 
@@ -47,9 +59,9 @@ bundles today:
 |---|---|---|
 | AWS | Implemented | [`aws/README.md`](aws/README.md) |
 | Azure | Implemented | [`azure/README.md`](azure/README.md) |
-| GCP | Not yet implemented; see `doc/TODO.md` Cloud Provider Support | — |
-| OCI | Components implemented and validated against a live tenancy; the real-cloud CTest binaries themselves are still open (`tasks.md` Task 6) | [`oci/README.md`](oci/README.md) |
-| Alibaba Cloud | Not yet implemented; see `doc/TODO.md` Cloud Provider Support | — |
+| GCP | Implemented | [`gcp/README.md`](gcp/README.md) |
+| OCI | Implemented (quorum/certificates suites + monitoring config) | [`oci/README.md`](oci/README.md) |
+| Alibaba Cloud | Monitoring-config test only; quorum manager/cert provider not yet implemented (`doc/TODO.md` Cloud Provider Support) | [`alibaba/README.md`](alibaba/README.md) |
 
 ## Why AWS needs two provisioning scripts, not one
 

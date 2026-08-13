@@ -71,6 +71,20 @@ gh variable set REAL_CLOUD_TESTS_GCP_QUORUM_MANAGER_ENABLED --body "true"
 gh variable set REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED     --body "true"
 ```
 
+## Monitoring-config test
+
+The Cloud Monitoring monitoring-config test (`gcp-monitoring` job;
+`scripts/real-cloud-monitoring/gcp-cloud-monitoring.sh`; doc/TODO.md
+"Metrics Backends") reuses the same workload-identity CI service account
+and project variables but has its own toggle,
+`REAL_CLOUD_TESTS_GCP_MONITORING_ENABLED`. Grant the service account three
+extra project-level roles (not part of any bundle above):
+`roles/monitoring.metricWriter` and `roles/logging.logWriter` (the example
+config's ingest path) plus `roles/monitoring.viewer` (the query-side
+assertion). Cost per run is effectively zero — one
+`workload.googleapis.com/kythira_ci_monitoring_probe` datapoint and one log
+entry; nothing needs teardown.
+
 ## What the tests create (and clean up)
 
 The real-GCE fixture creates its own VPC subnetworks, service account (if
