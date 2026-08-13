@@ -36,6 +36,17 @@ struct node_config {
     std::vector<std::pair<std::string, std::string>> otlp_headers;
     std::string otlp_service_name{"kythira-chaos-node"};
 
+    // Self-hosted metrics backends (doc/TODO.md "Metrics Backends"). Same
+    // opt-in pattern as OTLP: each is enabled by its env var being set, and
+    // at most one metrics backend (including OTLP) may be selected per run —
+    // main.cpp enforces the precedence and prints which one won.
+    std::optional<std::uint16_t> prometheus_metrics_port;  ///< PROMETHEUS_METRICS_PORT
+    std::optional<std::string> victoriametrics_endpoint;   ///< VICTORIAMETRICS_ENDPOINT
+    std::optional<std::pair<std::string, std::uint16_t>> telegraf_endpoint;  ///< TELEGRAF_ENDPOINT
+    bool telegraf_tcp{false};  ///< TELEGRAF_PROTOCOL=tcp (default udp)
+    std::optional<std::pair<std::string, std::uint16_t>>
+        netdata_endpoint;  ///< NETDATA_STATSD_ENDPOINT
+
     // Parse from environment variables.
     // Throws std::invalid_argument if NODE_ID or PEERS are missing / malformed.
     static auto from_env() -> node_config {
@@ -116,6 +127,43 @@ struct node_config {
             } else {
                 header_tok += c;
             }
+        }
+
+        // Self-hosted metrics backends — unset/empty means off, same as
+        // OTLP_ENDPOINT above. host:port values split on the LAST ':' so a
+        // bracketed IPv6 literal's colons don't confuse the parse.
+        auto parse_host_port = [](const std::string& value,
+                                  const char* var) -> std::pair<std::string, std::uint16_t> {
+            auto colon = value.rfind(':');
+            if (colon == std::string::npos || colon == 0 || colon + 1 == value.size()) {
+                throw std::invalid_argument(std::string("chaos_node: malformed ") + var +
+                                            " (want host:port): " + value);
+            }
+            return {value.substr(0, colon),
+                    static_cast<std::uint16_t>(std::stoul(value.substr(colon + 1)))};
+        };
+
+        if (std::string port_str = get_opt("PROMETHEUS_METRICS_PORT", ""); !port_str.empty()) {
+            cfg.prometheus_metrics_port = static_cast<std::uint16_t>(std::stoul(port_str));
+        }
+
+        if (std::string vm_str = get_opt("VICTORIAMETRICS_ENDPOINT", ""); !vm_str.empty()) {
+            cfg.victoriametrics_endpoint = std::move(vm_str);
+        }
+
+        if (std::string tg_str = get_opt("TELEGRAF_ENDPOINT", ""); !tg_str.empty()) {
+            cfg.telegraf_endpoint = parse_host_port(tg_str, "TELEGRAF_ENDPOINT");
+        }
+
+        std::string tg_proto = get_opt("TELEGRAF_PROTOCOL", "udp");
+        if (tg_proto != "udp" && tg_proto != "tcp") {
+            throw std::invalid_argument("chaos_node: TELEGRAF_PROTOCOL must be udp or tcp, got: " +
+                                        tg_proto);
+        }
+        cfg.telegraf_tcp = (tg_proto == "tcp");
+
+        if (std::string nd_str = get_opt("NETDATA_STATSD_ENDPOINT", ""); !nd_str.empty()) {
+            cfg.netdata_endpoint = parse_host_port(nd_str, "NETDATA_STATSD_ENDPOINT");
         }
 
         return cfg;
