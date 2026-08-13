@@ -53,3 +53,19 @@ One line per `emit()`: `measurement[,tag=value...] field=value <ns>`.
 Payloads pack multiple newline-separated lines up to
 `metrics_line_exporter_config::max_payload_bytes` (default 1400, one safe
 UDP datagram).
+
+## Logging: same listener, line-protocol log events
+
+`telegraf_logger` (`include/raft/telegraf_logger.hpp`) is this ecosystem's
+logging leg — a `kythira::diagnostic_logger` emitting each log call as one
+line-protocol record (measurement `kythira_log`, `level` tag plus constant
+identity tags, `msg` and every structured pair as string fields, trailing
+nanosecond timestamp) to the same `socket_listener` the metrics leg uses.
+No new listener, port, or agent config: whatever outputs the operator's
+Telegraf routes metrics to receive the log events the same way — the
+fan-out inheritance that justifies this backend, applied to logs.
+
+On `chaos_node`, set `TELEGRAF_LOGS=on` — it pairs with this metrics
+backend and requires `TELEGRAF_ENDPOINT` to be set too (startup rejects an
+unpaired logger). The scenario test asserts `kythira_log` events survive
+Telegraf's parse into its file output alongside the metrics.
