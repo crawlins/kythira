@@ -2628,6 +2628,26 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   (the bucket object `heartbeat/local-debug/` is already deleted).
 - [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
   a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
+- [ ] **Cloud key-object persistence engines — write the spec** (a new
+  `.kiro/specs/` directory): one `kythira::persistence_engine`
+  (`include/raft/persistence.hpp`) implementation per implemented cloud
+  provider, backed by that provider's key-object store — AWS S3, Azure Blob
+  Storage, GCP Cloud Storage, and OCI Object Storage (whose bucket
+  plumbing, `kythira-ci-artifacts`, already exists from the Requirement 4.4
+  heartbeat work). Persisting term/voted_for/log/snapshot in a durable
+  object store is also the natural seam for off-node backup and
+  restore-into-fresh-cluster flows, which today don't exist at all —
+  `file_persistence_engine` keeps a single overwritten snapshot slot on
+  local disk. The spec must confront the Raft paper's synchronous-flush
+  requirement head on (`save_current_term`/`save_voted_for` must be durable
+  before returning; per-object PUT latency puts that on the hot election
+  path) and say explicitly what the per-provider consistency model
+  guarantees (S3/GCS/OCI strong read-after-write vs. what the engine
+  actually needs). No Alibaba spec exists yet — **whichever spec introduces
+  Alibaba Cloud support (its entry above) SHALL include an Alibaba OSS
+  key-object persistence engine in scope**, so the provider lands with
+  parity instead of joining the example-config debt documented at this
+  section's top.
 
 ### RPC Serializer Implementations
 
@@ -2776,6 +2796,16 @@ as the Cloud Provider Support requirement above.
   (CloudWatch, Prometheus, etc.) indirectly — those entries are not
   themselves considered done by this one; they remain useful as direct,
   Collector-free integrations.
+  **Correction, August 13, 2026 (found while verifying the four self-hosted
+  backends below): this entry's Docker scenario test had never verifiably
+  passed on the arm64 smoke workflow.** Its workflow step was
+  `continue-on-error: true` — reporting green while the node container died
+  at the entrypoint (`otlp-collector-compose.yml` lacked the `NET_ADMIN`
+  the iptables setup needs) and while the test's read-back ran
+  `docker exec … cat` against a distroless collector image with no `cat`
+  in it. All three fixed (capability granted, read-back via `docker cp`,
+  step unmasked); run 31653717200 is this scenario's first verifiable pass.
+  The unit tiers were never affected.
 - [ ] **AWS CloudWatch** — example monitoring configuration (e.g. an
   OpenTelemetry Collector `awscloudwatch`/`awsemf` exporter config, or the
   CloudWatch agent's own config) routing Kythira's exported telemetry to
@@ -2801,19 +2831,80 @@ as the Cloud Provider Support requirement above.
   routing to CloudMonitor's custom-metrics API, plus documentation — not a
   bespoke `kythira::metrics` implementation; pairs with the Alibaba Cloud
   quorum manager/certificate provider entry above
-- [ ] **Prometheus** — exposes an HTTP `/metrics` scrape endpoint (text
-  exposition format); the dominant pull-based backend for Kubernetes/
-  container deployments
-- [ ] **Telegraf** — emits to a local Telegraf agent (StatsD or InfluxDB
-  line protocol over UDP/TCP), letting operators fan metrics out to
-  whatever Telegraf output plugin they already run (InfluxDB, Graphite,
-  Kafka, etc.) without Kythira needing to pick one
-- [ ] **VictoriaMetrics** — Prometheus-remote-write-compatible, so likely
-  shares most of the Prometheus implementation's wire format rather than
-  needing a wholly separate one
-- [ ] **NetData** — via NetData's StatsD-compatible collector or its own
-  REST API, for operators already running NetData for host-level
-  monitoring who want Kythira's Raft/RPC metrics in the same dashboard
+- [x] **Prometheus** — `prometheus_metrics` + `prometheus_scrape_server`
+  (`include/raft/prometheus_metrics.hpp`): shared-registry aggregation
+  (copyable handle, so the HTTP transports' copy-per-emission idiom works —
+  the shape `otlp_metrics`' move-only design cannot serve), text exposition
+  0.0.4 with `_total` counter suffixing and sorted labels, no I/O at all on
+  the recording path. `chaos_node` opt-in via `PROMETHEUS_METRICS_PORT`;
+  example scrape config `docker/prometheus/prometheus.yml`; docs
+  `doc/prometheus_metrics_backend.md`. Docker tier per this section's
+  testing requirement: `docker-prometheus-metrics-tests` asserts through a
+  real Prometheus's own query API (August 12, 2026, smoke-workflow run
+  31652592215 — all four backends' scenario tests green in one run).
+- [x] **Telegraf** — `telegraf_metrics` (`include/raft/telegraf_metrics.hpp`),
+  InfluxDB line protocol (chosen over StatsD: dimensions are first-class
+  tags) over UDP (default) or TCP via the shared non-blocking
+  `metrics_line_exporter` (bounded queue, drop-oldest, no retry — metric
+  datagrams are lossy by design, `dropped_line_count()` makes it
+  observable). `chaos_node` opt-in via `TELEGRAF_ENDPOINT`/
+  `TELEGRAF_PROTOCOL`; example agent config `docker/telegraf/telegraf.conf`;
+  docs `doc/telegraf_metrics_backend.md`. Docker tier:
+  `docker-telegraf-metrics-tests` asserts against Telegraf's re-serialized
+  file output, which unparseable input never reaches (same green run).
+  Bring-up finding worth keeping: the official telegraf image's entrypoint
+  drops root to the `telegraf` user even when started `user: "0:0"`, so a
+  root-owned output volume fails with the agent exiting at startup — the
+  file output writes inside the container instead.
+- [x] **VictoriaMetrics** — `victoriametrics_metrics`
+  (`include/raft/victoriametrics_metrics.hpp`), and this entry's own
+  prediction held exactly: it shares the Prometheus backend's registry and
+  renderer outright, adding only a push loop POSTing the cumulative text
+  exposition to `/api/v1/import/prometheus` (not remote-write
+  protobuf+snappy — the import endpoint ingests the same text a scraper
+  reads, keeping the wire human-debuggable). A failed push loses
+  resolution, not data, so failures are counted, never retried. Identity
+  travels as constant `job`/`instance` labels — pushed data has no scrape
+  target to inherit them from. `chaos_node` opt-in via
+  `VICTORIAMETRICS_ENDPOINT`; docs `doc/victoriametrics_metrics_backend.md`.
+  Docker tier: `docker-victoriametrics-metrics-tests` queries the sample
+  back out through VM's Prometheus-compatible API, constant labels included
+  (same green run).
+- [x] **NetData** — `netdata_metrics` (`include/raft/netdata_metrics.hpp`),
+  StatsD over UDP with DataDog-style `|#` tags (accepted by NetData,
+  surfaced as chart labels — NOT per-dimension series; the header and
+  `doc/netdata_metrics_backend.md` carry that caveat honestly, and
+  `include_tags = false` strips them). Same shared `metrics_line_exporter`
+  as Telegraf. `chaos_node` opt-in via `NETDATA_STATSD_ENDPOINT`; example
+  config `docker/netdata/netdata.conf`. Docker tier:
+  `docker-netdata-metrics-tests` reads the chart back through NetData's own
+  REST API (same green run). Bring-up finding: NetData's statsd listener
+  binds localhost by default — unreachable from a sibling container, and
+  the failure mode is a perfectly healthy NetData receiving nothing; the
+  example config's `bind to = udp:* tcp:*` is load-bearing.
+- [ ] **Logging alongside each metrics backend** — this section's own
+  preamble says its Requirement/Testing language "applies to logging
+  integrations too, not metrics alone", but of the entries above only OTLP
+  actually covers logging (`otlp_logger`); the four self-hosted metrics
+  backends are metrics-only, leaving their operators on `console_logger`
+  stderr. Close the gap per backend with whichever of the two shapes fits
+  that ecosystem, and update each backend's example config + compose pair
+  to carry the logging leg too:
+  - a `kythira::diagnostic_logger` (`include/raft/logger.hpp`)
+    implementation where the ecosystem has a native log ingestion path
+    Kythira must speak directly — e.g. Loki's push API as the
+    Prometheus-stack pairing, VictoriaLogs for the VictoriaMetrics
+    pairing; or
+  - an example-configuration-only leg where an agent the operator already
+    runs can pick up Kythira's existing stderr/console output — e.g. a
+    Telegraf `[[inputs.tail]]`/syslog input section added to
+    `docker/telegraf/telegraf.conf`, or NetData's log collectors pointed
+    at the node's output — the same config-not-code reasoning the
+    cloud-vendor monitoring note at this section's top applies to
+    integrations someone else already wrote.
+  Whichever shape each backend gets, the section's example-config and
+  two-tier testing requirements apply to the logging leg exactly as they
+  do to metrics.
 
 ### Minor Enhancements
 
