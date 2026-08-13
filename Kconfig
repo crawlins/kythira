@@ -329,6 +329,55 @@ config OCI_CERTIFICATES_PROVIDER
 
 endmenu # OCI Integration
 
+menu "Alibaba Cloud Integration"
+
+# Same shape as the OCI menu above, and for the same reason: these gate no
+# find_package call. There is no Alibaba SDK dependency — the general
+# aliyun-openapi-cpp-sdk is not in the vcpkg registry, and pulling in the
+# OSS-only one would add a second HTTP stack (libcurl) beside httplib and
+# bury the persistence engine's durability-critical retry behavior inside a
+# vendor client. So the components sign their own requests
+# (include/raft/alibaba_signing.hpp for the ACS3-HMAC-SHA256 control plane,
+# include/raft/alibaba_oss_client.hpp for OSS V4) and send them over httplib.
+# These symbols therefore select whether Alibaba support is *built*, not
+# whether a dependency was *found*, which is why neither has a KYTHIRA_HAS_*
+# counterpart.
+#
+# Both depend on HTTP_TRANSPORT_TLS for the reason the OCI menu documents at
+# length: every Alibaba endpoint is https, CPPHTTPLIB_OPENSSL_SUPPORT comes
+# only from that symbol, and without it support would build cleanly and fail
+# on its first real call — invisible to a test tier that points
+# endpoint_override at a plain-http local server.
+
+config ALIBABA_QUORUM_MANAGER
+	bool "Alibaba Cloud ESS quorum manager"
+	depends on HTTP_TRANSPORT_TLS
+	default y
+	help
+	  Builds alibaba_ess_quorum_manager and the Alibaba request-signing and
+	  HTTP plumbing it shares with the OSS persistence engine. Needs only
+	  OpenSSL, httplib and boost::json, all unconditional dependencies
+	  already.
+
+	  Requires HTTP_TRANSPORT_TLS: Alibaba is https-only, and that symbol is
+	  what defines CPPHTTPLIB_OPENSSL_SUPPORT.
+
+config ALIBABA_OSS_PERSISTENCE
+	bool "Alibaba Cloud OSS persistence engine"
+	depends on HTTP_TRANSPORT_TLS
+	default y
+	help
+	  Builds alibaba_oss_persistence_engine, a kythira::persistence_engine
+	  storing term/voted_for/log/snapshot as OSS objects. Independent of
+	  ALIBABA_QUORUM_MANAGER rather than depending on it — the two share the
+	  signing layer but neither uses the other, mirroring how the OCI
+	  quorum manager and certificate provider are siblings.
+
+	  Requires HTTP_TRANSPORT_TLS, for the same reason ALIBABA_QUORUM_MANAGER
+	  does.
+
+endmenu # Alibaba Cloud Integration
+
 menu "Test-Only Dependencies"
 
 config LIBSSH2_TESTS

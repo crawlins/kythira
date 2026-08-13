@@ -367,6 +367,27 @@ else()
     message(STATUS "OCI support: disabled by Kconfig")
 endif()
 
+# alibaba-cloud-services spec: ESS quorum management and OSS-backed Raft
+# persistence, both speaking the Alibaba REST APIs directly.
+#
+# No find_package and no kythira_kconfig_require, for exactly the reason the
+# OCI block above documents: there is no Alibaba SDK to probe. The components
+# hand-roll ACS3-HMAC-SHA256 (control plane) and OSS V4 (data plane) signing
+# over OpenSSL and send with httplib, and OpenSSL/httplib/boost::json are all
+# unconditional dependencies. These gates answer "is Alibaba support wanted?".
+kythira_kconfig_gate(ALIBABA_QUORUM_MANAGER)
+kythira_kconfig_gate(ALIBABA_OSS_PERSISTENCE)
+if(_KYTHIRA_GATE_ALIBABA_QUORUM_MANAGER OR _KYTHIRA_GATE_ALIBABA_OSS_PERSISTENCE)
+    # The signing/HTTP layer is shared, so it is built when *either*
+    # component is wanted rather than being duplicated under each.
+    set(KYTHIRA_ALIBABA_SHARED TRUE)
+    message(STATUS "Alibaba support: enabled (quorum_manager=${_KYTHIRA_GATE_ALIBABA_QUORUM_MANAGER}, "
+                   "oss_persistence=${_KYTHIRA_GATE_ALIBABA_OSS_PERSISTENCE})")
+else()
+    set(KYTHIRA_ALIBABA_SHARED FALSE)
+    message(STATUS "Alibaba support: disabled by Kconfig")
+endif()
+
 # ion-rpc-serializer spec: Amazon Ion (via the ion-c C library) backs a second
 # rpc_serializer implementation (ion_rpc_serializer, include/raft/ion_serializer.hpp)
 # alongside json_rpc_serializer. Optional and gracefully degrading, exactly like

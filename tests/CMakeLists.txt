@@ -2471,6 +2471,75 @@ else()
     message(STATUS "oci_signing_unit_test: skipped (requires OpenSSL)")
 endif()
 
+# Alibaba OpenAPI V3 signing unit tests
+#
+# Guarded only on OpenSSL, for the same reason as the OCI signing test above:
+# alibaba_signing.hpp adds no dependency beyond it, and signing is a pure
+# function with no futures in it.
+if(TARGET OpenSSL::SSL AND KYTHIRA_ALIBABA_SHARED)
+    add_executable(alibaba_signing_unit_test alibaba_signing_unit_test.cpp)
+    target_link_libraries(alibaba_signing_unit_test PRIVATE
+        Boost::unit_test_framework
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    target_include_directories(alibaba_signing_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(alibaba_signing_unit_test PRIVATE cxx_std_23)
+    add_test(NAME alibaba_signing_unit_test COMMAND alibaba_signing_unit_test)
+    set_tests_properties(alibaba_signing_unit_test PROPERTIES
+        TIMEOUT 60
+        LABELS "unit;alibaba;cloud"
+    )
+elseif(NOT KYTHIRA_ALIBABA_SHARED)
+    message(STATUS "alibaba_signing_unit_test: skipped (Alibaba support disabled by Kconfig)")
+else()
+    message(STATUS "alibaba_signing_unit_test: skipped (requires OpenSSL)")
+endif()
+
+# Alibaba HTTP/OSS client unit tests
+#
+# These need httplib (the transport, and the local mock server the tests
+# point endpoint_override at) and boost::json for the control-plane client's
+# response parsing, so they carry a wider guard than the pure-signing test.
+if(KYTHIRA_ALIBABA_SHARED AND TARGET OpenSSL::SSL AND TARGET httplib::httplib)
+    function(kythira_add_alibaba_client_test target_name)
+        add_executable(${target_name} ${target_name}.cpp)
+        target_link_libraries(${target_name} PRIVATE
+            Boost::unit_test_framework
+            httplib::httplib
+            OpenSSL::SSL
+            OpenSSL::Crypto
+        )
+        if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+            target_link_libraries(${target_name} PRIVATE
+                "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+        elseif(TARGET Boost::json)
+            target_link_libraries(${target_name} PRIVATE Boost::json)
+        endif()
+        target_include_directories(${target_name} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+        target_compile_features(${target_name} PRIVATE cxx_std_23)
+    endfunction()
+
+    kythira_add_alibaba_client_test(alibaba_http_client_unit_test)
+    add_test(NAME alibaba_http_client_unit_test COMMAND alibaba_http_client_unit_test)
+    set_tests_properties(alibaba_http_client_unit_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;alibaba;cloud"
+    )
+
+    kythira_add_alibaba_client_test(alibaba_oss_client_unit_test)
+    add_test(NAME alibaba_oss_client_unit_test COMMAND alibaba_oss_client_unit_test)
+    set_tests_properties(alibaba_oss_client_unit_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;alibaba;cloud"
+    )
+elseif(NOT KYTHIRA_ALIBABA_SHARED)
+    message(STATUS "alibaba client tests: skipped (Alibaba support disabled by Kconfig)")
+else()
+    message(STATUS "alibaba client tests: skipped (requires OpenSSL and httplib)")
+endif()
+
+
 # OCI signed-JSON HTTP client tests
 #
 # Additionally needs httplib -- on both sides: the client wraps it, and the
