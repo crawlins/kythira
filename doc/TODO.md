@@ -2882,29 +2882,43 @@ as the Cloud Provider Support requirement above.
   binds localhost by default — unreachable from a sibling container, and
   the failure mode is a perfectly healthy NetData receiving nothing; the
   example config's `bind to = udp:* tcp:*` is load-bearing.
-- [ ] **Logging alongside each metrics backend** — this section's own
-  preamble says its Requirement/Testing language "applies to logging
-  integrations too, not metrics alone", but of the entries above only OTLP
-  actually covers logging (`otlp_logger`); the four self-hosted metrics
-  backends are metrics-only, leaving their operators on `console_logger`
-  stderr. Close the gap per backend with whichever of the two shapes fits
-  that ecosystem, and update each backend's example config + compose pair
-  to carry the logging leg too:
-  - a `kythira::diagnostic_logger` (`include/raft/logger.hpp`)
-    implementation where the ecosystem has a native log ingestion path
-    Kythira must speak directly — e.g. Loki's push API as the
-    Prometheus-stack pairing, VictoriaLogs for the VictoriaMetrics
-    pairing; or
-  - an example-configuration-only leg where an agent the operator already
-    runs can pick up Kythira's existing stderr/console output — e.g. a
-    Telegraf `[[inputs.tail]]`/syslog input section added to
-    `docker/telegraf/telegraf.conf`, or NetData's log collectors pointed
-    at the node's output — the same config-not-code reasoning the
-    cloud-vendor monitoring note at this section's top applies to
-    integrations someone else already wrote.
-  Whichever shape each backend gets, the section's example-config and
-  two-tier testing requirements apply to the logging leg exactly as they
-  do to metrics.
+- [x] **Logging alongside each metrics backend** — closed August 13, 2026,
+  per-ecosystem as this item prescribed (the section's preamble claims its
+  requirements apply to logging too; before this, only OTLP delivered on
+  that). Three real `kythira::diagnostic_logger` implementations, each
+  pairing with its metrics backend and enforced as a PAIR at chaos_node
+  startup (an unpaired logger env var is rejected with a message naming
+  the missing metrics variable, rather than silently running half a
+  stack):
+  - **Loki** (`include/raft/loki_logger.hpp`, `LOKI_ENDPOINT`, pairs with
+    Prometheus): push to `/loki/api/v1/push`, reusing
+    `otlp_http_batch_exporter` wholesale; one stream per severity labelled
+    {job, instance, level}; structured pairs render as logfmt in the line
+    (`| logfmt`-parseable in every Loki version).
+  - **VictoriaLogs** (`victorialogs_logger.hpp`, `VICTORIALOGS_ENDPOINT`,
+    pairs with VictoriaMetrics): ND-JSON to `/insert/jsonline` on the
+    shared `metrics_line_exporter` with an HTTP sender; structured pairs
+    are first-class LogsQL fields. Measured, not assumed: `_time` is
+    RFC3339-with-nanos because a real VictoriaLogs v1.0.0 REJECTS bare
+    nanosecond integers ("too big timestamp in milliseconds" — it parses
+    integers as ms), which its own container log said verbatim on the
+    first verification dispatch.
+  - **Telegraf** (`telegraf_logger.hpp`, `TELEGRAF_LOGS=on`, pairs with
+    the Telegraf metrics leg): log events as line-protocol records
+    (`kythira_log`, level tag, msg + structured pairs as string fields)
+    on the SAME socket_listener — no new listener, port, or agent config;
+    the fan-out inheritance argument applied to logs.
+  - **NetData: documented pairing only, deliberately** — NetData has no
+    app-facing log ingestion API; its log story consumes host journals.
+    `doc/netdata_metrics_backend.md`'s Logging section documents the
+    journald pairing and why an in-repo docker-tier test would have to
+    fake exactly the part that matters.
+  Verified per this section's testing requirement: 14 unit cases across
+  three binaries (injected poster/sender seams), and the three scenario
+  tests each gained a logs case asserting through the agent's own query
+  API/output (Loki query_range, LogsQL, Telegraf's file output) — all
+  green in smoke-workflow run 31676479371 (fully green dispatch,
+  August 13, 2026).
 
 ### Minor Enhancements
 

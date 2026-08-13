@@ -50,3 +50,18 @@ the StatsD collector on explicitly) and
   delimiters with no escape syntax; they are replaced with `_`.
 - Multiple metrics pack into one datagram newline-separated, up to
   `metrics_line_exporter_config::max_payload_bytes` (default 1400).
+
+## Logging: documented pairing only — deliberately no code leg
+
+NetData has no app-facing log ingestion API to push to: its log story
+(`systemd-journal` plugin, `log2journal`) consumes **host journals**, not
+application streams. The pairing that works is configuration outside this
+repo: run the node with its stderr going to journald (e.g. Docker's
+`--log-driver=journald`, or a systemd unit) and NetData's systemd-journal
+plugin picks it up with zero Kythira-side code. That is why — unlike the
+Prometheus/VictoriaMetrics/Telegraf ecosystems, which got real
+`diagnostic_logger` implementations — this backend's logging leg is
+documentation only, and why it has no docker-tier test: journald is
+neither present nor portable inside the rootless-compatible container
+harness (CLAUDE.md's container rules), so an in-repo round-trip test would
+have to fake precisely the part that matters.

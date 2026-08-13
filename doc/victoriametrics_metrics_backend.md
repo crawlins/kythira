@@ -54,3 +54,21 @@ VM's Prometheus-compatible `/api/v1/query`.
 `prometheus_registry`, so a deployment can push to VM *and* expose a local
 `prometheus_scrape_server` from the same aggregate state — useful while
 migrating between pull and push.
+
+## Logging: VictoriaLogs
+
+`victorialogs_logger` (`include/raft/victorialogs_logger.hpp`) is this
+ecosystem's logging leg — a `kythira::diagnostic_logger` pushing
+newline-delimited JSON to VictoriaLogs' `/insert/jsonline` API on the
+metrics backends' shared `metrics_line_exporter` (with an HTTP sender in
+place of a socket). Each line carries `_time` (unix nanoseconds), `_msg`,
+`level`, the `job`/`instance` stream identity (declared via
+`_stream_fields`), and every structured key-value pair as a first-class
+JSON field — directly queryable in LogsQL.
+
+On `chaos_node`, set `VICTORIALOGS_ENDPOINT` (e.g.
+`http://victorialogs:9428`) — it pairs with this metrics backend and
+requires `VICTORIAMETRICS_ENDPOINT` to be set too (startup rejects an
+unpaired logger). The scenario compose file runs a real VictoriaLogs
+alongside VictoriaMetrics and the test queries the node's log lines back
+out via LogsQL.

@@ -52,6 +52,23 @@ single-node `chaos_node` + real Prometheus pair (the same compose file
   under one name would render conflicting `# TYPE` lines, which Prometheus
   rejects at scrape time.
 
+## Logging: Loki
+
+`loki_logger` (`include/raft/loki_logger.hpp`) is this ecosystem's logging
+leg — a `kythira::diagnostic_logger` pushing to Grafana Loki's
+`/loki/api/v1/push`, reusing the OTLP backend's batching exporter (same
+bounded queue, retry, and injectable poster seam). Entries group into one
+stream per severity, labelled `{job, instance, level}` from the same
+resource attributes OTLP uses; structured key-value pairs render into the
+line in logfmt form (`msg="..." key="value"`), parseable by LogQL's
+`| logfmt` stage in every Loki version.
+
+On `chaos_node`, set `LOKI_ENDPOINT` (e.g. `http://loki:3100`) — it pairs
+with this metrics backend and requires `PROMETHEUS_METRICS_PORT` to be set
+too (startup rejects an unpaired logger). The scenario compose file runs a
+real Loki alongside Prometheus and the test queries the node's log lines
+back out of it.
+
 ## Embedding outside chaos_node
 
 Construct one `std::shared_ptr<prometheus_registry>`, hand
