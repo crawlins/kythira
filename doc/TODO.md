@@ -2644,10 +2644,15 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   path). The ESS quorum manager is **partially verified live** (same day,
   spike-notes.md Finding 9): its read path — `DescribeScalingGroups`,
   `DescribeScalingInstances`, the tag scan, idempotent decommission of an
-  absent node — passes against the real API. Its **write path has never run**:
-  `ModifyScalingGroup` capacity+1, `RemoveInstances`' decrement parameter, the
-  `InService`/`Running` state spellings and ECS batch-response parsing all
-  need an instance to exist, which only the one billable real case creates.
+  absent node — passes against the real API. Its write path is **half-confirmed**
+  (Finding 10): `ModifyScalingGroup` capacity+1 is the correct trigger and
+  succeeded live, and the beyond-spec capacity rollback on timeout works. The
+  rest — `RemoveInstances`' decrement parameter, the `InService`/`Running`
+  spellings, ECS batch-response parsing — still needs an instance to exist,
+  and the live attempt was blocked by **`Forbidden.RiskControl`**, an
+  account-wide ECS-creation block confirmed with a free `RunInstances`
+  dry-run. That is an Alibaba support matter, not a code or config change;
+  re-run the single billable case once it clears.
   **The certificate provider this entry originally named was descoped** on
   cost grounds (no Alibaba CA will be purchased); revivable — see the spec's
   Requirement 12.
