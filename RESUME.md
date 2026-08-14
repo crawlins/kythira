@@ -114,13 +114,25 @@ else in the tree depends on this.
 
 ## Priorities for next session
 
-1. Finish `.kiro/specs/alibaba-cloud-services/tasks.md`: Tasks 3 (ESS quorum
-   manager), 5 (OSS persistence engine), 6 (signature-verifying mock server —
-   note it is what would have caught the content-type bug locally), 7 (real
-   suites, exit-77, never CTest-registered), 8 (CI job), 9 (docs/close-out).
-2. Then Task 11: live verification, now unblocked — all infrastructure exists.
-3. Longer term: the cloud key-object persistence spec (doc/TODO.md), for
-   which the Alibaba OSS engine is the mandated first instance.
+**The Alibaba provider is complete** (tasks 1-10 of its tasks.md; PRs
+#235-#238). Both components, three test tiers, the CI job and docs are in;
+seven suites green. The OSS engine is live-verified end to end. The ESS
+manager's read path is live-verified and its write path is half-confirmed —
+the remainder waits on the risk-control block above, not on work.
+
+1. **Write the cloud key-object persistence spec** (`doc/TODO.md:2655`) — now
+   the largest designed-work item, and unusually well positioned: the Alibaba
+   OSS engine is its mandated first instance and is live-verified, so the
+   spec can be written against a working reference. The questions it must
+   settle were deliberately deferred *to it* — snapshot retention, backup
+   catalogs, restore-into-fresh-cluster, and conditional-PUT fencing — and it
+   now has a measured latency number (~2-3 s/round trip to Singapore) instead
+   of a hand-wave.
+2. When risk control clears (see above), re-run the one blocked case.
+3. Optional/minor: memory usage profiling (`doc/TODO.md:3186`); lighting up
+   the Azure and GCP monitoring legs (both cheap — an App Insights resource
+   and three SA roles respectively); OSCORE leftovers; the proxygen ingress
+   timeout still "reduced, not root-caused".
 
 ## How to not lose the next four hours
 
