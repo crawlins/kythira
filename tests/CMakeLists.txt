@@ -2588,6 +2588,23 @@ if(KYTHIRA_ALIBABA_SHARED AND TARGET OpenSSL::SSL AND TARGET httplib::httplib AN
         )
     endif()
 
+    if(_KYTHIRA_GATE_ALIBABA_QUORUM_MANAGER)
+        kythira_add_alibaba_component_test(alibaba_quorum_manager_mock_test)
+        add_test(NAME alibaba_quorum_manager_mock_test COMMAND alibaba_quorum_manager_mock_test)
+        set_tests_properties(alibaba_quorum_manager_mock_test PROPERTIES
+            TIMEOUT 300
+            LABELS "integration;alibaba;mock;quorum_manager;cloud"
+        )
+    endif()
+    if(_KYTHIRA_GATE_ALIBABA_OSS_PERSISTENCE)
+        kythira_add_alibaba_component_test(alibaba_oss_persistence_mock_test)
+        add_test(NAME alibaba_oss_persistence_mock_test COMMAND alibaba_oss_persistence_mock_test)
+        set_tests_properties(alibaba_oss_persistence_mock_test PROPERTIES
+            TIMEOUT 300
+            LABELS "integration;alibaba;mock;persistence;cloud"
+        )
+    endif()
+
     # Real-Alibaba suites: built so they cannot rot, deliberately NEVER
     # registered with add_test (spec Requirement 16.8). They need real
     # credentials and spend real money, so they are run BY NAME by the
