@@ -119,6 +119,26 @@ class of defect is catchable locally in future.
 paginated ListObjectsV2 → DeleteObject, all against real OSS over https with
 virtual-host addressing — the configuration no local test exercises.
 
+## Finding 7 — OSS persistence latency, measured live (August 14, 2026)
+
+`alibaba_oss_persistence_real_test` run against the real bucket from a
+developer machine to `ap-southeast-1`: **~9.6 s** for the term+vote case
+(a handful of round trips) and **~34 s** for 12 appended log entries —
+roughly **2-3 s per object round trip**, dominated by geography rather than
+by OSS itself.
+
+This is the figure Requirement 15.2's honesty clause wanted. It makes the
+durability trade concrete: `save_current_term`/`save_voted_for` sit on the
+election hot path and now cost a real WAN round trip, so a deployment using
+this engine must size election timeouts accordingly — and a cluster whose
+nodes are in-region will see far less, which is the configuration the engine
+is actually for. Re-measure from an in-region instance before quoting a
+production number; this one is an upper bound, not a representative one.
+
+All four real cases passed, including the load-bearing durability case: a
+term and vote written by one engine, read back by a FRESH engine sharing no
+memory with the writer.
+
 ## Finding 3 — Endpoints: PARTIALLY CONFIRMED (documentation only)
 
 `ess.aliyuncs.com` and `sts.aliyuncs.com` are the documented central
