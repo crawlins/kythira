@@ -231,7 +231,14 @@ BOOST_AUTO_TEST_CASE(binary_bytes_survive_a_round_trip) {
     });
     mock.start();
 
-    const std::string payload("\x00\x01\xffbinary\x00", 11);
+    // Split literal, deliberately: a hex escape is greedy and 'b' is a hex
+    // digit, so "\xffbinary" parses as the single escape \xffb — out of range
+    // for char. GCC accepts it with a warning; clang++-18 (what CI builds
+    // with) rejects it outright. Concatenation terminates the escape.
+    const std::string payload(
+        "\x00\x01\xff"
+        "binary\x00",
+        11);
     const alibaba_oss_client client{config_for(mock)};
     client.put_object("b", "blob", payload);
     BOOST_TEST(client.get_object("b", "blob").value() == payload);
