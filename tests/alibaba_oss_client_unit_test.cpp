@@ -120,6 +120,32 @@ BOOST_AUTO_TEST_CASE(v4_authorization_has_the_documented_shape) {
     BOOST_TEST(auth.find(",Signature=") != std::string::npos);
 }
 
+// The bug the first live call found (spike-notes.md Finding 2): OSS V4 signs
+// Content-Type when the request carries one, and httplib sets that header
+// from its body-overload argument — so a PUT whose signature omits it is
+// rejected with SignatureDoesNotMatch. Pinned here because no mock can catch
+// it: this repo's mock servers do not verify signatures.
+BOOST_AUTO_TEST_CASE(content_type_is_signed_when_the_request_carries_one) {
+    alibaba_client_config cfg;
+    cfg.region = "cn-hangzhou";
+    cfg.access_key_id = "id";
+    cfg.access_key_secret = "secret";
+    const alibaba_oss_client client{cfg};
+    const auto when = std::chrono::system_clock::from_time_t(1744353684);
+
+    const auto with_body =
+        client.prepared_headers("b", "k", "PUT", {}, when, "application/octet-stream");
+    BOOST_TEST(with_body.at("content-type") == "application/octet-stream");
+
+    // A bodyless request carries no Content-Type, so signing one would
+    // canonicalise a header the wire never sees — the same failure mirrored.
+    const auto bodyless = client.prepared_headers("b", "k", "GET", {}, when);
+    BOOST_TEST(bodyless.count("content-type") == 0U);
+
+    // Different signed sets must produce different signatures.
+    BOOST_TEST(with_body.at("Authorization") != bodyless.at("Authorization"));
+}
+
 BOOST_AUTO_TEST_CASE(security_token_is_signed_when_present) {
     alibaba_client_config cfg;
     cfg.region = "cn-hangzhou";

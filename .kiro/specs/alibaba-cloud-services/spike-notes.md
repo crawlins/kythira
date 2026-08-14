@@ -5,7 +5,7 @@ Corrections are folded back into requirements.md/design.md in place; this
 file is the record of *how* each fact was established, and — as important —
 which facts are still only documentation-deep because no account exists.
 
-**Account status: none.** Everything below is derived from vendor
+**Account status: provisioned August 13, 2026** (account 5633986662052576, region `ap-southeast-1`, RAM user `kythira-ci-user`; OSS confirmed live, ESS/ECS activated but not yet exercised). Everything below is derived from vendor
 documentation plus independent recomputation. Sub-items needing live traffic
 are marked OPEN and stay open until Task 10 provisions an account.
 
@@ -44,7 +44,7 @@ Details worth recording because they are easy to get wrong:
   std::string>` gives for free — the implementation leans on that rather
   than sorting explicitly.
 
-## Finding 2 — OSS V4 signing: canonical form CONFIRMED, final signature OPEN
+## Finding 2 — OSS V4 signing: CONFIRMED LIVE (and it found a real defect)
 
 The OSS V4 documentation also publishes a worked example, and its canonical
 request **hashes to the documented string-to-sign value exactly**
@@ -73,6 +73,51 @@ first account run should do: one successful PutObject proves the whole chain
 at once. Until then, treat OSS V4 as structurally-verified, not
 end-to-end-verified, and expect the first live call to be where a residual
 detail surfaces.
+
+**RESOLVED August 13, 2026, against the live service** (account
+5633986662052576, `ap-southeast-1`, bucket `kythira-ci-5633986662052576`).
+The first live `PutObject` returned **`SignatureDoesNotMatch`** — and the
+defect it exposed is one no local test in this repo could have caught, which
+is exactly why the spike flagged this as the highest-value first check.
+
+**The bug: OSS V4 signs `Content-Type` when the request carries one, and the
+client was not signing it.** cpp-httplib sets that header from its
+body-overload argument, so it reached the wire on every PUT while the
+signature covered a header set that omitted it.
+
+This is the **exact inverse of the rule `oci_http_client` follows**, and the
+inversion is the thing to remember. Both clients face the identical httplib
+behaviour; the schemes differ in whether they sign the header. OCI does not
+sign content-type, so there the fix is to *withhold* it from the header map
+and let httplib own it. OSS does sign it, so here the same httplib behaviour
+means the value must be folded *into* the signature. Copying the OCI rule
+across — which is what happened — produces a client that is wrong in
+precisely one line.
+
+**How it was diagnosed, in one step:** OSS's 403 body echoes the
+`CanonicalRequest` and `StringToSign` it computed. Diffing the server's
+canonical request against ours showed a single extra line
+(`content-type:application/octet-stream`); everything else — resource path,
+header ordering, the two blank lines before the payload constant, the
+credential scope — matched byte for byte. This is the repo's recurring
+lesson again: **the service's own error output is the specification.** No
+documentation reading would have been faster, and the vendor's masked
+example had already made the golden-vector route impossible.
+
+**Why no local tier could have caught it:** the mock servers here do not
+verify signatures (the OCI mock does; this provider's is not written yet),
+the unit tier asserts on header *shape* rather than on server acceptance,
+and the vendor's own worked example is unreproducible because its
+AccessKeySecret is masked. Live traffic was the only available oracle.
+`content_type_is_signed_when_the_request_carries_one` in
+`alibaba_oss_client_unit_test.cpp` now pins the behaviour, and the
+forthcoming mock server must verify signatures (Requirement 16.6) so the
+class of defect is catchable locally in future.
+
+**Verified live end to end after the fix:** PutObject → GetObject
+(round-trip) → GetObject on an absent key (`nullopt`, not an exception) →
+paginated ListObjectsV2 → DeleteObject, all against real OSS over https with
+virtual-host addressing — the configuration no local test exercises.
 
 ## Finding 3 — Endpoints: PARTIALLY CONFIRMED (documentation only)
 

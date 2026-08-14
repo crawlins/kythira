@@ -1,0 +1,26 @@
+[
+  {
+    "Action": [
+      "ess:DescribeScalingGroups",
+      "ess:DescribeScalingInstances",
+      "ess:DescribeScalingActivities",
+      "ess:DescribeScalingConfigurations",
+      "ess:ModifyScalingGroup",
+      "ess:RemoveInstances"
+    ],
+    "Resource": "*",
+    "Effect": "Allow"
+  },
+  {
+    "Action": [
+      "ecs:DescribeInstances",
+      "ecs:DescribeInstanceStatus",
+      "ecs:DescribeZones",
+      "ecs:DescribeRegions",
+      "ecs:TagResources",
+      "ecs:ListTagResources"
+    ],
+    "Resource": "*",
+    "Effect": "Allow"
+  }
+]

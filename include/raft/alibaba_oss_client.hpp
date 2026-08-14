@@ -265,7 +265,8 @@ public:
     [[nodiscard]] auto prepared_headers(const std::string& bucket, const std::string& key,
                                         std::string_view method,
                                         const std::map<std::string, std::string>& query,
-                                        std::chrono::system_clock::time_point when) const
+                                        std::chrono::system_clock::time_point when,
+                                        std::string_view content_type = {}) const
         -> std::map<std::string, std::string> {
         if (_cfg.access_key_id.empty()) {
             throw std::invalid_argument("alibaba_oss_client: access_key_id is empty");
@@ -277,15 +278,33 @@ public:
         const std::string date = timestamp.substr(0, 8);
         const std::string scope = date + "/" + _cfg.region + "/oss/aliyun_v4_request";
 
-        // The signed set: x-oss-* headers only (this client sends no
-        // content-md5, and content-type is signed only if sent — it sends
-        // none, letting httplib's body overload own it un-signed is NOT an
-        // option for OSS, so bodies go up with an explicitly empty
-        // content-type; see send()).
+        // The signed set. `content-type` is signed WHEN THE REQUEST CARRIES
+        // ONE — the exact inverse of the rule oci_http_client follows, and
+        // the reason this client's first live call returned
+        // SignatureDoesNotMatch.
+        //
+        // Both clients face the same httplib behaviour: its body overloads
+        // set Content-Type from their own argument, so the header reaches the
+        // wire whether or not the caller put it in the header map. OCI's
+        // scheme does not sign content-type, so there the fix was to withhold
+        // it and let httplib own it. OSS V4 *does* sign Content-Type when
+        // present, so here the same behaviour means the value must be folded
+        // into the signature instead — otherwise the server canonicalises a
+        // header the client never signed.
+        //
+        // OSS named this itself: its 403 body echoes the CanonicalRequest it
+        // computed, which differed from ours by exactly the
+        // `content-type:application/octet-stream` line (spike-notes.md
+        // Finding 2). No local test could have caught it — the mock tier's
+        // server does not verify signatures, and the golden vector could not
+        // be reproduced because the vendor masked its example's secret.
         std::map<std::string, std::string> signed_headers{
             {"x-oss-content-sha256", "UNSIGNED-PAYLOAD"},
             {"x-oss-date", timestamp},
         };
+        if (!content_type.empty()) {
+            signed_headers.emplace("content-type", std::string(content_type));
+        }
         if (!_cfg.security_token.empty()) {
             signed_headers.emplace("x-oss-security-token", _cfg.security_token);
         }
@@ -349,9 +368,21 @@ private:
                             const std::string& body) const -> httplib::Result {
         const auto [origin, path] = origin_and_path(bucket, key);
 
+        // Only PUT carries a body, and therefore only PUT carries the
+        // Content-Type httplib derives from its body overload — so it is the
+        // only method whose signature must cover one.
+        const std::string_view content_type = (method == "PUT") ? k_put_content_type : "";
+
         httplib::Headers headers;
-        for (const auto& [name, value] :
-             prepared_headers(bucket, key, method, query, std::chrono::system_clock::now())) {
+        for (const auto& [name, value] : prepared_headers(
+                 bucket, key, method, query, std::chrono::system_clock::now(), content_type)) {
+            // content-type is withheld from the map httplib is given: it sets
+            // that header itself from the Put() argument below, and supplying
+            // it twice puts two on the wire. It is still *signed* above,
+            // which is the distinction that matters.
+            if (name == "content-type") {
+                continue;
+            }
             headers.emplace(name, value);
         }
 
@@ -376,7 +407,7 @@ private:
             // The payload hash is UNSIGNED-PAYLOAD and content-type is not in
             // the signed set, so httplib owning the content-type header is
             // harmless here (unlike a signed-content-type scheme).
-            return client->Put(target, headers, body, "application/octet-stream");
+            return client->Put(target, headers, body, k_put_content_type);
         }
         if (method == "GET") {
             return client->Get(target, headers);
@@ -423,6 +454,10 @@ private:
             throw std::runtime_error(out);
         }
     }
+
+    /// The content type every PUT carries — signed (see prepared_headers)
+    /// and handed to httplib's body overload, which must be the same string.
+    static constexpr const char* k_put_content_type = "application/octet-stream";
 
     alibaba_client_config _cfg;
 };
