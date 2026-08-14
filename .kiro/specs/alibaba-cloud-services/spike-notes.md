@@ -213,8 +213,30 @@ on ECS instance creation, so it is not the scaling configuration, the image,
 the instance type, the vSwitches or anything this repo controls. The console
 surfaced no verification prompt, which suggests a support-side block rather
 than a pending self-service step — typical of a new account with no billing
-history. Remediation is an Alibaba support ticket, not a code or config
-change.
+history. Remediation is account-level, not a code or config change.
+
+**Status, August 14, 2026: payment/identity verification started by the
+account owner; quoted at up to 3 business days.** That is the expected
+trigger — an unverified new account is the textbook cause of this block, and
+it also explains the absent console prompt (verification was pending rather
+than failed). Once it completes, re-run the single case:
+
+```sh
+export KYTHIRA_ALIBABA_REGION=ap-southeast-1
+export KYTHIRA_ALIBABA_SCALING_GROUP_ID=asg-t4ne1kbdhc5xbzskizxm
+export KYTHIRA_ALIBABA_ACCESS_KEY_ID=... KYTHIRA_ALIBABA_ACCESS_KEY_SECRET=...
+./build/tests/alibaba_quorum_manager_real_test --log_level=test_suite \
+  --run_test='alibaba_quorum_manager_real/provision_then_decommission_a_real_instance'
+```
+
+Cheap pre-check that costs nothing and tells you whether the block has
+lifted, without waiting ~10 minutes for a provision timeout:
+
+```sh
+aliyun --profile kythira-ci ecs RunInstances --RegionId ap-southeast-1 --DryRun true \
+  --ImageId ubuntu_24_04_x64_20G_alibase_20260720.vhd --InstanceType ecs.e-c1m1.large \
+  --VSwitchId vsw-t4nd0gfwgpoxkdeq48v0o --SecurityGroupId sg-t4n3lyvcd8qegudjvhvw --Amount 1
+```
 
 **Confirmed working, unexpectedly:** the capacity-rollback-on-provision-
 timeout that Task 3 added *beyond* the requirements (a sibling-lesson

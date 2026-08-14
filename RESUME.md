@@ -102,6 +102,16 @@ tighter standing footprint is wanted.
   transcript (both since rotated and verified dead). Use `aliyun configure`
   so the CLI holds secrets, and pass only a *path* if a file is unavoidable.
 
+## Blocked, waiting on an external clock
+
+**Alibaba ESS write-path verification** is blocked by `Forbidden.RiskControl`
+— an account-wide ECS-creation block, isolated with a free `RunInstances`
+dry-run so it is definitively not our configuration. Payment/identity
+verification was started August 14, 2026, quoted at **up to 3 business
+days**. spike-notes.md Finding 10 carries the one-command retry and a
+zero-cost dry-run pre-check to test whether the block has lifted. Nothing
+else in the tree depends on this.
+
 ## Priorities for next session
 
 1. Finish `.kiro/specs/alibaba-cloud-services/tasks.md`: Tasks 3 (ESS quorum
