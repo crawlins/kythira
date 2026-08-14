@@ -176,6 +176,16 @@ private:
             if (name == "content-type") {
                 continue;
             }
+            // The lowercase "host" is part of the SIGNED set (the canonical
+            // request needs it) but must not also go on the wire, because
+            // "Host" is added below from the same value: two Host headers
+            // violate HTTP/1.1's MUST NOT, and while httplib's own server
+            // tolerates it by taking the first, a stricter front end is
+            // entitled to answer 400. Signing it and sending it are separate
+            // concerns; only one belongs in the header map.
+            if (name == "host") {
+                continue;
+            }
             headers.emplace(name, value);
         }
 

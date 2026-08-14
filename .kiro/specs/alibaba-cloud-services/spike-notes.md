@@ -139,6 +139,28 @@ All four real cases passed, including the load-bearing durability case: a
 term and vote written by one engine, read back by a FRESH engine sharing no
 memory with the writer.
 
+## Finding 8 — httplib rewrites the signed query string; harmless (verified live)
+
+The mock-server work measured that cpp-httplib 0.27.0 does not send the
+query string it was given: `ClientImpl::process_request` splits at `?`,
+decodes into `Params`, and re-encodes. It leaves `, ! $ ' ( ) * ; /`
+literal where Alibaba's rule percent-encodes them, and turns a space into
+`+`. So the bytes signed and the bytes sent differ on **every multi-ID
+`DescribeInstances`** — which is every real cluster — and on any OSS prefix
+or continuation token containing `/`.
+
+**Verified live against ECS in `ap-southeast-1`: accepted.** A two-ID
+`DescribeInstances` signed with percent-encoded `,` and sent with a literal
+`,` returns normally, which means Alibaba canonicalises from *parsed
+parameters*, not raw query bytes — the SigV4-family behaviour. No client
+change is needed and the mock is deliberately not byte-strict on the query,
+since being stricter than the real service would manufacture failures.
+
+Still unverified, and the one shape that could bite: a parameter value
+containing a **space** (signed `%20`, sent as `+`). Nothing this provider
+sends today contains one; an operator's `extra_tags` value is the only
+route in. Worth a live check before that path is used.
+
 ## Finding 3 — Endpoints: PARTIALLY CONFIRMED (documentation only)
 
 `ess.aliyuncs.com` and `sts.aliyuncs.com` are the documented central
