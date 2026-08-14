@@ -2539,6 +2539,60 @@ else()
     message(STATUS "alibaba client tests: skipped (requires OpenSSL and httplib)")
 endif()
 
+# Alibaba component tests (quorum manager, OSS persistence engine).
+#
+# Wider guard than the client tests above: these use future_default, so they
+# need folly — which arrives via network_simulator, the same way the OCI
+# provider tests get it.
+if(KYTHIRA_ALIBABA_SHARED AND TARGET OpenSSL::SSL AND TARGET httplib::httplib AND folly_FOUND)
+    function(kythira_add_alibaba_component_test target_name)
+        add_executable(${target_name} ${target_name}.cpp)
+        target_link_libraries(${target_name} PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            httplib::httplib
+            OpenSSL::SSL
+            OpenSSL::Crypto
+        )
+        if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+            target_link_libraries(${target_name} PRIVATE
+                "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+        elseif(TARGET Boost::json)
+            target_link_libraries(${target_name} PRIVATE Boost::json)
+        endif()
+        if(FIU_FOUND)
+            target_compile_definitions(${target_name} PRIVATE FIU_ENABLE)
+            target_link_libraries(${target_name} PRIVATE ${FIU_LDFLAGS})
+            target_include_directories(${target_name} PRIVATE ${FIU_INCLUDE_DIRS})
+        endif()
+        target_include_directories(${target_name} PRIVATE
+            ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests)
+        target_compile_features(${target_name} PRIVATE cxx_std_23)
+    endfunction()
+
+    if(_KYTHIRA_GATE_ALIBABA_QUORUM_MANAGER)
+        kythira_add_alibaba_component_test(alibaba_quorum_manager_unit_test)
+        add_test(NAME alibaba_quorum_manager_unit_test COMMAND alibaba_quorum_manager_unit_test)
+        set_tests_properties(alibaba_quorum_manager_unit_test PROPERTIES
+            TIMEOUT 120
+            LABELS "unit;alibaba;quorum_manager;cloud"
+        )
+    endif()
+
+    if(_KYTHIRA_GATE_ALIBABA_OSS_PERSISTENCE)
+        kythira_add_alibaba_component_test(alibaba_oss_persistence_unit_test)
+        add_test(NAME alibaba_oss_persistence_unit_test COMMAND alibaba_oss_persistence_unit_test)
+        set_tests_properties(alibaba_oss_persistence_unit_test PROPERTIES
+            TIMEOUT 120
+            LABELS "unit;alibaba;persistence;cloud"
+        )
+    endif()
+elseif(NOT KYTHIRA_ALIBABA_SHARED)
+    message(STATUS "alibaba component tests: skipped (Alibaba support disabled by Kconfig)")
+elseif(NOT folly_FOUND)
+    message(STATUS "alibaba component tests: skipped (requires Folly)")
+endif()
+
 
 # OCI signed-JSON HTTP client tests
 #

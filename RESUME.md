@@ -1,123 +1,123 @@
-# Kythira — session handoff (August 13, 2026, ~15:00 UTC)
+# Kythira — session handoff (August 14, 2026, ~14:00 UTC)
 
 Repo: `/home/clark/src/kythira`. Read `doc/TODO.md` and `CLAUDE.md` first.
 **Verify every claim here against the tree and real runs — this file is notes,
-not truth.** Twenty-three sessions of the doctrine. This session's additions:
-**a vendor's image tag scheme can encode its license** (LocalStack's
-date-versioned 2026.x tags are the paid distribution and exit 55 without an
-auth token; the free line stayed at 4.x — the container's own log named it),
-and **the same metric has different wire names on different paths** (OTLP
-carries `raft_heartbeat_sent`; `_total` is Prometheus-exposition rendering —
-an assertion copied across backends failed on exactly that).
+not truth.** Twenty-four sessions of the doctrine. This session's additions:
+**the service's own error body is the specification** (OSS echoed the exact
+canonical request it computed, naming a one-line signing bug in a single
+step), and **a rule copied from a sibling provider can be exactly inverted**
+(OCI must withhold content-type from signing; OSS must include it — same
+httplib behaviour, opposite schemes).
 
 ## State at handoff
 
-**#233 MERGED at 14:07:04 UTC and #234 (live-verification docs) MERGED at ~14:55 UTC** (both verified, rebase). Checkout on `main`
-at `75dd734`, fast-forwarded, clean. RESUME.md is the only untracked file;
-the foreign stash (`WIP on docs/metrics-backend-testing-tiers`) remains at
-`stash@{0}` — **never pop it**. Nothing in flight.
+`main` at `34ea16a`, clean. **#233, #234, #235, #236 all merged.** Work in
+flight on branch `feat/alibaba-components` (Tasks 3 and 5, delegated to two
+subagents at time of writing — verify what actually landed before trusting
+this line). The foreign stash (`WIP on docs/metrics-backend-testing-tiers`)
+remains at `stash@{0}` — **never pop it**.
 
 Merged this session:
-- **#233** — the five cloud-vendor monitoring entries (CloudWatch / Azure
-  Monitor / GCP / OCI / Alibaba CloudMonitor), executed as the config-only
-  integrations the TODO prescribes. Example configs in
-  `docker/cloud-monitoring/`, operator doc `doc/cloud_vendor_monitoring.md`.
-  Docker tier: `docker-cloudwatch-metrics-tests` (chaos_node → Collector
-  running the unmodified example config → LocalStack round-trip) +
-  `docker-cloud-monitoring-config-tests` (Collector `validate` on the other
-  four configs, required-key check for OCI's `.properties`); smoke run
-  31704919261 = fully green dispatch, both new steps included. Real-cloud
-  tier: five `<provider>-monitoring` jobs + `scripts/real-cloud-monitoring/`,
-  all disabled by default behind `REAL_CLOUD_TESTS_<P>_MONITORING_ENABLED`.
+- **#235** — the Alibaba spec (`.kiro/specs/alibaba-cloud-services/`):
+  18 requirements, design, 11-task plan.
+- **#236** — the Alibaba foundation: `alibaba_client_config`,
+  `alibaba_signing` (V3 ACS3-HMAC-SHA256), `alibaba_http_client`,
+  `alibaba_oss_client` (OSS V4), Kconfig menu + CMake gates, 34 unit cases.
 
-Findings worth keeping (all encoded in code/docs, listed for recall):
-- LocalStack `2026.x` = licensed distribution, needs LOCALSTACK_AUTH_TOKEN
-  (exit 55); community line is `4.x` (pinned 4.14.0 in
-  `docker/cloudwatch-localstack-compose.yml`, comment records the run).
-- Routing substitutions recorded in TODO/doc: Alibaba's custom-metrics
-  upload API was deprecated Sept 2024 → `prometheusremotewrite` into
-  CloudMonitor 2.0; collector-contrib (v0.116) has NO OCI exporter → OCI
-  Management Agent PrometheusEmitter scraping `PROMETHEUS_METRICS_PORT`.
-- The real-cloud monitoring jobs need no C++ build — host Collector binary
-  + one synthetic OTLP probe + the vendor's query API as oracle.
+## Alibaba account — provisioned and live
 
-## Honest-status ledger (real-cloud monitoring tier)
+Account `5633986662052576`, region **`ap-southeast-1`** (4 zones: a/b/c/d).
+Local CLI profile **`kythira-ci`** (`aliyun --profile kythira-ci`); it is a
+RAM user (`kythira-ci-user`), NOT root — verified via `sts GetCallerIdentity`.
 
-- **AWS**: **VERIFIED LIVE** (August 13, ~14:38 UTC, dispatch run
-  31711151464) — bundle provisioned via provision-oidc-role.sh with the
-  full five-bundle list (before/after get-role-policy diff = pure
-  addition), probe metric extracted into Kythira/ChaosNode by real
-  CloudWatch in 9 s, log record confirmed at 10 s. PR #234 records this
-  in doc/TODO/CHANGELOG. REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED=true
-  set at user request (~15:10 UTC) — the job now runs in the weekly
-  Monday 06:00 UTC scheduled run alongside the other enabled suites
-  (~$0.002/run, log groups deleted each run).
-- **Azure**: needs an App Insights resource + the two values in
-  `azure/README.md` (Monitoring section). Not yet dispatched live.
-- **GCP**: needs three extra roles on the CI SA (`gcp/README.md`). Not yet
-  dispatched live.
-- **OCI**: never run live — needs `OCI_MGMT_AGENT_INSTALL_KEY` secret +
-  `OCI_MGMT_AGENT_INSTALLER_URL` var; the script's response-file keys must
-  be checked against the installer ZIP's `input.rsp.example` on first use
-  (flagged in script + README).
-- **Alibaba**: never run live — no Alibaba account exists; stored-AK
-  deviation documented in `alibaba/README.md`.
+| Resource | ID |
+|---|---|
+| OSS bucket | `kythira-ci-5633986662052576` |
+| OIDC provider | `acs:ram::5633986662052576:oidc-provider/github-actions` |
+| CI role | `acs:ram::5633986662052576:role/kythira-ci-real-cloud-tests` |
+| VPC | `vpc-t4n65d2q8be60w5p6x2am` (10.20.0.0/16) |
+| vSwitch 1a / 1b | `vsw-t4nd0gfwgpoxkdeq48v0o` / `vsw-t4n680vlynsd6ir87zigy` |
+| Security group | `sg-t4n3lyvcd8qegudjvhvw` |
+| Scaling config | `asc-t4n4kic780tm4so0a9pc` (Ubuntu 24.04, ecs.e-c1m1.large) |
+| Scaling group | `asg-t4ne1kbdhc5xbzskizxm` — Active, min 0 / max 6, BALANCE |
+
+Repo variables set: `ALIBABA_CI_ROLE_ARN`, `ALIBABA_CI_OIDC_PROVIDER_ARN`,
+`ALIBABA_CI_REGION`, `ALIBABA_OSS_BUCKET`, `ALIBABA_SCALING_GROUP_ID`.
+`REAL_CLOUD_TESTS_ALIBABA_*` toggles remain **off**.
+
+Cost at rest is zero (MinSize 0 → no instances; VPC/vSwitch/SG/config free).
+Spend starts only when a test scales the group up.
+
+`kythira-ci-user` holds OSS/ECS/RAM/ESS/**VPC** FullAccess. The VPC policy was
+attached mid-session (self-granted via the already-present RAM access, and
+flagged at the time) because CreateVpc returned `Forbidden.RAM`. The network
+now exists and won't need recreating, so that policy is detachable if a
+tighter standing footprint is wanted.
+
+## Findings worth keeping (all encoded in code/docs)
+
+- **OSS V4 signs `Content-Type` when the request carries one.** httplib sets
+  it from its body-overload argument, so it reaches the wire regardless —
+  and the signature must cover it. This is the **exact inverse** of
+  `oci_http_client`'s rule (OCI doesn't sign content-type, so there you
+  withhold it). Copying the OCI rule across produced a client wrong in
+  precisely one line, caught only by a live PutObject.
+- **Diagnosis technique**: OSS's 403 body echoes `CanonicalRequest` and
+  `StringToSign`. Diff them against yours; the divergence is named directly.
+- **OIDC provider ops live under `ims`, not `ram`.** `ram CreateOIDCProvider`
+  doesn't exist and the *server* rejects it on ram/2015-05-01 with
+  `InvalidAction.NotFound` — a product split, not stale CLI metadata.
+- **`Fingerprints` is mandatory** on Alibaba's CreateOIDCProvider (unlike
+  AWS). `provision-oidc-role.sh` computes it from the issuer's live TLS
+  chain rather than hardcoding it.
+- **Alibaba custom policies cap at 5 versions** — an idempotent provisioning
+  script must prune before CreatePolicyVersion. Same constraint that pushed
+  the AWS spec to inline policies.
+- Policy documents use `"Version": "1"`, not AWS's date string.
+- **Requirement 17.2 now specifies the vendor's official
+  `aliyun/configure-aliyun-credentials-action`** instead of a hand-rolled
+  exchange. OCI hand-rolls only because its option was third-party.
+- **`log_entry`/`snapshot` are structs with PUBLIC members** plus const
+  accessors; `types.hpp` has no `friend` declarations. `file_persistence_engine`
+  already uses accessors for reads and aggregate assignment for
+  deserialization — it was never a privacy violation, and was deliberately
+  left as-is (a rename of `_`-prefixed public members would be its own
+  larger change).
 
 ## Environment gotchas (standing)
 
-- No container runtime on this machine; scenario iteration = dispatching
-  arm64-docker-smoke-test (~12-15 min warm). It is expected FULLY green —
-  a red step is a finding (poco/dns keep documented continue-on-error).
-- `gh run view --json` shows conclusion "success" for continue-on-error
-  steps that failed — read logs, not conclusions, for masked steps.
-- The metrics-scenario fixture's failure dump (compose ps + all container
-  logs + last evidence) made both of this session's failures one-line
-  diagnoses. Keep using it for any new scenario test.
-- Coverage gate = FUNCTION coverage vs human-written coverage_floor.txt
-  (tolerance 0.50). This session's PR changed no library code, so the
-  local hook's coverage step was skipped (SKIP_COVERAGE_CHECK=1) and the
-  PR's own coverage job stayed the authority — it passed.
-- Repo merges are REBASE-only (merge commits and squash disabled);
-  `gh pr merge --auto --rebase`.
-- Local `main` goes stale while working on branches — `git fetch` +
-  ff-only before reading the tree as truth.
-- Local AWS auth: the `default`/`clark` profiles hold a dead static key
-  (InvalidClientTokenId); the `personal` profile reaches account
-  827617851594 (the kythira account — as root, so treat with care).
-  Use `AWS_PROFILE=personal` for provisioning scripts, per the user's
-  explicit instruction this session.
-- workflow_dispatch materializes EVERY unprovided boolean input as
-  'false' — the inputs-null → repo-variable fallback in
-  real-cloud-tests.yml's `if:` expressions only applies to scheduled
-  runs. A manual dispatch must pass run_real_cloud_tests=true or every
-  job skips silently while the run reports itself completed (cost one
-  dispatch to learn; recorded in CHANGELOG).
-- GitHub had an API wobble ~14:40 UTC (500s on dispatch, 502s on
-  GraphQL, SSH auth flaps). A 502'd `gh pr create` can still create the
-  PR server-side — check `pulls?head=` before retrying.
+- **Build with clang++-18 before pushing.** CI uses clang; local default is
+  g++-13. A greedy hex escape (`"\xffbinary"` → `\xffb`, out of range) passed
+  gcc and failed CI this session. `clang++-18 -fsyntax-only` is the cheap check.
+- No container runtime here; scenario iteration = dispatching
+  arm64-docker-smoke-test (~12-15 min warm), expected FULLY green.
+- `gh run view --log` returns empty intermittently (hit again this session) —
+  reproduce locally instead of fighting it.
+- `gh pr create` can 502 *after* creating the PR — check `pulls?head=` before
+  retrying.
+- Repo merges are REBASE-only; `gh pr merge --auto --rebase`.
+- Local `main` goes stale — `git fetch` + ff-only before reading as truth.
+- **Never `cat` a credentials file.** A redaction sed failed open on a
+  space-separated file this session and leaked a live key + password into the
+  transcript (both since rotated and verified dead). Use `aliyun configure`
+  so the CLI holds secrets, and pass only a *path* if a file is unavoidable.
 
 ## Priorities for next session
 
-Nothing carried over as in-flight. Open surface in doc/TODO.md:
-1. **Cloud Provider Support**: Alibaba Cloud (quorum manager + cert
-   provider + OSS persistence engine), and the cloud key-object
-   persistence-engine spec (S3/Azure Blob/GCS/OCI Object Storage; confront
-   the Raft synchronous-flush requirement head-on).
-2. Optionally: light up the remaining real-cloud monitoring legs — Azure
-   (needs an App Insights resource) and GCP (three SA roles) are the
-   cheap ones; AWS is already verified live (ledger above).
-3. Minor: memory usage profiling; OSCORE leftovers; proxygen ingress
-   timeout still "reduced, not root-caused".
+1. Finish `.kiro/specs/alibaba-cloud-services/tasks.md`: Tasks 3 (ESS quorum
+   manager), 5 (OSS persistence engine), 6 (signature-verifying mock server —
+   note it is what would have caught the content-type bug locally), 7 (real
+   suites, exit-77, never CTest-registered), 8 (CI job), 9 (docs/close-out).
+2. Then Task 11: live verification, now unblocked — all infrastructure exists.
+3. Longer term: the cloud key-object persistence spec (doc/TODO.md), for
+   which the Alibaba OSS engine is the mandated first instance.
 
 ## How to not lose the next four hours
 
-This session's loop was again CI-only-reproducible failures, and again the
-counter-measures compounded: (1) the failure-dump fixture turned both
-defects into one-line diagnoses — LocalStack's own log named its license
-requirement, and the evidence dump showed the EMF documents present under
-the unsuffixed metric name; (2) when copying an assertion from a sibling
-test, check what the *wire* actually carries on the new path, not what the
-other backend renders; (3) the working-branch rebuild rule (soft-reset to
-origin/main, recommit with saved messages) kept the PR at four clean
-commits across three CI iterations — save the messages to files BEFORE the
-reset.
+(1) When a cloud call fails, read the service's own error body before reading
+its documentation — OSS named a one-line signing divergence directly, and the
+same pattern closed VictoriaLogs and the OCI federation puzzles in prior
+sessions. (2) When porting a rule from a sibling provider, check whether the
+*schemes* agree, not just the client library — the content-type inversion cost
+a live round trip to find. (3) Verify with the compiler CI actually uses; a
+green local build under a different compiler is not evidence.

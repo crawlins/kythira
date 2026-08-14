@@ -480,7 +480,11 @@ engine's on-bucket format is inspectable, debuggable, and stable.
    `"none"`), `"<prefix>/log/<index>"` — one object per log entry, key
    zero-padded to 20 digits so lexicographic key order equals numeric
    index order — each holding the same one-line JSON record
-   `file_persistence_engine` uses (`{term, index, command_b64, type}`),
+   `file_persistence_engine` uses — whose fields are `term`, `index`,
+   `command` (base64-valued) and `type`; an earlier draft of this clause
+   said `command_b64`, contradicting its own "same record as the file
+   engine" requirement, and the file engine's actual field name wins so the
+   two formats stay byte-comparable —
    and `"<prefix>/snapshot"` (the same JSON codec).
 2. One object per log entry (vs the file engine's single rewritten log
    file) SHALL be the layout precisely because it makes `append_log_entry`
