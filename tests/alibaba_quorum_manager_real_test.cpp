@@ -78,11 +78,14 @@ BOOST_FIXTURE_TEST_CASE(assess_quorum_reads_the_live_group, RealEssFixture,
                         *boost::unit_test::timeout(300)) {
     auto manager = make_manager();
     auto health = manager.assess_quorum({}).get();
-    // An empty cluster over a group with no kythira-tagged instances is
-    // healthy by the sibling managers' convention; the value under test is
-    // that the call completes against the real API at all.
-    BOOST_TEST_MESSAGE("live assess_quorum returned without error");
-    (void)health;
+    // Assert something, rather than relying on "it did not throw": Boost
+    // reports an assertion-free case, and a case that can only fail by
+    // throwing is weaker than it looks. Over a group holding no
+    // kythira-tagged instances the manager must report no members and no
+    // per-group entries — which also pins that foreign/untagged instances
+    // are excluded (design Property 4) against the real API.
+    BOOST_TEST(health.total_node_count == 0U);
+    BOOST_TEST(health.live_node_count == 0U);
 }
 
 // Idempotency against the real service: decommissioning a NodeId that no

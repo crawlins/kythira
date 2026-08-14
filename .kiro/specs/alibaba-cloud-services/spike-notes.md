@@ -161,6 +161,38 @@ containing a **space** (signed `%20`, sent as `+`). Nothing this provider
 sends today contains one; an operator's `extra_tags` value is the only
 route in. Worth a live check before that path is used.
 
+## Finding 9 — ESS quorum manager, partially verified live (August 14, 2026)
+
+Ran the three no-cost cases of `alibaba_quorum_manager_real_test` against
+the live scaling group `asg-t4ne1kbdhc5xbzskizxm` in `ap-southeast-1`. All
+three pass.
+
+**Now verified against the real API:**
+- `DescribeScalingGroups` — endpoint, ACS3 signature, and the response shape
+  the constructor parses (the double-wrapping guess was right).
+- `DescribeScalingInstances` — same, over an empty group.
+- The tag-scan path that `decommission_node` uses to resolve a NodeId, and
+  its idempotent resolve when no instance carries the id (Requirement 8.3).
+- `assess_quorum` over a group with no kythira-tagged instances reports zero
+  members, which also pins foreign/untagged exclusion against the real API.
+
+**Still NOT verified, and this is the important half** — the group holds no
+instances, so the paths that only exist when instances do were never
+exercised:
+- `ECS DescribeInstances` batching (the 100-ID `InstanceIds` JSON array).
+  Note Finding 8 verified multi-ID *encoding* separately with fabricated
+  ids, so the query-string half is settled; the response parsing is not.
+- The `InService` lifecycle-state spelling, and the `Running` ECS status —
+  no instance has ever been in either state under this code.
+- `ModifyScalingGroup` DesiredCapacity+1 and, the riskiest single guess in
+  the provider, `RemoveInstances`' capacity-decrement parameter.
+- Pagination beyond a single short page.
+
+Only the fourth case (`provision_then_decommission_a_real_instance`, which
+launches a billable ECS instance) exercises any of these. Until it runs, the
+manager's write path is documentation-derived — and the OSS content-type bug
+is the standing reminder of what that is worth.
+
 ## Finding 3 — Endpoints: PARTIALLY CONFIRMED (documentation only)
 
 `ess.aliyuncs.com` and `sts.aliyuncs.com` are the documented central
