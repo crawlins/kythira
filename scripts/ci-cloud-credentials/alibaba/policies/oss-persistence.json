@@ -1,0 +1,15 @@
+[
+  {
+    "Action": [
+      "oss:GetObject",
+      "oss:PutObject",
+      "oss:DeleteObject",
+      "oss:ListObjects"
+    ],
+    "Resource": [
+      "acs:oss:*:*:{{BUCKET}}",
+      "acs:oss:*:*:{{BUCKET}}/*"
+    ],
+    "Effect": "Allow"
+  }
+]
