@@ -2641,10 +2641,13 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   against the live service** (August 14, 2026 — all four real cases, incl. a
   fresh engine reading back another's writes; ~2-3 s per object round trip to
   `ap-southeast-1`, recorded because it puts WAN latency on the election hot
-  path). The **ESS quorum manager has not yet run live** — its ESS/ECS
-  response shapes, pagination limits and the `RemoveInstances` decrement
-  parameter remain documentation-derived. Its three cheap real cases cost
-  nothing and should run before it is trusted.
+  path). The ESS quorum manager is **partially verified live** (same day,
+  spike-notes.md Finding 9): its read path — `DescribeScalingGroups`,
+  `DescribeScalingInstances`, the tag scan, idempotent decommission of an
+  absent node — passes against the real API. Its **write path has never run**:
+  `ModifyScalingGroup` capacity+1, `RemoveInstances`' decrement parameter, the
+  `InService`/`Running` state spellings and ECS batch-response parsing all
+  need an instance to exist, which only the one billable real case creates.
   **The certificate provider this entry originally named was descoped** on
   cost grounds (no Alibaba CA will be purchased); revivable — see the spec's
   Requirement 12.
