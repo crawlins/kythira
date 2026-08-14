@@ -656,13 +656,38 @@ to run these suites under keyless federation once an account exists.
    (each with `workflow_dispatch` input overrides), including the
    zero-bundles fail-closed guard every provider job carries.
 2. Credentials SHALL come from RAM **AssumeRoleWithOIDC** — a RAM OIDC
-   IdP trusting GitHub's issuer, a role scoped per bundle, and an
-   in-workflow STS exchange of the job's OIDC JWT for temporary
-   AccessKeyId/Secret/SecurityToken exported as `KYTHIRA_ALIBABA_*` — no
-   stored long-lived key for these suites. (The existing
-   `ALIBABA_CLOUD_ACCESS_KEY_*` secrets for CloudMonitor remote-write
-   remain a documented, separate deviation — Basic-auth ingestion cannot
-   carry an STS token; control-plane APIs can.)
+   IdP trusting GitHub's issuer and a role scoped per bundle — exchanged
+   for temporary AccessKeyId/Secret/SecurityToken and exported as
+   `KYTHIRA_ALIBABA_*`; no stored long-lived key for these suites.
+
+   **The exchange SHALL use the vendor's official
+   `aliyun/configure-aliyun-credentials-action`, not a hand-rolled
+   in-workflow exchange.** This is a deliberate departure from the OCI
+   job, which does hand-roll its UPST exchange — and the reason that
+   precedent does not transfer is that OCI's only option was an
+   unaudited *third-party* action, so owning ~10 lines of curl beat
+   auditing someone else's implementation. Alibaba publishes a
+   *first-party* action, which inverts the trade: it is maintained by
+   the vendor whose API contract it implements, so it tracks changes to
+   the exchange that a hand-rolled copy in this repo would not.
+
+   Provisioning notes confirmed against the live account (August 13,
+   2026 — spike-notes.md Finding 6):
+   - OIDC identity-provider operations live under the **`ims`** product
+     (Identity Management Service), **not `ram`**;
+     `ram CreateOIDCProvider` does not exist, and the server rejects it
+     on `ram.aliyuncs.com/2015-05-01` with `InvalidAction.NotFound`.
+   - **`Fingerprints` is mandatory** on `CreateOIDCProvider`, unlike
+     AWS's equivalent where the thumbprint is optional/auto-derived;
+     `provision-oidc-role.sh` computes it from the issuer's live TLS
+     chain rather than hardcoding a constant that a CA rotation would
+     silently stale.
+   - Trust-policy documents use `"Version": "1"`, Alibaba's own
+     versioning — not AWS's `"2012-10-17"` date.
+
+   (The existing `ALIBABA_CLOUD_ACCESS_KEY_*` secrets for CloudMonitor
+   remote-write remain a documented, separate deviation — Basic-auth
+   ingestion cannot carry an STS token; control-plane APIs can.)
 3. `scripts/ci-cloud-credentials/alibaba/` SHALL grow the aws-shaped
    provisioning layout: `provision-oidc-role.sh` (idempotent; creates the
    OIDC IdP + role + per-bundle policies), `policies/<bundle>.json`
