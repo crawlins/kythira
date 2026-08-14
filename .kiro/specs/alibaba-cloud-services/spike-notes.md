@@ -193,6 +193,40 @@ launches a billable ECS instance) exercises any of these. Until it runs, the
 manager's write path is documentation-derived — and the OSS content-type bug
 is the standing reminder of what that is worth.
 
+## Finding 10 — ESS write path: half-confirmed; blocked by account risk control
+
+Ran `provision_then_decommission_a_real_instance` live (August 14, 2026).
+It **failed**, and the failure is more informative than a pass would have
+been.
+
+**Confirmed correct — the riskiest remaining guess in the provider:**
+`ModifyScalingGroup` with DesiredCapacity+1 IS the right call to trigger a
+scale-out, and it *succeeded*. The activity log records "A user requests to
+modify the specified scaling group, changing the Desired Capacity …
+**Successful**". What failed is the scale-out activity ESS then ran.
+
+**The failure is account-side, not ours:**
+`ErrorCode: Forbidden.RiskControl` — "This operation is forbidden by Aliyun
+RiskControl system." Isolated with a **free `RunInstances --DryRun true`**,
+which creates nothing and was refused identically: the block is account-wide
+on ECS instance creation, so it is not the scaling configuration, the image,
+the instance type, the vSwitches or anything this repo controls. The console
+surfaced no verification prompt, which suggests a support-side block rather
+than a pending self-service step — typical of a new account with no billing
+history. Remediation is an Alibaba support ticket, not a code or config
+change.
+
+**Confirmed working, unexpectedly:** the capacity-rollback-on-provision-
+timeout that Task 3 added *beyond* the requirements (a sibling-lesson
+defensive measure, Req 7.2 mandates only the exceptional future). After the
+timeout, `DesiredCapacity` and `TotalCapacity` are both back to 0 — no leak,
+no lingering spend, on its first real exercise. Worth keeping.
+
+**Still unverified, and needing an instance to exist:** `RemoveInstances`'
+capacity-decrement parameter, the `InService`/`Running` state spellings, and
+ECS `DescribeInstances` batch-response parsing. Re-run this single case once
+risk control clears; the binary and infrastructure are already in place.
+
 ## Finding 3 — Endpoints: PARTIALLY CONFIRMED (documentation only)
 
 `ess.aliyuncs.com` and `sts.aliyuncs.com` are the documented central
