@@ -150,13 +150,46 @@ four-step HMAC chain. The fallback recorded in design.md (adopt the vcpkg
 cost it would have carried — a second HTTP stack, opaque write-retry
 behavior beneath a durability contract — remains the reason not to.
 
-## Finding 6 — AssumeRoleWithOIDC: OPEN
+## Finding 6 — OIDC federation: CONFIRMED LIVE, with three corrections
 
-Not yet examined in detail; needed only by Task 8's CI wiring, which is
-downstream of an account existing. The shape assumed by requirements.md 17.2
-(an unauthenticated STS call carrying the OIDC token, role ARN and OIDC
-provider ARN, returning an AccessKeyId/Secret/SecurityToken triple) is from
-the vendor's overview documentation and has not been exercised.
+Provisioned against the live account August 13, 2026 (role
+`acs:ram::5633986662052576:role/kythira-ci-real-cloud-tests`, provider
+`acs:ram::5633986662052576:oidc-provider/github-actions`). Three corrections
+to what requirements.md 17.2 originally assumed, each learned by a failing
+call rather than from documentation:
+
+1. **CORRECTED — the product is `ims`, not `ram`.** OIDC identity-provider
+   operations live under Identity Management Service.
+   `aliyun ram CreateOIDCProvider` fails "not a valid api", and forcing it
+   against `ram.aliyuncs.com/2015-05-01` is rejected *by the server* with
+   `InvalidAction.NotFound` — so this is a genuine product split, not stale
+   CLI metadata. The distinction matters: the first diagnosis (stale CLI)
+   would have sent us chasing a CLI upgrade that could not have helped.
+   WAS: the script called `ram CreateOIDCProvider`.
+2. **CORRECTED — `Fingerprints` is mandatory**, unlike AWS's equivalent
+   where the thumbprint is optional and auto-derived; omitting it fails
+   `MissingFingerprints`. `provision-oidc-role.sh` computes it from the
+   issuer's live TLS chain (last certificate in the presented chain, SHA-1,
+   lowercase hex) rather than hardcoding a constant that a CA rotation would
+   silently stale.
+3. **CORRECTED — use the vendor's official action, not a hand-rolled
+   exchange.** Alibaba publishes `aliyun/configure-aliyun-credentials-action`.
+   The OCI job hand-rolls its UPST exchange because its only option was an
+   unaudited third-party action; a first-party action inverts that trade.
+   requirements.md 17.2 now specifies the official action and records why the
+   OCI precedent does not transfer.
+
+Also confirmed incidentally: trust-policy documents use `"Version": "1"`
+(Alibaba's own versioning, not AWS's `"2012-10-17"` date), and custom
+policies are capped at **5 versions** — so an idempotent provisioning script
+must prune before `CreatePolicyVersion` or it eventually fails
+`LimitExceeded`. That is the same constraint that pushed the AWS spec toward
+inline policies over managed ones; here the script prunes the oldest
+non-default version instead.
+
+Not yet exercised: the *runtime* half — a real GitHub Actions job assuming
+this role. That needs Task 7's suites to exist, and is the next live check
+after them.
 
 ---
 
