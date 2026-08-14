@@ -2626,19 +2626,29 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   convenient: instance configurations `kythira-ci-config-userdata-probe`,
   `-diag2`, `-mime-diag`, `-mime-diag2`, `-ubuntu24-heartbeat` (v1), `-v2`
   (the bucket object `heartbeat/local-debug/` is already deleted).
-- [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group.
-  **Spec authored August 13, 2026** (`.kiro/specs/alibaba-cloud-services/`):
-  `alibaba_ess_quorum_manager` (ESS capacity + ECS tags, mirroring
-  `aws_asg_quorum_manager` semantics) and — per the persistence entry's
-  mandate below — `alibaba_oss_persistence_engine`, on hand-rolled
-  ACS3-HMAC-SHA256 / OSS-V4 signing following the OCI no-SDK shape.
-  **The certificate provider this entry originally named (CAS Private CA)
-  was descoped the same day by operator decision, on cost grounds — no
-  Alibaba CA, private or public, will be purchased; revivable under the
-  right conditions** (the spec's Requirement 12 records the rationale,
-  the revival conditions, and where the drafted requirements live).
-  Implementation not started; the real-cloud tier is specced fail-closed
-  because no Alibaba account exists yet.
+- [x] **Alibaba Cloud** — `alibaba_ess_quorum_manager` (ESS scaling-group
+  capacity + ECS tags, `aws_asg_quorum_manager` semantics) and
+  `alibaba_oss_persistence_engine` (one object per state item, synchronous
+  durable writes) — spec `.kiro/specs/alibaba-cloud-services/`, operator docs
+  `docker/alibaba_quorum_manager/README.md`. Both hand-roll their signing
+  (ACS3-HMAC-SHA256 / OSS V4) following the OCI no-SDK shape; no vcpkg or
+  find_package change. Test tiers per the spec: unit (golden vectors from the
+  vendor's own worked example), a **signature-verifying** mock server, and an
+  opt-in real tier (exit-77 skip, never CTest-registered) wired into
+  `real-cloud-tests.yml` behind `REAL_CLOUD_TESTS_ALIBABA_*`, using the
+  vendor's official OIDC action.
+  **Verification status, honestly:** the OSS persistence engine is **verified
+  against the live service** (August 14, 2026 — all four real cases, incl. a
+  fresh engine reading back another's writes; ~2-3 s per object round trip to
+  `ap-southeast-1`, recorded because it puts WAN latency on the election hot
+  path). The **ESS quorum manager has not yet run live** — its ESS/ECS
+  response shapes, pagination limits and the `RemoveInstances` decrement
+  parameter remain documentation-derived. Its three cheap real cases cost
+  nothing and should run before it is trusted.
+  **The certificate provider this entry originally named was descoped** on
+  cost grounds (no Alibaba CA will be purchased); revivable — see the spec's
+  Requirement 12.
+
 - [ ] **Cloud key-object persistence engines — write the spec** (a new
   `.kiro/specs/` directory): one `kythira::persistence_engine`
   (`include/raft/persistence.hpp`) implementation per implemented cloud
