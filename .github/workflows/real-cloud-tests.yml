@@ -66,7 +66,15 @@ on:
         type: boolean
         required: false
       alibaba_enabled:
-        description: "Alibaba Cloud (not yet implemented — see doc/TODO.md Cloud Provider Support)"
+        description: "Alibaba Cloud (overrides REAL_CLOUD_TESTS_ALIBABA_ENABLED for this run only)"
+        type: boolean
+        required: false
+      alibaba_bundle_ess_quorum:
+        description: "Alibaba bundle: ess-quorum-manager (launches a real ECS instance)"
+        type: boolean
+        required: false
+      alibaba_bundle_oss_persistence:
+        description: "Alibaba bundle: oss-persistence (OSS objects only, ~free)"
         type: boolean
         required: false
       # Cloud-vendor monitoring-config tests (doc/TODO.md "Metrics
@@ -1366,17 +1374,220 @@ jobs:
           fi
           echo "Post-run audit clean: no non-terminated instances in the compartment."
 
+  # ── Alibaba Cloud ────────────────────────────────────────────────────────
+  # .kiro/specs/alibaba-cloud-services/ — alibaba_ess_quorum_manager and
+  # alibaba_oss_persistence_engine. Credentials come from RAM
+  # AssumeRoleWithOIDC via the VENDOR'S OWN action (Requirement 17.2): unlike
+  # the oci job, which hand-rolls its UPST exchange because its only option
+  # was an unaudited third-party action, Alibaba publishes a first-party one,
+  # which tracks changes to the exchange that a copy in this repo would not.
+  #
+  # Neither suite is registered with CTest (they need real credentials and
+  # spend real money), so they are built as named targets and run directly —
+  # the same contract the oci job follows.
   alibaba:
     name: Real Cloud Tests (Alibaba Cloud)
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
     if: |
       (github.event.inputs.run_real_cloud_tests == 'true'
         || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
       && (github.event.inputs.alibaba_enabled == 'true'
         || (github.event.inputs.alibaba_enabled == null && vars.REAL_CLOUD_TESTS_ALIBABA_ENABLED == 'true'))
+
+    env:
+      BUNDLE_ESS_QUORUM: ${{ (github.event.inputs.alibaba_bundle_ess_quorum == 'true') || (github.event.inputs.alibaba_bundle_ess_quorum == null && vars.REAL_CLOUD_TESTS_ALIBABA_ESS_QUORUM_ENABLED == 'true') }}
+      BUNDLE_OSS_PERSISTENCE: ${{ (github.event.inputs.alibaba_bundle_oss_persistence == 'true') || (github.event.inputs.alibaba_bundle_oss_persistence == null && vars.REAL_CLOUD_TESTS_ALIBABA_OSS_PERSISTENCE_ENABLED == 'true') }}
+      CCACHE_DIR: /home/runner/.ccache
+
     steps:
-      - name: No real-cloud tests implemented for Alibaba Cloud yet
-        run: echo "No real-cloud tests implemented for Alibaba Cloud yet — see doc/TODO.md Cloud Provider Support."
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Every provider job carries this guard because the failure it prevents
+      # actually happened on the azure job: all bundles off means the job
+      # builds, authenticates, runs zero tests and reports SUCCESS.
+      - name: Fail closed if no test bundle is enabled
+        if: ${{ env.BUNDLE_ESS_QUORUM != 'true' && env.BUNDLE_OSS_PERSISTENCE != 'true' }}
+        run: |
+          echo "::error::The Alibaba job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_ALIBABA_ESS_QUORUM_ENABLED and/or REAL_CLOUD_TESTS_ALIBABA_OSS_PERSISTENCE_ENABLED, or pass the alibaba_bundle_* workflow_dispatch inputs. See scripts/ci-cloud-credentials/alibaba/README.md." >&2
+          exit 1
+
+      - name: Fail closed if Alibaba CI variables are unset
+        run: |
+          fail=0
+          [ -z "${{ vars.ALIBABA_CI_ROLE_ARN }}" ] && { echo "::error::ALIBABA_CI_ROLE_ARN repository variable is unset." >&2; fail=1; }
+          [ -z "${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}" ] && { echo "::error::ALIBABA_CI_OIDC_PROVIDER_ARN repository variable is unset." >&2; fail=1; }
+          [ -z "${{ vars.ALIBABA_CI_REGION }}" ] && { echo "::error::ALIBABA_CI_REGION repository variable is unset." >&2; fail=1; }
+          if [ "${BUNDLE_ESS_QUORUM}" = "true" ] && [ -z "${{ vars.ALIBABA_SCALING_GROUP_ID }}" ]; then
+            echo "::error::ALIBABA_SCALING_GROUP_ID is unset but the ess-quorum bundle is enabled." >&2; fail=1
+          fi
+          if [ "${BUNDLE_OSS_PERSISTENCE}" = "true" ] && [ -z "${{ vars.ALIBABA_OSS_BUCKET }}" ]; then
+            echo "::error::ALIBABA_OSS_BUCKET is unset but the oss-persistence bundle is enabled." >&2; fail=1
+          fi
+          exit $fail
+
+      - name: Install system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Export Actions cache credentials for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-realcloud-alibaba-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-realcloud-alibaba-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-realcloud-alibaba-${{ runner.os }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
+      - name: Configure (Release)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      - name: Build the real-Alibaba suites
+        run: |
+          targets=""
+          [ "${BUNDLE_ESS_QUORUM}" = "true" ] && targets="$targets alibaba_quorum_manager_real_test"
+          [ "${BUNDLE_OSS_PERSISTENCE}" = "true" ] && targets="$targets alibaba_oss_persistence_real_test"
+          # shellcheck disable=SC2086
+          cmake --build build --target $targets
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-realcloud-alibaba-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      # Deliberately AFTER the build and immediately before the test steps.
+      # The azure job learned this the expensive way: it logged in first, took
+      # ~84 minutes to cold-build, and its credentials had expired before the
+      # first test ran. STS credentials are short-lived; keep the gap between
+      # minting and using them to the width of the test steps.
+      - name: Configure Alibaba Cloud credentials (RAM OIDC)
+        uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          region: ${{ vars.ALIBABA_CI_REGION }}
+
+      # Exit 77 is the suites' "not configured" skip. In CI that is a
+      # misconfiguration, not a skip — the bundle was explicitly enabled — so
+      # it is converted into a loud failure rather than a silent green.
+      - name: Run oss-persistence bundle
+        if: ${{ env.BUNDLE_OSS_PERSISTENCE == 'true' }}
+        env:
+          KYTHIRA_ALIBABA_REGION: ${{ vars.ALIBABA_CI_REGION }}
+          KYTHIRA_ALIBABA_ACCESS_KEY_ID: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          KYTHIRA_ALIBABA_ACCESS_KEY_SECRET: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+          KYTHIRA_ALIBABA_SECURITY_TOKEN: ${{ env.ALIBABA_CLOUD_SECURITY_TOKEN }}
+          KYTHIRA_ALIBABA_OSS_BUCKET: ${{ vars.ALIBABA_OSS_BUCKET }}
+        run: |
+          rc=0
+          ./build/tests/alibaba_oss_persistence_real_test --log_level=test_suite || rc=$?
+          if [ $rc -eq 77 ]; then
+            echo "::error::The suite skipped for want of configuration, but this bundle was enabled. Check the credentials step and the ALIBABA_* variables." >&2
+            exit 1
+          fi
+          exit $rc
+
+      - name: Run ess-quorum-manager bundle
+        if: ${{ env.BUNDLE_ESS_QUORUM == 'true' }}
+        env:
+          KYTHIRA_ALIBABA_REGION: ${{ vars.ALIBABA_CI_REGION }}
+          KYTHIRA_ALIBABA_ACCESS_KEY_ID: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          KYTHIRA_ALIBABA_ACCESS_KEY_SECRET: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+          KYTHIRA_ALIBABA_SECURITY_TOKEN: ${{ env.ALIBABA_CLOUD_SECURITY_TOKEN }}
+          KYTHIRA_ALIBABA_SCALING_GROUP_ID: ${{ vars.ALIBABA_SCALING_GROUP_ID }}
+        run: |
+          rc=0
+          ./build/tests/alibaba_quorum_manager_real_test --log_level=test_suite || rc=$?
+          if [ $rc -eq 77 ]; then
+            echo "::error::The suite skipped for want of configuration, but this bundle was enabled. Check the credentials step and the ALIBABA_* variables." >&2
+            exit 1
+          fi
+          exit $rc
+
+      # Every cloud provider in this project leaked something on its first
+      # live run. The suites tear down unconditionally, including on a signal,
+      # but "the teardown ran" and "nothing is left running" are different
+      # claims — and this is the run most likely to have leaked.
+      - name: Audit for leaked instances
+        if: always()
+        env:
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+          ALIBABA_CLOUD_SECURITY_TOKEN: ${{ env.ALIBABA_CLOUD_SECURITY_TOKEN }}
+        run: |
+          if [ -z "${ALIBABA_CLOUD_ACCESS_KEY_ID:-}" ]; then
+            echo "No credentials in the environment (the credentials step failed or never ran) — nothing to audit with."
+            exit 0
+          fi
+          if [ "${BUNDLE_ESS_QUORUM}" != "true" ]; then
+            echo "ess-quorum bundle did not run; no instances could have been created."
+            exit 0
+          fi
+          curl -sSL -o /tmp/aliyun.tgz \
+            https://github.com/aliyun/aliyun-cli/releases/latest/download/aliyun-cli-linux-latest-amd64.tgz
+          tar -xzf /tmp/aliyun.tgz -C /tmp && sudo mv /tmp/aliyun /usr/local/bin/
+          # The scaling group must be back at zero. A non-zero TotalCapacity
+          # means an instance outlived teardown and is being billed.
+          capacity=$(aliyun ess DescribeScalingGroups --RegionId "${{ vars.ALIBABA_CI_REGION }}" \
+            --ScalingGroupId.1 "${{ vars.ALIBABA_SCALING_GROUP_ID }}" \
+            | python3 -c 'import json,sys; g=json.load(sys.stdin)["ScalingGroups"]["ScalingGroup"]; print(g[0]["TotalCapacity"] if g else 0)')
+          echo "scaling group TotalCapacity after the run: ${capacity}"
+          if [ "${capacity}" != "0" ]; then
+            echo "::error::Post-run audit found ${capacity} instance(s) still in the scaling group — teardown did not complete. They are being billed; remove them via the ESS console." >&2
+            exit 1
+          fi
+          echo "Post-run audit clean: the scaling group is back at zero."
 
   # ── Cloud-vendor monitoring configs (doc/TODO.md "Metrics Backends") ─────
   # Each job below exercises one example config from docker/cloud-monitoring/
