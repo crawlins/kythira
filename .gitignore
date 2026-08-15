@@ -51,6 +51,13 @@ docker/poco_discovery_node/dist/
 docker/dns_discovery_node/dist/
 docker/dns_sd_discovery_node/dist/
 
+# Session handoff scratch notes — working-copy only, never committed.
+# RESUME.md is a per-machine set of notes-to-self about in-flight work; it
+# goes stale the moment anything merges, and it is explicitly not a source
+# of truth (its own header says to verify every claim against the tree).
+# Tracking it produced merge conflicts on a file nobody reads from git.
+RESUME.md
+
 # OS files
 .DS_Store
 Thumbs.db
