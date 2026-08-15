@@ -2649,29 +2649,77 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   cost grounds (no Alibaba CA will be purchased); revivable — see the spec's
   Requirement 12.
 
-- [ ] **Cloud key-object persistence engines — write the spec** (a new
-  `.kiro/specs/` directory): one `kythira::persistence_engine`
-  (`include/raft/persistence.hpp`) implementation per implemented cloud
-  provider, backed by that provider's key-object store — AWS S3, Azure Blob
-  Storage, GCP Cloud Storage, and OCI Object Storage (whose bucket
-  plumbing, `kythira-ci-artifacts`, already exists from the Requirement 4.4
-  heartbeat work). Persisting term/voted_for/log/snapshot in a durable
-  object store is also the natural seam for off-node backup and
-  restore-into-fresh-cluster flows, which today don't exist at all —
-  `file_persistence_engine` keeps a single overwritten snapshot slot on
-  local disk. The spec must confront the Raft paper's synchronous-flush
-  requirement head on (`save_current_term`/`save_voted_for` must be durable
-  before returning; per-object PUT latency puts that on the hot election
-  path) and say explicitly what the per-provider consistency model
-  guarantees (S3/GCS/OCI strong read-after-write vs. what the engine
-  actually needs). **The Alibaba requirement is discharged**: the mandate
-  that whichever spec introduces Alibaba Cloud support SHALL include an
-  Alibaba OSS key-object persistence engine in scope is now met by
+- [ ] **Cloud key-object persistence engines** — one
+  `kythira::persistence_engine` (`include/raft/persistence.hpp`) per
+  implemented cloud provider, backed by that provider's key-object store:
+  AWS S3, Azure Blob Storage, GCP Cloud Storage, OCI Object Storage (whose
+  bucket plumbing, `kythira-ci-artifacts`, already exists from the
+  Requirement 4.4 heartbeat work), and the Alibaba OSS engine that already
+  ships.
+  **The spec is written** (August 14, 2026):
+  `.kiro/specs/cloud-object-persistence/` — 19 requirements, 20 tasks, none
+  implemented. What remains under this bullet is the implementation.
+  **What the spec decided**, since these were the open questions:
+  - **One engine, five stores.** The Raft-correctness body — layout,
+    20-digit padding, the in-memory mirror, mirror-after-acknowledgement
+    ordering, parse-or-throw load, retry, retention, fencing — is written
+    once as `object_store_persistence_engine<Store>` over a new
+    `kythira::key_object_store` concept, and each provider contributes only
+    a client. This is a **deliberate departure** from the independent-sibling
+    shape of the quorum managers and certificate providers, on the grounds
+    that compute-fleet APIs differ semantically while object stores do not.
+    `alibaba_oss_persistence_engine` becomes an instantiation and keeps its
+    name, its constructor and its tests.
+  - **The synchronous-flush requirement is confronted, not softened.** No
+    batching, no write-behind, no relaxed-durability mode. One election
+    round costs four sequential durable writes, so
+    `election_timeout_min ≥ 4 × p99(PUT) + rpc_rtt`, and sustained append
+    throughput is bounded by one PUT round trip per entry per node. The only
+    measurement this project has is **~2-3 s per round trip** to
+    `ap-southeast-1` from a developer machine (spike-notes Finding 7) — a
+    geography-dominated upper bound the spec forbids quoting as a production
+    number, with in-region measurement as a deliverable.
+  - **Per-provider consistency and conditional-write tables**, with an
+    explicit confirmed-vs-OPEN column. S3 and GCS document strong
+    read-after-write *and* list-after-write explicitly; **list-after-write
+    is OPEN for Azure, OCI and OSS**, and closing it is a spike item,
+    empirically as well as documentarily, because a lagging listing is a
+    silently short log. Azure's durability-on-response depends on the
+    account's redundancy mode (ZRS is the only one documented as
+    synchronous to all replicas).
+  - **Fencing**: compare-and-swap on `term`/`voted_for` — the safety
+    chokepoint a second writer cannot avoid — plus create-only preconditions
+    on log appends, which cost nothing and catch the one corruption path the
+    chokepoint misses (a stale leader appends without ever changing its
+    term). Zero extra round trips, terminal latch, and snapshot/DELETE left
+    unconditional as a **stated residual**. It **detects**; it does not
+    coordinate. Azure
+    Blob leases were considered and rejected. Where a provider cannot
+    express the precondition it is a **compile error**, never a silent
+    degradation — and **Alibaba OSS may be that provider** (only
+    `x-oss-forbid-overwrite` is confirmed, and it is documented as silently
+    ignored under bucket versioning).
+  - **Backup and restore are in scope**, as `object_store_backup` plus a
+    `cmd/raft_object_backup` CLI, with two deliberately separate restore
+    verbs — clone (same identity) and seed (new cluster from a snapshot,
+    membership replaced). Snapshot retention is added but documented as
+    **not** a backup: it shares a bucket, prefix, credential and blast
+    radius with what it would recover from.
+  - **Named as future work, deliberately out of scope**: a batched
+    `append_log_entries` and a `save_hard_state(term, vote)` on the
+    `persistence_engine` concept. Both would lift real limits this spec
+    accepts, and both are concept changes affecting every engine —
+    `file_persistence_engine` and `memory_persistence_engine` included —
+    rather than cloud concerns.
+  **The Alibaba requirement was already discharged**: the mandate that
+  whichever spec introduces Alibaba Cloud support SHALL include an Alibaba
+  OSS key-object persistence engine in scope was met by
   `.kiro/specs/alibaba-cloud-services/` (Requirements 14–15), whose engine
-  keeps deliberate single-slot parity with `file_persistence_engine` and
-  defers retention/backup/restore/fencing decisions to THIS spec so they
-  can be made uniformly across providers — write this spec before (or
-  with) that engine's cross-provider follow-ons.
+  kept deliberate single-slot, no-fencing parity with
+  `file_persistence_engine` precisely so the four decisions above could be
+  made uniformly here.
+  **Nothing is implemented yet — this entry stays open until the engines
+  are.**
 
 ### RPC Serializer Implementations
 
