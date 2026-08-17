@@ -1,9 +1,52 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: not started (spec written August 14, 2026)
+## Status: tasks 1-3 done; task 0 closed for Alibaba and S3
 
-Nothing in this plan has been implemented. One thing in it has already been
-**live-verified**, which is why the plan is shaped the way it is:
+**Done:** the seam (task 1), the generic engine (task 2) and the Alibaba
+instantiation (task 3), August 15, 2026. Together they add **no capability on
+purpose** — a default-configured bucket is byte-identical to what shipped,
+which is the property task 3's unmodified test suites demonstrate.
+
+**Task 0, Alibaba's cells: closed live, August 16, 2026** (spike-notes.md).
+The decisive one went the way this plan's Notes section anticipated: **OSS has
+no overwrite compare-and-swap** — `If-Match` on PutObject is
+`400 NotImplemented` for a current ETag as well as a stale one — so
+Requirement 9.8 fires and `compare_and_swap` will be a **compile error** for
+the OSS engine. Create-only (`x-oss-forbid-overwrite` → **409
+`FileAlreadyExists`**), `Content-MD5` verification, ETag determinism and
+list-after-write are all confirmed live; conditional DELETE is **accepted and
+silently ignored**.
+
+**Task 19's Alibaba half is also done:** the real suite ran green against the
+live bucket *after* the hoist, so the live-verified claim now belongs to the
+generic engine over the OSS client.
+
+**Task 0, AWS S3's cells: closed live, August 16, 2026** (Finding 10), and
+they went the other way: **every** conditional primitive works, conditional
+delete included (the cell design.md had marked OPEN), so S3 is the first
+provider that could carry `compare_and_swap`. The one thing the run did *not*
+produce is a **409 `ConditionalRequestConflict`** — 53 racing losers, all 412 —
+so the 412/409 mapping stays a documentation-derived rule with a mandatory
+unit case rather than becoming "409 never happens".
+
+**Azure Blob, GCS and OCI cells remain open**, and tasks 5-6 wait on them —
+but nothing external blocks them now. **All five providers have a bucket**
+(task 17's bucket half, done August 16, 2026: `kythira-ci-827617851594` on S3,
+`kythirarealtestobj`/`kythira-raft` on Azure Blob,
+`kythira-ci-prefab-sky-500619-s9` on GCS; OCI and Alibaba already had one), and
+all five authenticate from this host. Two credential caveats worth knowing
+before reaching for them: **AWS's working credentials are in the `personal`
+CLI profile** and resolve to the account **root** — fine for a read-only spike,
+wrong for least-privilege CI — and **GCP's user credential is expired**, though
+application-default credentials still work via
+`CLOUDSDK_AUTH_ACCESS_TOKEN`. Full table in spike-notes.md.
+
+The probes live in `scripts/object-store-probes/`; adding a provider means a
+sibling of `probe_alibaba_oss.py`, reusing its status-code-based verdicts
+rather than re-deriving them.
+
+One thing in this plan has already been **live-verified**, which is why the
+plan is shaped the way it is:
 `alibaba_oss_persistence_engine` passed all four of its real cases against a
 live `ap-southeast-1` bucket on August 14, 2026, including a fresh engine
 reading back another engine's writes. Task 2 hoists that engine's body into
@@ -70,19 +113,25 @@ Reference implementations to study before starting, in this order:
   Every cell marked OPEN in design.md's Data Models tables is a sub-item
   here, and none of them may be closed by analogy to another provider.
 
-  - [ ] 0.1 **List-after-write, empirically** — for Azure Blob, OCI Object
+  - [~] 0.1 **List-after-write, empirically** — for Azure Blob, OCI Object
         Storage and Alibaba OSS (S3 and GCS document it explicitly and need
         only a confirming run). Write N objects under a fresh prefix, LIST
         immediately, assert all N appear; repeat under concurrency. This is
         the one consistency question the engine cannot detect at runtime —
         a lagging listing produces a silently short log at recovery — so
         documentation is deliberately the weaker evidence.
+        **Alibaba OSS and AWS S3: CLOSED live** — 3 × 25 objects, immediate
+        LIST, complete every round on both (spike-notes.md Findings 5 and 10).
+        OSS is recorded as *empirically consistent* rather than guaranteed,
+        since the vendor publishes no listing-specific statement; S3's run
+        confirms documentation that is already explicit. **Azure Blob and OCI
+        remain open.**
   - [ ] 0.2 **Durability-on-response wording for OCI.** Find or fail to find
         primary documentation that a 2xx PUT means durably stored before the
         response. If it does not exist, say so in that provider's section
         rather than letting the four confirmed providers' wording stand in
         for it (Requirement 4.2's honesty rule).
-  - [ ] 0.3 **The conditional-write matrix, live, per provider** — create-only
+  - [~] 0.3 **The conditional-write matrix, live, per provider** — create-only
         precondition, If-Match overwrite, conditional delete: exact header
         spelling, exact status code on rejection, and behaviour under
         concurrency. Three cells decide real design outcomes: **S3's 412 vs
@@ -95,12 +144,36 @@ Reference implementations to study before starting, in this order:
         the overwrite precondition, `alibaba_oss_client` satisfies only the
         base concept and `compare_and_swap` becomes a compile error for it,
         by design (Requirement 9.8).
+        **Alibaba OSS: CLOSED live, and it triggered exactly that clause** —
+        `If-Match` on PutObject is `400 NotImplemented` for a *current* ETag
+        as well as a stale one, so there is no overwrite CAS at all;
+        create-only is `x-oss-forbid-overwrite` rejecting with **409
+        `FileAlreadyExists`** (not 412 — and S3 uses 409 for the opposite,
+        retryable meaning, so no client may map a bare 409); conditional
+        DELETE is **accepted and silently ignored** (spike-notes.md Findings
+        1-3).
+        **AWS S3: CLOSED live** — every conditional primitive works, including
+        the **conditional delete** this design had marked OPEN (stale `If-Match`
+        → 412 *and the object survives*; current → 204), so S3 is the first
+        provider that could carry `compare_and_swap`. Its **409
+        `ConditionalRequestConflict` was not elicited** — 53 racing losers, all
+        412 — so the 412/409 split stays a documentation-derived rule with a
+        mandatory unit case, explicitly not "409 does not happen"
+        (spike-notes.md Finding 10). **Azure Blob, GCS and OCI remain open.**
   - [ ] 0.4 **Single-PUT size limits** per provider; `max_object_bytes`'s
         default is chosen from the smallest (Requirement 7.3).
-  - [ ] 0.5 **Checksum spelling** per provider — `Content-MD5` where
+  - [~] 0.5 **Checksum spelling** per provider — `Content-MD5` where
         universally supported, the provider's native header where preferred
         — and for which providers the returned ETag is a deterministic
         function of single-part content (Requirement 7.2).
+        **Alibaba OSS and AWS S3: CLOSED live** — `Content-MD5` is verified
+        end to end on both, and on both the ETag is the MD5 hex of single-part
+        content, so both halves of Requirement 7 apply. The spellings differ
+        and a client must not assume: mismatch is **`InvalidDigest`** on OSS
+        and **`BadDigest`** on S3, and the ETag is **uppercase** on OSS,
+        **lowercase** on S3 — so a local ETag check must compare
+        case-insensitively (spike-notes.md Findings 4 and 10). **Other
+        providers open.**
   - [ ] 0.6 **Azure Blob: REST vs SDK decision checkpoint.** The recorded
         decision is hand-rolled REST over httplib with an AAD bearer token,
         avoiding a new unconditional dependency. IF the surface proves
@@ -125,7 +198,17 @@ Reference implementations to study before starting, in this order:
     analogy.
   - _Requirements: 4.2, 4.3, 5.3, 5.4, 7.1–7.3, 9.7, 13.2, 15.3, 17.5_
 
-- [ ] 1. **The seam: `key_object_store`, the mock store, the conformance suite**
+- [x] 1. **The seam: `key_object_store`, the mock store, the conformance suite**
+      — done August 15, 2026. `include/raft/key_object_store.hpp`,
+      `tests/mock_object_store.hpp`, `tests/object_store_conformance.hpp`.
+      **One deviation from the design sketch, recorded:** the concept's
+      requires-expression names `const std::string&` for `bucket`/`key` rather
+      than `std::string_view`, because it is the *more permissive* of the two
+      (a `string_view`-parameter client still satisfies it; a
+      `const std::string&`-parameter client fails a `string_view`-argument
+      check, since `std::string`'s converting constructor is explicit). The
+      engine builds every key as a `std::string` anyway, and this is what lets
+      `alibaba_oss_client` keep its signatures.
 
   - Create `include/raft/key_object_store.hpp` per the design sketch:
     `object_version`, `put_result`, `get_result`, `object_precondition_failed`,
@@ -150,7 +233,22 @@ Reference implementations to study before starting, in this order:
     demonstrably one line.
   - _Requirements: 1.1–1.4, 16.3, 17.1, 17.2_
 
-- [ ] 2. **`object_store_persistence_engine` — the hoist**
+- [x] 2. **`object_store_persistence_engine` — the hoist** — done August 15,
+      2026, in `include/raft/object_store_persistence.hpp`, with
+      `tests/object_store_persistence_unit_test.cpp` running the conformance
+      suite against `mock_object_store` (43 conformance cases + 13 substrate-
+      specific ones, green). The file-scope `static_assert` is made over a
+      synthetic in-header store so it needs no provider, and the test repeats
+      it over a real one.
+
+      **`object_persistence_options` is deliberately partial**: it carries
+      `write_retries` only. `snapshot_retention`, `fencing`, `owner_id`,
+      `takeover_epoch`, `verify_checksums` and `max_object_bytes` arrive **with
+      the behaviour that honours them** in tasks 4-6, rather than being
+      accepted and ignored now. An ignored fencing knob is precisely the
+      silent-degradation failure Requirement 9.8 exists to forbid, and
+      `max_object_bytes`'s default cannot be chosen before task 0.4 measures
+      the per-provider limits anyway.
 
   - Create `include/raft/object_store_persistence.hpp` with
     `object_persistence_options` (aggregate; every default preserving
@@ -176,7 +274,29 @@ Reference implementations to study before starting, in this order:
     `#ifdef KYTHIRA_HAS_*` (grep is the check).
   - _Requirements: 2.1–2.6, 4.1, 4.4, 17.3_
 
-- [ ] 3. **`alibaba_oss_persistence_engine` becomes an instantiation**
+- [x] 3. **`alibaba_oss_persistence_engine` becomes an instantiation** — done
+      August 15, 2026, as a thin derived type (an alias could not preserve the
+      `{alibaba_client_config, bucket, prefix}` constructor).
+
+      **The verification bar was met as written**:
+      `alibaba_oss_persistence_unit_test` (41 cases),
+      `alibaba_oss_persistence_mock_test` and `alibaba_oss_persistence_real_test`
+      compile and pass with **zero source changes** — not one assertion moved.
+      The only edited test lines in the whole hoist are two in
+      `alibaba_oss_client_unit_test.cpp` (`.value()` → `.value().body`), which
+      is exactly the mechanical Requirement 1.6 return-type change.
+
+      The `raft/alibaba/oss/*` fault points moved onto the client, where they
+      fire just inside the store boundary the generic
+      `raft/objstore/*` points sit just outside; the existing fault-injection
+      cases pass unchanged, which is the evidence that the move is invisible.
+
+      **Re-verified live, August 16, 2026**: all four real cases green against
+      `kythira-ci-5633986662052576` in `ap-southeast-1` *after* the hoist
+      (spike-notes.md Finding 7), so the live-verified claim now belongs to the
+      generic engine over the OSS client — which is the reason the hoist was
+      acceptable at all. That is task 19's Alibaba half, done early because the
+      credentials were available.
 
   - Amend `alibaba_oss_client` additively: `put_object` returns the response
     ETag, `get_object` returns a `get_result`. Signing, addressing,
@@ -465,7 +585,16 @@ Reference implementations to study before starting, in this order:
     providers are comparable.
   - _Requirements: 4.5, 5.5, 17.6, 17.7_
 
-- [ ] 17. **CI wiring + bucket provisioning**
+- [~] 17. **CI wiring + bucket provisioning** — **the bucket half is done**
+      (August 16, 2026): idempotent `provision-object-persistence-*` scripts in
+      `scripts/ci-cloud-credentials/{aws,azure,gcp}/`, each run twice and each
+      verified with a real write/read/delete round trip, with cost notes and
+      the two traps recorded in their READMEs (Azure's Owner-is-not-blob-data
+      and the unregistered-provider `SubscriptionNotFound`). OCI reuses
+      `kythira-ci-artifacts`, Alibaba reuses `kythira-ci-5633986662052576`.
+      **Not done:** the per-provider least-privilege grants for each CI
+      identity, the repository variables, and the toggles below — there is no
+      suite to enable yet.
 
   - Per-provider `REAL_CLOUD_TESTS_<PROVIDER>_OBJECT_PERSISTENCE_ENABLED`
     bundle toggle plus a matching `workflow_dispatch` input, **inside each
@@ -525,9 +654,13 @@ Reference implementations to study before starting, in this order:
   - Run every provider's real suite against a real bucket; fold every live
     correction back into spike-notes.md/requirements/design **in place**
     (the OCI doctrine).
-  - **Re-run the Alibaba real suite** and record the result: this is the
+  - **Re-run the Alibaba real suite** (**DONE**, see below) and record the
+    result: this is the
     verification that the task 2/3 hoist preserved a live-verified
     component, and it is the reason the hoist was acceptable at all.
+    **Done August 16, 2026** — 4/4 green post-hoist, wall times recorded in
+    spike-notes.md Finding 7. The remaining providers' runs, the CI toggles
+    and the measured p50/p99 are still outstanding.
   - Record each provider's measured p50/p99 in the documentation with its
     measurement position; update the election-timeout table's second row
     with real numbers, replacing the hypothetical.
