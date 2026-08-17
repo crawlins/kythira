@@ -762,6 +762,30 @@ already-paid-for build. The retry strategy is forced to zero
 (Requirement 1.5) — the engine's single retry must be the only retry, or its
 idempotency argument is unverifiable from the outside.
 
+Three things found by writing it, folded in here rather than left in the task
+entry, because each is a fact about the provider rather than about the code:
+
+- **S3's `DeleteObject` models `If-Match` and not `If-None-Match`.** The
+  `conditional_key_object_store` refinement names one `precondition` type for
+  both operations, so `delete_object_if(…, if_absent{})` has no wire spelling
+  on S3 and **throws `std::invalid_argument`**. Silently issuing an
+  unconditional DELETE instead is Requirement 9.8's forbidden outcome one layer
+  down. The engine never issues the combination — its DELETEs are unconditional
+  by design (task 5's stated residual) — so this guards a future caller.
+- **The SDK adds a checksum of its own unless told not to.**
+  `ClientConfiguration::checksumConfig.requestChecksumCalculation` defaults to
+  `WHEN_SUPPORTED`, which computes a CRC32 per request and may reframe the body
+  onto `aws-chunked` trailers to carry it. The client sets `WHEN_REQUIRED` and
+  sends an explicit `Content-MD5`, so the integrity check on the wire is the one
+  task 0.5 verified rather than whichever one the SDK defaults to on the day of
+  the build.
+- **Neither 412 `PreconditionFailed` nor 409 `ConditionalRequestConflict` is
+  modelled in `Aws::S3::S3Errors`** — there is no `PRECONDITION_FAILED`
+  enumerator. Both arrive as `S3Errors::UNKNOWN` with the wire code in
+  `GetExceptionName()`, so the 412/409 split *must* be read from the error code
+  string; reading the error-type enum would map the two onto each other, which
+  is exactly the unclearable-latch failure this design forbids.
+
 ### 5. `include/raft/azure_blob_client.hpp`
 
 ```cpp
