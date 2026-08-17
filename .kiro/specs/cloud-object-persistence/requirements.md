@@ -399,8 +399,21 @@ cannot become silent state loss.
    `Md5Mismatch` (Azure), `invalid` (GCS), `UnmatchedContentMD5` (OCI).
 3. `max_object_bytes` SHALL cap the size of any single PUT, defaulting to a
    conservative value below every provider's documented single-request
-   limit (Task 0 confirms the limits; the default SHALL be chosen from the
-   smallest). A `save_snapshot` whose serialised size exceeds the cap SHALL
+   limit. **Measured from primary documentation, August 17, 2026
+   (spike-notes.md Finding 16): S3 5 GB, Alibaba OSS 5 GB, Azure Blob
+   5,000 MiB *for `x-ms-version` 2019-12-12 and later*, OCI 50 GiB, GCS
+   5 TiB** — so the smallest documented limit is 5 GB. **The default SHALL
+   nevertheless be 64 MiB**, and the reason is a correction to this
+   criterion's original "chosen from the smallest": the binding constraint is
+   the engine's shape rather than the service's limit. This engine has one
+   retry, no multipart, no resumption and no progress reporting, holds its
+   mutex for the whole round trip, and the only measured latency this project
+   has is ~2-3 s per round trip — so a multi-gigabyte single PUT is an
+   hours-long request that can only be retried whole. AWS's own guidance
+   abandons single-PUT above 100 MB. The cap exists to turn "this deployment
+   has outgrown a single-PUT persistence engine" into a loud error at the
+   first snapshot that reaches it, and SHALL be configurable upward for
+   operators who have measured their own case. A `save_snapshot` whose serialised size exceeds the cap SHALL
    throw with a message naming the size, the cap, and the fact that
    multipart upload is a documented non-goal — a snapshot silently truncated
    at a provider limit is the worst outcome available here.
