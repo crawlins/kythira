@@ -136,6 +136,54 @@ namespace alibaba_mock_detail {
 inline constexpr const char* k_lower_hex = "0123456789abcdef";
 inline constexpr const char* k_upper_hex = "0123456789ABCDEF";
 
+/// The raw 16 MD5 bytes. Local, and computed through EVP rather than the
+/// deprecated `MD5()`, for the same reason `sha256_hex` below is local: no part
+/// of the verification path may share a bug with the code under test.
+[[nodiscard]] inline auto md5_raw(std::string_view data) -> std::string {
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_len = 0;
+    // A default-constructed string_view has a null data pointer, which EVP must
+    // not be handed even at length zero.
+    const auto* bytes = reinterpret_cast<const unsigned char*>(data.empty() ? "" : data.data());
+    if (EVP_Digest(bytes, data.size(), digest.data(), &digest_len, EVP_md5(), nullptr) != 1) {
+        throw std::runtime_error("alibaba_mock_server: MD5 computation failed");
+    }
+    return std::string(reinterpret_cast<const char*>(digest.data()), digest_len);
+}
+
+/// @brief **Uppercase**-hex MD5 — the spelling OSS's ETag actually uses.
+///
+/// The case is not cosmetic. S3 spells the same digest lowercase, so a client
+/// or engine that compared case-sensitively would work against one provider and
+/// fail against the other; minting it uppercase here is what holds the
+/// comparison to being case-insensitive rather than merely claiming to be.
+[[nodiscard]] inline auto md5_hex_upper(std::string_view data) -> std::string {
+    const std::string raw = md5_raw(data);
+    std::string out;
+    out.reserve(2 * raw.size());
+    for (const char c : raw) {
+        const auto b = static_cast<unsigned char>(c);
+        out.push_back(k_upper_hex[b >> 4U]);
+        out.push_back(k_upper_hex[b & 0x0FU]);
+    }
+    return out;
+}
+
+/// Base64 of the raw 16 MD5 bytes — the `Content-MD5` header's encoding, which
+/// is a *different spelling of the same digest* from the ETag above.
+[[nodiscard]] inline auto md5_base64(std::string_view data) -> std::string {
+    const std::string raw = md5_raw(data);
+    std::string out(4 * ((raw.size() + 2) / 3) + 1, '\0');
+    const int written = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(out.data()),
+                                        reinterpret_cast<const unsigned char*>(raw.data()),
+                                        static_cast<int>(raw.size()));
+    if (written < 0) {
+        throw std::runtime_error("alibaba_mock_server: base64 encoding failed");
+    }
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+
 /// Lowercase-hex SHA-256. Local rather than borrowed from
 /// `alibaba_signing::detail` so that no part of the verification path can share
 /// a bug with the code under test.
@@ -1372,10 +1420,28 @@ private:
                           "an injected failure; please try again later");
                 return;
             }
+            // Requirement 7.1's service-side check, modelled rather than
+            // assumed: OSS verifies `Content-MD5` when the request carries one
+            // and refuses a mismatch with **`InvalidDigest`** (live-confirmed,
+            // spike-notes.md Finding 4). Verifying it here from the bytes that
+            // actually arrived is what makes the client's header real evidence
+            // instead of a string the mock never reads.
+            if (req.has_header("Content-MD5")) {
+                const auto sent = req.get_header_value("Content-MD5");
+                if (sent != alibaba_mock_detail::md5_base64(req.body)) {
+                    oss_error(res, 400, "InvalidDigest",
+                              "The Content-MD5 you specified was invalid");
+                    return;
+                }
+            }
             _objects[key] = req.body;
             res.status = 200;
-            res.set_header("ETag",
-                           "\"" + alibaba_mock_detail::sha256_hex(req.body).substr(0, 32) + "\"");
+            // The ETag OSS actually returns: the content MD5, **uppercase hex,
+            // quoted**. It was a truncated SHA-256 here until the OSS client
+            // declared `version_is_content_md5` — at which point a fake ETag
+            // stops being a harmless placeholder and becomes a digest the
+            // engine compares against and always rejects.
+            res.set_header("ETag", "\"" + alibaba_mock_detail::md5_hex_upper(req.body) + "\"");
         });
 
         _server.Get(k_object_route, [this](const httplib::Request& req, httplib::Response& res) {
