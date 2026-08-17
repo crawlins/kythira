@@ -291,6 +291,39 @@ This document lists the dependencies required to build and use the network simul
   `KYTHIRA_HAS_GCP_PRIVATECA`. Backs the `GCP_PRIVATECA` Kconfig symbol.
   Environments with the compute components but without `privateca` still build
   everything except `gcp_privateca_certificate_provider`, and vice versa.
+
+### google-cloud-cpp (storage component) — GCS object client for cloud persistence
+- **Status**: Optional — independent of **both** `KYTHIRA_HAS_GCP_SDK` and
+  `KYTHIRA_HAS_GCP_PRIVATECA`, and for a stronger reason than privateca's: the
+  storage component shares no code with the Compute API surface, so a node that
+  persists Raft state in GCS need not carry the quorum managers at all
+- **Purpose**: `google::cloud::storage::Client` calls (`InsertObject`,
+  `ReadObject`, `DeleteObject`, `ListObjects`, `GetObjectMetadata`) backing
+  `gcp_gcs_client`, the GCS member of the `key_object_store` family that
+  `object_store_persistence_engine` is generic over. It is the one provider
+  client in that family that takes an SDK dependency: `azure_blob_client` and
+  `alibaba_oss_client` speak REST directly and `aws_s3_client` reuses an SDK
+  this tree already requires, but GCS authentication needs service-account JWT
+  signing and Application Default Credentials, which is a security-critical
+  component this library already provides (see `gcp_gcs_client.hpp`'s
+  "Considered and rejected" note)
+- **Minimum Version**: google-cloud-cpp ≥ 2.20 (CI builds 2.37.0). Two APIs are
+  load-bearing: `IfGenerationMatch` (a well-known parameter over
+  `std::int64_t`, so `IfGenerationMatch(0)` is create-only) and
+  `LimitedErrorCountRetryPolicy(0)`, which is what holds the client to the
+  retry-free contract `key_object_store` requires
+- **Installation**: `google-cloud-cpp` vcpkg port with the `storage` feature,
+  declared under the opt-in `gcp` manifest feature (see the compute entry
+  above). **`storage` is also in google-cloud-cpp's own default feature set**,
+  which this manifest never disables, so listing it changes nothing about what
+  gets built today — it makes the dependency intentional, so an upstream change
+  to those defaults cannot silently remove a component a persistence backend
+  needs
+- **Notes**: `find_package(google_cloud_cpp_storage QUIET)` defines
+  `KYTHIRA_HAS_GCP_STORAGE`. Backs the `GCP_STORAGE` Kconfig symbol. When
+  absent, `gcp_gcs_client` is simply not defined and a named configure-time
+  STATUS message says so; the rest of the build is unaffected.
+
 ### Azure SDK for C++ (azure-core-cpp, azure-identity-cpp) — azure_vm_quorum_manager, azure_vmss_quorum_manager
 - **Status**: Optional — `find_package(azure-core-cpp CONFIG)` +
   `find_package(azure-identity-cpp CONFIG)`

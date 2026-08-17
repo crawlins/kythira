@@ -107,13 +107,14 @@
   ],
   "features": {
     "gcp": {
-      "description": "GCP quorum managers (Compute Engine + Managed Instance Groups) and the Certificate Authority Service certificate provider. Pulls in google-cloud-cpp's compute and privateca components. Opt-in via --x-feature=gcp: the compute component builds the entire Compute API surface (large), so it is kept out of the default dependency set — only the dedicated GCP CI job and operators who want the GCP backends enable it. Backs KYTHIRA_HAS_GCP_SDK / KYTHIRA_HAS_GCP_PRIVATECA (Requirement 1 AC 6).",
+      "description": "GCP quorum managers (Compute Engine + Managed Instance Groups), the Certificate Authority Service certificate provider, and the GCS object client. Pulls in google-cloud-cpp's compute, privateca and storage components. Opt-in via --x-feature=gcp: the compute component builds the entire Compute API surface (large), so it is kept out of the default dependency set — only the dedicated GCP CI job and operators who want the GCP backends enable it. Backs KYTHIRA_HAS_GCP_SDK / KYTHIRA_HAS_GCP_PRIVATECA / KYTHIRA_HAS_GCP_STORAGE (Requirement 1 AC 6). NOTE on 'storage': it is already in google-cloud-cpp's own default feature set, which this list never disables, so adding it here does not change what gets built today. It is listed to make the dependency intentional — gcp_gcs_client is a persistence backend, and an upstream change to that default set must not be able to remove it silently.",
       "dependencies": [
         {
           "name": "google-cloud-cpp",
           "features": [
             "compute",
-            "privateca"
+            "privateca",
+            "storage"
           ]
         }
       ]

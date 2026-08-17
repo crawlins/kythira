@@ -460,6 +460,7 @@ jobs:
           cmake --build build -j$(nproc) --target \
             gcp_quorum_manager_unit_test \
             gcp_privateca_provider_unit_test \
+            gcp_gcs_client_unit_test \
             gcp_quorum_manager_real_gce_test \
             gcp_privateca_provider_real_test \
             ca_service
@@ -474,7 +475,7 @@ jobs:
       - name: Run GCP unit tests
         run: |
           ctest --test-dir build --output-on-failure \
-            -R '^(gcp_quorum_manager_unit_test|gcp_privateca_provider_unit_test)$'
+            -R '^(gcp_quorum_manager_unit_test|gcp_privateca_provider_unit_test|gcp_gcs_client_unit_test)$'
 
   # ── Coverage (clang only) ────────────────────────────────────────────────────
   # ENABLE_COVERAGE uses LLVM source-based instrumentation and requires clang.

@@ -260,6 +260,18 @@ config GCP_PRIVATECA
 	  so a build with compute but without privateca (or vice versa) still
 	  configures cleanly. Backs KYTHIRA_HAS_GCP_PRIVATECA.
 
+config GCP_STORAGE
+	bool "GCP Cloud Storage object client (gcp_gcs_client)"
+	default y
+	help
+	  find_package(google_cloud_cpp_storage) — the object client the
+	  cloud-object-persistence engine instantiates over GCS.
+
+	  Deliberately does NOT depend on GCP_SDK, unlike GCP_PRIVATECA above.
+	  The storage component shares no code with the Compute API surface, and
+	  a node that persists Raft state in GCS has no reason to also carry the
+	  Compute quorum managers. Backs KYTHIRA_HAS_GCP_STORAGE.
+
 endmenu # GCP Integration
 menu "Azure Integration"
 

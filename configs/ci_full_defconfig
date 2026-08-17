@@ -35,10 +35,15 @@
 # a FATAL_ERROR (each was read off a green run's configure log — "not found",
 # run 31569941823 — not inferred from vcpkg.json):
 #
-#   GCP_SDK, GCP_PRIVATECA  — google-cloud-cpp comes only from the opt-in
-#                             `gcp` vcpkg feature, installed only by the GCP
+#   GCP_SDK, GCP_PRIVATECA, — google-cloud-cpp comes only from the opt-in
+#   GCP_STORAGE               `gcp` vcpkg feature, installed only by the GCP
 #                             SDK Build job, which uses ci_gcp_defconfig (its
 #                             own reconciliation of this same trade).
+#                             GCP_STORAGE is off here for the same reason as
+#                             the other two even though `storage` is in
+#                             google-cloud-cpp's own default feature set:
+#                             what these legs lack is the whole port, not a
+#                             component of it.
 #   DNS_DISCOVERY           — libldns is in no CI image; the rfc1035/rfc2136
 #                             discovery tests have never run in CI. Turning
 #                             the symbol off records that honestly instead of
@@ -57,5 +62,6 @@ CONFIG_PROXYGEN_TRANSPORT=y
 CONFIG_PROTOBUF_SERIALIZER=y
 # CONFIG_GCP_SDK is not set
 # CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
 # CONFIG_DNS_DISCOVERY is not set
 # CONFIG_POCO_DISCOVERY is not set
