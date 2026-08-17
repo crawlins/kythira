@@ -56,6 +56,8 @@
 
 #include <raft/alibaba_client_config.hpp>
 #include <raft/alibaba_signing.hpp>
+#include <raft/fault_injection.hpp>
+#include <raft/key_object_store.hpp>
 
 #include <httplib.h>
 
@@ -182,18 +184,33 @@ class alibaba_oss_client {
 public:
     explicit alibaba_oss_client(alibaba_client_config cfg) : _cfg(std::move(cfg)) {}
 
+    /// @brief The name this store answers to in error messages, metrics and a
+    ///        backup manifest (`kythira::key_object_store`).
+    [[nodiscard]] static auto provider_name() -> std::string_view { return "oss"; }
+
     /// @brief PUT one object. Success is a 2xx and nothing else; no retry
     ///        (the engine owns write retries — Requirement 2.5).
+    ///
+    /// Returns the response ETag as the object's `object_version`. OSS's ETag
+    /// is carried through verbatim, quotes included: it is an opaque token that
+    /// goes back to the service unmodified in a future precondition, so
+    /// normalising it here would only create a way for the two spellings to
+    /// disagree.
     auto put_object(const std::string& bucket, const std::string& key, std::string_view bytes) const
-        -> void {
+        -> put_result {
+        fiu_do_on("raft/alibaba/oss/put_object",
+                  throw std::runtime_error("chaos: raft/alibaba/oss/put_object " + key););
         auto result = send(bucket, key, "PUT", {}, std::string(bytes));
         require_2xx(result, "PutObject", key);
+        return {result->get_header_value("ETag")};
     }
 
     /// @brief GET one object; `nullopt` on 404 (absent is an answer, not an
     ///        error, for a persistence load path).
     [[nodiscard]] auto get_object(const std::string& bucket, const std::string& key) const
-        -> std::optional<std::string> {
+        -> std::optional<get_result> {
+        fiu_do_on("raft/alibaba/oss/get_object",
+                  throw std::runtime_error("chaos: raft/alibaba/oss/get_object " + key););
         auto result = send(bucket, key, "GET", {}, {});
         if (result && result->status == 404) {
             return std::nullopt;
@@ -203,13 +220,15 @@ public:
             result = send(bucket, key, "GET", {}, {});
         }
         require_2xx(result, "GetObject", key);
-        return result->body;
+        return get_result{result->body, result->get_header_value("ETag")};
     }
 
     /// @brief DELETE one object. OSS answers 204 for present and absent keys
     ///        alike, which is exactly what the engine's idempotent truncation
     ///        wants.
     auto delete_object(const std::string& bucket, const std::string& key) const -> void {
+        fiu_do_on("raft/alibaba/oss/delete_object",
+                  throw std::runtime_error("chaos: raft/alibaba/oss/delete_object " + key););
         auto result = send(bucket, key, "DELETE", {}, {});
         require_2xx(result, "DeleteObject", key);
     }
@@ -220,6 +239,8 @@ public:
     ///        engine is silent data loss (Requirement 2.4).
     [[nodiscard]] auto list_keys(const std::string& bucket, const std::string& prefix) const
         -> std::vector<std::string> {
+        fiu_do_on("raft/alibaba/oss/list_keys",
+                  throw std::runtime_error("chaos: raft/alibaba/oss/list_keys " + prefix););
         std::vector<std::string> keys;
         std::string continuation;
         while (true) {

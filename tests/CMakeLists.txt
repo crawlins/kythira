@@ -456,6 +456,27 @@ add_raft_completion_test(persistence_round_trip_property_test persistence_round_
 
 # New component unit tests (file_persistence_engine + tcp_rpc)
 add_raft_completion_test(file_persistence_unit_test file_persistence_unit_test.cpp)
+
+# Cloud key-object persistence: the generic engine and its conformance suite
+# (.kiro/specs/cloud-object-persistence/ tasks 1-2).
+#
+# Registered unconditionally and deliberately: `key_object_store.hpp`,
+# `object_store_persistence.hpp` and the conformance suite name no provider,
+# include no SDK and depend on no cloud gate, so this suite must build and pass
+# in a configuration with **every** cloud provider disabled (Requirement 16.1).
+# It is the per-provider suites that carry gates.
+add_raft_completion_test(object_store_persistence_unit_test object_store_persistence_unit_test.cpp)
+target_include_directories(object_store_persistence_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(object_store_persistence_unit_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;persistence;object-store"
+)
+if(FIU_FOUND)
+    target_compile_definitions(object_store_persistence_unit_test PRIVATE FIU_ENABLE)
+    target_link_libraries(object_store_persistence_unit_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(object_store_persistence_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+
 add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
 add_raft_completion_test(raft_follower_acknowledgment_tracking_property_test raft_follower_acknowledgment_tracking_property_test.cpp)
 add_raft_completion_test(raft_majority_commit_index_advancement_property_test raft_majority_commit_index_advancement_property_test.cpp)
