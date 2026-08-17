@@ -1188,6 +1188,35 @@ else()
     message(STATUS "google-cloud-cpp privateca component not found — gcp_privateca_certificate_provider disabled")
 endif()
 
+# ── GCP Cloud Storage (gcp_gcs_client) ────────────────────────────────────────
+# Independent of both blocks above, and for a stronger reason than privateca's:
+# the storage component shares no code with the Compute API surface, so a node
+# that persists Raft state in GCS need not carry the quorum managers at all.
+# Note that `storage` is in google-cloud-cpp's *own* default feature set, so on a
+# tree built with --x-feature=gcp this find_package already succeeds today; the
+# explicit vcpkg.json entry makes the dependency intentional rather than
+# inherited (see that file's `gcp` feature description).
+set(_KYTHIRA_GCP_STORAGE_FOUND FALSE)
+kythira_kconfig_gate(GCP_STORAGE)
+if(_KYTHIRA_GATE_GCP_STORAGE)
+    find_package(google_cloud_cpp_storage QUIET)
+    # Inside the gate, for the same reason as the three blocks above: imported
+    # targets are global, so testing outside it would ask whether the target
+    # exists anywhere rather than whether this feature's probe found it.
+    if(TARGET google-cloud-cpp::storage)
+        set(_KYTHIRA_GCP_STORAGE_FOUND TRUE)
+    endif()
+endif()
+kythira_kconfig_require(GCP_STORAGE _KYTHIRA_GCP_STORAGE_FOUND "google-cloud-cpp storage component")
+if(_KYTHIRA_GCP_STORAGE_FOUND)
+    message(STATUS "google-cloud-cpp storage component found — gcp_gcs_client enabled")
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_GCP_STORAGE)
+    target_link_libraries(network_simulator INTERFACE google-cloud-cpp::storage)
+else()
+    message(STATUS "google-cloud-cpp storage component not found — gcp_gcs_client disabled "
+        "(configure with --x-feature=gcp to enable the GCS persistence backend)")
+endif()
+
 # ── Azure SDK (azure_vm_quorum_manager, azure_vmss_quorum_manager) ───────────
 kythira_find_optional(AZURE_SDK azure-core-cpp CONFIG)
 kythira_find_optional(AZURE_IDENTITY azure-identity-cpp CONFIG)

@@ -4076,6 +4076,48 @@ else()
     message(STATUS "azure_blob_client_unit_test: skipped (needs the Azure SDK, httplib and OpenSSL)")
 endif()
 
+# ── gcp_gcs_client unit test (cloud object persistence, task 9) ───────────────
+#
+# Needs google-cloud-cpp's storage component and httplib for the local server
+# the test points `endpoint_override` at. Deliberately does NOT link
+# network_simulator: this client uses no futures, so linking it would pull folly
+# in and force a folly::init fixture for nothing — which means
+# KYTHIRA_HAS_GCP_STORAGE has to be defined here, since it normally arrives on
+# that INTERFACE.
+#
+# OpenSSL is for the *test*, not the client: each case authenticates with a
+# throwaway service account whose RSA key is generated at run time, because
+# google-cloud-cpp turns a service account into a locally-signed JWT and so
+# needs no network — and because a private key committed to the tree would be a
+# secret-scanner finding however clearly it were labelled a fixture.
+#
+# Gated on the imported target rather than on _KYTHIRA_GCP_STORAGE_FOUND: that
+# variable is not visible in this directory scope, and the target is, since
+# imported targets from find_package are global.
+if(TARGET google-cloud-cpp::storage AND TARGET httplib::httplib AND TARGET OpenSSL::Crypto)
+    add_executable(gcp_gcs_client_unit_test gcp_gcs_client_unit_test.cpp)
+    target_compile_definitions(gcp_gcs_client_unit_test PRIVATE KYTHIRA_HAS_GCP_STORAGE)
+    target_link_libraries(gcp_gcs_client_unit_test PRIVATE
+        Boost::unit_test_framework
+        httplib::httplib
+        google-cloud-cpp::storage
+        OpenSSL::Crypto
+    )
+    target_include_directories(gcp_gcs_client_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(gcp_gcs_client_unit_test PRIVATE cxx_std_23)
+    add_test(NAME gcp_gcs_client_unit_test COMMAND gcp_gcs_client_unit_test)
+    set_tests_properties(gcp_gcs_client_unit_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;gcp;cloud;object-persistence"
+    )
+elseif(NOT TARGET google-cloud-cpp::storage)
+    message(STATUS "gcp_gcs_client_unit_test: skipped "
+        "(google-cloud-cpp storage not found — configure with --x-feature=gcp)")
+else()
+    message(STATUS "gcp_gcs_client_unit_test: skipped "
+        "(requires httplib for the local mock server and OpenSSL for the test service account)")
+endif()
+
 # ── azure_key_vault_ca_provider tests (independent of the core Azure SDK) ────
 if(azure-security-keyvault-keys-cpp_FOUND AND TARGET certificate_authority)
 
