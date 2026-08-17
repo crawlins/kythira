@@ -9,20 +9,20 @@ this file is the evidence trail, not a second source of truth.
 | Sub-task | Provider coverage | State |
 |---|---|---|
 | 0.1 list-after-write, empirically | **all five: CLOSED** (live, 3 × 25 objects each) | — |
-| 0.2 OCI durability-on-response wording | — | OPEN |
+| 0.2 OCI durability-on-response wording | **CLOSED as "no such wording exists"** (Finding 15) — searched and not found, which is the answer Requirement 4.2 asks for | — |
 | 0.3 conditional-write matrix, live | **all five: CLOSED** (live; each decided a design outcome) | — |
-| 0.4 single-PUT size limits | — | OPEN (documentation-only so far) |
+| 0.4 single-PUT size limits | **CLOSED** — all five documented; smallest is 5 GB (S3, OSS), and the recommended default is far below it for engine-shape reasons (Finding 16) | — |
 | 0.5 checksum spelling / ETag determinism | **all five: CLOSED** (live) | — |
 | 0.6 Azure REST-vs-SDK checkpoint | **CLOSED** — the recorded REST decision holds (Finding 11) | — |
 | 0.7 GCS mock-tier decision | the **fidelity bar** is now measured (Finding 12) | OPEN — needs `fake-gcs-server` run, and this host has no container runtime |
 | 0.8 OCI namespace and endpoint | **CLOSED** — endpoint confirmed, namespace is both configurable and resolvable via `GET /n/` (Finding 13) | — |
 
-**Three of the eight sub-tasks remain**, and each is a different kind of work:
-**0.2** is a documentation search (and is allowed to conclude that the wording
-does not exist), **0.4** is a per-provider limit table feeding
-`max_object_bytes`'s default, and **0.7** needs a container runtime this
-development host does not have. Every cell that required a live service is
-closed: credentials work for all five providers and all five have a bucket
+**One sub-task remains: 0.7**, which needs a container runtime this development
+host does not have — `fake-gcs-server`'s fidelity on generation preconditions
+cannot be assessed without running it, and the fidelity bar it must clear is
+recorded in Finding 12. **0.2 closed with a negative result** (the wording does
+not exist; Finding 15) and **0.4 closed from documentation** (Finding 16).
+Every cell that required a live service is closed: credentials work for all five providers and all five have a bucket
 (Finding 8), and Findings 11-13 close Azure Blob, GCS and OCI the same way
 Findings 1-6 and 10 closed Alibaba OSS and AWS S3. Finding 14 is the
 side-by-side table the client tasks read from.
@@ -556,3 +556,91 @@ Read across the rows, three design consequences follow directly:
    must read `Content-MD5` / `md5Hash` / `opc-content-md5` instead. The
    end-to-end service-side check, by contrast, is available on **all five** —
    in five different spellings, none of which a client may guess.
+
+## Finding 15 — OCI publishes no "durable before the response" wording (task 0.2)
+
+**The answer is that the sentence does not exist**, and Requirement 4.2's
+honesty rule says to write that down rather than let the four confirmed
+providers' wording stand in for it.
+
+Searched August 17, 2026: the Object Storage overview
+(`docs.oracle.com/en-us/iaas/Content/Object/Concepts/objectstorageoverview.htm`),
+the object-management task pages, the REST API reference for `PutObject`, and
+the Python/Java SDK reference for `put_object`. What Oracle does state:
+
+> "Data is stored redundantly across multiple storage servers. Object Storage
+> actively monitors data integrity using checksums and automatically detects
+> and repairs corrupt data. … If a redundancy loss is detected, Object Storage
+> automatically creates more data copies."
+
+and, separately,
+
+> "**Strong consistency**: When a read request is made, Object Storage always
+> serves the most recent copy of the data that was written to the system."
+
+Both are about the steady state and about *reads*. **Neither says when the
+redundancy exists relative to the PUT response**, which is precisely the claim
+this engine's durability contract rests on — "the method returned" implying
+"the bytes survive the loss of this instance". S3 says it
+("if you receive a success response, Amazon S3 added the entire object"), GCS
+says it, Azure says it per redundancy mode, OSS implies it; OCI says the
+adjacent things and not this one.
+
+**Consequences, and they are deliberately unexciting:**
+
+- The N1 cell for OCI stays **OPEN in the durability table**, now with "searched
+  and not found, August 17, 2026" rather than "not yet searched". A cell that
+  has been looked for and not found is a different and more useful state than
+  an unexamined one.
+- `doc/cloud_object_persistence.md` must carry that row with the gap visible
+  (Requirement 4.2). An operator choosing OCI for a Raft log is entitled to know
+  that the fsync-equivalence argument is weaker there than on the other four —
+  not because OCI is less durable, but because Oracle has not published the
+  sentence the argument needs.
+- This is **not** a blocker for `oci_object_storage_client`: the engine's
+  behaviour is identical either way. It is a documentation obligation, and the
+  honest version of it is "unstated by the vendor", not "presumed equivalent".
+
+The remaining way to close it is a support ticket asking Oracle to state the
+write-path durability boundary. That is recorded as the next step rather than
+attempted here, because a support answer that is not published documentation is
+evidence of a different kind and should be labelled as such if it arrives.
+
+## Finding 16 — Single-PUT size limits, and why the default cap is far below the smallest
+
+Task 0.4, from primary documentation, August 17, 2026:
+
+| Provider | Documented single-request limit | On exceeding it |
+|---|---|---|
+| **AWS S3** | **5 GB** in one `PutObject` (multipart 5 MB-5 TB); AWS advises multipart above **100 MB** | request rejected |
+| **Azure Blob** | **5,000 MiB** via a single `Put Blob`, for `x-ms-version` **2019-12-12 and later** (256 MiB for 2016-05-31 through 2019-07-07; 64 MiB before that) | **413 Request Entity Too Large**, with the permitted maximum in the body |
+| **GCS** | **5 TiB** — the object-size limit; single-request upload has no smaller documented cap | request rejected |
+| **OCI Object Storage** | **50 GiB** via `PutObject` | request rejected |
+| **Alibaba OSS** | **5 GB** via `PutObject` (multipart to 48.8 TB) | request rejected |
+
+**The smallest documented limit is 5 GB (S3 and OSS).** Azure's is version-
+dependent, which is a second reason its client pins `x-ms-version` to a dated
+constant: a client that let the version float could silently drop from 5,000
+MiB to 64 MiB.
+
+**But the default `max_object_bytes` should not be 5 GB, and Requirement 7.3 is
+amended to say so.** The limit that binds here is not the service's — it is this
+engine's own shape:
+
+- the only latency this project has measured is **~2-3 s per object round
+  trip** (cross-ocean, `.kiro/specs/alibaba-cloud-services/spike-notes.md`
+  Finding 7), so a multi-gigabyte single PUT is an hours-long request;
+- the engine has **exactly one retry and no multipart, no resumption and no
+  progress reporting** (multipart is a documented non-goal), so a failure at
+  the end of such a request re-sends the whole thing once and then throws;
+- `save_snapshot` holds the engine's mutex for the entire round trip, so an
+  oversized snapshot stalls every other persistence call behind it;
+- AWS's own guidance is to stop using single-PUT above **100 MB**.
+
+**Recommended default: 64 MiB**, with the cap configurable upward. That is
+comfortably below every provider's limit *and* below AWS's multipart advice,
+and it is far above any state-machine snapshot this repo produces. The point of
+the cap is not to predict the service's 413 — it is to turn "this deployment
+has outgrown a single-PUT persistence engine" into a loud error naming the
+size, the cap and the multipart non-goal, at the first snapshot that reaches
+it, instead of an hours-long write that may still fail.

@@ -1,6 +1,6 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-4 done; task 0 closed for all five providers except 0.2, 0.4 and 0.7
+## Status: tasks 1-4 done; task 0 closed except 0.7 (needs a container runtime)
 
 **Done:** the seam (task 1), the generic engine (task 2) and the Alibaba
 instantiation (task 3), August 15, 2026. Together they add **no capability on
@@ -157,11 +157,23 @@ Reference implementations to study before starting, in this order:
         round where PUTs were refused and the listing is correspondingly short
         is a complete listing, and reading it otherwise invents a consistency
         defect out of an authorization flake.
-  - [ ] 0.2 **Durability-on-response wording for OCI.** Find or fail to find
+  - [x] 0.2 **Durability-on-response wording for OCI** — **closed with a
+        negative result, August 17, 2026** (Finding 15). Find or fail to find
         primary documentation that a 2xx PUT means durably stored before the
         response. If it does not exist, say so in that provider's section
         rather than letting the four confirmed providers' wording stand in
         for it (Requirement 4.2's honesty rule).
+        **It does not exist.** Oracle publishes the steady-state redundancy
+        statement and a read-side strong-consistency statement, and **neither
+        says when the redundancy exists relative to the PUT response** — the
+        one claim the engine's durability contract needs. The N1 cell stays
+        OPEN in the durability table, now reading "searched and not found"
+        rather than "not yet searched", and the operator documentation must
+        carry the gap visibly. This blocks nothing in the client: the engine
+        behaves identically either way. A support ticket is the remaining
+        avenue and is recorded as such — a support answer is evidence of a
+        different kind from published documentation and must be labelled that
+        way if it arrives.
   - [x] 0.3 **The conditional-write matrix, live, per provider** — create-only
         precondition, If-Match overwrite, conditional delete: exact header
         spelling, exact status code on rejection, and behaviour under
@@ -203,8 +215,22 @@ Reference implementations to study before starting, in this order:
         `IfMatchFailed`. Set against S3's 409 meaning "retry", the rule stands
         reinforced: **no client may map a bare status; it must read the error
         code.**
-  - [ ] 0.4 **Single-PUT size limits** per provider; `max_object_bytes`'s
-        default is chosen from the smallest (Requirement 7.3).
+  - [x] 0.4 **Single-PUT size limits** per provider; `max_object_bytes`'s
+        default is chosen from the smallest (Requirement 7.3). **Closed from
+        primary documentation, August 17, 2026** (Finding 16): S3 **5 GB**,
+        OSS **5 GB**, Azure **5,000 MiB** *for `x-ms-version` 2019-12-12 and
+        later* (256 MiB before — a second reason the client pins a dated
+        version), OCI **50 GiB**, GCS **5 TiB**. Azure is the only one that
+        names the failure: **413 Request Entity Too Large**.
+        **The default is deliberately far below the smallest**, and
+        Requirement 7.3 is amended to say why: the binding limit is the
+        engine's shape, not the service's. One retry, no multipart, no
+        resumption, the mutex held for the whole round trip, ~2-3 s measured
+        per round trip, and AWS's own advice to abandon single-PUT above
+        100 MB. **Recommended default: 64 MiB**, configurable upward — the cap
+        exists to turn "this deployment has outgrown a single-PUT persistence
+        engine" into a loud error at the first snapshot that reaches it, not to
+        predict the service's 413.
   - [x] 0.5 **Checksum spelling** per provider — `Content-MD5` where
         universally supported, the provider's native header where preferred
         — and for which providers the returned ETag is a deterministic
