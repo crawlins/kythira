@@ -7,17 +7,22 @@
 
 #include <httplib.h>
 
+#include <openssl/evp.h>
+
 #ifdef FIU_ENABLE
 #include <fiu-control.h>
 #endif
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -49,6 +54,50 @@ namespace {
 
 constexpr const char* k_bucket = "kythira";
 constexpr const char* k_prefix = "raft";
+
+/// The raw 16 MD5 bytes. Computed here rather than borrowed from the engine's
+/// own hand-rolled MD5, so that this file's digests cannot agree with the code
+/// under test by sharing its bug.
+[[nodiscard]] auto md5_raw(std::string_view data) -> std::string {
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_len = 0;
+    const auto* bytes = reinterpret_cast<const unsigned char*>(data.empty() ? "" : data.data());
+    if (EVP_Digest(bytes, data.size(), digest.data(), &digest_len, EVP_md5(), nullptr) != 1) {
+        throw std::runtime_error("alibaba_oss_persistence_unit_test: MD5 computation failed");
+    }
+    return std::string(reinterpret_cast<const char*>(digest.data()), digest_len);
+}
+
+/// **Uppercase**-hex MD5 — the spelling OSS's ETag uses, where S3 uses
+/// lowercase. Minting it uppercase is what holds the engine's comparison to
+/// being genuinely case-insensitive.
+[[nodiscard]] auto md5_hex_upper(std::string_view data) -> std::string {
+    static constexpr const char* k_upper_hex = "0123456789ABCDEF";
+    const std::string raw = md5_raw(data);
+    std::string out;
+    out.reserve(2 * raw.size());
+    for (const char c : raw) {
+        const auto b = static_cast<unsigned char>(c);
+        out.push_back(k_upper_hex[b >> 4U]);
+        out.push_back(k_upper_hex[b & 0x0FU]);
+    }
+    return out;
+}
+
+/// Base64 of the raw digest — the `Content-MD5` encoding, a different spelling
+/// of the same digest the ETag carries as hex.
+[[nodiscard]] auto md5_base64(std::string_view data) -> std::string {
+    const std::string raw = md5_raw(data);
+    std::string out(4 * ((raw.size() + 2) / 3) + 1, '\0');
+    const int written = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(out.data()),
+                                        reinterpret_cast<const unsigned char*>(raw.data()),
+                                        static_cast<int>(raw.size()));
+    if (written < 0) {
+        throw std::runtime_error("alibaba_oss_persistence_unit_test: base64 encoding failed");
+    }
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
 
 /// An in-memory OSS bucket: PUT/GET/DELETE/ListObjectsV2 over path-style keys,
 /// with a request log (so a test can prove a write completed before its method
@@ -96,11 +145,32 @@ struct MockOss {
                     "application/xml");
                 return;
             }
+            // OSS verifies `Content-MD5` and refuses a mismatch with
+            // `InvalidDigest` (spike-notes.md Finding 4). Modelled here so the
+            // client's header is checked against the bytes that arrived rather
+            // than merely transmitted.
+            if (req.has_header("Content-MD5") &&
+                req.get_header_value("Content-MD5") != md5_base64(req.body)) {
+                res.status = 400;
+                res.set_content(
+                    "<Error><Code>InvalidDigest</Code>"
+                    "<Message>The Content-MD5 you specified was invalid</Message>"
+                    "</Error>",
+                    "application/xml");
+                return;
+            }
             {
                 const std::lock_guard lock(mu);
                 store[key] = req.body;
             }
             res.status = 200;
+            // The ETag OSS returns for a single-part upload: the content MD5 in
+            // **uppercase hex, quoted**. Now that `alibaba_oss_client` declares
+            // `version_is_content_md5`, the engine compares this against its own
+            // digest on every write — so an invented ETag here would fail every
+            // case in this file, and a *correct* one makes all 41 of them a
+            // negative control for that verification.
+            res.set_header("ETag", "\"" + md5_hex_upper(req.body) + "\"");
         });
 
         server.Get(route, [this](const httplib::Request& req, httplib::Response& res) {
@@ -125,6 +195,7 @@ struct MockOss {
                 res.set_content("<Error><Code>NoSuchKey</Code></Error>", "application/xml");
                 return;
             }
+            res.set_header("ETag", "\"" + md5_hex_upper(body) + "\"");
             res.set_content(body, "application/octet-stream");
         });
 

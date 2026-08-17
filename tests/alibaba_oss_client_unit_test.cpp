@@ -78,6 +78,22 @@ auto listing_page(const std::string& keys_xml, bool truncated, const std::string
 
 }  // namespace
 
+BOOST_AUTO_TEST_SUITE(alibaba_oss_concepts)
+
+// What this client does and does not promise the persistence engine, in one
+// place. The negative is as load-bearing as the positives: OSS has no overwrite
+// compare-and-swap at all (`If-Match` on PutObject is 400 `NotImplemented` even
+// for a *current* ETag, spike-notes.md Finding 3), so `fencing_mode::
+// compare_and_swap` must remain a compile error for it rather than degrading.
+BOOST_AUTO_TEST_CASE(the_store_concepts_this_client_satisfies) {
+    static_assert(key_object_store<alibaba_oss_client>);
+    static_assert(content_md5_versioned_store<alibaba_oss_client>);
+    static_assert(!conditional_key_object_store<alibaba_oss_client>);
+    BOOST_TEST(alibaba_oss_client::provider_name() == "oss");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 BOOST_AUTO_TEST_SUITE(alibaba_oss_addressing)
 
 // Virtual-host style against real OSS; path-style under the override so a
@@ -146,6 +162,31 @@ BOOST_AUTO_TEST_CASE(content_type_is_signed_when_the_request_carries_one) {
     BOOST_TEST(with_body.at("Authorization") != bodyless.at("Authorization"));
 }
 
+// Requirement 7.1's service-side half. `content-md5` is signed by exactly the
+// same rule as `content-type` — OSS V4 canonicalises it when the request
+// carries one — and a header that reaches the wire outside the signed set is
+// the `SignatureDoesNotMatch` this client already paid for once.
+BOOST_AUTO_TEST_CASE(content_md5_is_signed_when_the_request_carries_one) {
+    alibaba_client_config cfg;
+    cfg.region = "cn-hangzhou";
+    cfg.access_key_id = "id";
+    cfg.access_key_secret = "secret";
+    const alibaba_oss_client client{cfg};
+    const auto when = std::chrono::system_clock::from_time_t(1744353684);
+
+    const auto with_digest = client.prepared_headers(
+        "b", "k", "PUT", {}, when, "application/octet-stream", "XUFAKrxLKna5cZ2REBfFkg==");
+    BOOST_TEST(with_digest.at("content-md5") == "XUFAKrxLKna5cZ2REBfFkg==");
+
+    const auto without_digest =
+        client.prepared_headers("b", "k", "PUT", {}, when, "application/octet-stream");
+    BOOST_TEST(without_digest.count("content-md5") == 0U);
+
+    // Different signed sets must produce different signatures, or the header
+    // is not actually in the signature.
+    BOOST_TEST(with_digest.at("Authorization") != without_digest.at("Authorization"));
+}
+
 BOOST_AUTO_TEST_CASE(security_token_is_signed_when_present) {
     alibaba_client_config cfg;
     cfg.region = "cn-hangzhou";
@@ -207,6 +248,63 @@ BOOST_AUTO_TEST_CASE(put_get_delete_round_trip) {
 
 // Absent is an answer, not an error — a persistence load path needs to tell
 // "no such object" from "the store is broken".
+// The header that reaches the service, asserted from the bytes that arrived.
+// The known answers are written out rather than recomputed by the code under
+// test: this file now carries the *same digest in two encodings* — base64 of
+// the raw bytes here, uppercase hex in the ETag — and a test that recomputed
+// would agree with whichever one the client chose.
+BOOST_AUTO_TEST_CASE(every_put_carries_content_md5_as_base64_not_hex) {
+    MockServer mock;
+    std::string seen;
+    mock.server.Put("/b/k", [&seen](const httplib::Request& req, httplib::Response& res) {
+        seen = req.get_header_value("Content-MD5");
+        res.status = 200;
+    });
+    mock.start();
+
+    const alibaba_oss_client client{config_for(mock)};
+    client.put_object("b", "k", "hello");
+    // md5("hello") = 5d41402abc4b2a76b9719d911017c592
+    BOOST_TEST(seen == "XUFAKrxLKna5cZ2REBfFkg==");
+    BOOST_TEST(seen != "5D41402ABC4B2A76B9719D911017C592");
+}
+
+// A zero-byte PUT still carries a digest — of the empty string, which is a
+// value and not an absence.
+BOOST_AUTO_TEST_CASE(an_empty_body_carries_the_empty_string_digest) {
+    MockServer mock;
+    std::string seen;
+    bool header_present = false;
+    mock.server.Put("/b/k", [&](const httplib::Request& req, httplib::Response& res) {
+        header_present = req.has_header("Content-MD5");
+        seen = req.get_header_value("Content-MD5");
+        res.status = 200;
+    });
+    mock.start();
+
+    const alibaba_oss_client client{config_for(mock)};
+    client.put_object("b", "k", "");
+    BOOST_TEST(header_present);
+    // md5("") = d41d8cd98f00b204e9800998ecf8427e
+    BOOST_TEST(seen == "1B2M2Y8AsgTpgAmY7PhCfg==");
+}
+
+// A GET has no body, so there is nothing to digest — sending a Content-MD5
+// there would sign and transmit a header describing bytes that do not exist.
+BOOST_AUTO_TEST_CASE(a_bodyless_request_carries_no_content_md5) {
+    MockServer mock;
+    bool header_present = true;
+    mock.server.Get("/b/k", [&header_present](const httplib::Request& req, httplib::Response& res) {
+        header_present = req.has_header("Content-MD5");
+        res.set_content("v", "application/octet-stream");
+    });
+    mock.start();
+
+    const alibaba_oss_client client{config_for(mock)};
+    (void)client.get_object("b", "k");
+    BOOST_TEST(!header_present);
+}
+
 BOOST_AUTO_TEST_CASE(missing_object_is_nullopt_not_throw) {
     MockServer mock;
     mock.server.Get("/b/absent", [](const httplib::Request&, httplib::Response& res) {

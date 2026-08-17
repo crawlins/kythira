@@ -53,6 +53,25 @@
 /// Listings request `encoding-type=url`, so keys arrive percent-encoded
 /// ASCII and are decoded here — sidestepping XML entity handling for
 /// arbitrary key bytes without an XML dependency.
+///
+/// **Integrity, both halves** (cloud-object-persistence Requirement 7, whose
+/// two criteria live at two different layers):
+///
+/// - *Service-side* (7.1): every PUT carries `Content-MD5`, which OSS verifies
+///   and rejects with **`InvalidDigest`** (live-confirmed, spike-notes.md
+///   Finding 4). It is base64 of the raw digest bytes, it is part of the signed
+///   set — OSS V4 signs `content-md5` when the request carries one, exactly as
+///   it signs `content-type` — and putting it on the wire without signing it
+///   produces `SignatureDoesNotMatch`, which is the failure mode the mock
+///   server's derived-from-what-arrived signature check exists to catch.
+/// - *Client-side* (7.2): `version_is_content_md5` is declared, because OSS's
+///   ETag **is** the MD5 of single-part content, spelled in **uppercase hex**
+///   and returned **with its quotes**. The engine's comparison normalises both,
+///   which is what lets S3's lowercase and OSS's uppercase share one code path.
+///   The declaration does not hold for a server-side-encrypted object, whose
+///   ETag is not a content digest; the remedy there is
+///   `object_persistence_options::verify_checksums = false`, which leaves the
+///   service-side check above untouched.
 
 #include <raft/alibaba_client_config.hpp>
 #include <raft/alibaba_signing.hpp>
@@ -60,6 +79,8 @@
 #include <raft/key_object_store.hpp>
 
 #include <httplib.h>
+
+#include <openssl/evp.h>
 
 #include <algorithm>
 #include <array>
@@ -150,6 +171,34 @@ namespace alibaba_oss_detail {
     return out;
 }
 
+/// @brief Base64 of the raw 16 MD5 bytes — the `Content-MD5` encoding, which
+///        OSS verifies server-side and rejects with `InvalidDigest`.
+///
+/// **The same digest appears twice in this file in two different spellings**:
+/// here as base64 of the raw bytes, and as the response ETag in **uppercase
+/// hex**. Sending one where the other belongs produces a well-formed request
+/// the service refuses with an error that names neither encoding, so the two
+/// are kept visibly distinct rather than derived from one another.
+[[nodiscard]] inline auto content_md5_base64(std::string_view bytes) -> std::string {
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_len = 0;
+    // A default-constructed string_view has a null data pointer, which EVP
+    // must not be handed even with a zero length.
+    const auto* data = reinterpret_cast<const unsigned char*>(bytes.empty() ? "" : bytes.data());
+    if (EVP_Digest(data, bytes.size(), digest.data(), &digest_len, EVP_md5(), nullptr) != 1) {
+        throw std::runtime_error("alibaba_oss_client: MD5 computation failed");
+    }
+    // EVP_EncodeBlock writes 4 bytes per 3 input bytes, plus a NUL.
+    std::string out(4 * ((static_cast<std::size_t>(digest_len) + 2) / 3) + 1, '\0');
+    const int written = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(out.data()), digest.data(),
+                                        static_cast<int>(digest_len));
+    if (written < 0) {
+        throw std::runtime_error("alibaba_oss_client: base64 encoding of the content MD5 failed");
+    }
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+
 /// Extract every text content of `<element>` from an XML body — the bounded
 /// scanning Requirement 2.4 asks for instead of an XML dependency. Only flat,
 /// non-nested elements are handled, which is what ListObjectsV2's `<Key>`,
@@ -182,6 +231,11 @@ namespace alibaba_oss_detail {
 /// @brief The four object operations the persistence engine needs, V4-signed.
 class alibaba_oss_client {
 public:
+    /// @brief OSS's ETag is the MD5 hex of single-part content, so the engine
+    ///        may verify every PUT locally (Requirement 7.2). Uppercase and
+    ///        quoted — see the file comment.
+    static constexpr bool version_is_content_md5 = true;
+
     explicit alibaba_oss_client(alibaba_client_config cfg) : _cfg(std::move(cfg)) {}
 
     /// @brief The name this store answers to in error messages, metrics and a
@@ -287,7 +341,8 @@ public:
                                         std::string_view method,
                                         const std::map<std::string, std::string>& query,
                                         std::chrono::system_clock::time_point when,
-                                        std::string_view content_type = {}) const
+                                        std::string_view content_type = {},
+                                        std::string_view content_md5 = {}) const
         -> std::map<std::string, std::string> {
         if (_cfg.access_key_id.empty()) {
             throw std::invalid_argument("alibaba_oss_client: access_key_id is empty");
@@ -325,6 +380,13 @@ public:
         };
         if (!content_type.empty()) {
             signed_headers.emplace("content-type", std::string(content_type));
+        }
+        // Signed for the same reason and by the same rule as content-type: OSS
+        // V4 canonicalises `content-md5` whenever the request carries one.
+        // Unlike content-type, httplib does *not* set this header itself, so it
+        // is both signed here and sent below.
+        if (!content_md5.empty()) {
+            signed_headers.emplace("content-md5", std::string(content_md5));
         }
         if (!_cfg.security_token.empty()) {
             signed_headers.emplace("x-oss-security-token", _cfg.security_token);
@@ -391,12 +453,16 @@ private:
 
         // Only PUT carries a body, and therefore only PUT carries the
         // Content-Type httplib derives from its body overload — so it is the
-        // only method whose signature must cover one.
+        // only method whose signature must cover one. The same is true of
+        // Content-MD5: a body is what there is a digest of.
         const std::string_view content_type = (method == "PUT") ? k_put_content_type : "";
+        const std::string content_md5 =
+            (method == "PUT") ? alibaba_oss_detail::content_md5_base64(body) : std::string{};
 
         httplib::Headers headers;
-        for (const auto& [name, value] : prepared_headers(
-                 bucket, key, method, query, std::chrono::system_clock::now(), content_type)) {
+        for (const auto& [name, value] :
+             prepared_headers(bucket, key, method, query, std::chrono::system_clock::now(),
+                              content_type, content_md5)) {
             // content-type is withheld from the map httplib is given: it sets
             // that header itself from the Put() argument below, and supplying
             // it twice puts two on the wire. It is still *signed* above,
