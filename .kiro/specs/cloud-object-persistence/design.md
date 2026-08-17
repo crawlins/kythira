@@ -244,9 +244,9 @@ What the engine actually needs, so the table can be read against something:
 | | AWS S3 | Azure Blob | GCS | OCI Object Storage | Alibaba OSS |
 |---|---|---|---|---|---|
 | **N2** read-after-write, new **and** overwrite | Strong — **explicit**, all operations, since Dec 2020 | Strong — documented as a general storage-account guarantee | Strong — **explicit**, "never … stale data", globally | Strong — **explicit** overview statement | Strong — **explicit**, "no scenarios in which data is not obtained" |
-| **N3** list-after-write | Strong — **explicit**, called out beside read consistency | **OPEN** — the general claim covers "list operations" but without S3/GCS's specificity | Strong — **explicit**, "bucket listing and object listing are strongly consistent" (Spanner-backed) | **OPEN** — no listing-specific statement found | **OPEN** — no listing-specific statement found |
+| **N3** list-after-write | Strong — **explicit**, called out beside read consistency; **confirmed live** (3 × 25 objects, immediate LIST, complete every round) | **OPEN** — the general claim covers "list operations" but without S3/GCS's specificity | Strong — **explicit**, "bucket listing and object listing are strongly consistent" (Spanner-backed) | **OPEN** — no listing-specific statement found | **Empirically consistent** (3 × 25 objects, immediate LIST, complete every time — spike-notes.md Finding 5). No listing-specific vendor statement exists, so this is evidence, not a guarantee |
 | **N1** 2xx ⇒ durable | Yes — "if you receive a success response, Amazon S3 added the entire object"; 11 nines | **Depends on account redundancy.** ZRS: **explicit** synchronous write to all three zones before success. LRS: synchronous, one datacenter. GRS/GZRS: primary synchronous, **secondary region asynchronous** | Yes — **explicit**: the object becomes visible only once the upload completed and the server sent success | Implied by the documented redundancy model + 11 nines; **no "before returning success" wording found — OPEN** | Implied — "replicas of the object are created for redundancy" on a success response; 12 nines |
-| Verification status **in this repo** | documentation-derived | documentation-derived | documentation-derived | documentation-derived | **live-verified** (Aug 14 2026, `ap-southeast-1`) |
+| Verification status **in this repo** | **conditional writes, checksums and list-after-write live-verified** (Aug 16 2026, `us-east-1`); durability wording still documentation-derived | documentation-derived | documentation-derived | documentation-derived | **live-verified** (`ap-southeast-1`; Aug 14 2026 pre-hoist, **re-verified Aug 16 2026 against the generic engine**) |
 
 Three consequences the design takes seriously:
 
@@ -341,11 +341,11 @@ interesting table in the design.
 
 | | Create-only precondition | Overwrite CAS | Conditional delete | Version token |
 |---|---|---|---|---|
-| **AWS S3** | `If-None-Match: *` (Aug 2024). 412 on exists; **409 `ConditionalRequestConflict` on a benign race** | `If-Match: <etag>` | `if-match` on DeleteObject — general-purpose buckets since Sept 2025 | ETag |
+| **AWS S3** | `If-None-Match: *` — **spike-verified live**: 412 `PreconditionFailed` on exists, object unchanged. 409 `ConditionalRequestConflict` is documented for a benign race and was **not elicited** in 56 racing PUTs (see below) | `If-Match: <etag>` — **spike-verified live** (current ETag 200, stale 412) | `if-match` on DeleteObject — **spike-verified live**: stale ETag 412 **and the object survives**; current ETag 204 | ETag (quoted lowercase MD5 hex for single-part content) |
 | **Azure Blob** | `If-None-Match: *` on Put Blob | `If-Match: <etag>` on Put Blob | `If-Match` on Delete Blob | ETag |
 | **GCS** | `ifGenerationMatch=0` | `ifGenerationMatch=<generation>` | `ifGenerationMatch=<generation>` | **generation number** (integer) |
 | **OCI Object Storage** | `if-none-match: *` (only `*` is a valid value) | `if-match: <etag>` | `if-match` — **OPEN**, confirm in Task 0 | ETag |
-| **Alibaba OSS** | `x-oss-forbid-overwrite: true` → `FileAlreadyExists`. **Documented as silently ignored when bucket versioning is enabled or suspended** | **OPEN — not confirmed.** `If-Match`/`If-None-Match` are not listed among PutObject's supported headers | **OPEN** | ETag |
+| **Alibaba OSS** | `x-oss-forbid-overwrite: true` → **409 `FileAlreadyExists`** — **spike-verified live**, including that the refused PUT leaves the object intact. `If-None-Match: *` is **400 `NotImplemented`**. Documented as silently ignored when bucket versioning is enabled or suspended (the CI bucket has versioning unset) | **NONE — spike-verified live.** `If-Match` on PutObject is **400 `NotImplemented`** for a *current* ETag as well as a stale one: the header is unimplemented, not evaluated | **NONE, and silently ignored** — `If-Match` on DeleteObject returns 204 and deletes anyway (spike-verified live) | ETag (quoted uppercase MD5 hex for single-part content) |
 
 Design consequences, each of which is a decision rather than an observation:
 
@@ -357,22 +357,41 @@ Design consequences, each of which is a decision rather than an observation:
    mistake would be unrecoverable without a restart). The S3 client maps
    409 to a retryable exception and only 412 to
    `object_precondition_failed`.
+
+   **This rule now rests explicitly on AWS's documentation, not on
+   measurement, and that is stated because the measurement came out empty:**
+   racing 8, 16 and 32 concurrent create-only PUTs at one key produced exactly
+   one winner per round and **53 losers, every one of them 412** — no 409 at
+   all (spike-notes.md Finding 10). "Not observed in 56 requests from one
+   host" is not "cannot happen", and treating it as such is precisely how a
+   rare-but-real path becomes an unrecoverable latch in production. The unit
+   case pinning the 412/409 split therefore stays mandatory.
 2. **GCS's generation is not an ETag, and is stronger.** A generation is a
    monotonically-assigned integer identifying a specific object version;
    `ifGenerationMatch=0` is a sentinel for "does not exist" rather than a
    wildcard. The concept's opaque `object_version` string is exactly what
    lets an integer generation and an ETag share one interface without the
    engine ever inspecting either.
-3. **Alibaba OSS may not qualify for `compare_and_swap` at all**, and the
-   design must not pretend otherwise. Only the existence-check header is
-   confirmed; ETag-based overwrite CAS is unconfirmed and possibly absent.
-   Requirement 9.8's rule applies exactly here: if OSS cannot express the
-   overwrite precondition, `alibaba_oss_client` does **not** satisfy
-   `conditional_key_object_store`, and `compare_and_swap` becomes a
-   **compile-time** unavailable option for it. It does not silently degrade
-   to a no-op. This is the single most important thing this table decides,
-   and it is decided against the provider this spec's reference
-   implementation comes from.
+3. **Alibaba OSS does not qualify for `compare_and_swap`. Settled live,
+   August 16, 2026** (spike-notes.md Finding 1): `If-Match` on PutObject is
+   rejected `400 NotImplemented` for a *current* ETag as well as a stale one,
+   so there is no ETag-predicated write to build a fence on. Requirement
+   9.8's rule therefore fires exactly as written — `alibaba_oss_client`
+   satisfies `key_object_store` and **not**
+   `conditional_key_object_store`, and `compare_and_swap` is a
+   **compile-time** unavailable option for the OSS engine. It does not
+   silently degrade to a no-op. This is the single most important thing this
+   table decides, and it is decided against the provider this spec's
+   reference implementation comes from.
+
+   Two live corrections came with it. OSS's create-only rejection is **409
+   `FileAlreadyExists`**, not 412 — and since S3's **409
+   `ConditionalRequestConflict`** means the opposite (a benign race to
+   retry), **no client may map a bare 409 to either meaning**; the error
+   code must be read, on both providers. And OSS's conditional *delete* is
+   **accepted and ignored** — a stale `If-Match` returns 204 and deletes the
+   object — which is why a conditional delete must never enter the concept
+   without a per-provider live negative control.
 4. **The OSS versioning caveat generalizes into a test obligation.** A
    precondition that a bucket setting can silently disable is a fence that
    can silently stop fencing — the worst outcome Requirement 9 has. Only a
@@ -741,11 +760,24 @@ its own prefix, rather than provisioning a second one.
 Additive only: `put_object` returns the response ETag instead of `void`, and
 `get_object` returns a `get_result`. Signing, virtual-host/path-style
 addressing, pagination and error handling are untouched, and its existing
-tests pass unmodified except where they name those two return types. Whether
-it can also satisfy `conditional_key_object_store` is **OPEN** and decided by
-Task 0 (see the conditional-write table above) — if OSS has no ETag-based
-overwrite CAS, it satisfies only the base concept and `compare_and_swap` is
-a compile error for it, by design.
+tests pass unmodified except where they name those two return types.
+**Implemented August 15, 2026**; the three persistence suites passed with zero
+source changes and the client suite with two mechanical `.value().body` edits.
+
+Whether it can *also* satisfy `conditional_key_object_store` is **settled: it
+cannot** (spike-notes.md Finding 1 — `If-Match` on PutObject is
+`400 NotImplemented`). It satisfies only the base concept, and
+`compare_and_swap` is a compile error for the OSS engine, by design. Its
+create-only header (`x-oss-forbid-overwrite`, rejecting with 409
+`FileAlreadyExists`) is real and could support a create-only-only refinement
+if one is ever wanted; this design does not invent one, because a fence that
+covers log appends but not `term`/`voted_for` would protect against corruption
+while leaving the safety chokepoint unguarded — the opposite of the priority
+Requirement 9 sets.
+
+For Requirement 7, OSS is fully equipped: `Content-MD5` is verified end to end
+(`400 InvalidDigest` on mismatch) and the returned ETag is the uppercase MD5
+hex of single-part content, so 7.2's local verification applies.
 
 ## Correctness Properties
 
