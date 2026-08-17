@@ -546,7 +546,58 @@ Reference implementations to study before starting, in this order:
     S3's 409 does not latch and its 412 does** (task 0.3's finding).
   - _Requirements: 9.1–9.9_
 
-- [ ] 6. **Object integrity and size limits**
+- [x] 6. **Object integrity and size limits** — the engine's half done
+      August 17, 2026, in `include/raft/object_store_persistence.hpp`, with 9 new
+      conformance cases and 4 MD5 known-answer cases (213 cases in
+      `object_store_persistence_unit_test`, was 136). The **whole** suite now runs
+      over three substrates — plain, fenced, and content-MD5-versioned — because
+      "the engine verifies digests" is worth having only if every legitimate write
+      still passes the verification.
+
+      **The correction this task forced, folded into requirements.md as a new
+      criterion 7.0 and into design.md in place: Requirement 7 spans two layers
+      and one flag cannot govern both.** 7.1's service-side check is a header the
+      client sends and the service evaluates, so it is each **client's** own
+      configuration — the engine does not speak HTTP and the client is
+      constructed by the caller, so an engine option could never reach it. 7.2's
+      local check is the **engine's**, once, over a `content_md5_versioned_store`
+      trait the client declares. This task's own verification bar settles that
+      independently: *a mock store returning a wrong ETag must make the write
+      throw*, and a mock store is not a client. `verify_checksums` therefore
+      governs the local half only, and says so.
+
+      Three decisions, each recorded because the obvious alternative is worse.
+      **A checksum mismatch is retryable, not fatal** — it sits inside the single
+      PUT retry, because a corrupted transfer is exactly what re-sending the
+      identical bytes to the identical key repairs. **The MD5 is hand-rolled in
+      the engine header**, beside the base64 codec that is there for the same
+      reason: this header must compile with every cloud gate off, and OpenSSL
+      reaches this tree only through the gated provider signing headers. It is
+      pinned against RFC 1321 §A.5, the three padding boundaries and an
+      all-256-bytes input — and the first transcription of that suite's 80-digit
+      vector was wrong, which is precisely what a known-answer test is for.
+      **Quotes and case are normalised at the comparison**, not at the client: S3
+      spells the hex lowercase, OSS uppercase, and OSS's client returns the ETag
+      verbatim with its quotes because it is an opaque token that goes back to the
+      service unmodified.
+
+      `max_object_bytes` defaults to **64 MiB** and caps every PUT, refusing it
+      *before* the request; `0` is rejected at construction. The error names all
+      three facts Requirement 7.3 asks for — size, cap, and that multipart is a
+      documented non-goal — and the cases assert all three are present, plus that
+      raising the cap admits the very snapshot it refused (a limit, not a hidden
+      one).
+
+      Mutation-tested, four mutants, each caught: the size cap never firing (16
+      failures), the digest check never running (6), the comparison not
+      normalising case (54), and one corrupted MD5 constant (14).
+
+      **Not done in this task: 7.1's header on `alibaba_oss_client`**, which does
+      not send `Content-MD5` today. It is the one shipped client, and adding the
+      header touches `alibaba_signing` (which signs `content-md5` when present) on
+      a live-verified component, so it belongs with the client work of tasks 7-10
+      rather than smuggled in here. Note the two encodings when it is done:
+      `Content-MD5` is **base64 of the raw 16 bytes**, the ETag is **hex**.
 
   - `verify_checksums` (default on): every PUT carries an end-to-end
     checksum the service verifies, per task 0.5's per-provider spelling;

@@ -449,6 +449,35 @@ struct object_persistence_options {
     /// When set it must exceed the recorded epoch — an epoch that does not
     /// advance is not a takeover, and is rejected rather than ignored.
     std::optional<std::uint64_t> takeover_epoch;
+
+    /// Verify each PUT's returned version against the digest computed here, and
+    /// throw naming the key on a mismatch. On by default, and it costs nothing on
+    /// a store that does not declare `content_md5_versioned_store` — there is no
+    /// digest to compare against, so nothing is computed either.
+    ///
+    /// This is the **local** half of Requirement 7. The service-side half — a
+    /// `Content-MD5` (or native) header the service evaluates and rejects on
+    /// mismatch — is each client's own configuration, because the engine does not
+    /// speak HTTP and cannot spell a header. The two halves are deliberately not
+    /// one flag: a single knob spanning both layers would be honoured by one of
+    /// them and silently ignored by the other.
+    bool verify_checksums{true};
+
+    /// Refuse any single PUT above this size. **64 MiB, deliberately far below
+    /// every provider's documented single-request limit** (the smallest is S3's
+    /// and OSS's 5 GB; spike-notes.md Finding 16): the binding constraint is this
+    /// engine's shape, not the service's. One retry, no multipart, no resumption,
+    /// no progress reporting, the mutex held for the whole round trip, and the
+    /// only latency this project has measured is ~2-3 s per round trip — so a
+    /// multi-gigabyte single PUT is an hours-long request that can only be
+    /// retried whole. AWS's own guidance abandons single-PUT above 100 MB.
+    ///
+    /// The cap exists to turn "this deployment has outgrown a single-PUT
+    /// persistence engine" into a loud error at the first snapshot that reaches
+    /// it, rather than to predict any service's 413. Configurable upward for an
+    /// operator who has measured their own case; `0` is rejected at construction,
+    /// since it would refuse every write including the empty one.
+    std::size_t max_object_bytes{64U * 1024U * 1024U};
 };
 
 namespace object_store_persistence_detail {
@@ -474,6 +503,145 @@ namespace object_store_persistence_detail {
         return {};
     }
     return std::string(buf.data(), static_cast<std::size_t>(written));
+}
+
+/// @brief MD5 of `data`, lowercase hex — the content checksum every one of these
+///        five services speaks (`Content-MD5`, and the ETag itself on S3 and
+///        OSS).
+///
+/// **Used only as a checksum against transport corruption**, which is the one
+/// job the services use it for. Nothing here is a security claim, and MD5 must
+/// not be reached for as one.
+///
+/// Hand-rolled rather than taken from OpenSSL for the same reason this file
+/// carries its own base64 codec: `object_store_persistence.hpp` must compile in
+/// a build with **every** cloud gate off (Requirement 16.1), and OpenSSL reaches
+/// this tree only through the gated provider signing headers. A hand-rolled
+/// digest with no known-answer test would be worse than no digest at all, so the
+/// unit test pins it against RFC 1321's full test suite **and** against the
+/// three padding boundaries (55, 56 and 64 bytes), which is where an
+/// implementation of this shape actually goes wrong.
+[[nodiscard]] inline auto md5_hex(std::string_view data) -> std::string {
+    // T[i] = floor(|sin(i + 1)| × 2^32), RFC 1321 §3.4.
+    static constexpr std::array<std::uint32_t, 64> k_t = {
+        0xd76aa478U, 0xe8c7b756U, 0x242070dbU, 0xc1bdceeeU, 0xf57c0fafU, 0x4787c62aU, 0xa8304613U,
+        0xfd469501U, 0x698098d8U, 0x8b44f7afU, 0xffff5bb1U, 0x895cd7beU, 0x6b901122U, 0xfd987193U,
+        0xa679438eU, 0x49b40821U, 0xf61e2562U, 0xc040b340U, 0x265e5a51U, 0xe9b6c7aaU, 0xd62f105dU,
+        0x02441453U, 0xd8a1e681U, 0xe7d3fbc8U, 0x21e1cde6U, 0xc33707d6U, 0xf4d50d87U, 0x455a14edU,
+        0xa9e3e905U, 0xfcefa3f8U, 0x676f02d9U, 0x8d2a4c8aU, 0xfffa3942U, 0x8771f681U, 0x6d9d6122U,
+        0xfde5380cU, 0xa4beea44U, 0x4bdecfa9U, 0xf6bb4b60U, 0xbebfbc70U, 0x289b7ec6U, 0xeaa127faU,
+        0xd4ef3085U, 0x04881d05U, 0xd9d4d039U, 0xe6db99e5U, 0x1fa27cf8U, 0xc4ac5665U, 0xf4292244U,
+        0x432aff97U, 0xab9423a7U, 0xfc93a039U, 0x655b59c3U, 0x8f0ccc92U, 0xffeff47dU, 0x85845dd1U,
+        0x6fa87e4fU, 0xfe2ce6e0U, 0xa3014314U, 0x4e0811a1U, 0xf7537e82U, 0xbd3af235U, 0x2ad7d2bbU,
+        0xeb86d391U};
+    static constexpr std::array<unsigned, 64> k_shift = {
+        7,  12, 17, 22, 7,  12, 17, 22, 7,  12, 17, 22, 7,  12, 17, 22, 5,  9,  14, 20, 5,  9,
+        14, 20, 5,  9,  14, 20, 5,  9,  14, 20, 4,  11, 16, 23, 4,  11, 16, 23, 4,  11, 16, 23,
+        4,  11, 16, 23, 6,  10, 15, 21, 6,  10, 15, 21, 6,  10, 15, 21, 6,  10, 15, 21};
+
+    const auto rotl = [](std::uint32_t v, unsigned n) -> std::uint32_t {
+        return (v << n) | (v >> (32U - n));
+    };
+
+    // The padded message is never materialised: `byte_at` synthesises the
+    // 0x80 terminator, the zero fill and the little-endian bit length, so a
+    // multi-megabyte snapshot is not copied to be hashed.
+    const std::uint64_t bit_length = static_cast<std::uint64_t>(data.size()) * 8U;
+    std::size_t padded = data.size() + 1;
+    while (padded % 64U != 56U) {
+        ++padded;
+    }
+    const std::size_t length_offset = padded;
+    padded += 8;
+
+    const auto byte_at = [&](std::size_t i) -> std::uint32_t {
+        if (i < data.size()) {
+            return static_cast<std::uint8_t>(data[i]);
+        }
+        if (i == data.size()) {
+            return 0x80U;
+        }
+        if (i < length_offset) {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>((bit_length >> (8U * (i - length_offset))) & 0xFFU);
+    };
+
+    std::array<std::uint32_t, 4> h = {0x67452301U, 0xefcdab89U, 0x98badcfeU, 0x10325476U};
+    for (std::size_t offset = 0; offset < padded; offset += 64) {
+        std::array<std::uint32_t, 16> m{};
+        for (std::size_t j = 0; j < 16; ++j) {
+            const std::size_t at = offset + (4U * j);
+            m[j] = byte_at(at) | (byte_at(at + 1) << 8U) | (byte_at(at + 2) << 16U) |
+                   (byte_at(at + 3) << 24U);
+        }
+        std::uint32_t a = h[0];
+        std::uint32_t b = h[1];
+        std::uint32_t c = h[2];
+        std::uint32_t d = h[3];
+        for (unsigned i = 0; i < 64; ++i) {
+            std::uint32_t f = 0;
+            unsigned g = 0;
+            if (i < 16) {
+                f = (b & c) | (~b & d);
+                g = i;
+            } else if (i < 32) {
+                f = (d & b) | (~d & c);
+                g = ((5U * i) + 1U) % 16U;
+            } else if (i < 48) {
+                f = b ^ c ^ d;
+                g = ((3U * i) + 5U) % 16U;
+            } else {
+                f = c ^ (b | ~d);
+                g = (7U * i) % 16U;
+            }
+            f += a + k_t[i] + m[g];
+            a = d;
+            d = c;
+            c = b;
+            b += rotl(f, k_shift[i]);
+        }
+        h[0] += a;
+        h[1] += b;
+        h[2] += c;
+        h[3] += d;
+    }
+
+    static constexpr std::string_view k_hex = "0123456789abcdef";
+    std::string out;
+    out.reserve(32);
+    for (const std::uint32_t word : h) {
+        // Little-endian, per RFC 1321 §3.5.
+        for (unsigned byte = 0; byte < 4; ++byte) {
+            const auto value = static_cast<std::uint8_t>((word >> (8U * byte)) & 0xFFU);
+            out += k_hex[value >> 4U];
+            out += k_hex[value & 0x0FU];
+        }
+    }
+    return out;
+}
+
+/// @brief A returned version reduced to a comparable digest: surrounding quotes
+///        dropped, hex lowercased.
+///
+/// Both normalisations are load-bearing and both come from measurements. S3
+/// spells the ETag's hex **lowercase** and OSS **uppercase**, and OSS's client
+/// carries the ETag through verbatim — quotes included — because it is an opaque
+/// token that goes back to the service unmodified in a later precondition.
+/// Normalising at the comparison instead of at the client is what keeps those two
+/// facts from having to agree.
+[[nodiscard]] inline auto normalise_content_digest(std::string_view version) -> std::string {
+    if (version.size() >= 2 && version.front() == '"' && version.back() == '"') {
+        version.remove_prefix(1);
+        version.remove_suffix(1);
+    }
+    std::string out(version);
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'F') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    return out;
 }
 
 }  // namespace object_store_persistence_detail
@@ -550,6 +718,11 @@ public:
         if (_opts.snapshot_retention == 0) {
             throw std::invalid_argument(
                 "object_store_persistence_engine: snapshot_retention must be at least 1");
+        }
+        if (_opts.max_object_bytes == 0) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: max_object_bytes must be at least 1 — 0 would "
+                "refuse every write, including the empty one");
         }
         if constexpr (Fencing == fencing_mode::compare_and_swap) {
             if (_opts.owner_id.empty()) {
@@ -854,15 +1027,77 @@ private:
     // a chaos configuration written against this engine works for every store
     // it is instantiated over.
 
+    /// Refuse an oversized PUT **before** sending it (Requirement 7.3).
+    ///
+    /// Both PUT paths call this; the owner object does not, because its size is
+    /// fixed by this engine rather than by caller data — there is no input that
+    /// can make it large, so a cap on it would only be a cap that never fires.
+    ///
+    /// The message carries all three facts an operator needs: what was written,
+    /// what the cap is, and that multipart is a **documented non-goal** rather
+    /// than a missing feature. A snapshot silently truncated at a provider limit
+    /// is the worst outcome available here, so this error is the deliverable.
+    auto check_object_size(const std::string& key, std::string_view bytes) const -> void {
+        if (bytes.size() <= _opts.max_object_bytes) {
+            return;
+        }
+        throw std::runtime_error(
+            "object_store_persistence_engine: refusing to PUT " + key + ": " +
+            std::to_string(bytes.size()) + " bytes exceeds max_object_bytes of " +
+            std::to_string(_opts.max_object_bytes) +
+            ". This engine issues one whole-object PUT with no multipart upload, no resumption and "
+            "no progress reporting, and multipart is a documented non-goal of this design — raise "
+            "max_object_bytes only if you have measured that a single PUT of this size completes "
+            "within your election timeout");
+    }
+
+    /// Compare what the store reported against the digest of what was sent, where
+    /// the store declares its version **is** that digest (Requirement 7.2).
+    ///
+    /// A no-op — not even a digest computed — on the three providers whose version
+    /// is an opaque token, and on any store that says nothing. The two arguments
+    /// are named for what they are rather than `a` and `b`, because a check whose
+    /// inputs can be transposed without a type error eventually is.
+    auto verify_returned_digest(const std::string& key, std::string_view bytes,
+                                const object_version& reported_by_store) const -> void {
+        if constexpr (content_md5_versioned_store<Store>) {
+            if (!_opts.verify_checksums) {
+                return;
+            }
+            const std::string computed_from_content =
+                object_store_persistence_detail::md5_hex(bytes);
+            const std::string reported =
+                object_store_persistence_detail::normalise_content_digest(reported_by_store);
+            if (reported != computed_from_content) {
+                throw std::runtime_error(
+                    "object_store_persistence_engine: checksum mismatch on " + key + ": sent " +
+                    std::to_string(bytes.size()) + " bytes with MD5 " + computed_from_content +
+                    " but " + std::string(_store.provider_name()) + " reported " +
+                    (reported.empty() ? std::string("nothing") : reported) +
+                    " — the stored object does not match what was written and must not be treated "
+                    "as persisted");
+            }
+        } else {
+            (void)key;
+            (void)bytes;
+            (void)reported_by_store;
+        }
+    }
+
     /// PUT with the single idempotent-overwrite retry.
     auto put_object(const std::string& key, std::string_view bytes) -> void {
+        check_object_size(key, bytes);
         fiu_do_on("raft/objstore/put_object",
                   throw std::runtime_error("chaos: raft/objstore/put_object " + key););
         unsigned attempts_left = _opts.write_retries;
         std::string first_what;
         while (true) {
             try {
-                _store.put_object(_bucket, key, bytes);
+                // The digest check is inside the retry, deliberately: a mismatch
+                // is a corrupted transfer, which is exactly what re-sending the
+                // identical bytes to the identical key repairs.
+                const put_result result = _store.put_object(_bucket, key, bytes);
+                verify_returned_digest(key, bytes, result.version);
                 return;
             } catch (const std::exception& e) {
                 if (attempts_left == 0) {
@@ -920,16 +1155,23 @@ private:
     /// absent here (see the header).
     auto conditional_put(const std::string& key, std::string_view bytes, const precondition& pre)
         -> object_version {
+        check_object_size(key, bytes);
         fiu_do_on("raft/objstore/put_object",
                   throw std::runtime_error("chaos: raft/objstore/put_object " + key););
+        object_version version;
         try {
-            return _store.put_object_if(_bucket, key, bytes, pre).version;
+            version = _store.put_object_if(_bucket, key, bytes, pre).version;
         } catch (const object_precondition_failed& e) {
             latch(key, expected_version_of(pre), e.what());
         } catch (const std::exception& e) {
             throw std::runtime_error("object_store_persistence_engine: conditional PUT " + key +
                                      " failed: " + e.what());
         }
+        // Outside the catch, so a checksum mismatch keeps its own message rather
+        // than being re-wrapped as a conditional-write failure — and so it cannot
+        // be mistaken for a precondition failure, which would latch.
+        verify_returned_digest(key, bytes, version);
+        return version;
     }
 
     /// Record the fence and raise it. Callers hold `_mu`.

@@ -182,4 +182,32 @@ concept conditional_key_object_store =
         { store.delete_object_if(bucket, key, pre) } -> std::same_as<void>;
     };
 
+/// @brief A store whose `put_result::version` **is** the MD5 of the content it
+///        just stored, for a single-part upload.
+///
+/// True on exactly two of the five providers this design targets — S3 (lowercase
+/// hex) and Alibaba OSS (uppercase hex) — and false on the other three, whose
+/// version is an opaque token: Azure's ETag is a timestamp token, OCI's is a
+/// **UUID** and GCS's is opaque (spike-notes.md Findings 4, 10-13). A client
+/// that assumed the S3 shape would compare an opaque token against an MD5 and
+/// fail every write, which is why this is a **declaration by the client** rather
+/// than something the engine may infer.
+///
+/// Declared by adding `static constexpr bool version_is_content_md5 = true;`. A
+/// store that says nothing is simply not one of these — the first conjunct
+/// short-circuits, so the member is genuinely optional and no existing client
+/// needs touching. Where it *is* declared,
+/// `object_store_persistence_engine` verifies every PUT's returned version
+/// against the digest it computed locally (Requirement 7.2), comparing
+/// case-insensitively and ignoring surrounding quotes because the two providers
+/// disagree on case and at least one returns the ETag quoted.
+///
+/// This says nothing about the **service-side** check of Requirement 7.1, which
+/// every one of the five supports and each spells differently. That one is a
+/// header the client sends and the service evaluates; it cannot be expressed
+/// here, because the engine does not speak HTTP.
+template<typename S>
+concept content_md5_versioned_store =
+    key_object_store<S> && requires { S::version_is_content_md5; } && S::version_is_content_md5;
+
 }  // namespace kythira

@@ -128,6 +128,52 @@ private:
     }
 };
 
+/// The harness for a store whose version **is** the content MD5, like S3's and
+/// OSS's ETag. Only the store type and the one injection knob differ; everything
+/// else is the same pass-through, which is what keeps the checksum suite about
+/// the engine rather than about a second fixture.
+struct md5_versioned_mock_object_store_harness {
+    using store_t = kythira::md5_versioned_mock_object_store;
+    using engine_t = kythira::object_store_persistence_engine<store_t>;
+
+    store_t store;
+
+    [[nodiscard]] static auto bucket() -> std::string { return "kythira"; }
+    [[nodiscard]] static auto prefix() -> std::string { return "raft"; }
+
+    auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    auto make_engine(std::string bucket_name, std::string prefix_name) const -> engine_t {
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name)};
+    }
+
+    auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        return engine_t{store, bucket(), prefix(), opts};
+    }
+
+    auto seed(const std::string& key, std::string_view body) const -> void {
+        store.seed(key, body);
+    }
+    [[nodiscard]] auto keys() const -> std::vector<std::string> { return store.keys(); }
+    [[nodiscard]] auto has(const std::string& key) const -> bool { return store.has(key); }
+    [[nodiscard]] auto body(const std::string& key) const -> std::string { return store.body(key); }
+    [[nodiscard]] auto request_log() const -> std::vector<std::string> {
+        return store.request_log();
+    }
+    [[nodiscard]] auto count_requests(std::string_view verb) const -> std::size_t {
+        return store.count_requests(verb);
+    }
+    auto clear_requests() const -> void { store.clear_requests(); }
+    auto fail_next_puts(int n) const -> void { store.fail_next_puts(n); }
+    auto fail_puts_for_key(std::string key) const -> void {
+        store.fail_puts_for_key(std::move(key));
+    }
+    auto fail_next_gets(int n) const -> void { store.fail_next_gets(n); }
+    auto fail_next_deletes(int n) const -> void { store.fail_next_deletes(n); }
+    auto fail_next_lists(int n) const -> void { store.fail_next_lists(n); }
+    auto wrong_version_for_next_puts(int n) const -> void { store.wrong_version_for_next_puts(n); }
+};
+
 using engine_t = mock_object_store_harness::engine_t;
 using fenced_engine_t = fenced_mock_object_store_harness::engine_t;
 using log_entry_t = kythira::log_entry<>;
@@ -161,6 +207,14 @@ KYTHIRA_OBJECT_STORE_CONFORMANCE(mock_object_store_harness, mock_object_store)
 // every legitimate write is still accepted.
 KYTHIRA_OBJECT_STORE_CONFORMANCE(fenced_mock_object_store_harness, fenced_mock_object_store)
 KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(fenced_mock_object_store_harness, fenced_mock_object_store)
+
+// …and Requirement 7.2's local verification, over the one substrate that can
+// carry it: a store whose version *is* the content digest. The full suite runs
+// here too, because "the engine verifies digests" is only worth having if every
+// legitimate write still passes the verification.
+KYTHIRA_OBJECT_STORE_CONFORMANCE(md5_versioned_mock_object_store_harness, md5_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_CHECKSUM(md5_versioned_mock_object_store_harness,
+                                          md5_mock_object_store)
 
 // ── Concepts ─────────────────────────────────────────────────────────────────
 
@@ -234,6 +288,83 @@ BOOST_AUTO_TEST_CASE(compare_and_swap_is_unavailable_for_a_store_without_conditi
                                     std::uint64_t, std::uint64_t, std::uint64_t, log_entry_t,
                                     snapshot_t>);
     BOOST_TEST(true);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── The content digest (Requirement 7.2's local half) ────────────────────────
+
+BOOST_AUTO_TEST_SUITE(object_store_persistence_md5)
+
+// The engine carries its own MD5 so it compiles with every cloud gate off, the
+// same reason it carries its own base64. A hand-rolled digest with no
+// known-answer test is worse than no digest, so this is RFC 1321 §A.5's full
+// test suite verbatim.
+BOOST_AUTO_TEST_CASE(md5_matches_the_rfc_1321_test_suite) {
+    using kythira::object_store_persistence_detail::md5_hex;
+    BOOST_TEST(md5_hex("") == "d41d8cd98f00b204e9800998ecf8427e");
+    BOOST_TEST(md5_hex("a") == "0cc175b9c0f1b6a831c399e269772661");
+    BOOST_TEST(md5_hex("abc") == "900150983cd24fb0d6963f7d28e17f72");
+    BOOST_TEST(md5_hex("message digest") == "f96b697d7cb7938d525a2f31aaf161d0");
+    BOOST_TEST(md5_hex("abcdefghijklmnopqrstuvwxyz") == "c3fcd3d76192e4007dfb496cca67e13b");
+    BOOST_TEST(md5_hex("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") ==
+               "d174ab98d277d9f5a5611c2c9f419d9f");
+    // RFC 1321's last vector is "1234567890" eight times. Built rather than
+    // transcribed: an 80-character run of digits is a transcription error waiting
+    // to happen, and the first attempt at this line was one — it hashed cleanly
+    // to the wrong answer, which is exactly why a known-answer test is worth
+    // having.
+    std::string eighty;
+    for (int i = 0; i < 8; ++i) {
+        eighty += "1234567890";
+    }
+    BOOST_TEST(eighty.size() == 80U);
+    BOOST_TEST(md5_hex(eighty) == "57edf4a22be3c955ac49da2e2107b67a");
+}
+
+// The padding boundaries are where an implementation of this shape actually goes
+// wrong: at 56 bytes the length no longer fits in the first block, so a second
+// block appears, and at 64 the message is already block-aligned.
+BOOST_AUTO_TEST_CASE(md5_is_right_at_the_padding_boundaries) {
+    using kythira::object_store_persistence_detail::md5_hex;
+    BOOST_TEST(md5_hex(std::string(55, 'a')) == "ef1772b6dff9a122358552954ad0df65");
+    BOOST_TEST(md5_hex(std::string(56, 'a')) == "3b0c8ac703f828b04c6c197006d17218");
+    BOOST_TEST(md5_hex(std::string(63, 'a')) == "b06521f39153d618550606be297466d5");
+    BOOST_TEST(md5_hex(std::string(64, 'a')) == "014842d480b571495a4a0363793f7367");
+    BOOST_TEST(md5_hex(std::string(65, 'a')) == "c743a45e0d2e6a95cb859adae0248435");
+    BOOST_TEST(md5_hex(std::string(1000, 'a')) == "cabe45dcc9ae5b66ba86600cca6b8ba8");
+}
+
+// Binary content, including embedded nulls and every high byte — a log entry's
+// command is arbitrary bytes, so a digest that stopped at the first null would
+// pass every text-based test above and verify nothing in practice.
+BOOST_AUTO_TEST_CASE(md5_covers_binary_content_including_nulls) {
+    using kythira::object_store_persistence_detail::md5_hex;
+    std::string all_bytes;
+    for (int i = 0; i < 256; ++i) {
+        all_bytes += static_cast<char>(i);
+    }
+    BOOST_TEST(md5_hex(all_bytes) == "e2c865db4162bed963bfaa9ef6ac18f0");
+    BOOST_TEST(md5_hex(std::string("a\0b", 3)) != md5_hex("a"));
+}
+
+// The comparison the engine performs, not the digest: S3 spells the hex
+// lowercase and OSS uppercase, and OSS's client carries the ETag through with its
+// quotes because it is an opaque token that goes back to the service unmodified.
+// Normalising at the comparison is what keeps those two facts from having to
+// agree.
+BOOST_AUTO_TEST_CASE(the_digest_comparison_ignores_quotes_and_case) {
+    using kythira::object_store_persistence_detail::normalise_content_digest;
+    const std::string lower = "900150983cd24fb0d6963f7d28e17f72";
+    BOOST_TEST(normalise_content_digest(lower) == lower);
+    BOOST_TEST(normalise_content_digest("900150983CD24FB0D6963F7D28E17F72") == lower);
+    BOOST_TEST(normalise_content_digest("\"900150983CD24FB0D6963F7D28E17F72\"") == lower);
+    BOOST_TEST(normalise_content_digest("\"" + lower + "\"") == lower);
+    // An opaque token is left alone rather than mangled into something that might
+    // accidentally match.
+    BOOST_TEST(normalise_content_digest("0x8DD1234ABCD") == "0x8dd1234abcd");
+    BOOST_TEST(normalise_content_digest("") == "");
+    BOOST_TEST(normalise_content_digest("\"") == "\"");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

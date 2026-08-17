@@ -608,6 +608,25 @@ Both conditional operations report a rejected precondition by **throwing
 be silently ignorable at exactly the call sites where ignoring it is a
 safety violation.
 
+```cpp
+/// A store whose put_result::version IS the content MD5 of a single-part
+/// upload. Declared by `static constexpr bool version_is_content_md5 = true;`
+/// — optional, because the first conjunct short-circuits.
+template<typename S>
+concept content_md5_versioned_store =
+    key_object_store<S> && requires { S::version_is_content_md5; } &&
+    S::version_is_content_md5;
+```
+
+**True on exactly two of the five** — S3 (lowercase hex) and OSS (uppercase hex)
+— and false on Azure, GCS and OCI, whose version is an opaque token. A
+*declaration by the client* rather than something the engine may infer, because
+a client that assumed the S3 shape would compare an opaque token against an MD5
+and fail every write. Where it is declared, the engine performs Requirement 7.2's
+local verification (task 6); where it is not, the engine computes no digest at
+all, so the check costs nothing on three of the five providers rather than
+costing a digest and then discarding it.
+
 ### 2. `include/raft/object_store_persistence.hpp`
 
 ```cpp
@@ -622,8 +641,8 @@ struct object_persistence_options {
     unsigned write_retries{1};
     std::string owner_id;                            // required iff Fencing != none
     std::optional<std::uint64_t> takeover_epoch;
-    bool verify_checksums{true};                     // task 6
-    std::size_t max_object_bytes{64 * 1024 * 1024};  // task 6; Task 0.4: see below
+    bool verify_checksums{true};                     // the LOCAL half of Req 7 only
+    std::size_t max_object_bytes{64 * 1024 * 1024};  // Task 0.4: see below
 };
 
 template<key_object_store Store,
@@ -845,6 +864,51 @@ Requirement 9 sets.
 For Requirement 7, OSS is fully equipped: `Content-MD5` is verified end to end
 (`400 InvalidDigest` on mismatch) and the returned ETag is the uppercase MD5
 hex of single-part content, so 7.2's local verification applies.
+
+### Requirement 7's two layers, and where each one lives
+
+Settled while implementing task 6 (August 17, 2026) and folded into
+requirements.md as criterion 7.0, because criteria 7.1 and 7.2 read as one
+feature and are not:
+
+- **7.1, the service-side check, is each client's.** It is a header the client
+  sends and the service evaluates, in five different spellings with five
+  different rejection codes. The engine does not speak HTTP and the client is
+  constructed by the caller, so an engine option could not reach it.
+- **7.2, the local check, is the engine's** — once, over the
+  `content_md5_versioned_store` trait the client declares. Doing it in each
+  client would repeat it five times, and it is the engine that already holds the
+  bytes it meant to write. Task 6's own verification bar settles it
+  independently: *a mock store returning a wrong ETag must make the write
+  throw*, and a mock store is not a client.
+- So `object_persistence_options::verify_checksums` governs the **local** check
+  only. One flag spanning both layers would be honoured by one and silently
+  ignored by the other, which is the failure this design forbids elsewhere under
+  its own name.
+
+Three implementation decisions follow, each recorded because the obvious
+alternative is worse:
+
+1. **A checksum mismatch is retryable, not fatal.** It runs inside the engine's
+   single PUT retry, because a corrupted transfer is exactly what re-sending the
+   identical bytes to the identical key repairs. The mirror is not updated, so a
+   mismatch that survives the retry leaves the caller with a failed write and
+   memory that still matches what the store last confirmed — and the store
+   holding bytes that will fail the parse-or-throw load, which is the documented
+   corruption-is-fatal path rather than a new one.
+2. **The MD5 is hand-rolled inside `object_store_persistence.hpp`**, next to the
+   base64 codec that is there for the same reason: this header must compile in a
+   build with **every** cloud gate off (Requirement 16.1), and OpenSSL reaches
+   this tree only through the gated provider signing headers. It is pinned
+   against RFC 1321 §A.5's full test suite, the three padding boundaries (55, 56
+   and 64 bytes) and an all-256-bytes input — a hand-rolled digest with no
+   known-answer test is worse than no digest, and the first transcription of the
+   80-digit vector in that suite was in fact wrong.
+3. **The comparison normalises quotes and case at the comparison**, not at the
+   client. S3 spells the hex lowercase, OSS uppercase, and OSS's client carries
+   the ETag through *verbatim, quotes included*, because it is an opaque token
+   that goes back to the service unmodified in a later precondition. Normalising
+   centrally is what keeps those two facts from having to agree.
 
 ## Correctness Properties
 
