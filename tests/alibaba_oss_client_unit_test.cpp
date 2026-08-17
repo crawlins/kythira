@@ -200,7 +200,7 @@ BOOST_AUTO_TEST_CASE(put_get_delete_round_trip) {
 
     const alibaba_oss_client client{config_for(mock)};
     client.put_object("mybucket", "raft/term", "42");
-    BOOST_TEST(client.get_object("mybucket", "raft/term").value() == "42");
+    BOOST_TEST(client.get_object("mybucket", "raft/term").value().body == "42");
     client.delete_object("mybucket", "raft/term");
     BOOST_TEST(!client.get_object("mybucket", "raft/term").has_value());
 }
@@ -241,7 +241,7 @@ BOOST_AUTO_TEST_CASE(binary_bytes_survive_a_round_trip) {
         11);
     const alibaba_oss_client client{config_for(mock)};
     client.put_object("b", "blob", payload);
-    BOOST_TEST(client.get_object("b", "blob").value() == payload);
+    BOOST_TEST(client.get_object("b", "blob").value().body == payload);
 }
 
 BOOST_AUTO_TEST_CASE(oss_error_xml_surfaces_in_the_exception) {
