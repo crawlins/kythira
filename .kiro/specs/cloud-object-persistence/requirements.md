@@ -499,6 +499,18 @@ or a duplicated deployment cannot silently destroy a Raft log.
    - `compare_and_swap` — the writes that can carry a precondition **at no
      extra round trip** do carry one, and the mode requires
      `conditional_key_object_store` (Requirement 1.3) at compile time.
+
+   **The mode SHALL be selected at compile time, as a template argument rather
+   than an options field** (amended in place, August 17, 2026, from task 5's
+   implementation). Criterion 9.8's compile-time rule cannot be met by a runtime
+   field: such a field must be read behind `if constexpr` so that a store
+   lacking the refinement still compiles the rest of the engine, and a discarded
+   `if constexpr` branch is never instantiated — so `compare_and_swap` over such
+   a store would compile and then perform unconditional writes with fencing
+   configured, which is precisely 9.8's forbidden outcome reached through the
+   mechanism intended to prevent it. `owner_id` and `takeover_epoch` remain
+   runtime options, and SHALL be **rejected at construction** on an engine that
+   is not fenced.
 3. Under `compare_and_swap` the engine SHALL:
    - track the `object_version` returned by each successful PUT, per key, in
      the in-memory mirror;
@@ -528,6 +540,19 @@ or a duplicated deployment cannot silently destroy a Raft log.
    expected version, and the provider — and SHALL NOT retry it. A
    precondition failure is not a transient error; retrying it is exactly the
    overwrite the fence exists to prevent.
+
+   **A conditional write SHALL NOT be retried at all**, whatever
+   `write_retries` says, and a *transient* failure on one SHALL NOT latch
+   (amended in place, August 17, 2026, from task 5). A retry's precondition is
+   stale by construction if the first attempt landed, so retrying could only
+   convert a lost response into a false fence; and only a precondition the
+   service itself evaluated is evidence about ownership, so a broken connection
+   or a benign conditional-request race SHALL surface as an ordinary
+   `std::runtime_error` leaving the engine usable. The residual this leaves —
+   a conditional PUT whose response is lost *after* the service applied it
+   latches the sole writer on its next attempt — SHALL be stated in the design
+   and the operator documentation rather than implied to be absent. It is
+   inherent to predicating a write on a version learned only from the response.
 5. WHEN a `persistence_fenced_error` occurs THEN the engine SHALL **latch
    permanently**: every subsequent mutating call SHALL throw the same error
    without contacting the store, and the latch SHALL NOT be clearable at
@@ -542,6 +567,18 @@ or a duplicated deployment cannot silently destroy a Raft log.
    owner SHALL throw unless `takeover_epoch` is set higher than the recorded
    epoch — which makes takeover an explicit, auditable operator act rather
    than a race.
+
+   Three clarifications from task 5's implementation, all in place. A
+   `takeover_epoch` at or below the recorded epoch SHALL be **rejected**, not
+   ignored: an epoch that does not advance is not a takeover, and an ignored one
+   would put two writers on a prefix each believing it had been granted it. A
+   restart by the **recorded** owner SHALL be allowed and SHALL read-increment
+   the epoch — a crash-restart and a duplicated deployment are indistinguishable
+   at construction, since a duplicate carries the same node identity, and a
+   restart must succeed; the duplicate is caught by the first conditional write,
+   which is why the fence lives on the writes. And a **corrupt** owner object
+   SHALL fail construction rather than read as "unowned", which would hand the
+   prefix to a second writer at the moment fencing was asked for.
 7. The per-provider conditional-write support matrix SHALL be recorded in
    the design with `documentation-derived` / `spike-verified` status per
    cell — create-only precondition, If-Match overwrite, conditional delete,

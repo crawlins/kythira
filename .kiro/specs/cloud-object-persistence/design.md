@@ -465,7 +465,32 @@ elsewhere. So log-entry PUTs carry the **create-only** precondition. It costs
 nothing — a header on a PUT already in flight — and any collision at an index
 latches one of the two writers loudly. Legitimate re-use of an index is
 always preceded by `truncate_log`'s DELETE, so create-only never rejects a
-legal write.
+legal write. **Checked against the caller, not assumed** (task 5, August 17,
+2026): `raft.hpp`'s AppendEntries path appends only where
+`entry_index > get_last_log_index()` and truncates a conflicting index through
+`_persistence.truncate_log` first, so there is no path that re-PUTs a live index.
+An engine whose create-only precondition refused a legal append would latch a
+healthy leader, which is why this is verified rather than asserted.
+
+**Two decisions from the implementation, recorded here because both are places
+where the obvious choice is wrong.**
+
+*A restart by the recorded owner is allowed, and a duplicated deployment cannot
+be refused at construction.* The two are indistinguishable at that moment — a
+duplicate runs with the same node identity as the original, which is what makes
+it a duplicate — and a crash-restart must succeed. So construction refuses only
+a **different** `owner_id`, the epoch is read-incremented on a restart to leave
+an audit trail, and the duplicate is caught by the first conditional write. This
+is the reason the fence lives on the writes at all: a construction-time check
+cannot be the fence, and building one there would only look like protection.
+
+*The create-only PUT decides whether the prefix was unowned, not the listing that
+preceded it.* Construction reads `<prefix>/owner` from the listing the load path
+already performs, but the **precondition on the PUT** is what enforces the
+decision: a listing that lagged would show the owner object as absent, and the
+create-only precondition refuses to be fooled by exactly that. A corrupt owner
+object fails construction rather than reading as "unowned", which would hand the
+prefix to a second writer at the moment fencing was asked for.
 
 `<prefix>/snapshot`, `<prefix>/snapshots/<index>` and every DELETE stay
 unconditional, and this is a **bounded residual, not a covered case**: a
@@ -588,20 +613,25 @@ safety violation.
 ```cpp
 enum class fencing_mode { none, compare_and_swap };
 
+/// Thrown when this engine has provably lost ownership of its prefix, and by
+/// every mutating call thereafter. Names key, expected version and provider.
+class persistence_fenced_error : public std::runtime_error { /* … */ };
+
 struct object_persistence_options {
     std::size_t snapshot_retention{1};
-    fencing_mode fencing{fencing_mode::none};
-    std::string owner_id;
-    std::optional<std::uint64_t> takeover_epoch;
-    bool verify_checksums{true};
-    std::size_t max_object_bytes{64 * 1024 * 1024};  // Task 0.4: see below
     unsigned write_retries{1};
+    std::string owner_id;                            // required iff Fencing != none
+    std::optional<std::uint64_t> takeover_epoch;
+    bool verify_checksums{true};                     // task 6
+    std::size_t max_object_bytes{64 * 1024 * 1024};  // task 6; Task 0.4: see below
 };
 
 template<key_object_store Store,
          typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-         typename LogIndex = std::uint64_t>
-requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
+         typename LogIndex = std::uint64_t,
+         fencing_mode Fencing = fencing_mode::none>
+requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex> &&
+         (Fencing == fencing_mode::none || conditional_key_object_store<Store>)
 class object_store_persistence_engine {
 public:
     object_store_persistence_engine(Store store, std::string bucket,
@@ -610,6 +640,9 @@ public:
     // … the 12 persistence_engine methods, unchanged in signature …
 
     static constexpr std::size_t k_index_digits = 20;
+    static constexpr fencing_mode fencing = Fencing;
+    auto is_fenced() const -> bool;          // always false under `none`
+    auto owner_epoch() const -> std::uint64_t;
 private:
     Store _store;
     std::string _bucket, _prefix;
@@ -623,9 +656,38 @@ private:
 
     // Fencing (Requirement 9): version per single-slot key, and the latch.
     std::unordered_map<std::string, object_version> _versions;
-    std::optional<std::string> _fenced_reason;   // set once, never cleared
+    std::optional<owner_record> _owner_seen;          // what <prefix>/owner said
+    std::uint64_t _owner_epoch{0};
+    std::optional<persistence_fenced_error> _fenced;  // set once, never cleared
 };
+
+/// The constraint sits on the alias's own parameter, so asking for a fenced
+/// engine over a store that cannot fence fails at the name.
+template<conditional_key_object_store Store, typename NodeId = std::uint64_t,
+         typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+using fenced_object_store_persistence_engine =
+    object_store_persistence_engine<Store, NodeId, TermId, LogIndex,
+                                    fencing_mode::compare_and_swap>;
 ```
+
+**`fencing_mode` is a template argument, not an options field — corrected in
+place, August 17, 2026, while implementing task 5.** The sketch this design
+carried had it as `object_persistence_options::fencing`, and that shape cannot
+deliver Requirement 9.8. A runtime field must be read behind `if constexpr`, so
+that a store *without* the refinement still compiles the rest of the engine —
+and a discarded `if constexpr` branch is never instantiated, so
+`fencing = compare_and_swap` over such a store would compile and then run
+**unconditional writes with fencing configured**: exactly the silent degradation
+Requirement 9.8 exists to forbid, arrived at through the mechanism meant to
+prevent it. A compile-time selector is what makes it a compile error again, and
+it is placed **last** in the parameter list so every existing instantiation —
+`alibaba_oss_persistence_engine`'s included — is untouched.
+
+`owner_id` and `takeover_epoch` stay runtime fields, because they are values
+rather than capabilities, and they are **rejected at construction on an unfenced
+engine** — the same rule as "no field that is accepted and ignored", seen from
+the other side. An `owner_id` silently ignored reads, to whoever set it, exactly
+like fencing being on.
 
 Write path per mutating method, unchanged from the shipped engine except for
 the two bracketed additions: serialize → fault point
@@ -845,6 +907,37 @@ the primitive silently degrades to unconditional writes, which is a fence
 that is *believed in* and absent — the worst state of all, and why
 Requirement 9.8 makes it a **compile-time** unavailability rather than a
 runtime fallback.
+
+**The residual `compare_and_swap` adds, found by implementing it (task 5,
+August 17, 2026) and stated rather than papered over.** A conditional PUT whose
+response is *lost after the service applied it* leaves this engine holding a
+stale version, so its next write to that key is refused and the engine latches
+although it is the only writer. The failure is loud and safe — a node stops
+rather than corrupting a log — but it is an availability cost that
+`fencing_mode::none` does not have, and on a WAN with the ~2–3 s round trips
+this project has measured, a lost response is not exotic. It is **inherent** to
+predicating a write on a version the engine only learns from the response, and it
+is *not* avoided by declining to retry: the caller's own retry of
+`save_current_term` re-issues the same stale precondition. Two consequences,
+both implemented:
+
+- a conditional PUT is issued **once**, `write_retries` notwithstanding, because
+  a retry can only convert a transient failure into a false fence — its
+  precondition is stale by construction if the first attempt landed;
+- only `object_precondition_failed` latches. A transient failure is reported as
+  an ordinary `std::runtime_error` and the engine stays usable, because a broken
+  connection is not evidence about ownership.
+
+The identified mitigation is a **read-repair on the failure path**: GET the key,
+and if it already holds exactly the bytes this engine meant to write, adopt the
+returned version instead of latching. It is sound — a writer cannot distinguish
+its own landed write from an agreeing twin, so latching on equal bytes latches on
+unproven evidence, and with equal bytes there is no divergence to miss;
+detection is merely deferred to the first differing write, which is where the
+safety argument actually bites. It is recorded as **future work rather than
+implemented**, because it weakens the sentence "a rejected precondition means you
+lost" that Property 3 above is written against, and that trade deserves to be
+made deliberately rather than as a side effect of task 5.
 
 ### Property 4: The snapshot commit point cannot be lost
 **Validates: Requirements 8.2**

@@ -207,14 +207,116 @@
 /// silently shortened log can violate the Log Matching property. Failing to
 /// start is recoverable by an operator; starting with invented state is not.
 ///
-/// ## Single-writer requirement
+/// ## Single-writer requirement, and fencing
 ///
 /// **Exactly one process may own a `{bucket, prefix}` pair**, exactly as one
 /// process owns a `file_persistence_engine`'s directory. Two nodes pointed at
-/// the same prefix will corrupt each other's state. Conditional-PUT fencing —
-/// which *detects* a second writer rather than coordinating with one — is
-/// specified in `.kiro/specs/cloud-object-persistence/` Requirement 9 and is
-/// not yet implemented here; until it is, single-writer is by assertion.
+/// the same prefix will corrupt each other's state. Nothing here *coordinates*
+/// that: `fencing_mode::compare_and_swap` **detects** a second writer, it does
+/// not implement a lease, arbitrate, or take over.
+///
+/// At `fencing_mode::none` — the default, and the fifth template argument's
+/// default — single-writer is by assertion, exactly as it shipped: no
+/// `<prefix>/owner` object, no conditional header, and not one extra request.
+///
+/// ### What `compare_and_swap` conditions, and what it does not
+///
+// clang-format off
+/// | Write | Precondition | Why |
+/// |---|---|---|
+/// | `<prefix>/term`, `<prefix>/voted_for` | `If-Match: <version tracked in the mirror>`, or create-only on the first write | the **safety chokepoint** |
+/// | `<prefix>/log/<index>` | **create-only** | catches the stale appender the chokepoint misses |
+/// | `<prefix>/snapshot`, `<prefix>/snapshots/<index>`, every DELETE | **none** | a **stated residual**, below |
+// clang-format on
+///
+/// The chokepoint argument: a second writer cannot cause a Raft *safety*
+/// violation without first writing `term` or `voted_for`. A candidate persists
+/// an incremented term and a self-vote before sending any RequestVote; a
+/// follower persists a term bump before replying, and its vote before granting
+/// one at a term it has already recorded. There is no path to a second leader,
+/// a diverging committed log or a double vote that does not pass through one of
+/// those two single-slot objects.
+///
+/// That argument covers safety and **not corruption**, and the difference is
+/// why log-entry PUTs are create-only. A stale leader appends without ever
+/// changing its term — it will never gather a quorum again, but nothing makes
+/// it write `term` or `voted_for` before writing `<prefix>/log/<index>`, so
+/// left unconditional it interleaves log objects with the rightful owner's for
+/// as long as it runs and neither writer notices. The corruption would surface
+/// only at the next recovery, which is the silent-short-log failure this engine
+/// exists to prevent. Create-only costs nothing — a header on a PUT already in
+/// flight — and legitimate re-use of an index is always preceded by
+/// `truncate_log`'s DELETE, so it never rejects a legal write.
+///
+/// **The residual is bounded and stated rather than covered:** a second writer
+/// whose only interaction with the prefix is a snapshot overwrite or a
+/// truncation is **not detected**. Claiming a total fence here would be the
+/// more dangerous error, so a conformance case pins the gap open.
+///
+/// ### The owner object
+///
+/// Construction writes `<prefix>/owner` — `{owner_id, epoch, started_at}` —
+/// create-only when the prefix is unowned, and `If-Match` over the recorded
+/// object otherwise. The rules:
+///
+///   * the recorded owner is **this** `owner_id` → a restart; the epoch is
+///     read-incremented, which leaves an audit trail of restarts;
+///   * the recorded owner is somebody else → construction **throws**
+///     `persistence_fenced_error` naming them, unless `takeover_epoch` exceeds
+///     the recorded epoch, which makes a takeover an explicit operator act
+///     rather than a race;
+///   * `takeover_epoch` at or below the recorded epoch is rejected as an
+///     operator error rather than silently ignored — an epoch that does not
+///     advance is not a takeover.
+///
+/// A duplicated deployment shares its `owner_id` with the original, so
+/// construction cannot reject it: a crash-restart and a duplicate are
+/// indistinguishable at that moment, and a restart must succeed. The duplicate
+/// is caught by the first conditional write instead, which is what the fence is
+/// for.
+///
+/// The **create-only PUT** decides whether the prefix was unowned, not the
+/// listing that preceded it: a listing that lags would show an owner object as
+/// absent, and the precondition catches exactly that.
+///
+/// ### The latch
+///
+/// A rejected precondition throws `persistence_fenced_error` — naming the key,
+/// the expected version and the provider — and **latches the engine
+/// permanently**: every subsequent mutating call throws the same error without
+/// contacting the store, and the latch cannot be cleared at runtime. A node that
+/// has provably lost ownership of its state cannot safely continue in consensus,
+/// and an engine that lets it try is worse than one with no fencing at all.
+/// Reads keep answering from the mirror; they report what this node last knew,
+/// and the raft layer meets the latch at its next write.
+///
+/// A precondition failure is **never retried** (Requirement 9.4): a retry is
+/// exactly the overwrite the fence exists to prevent. Neither is a *transient*
+/// failure on a conditional write, and that is a separate decision worth the
+/// sentence: the retry's precondition is stale by construction if the first
+/// attempt actually landed, so retrying could only convert a lost response into
+/// a false fence. One attempt, then throw — and a transient failure does **not**
+/// latch, because only the service's own evaluated precondition is evidence
+/// about ownership. This is why a client must map a benign conditional-request
+/// race (S3's `409 ConditionalRequestConflict`) to an ordinary retryable
+/// exception and only `412` to `object_precondition_failed`; mapping a bare
+/// status would turn a retryable race into an unclearable latch.
+///
+/// **The residual that follows from it, stated because it is real:** a
+/// conditional PUT whose response is lost after the service applied it leaves
+/// the engine holding a stale version, so its next write to that key is refused
+/// and the engine latches although it is the only writer. The failure is loud
+/// and safe — a node stops rather than corrupting a log — but it is an
+/// availability cost of `compare_and_swap` on a lossy path, and it is inherent
+/// to predicating a write on a version this engine only learns from the
+/// response. The identified mitigation is a read-repair on the failure path (GET
+/// the key; if it already holds exactly the bytes this engine meant to write,
+/// adopt the returned version instead of latching, since a writer cannot tell
+/// its own landed write from an agreeing twin and detection is then merely
+/// deferred to the first genuine divergence). It is recorded as future work
+/// rather than implemented here, because it weakens "a rejected precondition
+/// means you lost" and that sentence is what the safety argument above is
+/// written against.
 ///
 /// ## Provider independence
 ///
@@ -234,8 +336,11 @@
 
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <ctime>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -243,19 +348,82 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace kythira {
+
+/// @brief How the engine detects a second writer. Exactly two values, and the
+///        choice is a **template argument** rather than a runtime field.
+///
+/// `compare_and_swap` requires `conditional_key_object_store` at compile time
+/// (Requirement 9.8), and only a compile-time selector can deliver that: a
+/// runtime field would have to sit behind `if constexpr`, which would silently
+/// leave a provider that cannot express the precondition running *unconditional*
+/// writes with fencing configured — the one behaviour Requirement 9 exists to
+/// forbid. Asking for `compare_and_swap` over such a store is therefore a
+/// compile error naming the unsatisfied concept, and
+/// `alibaba_oss_persistence_engine` — whose provider has no overwrite CAS at
+/// all, verified live — cannot be written any other way.
+enum class fencing_mode {
+    /// The shipped behaviour: single-writer by assertion, no `<prefix>/owner`
+    /// object, no conditional header, no extra request.
+    none,
+    /// Conditional writes wherever they cost no extra round trip, plus the
+    /// owner object and the latch. See the header's fencing section.
+    compare_and_swap
+};
+
+/// @brief Thrown when this engine has provably lost ownership of its prefix,
+///        and by every subsequent mutating call thereafter.
+///
+/// Raised only from a precondition the *service* evaluated and rejected, or from
+/// construction over a prefix another owner holds. It is deliberately distinct
+/// from the `std::runtime_error` an ordinary store failure produces: a transient
+/// failure says nothing about ownership, and treating one as the other in either
+/// direction is the mistake this type exists to prevent. The raft layer needs no
+/// special handling — it sees an exception from persistence like any other — but
+/// an operator's automation can catch this one to distinguish "split brain" from
+/// "the network broke".
+class persistence_fenced_error : public std::runtime_error {
+public:
+    persistence_fenced_error(std::string provider, std::string key, object_version expected,
+                             const std::string& detail)
+        : std::runtime_error(
+              "object_store_persistence_engine: fenced on " + key + " (provider: " + provider +
+              (expected.empty() ? ", expected: absent" : ", expected version: " + expected) + ")" +
+              (detail.empty() ? "" : ": " + detail) +
+              " — this engine is latched and every further mutating call fails"),
+          _provider(std::move(provider)),
+          _key(std::move(key)),
+          _expected(std::move(expected)) {}
+
+    /// The store that refused the write (`provider_name()`).
+    [[nodiscard]] auto provider() const noexcept -> const std::string& { return _provider; }
+    /// The object key whose precondition was refused.
+    [[nodiscard]] auto key() const noexcept -> const std::string& { return _key; }
+    /// The version the write was predicated on; empty for "must not exist".
+    [[nodiscard]] auto expected_version() const noexcept -> const object_version& {
+        return _expected;
+    }
+
+private:
+    std::string _provider;
+    std::string _key;
+    object_version _expected;
+};
 
 /// @brief Engine-level options. Every default preserves the shipped engine's
 ///        behaviour exactly, so an operator who upgrades and changes nothing
 ///        sees a bucket with exactly the keys it had before.
 ///
-/// The spec's remaining options (fencing mode and owner id, checksum
-/// verification, a single-PUT size cap) are added field by field **with** the
-/// behaviour that honours them — a field that is accepted and ignored is worse
-/// than an absent one, especially for a fencing knob.
+/// The spec's remaining options (checksum verification, a single-PUT size cap)
+/// are added field by field **with** the behaviour that honours them — a field
+/// that is accepted and ignored is worse than an absent one. `owner_id` and
+/// `takeover_epoch` follow the same rule from the other side: they are rejected
+/// at construction unless the engine is actually fenced.
 struct object_persistence_options {
     /// Snapshot generations kept, counting the live `<prefix>/snapshot`. `1` —
     /// the shipped behaviour — writes no `<prefix>/snapshots/` object at all.
@@ -264,21 +432,68 @@ struct object_persistence_options {
     /// snapshot just written.
     std::size_t snapshot_retention{1};
 
-    /// Same-call retries, PUT-only. `1` is the shipped behaviour: one retry,
-    /// then throw.
+    /// Same-call retries, PUT-only, and **unconditional-PUT-only**: a
+    /// conditional write is never retried, for the reason the header's fencing
+    /// section gives. `1` is the shipped behaviour: one retry, then throw.
     unsigned write_retries{1};
+
+    /// Who this engine says it is in `<prefix>/owner`. Required — and required
+    /// to be non-empty — under `fencing_mode::compare_and_swap`; rejected
+    /// otherwise, so a fencing knob can never be set on an engine that is not
+    /// fencing.
+    std::string owner_id;
+
+    /// The epoch to claim, for an **explicit, auditable** takeover of a prefix
+    /// another owner holds. Unset is the normal case: an unowned prefix is
+    /// claimed at epoch 1, and a restart by the recorded owner read-increments.
+    /// When set it must exceed the recorded epoch — an epoch that does not
+    /// advance is not a takeover, and is rejected rather than ignored.
+    std::optional<std::uint64_t> takeover_epoch;
 };
+
+namespace object_store_persistence_detail {
+
+/// The owner object's `started_at`: ISO 8601 UTC at second precision,
+/// `YYYY-MM-DDTHH:MM:SSZ`, formatted from the broken-down time explicitly so it
+/// is locale-independent. Written locally rather than borrowed from one of the
+/// provider signing headers, which already have this function — nothing in this
+/// file may name a provider.
+[[nodiscard]] inline auto iso8601_utc(std::chrono::system_clock::time_point when) -> std::string {
+    const std::time_t seconds = std::chrono::system_clock::to_time_t(when);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &seconds);
+#else
+    gmtime_r(&seconds, &utc);
+#endif
+    std::array<char, 32> buf{};
+    const int written =
+        std::snprintf(buf.data(), buf.size(), "%04d-%02d-%02dT%02d:%02d:%02dZ", utc.tm_year + 1900,
+                      utc.tm_mon + 1, utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec);
+    if (written <= 0) {
+        return {};
+    }
+    return std::string(buf.data(), static_cast<std::size_t>(written));
+}
+
+}  // namespace object_store_persistence_detail
 
 /// @brief Raft persistent state stored as individual objects in a key-object
 ///        store.
 ///
-/// @tparam Store    Must satisfy `kythira::key_object_store`.
+/// @tparam Store    Must satisfy `kythira::key_object_store`, and
+///                  `kythira::conditional_key_object_store` as well when
+///                  `Fencing` is `fencing_mode::compare_and_swap`.
 /// @tparam NodeId   Node identifier type; defaults to `std::uint64_t`.
 /// @tparam TermId   Term number type; defaults to `std::uint64_t`.
 /// @tparam LogIndex Log index type; defaults to `std::uint64_t`.
+/// @tparam Fencing  Second-writer detection; defaults to `fencing_mode::none`,
+///                  which is the shipped behaviour to the request. Last in the
+///                  list so every existing instantiation is unaffected.
 template<key_object_store Store, typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-         typename LogIndex = std::uint64_t>
-requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
+         typename LogIndex = std::uint64_t, fencing_mode Fencing = fencing_mode::none>
+requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex> &&
+         (Fencing == fencing_mode::none || conditional_key_object_store<Store>)
 class object_store_persistence_engine {
 public:
     using store_t = Store;
@@ -290,23 +505,36 @@ public:
     /// numeric index order coincide for every representable index.
     static constexpr std::size_t k_index_digits = 20;
 
-    /// @brief Construct over `{store, bucket, prefix}` and load the mirror.
+    /// Whether this engine detects a second writer, readable without naming the
+    /// template argument again.
+    static constexpr fencing_mode fencing = Fencing;
+
+    /// @brief Construct over `{store, bucket, prefix}`, load the mirror, and —
+    ///        under `compare_and_swap` — claim the prefix.
     ///
-    /// @throws std::invalid_argument if a required field is empty or an option
-    ///                               is out of range.
-    /// @throws std::runtime_error    if the listing or any GET fails, or if any
-    ///                               object under the prefix fails to parse —
-    ///                               the message names the offending key.
+    /// @throws std::invalid_argument      if a required field is empty, an option
+    ///                                    is out of range, or a fencing option is
+    ///                                    set on an unfenced engine.
+    /// @throws std::runtime_error         if the listing or any GET fails, or if
+    ///                                    any object under the prefix fails to
+    ///                                    parse — the message names the offending
+    ///                                    key.
+    /// @throws persistence_fenced_error   under `compare_and_swap`, if
+    ///                                    `<prefix>/owner` names a different
+    ///                                    owner and no adequate `takeover_epoch`
+    ///                                    was supplied, or if another writer
+    ///                                    claimed the prefix during construction.
     ///
     /// An empty prefix is the normal cold-start case: the standard empty state
     /// (term 0, no vote, empty log, no snapshot) is established and **no object
-    /// is written** until the first mutation.
+    /// is written** until the first mutation — except the owner object, which is
+    /// the whole construction-time cost of fencing.
     object_store_persistence_engine(Store store, std::string bucket, std::string prefix,
                                     object_persistence_options opts = {})
         : _store(std::move(store)),
           _bucket(std::move(bucket)),
           _prefix(std::move(prefix)),
-          _opts(opts) {
+          _opts(std::move(opts)) {
         if (_bucket.empty()) {
             throw std::invalid_argument("object_store_persistence_engine: bucket is empty");
         }
@@ -323,7 +551,30 @@ public:
             throw std::invalid_argument(
                 "object_store_persistence_engine: snapshot_retention must be at least 1");
         }
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            if (_opts.owner_id.empty()) {
+                throw std::invalid_argument(
+                    "object_store_persistence_engine: owner_id is required "
+                    "under fencing_mode::compare_and_swap — the owner "
+                    "object has to name somebody");
+            }
+        } else {
+            // The mirror image of "no field that is accepted and ignored": a
+            // fencing knob on an unfenced engine reads as fencing being on.
+            if (!_opts.owner_id.empty() || _opts.takeover_epoch) {
+                throw std::invalid_argument(
+                    "object_store_persistence_engine: owner_id / takeover_epoch are set but this "
+                    "engine is not fenced — instantiate it with "
+                    "fencing_mode::compare_and_swap (which requires a "
+                    "conditional_key_object_store) rather than leaving the options ignored");
+            }
+        }
         load_all();
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            // After the load, so a corrupt prefix fails construction without
+            // this engine having first written its name into it.
+            claim_ownership();
+        }
     }
 
     /// Move-only, and only safe before the engine is shared with the Raft loop —
@@ -338,7 +589,11 @@ public:
           _log(std::move(other._log)),
           _snapshot(std::move(other._snapshot)),
           _retained(std::move(other._retained)),
-          _last_prune_error(std::move(other._last_prune_error)) {}
+          _last_prune_error(std::move(other._last_prune_error)),
+          _versions(std::move(other._versions)),
+          _owner_seen(std::move(other._owner_seen)),
+          _owner_epoch(other._owner_epoch),
+          _fenced(std::move(other._fenced)) {}
 
     auto operator=(object_store_persistence_engine&&) -> object_store_persistence_engine& = delete;
     object_store_persistence_engine(const object_store_persistence_engine&) = delete;
@@ -356,6 +611,12 @@ public:
 
     /// @brief The single snapshot slot's object key.
     [[nodiscard]] auto snapshot_key() const -> std::string { return _prefix + "/snapshot"; }
+
+    /// @brief The object key recording who owns this prefix. Written and read
+    ///        only under `fencing_mode::compare_and_swap`; under
+    ///        `fencing_mode::none` an object at this key is a foreign object like
+    ///        any other, neither read nor written.
+    [[nodiscard]] auto owner_key() const -> std::string { return _prefix + "/owner"; }
 
     /// @brief The object key holding the entry at `index`, zero-padded to 20
     ///        digits so lexicographic listing order is numeric index order.
@@ -384,11 +645,31 @@ public:
     ///        that needs the provider's name.
     [[nodiscard]] auto store() const -> const Store& { return _store; }
 
+    // ── Fencing state (Requirement 9) ────────────────────────────────────────
+
+    /// @brief Whether this engine has been fenced out and latched.
+    ///
+    /// Always `false` under `fencing_mode::none`. Once `true` it stays `true` for
+    /// the life of the object: the latch is not clearable at runtime, by design.
+    [[nodiscard]] auto is_fenced() const -> bool {
+        std::lock_guard lock(_mu);
+        return _fenced.has_value();
+    }
+
+    /// @brief The epoch this engine recorded in `<prefix>/owner`, or `0` when
+    ///        unfenced. An operator reading two nodes' epochs can tell which
+    ///        claim is the newer one.
+    [[nodiscard]] auto owner_epoch() const -> std::uint64_t {
+        std::lock_guard lock(_mu);
+        return _owner_epoch;
+    }
+
     // ── currentTerm ──────────────────────────────────────────────────────────
 
     auto save_current_term(TermId term) -> void {
         std::lock_guard lock(_mu);
-        put_object(term_key(), std::to_string(static_cast<unsigned long long>(term)));
+        throw_if_fenced();
+        put_single_slot(term_key(), std::to_string(static_cast<unsigned long long>(term)));
         _current_term = term;
     }
 
@@ -401,10 +682,11 @@ public:
 
     auto save_voted_for(NodeId node) -> void {
         std::lock_guard lock(_mu);
+        throw_if_fenced();
         if constexpr (std::is_same_v<NodeId, std::string>) {
-            put_object(voted_for_key(), node);
+            put_single_slot(voted_for_key(), node);
         } else {
-            put_object(voted_for_key(), std::to_string(static_cast<unsigned long long>(node)));
+            put_single_slot(voted_for_key(), std::to_string(static_cast<unsigned long long>(node)));
         }
         _voted_for = std::move(node);
     }
@@ -416,9 +698,25 @@ public:
 
     // ── Log ──────────────────────────────────────────────────────────────────
 
+    /// @brief One PUT — **create-only** under `compare_and_swap`, which is what
+    ///        catches a stale leader that appends without ever changing its term.
     auto append_log_entry(const log_entry_t& entry) -> void {
         std::lock_guard lock(_mu);
-        put_object(log_key(entry.index()), entry_to_json(entry));
+        throw_if_fenced();
+        const std::string key = log_key(entry.index());
+        const std::string body = entry_to_json(entry);
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            // Create-only, always: legitimate re-use of an index is always
+            // preceded by `truncate_log`'s DELETE (the follower path only appends
+            // beyond its last index, and a conflicting index is truncated first),
+            // so this never refuses a legal write. The returned version is *not*
+            // tracked — a log object is never conditionally rewritten, and
+            // keeping a version per entry would grow the mirror with the log for
+            // nothing.
+            conditional_put(key, body, precondition{if_absent{}});
+        } else {
+            put_object(key, body);
+        }
         _log[entry.index()] = entry;
     }
 
@@ -457,6 +755,7 @@ public:
     /// the store and the caller free to re-run the (idempotent) truncation.
     auto truncate_log(LogIndex index) -> void {
         std::lock_guard lock(_mu);
+        throw_if_fenced();
         auto it = _log.lower_bound(index);
         while (it != _log.end()) {
             delete_object(log_key(it->first));
@@ -468,6 +767,7 @@ public:
     ///        snapshot), with the same delete-then-forget ordering.
     auto delete_log_entries_before(LogIndex index) -> void {
         std::lock_guard lock(_mu);
+        throw_if_fenced();
         auto it = _log.begin();
         while (it != _log.end() && it->first < index) {
             delete_object(log_key(it->first));
@@ -487,6 +787,13 @@ public:
     /// throw.
     auto save_snapshot(const snapshot_t& snap) -> void {
         std::lock_guard lock(_mu);
+        throw_if_fenced();
+        // Both PUTs and the prune's DELETEs stay unconditional even under
+        // `compare_and_swap` — the bounded residual the header states rather than
+        // covers. A snapshot is not a single-slot value with a version this engine
+        // tracks across writers, and predicating the commit point on one would
+        // make a legitimate `install_snapshot` fail against a prefix an operator
+        // had restored.
         const std::string body = snapshot_to_json(snap);
         const LogIndex index = snap.last_included_index();
         const bool retaining = _opts.snapshot_retention > 1;
@@ -530,6 +837,14 @@ public:
     }
 
 private:
+    /// What `<prefix>/owner` says, plus the version it was read at — the version
+    /// the takeover PUT is predicated on.
+    struct owner_record {
+        std::string owner_id;
+        std::uint64_t epoch{0};
+        object_version version;
+    };
+
     // ── Store boundary ───────────────────────────────────────────────────────
     //
     // Every store call is wrapped by exactly one libfiu fault point, following
@@ -570,6 +885,76 @@ private:
         }
     }
 
+    /// A single-slot value (`term`, `voted_for`): the CAS chokepoint under
+    /// `compare_and_swap`, an ordinary retried PUT otherwise. Callers hold `_mu`.
+    auto put_single_slot(const std::string& key, std::string_view bytes) -> void {
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            _versions[key] = conditional_put(key, bytes, precondition_for(key));
+        } else {
+            put_object(key, bytes);
+        }
+    }
+
+    /// What this engine believes about `key`: the version it last saw, or
+    /// "must not exist" if it has never seen the object at all.
+    ///
+    /// The parameters of the comparison this feeds are named `expected` and
+    /// `actual` at the store, never two versions in a row — a check whose two
+    /// inputs can be transposed without a type error eventually is.
+    [[nodiscard]] auto precondition_for(const std::string& key) const -> precondition {
+        auto it = _versions.find(key);
+        if (it == _versions.end()) {
+            return precondition{if_absent{}};
+        }
+        return precondition{if_version{it->second}};
+    }
+
+    /// A conditional PUT: **one attempt, never retried**, and the only place a
+    /// fence latches. Callers hold `_mu`.
+    ///
+    /// Only `object_precondition_failed` — a precondition the service itself
+    /// evaluated and rejected — latches. Anything else is an ordinary store
+    /// failure that says nothing about ownership, and is reported as one; that
+    /// asymmetry is what keeps a provider's benign conditional-request race (S3's
+    /// `409`) from becoming an unclearable latch, and it is why the retry is
+    /// absent here (see the header).
+    auto conditional_put(const std::string& key, std::string_view bytes, const precondition& pre)
+        -> object_version {
+        fiu_do_on("raft/objstore/put_object",
+                  throw std::runtime_error("chaos: raft/objstore/put_object " + key););
+        try {
+            return _store.put_object_if(_bucket, key, bytes, pre).version;
+        } catch (const object_precondition_failed& e) {
+            latch(key, expected_version_of(pre), e.what());
+        } catch (const std::exception& e) {
+            throw std::runtime_error("object_store_persistence_engine: conditional PUT " + key +
+                                     " failed: " + e.what());
+        }
+    }
+
+    /// Record the fence and raise it. Callers hold `_mu`.
+    [[noreturn]] auto latch(const std::string& key, object_version expected,
+                            const std::string& detail) -> void {
+        _fenced.emplace(std::string(_store.provider_name()), key, std::move(expected), detail);
+        throw *_fenced;
+    }
+
+    /// Throw the recorded fence, without contacting the store. Callers hold `_mu`.
+    auto throw_if_fenced() const -> void {
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            if (_fenced) {
+                throw *_fenced;
+            }
+        }
+    }
+
+    static auto expected_version_of(const precondition& pre) -> object_version {
+        if (const auto* at = std::get_if<if_version>(&pre)) {
+            return at->expected;
+        }
+        return {};
+    }
+
     /// DELETE, no retry: only full-overwrite PUTs are retried here. These stores
     /// answer success for a key that was never there, so a caller-level re-run
     /// of the whole truncation is the idempotent recovery.
@@ -579,14 +964,14 @@ private:
         _store.delete_object(_bucket, key);
     }
 
-    auto get_object(const std::string& key) -> std::optional<std::string> {
+    /// The full `get_result`, version included: the load path is where a fenced
+    /// engine learns the versions its first conditional writes are predicated on,
+    /// so discarding them here would make the first write of every restart a
+    /// create-only one against an object that exists.
+    auto get_object(const std::string& key) -> std::optional<get_result> {
         fiu_do_on("raft/objstore/get_object",
                   throw std::runtime_error("chaos: raft/objstore/get_object " + key););
-        auto result = _store.get_object(_bucket, key);
-        if (!result) {
-            return std::nullopt;
-        }
-        return std::move(result->body);
+        return _store.get_object(_bucket, key);
     }
 
     auto list_keys(const std::string& prefix) -> std::vector<std::string> {
@@ -631,6 +1016,7 @@ private:
         const std::string term = term_key();
         const std::string vote = voted_for_key();
         const std::string snap = snapshot_key();
+        const std::string owner = owner_key();
         const std::string log_pfx = log_prefix();
         const std::string snaps_pfx = snapshots_prefix();
 
@@ -641,24 +1027,43 @@ private:
             // like, so treat absent as absent rather than inventing state
             // for it.
             if (key == term) {
-                auto body = get_object(key);
-                if (body) {
-                    _current_term = static_cast<TermId>(parse_unsigned(*body, key));
+                auto got = get_object(key);
+                if (got) {
+                    remember_version(key, got->version);
+                    _current_term = static_cast<TermId>(parse_unsigned(got->body, key));
                 }
             } else if (key == vote) {
-                auto body = get_object(key);
-                if (body && *body != "none" && !body->empty()) {
-                    if constexpr (std::is_same_v<NodeId, std::string>) {
-                        _voted_for = *body;
-                    } else {
-                        _voted_for = static_cast<NodeId>(parse_unsigned(*body, key));
+                auto got = get_object(key);
+                if (got) {
+                    // The version is remembered whatever the body says: the
+                    // `"none"` sentinel is an object that exists, so a fenced
+                    // engine's first vote must be an If-Match and not a
+                    // create-only.
+                    remember_version(key, got->version);
+                    if (got->body != "none" && !got->body.empty()) {
+                        if constexpr (std::is_same_v<NodeId, std::string>) {
+                            _voted_for = got->body;
+                        } else {
+                            _voted_for = static_cast<NodeId>(parse_unsigned(got->body, key));
+                        }
                     }
                 }
             } else if (key == snap) {
-                auto body = get_object(key);
-                if (body && !body->empty()) {
+                auto got = get_object(key);
+                if (got && !got->body.empty()) {
                     _snapshot =
-                        wrap_parse<snapshot_t>(key, [&body] { return json_to_snapshot(*body); });
+                        wrap_parse<snapshot_t>(key, [&got] { return json_to_snapshot(got->body); });
+                }
+            } else if (key == owner) {
+                // Read only when fencing; under `none` this falls through as a
+                // foreign object, which is what "no extra request cost" means.
+                if constexpr (Fencing == fencing_mode::compare_and_swap) {
+                    auto got = get_object(key);
+                    if (got) {
+                        _owner_seen = wrap_parse<owner_record>(
+                            key, [&got] { return json_to_owner(got->body); });
+                        _owner_seen->version = got->version;
+                    }
                 }
             } else if (key.starts_with(snaps_pfx)) {
                 // Noted, never read: recovery is `<prefix>/snapshot` and
@@ -681,11 +1086,12 @@ private:
             } else if (key.starts_with(log_pfx)) {
                 const LogIndex index =
                     index_from_key(std::string_view(key).substr(log_pfx.size()), key);
-                auto body = get_object(key);
-                if (!body) {
+                auto got = get_object(key);
+                if (!got) {
                     continue;
                 }
-                auto entry = wrap_parse<log_entry_t>(key, [&body] { return json_to_entry(*body); });
+                auto entry =
+                    wrap_parse<log_entry_t>(key, [&got] { return json_to_entry(got->body); });
                 if (entry.index() != index) {
                     // The key *is* the index; a record that disagrees with its
                     // own key means the log's ordering guarantee no longer
@@ -704,6 +1110,100 @@ private:
             // operator's note, a future format's object). It is not this
             // engine's state, so it is neither read nor written — only keys
             // this format defines are parsed, and those must parse.
+        }
+    }
+
+    /// Remember the version of a single-slot key, and only when fencing needs it.
+    auto remember_version(const std::string& key, const object_version& version) -> void {
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            _versions[key] = version;
+        } else {
+            (void)key;
+            (void)version;
+        }
+    }
+
+    // ── Ownership (Requirement 9.6) ──────────────────────────────────────────
+
+    /// Claim `<prefix>/owner`. Called from the constructor, after `load_all`, only
+    /// under `compare_and_swap`.
+    ///
+    /// The decision is made from what the load path already read, but it is
+    /// **enforced by the precondition on the PUT**, not by that reading: a listing
+    /// that lagged would show an owner object as absent, and the create-only
+    /// precondition is what refuses to be fooled by it.
+    auto claim_ownership() -> void {
+        if (!_owner_seen) {
+            _owner_epoch = _opts.takeover_epoch.value_or(1);
+            write_owner(precondition{if_absent{}});
+            return;
+        }
+
+        const owner_record& recorded = *_owner_seen;
+        if (_opts.takeover_epoch) {
+            if (*_opts.takeover_epoch <= recorded.epoch) {
+                throw std::invalid_argument(
+                    "object_store_persistence_engine: takeover_epoch " +
+                    std::to_string(*_opts.takeover_epoch) + " does not advance past " +
+                    owner_key() + "'s recorded epoch " + std::to_string(recorded.epoch) +
+                    " (owner \"" + recorded.owner_id +
+                    "\") — an epoch that does not advance is not a takeover");
+            }
+            _owner_epoch = *_opts.takeover_epoch;
+        } else if (recorded.owner_id == _opts.owner_id) {
+            // A restart by the recorded owner. Read-incremented, so consecutive
+            // starts are distinguishable in the bucket. A duplicated deployment
+            // shares the owner id and reaches here too — indistinguishable from a
+            // restart at this moment, which is why the fence lives on the writes
+            // rather than on construction.
+            _owner_epoch = recorded.epoch + 1;
+        } else {
+            throw persistence_fenced_error(
+                std::string(_store.provider_name()), owner_key(), {},
+                "the prefix is owned by \"" + recorded.owner_id + "\" at epoch " +
+                    std::to_string(recorded.epoch) + " and this engine is \"" + _opts.owner_id +
+                    "\" — set takeover_epoch above " + std::to_string(recorded.epoch) +
+                    " to take it over deliberately");
+        }
+        write_owner(precondition{if_version{recorded.version}});
+    }
+
+    /// PUT the owner object under `pre`. A refused precondition means another
+    /// writer claimed the prefix between the load and this PUT, which is a
+    /// construction failure rather than a latch — there is no engine yet to latch.
+    auto write_owner(const precondition& pre) -> void {
+        boost::json::object obj;
+        obj["owner_id"] = _opts.owner_id;
+        obj["epoch"] = _owner_epoch;
+        obj["started_at"] =
+            object_store_persistence_detail::iso8601_utc(std::chrono::system_clock::now());
+        const std::string body = boost::json::serialize(obj);
+
+        const std::string key = owner_key();
+        fiu_do_on("raft/objstore/put_object",
+                  throw std::runtime_error("chaos: raft/objstore/put_object " + key););
+        try {
+            _store.put_object_if(_bucket, key, body, pre);
+        } catch (const object_precondition_failed&) {
+            // One extra GET, on the failure path only, so the error can name who
+            // won rather than only that somebody did.
+            std::string holder;
+            try {
+                if (auto got = get_object(key)) {
+                    const owner_record now = json_to_owner(got->body);
+                    holder = " it is now owned by \"" + now.owner_id + "\" at epoch " +
+                             std::to_string(now.epoch) + ".";
+                }
+            } catch (const std::exception&) {
+                // Naming the winner is a courtesy; failing to is not a second
+                // failure to report.
+            }
+            throw persistence_fenced_error(
+                std::string(_store.provider_name()), key, expected_version_of(pre),
+                "another writer claimed this prefix while this engine was starting." + holder);
+        } catch (const std::exception& e) {
+            throw std::runtime_error("object_store_persistence_engine: PUT " + key +
+                                     " failed while claiming the prefix: " + e.what());
         }
     }
 
@@ -811,6 +1311,21 @@ private:
             obj["old_nodes"] = old_nodes;
         }
         return boost::json::serialize(obj);
+    }
+
+    /// Strict, because a corrupt owner object under fencing must fail
+    /// construction rather than be read as "unowned" — which would hand the
+    /// prefix to a second writer at exactly the moment the fence was asked for.
+    /// The `version` field is filled in by the caller from the GET.
+    static auto json_to_owner(const std::string& s) -> owner_record {
+        auto obj = boost::json::parse(s).as_object();
+        owner_record rec;
+        rec.owner_id = std::string(obj.at("owner_id").as_string());
+        rec.epoch = static_cast<std::uint64_t>(obj.at("epoch").to_number<std::uint64_t>());
+        if (rec.owner_id.empty()) {
+            throw std::runtime_error("owner object names an empty owner_id");
+        }
+        return rec;
     }
 
     static auto json_to_snapshot(const std::string& s) -> snapshot_t {
@@ -923,7 +1438,39 @@ private:
     /// recognize, which is what keeps pruning from touching a foreign object.
     std::set<LogIndex> _retained;
     std::optional<std::string> _last_prune_error;
+
+    // ── Fencing (Requirement 9), all inert under `fencing_mode::none` ─────────
+
+    /// The version this engine last saw for each **single-slot** key —
+    /// `<prefix>/term` and `<prefix>/voted_for`, and only those. Log objects are
+    /// written create-only and never conditionally rewritten, so tracking a
+    /// version per entry would grow this map with the log for no reader.
+    std::unordered_map<std::string, object_version> _versions;
+
+    /// What the load path found at `<prefix>/owner`, before this engine claimed
+    /// it. Consumed by `claim_ownership` and then only of historical interest.
+    std::optional<owner_record> _owner_seen;
+
+    /// The epoch this engine claimed; `0` when unfenced.
+    std::uint64_t _owner_epoch{0};
+
+    /// Set once when a precondition is refused, and never cleared: the latch is
+    /// not clearable at runtime, because a node that has provably lost its state
+    /// cannot safely rejoin consensus by being asked nicely.
+    std::optional<persistence_fenced_error> _fenced;
 };
+
+/// @brief `object_store_persistence_engine` with second-writer detection on.
+///
+/// The constraint sits on the alias's own parameter, so asking for a fenced
+/// engine over a store that cannot express a precondition fails at the name
+/// rather than deep inside the template — which is the difference between a
+/// legible compile error and a page of them.
+template<conditional_key_object_store Store, typename NodeId = std::uint64_t,
+         typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+using fenced_object_store_persistence_engine =
+    object_store_persistence_engine<Store, NodeId, TermId, LogIndex,
+                                    fencing_mode::compare_and_swap>;
 
 namespace object_store_persistence_detail {
 
@@ -939,6 +1486,20 @@ struct concept_check_store {
 };
 
 static_assert(key_object_store<concept_check_store>);
+static_assert(!conditional_key_object_store<concept_check_store>,
+              "the unconditional check store must stay unconditional — it is what pins that "
+              "fencing_mode::compare_and_swap is unavailable for such a store");
+
+/// The same, refined: enough to check that the fenced engine compiles at file
+/// scope, again without naming a provider.
+struct conditional_concept_check_store : concept_check_store {
+    auto put_object_if(const std::string&, const std::string&, std::string_view,
+                       const precondition&) const -> put_result;
+    auto delete_object_if(const std::string&, const std::string&, const precondition&) const
+        -> void;
+};
+
+static_assert(conditional_key_object_store<conditional_concept_check_store>);
 
 }  // namespace object_store_persistence_detail
 
@@ -950,5 +1511,44 @@ static_assert(
         object_store_persistence_engine<object_store_persistence_detail::concept_check_store>,
         std::uint64_t, std::uint64_t, std::uint64_t, log_entry<>, snapshot<>>,
     "object_store_persistence_engine must satisfy the persistence_engine concept");
+
+/// …and a fenced engine is the same engine: fencing changes what it sends, never
+/// the interface the raft layer holds it through.
+static_assert(
+    persistence_engine<fenced_object_store_persistence_engine<
+                           object_store_persistence_detail::conditional_concept_check_store>,
+                       std::uint64_t, std::uint64_t, std::uint64_t, log_entry<>, snapshot<>>,
+    "a fenced object_store_persistence_engine must satisfy the persistence_engine "
+    "concept too");
+
+namespace object_store_persistence_detail {
+
+/// @brief Whether a fenced engine can be instantiated over `S` at all.
+///
+/// A concept rather than a bare requires-expression at the assertion site: a
+/// *non-dependent* requires-expression naming an ill-formed specialization is a
+/// hard error, because there is no substitution to fail. Written once here so
+/// both this header and the unit test's negative compile test read the same way.
+template<typename S>
+concept fenced_engine_instantiable = requires {
+    typename object_store_persistence_engine<S, std::uint64_t, std::uint64_t, std::uint64_t,
+                                             fencing_mode::compare_and_swap>;
+};
+
+}  // namespace object_store_persistence_detail
+
+/// Requirement 9.8, as a compile-time fact rather than a promise: a store that
+/// cannot express a precondition has no fenced engine to instantiate at all.
+/// This is the assertion that would fail if somebody "made it work" by dropping
+/// the constraint and letting `compare_and_swap` fall back to unconditional
+/// writes.
+static_assert(
+    !object_store_persistence_detail::fenced_engine_instantiable<
+        object_store_persistence_detail::concept_check_store>,
+    "fencing_mode::compare_and_swap must be unavailable for a store that is not a "
+    "conditional_key_object_store — a silently unconditional fence is worse than no fence");
+static_assert(object_store_persistence_detail::fenced_engine_instantiable<
+                  object_store_persistence_detail::conditional_concept_check_store>,
+              "…and available for one that is, or the assertion above proves nothing");
 
 }  // namespace kythira
