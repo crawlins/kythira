@@ -22,6 +22,8 @@
 ///     <prefix>/voted_for                   decimal text or the literal "none"
 ///     <prefix>/log/<20-digit index>        one JSON record per log entry
 ///     <prefix>/snapshot                    one JSON record, single slot
+///     <prefix>/snapshots/<20-digit index>  retained predecessors, only when
+///                                          `snapshot_retention > 1`
 ///
 /// The log-entry and snapshot records use **the same one-line JSON codec
 /// `file_persistence_engine` writes** (`{term, index, command, type}` with the
@@ -141,6 +143,59 @@
 /// idempotent). After the retry fails the method throws, and the raft layer's
 /// existing treatment of persistence exceptions applies unchanged.
 ///
+/// ## Snapshot retention
+///
+/// `object_persistence_options::snapshot_retention` is the number of snapshot
+/// **generations** kept, counting the live one, and its default of `1` is
+/// today's behaviour to the byte: at `1` no `<prefix>/snapshots/` object is
+/// written at all, `save_snapshot` is exactly one PUT, and it issues no LIST
+/// and no DELETE. The point of retaining more is narrow and worth stating,
+/// because it is not backup: a snapshot written from corrupted in-memory state
+/// overwrites the single slot, and without a predecessor there is nothing left
+/// to go back to.
+///
+/// Above `1`, `save_snapshot` is three steps in this order:
+///
+///   (a) PUT `<prefix>/snapshots/<20-digit last_included_index>` — the retained
+///       copy, same codec and same padding rationale as the log keys;
+///   (b) PUT `<prefix>/snapshot` — **the commit point**;
+///   (c) prune retained copies beyond `snapshot_retention`, oldest first.
+///
+/// No ordering of failures across those three can lose the current snapshot: a
+/// failure at (a) leaves the previous state entirely intact and throws; a
+/// failure at (b) leaves an unreferenced retained copy, which nothing reads; a
+/// failure at (c) leaves extra copies, which costs storage and nothing else.
+///
+/// **(c) is therefore best-effort and does not throw.** By the time it runs the
+/// snapshot is committed and the mirror updated, so reporting a failed DELETE
+/// as a failed `save_snapshot` would tell the caller its snapshot was lost when
+/// it was not — and the raft layer's `install_snapshot` path would abandon a
+/// successful RPC over a garbage-collection error. Silence is not the
+/// alternative: the failure is recorded in `last_prune_error()`, the index stays
+/// in the retained set, and the next `save_snapshot` prunes it again, so the
+/// condition is self-healing as well as observable.
+///
+/// **Recovery reads `<prefix>/snapshot` and nothing else.** Retained copies are
+/// for operators and for the backup/restore tooling; the load path never GETs
+/// one, which keeps recovery a single GET and keeps a corrupt retained copy
+/// from being able to break startup. Construction *notes* which retained
+/// indices exist, from the listing it already performs, so pruning needs no LIST
+/// of its own.
+///
+/// Pruning deletes only what the engine can prove it wrote: a key under
+/// `<prefix>/snapshots/` whose suffix is not exactly 20 digits is left alone —
+/// not deleted, and, unlike the same shape under `<prefix>/log/`, not treated as
+/// corruption either. The asymmetry is deliberate: a log key that cannot be
+/// ordered breaks recovery, whereas a retained copy is never read by the load
+/// path at all, so the safe reading of an unrecognized one is "somebody else's
+/// object".
+///
+/// Retention is **not a backup**. Retained snapshots share a bucket, a prefix, a
+/// credential and a blast radius with the thing they would be recovering from;
+/// an `rm -r` of the prefix or a compromised credential takes them with it. The
+/// backup story is a separate catalog with its own manifest, in
+/// `.kiro/specs/cloud-object-persistence/` Requirement 10.
+///
 /// ## Corruption is fatal at load
 ///
 /// If any object under the prefix fails to parse, **construction throws** and
@@ -184,6 +239,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -196,11 +252,18 @@ namespace kythira {
 ///        behaviour exactly, so an operator who upgrades and changes nothing
 ///        sees a bucket with exactly the keys it had before.
 ///
-/// The spec's full option set (snapshot retention, fencing mode and owner id,
-/// checksum verification, a single-PUT size cap) is added field by field
-/// **with** the behaviour that honours it — a field that is accepted and
-/// ignored is worse than an absent one, especially for a fencing knob.
+/// The spec's remaining options (fencing mode and owner id, checksum
+/// verification, a single-PUT size cap) are added field by field **with** the
+/// behaviour that honours them — a field that is accepted and ignored is worse
+/// than an absent one, especially for a fencing knob.
 struct object_persistence_options {
+    /// Snapshot generations kept, counting the live `<prefix>/snapshot`. `1` —
+    /// the shipped behaviour — writes no `<prefix>/snapshots/` object at all.
+    /// Must be at least 1; `0` is rejected at construction rather than silently
+    /// read as "keep none", which would delete the retained copy of the
+    /// snapshot just written.
+    std::size_t snapshot_retention{1};
+
     /// Same-call retries, PUT-only. `1` is the shipped behaviour: one retry,
     /// then throw.
     unsigned write_retries{1};
@@ -256,6 +319,10 @@ public:
         if (_prefix.empty()) {
             throw std::invalid_argument("object_store_persistence_engine: prefix is empty");
         }
+        if (_opts.snapshot_retention == 0) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: snapshot_retention must be at least 1");
+        }
         load_all();
     }
 
@@ -269,7 +336,9 @@ public:
           _current_term(other._current_term),
           _voted_for(std::move(other._voted_for)),
           _log(std::move(other._log)),
-          _snapshot(std::move(other._snapshot)) {}
+          _snapshot(std::move(other._snapshot)),
+          _retained(std::move(other._retained)),
+          _last_prune_error(std::move(other._last_prune_error)) {}
 
     auto operator=(object_store_persistence_engine&&) -> object_store_persistence_engine& = delete;
     object_store_persistence_engine(const object_store_persistence_engine&) = delete;
@@ -298,6 +367,18 @@ public:
 
     /// @brief The common prefix of every log-entry key, trailing slash included.
     [[nodiscard]] auto log_prefix() const -> std::string { return _prefix + "/log/"; }
+
+    /// @brief The common prefix of every retained snapshot copy, trailing slash
+    ///        included. Nothing is written under it at
+    ///        `snapshot_retention == 1`.
+    [[nodiscard]] auto snapshots_prefix() const -> std::string { return _prefix + "/snapshots/"; }
+
+    /// @brief The key a retained copy of the snapshot ending at `index` is
+    ///        written to, padded to the same 20 digits as a log key so a
+    ///        listing reads in index order.
+    [[nodiscard]] auto retained_snapshot_key(LogIndex index) const -> std::string {
+        return snapshots_prefix() + pad_index(index);
+    }
 
     /// @brief The store this engine writes through, for tests and for tooling
     ///        that needs the provider's name.
@@ -396,16 +477,56 @@ public:
 
     // ── Snapshot ─────────────────────────────────────────────────────────────
 
-    /// @brief Overwrite the single `<prefix>/snapshot` object.
+    /// @brief Overwrite the single `<prefix>/snapshot` object, retaining
+    ///        predecessors when `snapshot_retention > 1`.
+    ///
+    /// At the default retention of 1 this is exactly one PUT, as it has always
+    /// been. Above 1 it is retained-copy PUT, then the commit-point PUT, then a
+    /// best-effort prune — see the header's retention section for why a failure
+    /// at each of the three steps is survivable and why only the first two
+    /// throw.
     auto save_snapshot(const snapshot_t& snap) -> void {
         std::lock_guard lock(_mu);
-        put_object(snapshot_key(), snapshot_to_json(snap));
+        const std::string body = snapshot_to_json(snap);
+        const LogIndex index = snap.last_included_index();
+        const bool retaining = _opts.snapshot_retention > 1;
+
+        if (retaining) {
+            // (a) The retained copy first. If this throws, nothing has changed:
+            // the live slot still holds the previous snapshot.
+            put_object(retained_snapshot_key(index), body);
+            // Recorded even though (b) may still fail — the object exists, and
+            // an unreferenced retained copy is inert but prunable.
+            _retained.insert(index);
+        }
+
+        // (b) The commit point.
+        put_object(snapshot_key(), body);
         _snapshot = snap;
+
+        if (retaining) {
+            // (c) Housekeeping, after the commit point and deliberately unable
+            // to fail the call.
+            prune_retained();
+        }
     }
 
     auto load_snapshot() -> std::optional<snapshot_t> {
         std::lock_guard lock(_mu);
         return _snapshot;
+    }
+
+    /// @brief Why the last prune stopped early, if it did.
+    ///
+    /// Pruning retained snapshot copies runs after the commit point and cannot
+    /// fail `save_snapshot` (header, retention section), so this is where a
+    /// failed DELETE becomes visible rather than silent. It is cleared by the
+    /// next prune that completes, and the copies it could not delete are
+    /// retried by that prune — an operator seeing this persist is looking at a
+    /// standing permissions or connectivity problem, not a lost snapshot.
+    [[nodiscard]] auto last_prune_error() const -> std::optional<std::string> {
+        std::lock_guard lock(_mu);
+        return _last_prune_error;
     }
 
 private:
@@ -474,6 +595,34 @@ private:
         return _store.list_keys(_bucket, prefix);
     }
 
+    // ── Retention ────────────────────────────────────────────────────────────
+
+    /// Delete retained copies beyond `snapshot_retention`, oldest first.
+    /// Callers hold `_mu`.
+    ///
+    /// Best-effort by design: it runs after the commit point, so the first
+    /// failed DELETE stops it, is recorded, and leaves the remaining copies for
+    /// the next `save_snapshot` to try again. An index is dropped from
+    /// `_retained` only after its DELETE is acknowledged, so the in-memory set
+    /// never claims to have removed an object that is still there.
+    auto prune_retained() -> void {
+        while (_retained.size() > _opts.snapshot_retention) {
+            const LogIndex oldest = *_retained.begin();
+            try {
+                delete_object(retained_snapshot_key(oldest));
+            } catch (const std::exception& e) {
+                _last_prune_error = "object_store_persistence_engine: DELETE " +
+                                    retained_snapshot_key(oldest) +
+                                    " failed while pruning retained snapshots (the current "
+                                    "snapshot is committed): " +
+                                    e.what();
+                return;
+            }
+            _retained.erase(_retained.begin());
+        }
+        _last_prune_error.reset();
+    }
+
     // ── Initialisation ───────────────────────────────────────────────────────
 
     /// One List plus one GET per live object. Anything that will not parse
@@ -483,6 +632,7 @@ private:
         const std::string vote = voted_for_key();
         const std::string snap = snapshot_key();
         const std::string log_pfx = log_prefix();
+        const std::string snaps_pfx = snapshots_prefix();
 
         for (const auto& key : list_keys(_prefix + "/")) {
             // A key that vanished between the List and the GET is a
@@ -509,6 +659,24 @@ private:
                 if (body && !body->empty()) {
                     _snapshot =
                         wrap_parse<snapshot_t>(key, [&body] { return json_to_snapshot(*body); });
+                }
+            } else if (key.starts_with(snaps_pfx)) {
+                // Noted, never read: recovery is `<prefix>/snapshot` and
+                // nothing else, so a corrupt retained copy cannot break
+                // startup. What the listing buys here is a prune that needs no
+                // LIST of its own.
+                //
+                // A suffix that is not exactly 20 digits is *not* corruption —
+                // the opposite of the same shape under `<prefix>/log/`, and for
+                // the reason that asymmetry exists: this object is never read,
+                // so the safe reading of an unrecognized one is that it belongs
+                // to somebody else. Leaving it out of `_retained` is what makes
+                // "the engine deletes only what it can prove it wrote"
+                // structural rather than a convention.
+                const std::string_view suffix = std::string_view(key).substr(snaps_pfx.size());
+                if (suffix.size() == k_index_digits &&
+                    suffix.find_first_not_of("0123456789") == std::string_view::npos) {
+                    _retained.insert(static_cast<LogIndex>(parse_unsigned(suffix, key)));
                 }
             } else if (key.starts_with(log_pfx)) {
                 const LogIndex index =
@@ -748,6 +916,13 @@ private:
     /// bucket.
     std::map<LogIndex, log_entry_t> _log;
     std::optional<snapshot_t> _snapshot;
+
+    /// The indices of the retained snapshot copies this engine knows it wrote
+    /// or found under `<prefix>/snapshots/`. Ordered, because pruning is
+    /// oldest-first. Never holds an index whose key shape the engine did not
+    /// recognize, which is what keeps pruning from touching a foreign object.
+    std::set<LogIndex> _retained;
+    std::optional<std::string> _last_prune_error;
 };
 
 namespace object_store_persistence_detail {

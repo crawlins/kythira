@@ -33,6 +33,7 @@
 /// | `using engine_t` | the engine type under test (an instantiation, or a thin derived type such as `alibaba_oss_persistence_engine`) |
 /// | `make_engine()` | a fresh engine over the harness's default `{bucket, prefix}`, loading whatever is already in the store |
 /// | `make_engine(bucket, prefix)` | the same, over an explicit pair — used by the validation and normalisation cases |
+/// | `make_engine(options)` | the same over the default pair, with explicit `object_persistence_options` — used by the retention cases |
 /// | `bucket()` / `prefix()` | the defaults `make_engine()` uses |
 /// | `seed(key, body)` | write an object directly, bypassing the engine and the request log |
 /// | `keys()` / `has(key)` / `body(key)` | inspect the store |
@@ -98,6 +99,32 @@ template<typename Harness> struct cases {
     static auto padded(const Harness& h, std::uint64_t index) -> std::string {
         const std::string digits = std::to_string(index);
         return h.prefix() + "/log/" + std::string(20 - digits.size(), '0') + digits;
+    }
+
+    /// The retained-snapshot key for an index, likewise computed here rather
+    /// than asked of the engine.
+    static auto retained_key(const Harness& h, std::uint64_t index) -> std::string {
+        const std::string digits = std::to_string(index);
+        return h.prefix() + "/snapshots/" + std::string(20 - digits.size(), '0') + digits;
+    }
+
+    /// Every key under `<prefix>/snapshots/`, in the store's (lexicographic,
+    /// therefore index) order.
+    static auto retained_keys(const Harness& h) -> std::vector<std::string> {
+        std::vector<std::string> out;
+        for (const auto& key : h.keys()) {
+            if (key.starts_with(h.prefix() + "/snapshots/")) {
+                out.push_back(key);
+            }
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    static auto options_with_retention(std::size_t n) -> object_persistence_options {
+        object_persistence_options opts;
+        opts.snapshot_retention = n;
+        return opts;
     }
 
     // ── Concept ──────────────────────────────────────────────────────────────
@@ -523,6 +550,213 @@ template<typename Harness> struct cases {
         BOOST_TEST(loaded->configuration().old_nodes()->size() == 2U);
     }
 
+    // ── Snapshot retention (Requirement 8) ───────────────────────────────────
+
+    /// Requirement 8.3, and the sharpest form of Property 8: at the default
+    /// retention the bucket is what shipped, **and so is the request pattern**.
+    /// A retention feature that quietly added a LIST or a DELETE per snapshot
+    /// would satisfy a key-set assertion and still have changed every existing
+    /// deployment's cost.
+    static auto retention_of_one_writes_no_retained_copy_and_costs_one_put() -> void {
+        Harness h;
+        engine_t eng = h.make_engine();
+        eng.save_snapshot(make_snapshot(5, 1));
+        h.clear_requests();
+        eng.save_snapshot(make_snapshot(9, 2));
+        eng.save_snapshot(make_snapshot(12, 2));
+
+        BOOST_TEST(retained_keys(h).empty());
+        BOOST_TEST(h.count_requests("PUT") == 2U);
+        BOOST_TEST(h.count_requests("DELETE") == 0U);
+        BOOST_TEST(h.count_requests("LIST") == 0U);
+        BOOST_TEST(eng.load_snapshot()->last_included_index() == 12U);
+    }
+
+    /// `0` cannot mean "keep none" — that would delete the copy of the snapshot
+    /// just written — so it is rejected where every other bad option is.
+    static auto a_retention_of_zero_is_rejected() -> void {
+        Harness h;
+        BOOST_CHECK_THROW(h.make_engine(options_with_retention(0)), std::invalid_argument);
+    }
+
+    /// Retention counts generations including the live slot, so at 2 the store
+    /// holds the current snapshot and exactly one predecessor.
+    static auto retention_of_two_keeps_the_current_and_one_predecessor() -> void {
+        Harness h;
+        engine_t eng = h.make_engine(options_with_retention(2));
+        eng.save_snapshot(make_snapshot(5, 1));
+        eng.save_snapshot(make_snapshot(9, 2));
+        eng.save_snapshot(make_snapshot(12, 3));
+
+        const std::vector<std::string> expected{retained_key(h, 9), retained_key(h, 12)};
+        BOOST_TEST(retained_keys(h) == expected, boost::test_tools::per_element());
+        BOOST_TEST(eng.load_snapshot()->last_included_index() == 12U);
+        BOOST_TEST(!eng.last_prune_error().has_value());
+    }
+
+    /// …and at N it prunes oldest first, one DELETE per save in steady state.
+    static auto retention_of_n_prunes_oldest_first() -> void {
+        Harness h;
+        engine_t eng = h.make_engine(options_with_retention(3));
+        for (std::uint64_t i = 1; i <= 6; ++i) {
+            eng.save_snapshot(make_snapshot(i, 1));
+        }
+        const std::vector<std::string> expected{retained_key(h, 4), retained_key(h, 5),
+                                                retained_key(h, 6)};
+        BOOST_TEST(retained_keys(h) == expected, boost::test_tools::per_element());
+
+        // Steady state: the sixth save costs two PUTs and exactly one DELETE.
+        h.clear_requests();
+        eng.save_snapshot(make_snapshot(7, 1));
+        BOOST_TEST(h.count_requests("PUT") == 2U);
+        BOOST_TEST(h.count_requests("DELETE") == 1U);
+        BOOST_TEST(h.count_requests("LIST") == 0U);
+    }
+
+    /// The retained copy is the same bytes as the live slot, by the same codec —
+    /// which is what makes it restorable by copying it over `<prefix>/snapshot`.
+    static auto a_retained_copy_is_byte_identical_to_the_current_snapshot() -> void {
+        Harness h;
+        engine_t eng = h.make_engine(options_with_retention(2));
+        eng.save_snapshot(make_snapshot(8, 3, {1, 2, 3}, {std::byte{0x01}, std::byte{0xFE}}));
+        BOOST_TEST(h.body(retained_key(h, 8)) == h.body(h.prefix() + "/snapshot"));
+    }
+
+    /// Construction notes the retained copies from the listing it already
+    /// performs, so a restarted engine prunes the previous run's copies rather
+    /// than accumulating a second generation of them.
+    static auto retained_copies_are_pruned_across_a_restart() -> void {
+        Harness h;
+        {
+            engine_t eng = h.make_engine(options_with_retention(2));
+            eng.save_snapshot(make_snapshot(1, 1));
+            eng.save_snapshot(make_snapshot(2, 1));
+        }
+        engine_t eng2 = h.make_engine(options_with_retention(2));
+        h.clear_requests();
+        eng2.save_snapshot(make_snapshot(3, 1));
+
+        const std::vector<std::string> expected{retained_key(h, 2), retained_key(h, 3)};
+        BOOST_TEST(retained_keys(h) == expected, boost::test_tools::per_element());
+        // The prune needed no listing of its own.
+        BOOST_TEST(h.count_requests("LIST") == 0U);
+    }
+
+    /// Requirement 8.4: the load path reads `<prefix>/snapshot` and nothing
+    /// else, so a retained copy that is unreadable cannot keep a node from
+    /// starting — the property that makes retention safe to turn on.
+    static auto a_corrupt_retained_copy_does_not_break_startup() -> void {
+        Harness h;
+        {
+            engine_t eng = h.make_engine(options_with_retention(3));
+            eng.save_snapshot(make_snapshot(4, 2));
+            eng.save_snapshot(make_snapshot(6, 2));
+        }
+        h.seed(retained_key(h, 4), "{\"last_included_index\": \"ten\"");
+
+        engine_t eng2 = h.make_engine(options_with_retention(3));
+        BOOST_TEST(eng2.load_snapshot()->last_included_index() == 6U);
+        // …and it was never even fetched.
+        BOOST_TEST(
+            std::none_of(h.request_log().begin(), h.request_log().end(),
+                         [&h](const std::string& r) { return r == "GET " + retained_key(h, 4); }));
+    }
+
+    /// Requirement 8.5 / Property 9: pruning deletes only keys whose index
+    /// suffix the engine recognizes. An operator's object under
+    /// `<prefix>/snapshots/` survives, and — unlike the same shape under
+    /// `<prefix>/log/` — it is not corruption either, because nothing reads it.
+    static auto pruning_leaves_alone_a_key_it_cannot_prove_it_wrote() -> void {
+        Harness h;
+        h.seed(h.prefix() + "/snapshots/NOTES", "left here by an operator");
+        h.seed(h.prefix() + "/snapshots/7", "an unpadded index");
+
+        engine_t eng = h.make_engine(options_with_retention(2));
+        for (std::uint64_t i = 1; i <= 5; ++i) {
+            eng.save_snapshot(make_snapshot(i, 1));
+        }
+
+        BOOST_TEST(h.has(h.prefix() + "/snapshots/NOTES"));
+        BOOST_TEST(h.body(h.prefix() + "/snapshots/NOTES") == "left here by an operator");
+        BOOST_TEST(h.has(h.prefix() + "/snapshots/7"));
+        // …while the copies it did write were pruned to the limit.
+        const std::vector<std::string> expected{retained_key(h, 4), retained_key(h, 5)};
+        std::vector<std::string> padded_only;
+        for (const auto& key : retained_keys(h)) {
+            if (key.size() == (h.prefix() + "/snapshots/").size() + 20) {
+                padded_only.push_back(key);
+            }
+        }
+        BOOST_TEST(padded_only == expected, boost::test_tools::per_element());
+    }
+
+    // ── Retention under injected failure (Requirement 8.2) ───────────────────
+
+    /// Step (a). The retained copy is written first precisely so that its
+    /// failure changes nothing: the live slot still holds the predecessor.
+    static auto a_failure_writing_the_retained_copy_leaves_the_previous_snapshot() -> void {
+        Harness h;
+        engine_t eng = h.make_engine(options_with_retention(3));
+        eng.save_snapshot(make_snapshot(5, 1));
+
+        h.fail_puts_for_key(retained_key(h, 9));
+        BOOST_CHECK_THROW(eng.save_snapshot(make_snapshot(9, 2)), std::runtime_error);
+        h.fail_puts_for_key("");
+
+        BOOST_TEST(eng.load_snapshot()->last_included_index() == 5U);
+        BOOST_TEST(!h.has(retained_key(h, 9)));
+        engine_t eng2 = h.make_engine(options_with_retention(3));
+        BOOST_TEST(eng2.load_snapshot()->last_included_index() == 5U);
+    }
+
+    /// Step (b), the commit point, at retention 1, 2 and N: whichever snapshot
+    /// was current before the failed save is still current and still readable
+    /// after it, and a retained copy left behind by step (a) is inert.
+    static auto a_failure_at_the_commit_point_leaves_the_previous_snapshot() -> void {
+        for (const std::size_t retention : {std::size_t{1}, std::size_t{2}, std::size_t{4}}) {
+            Harness h;
+            engine_t eng = h.make_engine(options_with_retention(retention));
+            eng.save_snapshot(make_snapshot(5, 1));
+
+            h.fail_puts_for_key(h.prefix() + "/snapshot");
+            BOOST_CHECK_THROW(eng.save_snapshot(make_snapshot(9, 2)), std::runtime_error);
+            h.fail_puts_for_key("");
+
+            BOOST_TEST(eng.load_snapshot()->last_included_index() == 5U);
+            engine_t eng2 = h.make_engine(options_with_retention(retention));
+            BOOST_TEST(eng2.load_snapshot()->last_included_index() == 5U);
+            // The unreferenced retained copy of the snapshot that never
+            // committed is inert, not an error.
+            BOOST_TEST(h.has(retained_key(h, 9)) == (retention > 1));
+        }
+    }
+
+    /// Step (c). Pruning runs after the commit point, so a failed DELETE must
+    /// not be reported as a failed `save_snapshot` — it is recorded instead, and
+    /// the next save retries it.
+    static auto a_failure_pruning_leaves_the_new_snapshot_committed() -> void {
+        Harness h;
+        engine_t eng = h.make_engine(options_with_retention(2));
+        eng.save_snapshot(make_snapshot(1, 1));
+        eng.save_snapshot(make_snapshot(2, 1));
+
+        h.fail_next_deletes(1);
+        BOOST_CHECK_NO_THROW(eng.save_snapshot(make_snapshot(3, 1)));
+
+        BOOST_TEST(eng.load_snapshot()->last_included_index() == 3U);
+        BOOST_TEST(h.body(h.prefix() + "/snapshot") == h.body(retained_key(h, 3)));
+        BOOST_TEST(eng.last_prune_error().has_value());
+        BOOST_TEST(eng.last_prune_error()->find(retained_key(h, 1)) != std::string::npos);
+        BOOST_TEST(h.has(retained_key(h, 1)));
+
+        // Self-healing: the next save prunes what the failed one could not, and
+        // clears the recorded failure.
+        BOOST_CHECK_NO_THROW(eng.save_snapshot(make_snapshot(4, 1)));
+        const std::vector<std::string> expected{retained_key(h, 3), retained_key(h, 4)};
+        BOOST_TEST(retained_keys(h) == expected, boost::test_tools::per_element());
+        BOOST_TEST(!eng.last_prune_error().has_value());
+    }
+
     // ── Durability (Property 1) ──────────────────────────────────────────────
 
     /// The write is synchronous, not buffered: by the time the method returns,
@@ -751,6 +985,14 @@ template<typename Harness> struct cases {
     KYTHIRA_OSC_CASE(harness_type, snapshot_survives_reload)                                      \
     KYTHIRA_OSC_CASE(harness_type, snapshot_overwrites_the_single_slot)                           \
     KYTHIRA_OSC_CASE(harness_type, joint_consensus_configuration_survives_reload)                 \
+    KYTHIRA_OSC_CASE(harness_type, retention_of_one_writes_no_retained_copy_and_costs_one_put)    \
+    KYTHIRA_OSC_CASE(harness_type, a_retention_of_zero_is_rejected)                               \
+    KYTHIRA_OSC_CASE(harness_type, retention_of_two_keeps_the_current_and_one_predecessor)        \
+    KYTHIRA_OSC_CASE(harness_type, retention_of_n_prunes_oldest_first)                            \
+    KYTHIRA_OSC_CASE(harness_type, a_retained_copy_is_byte_identical_to_the_current_snapshot)     \
+    KYTHIRA_OSC_CASE(harness_type, retained_copies_are_pruned_across_a_restart)                   \
+    KYTHIRA_OSC_CASE(harness_type, a_corrupt_retained_copy_does_not_break_startup)                \
+    KYTHIRA_OSC_CASE(harness_type, pruning_leaves_alone_a_key_it_cannot_prove_it_wrote)           \
     KYTHIRA_OSC_CASE(harness_type, a_returned_write_has_already_reached_the_store)                \
     KYTHIRA_OSC_CASE(harness_type, a_corrupt_term_object_fails_construction_by_name)              \
     KYTHIRA_OSC_CASE(harness_type, a_partially_numeric_term_is_corruption_not_a_prefix)           \
@@ -765,13 +1007,17 @@ template<typename Harness> struct cases {
 
 /// The full suite: the above plus the cases that inject store failures.
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define KYTHIRA_OBJECT_STORE_CONFORMANCE(harness_type, suite_prefix)                     \
-    KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION(harness_type, suite_prefix)            \
-    BOOST_AUTO_TEST_SUITE(suite_prefix##_conformance_injection)                          \
-    KYTHIRA_OSC_CASE(harness_type, a_failed_put_throws_and_leaves_the_mirror_unchanged)  \
-    KYTHIRA_OSC_CASE(harness_type, a_transient_put_failure_is_retried_once_and_succeeds) \
-    KYTHIRA_OSC_CASE(harness_type, a_failed_delete_throws_and_is_not_retried)            \
-    KYTHIRA_OSC_CASE(harness_type, a_failed_load_fails_construction)                     \
+#define KYTHIRA_OBJECT_STORE_CONFORMANCE(harness_type, suite_prefix)                           \
+    KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION(harness_type, suite_prefix)                  \
+    BOOST_AUTO_TEST_SUITE(suite_prefix##_conformance_injection)                                \
+    KYTHIRA_OSC_CASE(harness_type, a_failed_put_throws_and_leaves_the_mirror_unchanged)        \
+    KYTHIRA_OSC_CASE(harness_type, a_transient_put_failure_is_retried_once_and_succeeds)       \
+    KYTHIRA_OSC_CASE(harness_type, a_failed_delete_throws_and_is_not_retried)                  \
+    KYTHIRA_OSC_CASE(harness_type, a_failed_load_fails_construction)                           \
+    KYTHIRA_OSC_CASE(harness_type,                                                             \
+                     a_failure_writing_the_retained_copy_leaves_the_previous_snapshot)         \
+    KYTHIRA_OSC_CASE(harness_type, a_failure_at_the_commit_point_leaves_the_previous_snapshot) \
+    KYTHIRA_OSC_CASE(harness_type, a_failure_pruning_leaves_the_new_snapshot_committed)        \
     BOOST_AUTO_TEST_SUITE_END()
 
 /// One case. Kept separate so a suite can be assembled case by case where a

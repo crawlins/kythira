@@ -54,6 +54,10 @@ struct mock_object_store_harness {
         return engine_t{store, std::move(bucket_name), std::move(prefix_name)};
     }
 
+    auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        return engine_t{store, bucket(), prefix(), opts};
+    }
+
     auto seed(const std::string& key, std::string_view body) const -> void {
         store.seed(key, body);
     }
@@ -145,10 +149,12 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(object_store_persistence_options_suite)
 
-// The default is the shipped behaviour: one retry, PUT-only.
+// The default is the shipped behaviour: one retry, PUT-only, single snapshot
+// slot.
 BOOST_AUTO_TEST_CASE(the_default_options_are_the_shipped_behaviour) {
     const kythira::object_persistence_options opts;
     BOOST_TEST(opts.write_retries == 1U);
+    BOOST_TEST(opts.snapshot_retention == 1U);
 }
 
 // With retries disabled the first failure is the last word, and the message
