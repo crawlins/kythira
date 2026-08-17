@@ -227,7 +227,9 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
 [[nodiscard]] inline auto build_signing_string(std::string_view method,
                                                std::string_view request_target,
                                                std::string_view host, const std::string& body,
-                                               const std::string& date_header) -> std::string {
+                                               const std::string& date_header,
+                                               std::string_view content_type = "application/json")
+    -> std::string {
     const bool has_body = !body.empty();
     std::ostringstream out;
     out << "date: " << date_header << "\n";
@@ -235,7 +237,15 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
     out << "host: " << host;
     if (has_body) {
         out << "\ncontent-length: " << body.size();
-        out << "\ncontent-type: application/json";
+        // The content type is **signed**, so it is a parameter rather than the
+        // constant it was until task 10 of the cloud-object-persistence spec.
+        // Every caller before that was a control-plane API whose bodies are
+        // JSON; Object Storage is a data plane with opaque bodies, and a client
+        // that sent `application/octet-stream` while signing `application/json`
+        // would get `NotAuthenticated: Failed to verify the HTTP(S) Signature`
+        // — a failure naming neither side of the mismatch. The default keeps
+        // every existing caller byte-identical.
+        out << "\ncontent-type: " << content_type;
         out << "\nx-content-sha256: " << detail::sha256_base64(body);
     }
     return out.str();
@@ -256,11 +266,12 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
     std::string_view key_id, const std::string& private_key_pem,
     const std::string& private_key_passphrase, std::string_view method,
     std::string_view request_target, std::string_view host, const std::string& body,
-    std::time_t when = std::time(nullptr)) -> std::map<std::string, std::string> {
+    std::time_t when = std::time(nullptr), std::string_view content_type = "application/json")
+    -> std::map<std::string, std::string> {
     const bool has_body = !body.empty();
     const std::string date_header = detail::rfc1123_now(when);
     const std::string signing_string =
-        build_signing_string(method, request_target, host, body, date_header);
+        build_signing_string(method, request_target, host, body, date_header, content_type);
 
     auto key = detail::load_private_key(private_key_pem, private_key_passphrase);
     const std::string signature = detail::rsa_sha256_sign(key.get(), signing_string);
@@ -287,7 +298,10 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
     out["authorization"] = authorization.str();
     if (has_body) {
         out["content-length"] = std::to_string(body.size());
-        out["content-type"] = "application/json";
+        // Must be the same string the signing form above used — signing one
+        // content type and sending another is the whole failure this parameter
+        // exists to prevent.
+        out["content-type"] = std::string(content_type);
         out["x-content-sha256"] = detail::sha256_base64(body);
     }
     return out;
@@ -322,7 +336,8 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
 [[nodiscard]] inline auto sign_request(const oci_client_config& cfg, std::string_view method,
                                        std::string_view request_target, std::string_view host,
                                        const std::string& body,
-                                       std::time_t when = std::time(nullptr))
+                                       std::time_t when = std::time(nullptr),
+                                       std::string_view content_type = "application/json")
     -> std::map<std::string, std::string> {
     if (cfg.use_instance_principal) {
         throw std::runtime_error(
@@ -348,7 +363,7 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
         }
         return sign_request_with_key("ST$" + cfg.security_token, cfg.private_key_pem,
                                      cfg.private_key_passphrase, method, request_target, host, body,
-                                     when);
+                                     when, content_type);
     }
 
     // Named individually rather than as "credentials are incomplete", because
@@ -367,7 +382,7 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
 
     return sign_request_with_key(cfg.tenancy_id + "/" + cfg.user_id + "/" + cfg.fingerprint,
                                  cfg.private_key_pem, cfg.private_key_passphrase, method,
-                                 request_target, host, body, when);
+                                 request_target, host, body, when, content_type);
 }
 
 }  // namespace kythira::oci_signing

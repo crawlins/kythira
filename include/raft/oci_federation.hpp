@@ -491,7 +491,8 @@ public:
     /// the clock cannot pin a signature.
     [[nodiscard]] auto sign(std::string_view method, std::string_view request_target,
                             std::string_view host, const std::string& body,
-                            std::time_t when = std::time(nullptr))
+                            std::time_t when = std::time(nullptr),
+                            std::string_view content_type = "application/json")
         -> std::map<std::string, std::string> {
         const std::lock_guard<std::mutex> lock(_mutex);
         if (!_token.valid(when)) {
@@ -499,7 +500,7 @@ public:
         }
         return oci_signing::sign_request_with_key("ST$" + _token.raw, _session_private_key_pem,
                                                   /*passphrase=*/"", method, request_target, host,
-                                                  body, when);
+                                                  body, when, content_type);
     }
 
     /// How many federation exchanges have run — lets a test assert "the

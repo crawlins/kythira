@@ -24,6 +24,7 @@
 #include <httplib.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <map>
@@ -125,6 +126,90 @@ public:
         }
     }
 
+    /// @brief What a raw request answered with, unparsed.
+    ///
+    /// Deliberately not a `boost::json::value`: this exists precisely because
+    /// `request()` cannot carry object bytes.
+    struct raw_response {
+        int status{};
+        /// Response headers, lowercased on the way in, because OCI spells its
+        /// ETag header `etag` and its digest `opc-content-md5` while other
+        /// services capitalise — a plain map lookup on the wrong spelling
+        /// silently yields an empty string, which is how task 0's probe once
+        /// sent an empty precondition and read the result as "CAS unsupported".
+        std::map<std::string, std::string> headers;
+        std::string body;
+
+        /// Case-insensitive header read; empty when absent.
+        [[nodiscard]] auto header(std::string_view name) const -> std::string {
+            std::string lowered(name);
+            for (auto& c : lowered) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            const auto it = headers.find(lowered);
+            return it == headers.end() ? std::string{} : it->second;
+        }
+    };
+
+    /// @brief Send a signed request and return status, headers and body
+    ///        **unparsed**.
+    ///
+    /// Additive: `request()` above is untouched, and every existing caller keeps
+    /// its parsed-JSON behaviour. This path exists because parsing every
+    /// response as JSON was a **control-plane assumption** — correct for
+    /// Compute, Identity and the certificate services, and wrong for Object
+    /// Storage, which is a data plane whose bodies are arbitrary bytes. A
+    /// GetObject answering with a Raft snapshot is not JSON and must not be
+    /// asked to be.
+    ///
+    /// Three differences from `request()`, each deliberate:
+    ///
+    /// - **The caller decides what a status means.** No status is turned into an
+    ///   exception here, because "404" is an *answer* for a persistence load
+    ///   path and an error for a control-plane GET, and only the caller knows
+    ///   which it is. A transport failure — no response at all — still throws,
+    ///   since there is nothing to hand back.
+    /// - **The content type is a parameter**, and it is signed. Object bodies
+    ///   are `application/octet-stream`; signing `application/json` while
+    ///   sending something else yields `NotAuthenticated: Failed to verify the
+    ///   HTTP(S) Signature`, which names neither side of the mismatch.
+    /// - **No 429 retry.** `request()` retries once on 429 (Requirement 1.9);
+    ///   here the caller owns retries, because `object_store_persistence_engine`
+    ///   owns write retries and its idempotency argument depends on knowing
+    ///   exactly what was re-sent.
+    ///
+    /// @throws std::runtime_error only when no response arrived at all.
+    /// @param extra_headers Additional headers to put on the wire. These are
+    ///                      **not** signed, and do not need to be: OCI's
+    ///                      `Authorization` names the signed set explicitly in
+    ///                      its `headers=` list, so anything outside it travels
+    ///                      unsigned by design. Object Storage's conditional
+    ///                      headers (`if-match`, `if-none-match`) and its
+    ///                      `Content-MD5` all arrive this way.
+    [[nodiscard]] auto request_raw(
+        std::string_view service, std::string_view method, std::string_view path,
+        const std::string& body = {}, std::string_view content_type = "application/octet-stream",
+        const std::map<std::string, std::string>& extra_headers = {}) const -> raw_response {
+        const std::string host = host_for(service);
+        auto result = send_once(host, method, path, body, content_type, extra_headers);
+        if (!result) {
+            throw std::runtime_error(std::string("oci_http_client: ") + std::string(method) + " " +
+                                     std::string(path) +
+                                     " failed: " + httplib::to_string(result.error()));
+        }
+        raw_response out;
+        out.status = result->status;
+        out.body = result->body;
+        for (const auto& [name, value] : result->headers) {
+            std::string lowered = name;
+            for (auto& c : lowered) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            out.headers.emplace(std::move(lowered), value);
+        }
+        return out;
+    }
+
     /// @brief The regional host a service lives on.
     ///
     /// `endpoint_override` wins outright when set, and is the whole reason a
@@ -200,7 +285,8 @@ public:
     /// wins, and removes the whole signs-one-thing-sends-another class rather
     /// than tracking httplib's idea of a default port.
     [[nodiscard]] auto prepared_headers(const std::string& host, std::string_view method,
-                                        std::string_view path, const std::string& body) const
+                                        std::string_view path, const std::string& body,
+                                        std::string_view content_type = "application/json") const
         -> std::map<std::string, std::string> {
         const std::string host_header = host_header_for(host);
         // The auth-mode fork, in exactly one place: Instance Principal signs
@@ -208,8 +294,10 @@ public:
         // with the config's own key. Everything after the signature — Host,
         // the content-type handling below — is identical.
         auto headers = _instance_principal
-                           ? _instance_principal->sign(method, path, host_header, body)
-                           : oci_signing::sign_request(_cfg, method, path, host_header, body);
+                           ? _instance_principal->sign(method, path, host_header, body,
+                                                       std::time(nullptr), content_type)
+                           : oci_signing::sign_request(_cfg, method, path, host_header, body,
+                                                       std::time(nullptr), content_type);
         headers["Host"] = host_header;
         return headers;
     }
@@ -265,10 +353,15 @@ private:
     }
 
     [[nodiscard]] auto send_once(const std::string& host, std::string_view method,
-                                 std::string_view path, const std::string& body) const
+                                 std::string_view path, const std::string& body,
+                                 std::string_view content_type = json_content_type,
+                                 const std::map<std::string, std::string>& extra_headers = {}) const
         -> httplib::Result {
         httplib::Headers headers;
-        for (const auto& [name, value] : prepared_headers(host, method, path, body)) {
+        for (const auto& [name, value] : extra_headers) {
+            headers.emplace(name, value);
+        }
+        for (const auto& [name, value] : prepared_headers(host, method, path, body, content_type)) {
             // `content-type` is deliberately withheld from httplib's header
             // map. Every cpp-httplib body overload takes the content type as a
             // separate argument and sets the header from it — there is no
@@ -291,17 +384,18 @@ private:
 
         auto client = make_client(host);
         const std::string target(path);
+        const std::string content_type_arg(content_type);
         if (method == "GET") {
             return client->Get(target, headers);
         }
         if (method == "DELETE") {
-            return client->Delete(target, headers, body, json_content_type);
+            return client->Delete(target, headers, body, content_type_arg);
         }
         if (method == "PUT") {
-            return client->Put(target, headers, body, json_content_type);
+            return client->Put(target, headers, body, content_type_arg);
         }
         if (method == "POST") {
-            return client->Post(target, headers, body, json_content_type);
+            return client->Post(target, headers, body, content_type_arg);
         }
         throw std::invalid_argument("oci_http_client: unsupported HTTP method: " +
                                     std::string(method));
