@@ -111,6 +111,21 @@ public:
 static_assert(key_object_store<alibaba_oss_client>,
               "alibaba_oss_client must satisfy the key_object_store concept");
 
+/// …and, deliberately, **not** the conditional refinement. OSS has no overwrite
+/// compare-and-swap at all: `If-Match` on PutObject is rejected
+/// `400 NotImplemented` for a *current* ETag as well as a stale one
+/// (`.kiro/specs/cloud-object-persistence/spike-notes.md` Finding 1, verified
+/// live August 16, 2026), so there is no ETag-predicated write to build a fence
+/// on. Requirement 9.8 therefore fires here rather than anywhere else:
+/// `fencing_mode::compare_and_swap` is a **compile error** for this engine, not a
+/// runtime degradation to unconditional writes. This assertion is the guard on
+/// that — adding a `put_object_if` to the client that did not genuinely fence
+/// would fail here, where it is a decision, rather than in production, where it
+/// is a corrupted log.
+static_assert(!conditional_key_object_store<alibaba_oss_client>,
+              "alibaba_oss_client must NOT satisfy conditional_key_object_store — OSS has no "
+              "overwrite compare-and-swap (spike-notes.md Finding 1)");
+
 /// The concept is checked at file scope, so a signature drift is a compile
 /// error in every translation unit that includes this header — not just in
 /// whichever test happens to instantiate it.

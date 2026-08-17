@@ -165,9 +165,18 @@ public:
         const std::lock_guard lock(_state->mu);
         _state->requests.push_back("PUT " + key);
         require_bucket(bucket);
+        // The precondition is checked first, exactly as a service does: a request
+        // whose precondition fails never reaches the storage path, so an injected
+        // transport failure cannot mask a fence (or be mistaken for one).
         check_precondition_locked(key, pre);
         if (_state->fail_next_puts > 0) {
             --_state->fail_next_puts;
+            throw std::runtime_error("mock_object_store: injected PUT failure for " + key);
+        }
+        if (!_state->fail_puts_for_key.empty() && _state->fail_puts_for_key == key) {
+            // A plain `runtime_error`, deliberately: this is the shape a client
+            // gives a transient failure or a benign conditional-request race
+            // (S3's 409), and the engine must not latch on it.
             throw std::runtime_error("mock_object_store: injected PUT failure for " + key);
         }
         return {store_locked(key, std::string(bytes))};

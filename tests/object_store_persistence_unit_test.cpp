@@ -14,8 +14,10 @@
 #endif
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 // Unit coverage for the generic engine (spec Requirements 2.1–2.6, 17.1–17.3).
 //
@@ -80,7 +82,54 @@ struct mock_object_store_harness {
     auto fail_next_lists(int n) const -> void { store.fail_next_lists(n); }
 };
 
+/// The same harness with the engine fenced. It inherits every pass-through and
+/// overrides only construction, so the two instantiations of the conformance
+/// suite differ in exactly one thing: the fencing mode.
+struct fenced_mock_object_store_harness : mock_object_store_harness {
+    using store_t = ::store_t;
+    using engine_t = kythira::fenced_object_store_persistence_engine<store_t>;
+
+    /// Read by the conformance suite to branch the three cases that genuinely
+    /// differ under fencing.
+    static constexpr bool fenced = true;
+
+    [[nodiscard]] static auto owner_id() -> std::string { return "node-a"; }
+
+    auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    auto make_engine(std::string bucket_name, std::string prefix_name) const -> engine_t {
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name),
+                        with_owner(kythira::object_persistence_options{})};
+    }
+
+    auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        return engine_t{store, bucket(), prefix(), with_owner(std::move(opts))};
+    }
+
+    /// A *different* writer over the same `{bucket, prefix}` — the takeover and
+    /// other-owner cases. `takeover_epoch` is passed through exactly as given,
+    /// including a value that does not advance, because rejecting that is one of
+    /// the behaviours under test.
+    auto make_engine_as(std::string owner, std::optional<std::uint64_t> takeover_epoch) const
+        -> engine_t {
+        kythira::object_persistence_options opts;
+        opts.owner_id = std::move(owner);
+        opts.takeover_epoch = takeover_epoch;
+        return engine_t{store, bucket(), prefix(), std::move(opts)};
+    }
+
+private:
+    /// The suite's cases build options without knowing about fencing, so the
+    /// harness fills in the identity the mode requires.
+    [[nodiscard]] static auto with_owner(kythira::object_persistence_options opts)
+        -> kythira::object_persistence_options {
+        opts.owner_id = owner_id();
+        return opts;
+    }
+};
+
 using engine_t = mock_object_store_harness::engine_t;
+using fenced_engine_t = fenced_mock_object_store_harness::engine_t;
 using log_entry_t = kythira::log_entry<>;
 using snapshot_t = kythira::snapshot<>;
 
@@ -104,6 +153,14 @@ BOOST_GLOBAL_FIXTURE(FiuInitFixture);
 // ── The conformance suite, instantiated. One line, which is the point. ───────
 
 KYTHIRA_OBJECT_STORE_CONFORMANCE(mock_object_store_harness, mock_object_store)
+
+// …and again with fencing on. Running the *whole* suite a second time is the
+// evidence that `compare_and_swap` — which rewrites the precondition on most of
+// the engine's writes — broke nothing, and it is the negative control the fencing
+// cases need: "the stale write was rejected" says nothing about a fence unless
+// every legitimate write is still accepted.
+KYTHIRA_OBJECT_STORE_CONFORMANCE(fenced_mock_object_store_harness, fenced_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(fenced_mock_object_store_harness, fenced_mock_object_store)
 
 // ── Concepts ─────────────────────────────────────────────────────────────────
 
@@ -140,6 +197,42 @@ BOOST_AUTO_TEST_CASE(a_store_without_conditional_writes_still_satisfies_the_base
     };
     static_assert(kythira::key_object_store<versionless_store>);
     static_assert(!kythira::conditional_key_object_store<versionless_store>);
+    BOOST_TEST(true);
+}
+
+// Requirement 9.8, as a negative compile test rather than a promise: a store that
+// cannot express a precondition has no fenced engine to name. This is the
+// assertion that fails if somebody "makes it work" by relaxing the constraint and
+// letting `compare_and_swap` fall through to unconditional writes — which is the
+// single most likely well-meaning change that would destroy the feature.
+BOOST_AUTO_TEST_CASE(compare_and_swap_is_unavailable_for_a_store_without_conditional_writes) {
+    struct versionless_store {
+        auto put_object(const std::string&, const std::string&, std::string_view) const
+            -> kythira::put_result;
+        auto get_object(const std::string&, const std::string&) const
+            -> std::optional<kythira::get_result>;
+        auto delete_object(const std::string&, const std::string&) const -> void;
+        auto list_keys(const std::string&, const std::string&) const -> std::vector<std::string>;
+        auto provider_name() const -> std::string_view;
+    };
+
+    // Naming the specialization is the whole test: the constraint makes it
+    // ill-formed for a store lacking the refinement, and well-formed for one that
+    // has it. (The detection has to be a dependent requires-expression — hence
+    // the concept from the engine header — because a non-dependent one naming an
+    // ill-formed specialization is a hard error rather than `false`.)
+    using kythira::object_store_persistence_detail::fenced_engine_instantiable;
+    static_assert(!fenced_engine_instantiable<versionless_store>,
+                  "a store without conditional writes must not have a fenced engine");
+    static_assert(fenced_engine_instantiable<store_t>,
+                  "…and a store with them must, or the test above proves nothing");
+
+    // The unfenced engine over the same store is unaffected: losing the fencing
+    // *option* is the only consequence of not satisfying the refinement.
+    static_assert(
+        kythira::persistence_engine<kythira::object_store_persistence_engine<versionless_store>,
+                                    std::uint64_t, std::uint64_t, std::uint64_t, log_entry_t,
+                                    snapshot_t>);
     BOOST_TEST(true);
 }
 
@@ -182,6 +275,68 @@ BOOST_AUTO_TEST_CASE(extra_retries_are_honoured) {
     BOOST_CHECK_NO_THROW(eng.save_current_term(4));
     BOOST_TEST(h.count_requests("PUT") == 4U);
     BOOST_TEST(eng.load_current_term() == 4U);
+}
+
+// The fencing options are rejected on an engine that is not fencing — the mirror
+// image of "no field that is accepted and ignored". An owner_id silently ignored
+// reads, to whoever set it, exactly like fencing being on.
+BOOST_AUTO_TEST_CASE(fencing_options_on_an_unfenced_engine_are_rejected) {
+    mock_object_store_harness h;
+    kythira::object_persistence_options with_owner;
+    with_owner.owner_id = "node-a";
+    BOOST_CHECK_THROW((engine_t{h.store, mock_object_store_harness::bucket(),
+                                mock_object_store_harness::prefix(), with_owner}),
+                      std::invalid_argument);
+
+    kythira::object_persistence_options with_epoch;
+    with_epoch.takeover_epoch = 7;
+    BOOST_CHECK_THROW((engine_t{h.store, mock_object_store_harness::bucket(),
+                                mock_object_store_harness::prefix(), with_epoch}),
+                      std::invalid_argument);
+
+    // …and nothing was written on the way to either rejection.
+    BOOST_TEST(h.keys().empty());
+}
+
+// A fenced engine with no owner_id would write an owner object naming nobody,
+// which is worse than not fencing: it claims the prefix without saying for whom.
+BOOST_AUTO_TEST_CASE(a_fenced_engine_requires_an_owner_id) {
+    fenced_mock_object_store_harness h;
+    BOOST_CHECK_THROW((fenced_engine_t{h.store, fenced_mock_object_store_harness::bucket(),
+                                       fenced_mock_object_store_harness::prefix(),
+                                       kythira::object_persistence_options{}}),
+                      std::invalid_argument);
+    BOOST_TEST(h.keys().empty());
+}
+
+// The mode is visible on the type, which is what lets a caller assert it rather
+// than infer it from behaviour.
+BOOST_AUTO_TEST_CASE(the_fencing_mode_is_part_of_the_engine_type) {
+    static_assert(engine_t::fencing == kythira::fencing_mode::none);
+    static_assert(fenced_engine_t::fencing == kythira::fencing_mode::compare_and_swap);
+
+    mock_object_store_harness unfenced;
+    engine_t eng = unfenced.make_engine();
+    // An unfenced engine never latches, and says so without being asked twice.
+    BOOST_TEST(!eng.is_fenced());
+    BOOST_TEST(eng.owner_epoch() == 0U);
+}
+
+// `fencing_mode::none` writes no owner object even when one is already there:
+// under `none` that key is a foreign object like any other, which is what "no
+// extra request cost" means and what keeps an unfenced engine from stamping its
+// name over a fenced deployment's claim.
+BOOST_AUTO_TEST_CASE(an_unfenced_engine_neither_reads_nor_writes_the_owner_object) {
+    mock_object_store_harness h;
+    h.seed(mock_object_store_harness::prefix() + "/owner",
+           "{\"owner_id\":\"node-a\",\"epoch\":4,\"started_at\":\"2026-08-17T00:00:00Z\"}");
+    h.clear_requests();
+
+    engine_t eng = h.make_engine();
+    BOOST_CHECK_NO_THROW(eng.save_current_term(1));
+    BOOST_TEST(h.body(mock_object_store_harness::prefix() + "/owner").find("\"epoch\":4") !=
+               std::string::npos);
+    BOOST_TEST(h.count_requests("GET") == 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

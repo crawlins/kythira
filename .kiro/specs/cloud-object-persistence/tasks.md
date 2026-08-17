@@ -1,6 +1,6 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-4 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-5 done; task 0 closed except 0.7 (needs a container runtime)
 
 **Done:** the seam (task 1), the generic engine (task 2) and the Alibaba
 instantiation (task 3), August 15, 2026. Together they add **no capability on
@@ -13,6 +13,13 @@ add a capability, and it adds it strictly above the default: at
 It is also the first feature to arrive with its option rather than ahead of
 it, which is what `object_persistence_options` being deliberately partial was
 for.
+
+**Task 5 (fencing) is done, August 17, 2026** — the first task whose whole
+value is a *refusal*, and the one Requirement 9.8 was written for: it is a
+**compile error** for Alibaba OSS and available for the other four. Everything it
+needed already existed against `mock_object_store`, so it landed before any of
+the new clients. Details, the design correction it forced, and the residual it
+found are in the task entry below.
 
 **Task 0, Alibaba's cells: closed live, August 16, 2026** (spike-notes.md).
 The decisive one went the way this plan's Notes section anticipated: **OSS has
@@ -451,7 +458,60 @@ Reference implementations to study before starting, in this order:
     against the mock store's key set.
   - _Requirements: 8.1–8.6_
 
-- [ ] 5. **Fencing**
+- [x] 5. **Fencing** — done August 17, 2026, in
+      `include/raft/object_store_persistence.hpp`, with 10 new fencing
+      conformance cases **and the whole existing suite re-run with fencing on**
+      (136 cases in `object_store_persistence_unit_test`, was 67). The second
+      full run is the substance, not a bonus: `compare_and_swap` rewrites the
+      precondition on most of the engine's writes, so the evidence it broke
+      nothing is the other 54 cases passing with it enabled — and that doubles as
+      the negative control the fencing cases need, since "the stale write was
+      rejected" says nothing about a fence unless every legitimate write is still
+      accepted.
+
+      **One design correction, folded into requirements.md and design.md in
+      place: `fencing_mode` is a template argument, not an options field.** The
+      sketched runtime field cannot satisfy Requirement 9.8. It would have to be
+      read behind `if constexpr` so a store lacking the refinement still compiles
+      the rest of the engine — and a discarded `if constexpr` branch is never
+      instantiated, so `compare_and_swap` over such a store would compile and then
+      run **unconditional writes with fencing configured**: 9.8's forbidden
+      outcome, reached through the mechanism meant to prevent it. It sits last in
+      the parameter list, so no existing instantiation changed.
+      `alibaba_oss_persistence.hpp` now carries
+      `static_assert(!conditional_key_object_store<alibaba_oss_client>)`, which
+      turns the live OSS finding into a compile-time fact.
+
+      **One residual discovered by implementing it, recorded rather than papered
+      over:** a conditional PUT whose response is lost *after* the service applied
+      it leaves the engine holding a stale version, so its next write to that key
+      is refused and it latches although it is the only writer. Loud and safe, but
+      an availability cost `none` does not have, and inherent to predicating a
+      write on a version learned only from the response — the caller's own retry
+      re-issues the same stale precondition, so declining to retry does not avoid
+      it. Two things follow and are implemented: a conditional PUT is issued
+      **once** whatever `write_retries` says, and **only**
+      `object_precondition_failed` latches. The identified mitigation — a
+      read-repair that adopts the returned version when the object already holds
+      the intended bytes — is named as future work in design.md rather than
+      implemented, because it weakens "a rejected precondition means you lost",
+      which is the sentence the safety argument is written against.
+
+      Two claims were **checked rather than assumed**. `raft.hpp`'s AppendEntries
+      path appends only where `entry_index > get_last_log_index()` and truncates a
+      conflicting index through `_persistence.truncate_log` first, so create-only
+      log PUTs never refuse a legal append (a create-only precondition that did
+      would latch a healthy leader). And a restart by the recorded owner must be
+      *allowed*: a crash-restart and a duplicated deployment are indistinguishable
+      at construction, since a duplicate carries the same node identity — which is
+      the concrete reason the fence has to live on the writes and a
+      construction-time check cannot be it.
+
+      Mutation-tested before being believed, five mutants, each caught: not
+      recording the latch (10 failures), degrading single-slot writes to
+      unconditional PUTs (15), dropping create-only from log PUTs (3, all in the
+      stale-appender case), latching on *any* store failure (1 — the 409/412
+      case), and opening a prefix another owner holds (1).
 
   - `fencing_mode::compare_and_swap`: track the `object_version` per key in
     the mirror; write `<prefix>/term` and `<prefix>/voted_for` with
