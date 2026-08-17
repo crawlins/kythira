@@ -386,7 +386,17 @@ cannot become silent state loss.
 2. WHERE a provider returns a checksum or ETag that is a deterministic
    function of the content for single-part uploads, the client SHALL verify
    the returned value against the locally computed one and throw on
-   mismatch, naming the key.
+   mismatch, naming the key. **Measured, August 16-17, 2026: the ETag is the
+   content MD5 on only two of the five providers** — S3 (lowercase) and OSS
+   (uppercase), so that comparison must be case-insensitive. Azure's ETag is
+   an opaque timestamp token, OCI's is a **UUID** and GCS's is an opaque
+   token, so on those three the locally verifiable value is the returned
+   `Content-MD5` / `opc-content-md5` / `md5Hash` metadata field instead — all
+   three confirmed to match the content. A client that assumed the S3 shape
+   would compare an opaque token against an MD5 and fail every write.
+   The **service-side** check of criterion 1 is available on all five, in five
+   different spellings: `BadDigest` (S3), `InvalidDigest` (OSS),
+   `Md5Mismatch` (Azure), `invalid` (GCS), `UnmatchedContentMD5` (OCI).
 3. `max_object_bytes` SHALL cap the size of any single PUT, defaulting to a
    conservative value below every provider's documented single-request
    limit (Task 0 confirms the limits; the default SHALL be chosen from the
@@ -684,8 +694,19 @@ packages.
    record that an unpinned version is how a working client breaks on a
    service update.
 4. Conditional writes SHALL use standard `If-Match` / `If-None-Match: *`
-   semantics, which Blob supports natively, mapping 412 to
-   `object_precondition_failed`.
+   semantics, which Blob supports natively. **CORRECTED against the live
+   service, August 17, 2026 (spike-notes.md Finding 11): Azure answers two
+   different statuses for the two preconditions** — **409
+   `BlobAlreadyExists`** for `If-None-Match: *` and **412 `ConditionNotMet`**
+   for `If-Match` — so the client SHALL map **both** to
+   `object_precondition_failed`. Mapping only 412, as this criterion
+   originally said, would let a create-only collision — the very case that
+   catches a stale leader appending log entries — pass as an ordinary error.
+   The 409 SHALL be distinguished by its error code and never by its status
+   alone: S3's 409 `ConditionalRequestConflict` means the opposite (a benign
+   race to retry). The client SHALL also treat **201 on PUT and 202 on
+   DELETE** as success, and read the machine-readable error code from the
+   `x-ms-error-code` response header.
 5. Listing SHALL use `List Blobs` with the prefix parameter and follow
    `NextMarker` to completion, parsing the XML with the same bounded
    element-scanning approach `alibaba_oss_client` uses rather than adding an
@@ -759,8 +780,16 @@ reusing the signing and HTTP layer this repo already has.
    already carries: the domain is per service and is not derivable from one
    template.
 4. Conditional writes SHALL use OCI's `if-match` / `if-none-match` headers,
-   mapping 412 to `object_precondition_failed`; Task 0 SHALL verify both
-   against a live bucket.
+   mapping 412 to `object_precondition_failed`. **Verified live, August 17,
+   2026** (Finding 13): create-only rejects **412 `IfNoneMatchFailed`**,
+   `if-match` rejects **412 `IfMatchFailed`**, and the **conditional DELETE
+   works** — a stale `if-match` is refused and the object survives. One
+   signing consequence the same run produced: `oci_signing.hpp` signs
+   `content-type: application/json` as a constant because every existing
+   caller is a control-plane API, so the raw-bytes path SHALL make the signed
+   content type a **parameter** — signing `application/json` while sending
+   `application/octet-stream` yields a 401 that says nothing about content
+   types.
 5. Listing SHALL use `ListObjects` with `prefix` and follow the `nextStartWith`
    pagination cursor to completion.
 6. The existing `kythira-ci-artifacts` bucket (Requirement 4.4 heartbeat

@@ -8,20 +8,24 @@ this file is the evidence trail, not a second source of truth.
 
 | Sub-task | Provider coverage | State |
 |---|---|---|
-| 0.1 list-after-write, empirically | **Alibaba OSS + AWS S3: CLOSED** (live) | Azure Blob, OCI still OPEN |
+| 0.1 list-after-write, empirically | **all five: CLOSED** (live, 3 × 25 objects each) | — |
 | 0.2 OCI durability-on-response wording | — | OPEN |
-| 0.3 conditional-write matrix, live | **Alibaba OSS + AWS S3: CLOSED** (live; each decided a design outcome) | Azure Blob, GCS, OCI still OPEN |
+| 0.3 conditional-write matrix, live | **all five: CLOSED** (live; each decided a design outcome) | — |
 | 0.4 single-PUT size limits | — | OPEN (documentation-only so far) |
-| 0.5 checksum spelling / ETag determinism | **Alibaba OSS + AWS S3: CLOSED** (live) | others OPEN |
-| 0.6 Azure REST-vs-SDK checkpoint | — | OPEN |
-| 0.7 GCS mock-tier decision | — | OPEN |
-| 0.8 OCI namespace and endpoint | partially — the namespace resolves via `oci os ns get` (`axunmw4f0mln`) | OPEN |
+| 0.5 checksum spelling / ETag determinism | **all five: CLOSED** (live) | — |
+| 0.6 Azure REST-vs-SDK checkpoint | **CLOSED** — the recorded REST decision holds (Finding 11) | — |
+| 0.7 GCS mock-tier decision | the **fidelity bar** is now measured (Finding 12) | OPEN — needs `fake-gcs-server` run, and this host has no container runtime |
+| 0.8 OCI namespace and endpoint | **CLOSED** — endpoint confirmed, namespace is both configurable and resolvable via `GET /n/` (Finding 13) | — |
 
-**Why the other providers are still open, plainly:** nothing external blocks
-them any more. Credentials work for all five (see the table below) and **every
-provider now has a bucket** (Finding 8 — AWS, Azure and GCS provisioned
-August 16, 2026; OCI and Alibaba already had one). What is left is writing the
-per-provider probes, which is work rather than a dependency.
+**Three of the eight sub-tasks remain**, and each is a different kind of work:
+**0.2** is a documentation search (and is allowed to conclude that the wording
+does not exist), **0.4** is a per-provider limit table feeding
+`max_object_bytes`'s default, and **0.7** needs a container runtime this
+development host does not have. Every cell that required a live service is
+closed: credentials work for all five providers and all five have a bucket
+(Finding 8), and Findings 11-13 close Azure Blob, GCS and OCI the same way
+Findings 1-6 and 10 closed Alibaba OSS and AWS S3. Finding 14 is the
+side-by-side table the client tasks read from.
 
 ### Credentials on the development host, as of August 16, 2026
 
@@ -326,3 +330,229 @@ The lesson is not "be careful": it is that **a check whose inputs can be
 transposed without a type error will eventually be transposed**, and that the
 same trap recurred three times in one spike — once in prose, once in a
 verdict, once in the helper written to prevent it.
+
+## Finding 11 — Azure Blob: fenceable, and its create-only rejection is 409
+
+Run August 17, 2026 against `kythirarealtestobj`/`kythira-raft` (`eastus`,
+Standard_ZRS) with `scripts/object-store-probes/probe_azure_blob.py` — Blob
+REST over an AAD bearer token, `x-ms-version: 2023-11-03`,
+`x-ms-blob-type: BlockBlob`.
+
+```
+PUT <absent>   If-None-Match: *              → HTTP 201
+PUT <existing> If-None-Match: *              → HTTP 409  BlobAlreadyExists   (blob unchanged)
+PUT If-Match: <current etag>                 → HTTP 201
+PUT If-Match: <stale etag>                   → HTTP 412  ConditionNotMet
+DELETE If-Match: <stale etag>                → HTTP 412  ConditionNotMet     (blob SURVIVED)
+DELETE If-Match: <current etag>              → HTTP 202
+PUT with a wrong Content-MD5                 → HTTP 400  Md5Mismatch
+ETag == md5 hex of content                   → FALSE — the ETag is an opaque
+                                               timestamp token (0x8DEFC5FC0A7294B)
+GET returns Content-MD5 matching the content → true
+list-after-write, 3 × 25 blobs               → 25 blobs every round
+racing create-only, 8/16/32                  → one 201 per round, 53 losers,
+                                               every one 409 BlobAlreadyExists
+```
+
+**Azure satisfies `conditional_key_object_store` in full**, conditional delete
+included — the second provider that can carry `fencing_mode::compare_and_swap`.
+
+**One provider now answers with two different codes for two different
+preconditions**, which no earlier provider did: **409 `BlobAlreadyExists` for
+`If-None-Match: *`** and **412 `ConditionNotMet` for `If-Match`**. Both mean
+"you lost" and both must latch the fence. Set against S3's **409
+`ConditionalRequestConflict`**, which means "benign race, retry", the rule the
+OSS run produced gets stronger rather than merely repeated: **the status alone
+is never sufficient — a client must read the error code**, and on Azure it must
+map *both* statuses to `object_precondition_failed`.
+
+**Requirement 7's two halves come apart here.** The service verifies
+`Content-MD5` end to end (fourth distinct mismatch spelling: `BadDigest`,
+`InvalidDigest`, `Md5Mismatch`), but the **ETag is not a function of the
+content**, so the local ETag check that S3 and OSS allow is unavailable. What
+Azure does return is `Content-MD5` on GET, matching the value sent, so local
+verification is still possible — from a different header. A client that assumed
+the S3 shape here would compare an opaque token against an MD5 and fail every
+write.
+
+**Task 0.6 (REST vs SDK) is closed in favour of the recorded decision.** This
+probe *is* the hand-rolled surface, and nothing about it was harder than
+documented: bearer token from the CLI's own resolver, one dated `x-ms-version`,
+`x-ms-blob-type: BlockBlob` on PUT, `?restype=container&comp=list&prefix=` for
+listing with an empty `NextMarker` at 25 blobs. Three details the client header
+must record, because each is a plausible wrong guess:
+
+- **success is 201 on PUT and 202 on DELETE**, not 200 — a client that treats
+  only 200 as success fails every write;
+- **the machine-readable error code is the `x-ms-error-code` response header**,
+  present on every error, with the XML body as a fallback;
+- a PUT with no body still needs an explicit `Content-Length: 0`.
+
+No `azure-storage-blobs-cpp` dependency is needed.
+
+## Finding 12 — GCS: fenceable via generations, and its version is a counter
+
+Run August 17, 2026 against `kythira-ci-prefab-sky-500619-s9` (`us-central1`)
+with `scripts/object-store-probes/probe_gcs.py`, deliberately against the
+**JSON API** — the surface `google-cloud-cpp`'s storage client speaks, since a
+cell closed against the XML API of the same service would be closed by analogy.
+
+```
+upload <absent>   ifGenerationMatch=0        → HTTP 200
+upload <existing> ifGenerationMatch=0        → HTTP 412  conditionNotMet   (object unchanged)
+upload ifGenerationMatch=<current>           → HTTP 200
+upload ifGenerationMatch=<stale>             → HTTP 412  conditionNotMet
+DELETE ifGenerationMatch=<stale>             → HTTP 412  conditionNotMet   (object SURVIVED)
+DELETE ifGenerationMatch=<current>           → HTTP 204
+upload with a wrong md5Hash in metadata      → HTTP 400  invalid
+returned md5Hash == md5 of content           → true
+etag == md5 hex of content                   → FALSE (etag is 'CKzagZTdp5YDEAE=')
+list-after-write, 3 × 25 objects             → 25 objects every round
+racing create-only, 8/16/32                  → one 200 per round, 53 losers,
+                                               every one 412 conditionNotMet
+```
+
+**GCS satisfies `conditional_key_object_store` in full**, conditional delete
+included — the third fenceable provider.
+
+**The generation is a decimal counter, not a hash** (`1786971917733520` →
+`1786971917901538`), and it travels as a **query parameter**, not a header.
+This is the concrete justification for `object_version` being an opaque string
+the engine never inspects: an engine that assumed "quoted hash in a header"
+would be wrong here, and one that assumed "decimal counter" would be wrong
+everywhere else.
+
+**Requirement 7 again comes apart, and differently from Azure.** The checksum
+is not a request header at all — it is `md5Hash` in the object *metadata*, sent
+as the JSON part of a multipart upload (the shape `MD5HashValue` produces in
+`google-cloud-cpp`), and a mismatch is `400 invalid`, a fifth spelling and a
+notably uninformative one. The ETag is opaque, but the response's `md5Hash`
+field is exactly the content MD5, so local verification is available from the
+metadata rather than from the ETag.
+
+**Task 0.7 (GCS mock tier) is NOT closed by this run** and is deliberately not
+guessed at: `fake-gcs-server`'s fidelity on generation preconditions cannot be
+assessed without running it, and this host has no container runtime. What this
+run does contribute is the **fidelity bar** the emulator must clear, now stated
+as observations rather than expectations: `ifGenerationMatch=0` on an existing
+object must be `412 conditionNotMet` and must leave the object unchanged; a
+stale `ifGenerationMatch` must refuse both an upload and a delete; and the
+generation must advance on every write.
+
+## Finding 13 — OCI: fenceable, conditional delete confirmed, and the ETag is a UUID
+
+Run August 17, 2026 against `kythira-ci-artifacts` (`us-phoenix-1`,
+namespace `axunmw4f0mln`) with `scripts/object-store-probes/probe_oci.py`,
+whose request signatures are written from the canonical form documented in
+`include/raft/oci_signing.hpp` — an independent second witness to that form,
+which authenticated on its first live call.
+
+```
+PUT <absent>   if-none-match: *              → HTTP 200
+PUT <existing> if-none-match: *              → HTTP 412  IfNoneMatchFailed  (object unchanged)
+PUT if-match: <current etag>                 → HTTP 200
+PUT if-match: <stale etag>                   → HTTP 412  IfMatchFailed
+DELETE if-match: <stale etag>                → HTTP 412  IfMatchFailed      (object SURVIVED)
+DELETE if-match: <current etag>              → HTTP 204
+PUT with a wrong Content-MD5                 → HTTP 400  UnmatchedContentMD5
+ETag == md5 hex of content                   → FALSE — the ETag is a UUID
+                                               (9a86a492-43fa-4c8c-a80e-dbd650188ff8)
+GET returns opc-content-md5 matching content → true
+list-after-write, 3 × 25 objects             → 25 objects every round
+racing create-only, 8/16/32                  → one 200 per round, 52 losers,
+                                               every one 412 IfNoneMatchFailed
+```
+
+**OCI satisfies `conditional_key_object_store` in full**, and this closes the
+**conditional-delete cell design.md recorded as unconfirmed** (task 0.3): a
+stale `if-match` DELETE is refused *and the object survives*. Four of the five
+providers can be fenced; **only Alibaba OSS cannot** (Finding 1).
+
+**Task 0.8 is closed.** The endpoint is
+`https://objectstorage.<region>.oraclecloud.com` and the namespace is **both**
+configurable and resolvable: `GET /n/` returns it as a bare JSON string
+(`"axunmw4f0mln"`). So `oci_object_storage_client` should accept a configured
+namespace and resolve-and-cache only when none is given — one call at
+construction, never per request.
+
+**A signing divergence the client must handle, found by writing the signer:**
+`oci_signing.hpp` signs `content-type: application/json` as a **constant**,
+because every existing caller is a control-plane API. Object Storage is a data
+plane and its bodies are opaque bytes. The signed content type must therefore
+become a parameter as part of task 10's raw-bytes request path — a client that
+sends `application/octet-stream` while signing `application/json` gets a 401
+that says nothing about content types.
+
+### Two probe defects this run exposed, both caught by controls rather than by luck
+
+- **`headers.get("ETag")` returned nothing, because OCI spells it `etag`.** The
+  probe then sent `if-match: ""`, the service answered `412 IfMatchFailed` to a
+  *correct*-ETag write, and the run read exactly like "OCI cannot do CAS" —
+  the same conclusion Alibaba genuinely earned. What caught it was the
+  **negative control**: `cas_verdict()` refuses to call CAS usable unless a
+  correct precondition is *accepted*, so the run printed "NOT USABLE — even a
+  correct precondition was refused" instead of a false finding. Response
+  headers are now case-insensitive (`probe_common.Headers`) for every provider.
+- **The checksum verdict trusted any 4xx.** On the run before the fix, the
+  tenancy declined the wrong-MD5 PUT with `404 BucketNotFound` and the probe
+  printed *"VERIFIED by the service (BucketNotFound)"*. The verdict now keys on
+  a **checksum-specific error code** and otherwise reports UNDECIDED — which is
+  how the real code, `UnmatchedContentMD5`, came to be recorded rather than
+  assumed. This is the effect-versus-status-code trap one level up: a status
+  class is not a reason.
+
+### An environment observation, recorded as such and NOT as a cell
+
+This tenancy **intermittently declines otherwise valid requests with
+`404 BucketNotFound`** ("...does not exist **or you are not authorized**"),
+against a bucket that plainly exists, with surrounding requests in the same
+second succeeding. Measured at roughly 3–16% depending on the moment, across
+every request shape — PUT, GET, DELETE and LIST, body-carrying or not — so it
+is not the signed body headers. Pacing requests one second apart reduced but
+did not remove it (1/25). The official `oci` CLI went 40/40 in one window,
+which at a 3% rate is unsurprising and therefore **not** evidence that the CLI
+is immune; the comparison is inconclusive rather than exculpatory.
+
+It resembles the previously recorded case where a policy `where` clause
+declined a *different* principal's Object Storage requests and presented as
+`BucketNotFound`, and it deserves its own investigation with an `opc-request-id`
+(e.g. `phx-1:5mJ4Le_9BVx5HBWhO1DZ2xS7M7ICsz1rZEOu0dZ4WrJfRwvQqJJz42MdkV6MTtS0`)
+against the compartment's audit log. It is **not** an object-storage
+consistency or conditional-write finding, and no cell above rests on a request
+that hit it: measurement requests are re-issued once past a decline, every
+re-issue prints, and the count is reported at the end of the run (0 on the run
+quoted above). Two consequences worth carrying forward: **a real-tier OCI suite
+will need this understood before it can distinguish a flake from a regression**,
+and **the list-after-write comparison must be listing-versus-acknowledged-
+writes**, never listing-versus-25 — the earlier run's "0 of 25 listed" was ten
+declined PUTs, and reading it as a lagging listing would have invented a
+consistency defect out of an authorization flake.
+
+## Finding 14 — What the five providers now look like side by side
+
+Every cell below is from a live run, none by analogy. The table is the input to
+tasks 5-10, and the differences are the point: no two providers agree on all
+four columns.
+
+| | create-only rejection | overwrite CAS | conditional DELETE | checksum mismatch | version token |
+|---|---|---|---|---|---|
+| AWS S3 | 412 `PreconditionFailed` | **yes** | **yes** | `BadDigest` | ETag = md5 hex (lowercase) |
+| Azure Blob | **409** `BlobAlreadyExists` | **yes** (412 `ConditionNotMet`) | **yes** | `Md5Mismatch` | opaque timestamp token |
+| GCS | 412 `conditionNotMet` | **yes** | **yes** | `invalid` | **decimal generation** (query param) |
+| OCI | 412 `IfNoneMatchFailed` | **yes** | **yes** | `UnmatchedContentMD5` | ETag = **UUID** |
+| Alibaba OSS | **409** `FileAlreadyExists` | **no — `400 NotImplemented`** | **silently ignored** | `InvalidDigest` | ETag = md5 hex (uppercase) |
+
+Read across the rows, three design consequences follow directly:
+
+1. **Four providers can carry `fencing_mode::compare_and_swap`; OSS cannot.**
+   Requirement 9.8's compile-time unavailability applies to exactly one
+   provider, which is the outcome the plan anticipated and forbade working
+   around.
+2. **`object_version` must stay opaque.** It is an MD5 hex on two providers, a
+   UUID on one, a timestamp token on one and a decimal counter carried as a
+   query parameter on the last.
+3. **Requirement 7's local ETag check applies to only two providers.** On Azure,
+   GCS and OCI the ETag is not a function of the content, and local verification
+   must read `Content-MD5` / `md5Hash` / `opc-content-md5` instead. The
+   end-to-end service-side check, by contrast, is available on **all five** —
+   in five different spellings, none of which a client may guess.

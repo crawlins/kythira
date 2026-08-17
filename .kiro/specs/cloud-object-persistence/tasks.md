@@ -1,6 +1,6 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-4 done; task 0 closed for Alibaba and S3
+## Status: tasks 1-4 done; task 0 closed for all five providers except 0.2, 0.4 and 0.7
 
 **Done:** the seam (task 1), the generic engine (task 2) and the Alibaba
 instantiation (task 3), August 15, 2026. Together they add **no capability on
@@ -36,8 +36,22 @@ produce is a **409 `ConditionalRequestConflict`** — 53 racing losers, all 412 
 so the 412/409 mapping stays a documentation-derived rule with a mandatory
 unit case rather than becoming "409 never happens".
 
-**Azure Blob, GCS and OCI cells remain open**, and tasks 5-6 wait on them —
-but nothing external blocks them now. **All five providers have a bucket**
+**Task 0, Azure Blob / GCS / OCI: closed live, August 17, 2026** (Findings
+11-13), which unblocks tasks 5 and 6. All three express every conditional
+primitive, **conditional delete included** — so **four of the five providers
+can carry `compare_and_swap` and only Alibaba OSS cannot**, exactly the
+outcome Requirement 9.8 exists for. Two results are worth carrying into the
+client tasks because they are the opposite of a convergence: **Azure answers
+409 `BlobAlreadyExists` to create-only but 412 `ConditionNotMet` to
+`If-Match`** — one provider, two statuses, both meaning "you lost" — and the
+**ETag is a content MD5 on only two of the five** (S3, OSS), being a UUID on
+OCI, an opaque timestamp token on Azure and an opaque token on GCS, whose
+version is a decimal **generation carried as a query parameter**. What remains
+of task 0 is 0.2 (an OCI documentation search), 0.4 (per-provider size limits)
+and 0.7 (`fake-gcs-server` fidelity, which needs a container runtime this host
+does not have).
+
+**All five providers have a bucket**
 (task 17's bucket half, done August 16, 2026: `kythira-ci-827617851594` on S3,
 `kythirarealtestobj`/`kythira-raft` on Azure Blob,
 `kythira-ci-prefab-sky-500619-s9` on GCS; OCI and Alibaba already had one), and
@@ -48,9 +62,14 @@ wrong for least-privilege CI — and **GCP's user credential is expired**, thoug
 application-default credentials still work via
 `CLOUDSDK_AUTH_ACCESS_TOKEN`. Full table in spike-notes.md.
 
-The probes live in `scripts/object-store-probes/`; adding a provider means a
-sibling of `probe_alibaba_oss.py`, reusing its status-code-based verdicts
-rather than re-deriving them.
+The probes live in `scripts/object-store-probes/` — one per provider, all five
+written and run. The shared rule they encode is in `probe_common.py`: verdicts
+key on the **status and the service's own error code**, never on the effect;
+`cas_verdict()` refuses to call CAS usable unless a *correct* precondition is
+accepted, which is what caught a probe bug that read exactly like "OCI cannot
+do CAS"; and response headers are case-insensitive, because OCI spells the
+ETag header `etag` and a plain dict lookup silently yielded an empty
+precondition.
 
 One thing in this plan has already been **live-verified**, which is why the
 plan is shaped the way it is:
@@ -120,25 +139,30 @@ Reference implementations to study before starting, in this order:
   Every cell marked OPEN in design.md's Data Models tables is a sub-item
   here, and none of them may be closed by analogy to another provider.
 
-  - [~] 0.1 **List-after-write, empirically** — for Azure Blob, OCI Object
+  - [x] 0.1 **List-after-write, empirically** — for Azure Blob, OCI Object
         Storage and Alibaba OSS (S3 and GCS document it explicitly and need
         only a confirming run). Write N objects under a fresh prefix, LIST
         immediately, assert all N appear; repeat under concurrency. This is
         the one consistency question the engine cannot detect at runtime —
         a lagging listing produces a silently short log at recovery — so
         documentation is deliberately the weaker evidence.
-        **Alibaba OSS and AWS S3: CLOSED live** — 3 × 25 objects, immediate
-        LIST, complete every round on both (spike-notes.md Findings 5 and 10).
-        OSS is recorded as *empirically consistent* rather than guaranteed,
-        since the vendor publishes no listing-specific statement; S3's run
-        confirms documentation that is already explicit. **Azure Blob and OCI
-        remain open.**
+        **CLOSED for all five, live** — 3 × 25 objects, immediate LIST,
+        complete every round on every provider (spike-notes.md Findings 5, 10,
+        11, 12, 13). OSS, **Azure Blob and OCI** are recorded as *empirically
+        consistent* rather than guaranteed, since none of those three vendors
+        publishes a listing-specific statement; S3's and GCS's runs confirm
+        documentation that is already explicit. One methodological correction
+        came out of the OCI run and is now part of the check: the comparison is
+        **listing-versus-acknowledged-writes**, never listing-versus-25 — a
+        round where PUTs were refused and the listing is correspondingly short
+        is a complete listing, and reading it otherwise invents a consistency
+        defect out of an authorization flake.
   - [ ] 0.2 **Durability-on-response wording for OCI.** Find or fail to find
         primary documentation that a 2xx PUT means durably stored before the
         response. If it does not exist, say so in that provider's section
         rather than letting the four confirmed providers' wording stand in
         for it (Requirement 4.2's honesty rule).
-  - [~] 0.3 **The conditional-write matrix, live, per provider** — create-only
+  - [x] 0.3 **The conditional-write matrix, live, per provider** — create-only
         precondition, If-Match overwrite, conditional delete: exact header
         spelling, exact status code on rejection, and behaviour under
         concurrency. Three cells decide real design outcomes: **S3's 412 vs
@@ -166,39 +190,75 @@ Reference implementations to study before starting, in this order:
         `ConditionalRequestConflict` was not elicited** — 53 racing losers, all
         412 — so the 412/409 split stays a documentation-derived rule with a
         mandatory unit case, explicitly not "409 does not happen"
-        (spike-notes.md Finding 10). **Azure Blob, GCS and OCI remain open.**
+        (spike-notes.md Finding 10).
+        **Azure Blob, GCS and OCI: CLOSED live, August 17, 2026** (Findings
+        11-13). All three express every primitive, conditional delete included
+        — which closes the OCI cell this plan called unconfirmed and makes
+        **four of five providers fenceable; only OSS is not**. The rejection
+        spellings do not converge and must not be guessed: **Azure answers 409
+        `BlobAlreadyExists` for create-only but 412 `ConditionNotMet` for
+        `If-Match`** — one provider, two statuses, both meaning "you lost" —
+        while GCS answers 412 `conditionNotMet` to both (via generation *query
+        parameters*, not headers) and OCI answers 412 `IfNoneMatchFailed` /
+        `IfMatchFailed`. Set against S3's 409 meaning "retry", the rule stands
+        reinforced: **no client may map a bare status; it must read the error
+        code.**
   - [ ] 0.4 **Single-PUT size limits** per provider; `max_object_bytes`'s
         default is chosen from the smallest (Requirement 7.3).
-  - [~] 0.5 **Checksum spelling** per provider — `Content-MD5` where
+  - [x] 0.5 **Checksum spelling** per provider — `Content-MD5` where
         universally supported, the provider's native header where preferred
         — and for which providers the returned ETag is a deterministic
         function of single-part content (Requirement 7.2).
-        **Alibaba OSS and AWS S3: CLOSED live** — `Content-MD5` is verified
-        end to end on both, and on both the ETag is the MD5 hex of single-part
-        content, so both halves of Requirement 7 apply. The spellings differ
-        and a client must not assume: mismatch is **`InvalidDigest`** on OSS
-        and **`BadDigest`** on S3, and the ETag is **uppercase** on OSS,
-        **lowercase** on S3 — so a local ETag check must compare
-        case-insensitively (spike-notes.md Findings 4 and 10). **Other
-        providers open.**
-  - [ ] 0.6 **Azure Blob: REST vs SDK decision checkpoint.** The recorded
-        decision is hand-rolled REST over httplib with an AAD bearer token,
-        avoiding a new unconditional dependency. IF the surface proves
-        materially harder than documented — container-level auth quirks, an
-        undocumented required header, listing pagination surprises — THEN
-        record the fallback to `azure-storage-blobs-cpp` (12.18.0, present
-        in the registry) and why.
-  - [ ] 0.7 **GCS mock tier decision.** No Google-supplied GCS emulator
+        **CLOSED for all five, live.** The service-side check exists
+        everywhere and is spelled differently everywhere — `InvalidDigest`
+        (OSS), `BadDigest` (S3), `Md5Mismatch` (Azure), `invalid` (GCS),
+        `UnmatchedContentMD5` (OCI) — so a client may not guess it and a
+        *probe* may not treat "any 4xx" as proof the digest was checked (that
+        mistake produced a false "VERIFIED" line once; Finding 13).
+        **Requirement 7's two halves come apart**: the ETag is the MD5 hex of
+        single-part content only on **S3 (lowercase) and OSS (uppercase)** — so
+        a local ETag check must compare case-insensitively — while Azure's ETag
+        is an opaque timestamp token, OCI's is a **UUID** and GCS's is an
+        opaque token. On those three, local verification must read
+        `Content-MD5` / `opc-content-md5` / the `md5Hash` metadata field
+        instead, all three of which were confirmed to match the content
+        (spike-notes.md Findings 4, 10, 11, 12, 13).
+  - [x] 0.6 **Azure Blob: REST vs SDK decision checkpoint** — **closed in
+        favour of the recorded decision, August 17, 2026.** The probe
+        (`probe_azure_blob.py`) *is* the hand-rolled surface, and nothing about
+        it was harder than documented: a bearer token from the CLI's own
+        resolver, one dated `x-ms-version`, `x-ms-blob-type: BlockBlob` on PUT,
+        `?restype=container&comp=list&prefix=` for listing. No
+        `azure-storage-blobs-cpp` dependency is needed. Three details the
+        client header must record because each is a plausible wrong guess:
+        **success is 201 on PUT and 202 on DELETE**, the machine-readable error
+        code is the **`x-ms-error-code` response header**, and a bodiless PUT
+        still needs an explicit `Content-Length: 0` (Finding 11).
+  - [~] 0.7 **GCS mock tier decision.** No Google-supplied GCS emulator
         exists. Assess `fake-gcs-server`'s fidelity **specifically on
         generation preconditions**; if it is not trustworthy there, the
         fallback is a hand-written mock. Emulator fidelity on the newest,
         least uniformly implemented feature in this design is exactly what
         cannot be assumed.
-  - [ ] 0.8 **OCI namespace and endpoint.** Confirm the `objectstorage`
-        regional endpoint spelling and whether the namespace must be
-        resolved via the API or can be configured — `oci_http_client`'s
-        header already records that OCI's domain is per service and not
-        derivable from one template, a lesson that cost two defects.
+        **Still open, and deliberately not guessed at** — it needs the emulator
+        run and this development host has no container runtime. What the live
+        run *did* produce is the **fidelity bar**, now stated as measurements
+        rather than expectations (Finding 12): `ifGenerationMatch=0` on an
+        existing object must be **412 `conditionNotMet`** and must leave the
+        object unchanged; a stale `ifGenerationMatch` must refuse an upload
+        *and* a delete; and the generation must advance on every write.
+  - [x] 0.8 **OCI namespace and endpoint** — **closed live, August 17,
+        2026** (Finding 13). The endpoint is
+        `https://objectstorage.<region>.oraclecloud.com` and the namespace is
+        **both** configurable and resolvable: `GET /n/` returns it as a bare
+        JSON string. `oci_object_storage_client` should therefore accept a
+        configured namespace and resolve-and-cache only when none is given —
+        one call at construction, never per request.
+        **One signing consequence, found by writing the signer:**
+        `oci_signing.hpp` signs `content-type: application/json` as a
+        constant, because every existing caller is a control-plane API. Object
+        storage is a data plane with opaque bodies, so the signed content type
+        must become a **parameter** as part of task 10's raw-bytes path.
   - Verify: `spike-notes.md` exists with a finding per sub-item; **every
     OPEN cell in design.md's three Data Models tables is now either
     CONFIRMED with a citation or CORRECTED in place**; no cell was closed by
