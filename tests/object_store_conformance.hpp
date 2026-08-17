@@ -164,6 +164,36 @@ template<typename Harness> struct cases {
         return out;
     }
 
+    /// @brief Whether the store was never asked for exactly `request`.
+    ///
+    /// A helper rather than an inline `std::none_of`, because the obvious inline
+    /// form is **undefined behaviour**: `request_log()` returns the log **by
+    /// value**, so `h.request_log().begin()` and `h.request_log().end()` are
+    /// iterators into two *different* vectors. Which of two wrong things happens
+    /// then depends only on where the allocator put the second buffer, and both
+    /// were observed:
+    ///
+    ///   * second buffer **below** the first → `last - first` is negative, and
+    ///     libstdc++'s random-access `__find_if` computes that distance once, so
+    ///     the loop never runs and `none_of` returns `true` having read nothing.
+    ///     The assertion passes **vacuously** — which is what this file did on
+    ///     x64 for months, checking nothing while looking green;
+    ///   * second buffer **above** the first → it walks that many elements from
+    ///     the first buffer's start, reading past its end and comparing whatever
+    ///     follows as a `std::string`. Confirmed under ASan as a
+    ///     `heap-buffer-overflow` READ inside `std::string::size()`; when the
+    ///     garbage string's data pointer happens to be null, it faults — which is
+    ///     what arm64 did the moment an unrelated change moved the heap.
+    ///
+    /// So the inline form is either a silent no-op or a crash, never a test.
+    /// Every case that searches the log goes through here so the shape cannot
+    /// come back.
+    static auto never_requested(const Harness& h, const std::string& request) -> bool {
+        const std::vector<std::string> log = h.request_log();
+        return std::none_of(log.begin(), log.end(),
+                            [&request](const std::string& r) { return r == request; });
+    }
+
     static auto options_with_retention(std::size_t n) -> object_persistence_options {
         object_persistence_options opts;
         opts.snapshot_retention = n;
@@ -727,11 +757,10 @@ template<typename Harness> struct cases {
         h.seed(retained_key(h, 4), "{\"last_included_index\": \"ten\"");
 
         engine_t eng2 = h.make_engine(options_with_retention(3));
+        BOOST_TEST(eng2.load_snapshot().has_value());
         BOOST_TEST(eng2.load_snapshot()->last_included_index() == 6U);
         // …and it was never even fetched.
-        BOOST_TEST(
-            std::none_of(h.request_log().begin(), h.request_log().end(),
-                         [&h](const std::string& r) { return r == "GET " + retained_key(h, 4); }));
+        BOOST_TEST(never_requested(h, "GET " + retained_key(h, 4)));
     }
 
     /// Requirement 8.5 / Property 9: pruning deletes only keys whose index
