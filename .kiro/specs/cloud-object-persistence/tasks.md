@@ -1,6 +1,6 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-10 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-11 done; task 0 closed except 0.7 (needs a container runtime)
 
 **The client wave is complete, August 17, 2026.** Tasks 7, 8, 9 and 10
 (`aws_s3_client`, `azure_blob_client`, `gcp_gcs_client`,
@@ -10,13 +10,11 @@ open: `alibaba_oss_client` now signs and sends `Content-MD5` and declares
 shipped provider, re-verified live. **All five providers now have a client**,
 and `object_store_persistence_engine` is generic over every one of them.
 
-Next is task 11 (build integration). Part of it is already done as a
-consequence of task 9 and should not be re-derived: the `GCP_STORAGE` Kconfig
-symbol, its `find_package(google_cloud_cpp_storage)` gate, both defconfigs, the
-`storage` entry in `vcpkg.json` and DEPENDENCIES.md all landed with the GCS
-client, because that client cannot compile without them. What task 11 still
-owes is the four `*_PERSISTENCE` selector symbols and the all-gates-off
-verification.
+**Task 11 (build integration) is also done**: every provider is now
+independently gateable, and each gate was verified to remove its target rather
+than merely to print that it had. `configs/no_cloud_defconfig` makes
+Requirement 16.3's all-providers-off configuration reproducible — 213
+conformance cases pass in it. Next is task 12 (the backup catalog).
 
 One honest distinction to carry into task 18: `alibaba_oss_client` is
 **live-verified** end to end. `aws_s3_client`, `azure_blob_client`,
@@ -1081,32 +1079,75 @@ Reference implementations to study before starting, in this order:
     there would break two shipped, live-verified OCI components.
   - _Requirements: 15.1–15.5, 17.4_
 
-- [ ] 11. **Build integration**
+- [x] 11. **Build integration** — done August 17, 2026. Every provider is now
+      independently gateable, and each gate was verified to actually *gate*
+      rather than merely to print that it did.
 
-  - **Partly done already, by task 9 — do not re-derive it.** `GCP_STORAGE`
-    (Kconfig, deliberately *not* depending on `GCP_SDK`), its
-    `find_package(google_cloud_cpp_storage)` gate defining
-    `KYTHIRA_HAS_GCP_STORAGE`, `CONFIG_GCP_STORAGE` in `ci_full_defconfig`
-    (off) and `ci_gcp_defconfig` (on), the `storage` entry in `vcpkg.json`'s
-    `gcp` feature and DEPENDENCIES.md all landed with `gcp_gcs_client`,
-    because that client cannot compile without them.
-  - Kconfig, still owed: `AWS_S3_PERSISTENCE` (depends on `AWS_SDK`),
-    `AZURE_BLOB_PERSISTENCE` and `OCI_OBJECT_PERSISTENCE` (depend on
-    `HTTP_TRANSPORT_TLS`, the no-SDK-to-find shape `OCI_QUORUM_MANAGER` and
-    `ALIBABA_OSS_PERSISTENCE` already use), and `GCP_STORAGE_PERSISTENCE`.
-    Help text follows the existing convention of saying whether a symbol gates
-    a `find_package` or only selects what is built, and invents **no**
-    `KYTHIRA_HAS_*` counterpart where nothing is being found.
-  - `find_package` + gate wiring in `CMakeLists.txt`: **done** (GCS only; S3,
-    Azure Blob and OCI need none).
-  - `DEPENDENCIES.md`: **done** — the `storage` component on the opt-in `gcp`
-    feature, and nothing else, since S3, Azure and OCI add no dependency.
-  - Verify: a build with **every** cloud gate off still compiles
-    `key_object_store.hpp`, `object_store_persistence.hpp` and
-    `object_store_backup.hpp` and still runs the conformance suite against
-    `mock_object_store`; each disabled provider produces a named
-    configure-time STATUS message.
-  - _Requirements: 16.1–16.5_
+      **Four new Kconfig symbols**, each in its provider's existing menu:
+      `AWS_S3_PERSISTENCE` (depends on `AWS_SDK`), `AZURE_BLOB_PERSISTENCE`
+      (depends on `HTTP_TRANSPORT_TLS && AZURE_SDK`), `OCI_OBJECT_PERSISTENCE`
+      (depends on `HTTP_TRANSPORT_TLS`) and `GCP_STORAGE_PERSISTENCE` (depends
+      on `GCP_STORAGE`). None invents a `KYTHIRA_HAS_*` counterpart, because
+      none gates a `find_package`: they select what is *built*. `GCP_STORAGE`
+      and its `find_package` had already landed with task 9, since
+      `gcp_gcs_client` could not compile without them.
+
+      Two of those dependencies are worth stating, because both look wrong at a
+      glance:
+
+      - **`AZURE_BLOB_PERSISTENCE` depends on `AZURE_SDK`** even though task 0.6
+        decided to take **no** `azure-storage-blobs-cpp` dependency and the
+        client speaks Blob REST over httplib. What it needs from
+        azure-core/azure-identity is the **credential chain** its bearer token
+        comes from. The decision to avoid the storage SDK stands.
+      - **`OCI_OBJECT_PERSISTENCE` joins the `KYTHIRA_OCI_SHARED` condition**
+        rather than sitting beside it. `oci_object_storage_client` is built on
+        `oci_http_client` and `oci_signing`, so a configuration wanting object
+        persistence with the quorum manager and certificate provider both off
+        would otherwise ask for a client whose transport was never built.
+
+      **The gates select something, and that was checked in both directions.**
+      A symbol that gates nothing is worse than no symbol — this tree already
+      has the scar, `COAP_TRANSPORT` having been inert for months while
+      appearing to work. So each of the four client suites is now gated on its
+      symbol, and:
+
+      - with `configs/no_cloud_defconfig`, all four targets are **absent** from
+        the generated build and `ctest -N` lists none of them — not merely
+        reported as skipped;
+      - with the gates on (`build-default`, and `build-gcp` for GCS) all four
+        are **present**, which is the control that makes the absence mean
+        something;
+      - turning off **one** symbol removes **one** target and leaves the others
+        present, so the gates are independent rather than all-or-nothing.
+
+      **`configs/no_cloud_defconfig` is new**, and exists so Requirement 16.3 is
+      reproducible instead of reconstructed by hand. It is deliberately *not*
+      "minimal_defconfig plus more": `minimal_defconfig` also turns off
+      `HTTP_TRANSPORT_TLS`, which reaches far past the cloud providers, so a
+      failure under it would not say whether the cloud gating or the TLS layer
+      caused it. Everything in the new file is left at its default except the
+      cloud symbols.
+
+      **Verify, as written:** with **every** cloud gate off,
+      `key_object_store.hpp` and `object_store_persistence.hpp` still compile
+      and `object_store_persistence_unit_test` still runs the conformance suite
+      against `mock_object_store` — **213 cases, green**. Every disabled
+      provider prints a named configure-time STATUS message
+      (`aws_s3_client disabled (CONFIG_AWS_S3_PERSISTENCE=n)` and its three
+      siblings). Both strict-mode defconfigs still configure clean:
+      `ci_full_defconfig` (which resolves `GCP_STORAGE_PERSISTENCE` to off
+      purely through `depends on`, with no explicit entry needed — it is listed
+      anyway, matching how `GCP_PRIVATECA` is) and `ci_gcp_defconfig`, whose
+      GCS suite builds and passes 45/45 under it.
+
+      **Two items of Requirement 16 are NOT closed here, and cannot be**, since
+      they name things that do not exist yet: 16.3's `object_store_backup.hpp`
+      (task 12) and 16.4's `cmd/raft_object_backup` provider reporting
+      (task 13). Both are unconditional-compilation obligations of the same
+      kind this task discharged for the engine, and each task owes its own.
+      - _Requirements: 16.1, 16.2, 16.5 (16.3 partly — the backup header is
+        task 12; 16.4 is task 13)_
 
 - [ ] 12. **Backup catalog**
 

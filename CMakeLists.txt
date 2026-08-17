@@ -356,15 +356,26 @@ kythira_kconfig_require(GRPC_TRANSPORT GRPC_TRANSPORT_FOUND "grpc")
 # is why adding a `require` here would assert something that cannot be false.
 kythira_kconfig_gate(OCI_QUORUM_MANAGER)
 kythira_kconfig_gate(OCI_CERTIFICATES_PROVIDER)
-if(_KYTHIRA_GATE_OCI_QUORUM_MANAGER OR _KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER)
-    # The signing/HTTP layer is shared, so it is built when *either* provider is
-    # wanted rather than being duplicated under each.
+kythira_kconfig_gate(OCI_OBJECT_PERSISTENCE)
+if(_KYTHIRA_GATE_OCI_QUORUM_MANAGER OR _KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER
+        OR _KYTHIRA_GATE_OCI_OBJECT_PERSISTENCE)
+    # The signing/HTTP layer is shared, so it is built when *any* of the three
+    # components is wanted rather than being duplicated under each.
+    #
+    # OCI_OBJECT_PERSISTENCE belongs in this condition and not merely beside it:
+    # oci_object_storage_client is built on oci_http_client and oci_signing, so a
+    # configuration that wanted object persistence with both other components off
+    # would otherwise ask for a client whose transport was never built.
     set(KYTHIRA_OCI_SHARED TRUE)
     message(STATUS "OCI support: enabled (quorum_manager=${_KYTHIRA_GATE_OCI_QUORUM_MANAGER}, "
-                   "certificates_provider=${_KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER})")
+                   "certificates_provider=${_KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER}, "
+                   "object_persistence=${_KYTHIRA_GATE_OCI_OBJECT_PERSISTENCE})")
 else()
     set(KYTHIRA_OCI_SHARED FALSE)
     message(STATUS "OCI support: disabled by Kconfig")
+endif()
+if(NOT _KYTHIRA_GATE_OCI_OBJECT_PERSISTENCE)
+    message(STATUS "oci_object_storage_client disabled (CONFIG_OCI_OBJECT_PERSISTENCE=n)")
 endif()
 
 # alibaba-cloud-services spec: ESS quorum management and OSS-backed Raft
@@ -1114,6 +1125,18 @@ else()
     message(STATUS "AWS ACM Private CA SDK component not found — aws_acm_pca_provider disabled")
 endif()
 
+# ── AWS S3 object persistence (aws_s3_client) ─────────────────────────────────
+# No find_package and no kythira_kconfig_require: the `s3` component this needs
+# is already in the unconditional AWSSDK component list the AWS_SDK block above
+# resolves, so this gate answers "is S3 object persistence wanted?" rather than
+# "was a dependency found?" — the shape the OCI and Alibaba blocks below use.
+kythira_kconfig_gate(AWS_S3_PERSISTENCE)
+if(_KYTHIRA_GATE_AWS_S3_PERSISTENCE)
+    message(STATUS "AWS S3 object persistence: enabled (aws_s3_client)")
+else()
+    message(STATUS "aws_s3_client disabled (CONFIG_AWS_S3_PERSISTENCE=n)")
+endif()
+
 # ── GCP Compute Engine SDK (gcp_compute_quorum_manager, gcp_mig_quorum_manager) ─
 # google-cloud-cpp ships one CMake package per API surface; the two quorum
 # managers need the compute_instances, compute_instance_group_managers, and
@@ -1217,6 +1240,17 @@ else()
         "(configure with --x-feature=gcp to enable the GCS persistence backend)")
 endif()
 
+# Separate from the find_package above on purpose: that one answers "was the
+# storage component found?", this one answers "do we want the GCS persistence
+# backend built?". Kconfig's `depends on GCP_STORAGE` keeps the second from
+# being selectable without the first.
+kythira_kconfig_gate(GCP_STORAGE_PERSISTENCE)
+if(_KYTHIRA_GCP_STORAGE_FOUND AND _KYTHIRA_GATE_GCP_STORAGE_PERSISTENCE)
+    message(STATUS "GCP Cloud Storage object persistence: enabled (gcp_gcs_client)")
+elseif(NOT _KYTHIRA_GATE_GCP_STORAGE_PERSISTENCE)
+    message(STATUS "gcp_gcs_client disabled (CONFIG_GCP_STORAGE_PERSISTENCE=n)")
+endif()
+
 # ── Azure SDK (azure_vm_quorum_manager, azure_vmss_quorum_manager) ───────────
 kythira_find_optional(AZURE_SDK azure-core-cpp CONFIG)
 kythira_find_optional(AZURE_IDENTITY azure-identity-cpp CONFIG)
@@ -1259,6 +1293,20 @@ if(azure-security-keyvault-keys-cpp_FOUND)
     target_link_libraries(network_simulator INTERFACE Azure::azure-security-keyvault-keys)
 else()
     message(STATUS "Azure Key Vault Keys SDK not found — azure_key_vault_ca_provider disabled")
+endif()
+
+# ── Azure Blob object persistence (azure_blob_client) ─────────────────────────
+# No find_package and no kythira_kconfig_require, and this one is worth being
+# explicit about: task 0.6 decided to take **no** azure-storage-blobs-cpp
+# dependency, so the client speaks the Blob REST API over httplib directly. What
+# it uses azure-core/azure-identity for is the credential chain its bearer token
+# comes from — which the AZURE_SDK block above already found. So this gate
+# answers "is Blob object persistence wanted?", not "was a storage SDK found?".
+kythira_kconfig_gate(AZURE_BLOB_PERSISTENCE)
+if(_KYTHIRA_GATE_AZURE_BLOB_PERSISTENCE)
+    message(STATUS "Azure Blob object persistence: enabled (azure_blob_client)")
+else()
+    message(STATUS "azure_blob_client disabled (CONFIG_AZURE_BLOB_PERSISTENCE=n)")
 endif()
 
 # When ON, azure_quorum_manager_real_test/azure_key_vault_ca_provider_real_test

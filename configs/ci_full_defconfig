@@ -43,7 +43,10 @@
 #                             the other two even though `storage` is in
 #                             google-cloud-cpp's own default feature set:
 #                             what these legs lack is the whole port, not a
-#                             component of it.
+#                             component of it. GCP_STORAGE_PERSISTENCE would
+#                             follow from `depends on GCP_STORAGE` anyway and
+#                             is listed explicitly regardless, the same way
+#                             GCP_PRIVATECA is.
 #   DNS_DISCOVERY           — libldns is in no CI image; the rfc1035/rfc2136
 #                             discovery tests have never run in CI. Turning
 #                             the symbol off records that honestly instead of
@@ -63,5 +66,6 @@ CONFIG_PROTOBUF_SERIALIZER=y
 # CONFIG_GCP_SDK is not set
 # CONFIG_GCP_PRIVATECA is not set
 # CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
 # CONFIG_DNS_DISCOVERY is not set
 # CONFIG_POCO_DISCOVERY is not set

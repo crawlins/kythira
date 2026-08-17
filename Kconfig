@@ -238,6 +238,22 @@ config AWS_ACM_PCA
 	  defines the acm-pca imported target on a component-scoped call.
 	  Backs KYTHIRA_HAS_AWS_ACM_PCA.
 
+config AWS_S3_PERSISTENCE
+	bool "AWS S3 object persistence (aws_s3_client)"
+	depends on AWS_SDK
+	default y
+	help
+	  Builds aws_s3_client, the S3 member of the key_object_store family
+	  that object_store_persistence_engine is generic over, and its unit
+	  suite. Selects what is *built*; it gates no find_package of its own
+	  and has no KYTHIRA_HAS_* counterpart, because the s3 component it
+	  needs is already in the unconditional AWSSDK component list that
+	  AWS_SDK's own probe resolves.
+
+	  Depends on AWS_SDK for that reason: unlike the Azure, OCI and Alibaba
+	  object clients, this one is written against a vendor SDK rather than
+	  against the REST API directly.
+
 endmenu # AWS Integration
 
 menu "GCP Integration"
@@ -272,6 +288,21 @@ config GCP_STORAGE
 	  a node that persists Raft state in GCS has no reason to also carry the
 	  Compute quorum managers. Backs KYTHIRA_HAS_GCP_STORAGE.
 
+config GCP_STORAGE_PERSISTENCE
+	bool "GCP Cloud Storage object persistence (gcp_gcs_client)"
+	depends on GCP_STORAGE
+	default y
+	help
+	  Builds gcp_gcs_client, the GCS member of the key_object_store family,
+	  and its unit suite. Selects what is *built*: the find_package it
+	  relies on is GCP_STORAGE's, so this symbol invents no KYTHIRA_HAS_*
+	  counterpart of its own.
+
+	  Split from GCP_STORAGE rather than folded into it so that the two
+	  questions stay separate — "was the storage component found?" and "do
+	  we want the GCS persistence backend built?" — matching how
+	  ALIBABA_OSS_PERSISTENCE is independent of the Alibaba quorum manager.
+
 endmenu # GCP Integration
 menu "Azure Integration"
 
@@ -290,6 +321,24 @@ config AZURE_KEY_VAULT
 	  find_package(azure-security-keyvault-keys-cpp CONFIG) — independently
 	  found even though it depends on AZURE_SDK for credential types.
 	  Backs KYTHIRA_HAS_AZURE_KEY_VAULT.
+
+config AZURE_BLOB_PERSISTENCE
+	bool "Azure Blob object persistence (azure_blob_client)"
+	depends on HTTP_TRANSPORT_TLS && AZURE_SDK
+	default y
+	help
+	  Builds azure_blob_client, the Azure member of the key_object_store
+	  family, and its unit suite. Selects what is *built* and gates no
+	  find_package of its own, so it has no KYTHIRA_HAS_* counterpart —
+	  the same no-SDK-to-find shape OCI_OBJECT_PERSISTENCE and
+	  ALIBABA_OSS_PERSISTENCE use.
+
+	  Requires HTTP_TRANSPORT_TLS because the client speaks the Blob REST
+	  API over httplib and Azure is https-only, and that symbol is what
+	  defines CPPHTTPLIB_OPENSSL_SUPPORT. It also depends on AZURE_SDK,
+	  which is NOT a storage SDK dependency — task 0.6's decision to take
+	  no azure-storage-blobs-cpp dependency stands. What it needs from
+	  azure-identity is the credential chain the bearer token comes from.
 
 endmenu # Azure Integration
 
@@ -338,6 +387,23 @@ config OCI_CERTIFICATES_PROVIDER
 
 	  Requires HTTP_TRANSPORT_TLS, for the same reason OCI_QUORUM_MANAGER
 	  does.
+
+config OCI_OBJECT_PERSISTENCE
+	bool "OCI Object Storage object persistence (oci_object_storage_client)"
+	depends on HTTP_TRANSPORT_TLS
+	default y
+	help
+	  Builds oci_object_storage_client, the OCI member of the
+	  key_object_store family, and its unit suite. Like the two OCI symbols
+	  above it gates no find_package and has no KYTHIRA_HAS_* counterpart:
+	  there is no OCI SDK to look for, and the client reuses oci_signing /
+	  oci_http_client, so Instance Principal auth comes along for free.
+
+	  Independent of OCI_QUORUM_MANAGER rather than depending on it — they
+	  share the signing layer but neither uses the other, the same sibling
+	  relationship ALIBABA_OSS_PERSISTENCE has.
+
+	  Requires HTTP_TRANSPORT_TLS for the reason the two symbols above do.
 
 endmenu # OCI Integration
 
