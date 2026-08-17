@@ -1,6 +1,13 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-5 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-7 done; task 0 closed except 0.7 (needs a container runtime)
+
+**Task 7 (`aws_s3_client`) is done, August 17, 2026** — the first of the four
+clients, and with it the one piece task 6 left open: `alibaba_oss_client` now
+signs and sends `Content-MD5` and declares `version_is_content_md5`, so both
+halves of Requirement 7 hold for the one shipped provider, re-verified live.
+Tasks 8-10 (Azure Blob, GCS, OCI) remain, still parallelizable, still depending
+only on the concept.
 
 **Done:** the seam (task 1), the generic engine (task 2) and the Alibaba
 instantiation (task 3), August 15, 2026. Together they add **no capability on
@@ -599,6 +606,43 @@ Reference implementations to study before starting, in this order:
       rather than smuggled in here. Note the two encodings when it is done:
       `Content-MD5` is **base64 of the raw 16 bytes**, the ETag is **hex**.
 
+      **Closed with task 7, August 17, 2026.** `alibaba_oss_client` now signs and
+      sends `Content-MD5` on every PUT and declares `version_is_content_md5`, so
+      both halves of Requirement 7 now hold for the one shipped provider. Two
+      consequences were found by making the change rather than reasoned about
+      beforehand, and both are the interesting part:
+
+      - **Declaring the trait turned two mocks' invented ETags into a defect.**
+        `alibaba_oss_persistence_unit_test`'s bucket returned **no ETag at all**
+        and `alibaba_mock_server.hpp` returned a truncated SHA-256. Harmless
+        placeholders while nothing compared them; the moment the engine verifies
+        every PUT's returned version, each of them fails every write in its file.
+        Both now mint the ETag OSS actually returns — the content MD5 in
+        **uppercase hex, quoted** — which makes those suites a negative control
+        for the verification rather than a casualty of it.
+      - **Both mocks now verify the digest** and answer `InvalidDigest` on a
+        mismatch, as live OSS does. A `Content-MD5` no mock reads is a header
+        that is transmitted, not a check that is performed.
+
+      The signing half needed no change to `alibaba_signing`: OSS V4 canonicalises
+      `content-md5` when the request carries one, by exactly the rule it uses for
+      `content-type`, and the mock server derives its signed set **from what
+      arrived** — so a header sent outside the signed set fails as
+      `SignatureDoesNotMatch` rather than passing quietly.
+
+      **Re-verified live, August 17, 2026, because this lands on a live-verified
+      component**: `alibaba_oss_persistence_real_test` 4/4 green against
+      `kythira-ci-5633986662052576` in `ap-southeast-1`, 65.7 s total (9.3 / 34.3
+      / 15.7 / 6.4 s per case), residual objects under the test prefix **0**,
+      counted from a listing. That run is what makes the trait declaration a
+      live fact rather than a documented expectation: real OSS accepted the
+      signed `Content-MD5` on every PUT — a header outside the signed set is
+      `SignatureDoesNotMatch`, a wrong digest is `InvalidDigest` — and every
+      real ETag matched the digest the engine computed locally. Three mutants
+      confirm the path is not inert: a mock minting a wrong ETag fails 30 cases
+      in the unit suite and 13 in the mock suite, and a client sending the digest
+      of the wrong bytes fails 14.
+
   - `verify_checksums` (default on): every PUT carries an end-to-end
     checksum the service verifies, per task 0.5's per-provider spelling;
     where the returned ETag is a deterministic function of single-part
@@ -611,7 +655,67 @@ Reference implementations to study before starting, in this order:
     outcome available here, so the error is the deliverable.
   - _Requirements: 7.1–7.4_
 
-- [ ] 7. **`aws_s3_client`**
+- [x] 7. **`aws_s3_client`** — done August 17, 2026, in
+      `include/raft/aws_s3_client.hpp`, with 29 cases in
+      `tests/aws_s3_client_unit_test.cpp` against a local `httplib::Server`. The
+      first of the four clients, and the only one that adds no dependency at
+      all: `${AWSSDK_LINK_LIBRARIES}` already carries `s3`.
+
+      **Every assertion is made against the bytes that arrived**, never against
+      the client's own fields — the value of a client is entirely what it puts
+      on the wire, and a test reading the client back would pass just as
+      happily if nothing were sent. The mock records requests and the test
+      thread asserts on them afterwards, rather than asserting inside a server
+      thread where a failure is reported against the wrong case.
+
+      Four decisions worth not re-deriving:
+
+      - **412 and 409 are read from the service's own error code, and the 409
+        test comes first.** Neither is modelled in `Aws::S3::S3Errors` — this
+        SDK has no `PRECONDITION_FAILED` enumerator — so both arrive as
+        `UNKNOWN` carrying the wire code in `GetExceptionName()`, and keying on
+        the error *type* would collapse them into one another. Testing
+        `ConditionalRequestConflict` before the 412 fallback means a future S3
+        that answered the conflict with some other 4xx still would not latch.
+      - **The SDK's flexible-checksum default is switched off**
+        (`requestChecksumCalculation = WHEN_REQUIRED`) and an explicit
+        `Content-MD5` sent instead. The default computes a CRC32 per request and
+        can move the body onto `aws-chunked` trailer framing to carry it; the
+        pinned header is in the encoding task 0.5 verified, and a case asserts
+        `x-amz-sdk-checksum-algorithm` and `x-amz-trailer` are absent from the
+        wire.
+      - **`delete_object_if` with `if_absent` throws.** S3's DeleteObject models
+        `If-Match` and **not** `If-None-Match`, so that precondition has no wire
+        spelling; the only alternative is an unconditional DELETE issued by a
+        caller who believes a guard is in place, which is Requirement 9.8's
+        doctrine one layer down. The engine never issues the combination — its
+        DELETEs are unconditional by design — so this guards a future caller.
+      - **The truncated-listing guard stops a hang, not just a short answer.**
+        Found by deleting it: the mutant did not fail the suite, it *hung* it.
+        An empty continuation token is carried into the next iteration, which
+        re-issues the identical request and receives the identical truncated
+        page, forever, holding the engine's mutex.
+
+      One residual is stated rather than glossed: `alibaba_oss_client` throws on
+      a listing that carries **no `<IsTruncated>` at all**, because it owns its
+      parser; the SDK's generated parser defaults that field to false, which
+      this client cannot tell from an explicit false. Real S3 always sends it,
+      so the difference is in what a *malformed* response does.
+
+      **Mutation-tested, and three of the first nine mutants survived — all
+      three because the mutation was inert, which is its own finding.** Removing
+      the `ConditionalRequestConflict` early-return changes nothing, because the
+      status fallback below it only fires when the error *code* is empty; the
+      same is true of the `NoSuchBucket` early-return. Both are defence against a
+      future reordering of those functions rather than against the service, and
+      the *real* bugs — keying the verdict on the 4xx class, or on a bare 404 —
+      are caught (3 and 1 failures). The third survivor is the addressing finding
+      above. Ten mutants in total are now caught: content-MD5 not sent (1), the
+      SDK's checksum default restored (4), SDK retries restored (4), a truncated
+      listing returned silently (1), `if_absent` DELETE silently unconditional
+      (2), `If-None-Match` not sent (1), precondition keyed on the status class
+      (3), 409 and 412 both latching (2), any 404 read as absence (1), and
+      path-style not forced on a hostname endpoint (1).
 
   - `include/raft/aws_s3_client.hpp` over `Aws::S3::S3Client`, gated by the
     existing `KYTHIRA_HAS_AWS_SDK`. **No `vcpkg.json` change** — the `s3`
