@@ -1,13 +1,19 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-7 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-8 done; task 0 closed except 0.7 (needs a container runtime)
 
-**Task 7 (`aws_s3_client`) is done, August 17, 2026** — the first of the four
-clients, and with it the one piece task 6 left open: `alibaba_oss_client` now
-signs and sends `Content-MD5` and declares `version_is_content_md5`, so both
-halves of Requirement 7 hold for the one shipped provider, re-verified live.
-Tasks 8-10 (Azure Blob, GCS, OCI) remain, still parallelizable, still depending
-only on the concept.
+**Tasks 7 and 8 (`aws_s3_client`, `azure_blob_client`) are done, August 17,
+2026** — the first two of the four clients, and with them the one piece task 6
+left open: `alibaba_oss_client` now signs and sends `Content-MD5` and declares
+`version_is_content_md5`, so both halves of Requirement 7 hold for the one
+shipped provider, re-verified live. **Three of the five providers now have a
+client**, and the two that can be fenced but are not yet written are GCS and OCI
+(tasks 9-10), still parallelizable and still depending only on the concept.
+
+One honest distinction to carry into task 18: `alibaba_oss_client` is
+**live-verified**; `aws_s3_client` and `azure_blob_client` are so far
+**documentation-derived plus a live task-0 probe of the wire questions they
+rest on**. Their own real suites are task 16.
 
 **Done:** the seam (task 1), the generic engine (task 2) and the Alibaba
 instantiation (task 3), August 15, 2026. Together they add **no capability on
@@ -737,7 +743,83 @@ Reference implementations to study before starting, in this order:
     assumed (a unit case counts requests against a failing endpoint).
   - _Requirements: 1.5, 12.1–12.5, 17.4_
 
-- [ ] 8. **`azure_blob_client`**
+- [x] 8. **`azure_blob_client`** — done August 17, 2026, in
+      `include/raft/azure_blob_client.hpp`, with 32 cases in
+      `tests/azure_blob_client_unit_test.cpp` against a local `httplib::Server`.
+      Task 0.6's decision held: no `azure-storage-blobs-cpp` dependency, no
+      SharedKey signing, AAD bearer token from the credential chain
+      `azure_client_config` already carries.
+
+      **The suite caught a bug that would have shipped, and it is the kind no
+      round-trip test can see.** `Azure::DateTime` is *not* a `system_clock`
+      time_point: its clock counts 100 ns ticks from **year 0001**. Reading
+      `ExpiresOn.time_since_epoch()` and treating it as a Unix duration put every
+      bearer token about two millennia in the future, so the first token was
+      cached forever and every write would have started failing an hour after
+      startup — in production, not in any test that only writes and reads back.
+      The refresh-margin case is what failed. `static_cast` to
+      `system_clock::time_point` (the explicit conversion operator azure-core
+      provides) is the only correct route.
+
+      Five decisions, each recorded in the header:
+
+      - **Both of Azure's rejection statuses latch**, and each is recognised by
+        its *error code*: 409 `BlobAlreadyExists` for a lost `If-None-Match: *`,
+        412 `ConditionNotMet` for a lost `If-Match`. Requirement 13.4's original
+        wording named only the 412 — which would have let a create-only collision,
+        the exact case that catches a stale leader appending log entries, pass as
+        an ordinary error and fence nothing. A 409 that is *not*
+        `BlobAlreadyExists` (a lease conflict, say) must not latch, and S3's 409
+        means the opposite outright, so the status is consulted only when no code
+        arrived, and then only for 412.
+      - **DELETE is not idempotent on the wire and is made so here.** Azure
+        answers **404 `BlobNotFound`** where S3 and OSS answer 204. The concept
+        requires an idempotent delete and the engine's truncation depends on it.
+        A 404 naming the *container* stays an error — swallowing that would let
+        an engine pointed at a non-existent container start up as though its
+        prefix were merely empty, and then delete "successfully".
+      - **`version_is_content_md5` is deliberately absent**, pinned by a
+        `static_assert` on the negative. Azure's ETag is an opaque timestamp
+        token, so declaring the trait would make the engine compare that token
+        against an MD5 and reject **every** write. The trait being a declaration
+        by the client rather than an inference by the engine is what makes this a
+        non-event. `Content-MD5` is still sent — 7.1's service-side half — and
+        Azure's GET-side `Content-MD5` response header is named as the route a
+        future local check would take.
+      - **Listing has no `IsTruncated` flag**, so the structural guard cannot be
+        "is the flag present". It is instead that the body must be an
+        `<EnumerationResults` document: without that, any unexpected 200 body
+        parses as *zero blobs*, which a persistence engine reads as an empty log
+        rather than as an error. An empty or absent `<NextMarker>` is how Blob
+        says "last page".
+      - **Blob listings have no `encoding-type` parameter** — the escape hatch
+        `alibaba_oss_client` uses to sidestep XML entities entirely does not exist
+        on this API — so names are XML-unescaped here. The engine's own keys never
+        contain a metacharacter; a foreign key under the same prefix can, and
+        returning it mangled would make the listing disagree with the store.
+
+      One deviation from the design sketch, recorded: the sketch's constructor
+      took `(azure_client_config, account, container)`, but the container **is**
+      the concept's `bucket` parameter and arrives per call. Storage-specific
+      settings live in a new `azure_blob_config` that embeds `azure_client_config`
+      for the credential chain and timeout, rather than widening the shared struct
+      — which carries a subscription, resource group and ARM endpoint that a
+      data-plane blob call has no use for — with three fields every other consumer
+      would ignore.
+
+      Mutation-tested, twelve mutants, **every one caught**: only-412-latches
+      (1), any-409-or-412-latches (1), an absent-blob DELETE treated as an error
+      (2), `ContainerNotFound` read as absence (1), the `EnumerationResults`
+      guard removed (1), `Content-MD5` not sent (1), `x-ms-blob-type` not sent
+      (1), `x-ms-version` not sent (4), the `DateTime` epoch bug reintroduced
+      (1), XML entities left encoded (1), `NextMarker` ignored (2), and 201 not
+      treated as success (11).
+
+      **Not done here, and it is the honest gap:** no live Azure run. Task 0's
+      probe closed the wire questions this client is built on (Finding 11), but
+      this client itself has only been exercised against a local server. Task 16
+      is where its real suite lands, and until then it is documentation-derived
+      in exactly the sense task 18 has to write down.
 
   - `include/raft/azure_blob_client.hpp`: Blob REST over httplib with
     `Authorization: Bearer <token>` from `azure_client_config`'s existing

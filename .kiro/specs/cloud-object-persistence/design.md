@@ -816,6 +816,31 @@ Two details that are how a working client breaks later, so they are pinned:
 by the same bounded element-scanning approach `alibaba_oss_client` uses,
 rather than taking an XML dependency for four element names.
 
+Four more facts, folded in from writing it, because each is about Azure rather
+than about the code:
+
+- **`Azure::DateTime` is not a `system_clock` time_point.** Its clock counts
+  100 ns ticks from **year 0001**, so `ExpiresOn.time_since_epoch()` read as a
+  Unix duration places a token two millennia in the future — a cached-forever
+  bearer token that starts failing every write an hour after startup and is
+  invisible to any write-then-read test. The explicit
+  `operator std::chrono::system_clock::time_point` is the only correct route.
+- **Delete Blob answers 404 `BlobNotFound` for an absent blob**, where S3 and
+  OSS answer 204. The concept's idempotent delete has to be *built* here, and
+  the 404 naming the container must stay an error.
+- **List Blobs has neither an `IsTruncated` flag nor an `encoding-type`
+  parameter.** An empty or absent `<NextMarker>` means "last page", so the
+  structural guard is that the body must be an `<EnumerationResults` document;
+  and blob names arrive XML-escaped rather than percent-encoded, so entities
+  must be decoded rather than sidestepped.
+- The sketch's `(cfg, account, container)` constructor does not survive contact
+  with the concept: the **container is the `bucket` parameter** and arrives per
+  call. Storage-specific settings live in an `azure_blob_config` embedding
+  `azure_client_config`, rather than widening a struct shared with two quorum
+  managers and the Key Vault provider — none of which has any use for a storage
+  account, and all of which carry a subscription and resource group that a
+  data-plane blob call does not.
+
 ### 6. `include/raft/gcp_gcs_client.hpp`
 
 ```cpp
