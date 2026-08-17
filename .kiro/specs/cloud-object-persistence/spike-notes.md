@@ -644,3 +644,97 @@ the cap is not to predict the service's 413 — it is to turn "this deployment
 has outgrown a single-PUT persistence engine" into a loud error naming the
 size, the cap and the multipart non-goal, at the first snapshot that reaches
 it, instead of an hours-long write that may still fail.
+
+## Finding 17 — GCS, second pass: what task 9 had to measure that Finding 12 did not
+
+Run August 17, 2026 against `kythira-ci-prefab-sky-500619-s9`, partly with
+`curl` against the JSON API and partly with a throwaway `google-cloud-cpp`
+program. Finding 12 closed the conditional-write matrix; writing the client
+turned up five more facts, and **three of them are library behaviour rather
+than service behaviour** — which is exactly the sort of thing that is invisible
+until something depends on it. Residual objects after every run: 0, counted
+from a listing.
+
+### 17.1 GCS gives an absent object and an absent bucket the *same* error code
+
+```
+GET  <real bucket>/<absent key>  → 404  reason=notFound
+                                        "No such object: <bucket>/<key>"
+GET  <absent bucket>/<any key>   → 404  reason=notFound
+                                        "The specified bucket does not exist."
+```
+
+**This is the one place where this design's usual rule cannot be followed.**
+S3 answers `NoSuchKey` vs `NoSuchBucket`; OCI answers `ObjectNotFound` vs
+`BucketNotFound`; GCS answers `notFound` to both, and only the human-readable
+message differs. So `gcp_gcs_client` keys absence on the message text, as a
+**whitelist** — anything not recognisably an absent object throws. The failure
+direction is what justifies it: reading a misconfigured bucket as "not written
+yet" would show the engine an empty Raft log, which is the one failure it
+cannot detect at runtime, whereas a reworded message makes absence *throw*.
+
+### 17.2 DELETE of an absent object is 404, not 204
+
+S3 and OSS answer 204. GCS answers `404 notFound`, so the idempotence the
+engine's truncation path requires is supplied by the client, not the service —
+and it is supplied through the same whitelist as 17.1, so a missing *bucket*
+still throws instead of being reported as a successful delete.
+
+### 17.3 `ifGenerationMatch=0` is accepted on a DELETE
+
+```
+DELETE ifGenerationMatch=0, object EXISTS  → 412 conditionNotMet
+DELETE ifGenerationMatch=0, object ABSENT  → 404 notFound
+```
+
+Unlike S3, whose `DeleteObject` models `If-Match` only, "delete only if it does
+not exist" has a wire spelling here. That makes the conditional delete's two
+preconditions read a 404 **differently**: `if_absent` treats it as the
+precondition holding, `if_version` treats it as having lost the race. Both are
+in the suite, as one case, because it is one decision.
+
+### 17.4 google-cloud-cpp *rewrites* the status message
+
+The retry loop wraps it: what the service sends as `No such object: b/k`
+reaches the caller as `Permanent error, with a last message of No such object:
+b/k` (also "Retry policy exhausted, …" and "Retry loop cancelled, …"). The
+original text is embedded verbatim in each form.
+
+**Recorded because it invalidated a measurement that looked sound.** The
+mapping from HTTP status to `StatusCode` was first probed by calling
+`rest_internal::AsStatus` directly — correct as far as it went (404 → kNotFound,
+409 → kAborted, 412 → kFailedPrecondition, 429/503 → kUnavailable, and *not* the
+blanket `[400,500) → kInvalidArgument` the header comment describes) but taken
+one layer below where the client actually reads. A prefix match written from
+that probe recognised nothing, and six cases failed on the suite's first run.
+Check that the repro reproduces the layer you are reasoning about.
+
+### 17.5 A zero-byte object reports no generation, and no headers at all
+
+```
+insert 0 bytes → generation 1787006876920424
+read   0 bytes → status ok, body 0 bytes, generation ABSENT, headers 0
+insert 5 bytes → generation 1787006877042595
+read   5 bytes → status ok, body 5 bytes, generation 1787006877042595, headers 22
+```
+
+With no bytes to stream, the library never captures the response, so
+`ObjectReadStream::generation()` is empty. Entirely reasonable, and completely
+invisible until a caller wants the version — which this one does, because the
+version a fenced engine reads is what it later predicates a conditional write
+on. `gcp_gcs_client` falls back to `GetObjectMetadata` on that path and checks
+the returned `size` is still 0, so a version is never reported for bytes that
+were not read. The five-byte leg is the negative control: without it, "GCS does
+not report generations on reads" would have been a plausible and wrong reading.
+
+### 17.6 `CLOUD_STORAGE_EMULATOR_ENDPOINT` overrides an explicit endpoint option
+
+Measured with the variable pointing at one local port and
+`storage::RestEndpointOption` at another: **every request went to the
+variable's port.** So the obvious way to point a storage client at a local
+test server would have made the whole unit suite exercise the environment
+variable and never the `endpoint_override` field the client reads. The suite
+therefore does not set it, and authenticates with a throwaway service account
+whose RSA key is generated at run time — google-cloud-cpp turns that into a
+locally-signed JWT with no token-endpoint round trip, so the tests need no
+network and no key material is committed.

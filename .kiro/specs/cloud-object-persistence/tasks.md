@@ -1,20 +1,30 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-8 and 10 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-10 done; task 0 closed except 0.7 (needs a container runtime)
 
-**Tasks 7, 8 and 10 (`aws_s3_client`, `azure_blob_client`,
-`oci_object_storage_client`) are done, August 17, 2026** — three of the four
-clients, and with them the one piece task 6 left open: `alibaba_oss_client` now signs and sends `Content-MD5` and declares
+**The client wave is complete, August 17, 2026.** Tasks 7, 8, 9 and 10
+(`aws_s3_client`, `azure_blob_client`, `gcp_gcs_client`,
+`oci_object_storage_client`) are done, and with them the one piece task 6 left
+open: `alibaba_oss_client` now signs and sends `Content-MD5` and declares
 `version_is_content_md5`, so both halves of Requirement 7 hold for the one
-shipped provider, re-verified live. **Four of the five providers now have a
-client**; only GCS (task 9) remains, and it is no longer blocked — the opt-in
-`gcp` vcpkg feature is installed locally (see the task entry for how, and for
-the symlink hazard that dictates it).
+shipped provider, re-verified live. **All five providers now have a client**,
+and `object_store_persistence_engine` is generic over every one of them.
+
+Next is task 11 (build integration). Part of it is already done as a
+consequence of task 9 and should not be re-derived: the `GCP_STORAGE` Kconfig
+symbol, its `find_package(google_cloud_cpp_storage)` gate, both defconfigs, the
+`storage` entry in `vcpkg.json` and DEPENDENCIES.md all landed with the GCS
+client, because that client cannot compile without them. What task 11 still
+owes is the four `*_PERSISTENCE` selector symbols and the all-gates-off
+verification.
 
 One honest distinction to carry into task 18: `alibaba_oss_client` is
-**live-verified**; `aws_s3_client` and `azure_blob_client` are so far
-**documentation-derived plus a live task-0 probe of the wire questions they
-rest on**. Their own real suites are task 16.
+**live-verified** end to end. `aws_s3_client`, `azure_blob_client`,
+`gcp_gcs_client` and `oci_object_storage_client` are **documentation-derived
+plus live task-0 probes of the wire questions they rest on** — and for GCS that
+probe base is unusually wide, because writing the client turned up five more
+service and library facts that Finding 12 had not covered (Finding 17). Their
+own real suites are task 16.
 
 **Done:** the seam (task 1), the generic engine (task 2) and the Alibaba
 instantiation (task 3), August 15, 2026. Together they add **no capability on
@@ -841,70 +851,132 @@ Reference implementations to study before starting, in this order:
     bytes, not from the client's own constant).
   - _Requirements: 13.1–13.6, 17.4_
 
-- [ ] 9. **`gcp_gcs_client`** — **unblocked, August 17, 2026.** The opt-in `gcp`
-      vcpkg feature is now installed on the development host, and both APIs this
-      task needs are confirmed present in `google-cloud-cpp@2.37.0`:
-      `IfGenerationMatch` (a well-known parameter over `std::int64_t`, so
-      `IfGenerationMatch(0)` is create-only and `IfGenerationMatch(g)` is the
-      overwrite precondition) and `LimitedErrorCountRetryPolicy(0)`.
+- [x] 9. **`gcp_gcs_client`** — done August 17, 2026, in
+      `include/raft/gcp_gcs_client.hpp`, with 45 cases in
+      `tests/gcp_gcs_client_unit_test.cpp` against a local `httplib::Server`,
+      12/12 mutants caught. The **last of the five clients**; GCS is the only
+      one that takes an SDK dependency, and the "considered and rejected"
+      note in the header records why (service-account JWT signing, plus ADC —
+      a new security-critical component whose failure mode is silent, against
+      a library that already has both).
 
-      **Two things about the install that the next person needs, in this order.**
+      **The suite caught two bugs that would have shipped, and one of them
+      only real GCS could have revealed.**
 
-      1. **`vcpkg_installed` in this repo is a SYMLINK** to
-         `/home/clark/src/kythira-libnyoci/vcpkg_installed` — one 7 GB tree
-         shared by both worktrees. `vcpkg install` **prunes** whatever the
-         requested feature set does not need, so running the CI job's
-         `--x-feature=gcp` here (CI runs it alone, in a job with its own private
-         tree) would strip `lakers` and `ion-c` out of **both** checkouts. The
-         install was therefore done into a **separate root**:
+      - **A zero-byte read reports no generation, and no response headers at
+        all.** Measured: reading a 0-byte object returns an ok status, an empty
+        body and `headers().size() == 0`, while the same run's 5-byte read
+        returned 22 headers including `x-goog-generation`. With no bytes to
+        stream the library never captures the response. The first version threw
+        on a missing generation — which is right for a *non-empty* read and
+        would have failed every legitimate empty-object read. `get_object` now
+        falls back to `GetObjectMetadata` and re-checks that `size` is still 0,
+        so a version is never reported for bytes that were not read. The
+        five-byte leg is the negative control; without it, "GCS does not report
+        generations" was a plausible and wrong reading.
+      - **google-cloud-cpp rewrites the status message.** `No such object: b/k`
+        arrives as `Permanent error, with a last message of No such object:
+        b/k`. The HTTP-status→`StatusCode` mapping had been probed by calling
+        `rest_internal::AsStatus` directly — correct, but one layer below where
+        the client reads — and the prefix match written from it recognised
+        nothing. Six cases failed on the suite's first run. Absence is now a
+        substring search, and a case asserts the wrapper is seen *through*.
 
-             /opt/vcpkg/vcpkg install --triplet x64-linux \
-               --x-install-root=vcpkg_installed_gcp \
-               --x-feature=gcp --x-feature=edhoc --x-feature=ion \
-               --no-print-usage --clean-after-build
+      **GCS is the one provider whose 404 carries no machine-readable
+      object-vs-bucket discriminator**: an absent object and an absent bucket
+      are both `404 reason=notFound`, differing only in prose (measured live —
+      Finding 17.1). S3 has `NoSuchKey`/`NoSuchBucket`, OCI has
+      `ObjectNotFound`/`BucketNotFound`; GCS has neither. So absence is a
+      whitelist keyed on the message, and every unrecognised 404 throws. The
+      failure direction is the justification: reading a misconfigured bucket as
+      "not written yet" would show the engine an empty Raft log, which is the
+      one failure it cannot detect at runtime, whereas a reworded message makes
+      absence *throw*. Matching prose is unattractive and is done because the
+      alternative is worse.
 
-         — a superset of what the shared tree carries, so nothing is lost either
-         way. It took **7.5 s**: every port, `google-cloud-cpp` included, came
-         from the local binary cache. `vcpkg_installed_*` is now in
-         `.gitignore`, with the reason written down there rather than learned
-         again.
-      2. **`storage` is already installed**, and this corrects what this task's
-         second bullet implies. The resolved plan is
-         `google-cloud-cpp[bigquery,bigtable,compute,core,grpc-common,iam,privateca,pubsub,rest-common,spanner,storage]`
-         — `storage` is in the *port's* default feature set, which this
-         manifest's `{"name": "google-cloud-cpp", "features": ["compute",
-         "privateca"]}` never disables. Adding `storage` explicitly is still the
-         right change, but **not because it makes the component available**: it
-         makes the dependency *intentional*, so an upstream change to
-         google-cloud-cpp's defaults cannot silently remove a component a
-         persistence engine depends on. Writing the edit up as "this is what
-         enables GCS" would be recording a false reason for a correct change.
+      Four more decisions, each recorded in the header:
 
-      To compile against it, configure a build with
-      `-DCMAKE_PREFIX_PATH=<repo>/vcpkg_installed_gcp/x64-linux` and
-      `-D_VCPKG_INSTALLED_DIR=<repo>/vcpkg_installed_gcp` — this project wires
-      vcpkg through those two variables rather than the toolchain file
-      (CMakeLists.txt:29-52).
+      - **The conditional DELETE answers a 404 two different ways.**
+        `if_absent` succeeds (the precondition held; `ifGenerationMatch=0` is
+        expressible on a GCS delete, unlike S3's `If-Match`-only DeleteObject)
+        and `if_version` throws `object_precondition_failed` (the object the
+        caller expected is gone, so it lost). Collapsing them would swallow
+        exactly what the fence exists to detect. Both measured live.
+      - **`RetryPolicyOption` is `LimitedErrorCountRetryPolicy(0)`**, and here
+        the default it replaces is a **15-minute `LimitedTimeRetryPolicy`**,
+        not "three tries". Deleting that line does not fail the suite so much
+        as *hang* it — the mutant was caught by the per-mutant timeout, which
+        is the second time that harness feature has earned itself.
+      - **`gcp_detail::make_base_options()` is deliberately not reused.**
+        `storage::Client` has its own option set: the endpoint is
+        `storage::RestEndpointOption`, not `google::cloud::EndpointOption`, and
+        the stall bounds are the public `storage::` ones, not the
+        `rest_internal` ones that helper sets. Passing it would have left the
+        endpoint override silently ignored and pointed the whole unit suite at
+        real GCS.
+      - **`version_is_content_md5` is absent**, `static_assert`ed on the
+        negative: the version is a generation counter and the ETag is an opaque
+        token (`CL/I06jPqJYDEAE=`). `MD5HashValue` is still sent on every insert
+        for the service-side check (Requirement 7.1), and `md5Hash` in the
+        metadata is named as the route a future local check would take.
 
-  - `include/raft/gcp_gcs_client.hpp` over `google-cloud-cpp`'s `storage`,
-    gated by a new `KYTHIRA_HAS_GCP_STORAGE` found independently of
-    `KYTHIRA_HAS_GCP_SDK` and `KYTHIRA_HAS_GCP_PRIVATECA`.
-  - Add `storage` to the **existing opt-in `gcp` vcpkg feature** and update
-    that feature's description, which already explains why it is opt-in.
-  - Disable the storage client's retry policy
-    (`LimitedErrorCountRetryPolicy(0)` or equivalent).
-  - Generation preconditions: `IfGenerationMatch(0)` create-only,
-    `IfGenerationMatch(g)` overwrite, with the numeric generation carried as
-    the opaque `object_version` — the concept never inspects it.
-  - Honour `gcp_client_config`'s `project_id`, `credentials_json` (ADC when
-    empty), `endpoint_override`, `api_timeout`.
-  - Record the considered-and-rejected hand-rolled-JSON-API alternative and
-    its trade-off (works in a default build, but needs service-account JWT
-    signing) so the fork is visible rather than re-derived.
-  - Verify: unit test green; a build **without** the `gcp` feature still
-    compiles everything else and emits a configure-time STATUS message
-    naming what is disabled and why.
-  - _Requirements: 14.1–14.6, 16.1, 17.4_
+      **On the test suite's own credentials**, because the obvious approach is
+      a trap: `CLOUD_STORAGE_EMULATOR_ENDPOINT` **overrides** an explicit
+      `RestEndpointOption` (measured — with the variable at one local port and
+      the client at another, every request went to the variable's port), so a
+      suite that used it would exercise the environment variable and never the
+      `endpoint_override` field. Each case instead builds a throwaway service
+      account whose RSA key is generated at run time, which google-cloud-cpp
+      turns into a locally-signed JWT: no network, and no key material in the
+      tree for the secret scanner to find.
+
+      **Build integration landed here rather than in task 11**, because the
+      client cannot compile without it: `GCP_STORAGE` (Kconfig, *not* depending
+      on `GCP_SDK` — the storage component shares no code with the Compute API
+      surface), `find_package(google_cloud_cpp_storage)` defining
+      `KYTHIRA_HAS_GCP_STORAGE`, `CONFIG_GCP_STORAGE` in both defconfigs (a new
+      `default y` symbol would otherwise FATAL_ERROR the non-GCP legs under
+      `KYTHIRA_KCONFIG_STRICT`), `storage` in `vcpkg.json`'s `gcp` feature,
+      DEPENDENCIES.md, and the target in the GCP CI job's build and ctest
+      lists.
+
+      Note on that `vcpkg.json` edit, since it is easy to write up wrongly:
+      **`storage` is already in google-cloud-cpp's own default feature set**,
+      which this manifest never disables, so adding it changes nothing about
+      what is built today. It makes the dependency intentional, so an upstream
+      change to those defaults cannot silently remove a component a persistence
+      backend needs. Writing it up as "this is what enables GCS" would record a
+      false reason for a correct change.
+
+      **To build this locally**, and read this before touching vcpkg:
+      `vcpkg_installed` in this repo is a **symlink** to the
+      `kythira-libnyoci` worktree's copy — one tree shared by both checkouts —
+      and `vcpkg install` *prunes* whatever the requested feature set does not
+      need, so running CI's `--x-feature=gcp` in place strips `lakers` and
+      `ion-c` out of **both**. Install into a separate root instead, and point
+      the two variables this project actually wires vcpkg through at it
+      (CMakeLists.txt:29-52 — not the toolchain file):
+
+          /opt/vcpkg/vcpkg install --triplet x64-linux \
+            --x-install-root=vcpkg_installed_gcp \
+            --x-feature=gcp --x-feature=edhoc --x-feature=ion \
+            --no-print-usage --clean-after-build
+
+          cmake -S . -B build-gcp -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=<repo>/vcpkg_installed_gcp/x64-linux \
+            -D_VCPKG_INSTALLED_DIR=<repo>/vcpkg_installed_gcp
+
+      `vcpkg_installed_*` is gitignored. Note this is a mixed-tree build —
+      CMakeLists still hardcodes `${CMAKE_SOURCE_DIR}/vcpkg_installed/...` for
+      boost_context/boost_json — which is fine because both trees came from the
+      same baseline, but is worth knowing when a version looks wrong.
+
+      **Verify, as written:** unit suite green (45 cases); a build *without* the
+      `gcp` feature configures cleanly and emits
+      `google-cloud-cpp storage component not found — gcp_gcs_client disabled
+      (configure with --x-feature=gcp to enable the GCS persistence backend)`
+      plus the matching test-target skip.
+      - _Requirements: 14.1–14.6, 16.1, 17.4_
 
 - [x] 10. **`oci_object_storage_client`** — done August 17, 2026, in
       `include/raft/oci_object_storage_client.hpp`, with 29 cases in
@@ -1011,18 +1083,24 @@ Reference implementations to study before starting, in this order:
 
 - [ ] 11. **Build integration**
 
-  - Kconfig: `AWS_S3_PERSISTENCE` (depends on `AWS_SDK`),
+  - **Partly done already, by task 9 — do not re-derive it.** `GCP_STORAGE`
+    (Kconfig, deliberately *not* depending on `GCP_SDK`), its
+    `find_package(google_cloud_cpp_storage)` gate defining
+    `KYTHIRA_HAS_GCP_STORAGE`, `CONFIG_GCP_STORAGE` in `ci_full_defconfig`
+    (off) and `ci_gcp_defconfig` (on), the `storage` entry in `vcpkg.json`'s
+    `gcp` feature and DEPENDENCIES.md all landed with `gcp_gcs_client`,
+    because that client cannot compile without them.
+  - Kconfig, still owed: `AWS_S3_PERSISTENCE` (depends on `AWS_SDK`),
     `AZURE_BLOB_PERSISTENCE` and `OCI_OBJECT_PERSISTENCE` (depend on
     `HTTP_TRANSPORT_TLS`, the no-SDK-to-find shape `OCI_QUORUM_MANAGER` and
-    `ALIBABA_OSS_PERSISTENCE` already use), `GCP_STORAGE` +
-    `GCP_STORAGE_PERSISTENCE`. Help text follows the existing convention of
-    saying whether a symbol gates a `find_package` or only selects what is
-    built, and invents **no** `KYTHIRA_HAS_*` counterpart where nothing is
-    being found.
-  - `find_package` + gate wiring in `CMakeLists.txt` for GCS only; S3,
-    Azure Blob and OCI need none.
-  - `DEPENDENCIES.md`: the `storage` component on the opt-in `gcp` feature,
-    and nothing else — S3, Azure and OCI add no dependency.
+    `ALIBABA_OSS_PERSISTENCE` already use), and `GCP_STORAGE_PERSISTENCE`.
+    Help text follows the existing convention of saying whether a symbol gates
+    a `find_package` or only selects what is built, and invents **no**
+    `KYTHIRA_HAS_*` counterpart where nothing is being found.
+  - `find_package` + gate wiring in `CMakeLists.txt`: **done** (GCS only; S3,
+    Azure Blob and OCI need none).
+  - `DEPENDENCIES.md`: **done** — the `storage` component on the opt-in `gcp`
+    feature, and nothing else, since S3, Azure and OCI add no dependency.
   - Verify: a build with **every** cloud gate off still compiles
     `key_object_store.hpp`, `object_store_persistence.hpp` and
     `object_store_backup.hpp` and still runs the conformance suite against
