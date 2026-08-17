@@ -1,0 +1,59 @@
+# no_cloud_defconfig — every cloud provider off, nothing else changed.
+#
+# This is the configuration Requirement 16.3 is written about, made
+# reproducible rather than reconstructed by hand each time it is checked:
+# `key_object_store.hpp` and `object_store_persistence.hpp` name no provider
+# and include no SDK, so a build with zero cloud providers must still compile
+# the concept and the engine and must still run the conformance suite against
+# `mock_object_store`. (Once task 12 lands, `object_store_backup.hpp` joins
+# that list; the same rule applies to it and for the same reason.)
+#
+# It is deliberately NOT "minimal_defconfig plus more". minimal_defconfig turns
+# off HTTP_TRANSPORT_TLS, which reaches far past the cloud providers, so a
+# failure there would not tell you whether the cloud gates or the TLS layer
+# caused it. Everything here is left at its default except the cloud symbols,
+# so a break in this configuration is a break in the cloud gating and nothing
+# else.
+#
+# Written to be used WITHOUT -DKYTHIRA_KCONFIG_STRICT=ON. Strict mode asserts
+# that a symbol left on had its dependency found, which is the opposite of what
+# this file is for — every symbol here is being turned off deliberately, and
+# the SDKs may well be present on the host doing the checking.
+#
+#   cmake -B build-nocloud -DKYTHIRA_KCONFIG=configs/no_cloud_defconfig
+#   cmake --build build-nocloud --target object_store_persistence_unit_test
+#   ctest --test-dir build-nocloud -R '^object_store_persistence_unit_test$'
+
+# AWS — the SDK probe and the S3 object client that depends on it.
+# CONFIG_AWS_SDK is not set
+# CONFIG_AWS_ACM_PCA is not set
+# CONFIG_AWS_S3_PERSISTENCE is not set
+
+# GCP — the compute and privateca probes, the storage probe, and the GCS
+# object client. GCP_STORAGE is independent of GCP_SDK, so it must be named
+# separately; GCP_STORAGE_PERSISTENCE depends on it and would follow anyway,
+# but is stated rather than left to be inferred.
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
+
+# Azure — the SDK probe, Key Vault, and the Blob object client.
+# CONFIG_AZURE_SDK is not set
+# CONFIG_AZURE_KEY_VAULT is not set
+# CONFIG_AZURE_BLOB_PERSISTENCE is not set
+
+# OCI — all three components. None of these gates a find_package (there is no
+# OCI SDK); they select what is built.
+# CONFIG_OCI_QUORUM_MANAGER is not set
+# CONFIG_OCI_CERTIFICATES_PROVIDER is not set
+# CONFIG_OCI_OBJECT_PERSISTENCE is not set
+
+# Alibaba — both components, same no-SDK-to-find shape as OCI.
+# CONFIG_ALIBABA_QUORUM_MANAGER is not set
+# CONFIG_ALIBABA_OSS_PERSISTENCE is not set
+
+# Test-only, and off for a different reason than the rest: these run against
+# real cloud accounts, so leaving them on in a no-cloud configuration would be
+# incoherent even though nothing would fail to configure.
+# CONFIG_LIBSSH2_TESTS is not set
