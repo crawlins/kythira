@@ -101,3 +101,39 @@ teardown before re-raising, so a cancelled CI run still cleans up.
 If credentials are missing or lack the required roles, the suites **skip** (they
 do not fail): the fixture's first action is a read-only `projects.get`
 pre-flight, mirroring the AWS `sts:GetCallerIdentity` pre-check.
+
+## Object-persistence bucket (cloud key-object persistence spec)
+
+`provision-object-persistence-bucket.sh` creates the GCS bucket the
+object-persistence real tier writes to.
+
+```sh
+scripts/ci-cloud-credentials/gcp/provision-object-persistence-bucket.sh \
+    [--bucket NAME] [--project ID] [--location us-central1]
+```
+
+**Provisioned August 16, 2026:** `kythira-ci-prefab-sky-500619-s9` in
+`us-central1`, uniform bucket-level access, public access prevention
+**enforced**, soft delete **off**, lifecycle expiring `kythira-real-test/`
+after 7 days.
+
+**Soft delete is disabled deliberately.** GCS defaults to a 7-day soft-delete
+retention that bills deleted objects for a week — on a bucket whose entire
+workload is create-and-delete test objects that is the dominant cost, and it
+is invisible in a bucket listing. The design also takes "no dependence on
+provider-native versioning or soft-delete" as a non-goal.
+
+If the gcloud user credential has expired but application-default credentials
+still work, the script runs unchanged with:
+
+```sh
+CLOUDSDK_AUTH_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)" \
+    scripts/ci-cloud-credentials/gcp/provision-object-persistence-bucket.sh
+```
+
+**Cost.** Effectively zero: a few small objects, deleted in teardown, with the
+lifecycle rule as the backstop. GCS Class A operations are ~$0.005/1,000.
+
+**Still required before CI can use it:** `roles/storage.objectAdmin` (or a
+custom role with `storage.objects.{get,create,delete,list}`) for
+`GCP_CI_SERVICE_ACCOUNT`, bound **on the bucket** rather than at project level.

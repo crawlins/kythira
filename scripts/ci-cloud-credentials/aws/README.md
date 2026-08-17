@@ -147,3 +147,32 @@ aws iam delete-role --role-name kythira-aws-quorum-test-node-role
 Then unset the repository variables with `gh variable delete` (or just set
 `REAL_CLOUD_TESTS_AWS_ENABLED` to `false` to disable without deleting
 anything).
+
+## Object-persistence bucket (cloud key-object persistence spec)
+
+`provision-object-persistence-bucket.sh` creates the S3 bucket the
+object-persistence real tier writes to. Separate from the identity scripts
+above: buckets are operator-owned prerequisites, and the engine never
+administers storage.
+
+```sh
+scripts/ci-cloud-credentials/aws/provision-object-persistence-bucket.sh \
+    [--profile PROFILE] [--bucket NAME] [--region us-east-1]
+```
+
+Creates `kythira-ci-<account-id>` with public access blocked (all four
+switches), SSE-S3 default encryption, and a lifecycle rule expiring objects
+under `kythira-real-test/` after 7 days. Safe to re-run.
+
+**Provisioned August 16, 2026:** `kythira-ci-827617851594` in `us-east-1`.
+
+**Cost.** Effectively zero at rest — the suites write a handful of small
+objects and delete them in teardown, and the lifecycle rule catches anything a
+crashed run leaves behind. Request charges for these suites are a rounding
+error against any storage minimum (S3 PUTs are ~$0.005/1,000). The real cost
+warning in this spec is about *production* append rates, not about CI.
+
+**Still required before CI can use it:** an object-persistence bundle on the
+CI role, scoped to `arn:aws:s3:::<bucket>/kythira-real-test/*` for
+get/put/delete plus prefix-conditioned `ListBucket` on the bucket — object
+operations only, no bucket administration.
