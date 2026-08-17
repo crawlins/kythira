@@ -29,6 +29,12 @@ Makefile
 !vcpkg-overlays/**/*.cmake
 !cmake/Kconfig.cmake
 vcpkg_installed
+# A second, feature-specific dependency tree (e.g. `--x-feature=gcp` into
+# `--x-install-root=vcpkg_installed_gcp`). Kept out of the shared tree on
+# purpose: `vcpkg_installed` here is a SYMLINK to another worktree's copy,
+# and an in-place install prunes whatever the requested feature set does not
+# need — which would silently strip that worktree too.
+vcpkg_installed_*
 
 # Rust build output (vcpkg overlay ports built via cargo)
 vcpkg-overlays/**/target/

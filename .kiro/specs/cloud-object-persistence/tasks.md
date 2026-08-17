@@ -1,14 +1,15 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-8 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-8 and 10 done; task 0 closed except 0.7 (needs a container runtime)
 
-**Tasks 7 and 8 (`aws_s3_client`, `azure_blob_client`) are done, August 17,
-2026** — the first two of the four clients, and with them the one piece task 6
-left open: `alibaba_oss_client` now signs and sends `Content-MD5` and declares
+**Tasks 7, 8 and 10 (`aws_s3_client`, `azure_blob_client`,
+`oci_object_storage_client`) are done, August 17, 2026** — three of the four
+clients, and with them the one piece task 6 left open: `alibaba_oss_client` now signs and sends `Content-MD5` and declares
 `version_is_content_md5`, so both halves of Requirement 7 hold for the one
-shipped provider, re-verified live. **Three of the five providers now have a
-client**, and the two that can be fenced but are not yet written are GCS and OCI
-(tasks 9-10), still parallelizable and still depending only on the concept.
+shipped provider, re-verified live. **Four of the five providers now have a
+client**; only GCS (task 9) remains, and it is no longer blocked — the opt-in
+`gcp` vcpkg feature is installed locally (see the task entry for how, and for
+the symlink hazard that dictates it).
 
 One honest distinction to carry into task 18: `alibaba_oss_client` is
 **live-verified**; `aws_s3_client` and `azure_blob_client` are so far
@@ -840,7 +841,50 @@ Reference implementations to study before starting, in this order:
     bytes, not from the client's own constant).
   - _Requirements: 13.1–13.6, 17.4_
 
-- [ ] 9. **`gcp_gcs_client`**
+- [ ] 9. **`gcp_gcs_client`** — **unblocked, August 17, 2026.** The opt-in `gcp`
+      vcpkg feature is now installed on the development host, and both APIs this
+      task needs are confirmed present in `google-cloud-cpp@2.37.0`:
+      `IfGenerationMatch` (a well-known parameter over `std::int64_t`, so
+      `IfGenerationMatch(0)` is create-only and `IfGenerationMatch(g)` is the
+      overwrite precondition) and `LimitedErrorCountRetryPolicy(0)`.
+
+      **Two things about the install that the next person needs, in this order.**
+
+      1. **`vcpkg_installed` in this repo is a SYMLINK** to
+         `/home/clark/src/kythira-libnyoci/vcpkg_installed` — one 7 GB tree
+         shared by both worktrees. `vcpkg install` **prunes** whatever the
+         requested feature set does not need, so running the CI job's
+         `--x-feature=gcp` here (CI runs it alone, in a job with its own private
+         tree) would strip `lakers` and `ion-c` out of **both** checkouts. The
+         install was therefore done into a **separate root**:
+
+             /opt/vcpkg/vcpkg install --triplet x64-linux \
+               --x-install-root=vcpkg_installed_gcp \
+               --x-feature=gcp --x-feature=edhoc --x-feature=ion \
+               --no-print-usage --clean-after-build
+
+         — a superset of what the shared tree carries, so nothing is lost either
+         way. It took **7.5 s**: every port, `google-cloud-cpp` included, came
+         from the local binary cache. `vcpkg_installed_*` is now in
+         `.gitignore`, with the reason written down there rather than learned
+         again.
+      2. **`storage` is already installed**, and this corrects what this task's
+         second bullet implies. The resolved plan is
+         `google-cloud-cpp[bigquery,bigtable,compute,core,grpc-common,iam,privateca,pubsub,rest-common,spanner,storage]`
+         — `storage` is in the *port's* default feature set, which this
+         manifest's `{"name": "google-cloud-cpp", "features": ["compute",
+         "privateca"]}` never disables. Adding `storage` explicitly is still the
+         right change, but **not because it makes the component available**: it
+         makes the dependency *intentional*, so an upstream change to
+         google-cloud-cpp's defaults cannot silently remove a component a
+         persistence engine depends on. Writing the edit up as "this is what
+         enables GCS" would be recording a false reason for a correct change.
+
+      To compile against it, configure a build with
+      `-DCMAKE_PREFIX_PATH=<repo>/vcpkg_installed_gcp/x64-linux` and
+      `-D_VCPKG_INSTALLED_DIR=<repo>/vcpkg_installed_gcp` — this project wires
+      vcpkg through those two variables rather than the toolchain file
+      (CMakeLists.txt:29-52).
 
   - `include/raft/gcp_gcs_client.hpp` over `google-cloud-cpp`'s `storage`,
     gated by a new `KYTHIRA_HAS_GCP_STORAGE` found independently of
@@ -862,7 +906,89 @@ Reference implementations to study before starting, in this order:
     naming what is disabled and why.
   - _Requirements: 14.1–14.6, 16.1, 17.4_
 
-- [ ] 10. **`oci_object_storage_client`**
+- [x] 10. **`oci_object_storage_client`** — done August 17, 2026, in
+      `include/raft/oci_object_storage_client.hpp`, with 29 cases in
+      `tests/oci_object_storage_client_unit_test.cpp`. Adds **no dependency**:
+      it reuses `oci_signing`, `oci_client_config` and `oci_http_client`, so
+      Instance Principal — the auth a node on an OCI instance actually uses —
+      comes along for free.
+
+      **The verify bar was met as written**: all seven existing OCI test targets
+      build and pass **unchanged**, 73 cases across
+      `oci_signing_unit_test` (9), `oci_http_client_unit_test` (12),
+      `oci_federation_unit_test` (11), `oci_quorum_manager_unit_test` (15),
+      `oci_heartbeat_writer_unit_test` (5), `oci_quorum_manager_mock_test` (12)
+      and `oci_certificates_provider_mock_test` (9). Not one test line was
+      edited. The two mock suites verify signatures from the bytes that arrived,
+      so their passing is real evidence that parameterising the signed content
+      type left every JSON caller byte-identical.
+
+      **The signed content type is now a parameter**, threaded through
+      `build_signing_string` → `sign_request_with_key` → `sign_request` →
+      `instance_principal_signer::sign` → `oci_http_client::prepared_headers`,
+      defaulted to `application/json` at every level so no existing call site
+      changed. Task 0.8 predicted this; writing it confirmed the shape.
+
+      **`oci_http_client::request_raw` is additive**, and differs from
+      `request()` in three deliberate ways:
+
+      - **No status becomes an exception.** A 404 is an *answer* for a
+        persistence load path and an error for a control-plane GET, and only the
+        caller knows which. A transport failure still throws — there is nothing
+        to hand back.
+      - **The content type is caller-chosen and signed.** Object bodies are
+        `application/octet-stream`.
+      - **No 429 retry.** `request()` retries once (Requirement 1.9); here the
+        engine owns retries and its idempotency argument depends on knowing what
+        was re-sent.
+
+      It also **lowercases every response header on the way in**, which is not
+      tidiness: OCI spells its ETag `etag` and its digest `opc-content-md5`, and
+      task 0's probe looked up `ETag`, got nothing, sent `if-match: ""`, was
+      refused 412 on a *correct*-ETag write, and read the run as "OCI cannot do
+      CAS" — the conclusion Alibaba OSS genuinely earns. Only a negative control
+      caught it. The suite asserts the ETag is read under three spellings.
+
+      Three more decisions:
+
+      - **`BucketNotFound` is never an absent object.** It is a real
+        misconfiguration *and* the code this tenancy's intermittent
+        authorization flake returns at 3-16%; reading it as absence would let a
+        flake present as an empty Raft log, which is the one failure this engine
+        cannot detect at runtime. `ObjectNotFound` is absence, and a DELETE of an
+        absent object succeeds.
+      - **`version_is_content_md5` is deliberately absent**, pinned by a
+        `static_assert` on the negative: OCI's ETag is a **UUID**. `Content-MD5`
+        is still sent (400 `UnmatchedContentMD5`), and `opc-content-md5` on GET
+        is named as the route a future local check would take.
+      - **The namespace is resolved once at construction** and only when not
+        configured, per task 0.8; a case asserts two writes issue no second
+        lookup. The conditional headers and `Content-MD5` travel **unsigned**,
+        which is correct: OCI's `Authorization` names its signed set explicitly.
+
+      **Mutation-tested, eleven mutants, and one survivor was a real test
+      gap rather than an inert mutation** — which is the difference worth
+      recording. Dropping the `is_array()` half of the listing guard still
+      *threw*, because `get_array()` throws on the wrong kind, so the suite
+      stayed green while the caller silently lost the message naming which key
+      it was reading. A case for `objects` present-but-not-an-array, asserting
+      the message names the listing, closes it and catches the mutant. The other
+      survivor is inert for the same reason two of task 7's were: **absence is
+      decided by a whitelist of codes**, so deleting the explicit
+      `BucketNotFound` exclusion changes nothing — the whitelist already refuses
+      every unknown code, and *that* is the property the tests protect (the
+      any-404-is-absence mutant is caught). The named check protects the reader,
+      not the behaviour, and the header now says so.
+
+      The nine caught outright: the signed content type back to a constant (2),
+      the sent content type back to JSON (1), any 404 read as absence (1),
+      `Content-MD5` not sent (1), `if-none-match` not sent (1), `nextStartWith`
+      ignored (2), the namespace resolved per request (27), and the precondition
+      verdict keyed on the 4xx class (1).
+
+      **Not done here, and stated rather than glossed:** no live OCI run. The
+      tenancy flake below has to be understood first, or a real-tier failure is
+      indistinguishable from a regression. Task 16 is where its real suite lands.
 
   - Add a **raw-bytes request path** to `oci_http_client` returning status,
     headers and body unparsed, **without changing `request()`'s behaviour or
