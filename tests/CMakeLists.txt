@@ -3828,6 +3828,35 @@ endif()  # LIBSSH2_FOUND
 
 endif()  # AWSSDK_FOUND
 
+# ── aws_s3_client unit test (cloud object persistence, task 7) ────────────────
+#
+# Needs the AWS SDK's s3 component (already in the component list
+# CMakeLists.txt:1072 resolves) and httplib for the local server the test points
+# `endpoint_override` at. Deliberately does NOT link network_simulator: this
+# client uses no futures, so linking it would pull folly in and force a
+# folly::init fixture for nothing. That means KYTHIRA_HAS_AWS_SDK has to be
+# defined here, since it normally arrives on network_simulator's INTERFACE.
+if(AWSSDK_FOUND AND TARGET httplib::httplib)
+    add_executable(aws_s3_client_unit_test aws_s3_client_unit_test.cpp)
+    target_compile_definitions(aws_s3_client_unit_test PRIVATE KYTHIRA_HAS_AWS_SDK)
+    target_link_libraries(aws_s3_client_unit_test PRIVATE
+        Boost::unit_test_framework
+        httplib::httplib
+        ${AWSSDK_LINK_LIBRARIES}
+    )
+    target_include_directories(aws_s3_client_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(aws_s3_client_unit_test PRIVATE cxx_std_23)
+    add_test(NAME aws_s3_client_unit_test COMMAND aws_s3_client_unit_test)
+    set_tests_properties(aws_s3_client_unit_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;aws;cloud;object-persistence"
+    )
+elseif(NOT AWSSDK_FOUND)
+    message(STATUS "aws_s3_client_unit_test: skipped (AWS SDK not found)")
+else()
+    message(STATUS "aws_s3_client_unit_test: skipped (requires httplib for the local mock server)")
+endif()
+
 # ── aws_acm_pca_provider tests (independent of the core AWS SDK component set) ─
 if(TARGET aws-cpp-sdk-acm-pca)
 
