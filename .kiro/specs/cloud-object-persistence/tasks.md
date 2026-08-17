@@ -1,11 +1,18 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-3 done; task 0 closed for Alibaba and S3
+## Status: tasks 1-4 done; task 0 closed for Alibaba and S3
 
 **Done:** the seam (task 1), the generic engine (task 2) and the Alibaba
 instantiation (task 3), August 15, 2026. Together they add **no capability on
 purpose** — a default-configured bucket is byte-identical to what shipped,
 which is the property task 3's unmodified test suites demonstrate.
+
+**Task 4 (snapshot retention) is done, August 17, 2026** — the first task to
+add a capability, and it adds it strictly above the default: at
+`snapshot_retention = 1` the bucket *and the request pattern* are unchanged.
+It is also the first feature to arrive with its option rather than ahead of
+it, which is what `object_persistence_options` being deliberately partial was
+for.
 
 **Task 0, Alibaba's cells: closed live, August 16, 2026** (spike-notes.md).
 The decisive one went the way this plan's Notes section anticipated: **OSS has
@@ -316,7 +323,30 @@ Reference implementations to study before starting, in this order:
     hoist, not a test that needs updating — treat it as such.
   - _Requirements: 1.6, 3.1–3.4_
 
-- [ ] 4. **Snapshot retention**
+- [x] 4. **Snapshot retention** — done August 17, 2026, in
+      `include/raft/object_store_persistence.hpp`, with 11 new conformance
+      cases (8 plain, 3 injecting a failure at each of the three steps).
+      `snapshot_retention` counts generations **including** the live slot, so
+      the default of 1 is today's behaviour without a special case: no
+      `<prefix>/snapshots/` object, one PUT per `save_snapshot`, no LIST and no
+      DELETE — asserted as a **request-count** case, not only a key-set one.
+
+      **Three decisions, folded into requirements.md/design.md in place:**
+      step (c) does not throw (it runs after the commit point; it records
+      `last_prune_error()`, keeps the index, and retries on the next save —
+      observable and self-healing, where an exception would report a lost
+      snapshot that is not lost and would abandon `node::install_snapshot`'s
+      term write over a garbage-collection error); the retained indices are
+      noted at construction from the listing the load path already performs,
+      so pruning issues no LIST of its own and the load path still never GETs
+      a retained copy; and an unparseable key under `<prefix>/snapshots/` is
+      neither pruned nor fatal — the **opposite** of the same shape under
+      `<prefix>/log/`, because that one breaks recovery and this one is never
+      read.
+
+      Verified against a mutant as well as against the tests: skipping the
+      prune and writing a retained copy at retention 1 fail 13 cases,
+      including the two pre-existing key-set cases.
 
   - Implement the three-step `save_snapshot`: PUT `<prefix>/snapshots/<20-digit>`,
     then PUT `<prefix>/snapshot` (**the commit point**), then prune oldest

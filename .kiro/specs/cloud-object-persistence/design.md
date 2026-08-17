@@ -858,6 +858,37 @@ the next restart, arbitrarily later. The conformance suite injects a failure
 at each of the three steps and asserts a readable current snapshot survives
 all three.
 
+**Implemented August 17, 2026, and three decisions the sketch above left
+open are recorded here rather than in the code alone:**
+
+- **`snapshot_retention` counts generations including the live slot**, which
+  is what makes `1` mean today's behaviour without a special case in the
+  arithmetic: at `1` step (a) and step (c) do not run at all, so
+  `save_snapshot` stays exactly one PUT and issues **no LIST and no DELETE**.
+  A retention feature that quietly added a request per snapshot would satisfy
+  a key-set assertion and still have changed every existing deployment's
+  cost, so the conformance case asserts the request counts and not just the
+  key set.
+- **Step (c) does not throw.** It runs after the commit point, so reporting a
+  failed pruning DELETE as a failed `save_snapshot` would tell the caller its
+  snapshot was lost when it was not — and in `node::install_snapshot` an
+  exception from `save_snapshot` abandons the term write and the RPC reply
+  over what is a garbage-collection error. Silence is not the alternative:
+  the failure is recorded in `last_prune_error()`, the index stays in the
+  retained set, and the next `save_snapshot` prunes it again, so the
+  condition is both observable and self-healing. The conformance case pins
+  all three halves of that (committed, recorded, retried).
+- **The retained indices are noted at construction from the listing the load
+  path already performs**, so pruning needs no LIST of its own — which is
+  what keeps the steady-state cost at the two PUTs the request model budgets.
+  The load path still **never GETs a retained copy** (Requirement 8.4), so a
+  corrupt one cannot break startup, and a retained key whose suffix is not
+  exactly 20 digits is neither recorded nor deleted nor treated as
+  corruption. That last point is deliberately the **opposite** of the same
+  key shape under `<prefix>/log/`, where it is fatal: a log key that cannot
+  be ordered breaks recovery, whereas a retained copy is never read at all,
+  so the safe reading of an unrecognized one is "somebody else's object".
+
 ### Property 5: Retention is not backup
 **Validates: Requirements 8.6, 10.5**
 

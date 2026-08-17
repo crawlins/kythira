@@ -422,9 +422,23 @@ destroy the only recoverable one.
    at (b) leaves an unreferenced retained copy, which is inert; a failure at
    (c) leaves extra copies, which costs storage and nothing else. No
    ordering of these three failures can lose the current snapshot.
-3. `snapshot_retention = 1` SHALL mean today's behaviour exactly: no
-   `<prefix>/snapshots/` objects are written at all, so a default-configured
-   engine's bucket is byte-identical to what ships today.
+   **Steps (a) and (b) SHALL throw on failure and step (c) SHALL NOT**
+   (settled in implementation, August 17, 2026): (c) runs after the commit
+   point, so failing the call there would report a lost snapshot that is not
+   lost, and would abandon `node::install_snapshot`'s term write and RPC
+   reply over a garbage-collection error. It SHALL instead record the failure
+   where an operator can read it (`last_prune_error()`), keep the
+   undeleted index in its retained set, and retry it on the next
+   `save_snapshot` — observable and self-healing, which is the property
+   "costs storage and nothing else" actually requires.
+3. `snapshot_retention` SHALL count snapshot **generations including the live
+   `<prefix>/snapshot`**, and `snapshot_retention = 1` SHALL mean today's
+   behaviour exactly: no `<prefix>/snapshots/` objects are written at all, so
+   a default-configured engine's bucket is byte-identical to what ships
+   today — **and its request pattern is too**: one PUT per `save_snapshot`,
+   no LIST and no DELETE. `0` SHALL be rejected at construction rather than
+   read as "keep none", which would delete the retained copy of the snapshot
+   just written.
 4. Recovery SHALL read `<prefix>/snapshot` and nothing else. Retained copies
    are for operators and for Requirement 11's restore, and are never
    consulted by the engine's own load path — which keeps the recovery path a
@@ -432,7 +446,10 @@ destroy the only recoverable one.
    startup.
 5. WHEN pruning encounters a retained copy whose key does not parse as a
    20-digit index THEN it SHALL be left alone rather than deleted. The
-   engine deletes only what it can prove it wrote.
+   engine deletes only what it can prove it wrote. Such a key SHALL also
+   **not** fail construction — deliberately the opposite of the same shape
+   under `<prefix>/log/`, because a log key that cannot be ordered breaks
+   recovery whereas a retained copy is never read by the load path at all.
 6. Retention SHALL be documented as **not** a backup: retained snapshots
    live in the same bucket, under the same prefix, subject to the same
    credentials and the same accidental `rm -r`. Requirement 10 is the
