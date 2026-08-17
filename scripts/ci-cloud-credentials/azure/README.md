@@ -108,3 +108,46 @@ Backends") reuses the same federated CI identity but has its own toggle,
 
 Cost per run is effectively zero (one custom metric datapoint); ingestion
 into the resource is billed by volume, and nothing needs teardown.
+
+## Object-persistence container (cloud key-object persistence spec)
+
+`provision-object-persistence-container.sh` creates the storage account and
+blob container the object-persistence real tier writes to.
+
+```sh
+scripts/ci-cloud-credentials/azure/provision-object-persistence-container.sh \
+    [--account NAME] [--container NAME] [--grant-caller-data-role]
+```
+
+**Provisioned August 16, 2026:** account `kythirarealtestobj` (container
+`kythira-raft`) in `kythira-realtest-rg`/`eastus`, **Standard_ZRS**, TLS 1.2
+minimum, HTTPS only, public blob access disabled.
+
+**Two things this script exists to stop you rediscovering:**
+
+1. **`Standard_ZRS` is a durability decision, not a default.** Azure is the one
+   provider whose "a 2xx write is durable" claim is account configuration the
+   engine does not control. ZRS is the only mode documented as writing
+   synchronously to all three zone replicas before returning success. LRS is
+   single-datacenter; GRS's cross-region copy is asynchronous.
+2. **Owner does not grant blob-data access.** A subscription Owner can create
+   the account *and the container* and still not write a single blob —
+   containers are management-plane resources. The script therefore probes the
+   data plane with a real write/read/delete round trip rather than inferring
+   success from container creation, and `--grant-caller-data-role` assigns
+   `Storage Blob Data Contributor` on the account if that probe fails. RBAC is
+   eventually consistent; propagation took ~45 s when this was written.
+
+A subscription that has never held a storage account also has
+`Microsoft.Storage` unregistered, and every storage call then fails with
+`SubscriptionNotFound` — which reads like the subscription is gone. The script
+registers it (one-time, free) and waits.
+
+**Cost.** A ZRS StorageV2 account with a few kilobytes in it is cents per
+month; the lifecycle of these tests is create-and-delete. ZRS costs more per
+GB than LRS, which is irrelevant at this volume and is the point of the
+choice.
+
+**Still required before CI can use it:** `Storage Blob Data Contributor` for
+the CI federated identity (`AZURE_CI_CLIENT_ID`), scoped to this account and
+no wider.
