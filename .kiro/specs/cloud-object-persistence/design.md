@@ -244,9 +244,9 @@ What the engine actually needs, so the table can be read against something:
 | | AWS S3 | Azure Blob | GCS | OCI Object Storage | Alibaba OSS |
 |---|---|---|---|---|---|
 | **N2** read-after-write, new **and** overwrite | Strong — **explicit**, all operations, since Dec 2020 | Strong — documented as a general storage-account guarantee | Strong — **explicit**, "never … stale data", globally | Strong — **explicit** overview statement | Strong — **explicit**, "no scenarios in which data is not obtained" |
-| **N3** list-after-write | Strong — **explicit**, called out beside read consistency; **confirmed live** (3 × 25 objects, immediate LIST, complete every round) | **OPEN** — the general claim covers "list operations" but without S3/GCS's specificity | Strong — **explicit**, "bucket listing and object listing are strongly consistent" (Spanner-backed) | **OPEN** — no listing-specific statement found | **Empirically consistent** (3 × 25 objects, immediate LIST, complete every time — spike-notes.md Finding 5). No listing-specific vendor statement exists, so this is evidence, not a guarantee |
+| **N3** list-after-write | Strong — **explicit**, called out beside read consistency; **confirmed live** (3 × 25 objects, immediate LIST, complete every round) | Documented only in general terms ("list operations"), without S3/GCS's specificity — but **confirmed live** (3 × 25 blobs, complete every round; Finding 11), so the cell is empirical evidence over weak documentation | Strong — **explicit**, "bucket listing and object listing are strongly consistent" (Spanner-backed); **confirmed live** (Finding 12) | No listing-specific vendor statement found, and **confirmed live** (3 × 25 objects, complete every round; Finding 13) — evidence, not a guarantee | **Empirically consistent** (3 × 25 objects, immediate LIST, complete every time — spike-notes.md Finding 5). No listing-specific vendor statement exists, so this is evidence, not a guarantee |
 | **N1** 2xx ⇒ durable | Yes — "if you receive a success response, Amazon S3 added the entire object"; 11 nines | **Depends on account redundancy.** ZRS: **explicit** synchronous write to all three zones before success. LRS: synchronous, one datacenter. GRS/GZRS: primary synchronous, **secondary region asynchronous** | Yes — **explicit**: the object becomes visible only once the upload completed and the server sent success | Implied by the documented redundancy model + 11 nines; **no "before returning success" wording found — OPEN** | Implied — "replicas of the object are created for redundancy" on a success response; 12 nines |
-| Verification status **in this repo** | **conditional writes, checksums and list-after-write live-verified** (Aug 16 2026, `us-east-1`); durability wording still documentation-derived | documentation-derived | documentation-derived | documentation-derived | **live-verified** (`ap-southeast-1`; Aug 14 2026 pre-hoist, **re-verified Aug 16 2026 against the generic engine**) |
+| Verification status **in this repo** | **conditional writes, checksums and list-after-write live-verified** (Aug 16 2026, `us-east-1`); durability wording still documentation-derived | **conditional writes, checksums and list-after-write live-verified** (Aug 17 2026, `eastus`, Standard_ZRS); durability wording documentation-derived | **conditional writes, checksums and list-after-write live-verified** (Aug 17 2026, `us-central1`); durability wording documentation-derived | **conditional writes, checksums and list-after-write live-verified** (Aug 17 2026, `us-phoenix-1`); durability wording **still OPEN** (task 0.2) | **live-verified** (`ap-southeast-1`; Aug 14 2026 pre-hoist, **re-verified Aug 16 2026 against the generic engine**) |
 
 Three consequences the design takes seriously:
 
@@ -255,7 +255,12 @@ Three consequences the design takes seriously:
   consistency continuously instead of once. This is worth saying out loud
   because the mirror looks like a performance optimization and is also a
   correctness simplification.
-- **The N3 OPENs cannot be closed by analogy.** Requirement 5.4 blocks
+- **The N3 cells were not closed by analogy, and all five are now closed
+  empirically** (August 16-17, 2026): 3 × 25 objects under a fresh prefix,
+  LIST immediately, all present on every round, on every provider. Two of them
+  — Azure Blob and OCI — publish no listing-specific statement at all, so for
+  those the run *is* the evidence and the cell says so rather than borrowing
+  S3's or GCS's wording. Requirement 5.4 blocks
   marking any provider production-ready whose listing is eventually
   consistent in any documented circumstance, and Task 0 closes each cell
   **empirically as well as documentarily** — write N objects under a fresh
@@ -342,9 +347,9 @@ interesting table in the design.
 | | Create-only precondition | Overwrite CAS | Conditional delete | Version token |
 |---|---|---|---|---|
 | **AWS S3** | `If-None-Match: *` — **spike-verified live**: 412 `PreconditionFailed` on exists, object unchanged. 409 `ConditionalRequestConflict` is documented for a benign race and was **not elicited** in 56 racing PUTs (see below) | `If-Match: <etag>` — **spike-verified live** (current ETag 200, stale 412) | `if-match` on DeleteObject — **spike-verified live**: stale ETag 412 **and the object survives**; current ETag 204 | ETag (quoted lowercase MD5 hex for single-part content) |
-| **Azure Blob** | `If-None-Match: *` on Put Blob | `If-Match: <etag>` on Put Blob | `If-Match` on Delete Blob | ETag |
-| **GCS** | `ifGenerationMatch=0` | `ifGenerationMatch=<generation>` | `ifGenerationMatch=<generation>` | **generation number** (integer) |
-| **OCI Object Storage** | `if-none-match: *` (only `*` is a valid value) | `if-match: <etag>` | `if-match` — **OPEN**, confirm in Task 0 | ETag |
+| **Azure Blob** | `If-None-Match: *` on Put Blob — **spike-verified live**: **409 `BlobAlreadyExists`** (not 412), blob unchanged; 53 racing losers all 409 | `If-Match: <etag>` on Put Blob — **spike-verified live** (current 201, stale **412 `ConditionNotMet`**) | `If-Match` on Delete Blob — **spike-verified live**: stale 412 **and the blob survives**; current 202 | ETag — **opaque timestamp token, NOT the content MD5** (spike-verified) |
+| **GCS** | `ifGenerationMatch=0` — **spike-verified live** (JSON API): **412 `conditionNotMet`**, object unchanged; 53 racing losers all 412 | `ifGenerationMatch=<generation>` — **spike-verified live** (current 200, stale 412) | `ifGenerationMatch=<generation>` — **spike-verified live**: stale 412 **and the object survives**; current 204 | **generation number** — a decimal counter carried as a **query parameter**, not a header (spike-verified) |
+| **OCI Object Storage** | `if-none-match: *` (only `*` is a valid value) — **spike-verified live**: **412 `IfNoneMatchFailed`**, object unchanged; 52 racing losers all 412 | `if-match: <etag>` — **spike-verified live** (current 200, stale **412 `IfMatchFailed`**) | `if-match` on DeleteObject — **spike-verified live**: stale 412 **and the object survives**; current 204. The cell this row marked OPEN is closed | ETag — **a UUID, NOT the content MD5** (spike-verified); the content MD5 comes back as `opc-content-md5` |
 | **Alibaba OSS** | `x-oss-forbid-overwrite: true` → **409 `FileAlreadyExists`** — **spike-verified live**, including that the refused PUT leaves the object intact. `If-None-Match: *` is **400 `NotImplemented`**. Documented as silently ignored when bucket versioning is enabled or suspended (the CI bucket has versioning unset) | **NONE — spike-verified live.** `If-Match` on PutObject is **400 `NotImplemented`** for a *current* ETag as well as a stale one: the header is unimplemented, not evaluated | **NONE, and silently ignored** — `If-Match` on DeleteObject returns 204 and deletes anyway (spike-verified live) | ETag (quoted uppercase MD5 hex for single-part content) |
 
 Design consequences, each of which is a decision rather than an observation:
@@ -812,7 +817,7 @@ a **provider whose listing is not strongly consistent** returns a short list
 rather than an error, and the engine has no way to detect the difference
 between "this log has 40 entries" and "this log has 60 entries and I was
 shown 40". This is why Requirement 5.4 forbids marking such a provider
-production-ready and why Task 0 closes the three OPEN N3 cells empirically
+production-ready and why Task 0 closed every N3 cell empirically
 against live services rather than from documentation.
 
 ### Property 3: A fenced writer cannot complete another mutation
@@ -1050,7 +1055,9 @@ skips rather than fails, cost-reporting and signal-teardown fixtures from
    stale-version write is genuinely rejected by the service.
 4. **Backup → verify → clone-restore → fresh-engine read-back.**
 
-Plus the **list-after-write empirical check** closing the three OPEN cells:
+Plus the **list-after-write empirical check**, which task 0 has already run
+against all five providers (spike-notes.md Findings 5, 10-13); the real-tier
+version re-runs it from an in-region host:
 write N objects under a fresh prefix, LIST immediately, assert all N appear.
 
 A task requiring live verification is **not** checked off against the mock

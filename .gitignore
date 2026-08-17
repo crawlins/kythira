@@ -65,3 +65,7 @@ Thumbs.db
 *.gcov.json.gz
 *.gcda
 *.gcno
+
+# Python bytecode from the object-store probe scripts
+__pycache__/
+*.pyc
