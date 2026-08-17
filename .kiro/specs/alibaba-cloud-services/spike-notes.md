@@ -233,10 +233,33 @@ Cheap pre-check that costs nothing and tells you whether the block has
 lifted, without waiting ~10 minutes for a provision timeout:
 
 ```sh
-aliyun --profile kythira-ci ecs RunInstances --RegionId ap-southeast-1 --DryRun true \
+aliyun ecs RunInstances --RegionId ap-southeast-1 --DryRun true \
   --ImageId ubuntu_24_04_x64_20G_alibase_20260720.vhd --InstanceType ecs.e-c1m1.large \
   --VSwitchId vsw-t4nd0gfwgpoxkdeq48v0o --SecurityGroupId sg-t4n3lyvcd8qegudjvhvw --Amount 1
 ```
+
+(The `--profile kythira-ci` this command used to carry is gone: `aliyun
+configure list` now shows a single `default` profile, and naming the old one
+fails with "unknown profile" before any request is sent — which reads exactly
+like a credentials problem and is not one.)
+
+**RISK CONTROL HAS LIFTED — August 17, 2026.** The account owner observed that
+the risk-management portal no longer lists any items, and the pre-check above
+confirms it from the API side rather than from the console:
+
+```
+ErrorCode: DryRunOperation
+Message: Request validation has been passed with DryRun flag set.
+```
+
+That is the success answer for a `--DryRun true` call — the request was
+validated and nothing was created — where the same command previously returned
+`Forbidden.RiskControl`. **ECS instance creation is permitted again, so the ESS
+write path is unblocked** and the single real case above is now worth running.
+Note what this does and does not establish: it proves the account-wide block on
+`RunInstances` is gone, which was the whole cause. It does not exercise ESS's
+scale-out activity, `RemoveInstances`, or the state spellings below — those
+still need an instance to actually exist, and the run costs real money.
 
 **Confirmed working, unexpectedly:** the capacity-rollback-on-provision-
 timeout that Task 3 added *beyond* the requirements (a sibling-lesson
@@ -244,10 +267,32 @@ defensive measure, Req 7.2 mandates only the exceptional future). After the
 timeout, `DesiredCapacity` and `TotalCapacity` are both back to 0 — no leak,
 no lingering spend, on its first real exercise. Worth keeping.
 
-**Still unverified, and needing an instance to exist:** `RemoveInstances`'
-capacity-decrement parameter, the `InService`/`Running` state spellings, and
-ECS `DescribeInstances` batch-response parsing. Re-run this single case once
-risk control clears; the binary and infrastructure are already in place.
+**VERIFIED, August 17, 2026 — the case passed green on its first run after
+the block lifted, in 110 s.** The three things that had never executed against
+the live service because they need an instance to exist are now all confirmed:
+`RemoveInstances`' capacity-decrement parameter, the `InService`/`Running`
+state spellings, and ECS `DescribeInstances` batch-response parsing. Nothing in
+the manager needed changing — the code written against documentation was right.
+
+```
+[provision_node] scaling group asg-t4ne1kbdhc5xbzskizxm placed
+                 i-t4ngi4c5q27znvt5gu17 in zone ap-southeast-1a
+provisioned node 1 at 10.20.1.210:7000
+decommission completed and the group was re-read
+*** No errors detected
+```
+
+**Cleanup confirmed from the service, not from the test's own bookkeeping** —
+the distinction this spec's probes are written around. Queried afterwards:
+`DesiredCapacity`/`TotalCapacity`/`ActiveCapacity` all 0,
+`DescribeScalingInstances` returns 0 instances, and `DescribeInstances` for
+`i-t4ngi4c5q27znvt5gu17` matches nothing at all. No leak, no lingering spend.
+
+**One behaviour worth keeping in view**, logged by the manager rather than
+discovered: ESS placed the instance in `ap-southeast-1a` while the requested
+zone was empty, and proceeded. That is by design — ESS owns placement, and one
+scaling group per zone is the only way to constrain it — but it means a caller
+that *needs* a specific zone cannot get one from this API by asking.
 
 ## Finding 3 — Endpoints: PARTIALLY CONFIRMED (documentation only)
 
