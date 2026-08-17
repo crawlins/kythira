@@ -4008,6 +4008,38 @@ else()
     message(STATUS "Azure SDK not found — azure_quorum_manager_unit_test will not be built")
 endif()
 
+# ── azure_blob_client unit test (cloud object persistence, task 8) ────────────
+#
+# Needs azure-core/azure-identity for the TokenCredential chain the client takes
+# its bearer token from, httplib for both the transport and the local server the
+# test points endpoint_override at, and OpenSSL for the Content-MD5 digest.
+# Deliberately does NOT link network_simulator: this client uses no futures, so
+# linking it would pull folly in and force a folly::init fixture for nothing —
+# which means KYTHIRA_HAS_AZURE_SDK has to be defined here, since it normally
+# arrives on that INTERFACE.
+if(azure-core-cpp_FOUND AND azure-identity-cpp_FOUND AND TARGET httplib::httplib
+   AND TARGET OpenSSL::SSL)
+    add_executable(azure_blob_client_unit_test azure_blob_client_unit_test.cpp)
+    target_compile_definitions(azure_blob_client_unit_test PRIVATE KYTHIRA_HAS_AZURE_SDK)
+    target_link_libraries(azure_blob_client_unit_test PRIVATE
+        Boost::unit_test_framework
+        httplib::httplib
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        Azure::azure-core
+        Azure::azure-identity
+    )
+    target_include_directories(azure_blob_client_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(azure_blob_client_unit_test PRIVATE cxx_std_23)
+    add_test(NAME azure_blob_client_unit_test COMMAND azure_blob_client_unit_test)
+    set_tests_properties(azure_blob_client_unit_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;azure;cloud;object-persistence"
+    )
+else()
+    message(STATUS "azure_blob_client_unit_test: skipped (needs the Azure SDK, httplib and OpenSSL)")
+endif()
+
 # ── azure_key_vault_ca_provider tests (independent of the core Azure SDK) ────
 if(azure-security-keyvault-keys-cpp_FOUND AND TARGET certificate_authority)
 
