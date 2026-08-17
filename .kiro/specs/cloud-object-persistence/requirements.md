@@ -378,15 +378,38 @@ cannot become silent state loss.
 
 #### Acceptance Criteria
 
-1. WHEN `verify_checksums` is enabled (the default) THEN every PUT SHALL
-   carry an end-to-end content checksum the service verifies and rejects on
+0. **Requirement 7 spans two layers, and one flag cannot govern both** —
+   established while implementing task 6, August 17, 2026, and stated first
+   because criteria 1 and 2 read as one feature and are not.
+   - The **service-side** check of criterion 1 is a header the client sends and
+     the service evaluates. The engine does not speak HTTP and cannot spell a
+     header, and the client is constructed by the caller rather than by the
+     engine, so this SHALL be each **client's** own configuration.
+   - The **local** check of criterion 2 SHALL live in the **engine**, once, over
+     a store trait the client declares. Doing it in each client would repeat it
+     five times, and it is the engine that already holds the bytes it meant to
+     write. Task 6's verification bar settles it independently: *a mock store
+     returning a wrong ETag must make the write throw*, and a mock store is not
+     a client.
+   - `object_persistence_options::verify_checksums` therefore governs the local
+     check only, and SHALL be documented as such. A single knob spanning both
+     layers would be honoured by one and silently ignored by the other, which
+     is the failure this spec forbids elsewhere under its own name.
+1. WHEN a client's checksum verification is enabled (the default) THEN every PUT
+   SHALL carry an end-to-end content checksum the service verifies and rejects on
    mismatch — `Content-MD5` where universally supported, or the provider's
    native checksum header where one is preferred. The per-provider spelling
    SHALL be recorded in the design's client table.
 2. WHERE a provider returns a checksum or ETag that is a deterministic
-   function of the content for single-part uploads, the client SHALL verify
+   function of the content for single-part uploads, **the engine** SHALL verify
    the returned value against the locally computed one and throw on
-   mismatch, naming the key. **Measured, August 16-17, 2026: the ETag is the
+   mismatch, naming the key — over a `content_md5_versioned_store` trait the
+   **client declares**, since only the client knows whether its version carries
+   that promise (see criterion 0; amended from "the client SHALL verify" in
+   place). The comparison SHALL ignore surrounding quotes and letter case, and
+   a mismatch SHALL be treated as a **retryable** failure rather than a fatal
+   one: a corrupted transfer is exactly what re-sending the identical bytes to
+   the identical key repairs. **Measured, August 16-17, 2026: the ETag is the
    content MD5 on only two of the five providers** — S3 (lowercase) and OSS
    (uppercase), so that comparison must be case-insensitive. Azure's ETag is
    an opaque timestamp token, OCI's is a **UUID** and GCS's is an opaque

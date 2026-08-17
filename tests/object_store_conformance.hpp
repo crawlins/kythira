@@ -48,6 +48,12 @@
 /// | `static constexpr bool fenced = true` | the engine is instantiated with `fencing_mode::compare_and_swap`. Absent means unfenced, so no existing harness needs touching |
 /// | `owner_id()` | the owner id `make_engine()` claims the prefix with |
 /// | `make_engine_as(owner_id, takeover_epoch)` | a *different* writer over the same `{bucket, prefix}` — the takeover and other-owner cases |
+///
+/// ### Additionally, for a **content-MD5-versioned** store (S3, Alibaba OSS)
+///
+/// | Member | Meaning |
+/// |---|---|
+/// | `wrong_version_for_next_puts(n)` | report a digest that does not match what was stored, for `n` PUTs — a corrupted transfer |
 // clang-format on
 ///
 /// A harness that cannot inject a failure (a real bucket, say) instantiates the
@@ -162,6 +168,20 @@ template<typename Harness> struct cases {
         object_persistence_options opts;
         opts.snapshot_retention = n;
         return opts;
+    }
+
+    static auto options_with_max_bytes(std::size_t n) -> object_persistence_options {
+        object_persistence_options opts;
+        opts.max_object_bytes = n;
+        return opts;
+    }
+
+    /// A snapshot whose serialised form is comfortably over `cap` bytes. Sized
+    /// from the state-machine blob, which is base64'd into the record, so the
+    /// serialised object is larger than the blob rather than smaller.
+    static auto snapshot_larger_than(std::size_t cap) -> snapshot_t {
+        std::vector<std::byte> state(cap + 64, std::byte{0x5A});
+        return make_snapshot(1, 1, {1, 2, 3}, std::move(state));
     }
 
     // ── Concept ──────────────────────────────────────────────────────────────
@@ -1012,6 +1032,180 @@ template<typename Harness> struct cases {
         BOOST_TEST(h.has(h.prefix() + "/README"));
     }
 
+    // ── Size limits (Requirement 7.3) ────────────────────────────────────────
+    //
+    // These need no injection and no special store, so every substrate runs them,
+    // fenced and unfenced alike.
+
+    /// The default is 64 MiB — deliberately far below the smallest provider limit
+    /// (5 GB), because the binding constraint is the engine's shape rather than
+    /// the service's.
+    static auto the_default_size_cap_is_64_mib() -> void {
+        const object_persistence_options opts;
+        BOOST_TEST(opts.max_object_bytes == 64U * 1024U * 1024U);
+        BOOST_TEST(opts.verify_checksums);
+    }
+
+    /// `0` would refuse every write including the empty one, so it is rejected
+    /// where every other unusable option is.
+    static auto a_size_cap_of_zero_is_rejected() -> void {
+        Harness h;
+        BOOST_CHECK_THROW(h.make_engine(options_with_max_bytes(0)), std::invalid_argument);
+    }
+
+    /// The deliverable of Requirement 7.3: an oversized snapshot throws naming
+    /// **all three** facts — the size, the cap, and that multipart is a documented
+    /// non-goal rather than a missing feature. A snapshot silently truncated at a
+    /// provider limit is the worst outcome available here.
+    static auto an_oversized_snapshot_throws_naming_size_cap_and_the_multipart_non_goal() -> void {
+        Harness h;
+        const std::size_t cap = 4096;
+        engine_t eng = h.make_engine(options_with_max_bytes(cap));
+        eng.save_snapshot(make_snapshot(1, 1));
+        h.clear_requests();
+
+        try {
+            eng.save_snapshot(snapshot_larger_than(cap));
+            BOOST_FAIL("a snapshot over max_object_bytes must not be written");
+        } catch (const std::runtime_error& e) {
+            const std::string what = e.what();
+            BOOST_TEST(what.find(std::to_string(cap)) != std::string::npos);
+            BOOST_TEST(what.find("max_object_bytes") != std::string::npos);
+            BOOST_TEST(what.find("multipart") != std::string::npos);
+            BOOST_TEST(what.find(h.prefix() + "/snapshot") != std::string::npos);
+        }
+
+        // Refused *before* the request, and the previous snapshot is untouched:
+        // the cap is a guard, not a failed write to clean up after.
+        BOOST_TEST(h.count_requests("PUT") == 0U);
+        BOOST_TEST(eng.load_snapshot()->last_included_index() == 1U);
+        engine_t eng2 = h.make_engine(options_with_max_bytes(cap));
+        BOOST_TEST(eng2.load_snapshot()->last_included_index() == 1U);
+    }
+
+    /// The cap is on *every* PUT, not only snapshots — a log entry carries an
+    /// arbitrary state-machine command and is the other object whose size a caller
+    /// controls.
+    static auto an_oversized_log_entry_is_refused_before_the_request() -> void {
+        Harness h;
+        const std::size_t cap = 2048;
+        engine_t eng = h.make_engine(options_with_max_bytes(cap));
+        h.clear_requests();
+
+        BOOST_CHECK_THROW(eng.append_log_entry(
+                              make_entry(1, 1, std::vector<std::byte>(cap + 64, std::byte{0x11}))),
+                          std::runtime_error);
+        BOOST_TEST(h.count_requests("PUT") == 0U);
+        BOOST_TEST(eng.get_last_log_index() == 0U);
+
+        // …and a normal entry still goes through, which is the control without
+        // which "refused" would prove nothing.
+        BOOST_CHECK_NO_THROW(eng.append_log_entry(make_entry(1, 1)));
+        BOOST_TEST(eng.get_last_log_index() == 1U);
+    }
+
+    /// Raised, the cap admits what it refused: it is a configured limit and not a
+    /// hidden one, so the same snapshot writes cleanly at a larger setting.
+    static auto raising_the_cap_admits_the_snapshot_it_refused() -> void {
+        Harness h;
+        const std::size_t cap = 4096;
+        {
+            engine_t small = h.make_engine(options_with_max_bytes(cap));
+            BOOST_CHECK_THROW(small.save_snapshot(snapshot_larger_than(cap)), std::runtime_error);
+        }
+        engine_t large = h.make_engine(options_with_max_bytes(cap * 64));
+        BOOST_CHECK_NO_THROW(large.save_snapshot(snapshot_larger_than(cap)));
+        BOOST_TEST(large.load_snapshot().has_value());
+
+        engine_t reader = h.make_engine(options_with_max_bytes(cap * 64));
+        BOOST_TEST(reader.load_snapshot()->state_machine_state().size() == cap + 64);
+    }
+
+    // ── Local checksum verification (Requirement 7.2) ─────────────────────────
+    //
+    // Instantiated only for a harness whose store declares
+    // `content_md5_versioned_store` — true of S3 and OSS, false of the other
+    // three, so this is a per-provider suite by construction rather than by
+    // choice.
+
+    /// The verification is real: a store reporting a digest that does not match
+    /// what was sent makes the write throw, naming the key.
+    static auto a_wrong_returned_digest_makes_the_write_throw_naming_the_key() -> void {
+        Harness h;
+        engine_t eng = h.make_engine(no_retries());
+        eng.save_current_term(1);
+
+        h.wrong_version_for_next_puts(1);
+        try {
+            eng.save_current_term(2);
+            BOOST_FAIL("a mismatched returned digest must not be treated as a successful write");
+        } catch (const std::runtime_error& e) {
+            const std::string what = e.what();
+            BOOST_TEST(what.find(h.prefix() + "/term") != std::string::npos);
+            BOOST_TEST(what.find("checksum") != std::string::npos);
+        }
+
+        // The mirror is unchanged, so the caller sees a failed write and the next
+        // read does not report state the store never confirmed.
+        BOOST_TEST(eng.load_current_term() == 1U);
+
+        // The control: with nothing injected, the same write succeeds — otherwise
+        // this case would pass against an engine that rejected every write.
+        BOOST_CHECK_NO_THROW(eng.save_current_term(2));
+        BOOST_TEST(eng.load_current_term() == 2U);
+    }
+
+    /// A mismatch is a corrupted transfer, which is exactly what re-sending the
+    /// identical bytes to the identical key repairs — so it is retried like any
+    /// other failed PUT rather than being fatal on the first occurrence.
+    static auto a_corrupted_transfer_is_repaired_by_the_retry() -> void {
+        Harness h;
+        engine_t eng = h.make_engine();  // the default single retry
+        h.clear_requests();
+
+        h.wrong_version_for_next_puts(1);
+        BOOST_CHECK_NO_THROW(eng.save_current_term(7));
+        BOOST_TEST(eng.load_current_term() == 7U);
+        BOOST_TEST(h.count_requests("PUT") == 2U);
+        BOOST_TEST(h.body(h.prefix() + "/term") == "7");
+    }
+
+    /// Every write is verified, not only the single-slot ones.
+    static auto log_and_snapshot_writes_are_verified_too() -> void {
+        Harness h;
+        engine_t eng = h.make_engine(no_retries());
+
+        h.wrong_version_for_next_puts(1);
+        BOOST_CHECK_THROW(eng.append_log_entry(make_entry(1, 1)), std::runtime_error);
+        BOOST_TEST(eng.get_last_log_index() == 0U);
+
+        h.wrong_version_for_next_puts(1);
+        BOOST_CHECK_THROW(eng.save_snapshot(make_snapshot(1, 1)), std::runtime_error);
+        BOOST_TEST(!eng.load_snapshot().has_value());
+
+        BOOST_CHECK_NO_THROW(eng.append_log_entry(make_entry(1, 1)));
+        BOOST_CHECK_NO_THROW(eng.save_snapshot(make_snapshot(1, 1)));
+    }
+
+    /// Turning it off turns it off — a knob that is honoured, so that an operator
+    /// on a provider with a known-broken digest is not stuck.
+    static auto verification_can_be_disabled() -> void {
+        Harness h;
+        object_persistence_options opts = no_retries();
+        opts.verify_checksums = false;
+        engine_t eng = h.make_engine(opts);
+
+        h.wrong_version_for_next_puts(1);
+        BOOST_CHECK_NO_THROW(eng.save_current_term(3));
+        BOOST_TEST(eng.load_current_term() == 3U);
+    }
+
+    static auto no_retries() -> object_persistence_options {
+        object_persistence_options opts;
+        opts.write_retries = 0;
+        return opts;
+    }
+
     // ── Fencing (Requirement 9) ──────────────────────────────────────────────
     //
     // Instantiated only for a fenced harness, by
@@ -1309,6 +1503,12 @@ template<typename Harness> struct cases {
     KYTHIRA_OSC_CASE(harness_type, retained_copies_are_pruned_across_a_restart)                   \
     KYTHIRA_OSC_CASE(harness_type, a_corrupt_retained_copy_does_not_break_startup)                \
     KYTHIRA_OSC_CASE(harness_type, pruning_leaves_alone_a_key_it_cannot_prove_it_wrote)           \
+    KYTHIRA_OSC_CASE(harness_type, the_default_size_cap_is_64_mib)                                \
+    KYTHIRA_OSC_CASE(harness_type, a_size_cap_of_zero_is_rejected)                                \
+    KYTHIRA_OSC_CASE(harness_type,                                                                \
+                     an_oversized_snapshot_throws_naming_size_cap_and_the_multipart_non_goal)     \
+    KYTHIRA_OSC_CASE(harness_type, an_oversized_log_entry_is_refused_before_the_request)          \
+    KYTHIRA_OSC_CASE(harness_type, raising_the_cap_admits_the_snapshot_it_refused)                \
     KYTHIRA_OSC_CASE(harness_type, a_returned_write_has_already_reached_the_store)                \
     KYTHIRA_OSC_CASE(harness_type, a_corrupt_term_object_fails_construction_by_name)              \
     KYTHIRA_OSC_CASE(harness_type, a_partially_numeric_term_is_corruption_not_a_prefix)           \
@@ -1334,6 +1534,20 @@ template<typename Harness> struct cases {
                      a_failure_writing_the_retained_copy_leaves_the_previous_snapshot)         \
     KYTHIRA_OSC_CASE(harness_type, a_failure_at_the_commit_point_leaves_the_previous_snapshot) \
     KYTHIRA_OSC_CASE(harness_type, a_failure_pruning_leaves_the_new_snapshot_committed)        \
+    BOOST_AUTO_TEST_SUITE_END()
+
+/// Requirement 7.2's local checksum verification. Instantiated **in addition** to
+/// the suites above, and only by a harness whose store declares
+/// `content_md5_versioned_store` — true of S3 and Alibaba OSS, false of Azure,
+/// GCS and OCI, whose version is an opaque token. The harness must also offer
+/// `wrong_version_for_next_puts(n)`.
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define KYTHIRA_OBJECT_STORE_CONFORMANCE_CHECKSUM(harness_type, suite_prefix)                    \
+    BOOST_AUTO_TEST_SUITE(suite_prefix##_conformance_checksum)                                   \
+    KYTHIRA_OSC_CASE(harness_type, a_wrong_returned_digest_makes_the_write_throw_naming_the_key) \
+    KYTHIRA_OSC_CASE(harness_type, a_corrupted_transfer_is_repaired_by_the_retry)                \
+    KYTHIRA_OSC_CASE(harness_type, log_and_snapshot_writes_are_verified_too)                     \
+    KYTHIRA_OSC_CASE(harness_type, verification_can_be_disabled)                                 \
     BOOST_AUTO_TEST_SUITE_END()
 
 /// The fencing cases (Requirement 9). Instantiated **in addition** to the suites

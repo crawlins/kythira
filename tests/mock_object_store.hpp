@@ -21,6 +21,7 @@
 /// survived a "restart".
 
 #include <raft/key_object_store.hpp>
+#include <raft/object_store_persistence.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -76,17 +77,37 @@ struct mock_object_store_state {
     /// silently short log). Nothing else about them changes: a GET still
     /// returns them.
     std::set<std::string> hidden_from_listing;
+
+    /// Report a version that is *not* the digest of what was stored, for this
+    /// many further PUTs — a corrupted transfer, on a store whose version is
+    /// supposed to be the content MD5. Inert on the plain store, whose version
+    /// carries no such promise.
+    int wrong_version_for_next_puts{0};
 };
 
 /// @brief A copyable handle onto an in-memory bucket, satisfying both store
 ///        concepts.
-class mock_object_store {
+///
+/// @tparam VersionIsContentMd5 mint the version as the content MD5, quoted and
+///         uppercased, the way S3's and OSS's ETag behave — and declare
+///         `version_is_content_md5` so the engine performs Requirement 7.2's
+///         local verification. `false` mints an opaque counter instead, like
+///         Azure, GCS and OCI. Two types rather than a runtime flag because the
+///         declaration is a compile-time property of the store, which is what
+///         lets the engine compute no digest at all where there is nothing to
+///         compare against.
+template<bool VersionIsContentMd5> class basic_mock_object_store {
 public:
-    mock_object_store() : _state(std::make_shared<mock_object_store_state>()) {}
+    /// Read by `kythira::content_md5_versioned_store`. Present on both
+    /// instantiations, `false` on one — a store may equally well say so
+    /// explicitly.
+    static constexpr bool version_is_content_md5 = VersionIsContentMd5;
+
+    basic_mock_object_store() : _state(std::make_shared<mock_object_store_state>()) {}
 
     /// Share an existing bucket — this is how a test keeps its own handle after
     /// handing one to an engine, and how two engines are pointed at one bucket.
-    explicit mock_object_store(std::shared_ptr<mock_object_store_state> state)
+    explicit basic_mock_object_store(std::shared_ptr<mock_object_store_state> state)
         : _state(std::move(state)) {}
 
     [[nodiscard]] auto state() const -> const std::shared_ptr<mock_object_store_state>& {
@@ -276,12 +297,48 @@ public:
         _state->hidden_from_listing.insert(std::move(key));
     }
 
+    /// Report a version that does not match what was stored, for the next `n`
+    /// PUTs — a corrupted transfer. The object is still stored, exactly as a
+    /// service would store what actually arrived; it is the *reported digest*
+    /// that disagrees, which is the whole point of an end-to-end checksum.
+    auto wrong_version_for_next_puts(int n) const -> void {
+        const std::lock_guard lock(_state->mu);
+        _state->wrong_version_for_next_puts = n;
+    }
+
 private:
     /// Callers hold `_state->mu`.
     auto store_locked(const std::string& key, std::string body) const -> object_version {
-        auto version = "v" + std::to_string(++_state->version_counter);
+        ++_state->version_counter;
+        object_version version;
+        if constexpr (VersionIsContentMd5) {
+            // Quoted and uppercase, like OSS's ETag — which is also how the
+            // engine's comparison gets held to being quote- and case-insensitive
+            // rather than only claiming to be.
+            version = '"' + to_upper(kythira::object_store_persistence_detail::md5_hex(body)) + '"';
+        } else {
+            version = "v" + std::to_string(_state->version_counter);
+        }
+        if (_state->wrong_version_for_next_puts > 0) {
+            --_state->wrong_version_for_next_puts;
+            // The digest of something else entirely: what a corrupted transfer
+            // looks like from the caller's side.
+            version = '"' +
+                      to_upper(kythira::object_store_persistence_detail::md5_hex(
+                          "not what the caller sent")) +
+                      '"';
+        }
         _state->objects[key] = mock_stored_object{std::move(body), version};
         return version;
+    }
+
+    static auto to_upper(std::string s) -> std::string {
+        for (char& c : s) {
+            if (c >= 'a' && c <= 'z') {
+                c = static_cast<char>(c - 'a' + 'A');
+            }
+        }
+        return s;
     }
 
     /// Callers hold `_state->mu`. A rejected precondition throws
@@ -316,9 +373,22 @@ private:
     std::shared_ptr<mock_object_store_state> _state;
 };
 
+/// The default substrate: an opaque version, like Azure, GCS and OCI.
+using mock_object_store = basic_mock_object_store<false>;
+
+/// The substrate for Requirement 7.2's local verification: the version **is** the
+/// content MD5, like S3's and OSS's ETag.
+using md5_versioned_mock_object_store = basic_mock_object_store<true>;
+
 static_assert(key_object_store<mock_object_store>,
               "mock_object_store must satisfy key_object_store");
 static_assert(conditional_key_object_store<mock_object_store>,
               "mock_object_store must satisfy conditional_key_object_store");
+static_assert(!content_md5_versioned_store<mock_object_store>,
+              "the plain mock store's version must stay opaque — it is what pins that the engine "
+              "computes no digest where there is nothing to compare against");
+static_assert(conditional_key_object_store<md5_versioned_mock_object_store>);
+static_assert(content_md5_versioned_store<md5_versioned_mock_object_store>,
+              "md5_versioned_mock_object_store must declare its version is the content MD5");
 
 }  // namespace kythira
