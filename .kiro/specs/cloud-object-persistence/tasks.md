@@ -1,6 +1,6 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-12 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-13 done; task 0 closed except 0.7 (needs a container runtime)
 
 **The client wave is complete, August 17, 2026.** Tasks 7, 8, 9 and 10
 (`aws_s3_client`, `azure_blob_client`, `gcp_gcs_client`,
@@ -16,9 +16,10 @@ than merely to print that it had. `configs/no_cloud_defconfig` makes
 Requirement 16.3's all-providers-off configuration reproducible — the engine's
 213 conformance cases and the backup catalog's 25 both pass in it.
 
-**Task 12 (the backup catalog) is done too.** Next is task 13 (restore, both
-modes), then task 14 (the CLI), which still owes Requirement 16.4's
-provider-reporting half.
+**Tasks 12 and 13 (the backup catalog and both restore modes) are done too**,
+with the restore runbooks in `doc/cloud_object_persistence.md`. Next is task 14
+(the CLI), which owes Requirement 16.4's provider-reporting half and the exact
+command sequences that document currently leaves open.
 
 One honest distinction to carry into task 18: `alibaba_oss_client` is
 **live-verified** end to end. `aws_s3_client`, `azure_blob_client`,
@@ -1222,26 +1223,67 @@ Reference implementations to study before starting, in this order:
       verified under `configs/no_cloud_defconfig`, alongside the engine's 213.
       - _Requirements: 10.1–10.5, 10.7_
 
-- [ ] 13. **Restore — both modes, separately named**
+- [x] 13. **Restore — both modes, separately named** — done August 17, 2026,
+      as `restore_clone` / `restore_seed` on `object_store_backup`, with 17
+      further cases (42 in the suite) and **13/13 mutants caught**.
 
-  - **Clone restore**: reproduce a backup into a target prefix byte for
-    byte, and restore the owner object with a **higher** epoch so a
-    returning original fences itself out on its next write.
-  - **Seed restore**: preserve the snapshot's state-machine bytes, **replace**
-    its configuration with an operator-supplied node set, reset term to the
-    snapshot's `last_included_term`, clear the vote, empty the log; refuse
-    when the backup has no snapshot; write one prefix per new node and emit
-    exactly what the operator must configure.
-  - Both refuse a non-empty target without `--force`; `--force` deletes
-    engine-owned keys before restoring and **never merges**.
-  - Both run `verify` **before writing anything** and abort on the first
-    inconsistency, naming it.
-  - Verify: a clone-restored prefix opened by a fresh engine matches the
-    original field for field; a seed-restored prefix has the new
-    configuration, an empty log, no vote, and the snapshot's term; **an
-    attempted merge into a non-empty prefix is impossible to produce** —
-    there is no code path to it.
-  - _Requirements: 11.1–11.6_
+      **A bug this task wrote and the design caught, worth recording because it
+      would have surfaced at the worst possible moment.** The first
+      `restore_seed` wrote the new cluster's node ids as JSON strings
+      unconditionally. The engine reads that array with `as_string()` when
+      `NodeId` is `std::string` and `as_int64()` when it is an integer, and
+      boost::json **throws** on the wrong one — so seeding a numeric-id cluster
+      would have produced a snapshot that parsed cleanly in every unit case and
+      exploded the moment an operator started the new cluster from it. The
+      representation is now **inferred from the backup's own snapshot**, not
+      guessed from the supplied ids: guessing would get `"1", "2", "3"` wrong
+      for a string-id cluster, which is an ordinary way to name nodes. Where it
+      cannot be inferred (an empty configuration) it refuses and says so rather
+      than picking one.
+
+      **Clone restore** reproduces a backup byte for byte. Requirement 11.1's
+      epoch bump is done by parsing and re-serialising the owner record, not by
+      patching it textually, so a differently-formatted owner object cannot pass
+      through unchanged; an owner record with no `epoch` is refused, because
+      restoring it unchanged would leave a returning original able to write. A
+      backup with **no** owner object restores without one being invented —
+      inventing one would make an unfenced prefix look fenced.
+
+      **Seed restore** keeps the state-machine bytes and the snapshot's
+      index/term, replaces the configuration, resets the term to
+      `last_included_term`, and clears the vote **by omission** rather than by
+      writing a `"none"` sentinel — an absent object is how this engine spells
+      "never voted", and the sentinel would make a fenced engine's first vote an
+      `If-Match` against an object it never wrote. The joint-consensus marker is
+      dropped: the old cluster may have been mid-reconfiguration, a new one
+      never is, and carrying it across would seed every node with a membership
+      change nobody proposed.
+
+      **The merge has no code path, structurally.** `prepare_target` either
+      throws or leaves the target with no engine-owned keys, and nothing writes
+      until it has returned. `force` deletes `term`, `voted_for`, `snapshot`,
+      `owner`, `log/*` and `snapshots/*` — and **only** those. Foreign objects
+      are left alone, because the engine neither reads nor writes them either
+      and they cannot merge with Raft state. The case that proves it seeds a
+      *different* node's entries at 40-41 and checks they are gone rather than
+      interleaved with the restored 4-6.
+
+      Two more decisions:
+
+      - **Seed prepares every target before writing any**, so a refusal on the
+        third node does not leave the first two seeded into a cluster that can
+        never reach a quorum.
+      - **Restore aborts on the first problem; `verify` collects them all.**
+        `verify` is a diagnostic run by a human who wants the whole picture, and
+        restore is a gate.
+
+      **Requirement 11.6's runbooks are in `doc/cloud_object_persistence.md`** —
+      one per mode, each with its sequence, its safety checks and a failure
+      table keyed on the actual message text. The document states plainly that
+      the exact `cmd/raft_object_backup` command lines land with task 14 rather
+      than guessing at them now, and that the durability contract and
+      per-provider evidence table are task 18's.
+      - _Requirements: 11.1–11.6_
 
 - [ ] 14. **`cmd/raft_object_backup` CLI**
 

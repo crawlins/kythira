@@ -26,6 +26,8 @@
 // not a gap in the code, and the real-store suites are where a genuinely
 // separate bucket gets exercised.
 
+#include <boost/json.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <string>
@@ -84,6 +86,25 @@ auto seed_source(const mock_object_store& store) -> void {
     for (std::uint64_t i = 4; i <= 6; ++i) {
         store.seed(p + log_key(i), entry_json(5, i));
     }
+}
+
+/// Every key under a prefix, with the prefix stripped — what a restored target
+/// should look like when compared against its source.
+auto relative_keys(const mock_object_store& store, const std::string& prefix)
+    -> std::vector<std::string> {
+    std::vector<std::string> out;
+    const std::string root = prefix + "/";
+    for (const auto& key : store.keys()) {
+        if (key.starts_with(root)) {
+            out.push_back(key.substr(root.size()));
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+auto target_ref(const char* prefix) -> backup_source {
+    return backup_source{k_bucket, prefix};
 }
 
 auto problems_of_kind(const verification_report& report, std::string_view kind)
@@ -599,6 +620,366 @@ BOOST_AUTO_TEST_CASE(the_same_source_backed_up_quiesced_verifies_clean) {
         BOOST_TEST_MESSAGE("unexpected problem: " << problem.kind << " " << problem.detail);
     }
     BOOST_TEST(report.ok);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── restore_clone ────────────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(object_store_backup_restore_clone)
+
+BOOST_AUTO_TEST_CASE(a_cloned_prefix_matches_the_original_field_for_field) {
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    const auto report = backup.restore_clone(dest_ref(), "b1", target_ref("node-1-restored"));
+
+    BOOST_TEST(report.backup_id == "b1");
+    BOOST_TEST(report.objects_written == 6U);
+    BOOST_REQUIRE_EQUAL(report.nodes.size(), 1U);
+    BOOST_TEST(report.nodes[0].prefix == "node-1-restored");
+
+    // Same keys, and the same bytes under each — byte for byte is the claim,
+    // so bytes are what is compared.
+    const auto original = relative_keys(store, k_source_prefix);
+    const auto restored = relative_keys(store, "node-1-restored");
+    BOOST_REQUIRE(original == restored);
+    for (const auto& relative : original) {
+        BOOST_TEST(store.body(std::string(k_source_prefix) + "/" + relative) ==
+                   store.body("node-1-restored/" + relative));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(the_restored_owner_claims_a_higher_epoch) {
+    // Requirement 11.1. This is what makes a split-brain loud instead of
+    // silent: the original, if it comes back, finds its own epoch stale and
+    // fences itself out on its next write rather than writing alongside.
+    const mock_object_store store;
+    seed_source(store);
+    store.seed(std::string(k_source_prefix) + "/owner",
+               R"({"owner_id":"n1","epoch":7,"started_at":"2026-08-17T00:00:00Z"})");
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    const auto report = backup.restore_clone(dest_ref(), "b1", target_ref("node-1-restored"));
+
+    BOOST_REQUIRE(report.owner_epoch.has_value());
+    BOOST_TEST(*report.owner_epoch == 8U);
+    const auto owner = boost::json::parse(store.body("node-1-restored/owner")).as_object();
+    BOOST_TEST(owner.at("epoch").to_number<std::uint64_t>() == 8U);
+    // Strictly higher than the original, which is untouched.
+    const auto source_owner =
+        boost::json::parse(store.body(std::string(k_source_prefix) + "/owner")).as_object();
+    BOOST_TEST(source_owner.at("epoch").to_number<std::uint64_t>() == 7U);
+    // And the rest of the record is preserved — this is an epoch bump, not a
+    // rewrite of who the owner is.
+    BOOST_TEST(std::string(owner.at("owner_id").as_string()) == "n1");
+}
+
+BOOST_AUTO_TEST_CASE(a_backup_with_no_owner_object_restores_without_inventing_one) {
+    // The owner object only exists under `compare_and_swap`. Inventing one for
+    // an unfenced engine would make the restored prefix look fenced when it is
+    // not.
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    const auto report = backup.restore_clone(dest_ref(), "b1", target_ref("node-1-restored"));
+
+    BOOST_TEST(!report.owner_epoch.has_value());
+    BOOST_TEST(!store.has("node-1-restored/owner"));
+}
+
+BOOST_AUTO_TEST_CASE(an_owner_record_with_no_epoch_is_refused) {
+    const mock_object_store store;
+    seed_source(store);
+    store.seed(std::string(k_source_prefix) + "/owner", R"({"owner_id":"n1"})");
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    try {
+        std::ignore = backup.restore_clone(dest_ref(), "b1", target_ref("node-1-restored"));
+        BOOST_FAIL("expected an epoch-less owner record to be refused");
+    } catch (const std::runtime_error& err) {
+        BOOST_TEST(std::string(err.what()).find("no epoch") != std::string::npos);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_non_empty_target_is_refused_without_force) {
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    store.seed("occupied/term", "99");
+    store.seed("occupied/" + log_key(1), entry_json(99, 1));
+
+    try {
+        std::ignore = backup.restore_clone(dest_ref(), "b1", target_ref("occupied"));
+        BOOST_FAIL("expected a non-empty target to be refused");
+    } catch (const std::runtime_error& err) {
+        BOOST_TEST(std::string(err.what()).find("without force") != std::string::npos);
+    }
+    // Nothing was written, so the refusal is total rather than partial.
+    BOOST_TEST(store.body("occupied/term") == "99");
+    BOOST_TEST(relative_keys(store, "occupied").size() == 2U);
+}
+
+BOOST_AUTO_TEST_CASE(force_deletes_engine_owned_keys_and_never_merges) {
+    // Requirement 11.4's real claim. The target holds a *different* node's
+    // state; after a forced restore it must hold the backup's state and no
+    // trace of what was there — not the union of the two, which is a log that
+    // is two histories interleaved and which no later repair untangles.
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    store.seed("occupied/term", "99");
+    store.seed("occupied/voted_for", "n9");
+    store.seed("occupied/" + log_key(40), entry_json(99, 40));
+    store.seed("occupied/" + log_key(41), entry_json(99, 41));
+    store.seed("occupied/snapshots/00000000000000000039", snapshot_json(39, 99));
+
+    const auto report =
+        backup.restore_clone(dest_ref(), "b1", target_ref("occupied"), {.force = true});
+
+    // The old node's log entries are gone, not merged alongside 4..6.
+    BOOST_TEST(!store.has("occupied/" + log_key(40)));
+    BOOST_TEST(!store.has("occupied/" + log_key(41)));
+    BOOST_TEST(!store.has("occupied/snapshots/00000000000000000039"));
+    BOOST_TEST(store.body("occupied/term") == "5");
+    BOOST_TEST(store.body("occupied/voted_for") == "n2");
+
+    const auto original = relative_keys(store, k_source_prefix);
+    const auto restored = relative_keys(store, "occupied");
+    BOOST_TEST(original == restored);
+    BOOST_TEST(report.keys_deleted.size() == 5U);
+}
+
+BOOST_AUTO_TEST_CASE(force_leaves_foreign_objects_alone) {
+    // The engine neither reads, writes nor deletes objects it does not own, and
+    // neither does this. They also cannot merge with Raft state, so leaving
+    // them is safe as well as correct.
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    store.seed("occupied/term", "99");
+    store.seed("occupied/operators-own-notes.txt", "do not delete");
+
+    const auto report =
+        backup.restore_clone(dest_ref(), "b1", target_ref("occupied"), {.force = true});
+
+    BOOST_TEST(store.body("occupied/operators-own-notes.txt") == "do not delete");
+    BOOST_REQUIRE_EQUAL(report.keys_deleted.size(), 1U);
+    BOOST_TEST(report.keys_deleted[0] == "occupied/term");
+}
+
+BOOST_AUTO_TEST_CASE(a_failing_verify_aborts_before_anything_is_written) {
+    // Requirement 11.5. The restore is the one operation where a warning is
+    // worthless, so it aborts on the *first* problem rather than collecting
+    // them the way `verify` does.
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    store.remove(std::string(k_dest_prefix) + "/b1/objects/" + log_key(5));
+
+    try {
+        std::ignore = backup.restore_clone(dest_ref(), "b1", target_ref("node-1-restored"));
+        BOOST_FAIL("expected a failing verify to abort the restore");
+    } catch (const std::runtime_error& err) {
+        const std::string what = err.what();
+        BOOST_TEST(what.find("refusing to restore") != std::string::npos);
+        BOOST_TEST(what.find("missing_object") != std::string::npos);
+    }
+    BOOST_TEST(relative_keys(store, "node-1-restored").empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── restore_seed ─────────────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(object_store_backup_restore_seed)
+
+BOOST_AUTO_TEST_CASE(seeds_one_prefix_per_new_node_with_the_new_configuration) {
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    const auto report =
+        backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {"alpha", "beta", "gamma"});
+
+    BOOST_REQUIRE_EQUAL(report.nodes.size(), 3U);
+    BOOST_TEST(report.nodes[0].node_id == "alpha");
+    BOOST_TEST(report.nodes[0].prefix == "fresh/alpha");
+    BOOST_TEST(report.nodes[2].prefix == "fresh/gamma");
+
+    for (const auto& node : {"alpha", "beta", "gamma"}) {
+        const std::string prefix = std::string("fresh/") + node;
+        // The snapshot's term, the vote cleared, the log empty.
+        BOOST_TEST(store.body(prefix + "/term") == "4");
+        BOOST_TEST(!store.has(prefix + "/voted_for"));
+        const auto keys = relative_keys(store, prefix);
+        BOOST_REQUIRE_EQUAL(keys.size(), 2U);
+        BOOST_TEST(keys[0] == "snapshot");
+        BOOST_TEST(keys[1] == "term");
+
+        const auto snap = boost::json::parse(store.body(prefix + "/snapshot")).as_object();
+        // The state-machine bytes survive; the configuration does not.
+        BOOST_TEST(snap.at("last_included_index").to_number<std::uint64_t>() == 3U);
+        BOOST_TEST(snap.at("last_included_term").to_number<std::uint64_t>() == 4U);
+        const auto& nodes = snap.at("nodes").as_array();
+        BOOST_REQUIRE_EQUAL(nodes.size(), 3U);
+        BOOST_TEST(std::string(nodes[0].as_string()) == "alpha");
+        BOOST_TEST(std::string(nodes[2].as_string()) == "gamma");
+        BOOST_TEST(!snap.at("is_joint_consensus").as_bool());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(the_state_machine_bytes_are_preserved_verbatim) {
+    const mock_object_store store;
+    const std::string p = std::string(k_source_prefix) + "/";
+    store.seed(p + "term", "5");
+    store.seed(p + "snapshot",
+               R"({"last_included_index":3,"last_included_term":4,"state":"aGVsbG8=",)"
+               R"("nodes":["n1","n2"],"is_joint_consensus":false})");
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {"alpha"});
+
+    const auto snap = boost::json::parse(store.body("fresh/alpha/snapshot")).as_object();
+    BOOST_TEST(std::string(snap.at("state").as_string()) == "aGVsbG8=");
+}
+
+BOOST_AUTO_TEST_CASE(a_joint_consensus_marker_is_not_carried_into_a_new_cluster) {
+    // The old cluster may have been mid-reconfiguration. A new one never is,
+    // and carrying the marker across would seed every node with a membership
+    // change nobody proposed.
+    const mock_object_store store;
+    const std::string p = std::string(k_source_prefix) + "/";
+    store.seed(p + "term", "5");
+    store.seed(p + "snapshot",
+               R"({"last_included_index":3,"last_included_term":4,"state":"",)"
+               R"("nodes":["n1","n2"],"is_joint_consensus":true,"old_nodes":["n0"]})");
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {"alpha"});
+
+    const auto snap = boost::json::parse(store.body("fresh/alpha/snapshot")).as_object();
+    BOOST_TEST(!snap.at("is_joint_consensus").as_bool());
+    BOOST_TEST(!snap.contains("old_nodes"));
+}
+
+BOOST_AUTO_TEST_CASE(numeric_node_ids_are_seeded_as_numbers) {
+    // The engine reads this array with `as_int64()` when its NodeId is an
+    // integer and `as_string()` when it is a string, and boost::json throws on
+    // the wrong one. Writing strings unconditionally would produce a snapshot
+    // that parses here and explodes when the operator starts the new cluster.
+    const mock_object_store store;
+    const std::string p = std::string(k_source_prefix) + "/";
+    store.seed(p + "term", "5");
+    store.seed(p + "snapshot", R"({"last_included_index":3,"last_included_term":4,"state":"",)"
+                               R"("nodes":[1,2,3],"is_joint_consensus":false})");
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {"7", "8"});
+
+    const auto snap = boost::json::parse(store.body("fresh/7/snapshot")).as_object();
+    const auto& nodes = snap.at("nodes").as_array();
+    BOOST_REQUIRE_EQUAL(nodes.size(), 2U);
+    BOOST_TEST(nodes[0].is_number());
+    BOOST_TEST(nodes[0].to_number<std::int64_t>() == 7);
+    BOOST_TEST(!nodes[0].is_string());
+}
+
+BOOST_AUTO_TEST_CASE(a_non_numeric_id_for_a_numeric_cluster_is_refused) {
+    const mock_object_store store;
+    const std::string p = std::string(k_source_prefix) + "/";
+    store.seed(p + "term", "5");
+    store.seed(p + "snapshot", R"({"last_included_index":3,"last_included_term":4,"state":"",)"
+                               R"("nodes":[1,2],"is_joint_consensus":false})");
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    try {
+        std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {"alpha"});
+        BOOST_FAIL("expected a string id for a numeric cluster to be refused");
+    } catch (const std::runtime_error& err) {
+        BOOST_TEST(std::string(err.what()).find("node ids are numbers") != std::string::npos);
+    }
+    BOOST_TEST(relative_keys(store, "fresh/alpha").empty());
+}
+
+BOOST_AUTO_TEST_CASE(a_backup_with_no_snapshot_is_refused) {
+    // There is nothing to seed from: a log without a snapshot is the history of
+    // a cluster whose configuration is exactly what seed restore discards.
+    const mock_object_store store;
+    const std::string p = std::string(k_source_prefix) + "/";
+    store.seed(p + "term", "5");
+    store.seed(p + log_key(1), entry_json(5, 1));
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    try {
+        std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {"alpha"});
+        BOOST_FAIL("expected a snapshot-less backup to be refused");
+    } catch (const std::runtime_error& err) {
+        BOOST_TEST(std::string(err.what()).find("no snapshot") != std::string::npos);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(an_empty_node_set_is_refused) {
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    BOOST_CHECK_THROW(std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {}),
+                      std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(every_target_is_checked_before_any_is_written) {
+    // A refusal on the third node must not leave the first two seeded into a
+    // cluster that will never reach a quorum — so all targets are prepared
+    // before any is written.
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    store.seed("fresh/gamma/term", "99");
+
+    BOOST_CHECK_THROW(std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"),
+                                                        {"alpha", "beta", "gamma"}),
+                      std::runtime_error);
+    BOOST_TEST(relative_keys(store, "fresh/alpha").empty());
+    BOOST_TEST(relative_keys(store, "fresh/beta").empty());
+    BOOST_TEST(store.body("fresh/gamma/term") == "99");
+}
+
+BOOST_AUTO_TEST_CASE(a_failing_verify_aborts_the_seed_before_anything_is_written) {
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    store.seed(std::string(k_dest_prefix) + "/b1/objects/snapshot", "tampered");
+
+    BOOST_CHECK_THROW(
+        std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {"alpha"}),
+        std::runtime_error);
+    BOOST_TEST(relative_keys(store, "fresh/alpha").empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

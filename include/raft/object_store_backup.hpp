@@ -166,6 +166,37 @@ struct backup_manifest {
     std::vector<backup_object_entry> objects;
 };
 
+struct restore_options {
+    /// Restore into a target prefix that already holds objects. Without it a
+    /// non-empty target is refused; with it, the target's **engine-owned** keys
+    /// are deleted before anything is written.
+    ///
+    /// It never merges, and that is not a policy this flag can relax — see
+    /// `object_store_backup::restore_clone`.
+    bool force{false};
+};
+
+/// @brief What a restore wrote, so the caller can print it. Requirement 11.3
+///        asks for exactly this from seed restore: the operator has to
+///        configure the new cluster by hand afterwards.
+struct restored_node {
+    std::string node_id;
+    std::string prefix;
+};
+
+struct restore_report {
+    std::string backup_id;
+    /// One entry for a clone restore, one per new node for a seed restore.
+    std::vector<restored_node> nodes;
+    std::size_t objects_written{0};
+    /// Engine-owned keys deleted from the target because `force` was set.
+    std::vector<std::string> keys_deleted;
+    /// Set by clone restore when the backup carried an owner object: the epoch
+    /// the restored prefix now claims, which is strictly higher than the
+    /// original's so a returning original fences itself out on its next write.
+    std::optional<std::uint64_t> owner_epoch;
+};
+
 /// @brief One thing wrong with a backup, named specifically enough to act on.
 struct verification_problem {
     /// A stable machine-readable tag: `"missing_object"`, `"checksum_mismatch"`,
@@ -396,7 +427,291 @@ public:
         return report;
     }
 
+    /// @brief Reproduce a backup into @p target byte for byte.
+    ///
+    /// For replacing the storage or the instance under an **otherwise
+    /// unchanged node identity**. The restored state is safe to start only if
+    /// the original node is definitively gone: starting both is a split-brain,
+    /// and no amount of care here prevents that — it is an operational fact
+    /// about running two copies of one node, not something a restore tool can
+    /// check.
+    ///
+    /// What this *can* do, and does, is make the split-brain **loud** where the
+    /// engine is fenced. If the backup carried an owner object, it is restored
+    /// with a strictly **higher epoch**, so a returning original finds its own
+    /// epoch stale and fences itself out on its next write (Requirement 11.1)
+    /// rather than writing alongside the restored node.
+    ///
+    /// Verifies the backup **before writing anything** and aborts on the first
+    /// inconsistency, naming it. That is deliberately stricter than `verify`,
+    /// which collects every problem: `verify` is a diagnostic and this is a
+    /// gate.
+    auto restore_clone(const backup_destination& src, std::string_view backup_id,
+                       const backup_source& target, const restore_options& opts = {}) const
+        -> restore_report {
+        namespace detail = object_store_backup_detail;
+
+        const auto manifest = verify_or_abort(src, backup_id);
+        prepare_target(target, opts);
+
+        restore_report report;
+        report.backup_id = manifest.backup_id;
+        report.nodes.push_back(restored_node{std::string{}, target.prefix});
+
+        const std::string root = backup_prefix(src, std::string(backup_id));
+        for (const auto& entry : manifest.objects) {
+            auto got =
+                _store.get_object(src.bucket, root + detail::k_objects_dir + entry.relative_key);
+            if (!got) {
+                // verify_or_abort just read every one of these, so this is a
+                // concurrent deletion of the *backup* mid-restore. Refusing
+                // leaves a partial target, which is why the message says so.
+                throw std::runtime_error(
+                    "object_store_backup: " + entry.relative_key +
+                    " vanished from the backup during the restore — the target prefix " +
+                    target.prefix + " is now partially written and must not be started");
+            }
+
+            std::string body = std::move(got->body);
+            if (entry.relative_key == "owner") {
+                body = with_higher_epoch(body, root + detail::k_objects_dir + entry.relative_key,
+                                         report);
+            }
+            _store.put_object(target.bucket, target.prefix + "/" + entry.relative_key, body);
+            ++report.objects_written;
+        }
+        report.keys_deleted = std::move(_deleted_scratch);
+        _deleted_scratch.clear();
+        return report;
+    }
+
+    /// @brief Build the initial state of a **new** cluster from a backup's
+    ///        snapshot.
+    ///
+    /// The state-machine bytes are preserved and everything that makes the
+    /// state belong to the *old* cluster is discarded: the configuration is
+    /// **replaced** by @p new_nodes, the term is reset to the snapshot's
+    /// `last_included_term`, the vote is cleared, and the log is empty.
+    ///
+    /// One prefix per new node, `<target.prefix>/<node_id>`, all seeded
+    /// identically — which is correct precisely because they are a *new*
+    /// cluster with no history to disagree about. The returned report names
+    /// every prefix written, because the operator has to configure the cluster
+    /// by hand afterwards and the new identities are unrelated to the old ones.
+    ///
+    /// **Refuses when the backup has no snapshot.** There is nothing to seed
+    /// from: a log without a snapshot is a history of a cluster whose
+    /// configuration is exactly what seed restore exists to discard.
+    auto restore_seed(const backup_destination& src, std::string_view backup_id,
+                      const backup_source& target, const std::vector<std::string>& new_nodes,
+                      const restore_options& opts = {}) const -> restore_report {
+        namespace detail = object_store_backup_detail;
+
+        if (new_nodes.empty()) {
+            throw std::invalid_argument(
+                "object_store_backup: seed restore needs at least one node id — it is building a"
+                " new cluster's membership, and an empty one has no meaning");
+        }
+
+        const auto manifest = verify_or_abort(src, backup_id);
+        if (!manifest.snapshot_last_included_index || !manifest.snapshot_last_included_term) {
+            throw std::runtime_error(
+                "object_store_backup: backup " + manifest.backup_id +
+                " has no snapshot, so there is nothing to seed a new cluster from — a log without"
+                " a snapshot is the history of a cluster whose configuration is exactly what seed"
+                " restore discards");
+        }
+
+        const std::string root = backup_prefix(src, std::string(backup_id));
+        auto snapshot = _store.get_object(src.bucket, root + detail::k_objects_dir + "snapshot");
+        if (!snapshot) {
+            throw std::runtime_error("object_store_backup: backup " + manifest.backup_id +
+                                     " lists a snapshot in its manifest but has none stored");
+        }
+        const std::string seeded_snapshot =
+            reseat_snapshot(snapshot->body, root + detail::k_objects_dir + "snapshot", new_nodes);
+        const std::string seeded_term = std::to_string(*manifest.snapshot_last_included_term);
+
+        restore_report report;
+        report.backup_id = manifest.backup_id;
+
+        // Every target is prepared *before* any is written, so a refusal on the
+        // third node does not leave the first two seeded into a cluster that
+        // will never have a quorum.
+        std::vector<std::string> prefixes;
+        prefixes.reserve(new_nodes.size());
+        for (const auto& node : new_nodes) {
+            prefixes.push_back(target.prefix + "/" + node);
+        }
+        for (const auto& prefix : prefixes) {
+            prepare_target(backup_source{target.bucket, prefix}, opts);
+        }
+
+        for (std::size_t i = 0; i < new_nodes.size(); ++i) {
+            const auto& prefix = prefixes[i];
+            _store.put_object(target.bucket, prefix + "/snapshot", seeded_snapshot);
+            _store.put_object(target.bucket, prefix + "/term", seeded_term);
+            report.objects_written += 2;
+            report.nodes.push_back(restored_node{new_nodes[i], prefix});
+            // No `voted_for` and no log entries, deliberately and by omission
+            // rather than by writing sentinels: the vote is cleared, and an
+            // absent object is how this engine spells "never voted". Writing
+            // `"none"` would make a fenced engine's first vote an If-Match
+            // against an object it never wrote.
+        }
+        report.keys_deleted = std::move(_deleted_scratch);
+        _deleted_scratch.clear();
+        return report;
+    }
+
 private:
+    /// Requirement 11.5: verify first, and abort on the **first** inconsistency
+    /// rather than collecting them. A restore that proceeded past a named
+    /// problem would be the one operation where a warning is worthless.
+    [[nodiscard]] auto verify_or_abort(const backup_destination& src,
+                                       std::string_view backup_id) const -> backup_manifest {
+        const auto report = verify(src, backup_id);
+        if (!report.problems.empty()) {
+            const auto& first = report.problems.front();
+            throw std::runtime_error(
+                "object_store_backup: refusing to restore backup " + std::string(backup_id) +
+                " — " + first.kind + " on " + first.subject + ": " + first.detail +
+                (report.problems.size() > 1
+                     ? " (and " + std::to_string(report.problems.size() - 1) + " more; run verify)"
+                     : ""));
+        }
+        return report.manifest;
+    }
+
+    /// Requirement 11.4, and the reason a merge has no code path: this either
+    /// throws or leaves the target with no engine-owned keys. Nothing calls a
+    /// write until it has returned.
+    auto prepare_target(const backup_source& target, const restore_options& opts) const -> void {
+        const std::string root = target.prefix + "/";
+        const auto existing = _store.list_keys(target.bucket, root);
+        if (existing.empty()) {
+            return;
+        }
+        if (!opts.force) {
+            throw std::runtime_error(
+                "object_store_backup: target prefix " + target.prefix + " already holds " +
+                std::to_string(existing.size()) +
+                " object(s) — refusing to restore into it without force. A restore that merged"
+                " into existing Raft state would produce a node whose log is two nodes' histories"
+                " interleaved, which is not a recoverable state and which no later repair can"
+                " untangle");
+        }
+        for (const auto& key : existing) {
+            if (!is_engine_owned(key.substr(root.size()))) {
+                // Foreign objects are the operator's, not the engine's, and
+                // this tool has no business deleting them — the engine itself
+                // neither reads, writes nor deletes them. Leaving them is also
+                // safe: they cannot merge with Raft state.
+                continue;
+            }
+            _store.delete_object(target.bucket, key);
+            _deleted_scratch.push_back(key);
+        }
+    }
+
+    /// The keys the engine owns under a node prefix. Anything else under that
+    /// prefix belongs to whoever put it there.
+    [[nodiscard]] static auto is_engine_owned(std::string_view relative) -> bool {
+        return relative == "term" || relative == "voted_for" || relative == "snapshot" ||
+               relative == "owner" || relative.starts_with("log/") ||
+               relative.starts_with("snapshots/");
+    }
+
+    /// Requirement 11.1's epoch bump. Parsed and re-serialized rather than
+    /// patched textually, so a differently-formatted owner object cannot
+    /// silently pass through unchanged.
+    [[nodiscard]] static auto with_higher_epoch(const std::string& body, const std::string& key,
+                                                restore_report& report) -> std::string {
+        boost::json::value parsed;
+        try {
+            parsed = boost::json::parse(body);
+        } catch (const std::exception& err) {
+            throw std::runtime_error("object_store_backup: corrupt object " + key +
+                                     ": owner record is not valid JSON: " + err.what());
+        }
+        if (!parsed.is_object() || !parsed.as_object().contains("epoch")) {
+            throw std::runtime_error(
+                "object_store_backup: corrupt object " + key +
+                ": owner record has no epoch, so it cannot be restored with a higher one —"
+                " restoring it unchanged would leave a returning original able to write");
+        }
+        auto obj = parsed.as_object();
+        const auto epoch =
+            static_cast<std::uint64_t>(obj.at("epoch").to_number<std::uint64_t>()) + 1;
+        obj["epoch"] = epoch;
+        report.owner_epoch = epoch;
+        return boost::json::serialize(obj);
+    }
+
+    /// The seeded snapshot: the state-machine bytes and the index/term the
+    /// snapshot covers are preserved verbatim, the configuration is replaced.
+    [[nodiscard]] static auto reseat_snapshot(const std::string& body, const std::string& key,
+                                              const std::vector<std::string>& new_nodes)
+        -> std::string {
+        boost::json::value parsed;
+        try {
+            parsed = boost::json::parse(body);
+        } catch (const std::exception& err) {
+            throw std::runtime_error("object_store_backup: corrupt object " + key +
+                                     ": snapshot is not valid JSON: " + err.what());
+        }
+        if (!parsed.is_object()) {
+            throw std::runtime_error("object_store_backup: corrupt object " + key +
+                                     ": snapshot is not a JSON object");
+        }
+        auto obj = parsed.as_object();
+
+        // **The node-id shape has to be preserved, and it is not a formatting
+        // detail.** The engine reads this array with `as_string()` when its
+        // `NodeId` is `std::string` and `as_int64()` when it is an integer, and
+        // boost::json *throws* on the wrong one. Writing strings unconditionally
+        // would seed a numeric-id cluster with a snapshot that parses fine here
+        // and explodes at the moment an operator starts the new cluster — the
+        // worst possible time to find out.
+        //
+        // This class is generic over the *store*, not over `NodeId`, so the
+        // shape is inferred from the backup's own snapshot rather than guessed
+        // from the supplied ids. Guessing from the ids would get "1", "2", "3"
+        // wrong for a string-id cluster, which is an entirely ordinary way to
+        // name nodes.
+        const auto* old_nodes = obj.if_contains("nodes");
+        if (old_nodes == nullptr || !old_nodes->is_array() || old_nodes->as_array().empty()) {
+            throw std::runtime_error(
+                "object_store_backup: the snapshot in " + key +
+                " records no cluster configuration, so the node-id representation this cluster"
+                " uses cannot be determined — seeding it would have to guess between \"n1\" and 1,"
+                " and the engine throws on the wrong one when it next starts");
+        }
+        const bool numeric_ids = old_nodes->as_array().front().is_number();
+
+        boost::json::array nodes;
+        for (const auto& node : new_nodes) {
+            if (!numeric_ids) {
+                nodes.push_back(boost::json::string(node));
+                continue;
+            }
+            if (node.empty() || node.find_first_not_of("0123456789") != std::string::npos) {
+                throw std::runtime_error(
+                    "object_store_backup: this cluster's node ids are numbers, but \"" + node +
+                    "\" is not one — seeding it as a string would produce a snapshot the engine"
+                    " cannot load");
+            }
+            nodes.push_back(static_cast<std::int64_t>(std::stoull(node)));
+        }
+        obj["nodes"] = nodes;
+        // The old cluster may have been mid-reconfiguration. A new cluster
+        // never is, and carrying a joint-consensus marker across would seed
+        // every node with a membership change nobody proposed.
+        obj["is_joint_consensus"] = false;
+        obj.erase("old_nodes");
+        return boost::json::serialize(obj);
+    }
+
     [[nodiscard]] static auto backup_prefix(const backup_destination& dst,
                                             const std::string& backup_id) -> std::string {
         return dst.prefix + "/" + backup_id + "/";
@@ -788,6 +1103,9 @@ private:
     }
 
     Store _store;
+    /// Scratch for `prepare_target` to report deletions back through, since it
+    /// is called once per node by seed restore.
+    mutable std::vector<std::string> _deleted_scratch;
 };
 
 }  // namespace kythira
