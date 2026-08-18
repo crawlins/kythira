@@ -1278,8 +1278,65 @@ jobs:
       # suspected, and nothing else -- including every target added since.
       # Building the default target set means a test added tomorrow is covered
       # under all three backends without anyone remembering to add it here.
+      # This job builds the DEFAULT target set (see the note above): on a cold
+      # ccache that is ~1000 compile and link steps, most of them test binaries
+      # statically linking Folly, Boost, OpenSSL and the AWS SDK.
+      #
+      # It was terminating with exit 143 and "the runner has received a shutdown
+      # signal", always at the same translation unit
+      # (examples/raft/proxygen_transport_example.cpp, the heaviest TU in the
+      # tree under a template-heavy backend), on `main` and on PR branches
+      # alike. A warm-ccache run compiled that same file in 90 s and finished
+      # all 1022 steps, so the file is not inherently fatal — the trigger is how
+      # much real compilation happens at once when the cache is cold.
+      #
+      # The reporting below is what identified the mechanism, and it ruled out
+      # the obvious guess. Measured on a failing run:
+      #
+      #     disk:   /dev/root 145G, 91G available, 38% used
+      #     memory: 15Gi total, 14Gi available, Swap 3.0Gi
+      #
+      # So disk is not the constraint — there is 91 GB spare — and the Coverage
+      # job's "~14 GB free" premise does not hold on this runner image. Memory
+      # is: 15 GiB against a build that peaks well above it, with only 3 GiB of
+      # swap to absorb the spike. That the `always()` report below does NOT run
+      # on a failure is itself evidence: the runner process is being killed, not
+      # the build step, which is what the platform reclaiming an over-memory VM
+      # looks like.
+      #
+      # The fix therefore spends the abundant resource on the scarce one: a
+      # 24 GiB swapfile carved out of that idle disk, so the peak spills instead
+      # of being killed. Note this is the exact OPPOSITE trade to the Coverage
+      # job, which deletes its swapfile to buy disk — both directions are now
+      # backed by measurements from the job that needed them.
+      #
+      # Parallelism is deliberately left at -j$(nproc). The failing runs reached
+      # step 505 of 1024 in ~70 minutes, so -j2 would not fit the 180-minute
+      # budget; swap buys the headroom without trading the wall clock.
+      - name: Add swap headroom and report resources
+        run: |
+          echo "── before ──"; df -h /; free -h
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile || true
+          sudo fallocate -l 24G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          # Prefer swapping over killing: the default of 60 is tuned for
+          # interactive latency, which is not what a batch compile wants.
+          sudo sysctl vm.swappiness=80
+          echo "── after ──"; df -h /; free -h
+
       - name: Build
         run: cmake --build build-${{ matrix.backend }} -j$(nproc)
+
+      # `always()`, because the interesting case is the one where Build died:
+      # a near-zero figure here names the mechanism the logs above could not.
+      - name: Report headroom after build
+        if: always()
+        run: |
+          echo "── disk after build ──"; df -h /
+          echo "── memory after build ──"; free -h
 
       - name: Save ccache
         if: always()
