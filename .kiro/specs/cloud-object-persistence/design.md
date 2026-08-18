@@ -742,6 +742,50 @@ It takes a store and a prefix. It **never** instantiates
 path — the structural guarantee behind Requirement 10.7. The CLI exists
 because operators do not have a C++ compiler in a recovery window.
 
+**On-store layout**, written by task 12:
+
+```
+<backup_prefix>/<backup_id>/objects/<key relative to the source prefix>
+<backup_prefix>/<backup_id>/manifest.json      ← written LAST
+```
+
+The manifest being last is the entire commit protocol, and it is the only one
+available: none of the five services offers cross-key atomicity, so "the
+manifest exists" has to be what "the backup finished" means. `list` ignores any
+directory without one, which is what makes a half-written copy invisible rather
+than restorable.
+
+`backup_id` defaults to `YYYYMMDDTHHMMSSZ` — fixed width, zero padded, no
+punctuation — so lexicographic listing order *is* chronological order, which is
+the only ordering these stores give. An id containing `/` is refused: it names
+one directory level, and a separator in it would silently restructure the
+layout `list` and `verify` depend on.
+
+**The manifest reads the engine's on-store format directly** — the key layout
+and the JSON bodies — rather than going through the engine, which is what keeps
+Requirement 10.7 structural. That is a real coupling and it is stated rather
+than hidden: if the on-bucket format changes, `object_store_backup.hpp` changes
+with it. The parse rule matches the engine's own load path — an **absent**
+metadata object is normal, a **present but unparseable** one throws naming the
+key, and in that case no manifest is written, so the partial copy is invisible.
+
+**`verify` checks the copy against itself**, because `source_quiesced` is a
+caller's claim and a claim is not evidence. Three checks, each reported as a
+named problem rather than a boolean:
+
+| Check | Catches |
+|---|---|
+| index contiguity from `last_included_index + 1` | an entry truncated out from under the copy |
+| every checksum and size | destination corruption, or a copy rewritten after its checksum was taken |
+| `current_term` ≥ every entry's term | the classic smear — term read early, node advances and appends |
+
+Contiguity is judged over the entries that actually **verified**, not over what
+the manifest claims: Requirement 10.4 asks whether every index is *present*,
+and an object listed but absent or corrupt is not present — it is a hole a
+restore would reproduce. So a deleted log object reports twice, as the specific
+object and as the gap it leaves. That is deliberate; the first says what broke
+and the second says what it costs.
+
 ### 4. `include/raft/aws_s3_client.hpp`
 
 ```cpp

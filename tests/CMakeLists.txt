@@ -477,6 +477,19 @@ if(FIU_FOUND)
     target_include_directories(object_store_persistence_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
 endif()
 
+# object_store_backup unit test (cloud object persistence, task 12)
+#
+# Unconditional for the same reason the suite above is: `object_store_backup.hpp`
+# names no provider, includes no SDK and depends on no cloud gate, so it must
+# build and pass with **every** cloud provider disabled (Requirement 16.3).
+# `configs/no_cloud_defconfig` is the configuration that checks it.
+add_raft_completion_test(object_store_backup_unit_test object_store_backup_unit_test.cpp)
+target_include_directories(object_store_backup_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(object_store_backup_unit_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;persistence;object-store;backup"
+)
+
 add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
 add_raft_completion_test(raft_follower_acknowledgment_tracking_property_test raft_follower_acknowledgment_tracking_property_test.cpp)
 add_raft_completion_test(raft_majority_commit_index_advancement_property_test raft_majority_commit_index_advancement_property_test.cpp)
