@@ -1,6 +1,6 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-13 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-14 done; task 0 closed except 0.7 (needs a container runtime)
 
 **The client wave is complete, August 17, 2026.** Tasks 7, 8, 9 and 10
 (`aws_s3_client`, `azure_blob_client`, `gcp_gcs_client`,
@@ -17,9 +17,11 @@ Requirement 16.3's all-providers-off configuration reproducible — the engine's
 213 conformance cases and the backup catalog's 25 both pass in it.
 
 **Tasks 12 and 13 (the backup catalog and both restore modes) are done too**,
-with the restore runbooks in `doc/cloud_object_persistence.md`. Next is task 14
-(the CLI), which owes Requirement 16.4's provider-reporting half and the exact
-command sequences that document currently leaves open.
+with the restore runbooks in `doc/cloud_object_persistence.md`. **Task 14 (the CLI) is done too**, which closes Requirement 16.4 and fills in
+that document's command sequences. What remains is task 16 (real-tier suites,
+writable now), task 17's CI half, task 18 (docs close-out) and task 19 (live
+verification). Tasks 0.7 and 15 stay blocked on a container runtime this
+development host does not have.
 
 One honest distinction to carry into task 18: `alibaba_oss_client` is
 **live-verified** end to end. `aws_s3_client`, `azure_blob_client`,
@@ -1285,17 +1287,68 @@ Reference implementations to study before starting, in this order:
       per-provider evidence table are task 18's.
       - _Requirements: 11.1–11.6_
 
-- [ ] 14. **`cmd/raft_object_backup` CLI**
+- [x] 14. **`cmd/raft_object_backup` CLI** — done August 17, 2026, with 16
+      cases in `tests/object_store_backup_cli_unit_test.cpp` and **12/12
+      mutants caught**.
 
-  - create / list / verify / restore-clone / restore-seed, `--provider`
-    selecting a compiled-in store, credentials from the same configuration
-    the engines take, following existing `cmd/` conventions.
-  - Asking for a provider that was not compiled in reports it **by name**.
-  - Verify: `--help` documents both restore modes as distinct verbs;
-    requesting an uncompiled provider exits non-zero naming it; a full
-    create → list → verify → restore-clone cycle works against
-    `mock_object_store` in a build with zero cloud providers.
-  - _Requirements: 10.6, 16.4_
+      **The split that made the verify bar reachable**: the verb dispatch,
+      argument parsing and output formatting live in
+      `include/raft/object_store_backup_cli.hpp`, generic over
+      `key_object_store` and writing to an injected `std::ostream`;
+      `cmd/raft_object_backup/main.cpp` does only the part that cannot be
+      generic — mapping `--provider` onto a compiled-in client. Task 14's bar
+      ("a full create → list → verify → restore-clone cycle against
+      `mock_object_store` in a build with zero cloud providers") is a testable
+      claim only because of that separation, and the suite runs argv vectors
+      through the **real parser** rather than filling in a `backup_cli_args`,
+      because a test that skipped parsing would not notice a verb whose
+      required options were never enforced.
+
+      **Requirement 16.4 is verified against two real binaries, not asserted.**
+      Under `no_cloud_defconfig` the tool builds, `--help` lists all five
+      providers as absent, and `--provider s3` exits 1 with `provider "s3" was
+      not compiled into this binary` plus what would enable it. Under the
+      default build it reports `s3, azure-blob, oci-objectstorage, oss` present
+      and `gcs` absent — correctly, since that build has no `--x-feature=gcp`.
+      An **unknown** provider and an **uncompiled** one give different messages
+      on purpose: answering "unknown provider: gcs" to someone who merely
+      switched it off would send them hunting for a typo during an outage.
+
+      Each `KYTHIRA_BACKUP_PROVIDER_*` macro is the **conjunction** of "was the
+      dependency found?" (`KYTHIRA_HAS_*`) and "was the backend wanted?" (the
+      Kconfig gate). Neither alone answers "can I use `--provider s3` with this
+      binary?", and OCI and Alibaba have no dependency to find at all, so
+      without the macro they would be unconditionally present even in a build
+      that switched them off.
+
+      **Exit codes are scriptable, and `verify` has its own**: 0 success, 1
+      usage or uncompiled provider, 2 the operation failed, **3 verify found
+      problems**. 3 is separated from 2 deliberately — "I could not check this
+      backup" and "I checked it and it is broken" call for different responses,
+      and a script gating a restore on `verify` has to tell them apart. A case
+      pins the split.
+
+      **A gate that was wrong on the first attempt**, recorded so it is not
+      "fixed" back: the CLI was first gated on Boost alone, on the reasoning
+      that it uses no futures. It does not — but
+      `object_store_backup.hpp` → `object_store_persistence.hpp` →
+      `persistence.hpp` → `future.hpp` reaches Folly, so the header chain needs
+      a future backend regardless. The build failed, and the subdirectory is now
+      gated exactly as `tests/` is. The CMake comment states that the
+      future-backend gate is orthogonal to the cloud-provider gates, so the
+      zero-provider build Requirement 16.4 asks for is still produced.
+
+      The binary is built **unconditionally with respect to providers**, which
+      is the requirement rather than an oversight: gating it on "at least one
+      provider" would replace its self-describing failure with "command not
+      found", which is the wrong thing to hand an operator in a recovery window.
+
+      `doc/cloud_object_persistence.md` now carries the real command sequences
+      for both runbooks, replacing the placeholders task 13 left explicitly
+      open, plus the exit-code table and the note that Azure additionally needs
+      `KYTHIRA_AZURE_STORAGE_ACCOUNT` (the bucket options name the *container*,
+      which is not enough to build the endpoint).
+      - _Requirements: 10.6, 16.4_
 
 - [ ] 15. **Per-provider emulator / mock tiers**
 

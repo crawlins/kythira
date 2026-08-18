@@ -490,6 +490,20 @@ set_tests_properties(object_store_backup_unit_test PROPERTIES
     LABELS "unit;persistence;object-store;backup"
 )
 
+# raft_object_backup CLI logic (cloud object persistence, task 14)
+#
+# Unconditional for the same reason as the two suites above: the CLI's verb
+# dispatch names no provider and includes no SDK. That is also what makes task
+# 14's verify bar reachable at all — a full create/list/verify/restore-clone
+# cycle "in a build with zero cloud providers" is only testable because the
+# dispatch is separable from provider selection, which stays in main.cpp.
+add_raft_completion_test(object_store_backup_cli_unit_test object_store_backup_cli_unit_test.cpp)
+target_include_directories(object_store_backup_cli_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(object_store_backup_cli_unit_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;persistence;object-store;backup;cli"
+)
+
 add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
 add_raft_completion_test(raft_follower_acknowledgment_tracking_property_test raft_follower_acknowledgment_tracking_property_test.cpp)
 add_raft_completion_test(raft_majority_commit_index_advancement_property_test raft_majority_commit_index_advancement_property_test.cpp)
