@@ -1,6 +1,6 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-11 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-12 done; task 0 closed except 0.7 (needs a container runtime)
 
 **The client wave is complete, August 17, 2026.** Tasks 7, 8, 9 and 10
 (`aws_s3_client`, `azure_blob_client`, `gcp_gcs_client`,
@@ -13,8 +13,12 @@ and `object_store_persistence_engine` is generic over every one of them.
 **Task 11 (build integration) is also done**: every provider is now
 independently gateable, and each gate was verified to remove its target rather
 than merely to print that it had. `configs/no_cloud_defconfig` makes
-Requirement 16.3's all-providers-off configuration reproducible — 213
-conformance cases pass in it. Next is task 12 (the backup catalog).
+Requirement 16.3's all-providers-off configuration reproducible — the engine's
+213 conformance cases and the backup catalog's 25 both pass in it.
+
+**Task 12 (the backup catalog) is done too.** Next is task 13 (restore, both
+modes), then task 14 (the CLI), which still owes Requirement 16.4's
+provider-reporting half.
 
 One honest distinction to carry into task 18: `alibaba_oss_client` is
 **live-verified** end to end. `aws_s3_client`, `azure_blob_client`,
@@ -1144,31 +1148,79 @@ Reference implementations to study before starting, in this order:
       **Two items of Requirement 16 are NOT closed here, and cannot be**, since
       they name things that do not exist yet: 16.3's `object_store_backup.hpp`
       (task 12) and 16.4's `cmd/raft_object_backup` provider reporting
-      (task 13). Both are unconditional-compilation obligations of the same
+      (task 14). Both are unconditional-compilation obligations of the same
       kind this task discharged for the engine, and each task owes its own.
       - _Requirements: 16.1, 16.2, 16.5 (16.3 partly — the backup header is
-        task 12; 16.4 is task 13)_
+        task 12; 16.4 is task 14)_
 
-- [ ] 12. **Backup catalog**
+- [x] 12. **Backup catalog** — done August 17, 2026, in
+      `include/raft/object_store_backup.hpp`, with 25 cases in
+      `tests/object_store_backup_unit_test.cpp` and **13/13 mutants caught**.
+      `create` / `list` / `verify` over a store and a prefix.
 
-  - `include/raft/object_store_backup.hpp`: `create` / `list` / `verify`
-    over a store and a prefix. It **never** instantiates the engine and
-    cannot be reached from the Raft hot path — that is a structural
-    guarantee, not a convention.
-  - Backups at `<backup_prefix>/<backup_id>/`, with the **manifest written
-    last** so its presence is the commit point; `list` ignores directories
-    without one.
-  - Manifest per the design schema: format version, provider, source
-    bucket/prefix, backup id, UTC ISO-8601 timestamp, quiesced flag, term,
-    voted-for, log index range, snapshot metadata and configuration, and one
-    entry per object with key, size and checksum.
-  - `verify` checks internal consistency: index contiguity from the
-    snapshot's `last_included_index`, every checksum, `current_term` ≥ every
-    entry's term.
-  - Verify: a backup taken from a **deliberately smeared** source (objects
-    mutated mid-copy) **fails `verify` with the inconsistency named**. This
-    is the case that distinguishes a manifest from a warning.
-  - _Requirements: 10.1–10.5, 10.7_
+      **Requirement 10.7 is structural, not conventional**: no engine type is
+      named anywhere in the file. It does reuse two free helpers from
+      `object_store_persistence.hpp` (`md5_hex`, `iso8601_utc`), which
+      instantiates nothing — the alternative was a second hand-rolled MD5 with
+      its own separate known-answer test.
+
+      **The manifest is written last, and that is the whole commit protocol.**
+      None of the five services offers cross-key atomicity, so "the manifest
+      exists" is the only thing "the backup finished" can mean. `list` ignores
+      any directory without one, which makes a half-written copy invisible
+      rather than restorable.
+
+      **The verify bar was met as written, and the fixture matters as much as
+      the assertion.** The smear is produced by mutating the source *while the
+      copy is in flight* — a new `on_get` hook on `mock_object_store` — and not
+      by seeding a source that was never consistent. Those are different
+      failures, and conflating them would leave the check looking tested when
+      only the fixture had been. The copy takes its listing, the node truncates
+      an entry the listing already promised, and `verify` answers:
+
+          log index 7 is missing between the copied entries at 6 and 8
+
+      The caller even declares `source_quiesced = true`; the claim is recorded
+      and **not believed**, which is the entire design. The negative control —
+      the identical source copied without interference — verifies clean, and
+      without it a `verify` that rejected every backup would look like a working
+      detector.
+
+      Three decisions worth not re-deriving:
+
+      - **Contiguity is judged over the entries that actually verified**, not
+        over what the manifest claims. The tests disagreed with the first
+        implementation and were right: Requirement 10.4 asks whether every index
+        is *present*, and an object listed but absent or corrupt in the
+        destination is not present — it is a hole a restore would reproduce. So
+        a deleted log object reports twice, as the object that broke and as the
+        gap it costs. That is deliberate, not noise.
+      - **A vanished source object is a gap, never a phantom manifest entry.**
+        An object listed by the LIST and gone by the GET is simply not in this
+        backup, so the manifest — an inventory of what the backup *holds* —
+        must not claim it. Recording it with an empty checksum would turn "this
+        backup is missing index 7" into "this backup is corrupt", a different
+        and wrong diagnosis. Found by a surviving mutant.
+      - **Absent metadata is fine; present-and-unparseable throws**, matching
+        the engine's own load path. A fresh node with no term, no vote and no
+        snapshot is a legal thing to back up. A corrupt one is not, and no
+        manifest is written in that case, so the partial copy stays invisible to
+        `list`.
+
+      Objects this file does not interpret — `owner`, retained snapshots,
+      genuinely foreign keys — are copied byte for byte and contribute nothing
+      to the manifest's reading of the node. A backup that silently dropped keys
+      it did not understand would restore an incomplete prefix.
+
+      `backup_id` defaults to `YYYYMMDDTHHMMSSZ`, so lexicographic listing order
+      *is* chronological order — the only ordering these stores give. An id
+      containing `/` is refused before anything is written.
+
+      **The suite is registered unconditionally**, like the conformance suite
+      and for the same reason (Requirement 16.3): it names no provider and
+      includes no SDK, so it must pass with every cloud gate off. It does —
+      verified under `configs/no_cloud_defconfig`, alongside the engine's 213.
+      - _Requirements: 10.1–10.5, 10.7_
 
 - [ ] 13. **Restore — both modes, separately named**
 

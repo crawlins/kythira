@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -83,6 +84,19 @@ struct mock_object_store_state {
     /// supposed to be the content MD5. Inert on the plain store, whose version
     /// carries no such promise.
     int wrong_version_for_next_puts{0};
+
+    /// Called with the key **before** each GET is served, while the store's
+    /// mutex is NOT held, so the callback may write to the store.
+    ///
+    /// This is what lets a test smear a source across a copy window — the
+    /// backup catalog's central failure mode, and one that cannot be produced
+    /// any other way: a backup has no cross-key atomicity, so an object read
+    /// early and an object read late can disagree, and the only honest way to
+    /// test that a manifest *detects* it is to mutate the source while the copy
+    /// is in flight. A plain "write inconsistent objects up front" setup would
+    /// test a different thing — a source that was never consistent, rather than
+    /// one that stopped being consistent midway.
+    std::function<void(const std::string& key)> on_get;
 };
 
 /// @brief A copyable handle onto an in-memory bucket, satisfying both store
@@ -133,6 +147,17 @@ public:
 
     [[nodiscard]] auto get_object(const std::string& bucket, const std::string& key) const
         -> std::optional<get_result> {
+        // Run the smear hook *before* taking the lock, and copy it out first:
+        // the whole point is that it may write to this same store, which would
+        // deadlock on a non-recursive mutex held here.
+        std::function<void(const std::string&)> hook;
+        {
+            const std::lock_guard lock(_state->mu);
+            hook = _state->on_get;
+        }
+        if (hook) {
+            hook(key);
+        }
         const std::lock_guard lock(_state->mu);
         _state->requests.push_back("GET " + key);
         require_bucket(bucket);
@@ -219,6 +244,14 @@ public:
     auto seed(const std::string& key, std::string_view body) const -> void {
         const std::lock_guard lock(_state->mu);
         store_locked(key, std::string(body));
+    }
+
+    /// Delete directly, bypassing the request log — the counterpart to `seed`.
+    /// A test that wants the DELETE *counted* calls `delete_object` instead;
+    /// this is for arranging a state, not for exercising the store.
+    auto remove(const std::string& key) const -> void {
+        const std::lock_guard lock(_state->mu);
+        _state->objects.erase(key);
     }
 
     [[nodiscard]] auto keys() const -> std::vector<std::string> {
