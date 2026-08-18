@@ -5,10 +5,11 @@ cloud key-object store, with one engine generic over five providers (AWS S3,
 Azure Blob, Google Cloud Storage, OCI Object Storage, Alibaba OSS).
 
 > **Status.** This document currently covers **backup and restore**
-> (Requirements 10 and 11). The durability contract, the per-provider evidence
-> table and the operator configuration examples are task 18 of
-> `.kiro/specs/cloud-object-persistence/` and are not here yet. What is written
-> below is complete and current; what is missing is missing, not summarised.
+> (Requirements 10, 11 and the CLI of 10.6). The durability contract, the
+> per-provider evidence table and the operator configuration examples are task
+> 18 of `.kiro/specs/cloud-object-persistence/` and are not here yet. What is
+> written below is complete and current; what is missing is missing, not
+> summarised.
 
 ## Backup and restore
 
@@ -17,10 +18,35 @@ with `create`, `list`, `verify`, `restore_clone` and `restore_seed`. It takes a
 store and a prefix, never instantiates the persistence engine, and cannot be
 reached from the Raft hot path.
 
-A CLI — `cmd/raft_object_backup` — is **task 14 and does not exist yet**. The
-runbooks below therefore give the operations and their exact arguments rather
-than a shell transcript; the command sequences will be filled in against the
-real binary rather than guessed at now.
+The CLI is `cmd/raft_object_backup`. It exists because operators do not have a
+C++ compiler in a recovery window, and it is built **whatever providers this
+build contains** — a build with every cloud gate off still produces a working
+binary that names all five providers as absent and says what would enable each.
+"Command not found" is the wrong thing to hand someone mid-outage.
+
+```
+raft_object_backup --help          # verbs, options, exit codes, and which
+                                   # providers this binary actually carries
+```
+
+Exit codes are scriptable, and `verify` has its own:
+
+| Code | Meaning |
+|---|---|
+| 0 | success; for `verify`, the backup is clean |
+| 1 | usage error, or a provider not compiled into this binary |
+| 2 | the operation failed — could not be done |
+| 3 | `verify` completed and found problems — done, and the answer is bad |
+
+2 and 3 are separate deliberately. "I could not check this backup" and "I
+checked it and it is broken" call for different responses, and a script gating a
+restore on `verify` has to tell them apart: the first is worth retrying, the
+second never is.
+
+**Credentials** come from wherever each provider's engine already reads them —
+nothing about authentication is special-cased for this tool. Azure additionally
+needs `KYTHIRA_AZURE_STORAGE_ACCOUNT`, because the bucket options name the
+*container* and that is not enough to build the endpoint.
 
 ### Where backups go, and why not beside the source
 
@@ -109,16 +135,33 @@ protection does not exist. That is a reason to run fenced, not a gap in restore.
 
 ### Sequence
 
-1. `list(destination)` — find the backup id. Ids sort chronologically.
-2. `verify(destination, backup_id)` — read the whole problem list yourself
-   before committing to anything. Restore runs this again and aborts on the
-   first problem, but it aborts; it does not explain.
-3. Confirm the original node is stopped and will not return. If you cannot
-   confirm it, stop here.
-4. `restore_clone(destination, backup_id, target, {.force = …})`.
-5. Read the returned `restore_report`: `objects_written`, `owner_epoch` if the
-   backup was fenced, and `keys_deleted` if you passed `force`.
-6. Start the node against the target prefix.
+```sh
+# 1. Find the backup. Ids sort chronologically, so the last line is the newest.
+raft_object_backup list --provider s3 \
+    --dest-bucket my-backups --dest-prefix raft-backups
+
+# 2. Read the whole problem list yourself before committing to anything.
+#    Restore runs verify again and aborts on the first problem — but it
+#    aborts, it does not explain.
+raft_object_backup verify --provider s3 \
+    --dest-bucket my-backups --dest-prefix raft-backups \
+    --backup-id 20260817T221530Z
+#    exit 0 = clean, 3 = problems found, 2 = could not check
+
+# 3. Confirm the original node is stopped and will not return.
+#    If you cannot confirm it, stop here.
+
+# 4. Restore. Add --force ONLY if the target is non-empty and you have read
+#    what --force deletes (below).
+raft_object_backup restore-clone --provider s3 \
+    --dest-bucket my-backups --dest-prefix raft-backups \
+    --backup-id 20260817T221530Z \
+    --target-bucket my-raft --target-prefix node-1
+
+# 5. Read the output: objects written, the owner epoch if the backup was
+#    fenced, and how many keys --force deleted.
+# 6. Start the node against the target prefix.
+```
 
 ### Failure modes
 
@@ -172,15 +215,23 @@ inherited but the state machine.
 
 ### Sequence
 
-1. `list` and `verify`, exactly as for clone restore.
-2. Decide the new node ids. They must match the representation this cluster's
-   engine uses — see the failure table below.
-3. `restore_seed(destination, backup_id, target, new_nodes, {.force = …})`.
-   One prefix is written per node, at `<target.prefix>/<node_id>`.
-4. Read the returned report's `nodes` list: it gives the node id and prefix for
-   every node written. **This is what you must configure**; the tool writes the
-   state, not the deployment.
-5. Start the new cluster with exactly that node set and those prefixes.
+```sh
+# 1. list and verify, exactly as for clone restore.
+
+# 2. Decide the new node ids. They must match the representation this
+#    cluster's engine uses — see the failure table below.
+
+# 3. Seed. One prefix is written per node, at <target-prefix>/<node-id>.
+raft_object_backup restore-seed --provider s3 \
+    --dest-bucket my-backups --dest-prefix raft-backups \
+    --backup-id 20260817T221530Z \
+    --target-bucket my-raft --target-prefix fresh-cluster \
+    --nodes alpha,beta,gamma
+
+# 4. The output ends with the node ids and prefixes it wrote. THAT is what you
+#    must configure — the tool writes the state, not the deployment.
+# 5. Start the new cluster with exactly that node set and those prefixes.
+```
 
 Every target is checked before any is written, so a refusal on the third node
 does not leave the first two seeded into a cluster that will never reach quorum.
@@ -199,6 +250,5 @@ does not leave the first two seeded into a cluster that will never reach quorum.
 
 ## What is not here yet
 
-- `cmd/raft_object_backup` and its exact command lines (task 14).
 - The durability contract and the per-provider evidence table (task 18).
 - Operator configuration examples per provider (task 18).

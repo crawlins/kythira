@@ -1532,6 +1532,18 @@ if(NOT ENABLE_COVERAGE)
        AND KYTHIRA_FUTURE_BACKEND_AVAILABLE)
         add_subdirectory(cmd/oci_heartbeat_writer)
     endif()
+    # The backup/restore CLI (Requirement 10.6). Gated on no cloud provider at
+    # all: Requirement 16.4 says it builds with *whichever* providers are enabled
+    # and names the absent ones, so a zero-provider build must still produce a
+    # working binary rather than no binary — "command not found" is the wrong
+    # thing to hand an operator in a recovery window.
+    #
+    # It is gated on a future backend, and only because the header chain reaches
+    # one: object_store_backup.hpp → object_store_persistence.hpp →
+    # persistence.hpp → future.hpp. The tool itself uses no futures.
+    if(Boost_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE)
+        add_subdirectory(cmd/raft_object_backup)
+    endif()
 endif()
 # folly_FOUND, not KYTHIRA_FUTURE_BACKEND_AVAILABLE: unlike tests/ and
 # certificate_authority, every example program calls folly::init()/
