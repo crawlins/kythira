@@ -138,6 +138,31 @@ inline constexpr const char* k_bucket_not_found = "BucketNotFound";
 
 /// @brief Percent-encode a query-parameter value. Unlike a path segment, `/` is
 ///        **not** literal here.
+/// @brief Percent-encodes a query-parameter value for OCI, leaving `/` alone.
+///
+/// **`/` must NOT be encoded**, and this is not a stylistic choice — encoding
+/// it as `%2F` makes OCI answer `401 NotAuthenticated`. The signature is
+/// computed over the request target, and OCI evidently canonicalises a
+/// percent-encoded slash before verifying, so the service checks a target the
+/// client never sent. Every listing this engine performs uses a prefix ending
+/// in `/`, so this affected **every** `list_keys` call: OCI object persistence
+/// could not recover a log at all.
+///
+/// Isolated against live Object Storage by varying only the prefix, which is
+/// what turned "LIST is broken" into a one-character cause:
+///
+///     prefix=            → 200, 52 keys
+///     prefix=heartbeat   → 200, 4 keys
+///     prefix=heartbeat/  → 401 NotAuthenticated
+///
+/// `/` is a legal query character under RFC 3986 §3.4 (`query = *( pchar / "/"
+/// / "?" )`), so leaving it literal is correct rather than a workaround.
+///
+/// Why 30 unit cases and a signature-verifying mock missed it: the mock
+/// verifies the signature against the bytes that **arrived**, so it and the
+/// client encode identically and always agree. Only a service that computes the
+/// signature independently can disagree — which is the whole reason this tier
+/// exists.
 [[nodiscard]] inline auto encode_query_value(std::string_view value) -> std::string {
     static constexpr const char* k_upper_hex = "0123456789ABCDEF";
     std::string out;
@@ -146,7 +171,7 @@ inline constexpr const char* k_bucket_not_found = "BucketNotFound";
         const auto b = static_cast<unsigned char>(c);
         const bool unreserved = (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
                                 (b >= '0' && b <= '9') || b == '-' || b == '_' || b == '.' ||
-                                b == '~';
+                                b == '~' || b == '/';
         if (unreserved) {
             out.push_back(c);
         } else {

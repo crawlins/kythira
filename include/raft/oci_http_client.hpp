@@ -229,6 +229,7 @@ public:
     /// | `identity` | works | works |
     /// | `certificatesmanagement` | **no DNS record** | works |
     /// | `certificates` | **no DNS record** | works |
+    /// | `objectstorage` | **works** (401 unauthenticated) | **TLS hostname verification fails** |
     ///
     /// So Core Services (`iaas`) predates the `oci` label and must **not**
     /// carry it, while the certificate services only exist with it. `iaas` is
@@ -250,11 +251,27 @@ public:
     /// The realm suffix for one service — see @ref host_for for the evidence.
     ///
     /// Unknown services default to the `oci` form, which is the newer
-    /// convention and what every service here except Core uses. A service that
-    /// turns out to need the bare form belongs in the list, and until then
+    /// convention and what the certificate services use. A service that turns
+    /// out to need the bare form belongs in the list, and until then
     /// `endpoint_override` is the escape hatch.
+    ///
+    /// **`objectstorage` was added to that list after it shipped in the wrong
+    /// one**, and the way it was missed is worth keeping. Task 10's suite is
+    /// thorough — 30 cases — but every one of them points `endpoint_override`
+    /// at a local server, and this function's own comment already said the mock
+    /// tier cannot see the derivation. So the defect was invisible until task
+    /// 16 ran the client against the real service, where it failed on the very
+    /// first request with "SSL server hostname verification failed" and OCI
+    /// object storage was simply non-functional. Measured, both forms, in
+    /// `us-phoenix-1`:
+    ///
+    ///     objectstorage.us-phoenix-1.oraclecloud.com      → HTTP 401
+    ///     objectstorage.us-phoenix-1.oci.oraclecloud.com  → TLS verify failure
+    ///
+    /// The default is the trap, not the list: a service that is never named
+    /// gets a plausible host that may not exist, and nothing local can tell.
     [[nodiscard]] static auto domain_suffix_for(std::string_view service) -> std::string_view {
-        if (service == "iaas") {
+        if (service == "iaas" || service == "objectstorage") {
             return ".oraclecloud.com";
         }
         return ".oci.oraclecloud.com";
@@ -332,6 +349,27 @@ private:
         }
         client->set_connection_timeout(static_cast<time_t>(_cfg.api_timeout.count()), 0);
         client->set_read_timeout(static_cast<time_t>(_cfg.api_timeout.count()), 0);
+
+        // **Do not let httplib re-encode the request target.** Its default is
+        // to percent-encode what it is given, and callers here hand it a target
+        // that is *already* encoded — and, decisively, already **signed** in
+        // that exact form. Re-encoding turns a signed `%2F` into a sent `%252F`
+        // and OCI answers `401 NotAuthenticated`, because the signature covers
+        // a request target the service never received.
+        //
+        // Honest provenance: this was found while chasing a live `401
+        // NotAuthenticated` on LIST, and it is **not** what caused that — the
+        // cause was `encode_query_value` encoding `/`, fixed there. Kept
+        // regardless, because "sign exactly what you send" is the invariant the
+        // whole signing scheme rests on, and leaving httplib free to rewrite
+        // the target after signing is a latent version of the same bug waiting
+        // for the first prefix that contains a space.
+        //
+        // Invisible below this tier for the same reason: the signature-verifying
+        // mocks check the signature against the bytes that *arrived*, so both
+        // sides re-encode consistently and agree. Only a service that signs
+        // independently can disagree.
+        client->set_url_encode(false);
         return client;
     }
 
