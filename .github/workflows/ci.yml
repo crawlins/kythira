@@ -97,7 +97,8 @@ jobs:
           # "gperf currently requires the following programs from the system
           # package manager" error.
           for attempt in 1 2 3; do
-            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
                  g++-13 \
                  clang-18 \
                  cmake \
@@ -375,7 +376,8 @@ jobs:
       - name: Install system dependencies
         run: |
           for attempt in 1 2 3; do
-            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
                  clang-18 cmake ninja-build libfiu-dev ccache \
                  autoconf autoconf-archive automake libtool; then
               exit 0
@@ -524,18 +526,29 @@ jobs:
           # addition in build-and-test's own "Install system dependencies"
           # step above for why (vcpkg's gperf port, a host-tool dependency
           # of proxygen, needs them from the system package manager).
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 \
-            llvm-18 \
-            cmake \
-            ninja-build \
-            libfiu-dev \
-            ccache \
-            autoconf \
-            autoconf-archive \
-            automake \
-            libtool
+          # Bounded and retried, like every other install step. This one had
+          # neither, and hung for its full 3-hour job budget without ever
+          # reaching a compiler.
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+               && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 \
+                 llvm-18 \
+                 cmake \
+                 ninja-build \
+                 libfiu-dev \
+                 ccache \
+                 autoconf \
+                 autoconf-archive \
+                 automake \
+                 libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed or timed out (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
 
       # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
       # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
@@ -866,7 +879,8 @@ jobs:
       - name: Install system dependencies
         run: |
           for attempt in 1 2 3; do
-            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
                  g++-13 \
                  cmake \
                  ninja-build \
@@ -1149,7 +1163,8 @@ jobs:
       - name: Install system dependencies
         run: |
           for attempt in 1 2 3; do
-            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
                  g++-13 \
                  cmake \
                  ninja-build \
@@ -1415,12 +1430,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Every network command is bounded and retried. Unbounded, this step hung
+      # for its whole 15-minute job budget and reported as a Packer failure —
+      # see the note on the build-and-test install step for why a retry without
+      # a timeout is no defence at all.
       - name: Install Packer and shellcheck
         run: |
-          curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
-          sudo apt-add-repository "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends packer shellcheck
+          for attempt in 1 2 3; do
+            if timeout 120 bash -c 'curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -' \
+               && timeout 120 sudo apt-add-repository -y "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+               && timeout 300 sudo apt-get update -q \
+               && timeout 600 sudo apt-get install -y --no-install-recommends packer shellcheck; then
+              exit 0
+            fi
+            echo "::warning::Packer/shellcheck install failed or timed out (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::Packer/shellcheck install failed after 3 attempts" >&2
+          exit 1
 
       - name: packer fmt -check
         run: packer fmt -check -diff packer/ca_cluster_node/*.pkr.hcl
@@ -1465,10 +1492,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Bounded and retried. Unbounded, this step hung for the docs job's whole
+      # 30-minute budget without ever invoking Doxygen, and reported as a docs
+      # failure — the generate step never ran.
       - name: Install Doxygen
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends doxygen
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+               && timeout 600 sudo apt-get install -y --no-install-recommends doxygen; then
+              exit 0
+            fi
+            echo "::warning::doxygen install failed or timed out (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::doxygen install failed after 3 attempts" >&2
+          exit 1
 
       # Fails on any warning -- see WARN_AS_ERROR in Doxyfile.
       - name: Generate documentation
