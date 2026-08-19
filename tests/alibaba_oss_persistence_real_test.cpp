@@ -5,6 +5,8 @@
 
 #include <raft/alibaba_oss_persistence.hpp>
 
+#include "object_persistence_real_cases.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -151,6 +153,39 @@ BOOST_FIXTURE_TEST_CASE(binary_command_survives_the_real_service, RealOssFixture
     const auto got = reader.get_log_entry(1);
     BOOST_REQUIRE(got.has_value());
     BOOST_TEST(got->command().size() == payload.size());
+}
+
+// ── The shared task-16 cases ─────────────────────────────────────────────────
+//
+// The same checks every other provider's real tier runs
+// (object_persistence_real_cases.hpp), so "Alibaba passes" means the same thing
+// as "S3 passes" rather than something written separately and hoped to be
+// equivalent.
+//
+// **The fencing case is absent, and its absence is the finding.** Alibaba OSS
+// is the one provider of the five that cannot express an overwrite
+// compare-and-swap — a conditional PUT against a *current* ETag is refused with
+// `400 NotImplemented` (spike-notes Finding 1), which is why
+// `alibaba_oss_persistence.hpp` carries a static_assert that
+// `alibaba_oss_client` does NOT satisfy `conditional_key_object_store`. The
+// case is therefore not skipped here, it is *uninstantiable*: calling it would
+// not compile. Requirement 9.8 fires for exactly this provider.
+
+BOOST_FIXTURE_TEST_CASE(shared_measured_latency, RealOssFixture, *boost::unit_test::timeout(900)) {
+    kythira::object_real::case_measured_latency(alibaba_oss_client{cfg.client_config()},
+                                                cfg.oss_bucket, prefix + "/latency", "oss");
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_backup_verify_restore_read_back, RealOssFixture,
+                        *boost::unit_test::timeout(900)) {
+    kythira::object_real::case_backup_verify_restore_read_back(
+        alibaba_oss_client{cfg.client_config()}, cfg.oss_bucket, prefix + "/src",
+        prefix + "/backups", prefix + "/restored");
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_list_after_write, RealOssFixture, *boost::unit_test::timeout(900)) {
+    kythira::object_real::case_list_after_write(alibaba_oss_client{cfg.client_config()},
+                                                cfg.oss_bucket, prefix + "/law", "oss");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

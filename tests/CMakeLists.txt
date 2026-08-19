@@ -490,6 +490,79 @@ set_tests_properties(object_store_backup_unit_test PROPERTIES
     LABELS "unit;persistence;object-store;backup"
 )
 
+# ── Real-tier object-persistence suites (cloud object persistence, task 16) ──
+#
+# Compiled whenever their provider is enabled, and **never** registered with
+# CTest. That is the point, not an oversight: these need real credentials and
+# spend real money, so they are run BY NAME by the real-cloud-tests workflow —
+# the same contract oci_*_real_test and alibaba_*_real_test already follow. A
+# `ctest -N` listing that included them would eventually run them.
+#
+# Each links network_simulator on top of its own client. Not for futures — these
+# suites use none — but because the header chain reaches them:
+# object_store_persistence.hpp includes persistence.hpp -> future.hpp -> Folly
+# -> glog, and glog needs compile definitions that arrive on that INTERFACE. The
+# first version of this block omitted it and every suite failed with
+# "<glog/logging.h> was not included correctly", which is the same trap
+# cmd/raft_object_backup hit. Left as a comment so it is not "simplified" back.
+function(kythira_add_object_real_test target source)
+    add_executable(${target} ${source})
+    target_include_directories(${target} PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests)
+    target_compile_features(${target} PRIVATE cxx_std_23)
+    target_link_libraries(${target} PRIVATE Boost::unit_test_framework network_simulator)
+    if(TARGET Folly::folly)
+        target_link_libraries(${target} PRIVATE Folly::folly)
+    endif()
+    if(TARGET boost_json)
+        target_link_libraries(${target} PRIVATE boost_json)
+    elseif(TARGET Boost::json)
+        target_link_libraries(${target} PRIVATE Boost::json)
+    endif()
+    # Deliberately no add_test().
+endfunction()
+
+if(AWSSDK_FOUND AND _KYTHIRA_GATE_AWS_S3_PERSISTENCE)
+    kythira_add_object_real_test(aws_s3_object_persistence_real_test
+        aws_s3_object_persistence_real_test.cpp)
+    target_compile_definitions(aws_s3_object_persistence_real_test PRIVATE KYTHIRA_HAS_AWS_SDK)
+    target_link_libraries(aws_s3_object_persistence_real_test PRIVATE ${AWSSDK_LINK_LIBRARIES})
+else()
+    message(STATUS "aws_s3_object_persistence_real_test: skipped (S3 persistence disabled)")
+endif()
+
+if(azure-core-cpp_FOUND AND azure-identity-cpp_FOUND AND _KYTHIRA_GATE_AZURE_BLOB_PERSISTENCE
+   AND TARGET httplib::httplib AND TARGET OpenSSL::SSL)
+    kythira_add_object_real_test(azure_blob_object_persistence_real_test
+        azure_blob_object_persistence_real_test.cpp)
+    target_compile_definitions(azure_blob_object_persistence_real_test PRIVATE
+        KYTHIRA_HAS_AZURE_SDK)
+    target_link_libraries(azure_blob_object_persistence_real_test PRIVATE
+        httplib::httplib OpenSSL::SSL OpenSSL::Crypto Azure::azure-core Azure::azure-identity)
+else()
+    message(STATUS "azure_blob_object_persistence_real_test: skipped (Blob persistence disabled)")
+endif()
+
+if(TARGET google-cloud-cpp::storage AND _KYTHIRA_GATE_GCP_STORAGE_PERSISTENCE)
+    kythira_add_object_real_test(gcp_gcs_object_persistence_real_test
+        gcp_gcs_object_persistence_real_test.cpp)
+    target_compile_definitions(gcp_gcs_object_persistence_real_test PRIVATE
+        KYTHIRA_HAS_GCP_STORAGE)
+    target_link_libraries(gcp_gcs_object_persistence_real_test PRIVATE google-cloud-cpp::storage)
+else()
+    message(STATUS "gcp_gcs_object_persistence_real_test: skipped (GCS persistence disabled)")
+endif()
+
+if(KYTHIRA_OCI_SHARED AND _KYTHIRA_GATE_OCI_OBJECT_PERSISTENCE
+   AND TARGET httplib::httplib AND TARGET OpenSSL::SSL)
+    kythira_add_object_real_test(oci_object_storage_persistence_real_test
+        oci_object_storage_persistence_real_test.cpp)
+    target_link_libraries(oci_object_storage_persistence_real_test PRIVATE
+        httplib::httplib OpenSSL::SSL OpenSSL::Crypto)
+else()
+    message(STATUS "oci_object_storage_persistence_real_test: skipped (OCI object persistence disabled)")
+endif()
+
 # raft_object_backup CLI logic (cloud object persistence, task 14)
 #
 # Unconditional for the same reason as the two suites above: the CLI's verb
