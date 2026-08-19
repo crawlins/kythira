@@ -738,3 +738,99 @@ therefore does not set it, and authenticates with a throwaway service account
 whose RSA key is generated at run time — google-cloud-cpp turns that into a
 locally-signed JWT with no token-endpoint round trip, so the tests need no
 network and no key material is committed.
+
+## Finding 18 — Task 16's real tier found two shipped OCI defects, each fatal on its own
+
+Run August 18-19, 2026 against `kythira-ci-artifacts` (`us-phoenix-1`). Both
+defects were in code that shipped with task 10, both made **OCI object
+persistence completely non-functional against the real service**, and both were
+structurally invisible to the 51 OCI unit cases that pass.
+
+### 18.1 The endpoint suffix was wrong
+
+`oci_http_client::domain_suffix_for` defaults unknown services to the newer
+`.oci.oraclecloud.com` form. Object Storage needs the bare one:
+
+```
+objectstorage.us-phoenix-1.oraclecloud.com      → HTTP 401 (reachable, wants auth)
+objectstorage.us-phoenix-1.oci.oraclecloud.com  → TLS hostname verification failure
+```
+
+Every request failed on the first connection. `objectstorage` now sits beside
+`iaas` in the bare-form list.
+
+**The default is the trap, not the list.** A service nobody names gets a
+plausible host that may not exist, and no local test can tell — every unit case
+sets `endpoint_override`, which replaces the host outright. That header's own
+comment already said the mock tier cannot see the derivation; it was right.
+
+### 18.2 A percent-encoded `/` in a query value breaks the signature
+
+`encode_query_value` encoded `/` as `%2F`. OCI answers **401
+NotAuthenticated** for that. Isolated by varying only the prefix, which is what
+turned "LIST is broken" into a one-character cause:
+
+```
+prefix=            → 200, 52 keys
+prefix=heartbeat   → 200, 4 keys
+prefix=heartbeat/  → 401 NotAuthenticated
+```
+
+Every listing this engine performs uses a prefix ending in `/`, so **every
+`list_keys` call failed** — the engine could not recover a log at all. `/` is a
+legal query character under RFC 3986 §3.4 (`query = *( pchar / "/" / "?" )`),
+so leaving it literal is correct rather than a workaround.
+
+**Why the signature-verifying mocks could not catch it**, and this generalises:
+those mocks verify the signature against the bytes that *arrived*, so the client
+and the mock encode identically and always agree. A signature bug of this shape
+is only observable against a party that computes the signature **independently**
+— which is the entire argument for a real tier, stated more sharply than task 16
+stated it.
+
+An unrelated correctness fix was made while chasing this and is recorded as
+such: `httplib::Client::set_url_encode(false)`, because the client signs an
+already-encoded target and letting httplib re-encode it would break the same
+invariant for the first prefix containing a space. It was **not** the cause of
+this defect.
+
+## Finding 19 — GCS rate-limits object mutations to ~1/second, per object
+
+Measured while taking task 16's latency samples: 20 rapid `save_current_term`
+writes to one key returned `429 rateLimitExceeded` ("exceeded the rate limit for
+object mutation operations"). **S3 took the identical pattern without
+throttling.**
+
+This is an operational constraint on GCS specifically, not a test artifact. The
+engine's `term`, `voted_for`, `snapshot` and `owner` are all **single-slot
+keys**, so a node that advances terms rapidly — a partitioned node campaigning
+repeatedly, say — can hit it on GCS and not on the other providers. The latency
+case spaces its samples at 1100 ms for exactly this reason.
+
+## Finding 20 — Measured write latency, all five providers
+
+Client-side, around the engine call, so it includes TLS, signing, the round trip
+and the engine's own bookkeeping — which is what a Raft node actually waits for.
+**Not** service-side latency, and not comparable with a vendor's published
+figures.
+
+| provider | `save_current_term` p50 | `append_log_entry` p50 | list-after-write |
+|---|---|---|---|
+| GCS | 145 ms | 113 ms | 25/25 × 3 |
+| S3 | 128 ms | 128 ms | 25/25 × 3 |
+| OCI | 356 ms | 342 ms | 25/25 × 3 |
+| Azure Blob | 348 ms | 365 ms | 25/25 × 3 |
+| Alibaba OSS | 1648 ms | 1476 ms | 25/25 × 3 |
+
+**Alibaba's figures are a distance measurement, not a provider one.** Its bucket
+is in `ap-southeast-1` and every other provider's is in a US region, so the
+~4-10x gap is the cross-ocean round trip this repo already measured at 2-3 s per
+object (`alibaba-cloud-services/spike-notes.md` Finding 7). Comparing it against
+the rows above as if it said something about OSS would be wrong.
+
+`get_log_entry` measures **sub-microsecond** on every provider. That is a
+memory-mirror hit, not a round trip, and reading it as a storage read latency
+would be badly wrong — the engine answers reads from the mirror it maintains.
+
+The list-after-write column closes task 0.1's cells empirically for all five:
+25 objects written and immediately listed, three rounds, complete every time.

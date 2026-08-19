@@ -1,6 +1,6 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-14 done; task 0 closed except 0.7 (needs a container runtime)
+## Status: tasks 1-14 and 16 done; task 0 closed except 0.7
 
 **The client wave is complete, August 17, 2026.** Tasks 7, 8, 9 and 10
 (`aws_s3_client`, `azure_blob_client`, `gcp_gcs_client`,
@@ -18,18 +18,18 @@ Requirement 16.3's all-providers-off configuration reproducible — the engine's
 
 **Tasks 12 and 13 (the backup catalog and both restore modes) are done too**,
 with the restore runbooks in `doc/cloud_object_persistence.md`. **Task 14 (the CLI) is done too**, which closes Requirement 16.4 and fills in
-that document's command sequences. What remains is task 16 (real-tier suites,
-writable now), task 17's CI half, task 18 (docs close-out) and task 19 (live
-verification). Tasks 0.7 and 15 stay blocked on a container runtime this
-development host does not have.
+that document's command sequences. **Task 16 is done and every provider is now live-verified** — the honesty
+caveat carried since task 7 is closed, and the tier found two shipped OCI
+defects on its first real run (Finding 18). What remains is task 15 (mock
+tiers), 0.7, task 17's CI half, task 18 (docs close-out) and task 19. **Podman
+is now installed on the development host, so 0.7 and 15.1-15.3 are no longer
+blocked**; 15.4 and 15.5 never were, being in-process mocks.
 
-One honest distinction to carry into task 18: `alibaba_oss_client` is
-**live-verified** end to end. `aws_s3_client`, `azure_blob_client`,
-`gcp_gcs_client` and `oci_object_storage_client` are **documentation-derived
-plus live task-0 probes of the wire questions they rest on** — and for GCS that
-probe base is unusually wide, because writing the client turned up five more
-service and library facts that Finding 12 had not covered (Finding 17). Their
-own real suites are task 16.
+The distinction task 18 must carry is now a *closed* one: **all five clients
+are live-verified end to end** as of task 16 (Findings 18-20). What task 18
+should record is that four of them were documentation-derived until that run,
+and that the run found two fatal defects in one of them — the evidence table
+should say when each provider was verified, not merely that it was.
 
 **Done:** the seam (task 1), the generic engine (task 2) and the Alibaba
 instantiation (task 3), August 15, 2026. Together they add **no capability on
@@ -1371,24 +1371,78 @@ Reference implementations to study before starting, in this order:
     live, the negative control the Alibaba mock already uses).
   - _Requirements: 17.2, 17.5_
 
-- [ ] 16. **Real-tier suites (compiled, gated, skip-correct)**
+- [x] 16. **Real-tier suites (compiled, gated, skip-correct)** — done August 19,
+      2026. **All five providers pass live**, and the tier found **two shipped
+      OCI defects, each of which alone made OCI object persistence
+      non-functional against the real service** (spike-notes Finding 18).
 
-  - `tests/<provider>_object_persistence_real_test.cpp` per provider, under
-    `KYTHIRA_<PROVIDER>_REAL_TESTS`, **never CTest-registered**, exit-77
-    skip naming each missing value, read-only pre-flight whose failure skips
-    rather than fails, cost-reporting and signal-teardown fixtures from
-    `oci_real_test_support.hpp`.
-  - Four load-bearing cases each: fresh-engine read-back; **measured p50/p99
-    per-operation latency with the measurement position recorded**; the
-    fencing race including the live negative control that a stale-version
-    write is genuinely rejected; and backup → verify → clone-restore →
-    fresh-engine read-back.
-  - Plus the list-after-write empirical check closing task 0.1's cells.
-  - Verify: every suite builds; running with no environment exits 77 with
-    the SKIP lines naming each missing value; `ctest -N` lists **none** of
-    them. The latency report prints in a fixed greppable format so runs and
-    providers are comparable.
-  - _Requirements: 4.5, 5.5, 17.6, 17.7_
+      **One suite, five providers.** The five checks live once, templated over
+      the store, in `tests/object_persistence_real_cases.hpp` with the
+      scaffolding in `tests/object_persistence_real_support.hpp`. Each
+      provider's file supplies only authentication and a bucket, which is what
+      actually differs. Written per provider this would be five copies of the
+      same reasoning, and the copies drift — the fencing case especially — so
+      "S3 passes" and "GCS passes" would stop being the same claim.
+
+      **The two OCI defects, and why 51 OCI unit cases could not see either:**
+
+      - **Wrong endpoint suffix.** `domain_suffix_for` defaults unknown services
+        to `.oci.oraclecloud.com`; Object Storage needs the bare form. Every
+        request failed TLS hostname verification. Invisible because every unit
+        case sets `endpoint_override`, which replaces the host outright — that
+        header's own comment already said the mock tier cannot see the
+        derivation.
+      - **`/` percent-encoded in a query value.** OCI answers `401
+        NotAuthenticated` for `%2F`. Every listing uses a prefix ending in `/`,
+        so **every `list_keys` call failed** and the engine could not recover a
+        log. Invisible because the signature-verifying mocks check the signature
+        against the bytes that *arrived* — client and mock encode identically
+        and therefore always agree. **A signature bug of this shape is only
+        observable against a party that signs independently**, which is the
+        argument for this tier stated more sharply than this task stated it.
+
+      **The verify bar, met as written and checked rather than asserted:**
+      every suite builds; `ctest -N` lists **none** of them; running with no
+      environment exits **77** naming *every* missing value, not just the first;
+      and the read-only pre-flight skips rather than fails — verified against a
+      genuinely nonexistent bucket, not simulated.
+
+      **Latency is reported in a fixed greppable format that records where the
+      measurement was taken** (`measured=client-side-around-engine-call`),
+      because that is the first thing that makes two latency numbers
+      incomparable. Two figures in it are traps and are labelled as such in
+      Finding 20: `get_log_entry`'s sub-microsecond result is a **memory-mirror
+      hit, not a round trip**, and Alibaba's ~1.5 s is a **cross-ocean distance
+      measurement, not a provider one**.
+
+      Three things the live runs corrected that no local tier could:
+
+      - **The fencing case encoded a misunderstanding.** It asserted that a
+        takeover alone makes the previous engine's next write fail. Against a
+        real bucket the *stale* writer succeeded and the *new owner* was
+        refused — the exact opposite. `compare_and_swap` **detects** a second
+        writer through per-object `If-Match`; it does not arbitrate. The loser
+        finds out only once the winner has written that same object. The case
+        now stages the race that way and keeps its negative control.
+      - **GCS rate-limits object mutations to ~1/s per object** (Finding 19),
+        where S3 took the identical pattern unthrottled. The latency case spaces
+        its samples accordingly.
+      - **Teardown could not survive a signal.** `run_teardown` was installed as
+        a `std::signal` handler, which is undefined behaviour — it allocates,
+        does TLS I/O and writes to `std::cout`. A real SIGTERM mid-request
+        deadlocked it against the allocator lock and abandoned **48 objects** in
+        a shared bucket. Now the signals are blocked and received by a dedicated
+        `sigtimedwait` thread, where that code is legal, and the sweep **loops
+        until a LIST comes back empty** — because a single pass provably leaks
+        while the main thread keeps writing (measured: one pass left 17). Tested
+        with a real SIGTERM 25 s into a live run: 75 objects deleted in 2 rounds,
+        **residual 0**.
+
+      **Alibaba runs the shared cases minus fencing, and the absence is the
+      finding**: `alibaba_oss_client` cannot express an overwrite CAS
+      (Requirement 9.8), so that case is not skipped but *uninstantiable* — it
+      would not compile.
+      - _Requirements: 4.5, 5.5, 17.6, 17.7_
 
 - [~] 17. **CI wiring + bucket provisioning** — **the bucket half is done**
       (August 16, 2026): idempotent `provision-object-persistence-*` scripts in
