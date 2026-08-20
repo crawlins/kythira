@@ -113,10 +113,18 @@ All sit under `REAL_CLOUD_TESTS_OCI_ENABLED` and the master
 `REAL_CLOUD_TESTS_ENABLED`, per [`../README.md`](../README.md)'s three-level
 model.
 
-**The `oci` job takes no `workflow_dispatch` bundle inputs**, unlike the aws,
-azure and gcp jobs. Repository variables are the only switch here, and the
-object-persistence bundle keeps that convention rather than introducing a
-second way to enable one bundle out of three.
+Each bundle also takes a `workflow_dispatch` input — `oci_bundle_instance_pool`,
+`oci_bundle_certificates`, `oci_bundle_object_persistence` — so a single bundle
+can be dispatched without touching repository state.
+
+**This job had none until August 20, 2026**, and the reason it gained them is
+worth keeping: with variables as the only switch, running *just* the
+object-persistence bundle meant setting the other two to `false`, dispatching,
+and setting them back. That is a window in which a scheduled run silently skips
+two bundles, and it leaves them off permanently if anything interrupts the
+restore. Adding an input for the new bundle alone would have given "how do I
+enable this for one run?" two answers inside one job; adding all three settles
+it the other way.
 
 ### `object-persistence` (cloud key-object persistence spec)
 

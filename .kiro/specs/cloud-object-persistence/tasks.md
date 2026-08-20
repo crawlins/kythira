@@ -1585,12 +1585,29 @@ Reference implementations to study before starting, in this order:
 
       **Deliberate asymmetries, preserved rather than smoothed over:**
 
-      - `aws|azure|gcp_bundle_object_persistence` `workflow_dispatch` inputs
-        exist; **OCI takes none.** That job drives every bundle from
-        repository variables alone, and giving one bundle a second switch
-        would make "how do I enable this for one run?" have two answers in
-        the same job. A comment at the inputs block says so, so the absence
-        does not read as an omission.
+      - **The OCI job's missing dispatch inputs were the one asymmetry that
+        did not survive contact with task 19.** It was preserved at first —
+        that job drove every bundle from repository variables alone, and
+        giving *one* bundle a second switch would have made "how do I enable
+        this for one run?" have two answers inside one job. Then task 19
+        needed to dispatch a single OCI bundle and could not: the only route
+        was to set `REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED` and
+        `_CERTIFICATES_ENABLED` to `false`, dispatch, and set them back — a
+        window in which a scheduled run silently skips two bundles, and which
+        leaves them off permanently if anything interrupts the restore.
+
+        So all three OCI bundles gained inputs. That satisfies the original
+        objection rather than violating it: the objection was to *one* bundle
+        having two answers, and now every OCI bundle behaves exactly like
+        every other provider's. Recorded this way round because the first
+        decision was defensible on the evidence available and was overturned
+        by new evidence, not by a change of taste.
+
+        **The input-count ceiling was checked rather than assumed.** GitHub
+        documents a 10-input maximum for `workflow_dispatch`; this file
+        declares **27** and dispatches fine — verified with a zero-cost probe
+        that passed 21 inputs with the master switch explicitly `false`, so
+        every job's `if:` evaluated false and all eleven skipped.
       - **Only OCI needed a build-target line.** aws/azure/gcp run `cmake
         --build build`, which builds everything; the oci and alibaba jobs
         build named targets precisely because none of their suites is

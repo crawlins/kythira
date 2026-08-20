@@ -73,14 +73,34 @@ on:
         description: "GCP bundle: object-persistence (GCS objects only, ~free)"
         type: boolean
         required: false
-      # Deliberately no oci_bundle_* inputs. The oci job drives its bundles
-      # from repository variables alone (see its `env:` block) — including the
-      # object-persistence bundle added for
-      # .kiro/specs/cloud-object-persistence/ task 17. Adding dispatch inputs
-      # for OCI would mean changing how every OCI bundle is selected, not just
-      # the new one, so the difference is preserved rather than smoothed over.
       oci_enabled:
-        description: "OCI (not yet implemented — see doc/TODO.md Cloud Provider Support)"
+        description: "OCI (overrides REAL_CLOUD_TESTS_OCI_ENABLED for this run only)"
+        type: boolean
+        required: false
+      # All three OCI bundles, not one. This job drove its bundles from
+      # repository variables alone until task 19 needed to dispatch a single
+      # one of them and could not: with no inputs, the only way to run just
+      # the object-persistence bundle was to flip
+      # REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED and _CERTIFICATES_ENABLED
+      # to false, dispatch, and flip them back — a window in which a scheduled
+      # run silently skips two bundles, and which leaves them off permanently
+      # if anything interrupts the restore.
+      #
+      # Adding an input for the *new* bundle only would have given "how do I
+      # enable this for one run?" two answers inside one job, which is why the
+      # first version of this block added none. Adding all three settles it the
+      # other way: every OCI bundle now behaves exactly like every other
+      # provider's.
+      oci_bundle_instance_pool:
+        description: "OCI bundle: instance-pool (launches a real instance)"
+        type: boolean
+        required: false
+      oci_bundle_certificates:
+        description: "OCI bundle: certificates (oci_certificates_provider)"
+        type: boolean
+        required: false
+      oci_bundle_object_persistence:
+        description: "OCI bundle: object-persistence (Object Storage objects only, ~free)"
         type: boolean
         required: false
       alibaba_enabled:
@@ -1158,15 +1178,15 @@ jobs:
         || (github.event.inputs.oci_enabled == null && vars.REAL_CLOUD_TESTS_OCI_ENABLED == 'true'))
 
     env:
-      # Repository variables only, with no workflow_dispatch counterpart —
-      # unlike the aws/azure/gcp jobs above. That is this job's existing
-      # convention and the object-persistence bundle keeps it: giving one
-      # bundle a dispatch input and not the others would make "how do I turn
-      # this on for a single run?" have two answers in the same job.
-      BUNDLE_INSTANCE_POOL: ${{ vars.REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED == 'true' }}
-      BUNDLE_CERTIFICATES: ${{ vars.REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED == 'true' }}
+      # Input-then-variable, the same shape the aws/azure/gcp jobs use, so a
+      # dispatch can select one bundle without touching repository state. On a
+      # `schedule` event `github.event.inputs` is null entirely, so every one
+      # of these falls through to its variable — the weekly run is unaffected
+      # by the inputs' existence.
+      BUNDLE_INSTANCE_POOL: ${{ (github.event.inputs.oci_bundle_instance_pool == 'true') || (github.event.inputs.oci_bundle_instance_pool == null && vars.REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED == 'true') }}
+      BUNDLE_CERTIFICATES: ${{ (github.event.inputs.oci_bundle_certificates == 'true') || (github.event.inputs.oci_bundle_certificates == null && vars.REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED == 'true') }}
       # .kiro/specs/cloud-object-persistence/ task 17.
-      BUNDLE_OBJECT_PERSISTENCE: ${{ vars.REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED == 'true' }}
+      BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.oci_bundle_object_persistence == 'true') || (github.event.inputs.oci_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED == 'true') }}
       CCACHE_DIR: /home/runner/.ccache
 
     steps:
@@ -1179,7 +1199,7 @@ jobs:
         run: |
           if [ "${BUNDLE_INSTANCE_POOL}" != "true" ] && [ "${BUNDLE_CERTIFICATES}" != "true" ] \
              && [ "${BUNDLE_OBJECT_PERSISTENCE}" != "true" ]; then
-            echo "::error::The OCI job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED, REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED and/or REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED." >&2
+            echo "::error::The OCI job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED, REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED and/or REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED, or pass the oci_bundle_* workflow_dispatch inputs." >&2
             exit 1
           fi
 
