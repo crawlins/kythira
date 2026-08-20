@@ -26,6 +26,15 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - **Timeout Classification** for intelligent error handling
 - **Resource Management** with proper cleanup and leak prevention
 - **Comprehensive Logging** for debugging and observability
+- **Cloud Object Persistence** — Raft state (term, vote, log, snapshot) stored
+  as individual objects in a cloud key-object store, with **one engine generic
+  over five providers**: AWS S3, Azure Blob, Google Cloud Storage, OCI Object
+  Storage and Alibaba OSS. Optional second-writer fencing via conditional
+  writes, snapshot retention, and a backup/restore CLI
+  (`cmd/raft_object_backup`). All five are live-verified against their real
+  services. **Read the operating envelope before adopting it** — the write path
+  is one HTTP round trip per log entry per node, which bounds both throughput
+  and cost: see [doc/cloud_object_persistence.md](https://github.com/crawlins/kythira/blob/main/doc/cloud_object_persistence.md)
 - **stdexec-Backed Future Implementation** (optional, opt-in) — a second,
   sender/receiver-based `Future`/`Promise`/`Executor` family alongside the
   default Folly one, for new code that wants direct access to `stdexec`
@@ -645,7 +654,7 @@ All major components are pluggable via template parameters:
 - **State Machine**: Your application logic
 - **Network Transport**: HTTP, simulator, or custom
 - **RPC Serializer**: JSON (`json_rpc_serializer`), CBOR (`cbor_rpc_serializer`), Protocol Buffers (`protobuf_rpc_serializer`), Amazon Ion (`ion_rpc_serializer`), or custom
-- **Persistence**: Memory, disk, or custom
+- **Persistence**: Memory, disk, **cloud object store** (AWS S3, Azure Blob, Google Cloud Storage, OCI Object Storage, Alibaba OSS — see [doc/cloud_object_persistence.md](https://github.com/crawlins/kythira/blob/main/doc/cloud_object_persistence.md)), or custom
 - **Logger**: Console, file, or custom
 - **Metrics**: Prometheus, StatsD, or custom
 - **Membership Manager**: Default or custom authorization

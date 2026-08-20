@@ -1645,7 +1645,60 @@ Reference implementations to study before starting, in this order:
       bundle's history is three rounds of exactly that discovery.
   - _Requirements: 18.1–18.4, 18.6_
 
-- [ ] 18. **Documentation, operator examples, close-out**
+- [x] 18. **Documentation, operator examples, close-out** — done August 19,
+      2026. `doc/cloud_object_persistence.md` went from 254 lines covering
+      backup and restore alone to the whole contract; `doc/TODO.md`'s entry is
+      closed `[x]`; `doc/CHANGELOG.md` and `README.md` record the capability.
+
+      **The five operator examples are sections of the one document, not five
+      documents.** The task asked for them "in the shape of
+      `docker/alibaba_quorum_manager/README.md`", and the shape is kept — a
+      worked snippet, the prerequisite resources, the credential story, the
+      latency warning — but copied five times the *shared* half would drift,
+      which is the exact failure the real-tier suite avoided by writing its
+      five checks once. So the shared reasoning appears once and each provider
+      gets what genuinely differs: authentication, prerequisites, its own
+      least-privilege pointer, and its own measured latency. The latency
+      warning is stated once, immediately above the five, as applying to all
+      of them.
+
+      **All five code examples were compiled, not eyeballed**, `-fsyntax-only`
+      against the real build trees' flags — and that caught a defect the prose
+      had already committed to: the first draft wrote
+      `opts.fencing = fencing_mode::compare_and_swap`, but **fencing is a
+      template argument, not a runtime option**. Every example now uses
+      `fenced_object_store_persistence_engine<Store>`. The same check pins the
+      document's central claim about Alibaba with two `static_assert`s: the
+      fenced alias is ill-formed over `alibaba_oss_client` and well-formed over
+      `aws_s3_client`. A document that says "this does not compile" should be
+      compiled.
+
+      **What the measurements let this document say, and what they do not.**
+      The election-timeout table's second row was a hypothetical 40 ms
+      placeholder; it now carries the measured 128 ms (S3 `us-east-1`). It is
+      **still not the number the rule asks for** — the rule wants p99, the
+      suite prints p99, and only p50 was transcribed into Finding 20 — so the
+      row is labelled a **lower bound on the floor** rather than rounded into
+      confidence. Throughput ceilings are computed per provider from the same
+      p50 and inherit the same caveat.
+
+      **The two traps are labelled at every point of use, and the labelling
+      was checked mechanically** rather than by reading: a script asserts that
+      no provider's latency figure appears on a line naming a different
+      provider, and that every occurrence of the cross-ocean figure carries its
+      distance caveat. Alibaba's row is annotated *in the cell* — proximity to
+      the explanation below it is not enough, because a table row is the unit
+      people copy.
+
+      **The N1 column is the honest part.** Not one provider's
+      durability-on-response is verified by this repo, on any provider, and the
+      document says so in those words: proving "a 2xx means durable" requires
+      killing the service. OCI's cell goes further — Oracle publishes no such
+      wording at all, searched and not found — and that gap is carried visibly
+      rather than borrowed from the other four.
+
+      Also verified: all seven internal anchors resolve, every markdown table
+      is well-formed, and every Requirement 19 artifact exists.
 
   - `doc/cloud_object_persistence.md`: the durability contract and its
     **per-provider evidence table with the confirmation column intact**; the
