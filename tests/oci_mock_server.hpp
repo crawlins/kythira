@@ -291,6 +291,63 @@ public:
     ///
     /// The caching claim in Requirement 12.5 is a claim about *call count*, not
     /// about the returned value — two identical PEMs prove nothing on their own.
+    // ── Direct inspection, bypassing the request log ─────────────────────────
+    //
+    // The conformance suite counts requests around engine operations, so its
+    // *inspection* helpers must not themselves issue any — `h.keys()` is called
+    // before `count_requests("LIST")` in several cases. These mirror
+    // `mock_object_store`'s `seed`/`keys`/`has`/`body`, which exist for exactly
+    // that reason and are documented as bypassing the log.
+
+    auto seed_object(const std::string& bucket, const std::string& key, std::string_view body)
+        -> void {
+        const std::lock_guard lock(_mutex);
+        _objects[bucket + "/" + key] = stored_object{std::string(body), mint_etag()};
+    }
+
+    [[nodiscard]] auto object_keys(const std::string& bucket) const -> std::vector<std::string> {
+        const std::lock_guard lock(_mutex);
+        std::vector<std::string> out;
+        for (const auto& [full, _] : _objects) {
+            if (full.starts_with(bucket + "/")) {
+                out.push_back(full.substr(bucket.size() + 1));
+            }
+        }
+        return out;
+    }
+
+    [[nodiscard]] auto object_has(const std::string& bucket, const std::string& key) const -> bool {
+        const std::lock_guard lock(_mutex);
+        return _objects.contains(bucket + "/" + key);
+    }
+
+    [[nodiscard]] auto object_body(const std::string& bucket, const std::string& key) const
+        -> std::string {
+        const std::lock_guard lock(_mutex);
+        const auto it = _objects.find(bucket + "/" + key);
+        return it == _objects.end() ? std::string{} : it->second.body;
+    }
+
+    /// The object-route request log, by value. Callers must bind it to a local
+    /// before iterating — `begin()`/`end()` on two separate calls name two
+    /// different vectors, a shape this repo has already been bitten by.
+    [[nodiscard]] auto object_requests() const -> std::vector<std::string> {
+        const std::lock_guard lock(_mutex);
+        return _object_requests;
+    }
+
+    [[nodiscard]] auto count_object_requests(std::string_view verb) const -> std::size_t {
+        const std::lock_guard lock(_mutex);
+        return static_cast<std::size_t>(
+            std::count_if(_object_requests.begin(), _object_requests.end(),
+                          [verb](const std::string& entry) { return entry.starts_with(verb); }));
+    }
+
+    auto clear_object_requests() -> void {
+        const std::lock_guard lock(_mutex);
+        _object_requests.clear();
+    }
+
     [[nodiscard]] auto hits(const std::string& key) -> std::size_t {
         const std::lock_guard<std::mutex> lock(_mutex);
         const auto it = _hits.find(key);
@@ -486,7 +543,196 @@ private:
         }
     }
 
+    // ── Object Storage (task 15.4) ───────────────────────────────────────────
+    //
+    // Extended into this server rather than duplicated into a new one, so the
+    // object routes inherit the signature verification the control-plane routes
+    // already have: this mock checks the client's signature against the bytes
+    // that **arrived**, with the public key, so a client that signs the wrong
+    // canonical form fails here rather than only against the real service.
+    //
+    // What that check can and cannot prove is worth stating, because task 16
+    // found two OCI defects this tier is structurally unable to catch. It
+    // verifies the signature *this* server reconstructs — so a client and mock
+    // that encode a request identically always agree, however wrongly they both
+    // encode it. It also never exercises endpoint derivation, because
+    // `endpoint_override` replaces the host outright. Those two blind spots are
+    // exactly where the real defects lived.
+    auto install_object_storage_routes() -> void {
+        // `GET /n/` — the namespace, resolved once at client construction.
+        _server.Get("/n/", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!authorized(req, res)) {
+                return;
+            }
+            const std::lock_guard lock(_mutex);
+            res.status = 200;
+            res.set_content("\"" + _namespace + "\"", "application/json");
+        });
+
+        const std::string object_route = R"(/n/([^/]+)/b/([^/]+)/o/(.+))";
+
+        _server.Put(object_route, [this](const httplib::Request& req, httplib::Response& res) {
+            if (!authorized(req, res)) {
+                return;
+            }
+            const std::string key = decode(req.matches[3]);
+            const std::lock_guard lock(_mutex);
+            _object_requests.push_back("PUT " + key);
+            const std::string full = std::string(req.matches[2]) + "/" + key;
+
+            // Conditional writes. OCI spells a lost create-only precondition
+            // `412 IfNoneMatchFailed` and a lost overwrite `412
+            // PreconditionFailed`; both latch, and both are 412, which is the
+            // shape the client's mapping is written against.
+            const auto if_none_match = req.get_header_value("if-none-match");
+            const auto if_match = req.get_header_value("if-match");
+            const auto existing = _objects.find(full);
+            if (if_none_match == "*" && existing != _objects.end()) {
+                oci_error(res, 412, "IfNoneMatchFailed", "the object already exists");
+                return;
+            }
+            if (!if_match.empty()) {
+                if (existing == _objects.end() || existing->second.etag != if_match) {
+                    oci_error(res, 412, "PreconditionFailed", "the ETag does not match");
+                    return;
+                }
+            }
+
+            const std::string etag = mint_etag();
+            _objects[full] = stored_object{req.body, etag};
+            res.status = 200;
+            // Lowercased deliberately: OCI spells it `etag`, and task 0's probe
+            // looked up `ETag`, got nothing, and misread the run as "OCI cannot
+            // do CAS". The client lowercases every response header for that
+            // reason; serving it lowercase here keeps the mock honest to the
+            // service rather than to the client.
+            res.set_header("etag", etag);
+        });
+
+        _server.Get(object_route, [this](const httplib::Request& req, httplib::Response& res) {
+            if (!authorized(req, res)) {
+                return;
+            }
+            const std::string key = decode(req.matches[3]);
+            const std::lock_guard lock(_mutex);
+            _object_requests.push_back("GET " + key);
+            const auto it = _objects.find(std::string(req.matches[2]) + "/" + key);
+            if (it == _objects.end()) {
+                oci_error(res, 404, "ObjectNotFound", "no such object");
+                return;
+            }
+            res.status = 200;
+            res.set_header("etag", it->second.etag);
+            res.set_content(it->second.body, "application/octet-stream");
+        });
+
+        _server.Delete(object_route, [this](const httplib::Request& req, httplib::Response& res) {
+            if (!authorized(req, res)) {
+                return;
+            }
+            const std::string key = decode(req.matches[3]);
+            const std::lock_guard lock(_mutex);
+            _object_requests.push_back("DELETE " + key);
+            const std::string full = std::string(req.matches[2]) + "/" + key;
+            const auto it = _objects.find(full);
+            const auto if_match = req.get_header_value("if-match");
+            if (!if_match.empty() && (it == _objects.end() || it->second.etag != if_match)) {
+                oci_error(res, 412, "PreconditionFailed", "the ETag does not match");
+                return;
+            }
+            if (it == _objects.end()) {
+                oci_error(res, 404, "ObjectNotFound", "no such object");
+                return;
+            }
+            _objects.erase(it);
+            res.status = 204;
+        });
+
+        // Listing. `prefix`, `limit` and `start` are the three the client uses;
+        // `nextStartWith` drives its pagination loop.
+        _server.Get(R"(/n/([^/]+)/b/([^/]+)/o)", [this](const httplib::Request& req,
+                                                        httplib::Response& res) {
+            if (!authorized(req, res)) {
+                return;
+            }
+            const std::string bucket(req.matches[2]);
+            const std::string prefix = req.get_param_value("prefix");
+            const std::string start = req.get_param_value("start");
+            std::size_t limit = 1000;
+            if (req.has_param("limit")) {
+                limit = static_cast<std::size_t>(std::stoul(req.get_param_value("limit")));
+            }
+            const std::lock_guard lock(_mutex);
+            _object_requests.push_back("LIST " + prefix);
+
+            std::string objects;
+            std::string next;
+            std::size_t emitted = 0;
+            for (const auto& [full, obj] : _objects) {
+                if (!full.starts_with(bucket + "/")) {
+                    continue;
+                }
+                const std::string key = full.substr(bucket.size() + 1);
+                if (!key.starts_with(prefix) || (!start.empty() && key < start)) {
+                    continue;
+                }
+                if (emitted == limit) {
+                    next = key;  // where the next page resumes
+                    break;
+                }
+                objects += (emitted == 0 ? "" : ",");
+                objects += R"({"name":")" + json_escape(key) + R"("})";
+                ++emitted;
+            }
+            std::string body = R"({"objects":[)" + objects + "]";
+            if (!next.empty()) {
+                body += R"(,"nextStartWith":")" + json_escape(next) + R"(")";
+            }
+            body += "}";
+            res.status = 200;
+            res.set_content(body, "application/json");
+        });
+    }
+
+    [[nodiscard]] auto mint_etag() -> std::string {
+        // Shaped like the UUID OCI returns, and opaque: nothing about it is
+        // derivable from the content.
+        return "mock-etag-" + std::to_string(++_etag_counter);
+    }
+
+    static auto oci_error(httplib::Response& res, int status, const char* code, const char* message)
+        -> void {
+        res.status = status;
+        res.set_content(std::string(R"({"code":")") + code + R"(","message":")" + message + R"("})",
+                        "application/json");
+    }
+
+    [[nodiscard]] static auto decode(const std::string& value) -> std::string {
+        std::string out;
+        for (std::size_t i = 0; i < value.size(); ++i) {
+            if (value[i] == '%' && i + 2 < value.size()) {
+                out.push_back(static_cast<char>(std::stoi(value.substr(i + 1, 2), nullptr, 16)));
+                i += 2;
+            } else {
+                out.push_back(value[i]);
+            }
+        }
+        return out;
+    }
+
+    [[nodiscard]] static auto json_escape(const std::string& value) -> std::string {
+        std::string out;
+        for (const char c : value) {
+            if (c == '"' || c == '\\') {
+                out.push_back('\\');
+            }
+            out.push_back(c);
+        }
+        return out;
+    }
+
     auto install_routes() -> void {
+        install_object_storage_routes();
         install_compute_routes();
         install_certificate_routes();
     }
@@ -1048,6 +1294,27 @@ private:
     std::uint64_t _certificate_counter{0};
     int _certificate_creating_polls{0};
     std::vector<std::string> _pool_membership;
+    /// Object Storage's keyspace (task 15.4). One flat map, because that is
+    /// what the service is: `bucket/key` -> bytes plus the ETag OCI mints.
+    ///
+    /// **OCI's ETag is a UUID**, not a content digest (spike-notes Finding 13),
+    /// so this mints an opaque counter rather than an MD5. A mock that returned
+    /// a digest here would let a client that wrongly assumed
+    /// `version_is_content_md5` pass — and `oci_object_storage_client`
+    /// static_asserts the negative precisely because that assumption is wrong
+    /// for this provider.
+    struct stored_object {
+        std::string body;
+        std::string etag;
+    };
+    std::map<std::string, stored_object> _objects;
+    /// `"PUT <key>"` / `"GET <key>"` / `"DELETE <key>"` / `"LIST <prefix>"`, in
+    /// order — the same shape `mock_object_store` records, so the conformance
+    /// suite's request-counting cases read identically over both substrates.
+    std::vector<std::string> _object_requests;
+    std::uint64_t _etag_counter{0};
+    std::string _namespace{"axunmw4f0mln"};
+
     std::map<std::string, instance_state> _instances;
     std::map<std::string, certificate_state> _certificates;
     std::map<std::string, std::size_t> _hits;

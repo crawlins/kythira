@@ -1359,16 +1359,52 @@ Reference implementations to study before starting, in this order:
   - [ ] 15.3 **GCS → task 0.7's decision** (`fake-gcs-server` or a
         hand-written mock), with the deciding factor recorded: fidelity on
         generation preconditions specifically.
-  - [ ] 15.4 **OCI → extend `tests/oci_mock_server.hpp`** with the object
-        routes. Extended, not duplicated, and it keeps **verifying
-        signatures from the bytes that actually arrived**.
-  - [ ] 15.5 **Alibaba → extend `tests/alibaba_mock_server.hpp`**'s existing
-        OSS routes for ETags and any conditional header task 0.3 confirmed.
+  - [x] 15.4 **OCI → extended `tests/oci_mock_server.hpp`** with the object
+        routes, August 19, 2026. Extended, not duplicated, so the object routes
+        inherit the public-key signature verification the control-plane routes
+        already had. The engine's **52-case conformance suite passes over it**
+        (`oci_object_storage_mock_conformance_test`), and the mock's 12 existing
+        cases are unchanged.
+
+        Conditional writes are modelled as OCI spells them: `412
+        IfNoneMatchFailed` for a lost create-only, `412 PreconditionFailed` for
+        a lost overwrite. The ETag is an **opaque counter, not a digest** —
+        OCI's is a UUID (Finding 13), and a mock that returned an MD5 here would
+        let a client wrongly declaring `version_is_content_md5` pass. It is
+        served **lowercased** (`etag`), because task 0's probe looked up `ETag`,
+        got nothing, and misread the run as "OCI cannot do CAS".
+  - [x] 15.5 **Alibaba → extended `tests/alibaba_mock_server.hpp`**'s OSS
+        routes, August 19, 2026. The uppercase-hex ETag was already modelled;
+        what this adds is `x-oss-forbid-overwrite` → **409 `FileAlreadyExists`**,
+        the create-only half task 0.3 confirmed and the *only* conditional write
+        OSS offers. `alibaba_oss_persistence_mock_test` now runs **74 cases**:
+        its original 22 plus the 52-case conformance suite.
+
+        **The fenced suite is deliberately absent and will not compile if
+        added**: OSS cannot express an overwrite CAS (`400 NotImplemented`,
+        Finding 1), so `alibaba_oss_client` does not satisfy
+        `conditional_key_object_store`. Requirement 9.8 fires for exactly this
+        provider, and the absence is the finding rather than a gap.
+
+        Note the 409: it means "you lost, permanently" on OSS and "retry" on S3.
+        That opposition is why no client in this design may map a bare status
+        without reading the service's own error code.
   - CTest labels `integration;<provider>;mock;object-persistence;cloud`.
   - Verify: the **same conformance suite** is green against all five
     substrates; a deliberately corrupted signature in a one-off build is
     rejected by both signature-verifying mocks (proving verification is
     live, the negative control the Alibaba mock already uses).
+  - **What these tiers cannot prove, recorded in both test files so the next
+    person does not assume otherwise.** Neither of the two OCI defects task 16
+    found live is catchable here, and neither is an omission: `endpoint_override`
+    replaces the host outright so endpoint derivation is never exercised, and a
+    signature check verifies what *that server* reconstructs — so a client and
+    mock which encode a request identically agree however wrongly they both
+    encode it. A signature bug of that shape is only observable against a party
+    that signs independently.
+  - Both harnesses use `KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION`: neither
+    mock has transient-failure knobs, so the retry cases are not instantiated.
+    Stated rather than quietly skipped.
   - _Requirements: 17.2, 17.5_
 
 - [x] 16. **Real-tier suites (compiled, gated, skip-correct)** — done August 19,
