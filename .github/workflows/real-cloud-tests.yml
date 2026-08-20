@@ -250,7 +250,8 @@ jobs:
           # `vcpkg install` against this manifest needs these regardless of
           # which Kconfig transports it actually builds).
           for attempt in 1 2 3; do
-            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
                  clang-18 \
                  cmake \
                  ninja-build \
@@ -548,10 +549,10 @@ jobs:
       - name: Install Packer
         run: |
           for attempt in 1 2 3; do
-            if curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add - \
-                 && sudo apt-add-repository "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-                 && sudo apt-get update -q \
-                 && sudo apt-get install -y --no-install-recommends packer; then
+            if timeout 120 curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add - \
+                 && timeout 300 sudo apt-add-repository "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+                 && timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends packer; then
               exit 0
             fi
             echo "::warning::Packer install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -717,7 +718,8 @@ jobs:
       - name: Install system dependencies
         run: |
           for attempt in 1 2 3; do
-            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
                  clang-18 \
                  cmake \
                  ninja-build \
@@ -968,7 +970,8 @@ jobs:
       - name: Install system dependencies
         run: |
           for attempt in 1 2 3; do
-            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
                  clang-18 cmake ninja-build libfiu-dev ccache \
                  autoconf autoconf-archive automake libtool; then
               exit 0
@@ -1208,7 +1211,8 @@ jobs:
       - name: Install system dependencies
         run: |
           for attempt in 1 2 3; do
-            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
                  clang-18 cmake ninja-build libfiu-dev ccache \
                  autoconf autoconf-archive automake libtool; then
               exit 0
@@ -1228,7 +1232,7 @@ jobs:
       # — cmake/Kconfig.cmake now FATAL_ERRORs on exactly that, so this step
       # is load-bearing, not hygiene.
       - name: Install kconfiglib
-        run: pip3 install --user -r scripts/kconfig/requirements.txt
+        run: timeout 300 pip3 install --user -r scripts/kconfig/requirements.txt
 
       # The dependency tree this job needs is exactly build-and-test's
       # (edhoc feature, x64) — same cache key on purpose, so the first oci
@@ -1375,14 +1379,14 @@ jobs:
           # exchange tooling expects; the trust validates issuer, signature
           # (via GitHub's JWKS) and the sub claim, which for this job is
           # repo:crawlins/kythira:environment:real-cloud-tests.
-          jwt=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          jwt=$(timeout 60 curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://cloud.oracle.com" | jq -r '.value')
           if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
             echo "::error::Could not obtain a GitHub OIDC token — is 'id-token: write' still in this job's permissions?" >&2
             exit 1
           fi
 
-          response=$(curl -sS -u "$OCI_WIF_CLIENT_ID:$OCI_WIF_CLIENT_SECRET" \
+          response=$(timeout 120 curl -sS -u "$OCI_WIF_CLIENT_ID:$OCI_WIF_CLIENT_SECRET" \
             "$OCI_DOMAIN_URL/oauth2/v1/token" \
             --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
             --data-urlencode 'requested_token_type=urn:oci:token-type:oci-upst' \
@@ -1473,7 +1477,7 @@ jobs:
       - name: Publish heartbeat binary for the instance (Requirement 4.4)
         if: env.BUNDLE_INSTANCE_POOL == 'true'
         run: |
-          pip3 install --user --quiet oci-cli
+          timeout 600 pip3 install --user --quiet oci-cli
           export PATH="$HOME/.local/bin:$PATH"
           umask 077
           printf '%s' "$KYTHIRA_OCI_SECURITY_TOKEN" > /tmp/oci-pub-upst.token
@@ -1560,7 +1564,7 @@ jobs:
             echo "No UPST in the environment (the credentials step failed or never ran) — nothing to audit with."
             exit 0
           fi
-          pip3 install --user --quiet oci-cli
+          timeout 600 pip3 install --user --quiet oci-cli
           export PATH="$HOME/.local/bin:$PATH"
 
           umask 077
@@ -1666,7 +1670,8 @@ jobs:
       - name: Install system dependencies
         run: |
           for attempt in 1 2 3; do
-            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
                  clang-18 cmake ninja-build libfiu-dev ccache \
                  autoconf autoconf-archive automake libtool; then
               exit 0
@@ -1806,7 +1811,7 @@ jobs:
             echo "ess-quorum bundle did not run; no instances could have been created."
             exit 0
           fi
-          curl -sSL -o /tmp/aliyun.tgz \
+          timeout 300 curl -sSL -o /tmp/aliyun.tgz \
             https://github.com/aliyun/aliyun-cli/releases/latest/download/aliyun-cli-linux-latest-amd64.tgz
           tar -xzf /tmp/aliyun.tgz -C /tmp && sudo mv /tmp/aliyun /usr/local/bin/
           # The scaling group must be back at zero. A non-zero TotalCapacity
@@ -1993,14 +1998,14 @@ jobs:
           openssl genrsa -out /tmp/oci-session-key.pem 2048 2>/dev/null
           public_key=$(openssl rsa -in /tmp/oci-session-key.pem -pubout -outform DER 2>/dev/null | base64 -w0)
 
-          jwt=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          jwt=$(timeout 60 curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://cloud.oracle.com" | jq -r '.value')
           if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
             echo "::error::Could not obtain a GitHub OIDC token — is 'id-token: write' still in this job's permissions?" >&2
             exit 1
           fi
 
-          response=$(curl -sS -u "$OCI_WIF_CLIENT_ID:$OCI_WIF_CLIENT_SECRET" \
+          response=$(timeout 120 curl -sS -u "$OCI_WIF_CLIENT_ID:$OCI_WIF_CLIENT_SECRET" \
             "$OCI_DOMAIN_URL/oauth2/v1/token" \
             --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
             --data-urlencode 'requested_token_type=urn:oci:token-type:oci-upst' \
