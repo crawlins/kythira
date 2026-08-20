@@ -34,6 +34,7 @@ POOL_ID="kythira-ci-pool"
 PROVIDER_ID="kythira-ci-github"
 SA_ID="kythira-ci-real-cloud-tests"
 REF_RESTRICTION=""
+OBJECT_PERSISTENCE_BUCKET=""
 DRY_RUN=0
 
 usage() {
@@ -44,7 +45,12 @@ Required:
   --project PROJECT_ID    GCP project to create the resources in
   --github-org ORG        e.g. crawlins
   --github-repo REPO      e.g. kythira
-  --bundles LIST          Comma-separated: gcp-quorum-manager,gcp-privateca
+  --bundles LIST          Comma-separated: gcp-quorum-manager,gcp-privateca,
+                           gcp-object-persistence
+  --object-persistence-bucket NAME
+                          Bucket the gcp-object-persistence bundle's binding is
+                           scoped to. Defaults to provision-object-persistence-
+                           bucket.sh's own default, kythira-ci-<project>.
 
 Optional:
   --pool-id ID              Workload Identity Pool id (default kythira-ci-pool)
@@ -68,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --provider-id) PROVIDER_ID="$2"; shift 2;;
         --service-account-id) SA_ID="$2"; shift 2;;
         --ref-restriction) REF_RESTRICTION="$2"; shift 2;;
+        --object-persistence-bucket) OBJECT_PERSISTENCE_BUCKET="$2"; shift 2;;
         --dry-run) DRY_RUN=1; shift;;
         -h|--help) usage; exit 0;;
         *) echo "unknown argument: $1" >&2; usage; exit 1;;
@@ -78,6 +85,7 @@ done
 [[ -n "$GITHUB_ORG" ]] || { echo "--github-org is required" >&2; exit 1; }
 [[ -n "$GITHUB_REPO" ]] || { echo "--github-repo is required" >&2; exit 1; }
 [[ -n "$BUNDLES" ]] || { echo "--bundles is required" >&2; exit 1; }
+: "${OBJECT_PERSISTENCE_BUCKET:=kythira-ci-${PROJECT}}"
 
 run() {
     if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -134,18 +142,47 @@ run gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
     --role="roles/iam.workloadIdentityUser" \
     --member="$MEMBER"
 
-echo "== Project role bindings for the selected bundles =="
+# Bindings for the selected bundles. Most are project-scoped because the
+# resources they cover are created and destroyed by the tests themselves and
+# have no stable parent to bind against — but the object-persistence bundle's
+# bucket is a standing, operator-owned resource, so its binding goes ON THE
+# BUCKET. A policy entry says which it wants with an optional "scope": "bucket";
+# absent, it means project, which is what every pre-existing entry meant.
+#
+# The difference is not cosmetic: roles/storage.objectUser at project scope
+# would grant object access to every bucket in the project, including any the
+# real-GCE fixture creates for node binaries, which is exactly the widening
+# this bundle exists to avoid.
+echo "== Role bindings for the selected bundles =="
 IFS=',' read -ra BUNDLE_ARR <<< "$BUNDLES"
 for bundle in "${BUNDLE_ARR[@]}"; do
     policy="${POLICY_DIR}/${bundle}.json"
     [[ -f "$policy" ]] || { echo "unknown bundle '$bundle' (no ${policy})" >&2; exit 1; }
     echo "-- ${bundle} --"
-    while IFS= read -r role; do
+    while IFS=$'\t' read -r role scope; do
         [[ -n "$role" ]] || continue
-        run gcloud projects add-iam-policy-binding "$PROJECT" \
-            --member="serviceAccount:${SA_EMAIL}" \
-            --role="$role" --condition=None
-    done < <(python3 -c 'import json,sys; [print(e["role"]) for e in json.load(open(sys.argv[1]))]' "$policy")
+        case "$scope" in
+            bucket)
+                echo "   (bucket-scoped: gs://${OBJECT_PERSISTENCE_BUCKET})"
+                run gcloud storage buckets add-iam-policy-binding \
+                    "gs://${OBJECT_PERSISTENCE_BUCKET}" \
+                    --member="serviceAccount:${SA_EMAIL}" \
+                    --role="$role"
+                ;;
+            project)
+                run gcloud projects add-iam-policy-binding "$PROJECT" \
+                    --member="serviceAccount:${SA_EMAIL}" \
+                    --role="$role" --condition=None
+                ;;
+            *)
+                echo "unknown scope '$scope' in ${policy}" >&2; exit 1
+                ;;
+        esac
+    done < <(python3 -c '
+import json, sys
+for e in json.load(open(sys.argv[1])):
+    print(e["role"], e.get("scope", "project"), sep="\t")
+' "$policy")
 done
 
 PROVIDER_RESOURCE="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}"
@@ -169,4 +206,9 @@ Then enable the toggles you want:
   gh variable set REAL_CLOUD_TESTS_GCP_ENABLED                   --body "true"
   gh variable set REAL_CLOUD_TESTS_GCP_QUORUM_MANAGER_ENABLED    --body "true"
   gh variable set REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED         --body "true"
+
+For the gcp-object-persistence bundle, additionally:
+
+  gh variable set GCP_OBJECT_PERSISTENCE_BUCKET                     --body "${OBJECT_PERSISTENCE_BUCKET}"
+  gh variable set REAL_CLOUD_TESTS_GCP_OBJECT_PERSISTENCE_ENABLED   --body "true"
 EOF

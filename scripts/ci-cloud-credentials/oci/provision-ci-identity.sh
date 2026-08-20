@@ -24,7 +24,10 @@
 #       --compartment-id OCID --bundles BUNDLE[,BUNDLE...] \
 #       [--group-name NAME] [--policy-name NAME] [--dry-run]
 #
-#   BUNDLE is one of: instance-pool, certificates
+#   BUNDLE is one of: instance-pool, certificates, heartbeat,
+#   object-persistence — one policies/<bundle>.txt each, and the fragment
+#   files are the authority: an unknown name is rejected by naming the file it
+#   looked for.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -160,4 +163,21 @@ the tenancy checker before wiring CI:
 
   cmake --build <build-dir> --target oci_tenancy_check
   ./<build-dir>/tests/oci_tenancy_check
+
+Then set the repository variables for the bundles you selected:
+  gh variable set REAL_CLOUD_TESTS_OCI_ENABLED                     --body true
+  gh variable set OCI_CI_REGION            --body '<region>'
+  gh variable set OCI_CI_COMPARTMENT_ID    --body '${COMPARTMENT_ID}'
+  # instance-pool:
+  gh variable set REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED       --body true
+  gh variable set OCI_CI_INSTANCE_POOL_ID  --body '<pool ocid>'
+  # certificates:
+  gh variable set REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED        --body true
+  gh variable set OCI_CI_CERTIFICATE_AUTHORITY_ID --body '<ca ocid>'
+  # object-persistence (reuses the heartbeat bundle's bucket; creates none):
+  gh variable set REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED  --body true
+  gh variable set OCI_OBJECT_PERSISTENCE_BUCKET --body 'kythira-ci-artifacts'
+
+The oci job takes no workflow_dispatch bundle inputs — repository variables
+are the only switch, deliberately.
 EOF

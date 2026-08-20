@@ -1,0 +1,7 @@
+[
+  {
+    "role": "roles/storage.objectUser",
+    "scope": "bucket",
+    "reason": "gcp_gcs_client: objects.get/create/delete/list plus the generation preconditions the fence uses (ifGenerationMatch on write and delete). objectUser rather than objectAdmin because the latter also carries objects.setIamPolicy, which this engine never calls; objectUser rather than a project-level binding because everything else in policies/ here is project-scoped by necessity and this one is not — see provision-workload-identity.sh's `scope` handling."
+  }
+]

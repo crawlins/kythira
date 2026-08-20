@@ -17,9 +17,17 @@
 #   provision-federated-identity.sh \
 #       --github-org <org> --github-repo <repo> \
 #       --subscription-id <sub> --resource-group <rg> \
-#       --bundles quorum-manager,key-vault \
+#       --bundles quorum-manager,key-vault,object-persistence \
 #       [--key-vault-name <vault>] \
+#       [--storage-account <acct>] [--storage-container <name>] \
+#       [--storage-resource-group <rg>] \
 #       [--dry-run]
+#
+# The object-persistence bundle's three --storage-* options default to what
+# provision-object-persistence-container.sh creates by default, and the
+# resolved values are echoed before the assignment is made — the scope is a
+# container path, and a typo in it produces a role assignment that succeeds
+# and grants nothing.
 
 set -euo pipefail
 
@@ -29,6 +37,9 @@ SUBSCRIPTION_ID=""
 RESOURCE_GROUP=""
 BUNDLES=""
 KEY_VAULT_NAME=""
+STORAGE_ACCOUNT="kythirarealtestobj"
+STORAGE_CONTAINER="kythira-raft"
+STORAGE_RESOURCE_GROUP=""
 DRY_RUN=0
 APP_NAME="kythira-ci-real-cloud-tests"
 
@@ -40,6 +51,9 @@ while [[ $# -gt 0 ]]; do
         --resource-group) RESOURCE_GROUP="$2"; shift 2 ;;
         --bundles) BUNDLES="$2"; shift 2 ;;
         --key-vault-name) KEY_VAULT_NAME="$2"; shift 2 ;;
+        --storage-account) STORAGE_ACCOUNT="$2"; shift 2 ;;
+        --storage-container) STORAGE_CONTAINER="$2"; shift 2 ;;
+        --storage-resource-group) STORAGE_RESOURCE_GROUP="$2"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -51,6 +65,13 @@ for required in GITHUB_ORG GITHUB_REPO SUBSCRIPTION_ID RESOURCE_GROUP BUNDLES; d
         exit 1
     fi
 done
+
+# The storage account need not live in the same resource group as the VM/VMSS
+# test resources — provision-object-persistence-container.sh creates it in
+# kythira-realtest-rg by default, which happens to be the same group today, but
+# nothing enforces that and a wrong group here yields a scope that names a
+# resource which does not exist.
+: "${STORAGE_RESOURCE_GROUP:=${RESOURCE_GROUP}}"
 
 run() {
     echo "+ $*"
@@ -123,16 +144,25 @@ for bundle in "${BUNDLE_LIST[@]}"; do
     # python3 (no third-party packages) does the {SUBSCRIPTION_ID}/{RESOURCE_GROUP}/
     # {VAULT_NAME} substitution and JSON iteration, mirroring the AWS
     # provisioner's use of python3 to merge bundle policy JSON.
-    python3 - "$policy_file" "$SUBSCRIPTION_ID" "$RESOURCE_GROUP" "$KEY_VAULT_NAME" <<'PYEOF'
+    python3 - "$policy_file" "$SUBSCRIPTION_ID" "$RESOURCE_GROUP" "$KEY_VAULT_NAME" \
+              "$STORAGE_RESOURCE_GROUP" "$STORAGE_ACCOUNT" "$STORAGE_CONTAINER" <<'PYEOF'
 import json, sys
-policy_file, sub, rg, vault = sys.argv[1:5]
+policy_file, sub, rg, vault, storage_rg, storage_acct, storage_container = sys.argv[1:8]
 with open(policy_file) as f:
     fragments = json.load(f)
 for frag in fragments:
     scope = (frag["scope"]
              .replace("{SUBSCRIPTION_ID}", sub)
              .replace("{RESOURCE_GROUP}", rg)
-             .replace("{VAULT_NAME}", vault))
+             .replace("{VAULT_NAME}", vault)
+             .replace("{STORAGE_RESOURCE_GROUP}", storage_rg)
+             .replace("{STORAGE_ACCOUNT}", storage_acct)
+             .replace("{STORAGE_CONTAINER}", storage_container))
+    # An unsubstituted placeholder is a scope that will be accepted by nobody
+    # and, worse, could be accepted by az as a literal name. Refuse rather
+    # than assign it.
+    if "{" in scope:
+        sys.exit(f"unsubstituted placeholder in scope: {scope}")
     print(f'{frag["roleDefinitionName"]}\t{scope}')
 PYEOF
 done | while IFS=$'\t' read -r role scope; do
@@ -145,3 +175,8 @@ echo "  gh variable set AZURE_CI_CLIENT_ID --body \"$APP_ID\""
 echo "  gh variable set AZURE_CI_TENANT_ID --body \"\$(az account show --query tenantId -o tsv)\""
 echo "  gh variable set AZURE_CI_SUBSCRIPTION_ID --body \"$SUBSCRIPTION_ID\""
 echo "  gh variable set REAL_CLOUD_TESTS_AZURE_ENABLED --body true"
+if [[ ",${BUNDLES}," == *",object-persistence,"* ]]; then
+    echo "  gh variable set AZURE_OBJECT_PERSISTENCE_ACCOUNT --body \"$STORAGE_ACCOUNT\""
+    echo "  gh variable set AZURE_OBJECT_PERSISTENCE_CONTAINER --body \"$STORAGE_CONTAINER\""
+    echo "  gh variable set REAL_CLOUD_TESTS_AZURE_OBJECT_PERSISTENCE_ENABLED --body true"
+fi

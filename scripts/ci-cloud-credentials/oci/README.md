@@ -97,18 +97,65 @@ PY
 
 ## Bundles and toggles
 
-A bundle is one group of permissions mapped 1:1 to one real-cloud CTest binary,
-so enabling one never grants blast radius for another.
+A bundle is one group of permissions mapped 1:1 to one real-cloud test binary,
+so enabling one never grants blast radius for another. None of these binaries
+is CTest-registered — they need real credentials and spend real money, so the
+`oci` job builds them as named targets and runs them directly.
 
-| Bundle | CTest binary | Toggle |
-|---|---|---|
-| `instance-pool` | `oci_quorum_manager_real_test` | `REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED` |
-| `certificates` | `oci_certificates_provider_real_test` | `REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED` |
+| Bundle | Test binary | Toggle | Extra variables |
+|---|---|---|---|
+| `instance-pool` | `oci_quorum_manager_real_test` | `REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED` | `OCI_CI_INSTANCE_POOL_ID` |
+| `certificates` | `oci_certificates_provider_real_test` | `REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED` | `OCI_CI_CERTIFICATE_AUTHORITY_ID` |
+| `object-persistence` | `oci_object_storage_persistence_real_test` | `REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED` | `OCI_OBJECT_PERSISTENCE_BUCKET` |
+| `heartbeat` | *(no binary of its own — grants the `instance-pool` bundle's artifact-delivery path)* | *(covered by `instance-pool`)* | — |
 
-Both sit under `REAL_CLOUD_TESTS_OCI_ENABLED` and the master
+All sit under `REAL_CLOUD_TESTS_OCI_ENABLED` and the master
 `REAL_CLOUD_TESTS_ENABLED`, per [`../README.md`](../README.md)'s three-level
-model. **Neither test binary exists yet** — Task 6 is open; the bundles are
-defined here so the policy and toggles are ready when it lands.
+model.
+
+**The `oci` job takes no `workflow_dispatch` bundle inputs**, unlike the aws,
+azure and gcp jobs. Repository variables are the only switch here, and the
+object-persistence bundle keeps that convention rather than introducing a
+second way to enable one bundle out of three.
+
+### `object-persistence` (cloud key-object persistence spec)
+
+`oci_object_storage_client` under the shared five-check suite that all five
+providers run (`.kiro/specs/cloud-object-persistence/`). It is the one bundle
+here that **provisions nothing**: it reuses the `kythira-ci-artifacts` bucket
+the `heartbeat` bundle already created, under the separate prefix
+`kythira-real-test/` that the suite creates and tears down for itself.
+
+```sh
+scripts/ci-cloud-credentials/oci/provision-ci-identity.sh \
+    --compartment-id "$OCI_CI_COMPARTMENT_ID" \
+    --bundles instance-pool,certificates,heartbeat,object-persistence
+gh variable set OCI_OBJECT_PERSISTENCE_BUCKET --body kythira-ci-artifacts
+gh variable set REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED --body true
+```
+
+The policy statements are **replaced, not merged**, so name every bundle the
+group should keep.
+
+Its grant is a single statement — `Allow group kythira-ci to manage objects in
+compartment <c>` — deliberately narrower than the `heartbeat` bundle's `manage
+object-family` (which additionally carries buckets and pre-authenticated
+requests, neither of which this client touches) and deliberately carrying **no
+`where` clause**. `policies/object-persistence.txt` gives the full argument;
+the short version is that a `where` clause on this compartment's Object
+Storage policy broke a *different* principal's `put_object` on August 12,
+2026, presenting as `404 BucketNotFound`, and this tenancy already declines
+3-16% of valid Object Storage requests with exactly that error. Another
+condition would make an open question unanswerable rather than merely open.
+
+**Cost:** a few hundred object operations and a few hundred kilobytes for the
+length of the run. The bucket already exists for the heartbeat path, so this
+bundle adds no standing cost at all.
+
+**A red run of this bundle is weaker evidence than the other four providers'.**
+The suite's own header and the workflow step both say so: take the
+`opc-request-id` from the decline to the compartment audit log rather than
+re-running until green, which would launder a regression into a flake.
 
 ## Monitoring-config test
 

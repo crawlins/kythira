@@ -1,0 +1,7 @@
+[
+  {
+    "roleDefinitionName": "Storage Blob Data Contributor",
+    "scope": "/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/{STORAGE_RESOURCE_GROUP}/providers/Microsoft.Storage/storageAccounts/{STORAGE_ACCOUNT}/blobServices/default/containers/{STORAGE_CONTAINER}",
+    "reason": "azure_blob_client: PUT/GET/DELETE blob and List Blobs under one container. Scoped to the container, not the account: a data-plane role at account scope would also cover any other container that account later grows. NOTE that this is a DATA-plane role and is not implied by Owner — an operator with Owner on the subscription still cannot read a blob, which is the trap provision-object-persistence-container.sh's README records."
+  }
+]

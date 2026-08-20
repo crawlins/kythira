@@ -25,6 +25,7 @@ POLICY_DIR="${REPO_ROOT}/scripts/ci-cloud-credentials/aws/policies"
 GITHUB_ORG=""
 GITHUB_REPO=""
 BUNDLES=""
+BUCKET=""
 ROLE_NAME="kythira-ci-real-cloud-tests"
 SESSION_DURATION="3600"
 REF_RESTRICTION=""
@@ -47,10 +48,15 @@ Required:
   --github-org ORG        e.g. crawlins
   --github-repo REPO      e.g. kythira
   --bundles LIST          Comma-separated: ec2-quorum-manager,ca-cluster-node,
-                           ca-cluster-node-rpc-tls,ami-build (any non-empty
-                           subset)
+                           ca-cluster-node-rpc-tls,ami-build,object-persistence
+                           (any non-empty subset)
 
 Optional:
+  --bucket NAME                  S3 bucket the object-persistence bundle is
+                                  scoped to (substituted for {{BUCKET}});
+                                  required when that bundle is selected.
+                                  Defaults to provision-object-persistence-
+                                  bucket.sh's own default, kythira-ci-<account>
   --role-name NAME               default: kythira-ci-real-cloud-tests
   --session-duration-seconds N   default: 3600 (one hour)
   --ref-restriction REF          e.g. "ref:refs/heads/main" — further
@@ -67,6 +73,7 @@ while [[ $# -gt 0 ]]; do
         --github-org) GITHUB_ORG="$2"; shift 2 ;;
         --github-repo) GITHUB_REPO="$2"; shift 2 ;;
         --bundles) BUNDLES="$2"; shift 2 ;;
+        --bucket) BUCKET="$2"; shift 2 ;;
         --role-name) ROLE_NAME="$2"; shift 2 ;;
         --session-duration-seconds) SESSION_DURATION="$2"; shift 2 ;;
         --ref-restriction) REF_RESTRICTION="$2"; shift 2 ;;
@@ -169,7 +176,23 @@ for bundle in "${BUNDLE_LIST[@]}"; do
         echo "       valid bundles: $(ls "${POLICY_DIR}" | sed 's/\.json$//' | tr '\n' ' ')" >&2
         exit 1
     fi
-    BUNDLE_STATEMENTS=$(sed "s/{{ACCOUNT_ID}}/${ACCOUNT_ID}/g" "${POLICY_FILE}")
+    # The object-persistence bundle scopes its statements to one bucket and
+    # one prefix inside it, so its policy carries a {{BUCKET}} placeholder the
+    # other bundles have no use for. Defaulted rather than demanded, to the
+    # same name provision-object-persistence-bucket.sh creates by default —
+    # but only defaulted, never guessed silently: the substitution is echoed
+    # below so a mismatch between the two scripts is visible in the output
+    # rather than in a 403 six weeks later.
+    if grep -q '{{BUCKET}}' "${POLICY_FILE}"; then
+        if [[ -z "${BUCKET}" ]]; then
+            BUCKET="kythira-ci-${ACCOUNT_ID}"
+            echo "  --bucket not given; scoping '${bundle}' to the default bucket ${BUCKET}"
+        else
+            echo "  scoping '${bundle}' to bucket ${BUCKET}"
+        fi
+    fi
+    BUNDLE_STATEMENTS=$(sed -e "s/{{ACCOUNT_ID}}/${ACCOUNT_ID}/g" \
+                            -e "s/{{BUCKET}}/${BUCKET}/g" "${POLICY_FILE}")
     STATEMENTS=$(python3 -c "
 import json, sys
 a = json.loads(sys.argv[1])
@@ -212,10 +235,14 @@ for bundle in "${BUNDLE_LIST[@]}"; do
         ca-cluster-node) VAR="REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED" ;;
         ca-cluster-node-rpc-tls) VAR="REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED" ;;
         ami-build) VAR="REAL_CLOUD_TESTS_AWS_AMI_BUILD_ENABLED" ;;
+        object-persistence) VAR="REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED" ;;
         *) continue ;;
     esac
     echo "  gh variable set ${VAR} --body true"
 done
+if [[ ",${BUNDLES}," == *",object-persistence,"* ]]; then
+    echo "  gh variable set AWS_OBJECT_PERSISTENCE_BUCKET --body '${BUCKET}'"
+fi
 if [[ ",${BUNDLES}," == *",ec2-quorum-manager,"* ]]; then
     echo ""
     echo "Note: the ec2-quorum-manager bundle references role"
