@@ -582,6 +582,46 @@ public:
     /// Keys returned per `ListObjectsV2` page. The default is larger than any
     /// test's key set, so pagination is opt-in; setting it small is how the
     /// continuation-token walk gets exercised.
+    // ── Direct OSS inspection, bypassing the request log ─────────────────────
+    //
+    // The conformance suite calls `keys()` before `count_requests("LIST")`, so
+    // an inspecting LIST over HTTP would be indistinguishable from one the
+    // engine made. `mock_object_store`'s `seed`/`keys`/`has`/`body` exist for
+    // the same reason and are documented as bypassing the log.
+    /// The OSS half of the existing request log, re-spelled as the conformance
+    /// suite expects: `"PUT <key>"` rather than `"OSS PUT <key>"`.
+    ///
+    /// Derived from `_requests` rather than recorded a second time. A parallel
+    /// log would be one more thing to keep in step with the routes, and the two
+    /// would disagree the first time someone added a route to only one of them.
+    [[nodiscard]] auto oss_requests() const -> std::vector<std::string> {
+        const std::lock_guard lock(_mutex);
+        std::vector<std::string> out;
+        for (const auto& entry : _requests) {
+            if (entry.starts_with("OSS ")) {
+                out.push_back(entry.substr(4));
+            }
+        }
+        return out;
+    }
+
+    [[nodiscard]] auto count_oss_requests(std::string_view verb) const -> std::size_t {
+        const auto entries = oss_requests();
+        return static_cast<std::size_t>(
+            std::count_if(entries.begin(), entries.end(),
+                          [verb](const std::string& e) { return e.starts_with(verb); }));
+    }
+
+    auto clear_oss_requests() -> void {
+        const std::lock_guard lock(_mutex);
+        _requests.clear();
+    }
+
+    auto seed_oss_object(const std::string& key, std::string_view body) -> void {
+        const std::lock_guard lock(_mutex);
+        _objects[key] = std::string(body);
+    }
+
     auto set_oss_page_size(std::size_t keys) -> void {
         const std::lock_guard lock(_mutex);
         _oss_page_size = keys == 0 ? 1 : keys;
@@ -1433,6 +1473,20 @@ private:
                               "The Content-MD5 you specified was invalid");
                     return;
                 }
+            }
+            // `x-oss-forbid-overwrite: true` is how OSS spells create-only —
+            // the ONLY conditional write it offers. Task 0.3 confirmed both
+            // halves live: this is refused with **409 FileAlreadyExists**, and
+            // an overwrite compare-and-swap against a current ETag is refused
+            // outright with `400 NotImplemented` (Finding 1). The 409 is worth
+            // being careful about: S3 uses 409 for the *opposite*, retryable
+            // meaning, which is why no client in this design may map a bare
+            // status without reading the service's own code.
+            if (req.get_header_value("x-oss-forbid-overwrite") == "true" &&
+                _objects.contains(key)) {
+                oss_error(res, 409, "FileAlreadyExists",
+                          "the object already exists and overwrite is forbidden");
+                return;
             }
             _objects[key] = req.body;
             res.status = 200;

@@ -39,6 +39,7 @@
 #include <raft/types.hpp>
 
 #include "alibaba_mock_server.hpp"
+#include "object_store_conformance.hpp"
 #include "test_timeout_scale.hpp"
 
 #include <httplib.h>
@@ -694,3 +695,98 @@ BOOST_AUTO_TEST_CASE(two_prefixes_in_one_bucket_are_independent,
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ── The engine conformance suite over the OSS mock tier (task 15.5) ──────────
+//
+// The same suite that proves `object_store_persistence_engine` over an
+// in-memory map, run again over a real HTTP round trip with **OSS V4 signatures
+// verified from the bytes that arrived**. That verification is the reason this
+// tier is worth more than a plain httplib server: `alibaba_oss_client`'s first
+// live PutObject failed with `SignatureDoesNotMatch` because the signed header
+// set omitted `Content-Type` while cpp-httplib put it on the wire, and no local
+// tier could see it until this mock started verifying.
+//
+// **The fencing suite is absent and that absence is the finding.** OSS is the
+// one provider of the five that cannot express an overwrite compare-and-swap —
+// a conditional PUT against a *current* ETag is refused `400 NotImplemented`
+// (spike-notes Finding 1) — so `alibaba_oss_client` deliberately does not
+// satisfy `conditional_key_object_store` and the fenced engine will not
+// instantiate over it. Requirement 9.8 fires for exactly this provider.
+//
+// The create-only half it *does* have (`x-oss-forbid-overwrite`, refused `409
+// FileAlreadyExists`) is modelled by the mock. Note that 409 means the opposite
+// on S3 — "retry" rather than "you lost" — which is why no client here may map
+// a bare status without reading the service's own error code.
+//
+// NO_INJECTION: the mock has no transient-failure knobs, so the retry cases are
+// not instantiated. Stated rather than quietly skipped — a harness that claimed
+// the full suite while omitting them would misreport what had been proved.
+
+namespace {
+
+/// Conformance harness over the started OSS mock.
+struct alibaba_oss_mock_harness {
+    using engine_t = kythira::object_store_persistence_engine<kythira::alibaba_oss_client>;
+
+    alibaba_mock_server server;
+
+    alibaba_oss_mock_harness() { server.start(); }
+    ~alibaba_oss_mock_harness() { server.stop(); }
+
+    alibaba_oss_mock_harness(const alibaba_oss_mock_harness&) = delete;
+    auto operator=(const alibaba_oss_mock_harness&) -> alibaba_oss_mock_harness& = delete;
+    alibaba_oss_mock_harness(alibaba_oss_mock_harness&&) = delete;
+    auto operator=(alibaba_oss_mock_harness&&) -> alibaba_oss_mock_harness& = delete;
+
+    [[nodiscard]] auto client() const -> kythira::alibaba_oss_client {
+        kythira::alibaba_client_config cfg;
+        cfg.region = "cn-hangzhou";
+        cfg.access_key_id = server.access_key_id();
+        cfg.access_key_secret = server.access_key_secret();
+        cfg.endpoint_override = server.origin();
+        cfg.api_timeout = 10s;
+        return kythira::alibaba_oss_client{cfg};
+    }
+
+    [[nodiscard]] auto bucket() const -> std::string { return server.bucket(); }
+    [[nodiscard]] auto prefix() const -> std::string { return "node-1"; }
+
+    [[nodiscard]] auto make_engine() const -> engine_t {
+        return engine_t{client(), bucket(), prefix()};
+    }
+    [[nodiscard]] auto make_engine(const std::string& b, const std::string& p) const -> engine_t {
+        return engine_t{client(), b, p};
+    }
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        return engine_t{client(), bucket(), prefix(), std::move(opts)};
+    }
+
+    // Inspection goes straight into the server's map, never over HTTP: the
+    // suite calls `keys()` before `count_requests("LIST")`, so an inspecting
+    // LIST would look like one the engine made.
+    auto seed(const std::string& key, std::string_view body) -> void {
+        server.seed_oss_object(key, body);
+    }
+    [[nodiscard]] auto keys() const -> std::vector<std::string> { return server.oss_keys(); }
+    [[nodiscard]] auto has(const std::string& key) const -> bool { return server.oss_has(key); }
+    [[nodiscard]] auto body(const std::string& key) const -> std::string {
+        return server.oss_body(key);
+    }
+
+    [[nodiscard]] auto request_log() const -> std::vector<std::string> {
+        return server.oss_requests();
+    }
+    [[nodiscard]] auto count_requests(std::string_view verb) const -> std::size_t {
+        return server.count_oss_requests(verb);
+    }
+    auto clear_requests() -> void { server.clear_oss_requests(); }
+};
+
+/// The macro pastes its store argument into an identifier, so a
+/// namespace-qualified type does not compile. Alias first — the same shape this
+/// file's `BOOST_GLOBAL_FIXTURE` note describes.
+using oss_client_t = kythira::alibaba_oss_client;
+
+}  // namespace
+
+KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION(alibaba_oss_mock_harness, oss_client_t)

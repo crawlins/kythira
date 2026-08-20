@@ -490,6 +490,38 @@ set_tests_properties(object_store_backup_unit_test PROPERTIES
     LABELS "unit;persistence;object-store;backup"
 )
 
+# ── Provider mock tiers: the conformance suite over a local server (task 15) ──
+#
+# The same engine suite that runs over the in-memory store, run again over a
+# real HTTP round trip with real request signing. Registered with CTest, unlike
+# the real tier: these need no credentials and cost nothing.
+if(KYTHIRA_OCI_SHARED AND _KYTHIRA_GATE_OCI_OBJECT_PERSISTENCE
+   AND TARGET httplib::httplib AND TARGET OpenSSL::SSL)
+    add_executable(oci_object_storage_mock_conformance_test
+        oci_object_storage_mock_conformance_test.cpp)
+    target_include_directories(oci_object_storage_mock_conformance_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests)
+    target_compile_features(oci_object_storage_mock_conformance_test PRIVATE cxx_std_23)
+    target_link_libraries(oci_object_storage_mock_conformance_test PRIVATE
+        Boost::unit_test_framework network_simulator httplib::httplib
+        OpenSSL::SSL OpenSSL::Crypto)
+    if(TARGET Folly::folly)
+        target_link_libraries(oci_object_storage_mock_conformance_test PRIVATE Folly::folly)
+    endif()
+    if(TARGET boost_json)
+        target_link_libraries(oci_object_storage_mock_conformance_test PRIVATE boost_json)
+    elseif(TARGET Boost::json)
+        target_link_libraries(oci_object_storage_mock_conformance_test PRIVATE Boost::json)
+    endif()
+    add_test(NAME oci_object_storage_mock_conformance_test
+        COMMAND oci_object_storage_mock_conformance_test)
+    set_tests_properties(oci_object_storage_mock_conformance_test PROPERTIES
+        TIMEOUT 300
+        LABELS "integration;oci;mock;object-persistence;cloud")
+else()
+    message(STATUS "oci_object_storage_mock_conformance_test: skipped (OCI object persistence disabled)")
+endif()
+
 # ── Real-tier object-persistence suites (cloud object persistence, task 16) ──
 #
 # Compiled whenever their provider is enabled, and **never** registered with
