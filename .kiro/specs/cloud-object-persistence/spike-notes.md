@@ -834,3 +834,137 @@ would be badly wrong — the engine answers reads from the mirror it maintains.
 
 The list-after-write column closes task 0.1's cells empirically for all five:
 25 objects written and immediately listed, three rounds, complete every time.
+
+## Finding 21 — `fake-gcs-server` does not clear task 0.7's fidelity bar. Task 0.7 closes NO.
+
+Measured August 19, 2026 against `fsouza/fake-gcs-server:latest` under rootless
+Podman. Finding 12 deliberately recorded the bar as **observations of the real
+service** rather than expectations, so this is a comparison and not a judgement
+call:
+
+| bar | result |
+|---|---|
+| generation advances on every write | **pass** |
+| `ifGenerationMatch=0` on an existing object, **multipart** upload → 412 | **pass** |
+| `ifGenerationMatch=0` on an existing object, **media** upload → 412 | **FAIL — 200, and it overwrites** |
+| stale `ifGenerationMatch` on a **media** upload → 412 | **FAIL — 200, and it overwrites** |
+| stale `ifGenerationMatch` on **DELETE** → 412, object survives | **FAIL — 200, and it DELETES** |
+| 404 body distinguishes an absent object | **FAIL — `Not Found`, where GCS sends `No such object: <bucket>/<key>`** |
+
+**The decision is no.** Not because two of six rows are amber but because of
+what the failures *are*.
+
+**The conditional DELETE gap is disqualifying on its own.** An unmodelled
+precondition there does not fail loudly — it succeeds and destroys the object.
+A fenced suite run against this emulator would go **green while the emulator
+deleted objects a real bucket would have refused**. That is a false green
+asserting the fence works when it was never exercised, which is worse than
+having no tier at all.
+
+**The 404 body gap forced the decision that settles it.** `gcp_gcs_client`
+treats absence as a whitelist keyed on GCS's own message (Finding 17.1), because
+GCS gives an absent object and an absent bucket the same code and reason. The
+emulator's `Not Found` does not match, so absence throws. The fix that would
+make the suite pass is to widen the whitelist — and that trades a **real-service
+safety property** (a misconfigured bucket can never be read as an empty Raft
+log) for emulator convenience. Refused. A test tier that requires loosening
+production safety to go green is not paying for itself.
+
+**What GCS gets instead.** The engine is proved over the in-memory substrates
+and over the **real bucket** (`gcp_gcs_object_persistence_real_test`, 5/5 live
+including fencing). The hand-written mock 0.7 named as the alternative is *not*
+written: it would be a third encoding of the same wire format, and Finding 18
+showed what a mock that agrees with its client is worth — the two OCI defects
+were invisible to exactly that arrangement. GCS's evidence is the real tier.
+
+Also measured, and it is why the multipart row passes: `gcp_gcs_client` sends
+`MD5HashValue` on every insert, which puts google-cloud-cpp on the multipart
+path. So the *upload* preconditions this engine actually issues would have been
+modelled faithfully. It is delete and absence that are not.
+
+## Finding 22 — The emulator tier does not land, for three independent reasons
+
+Measured August 19, 2026 under rootless Podman 4.9.3. Task 15's mock tiers
+(15.4 OCI, 15.5 Alibaba) are **done and green**; it is the three
+*external-emulator* subtasks that do not, and each fails for its own reason
+rather than for want of effort.
+
+### 15.1 S3 → LocalStack: the free image was discontinued
+
+```
+docker.io/localstack/localstack:latest    → exit 55, "License activation failed"
+docker.io/localstack/localstack:s3-latest → "This image was discontinued with the
+                                             release of v2026.03 on 23rd March 2026.
+                                             Please switch to localstack/localstack-pro."
+```
+
+LocalStack's community S3 image no longer exists; the replacement is licensed.
+This is an upstream product change, not a technical obstacle, and no amount of
+work here removes it. **A paid LocalStack licence would unblock 15.1
+immediately** — the harness is the same shape as 15.4's and would be a short
+change.
+
+Note the existing `aws_quorum_manager_localstack_test` is affected by the same
+change and will skip rather than run, since it probes for a reachable endpoint.
+That is pre-existing and outside this spec.
+
+### 15.2 Azure Blob → Azurite: an auth model this client deliberately does not have
+
+Azurite authenticates with **SharedKey**. `azure_blob_client` speaks **AAD
+bearer tokens only** — task 0.6 decided against `azure-storage-blobs-cpp`
+precisely because the credential chain already produces bearer tokens, and
+"no SharedKey signing is written at all" is a recorded design decision.
+
+Azurite's `--oauth basic` mode does start over plain HTTP (contrary to its
+older documentation), but rejected a hand-formed JWT with `403
+AuthenticationFailed`, so its acceptance criteria are stricter than "any
+well-formed token" and are not documented.
+
+Two routes exist and both are refused:
+
+- **Add SharedKey to `azure_blob_client`** — production code, security-relevant,
+  written solely so an emulator can be talked to. That is the same trade
+  Finding 21 refused for GCS and it is refused here for the same reason.
+- **Reverse-engineer what Azurite's `--oauth basic` accepts** — undocumented,
+  and a tier built on it breaks whenever the emulator tightens.
+
+`azure_client_config` *does* accept an injected `TokenCredential`, so if
+Azurite's OAuth requirements are ever documented this becomes cheap. Recorded
+so the next attempt starts from what was measured rather than from scratch.
+
+**One piece of scaffolding was written and then deleted rather than committed
+unused**: a `counting_object_store` decorator, which a black-box emulator needs
+because — unlike the mock tiers — there is no server-side request log to read
+and the conformance suite counts requests. Its shape, for whoever picks this up:
+wrap the store, record `"PUT <key>"`/`"GET <key>"`/`"DELETE <key>"`/`"LIST
+<prefix>"`, share the counter through a `shared_ptr` so it survives the engine
+copying its store, forward `put_object_if`/`delete_object_if` under a
+`requires conditional_key_object_store<Store>` clause so a fenceable store is
+not silently downgraded, and mirror `version_is_content_md5`. Note it counts
+what the client *issued*, which is strictly weaker than the mock tiers'
+server-side log.
+
+The other thing that attempt learned: an emulator harness **must reset its
+bucket per case**. The in-memory harness gets a fresh store per instance; an
+external emulator does not, and its objects outlive the process. Without a reset
+the second case inherits the first's state and the suite fails in ways that read
+as engine bugs — `load_current_term() == 4` where 0 was expected.
+
+### 15.3 GCS → fake-gcs-server: refused on fidelity (Finding 21)
+
+Measured, decided no, and the reasoning is in Finding 21. The short form: an
+unmodelled conditional DELETE **succeeds and destroys the object**, so a fenced
+suite would go green having tested nothing.
+
+### What this costs, stated plainly
+
+The engine is proved over five substrates: the in-memory store (plain, fenced
+and MD5-versioned), the **OCI mock server**, the **Alibaba OSS mock server**,
+and — for all five providers — a **real bucket** (task 16). What the emulator
+tier would have added is a middle rung: more realistic than a mock, cheaper than
+a real bucket, runnable in CI without credentials.
+
+Its absence is a genuine gap in CI economics, not in correctness evidence. The
+real tier covers everything the emulators would have, and covers it better —
+Finding 18's two OCI defects were invisible to every local tier and would have
+been invisible to an emulator too.

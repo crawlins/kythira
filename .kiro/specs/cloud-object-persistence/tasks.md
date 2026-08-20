@@ -1,6 +1,6 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-14 and 16 done; task 0 closed except 0.7
+## Status: tasks 1-14, 15.4, 15.5 and 16 done; task 0 fully closed (0.7 decided NO)
 
 **The client wave is complete, August 17, 2026.** Tasks 7, 8, 9 and 10
 (`aws_s3_client`, `azure_blob_client`, `gcp_gcs_client`,
@@ -1352,13 +1352,49 @@ Reference implementations to study before starting, in this order:
 
 - [ ] 15. **Per-provider emulator / mock tiers**
 
-  - [ ] 15.1 **S3 → LocalStack.** Follow the established
-        `aws_quorum_manager_localstack_test` registration and labels; run
-        the conformance suite against it.
-  - [ ] 15.2 **Azure Blob → Azurite.** Same shape, via `endpoint_override`.
-  - [ ] 15.3 **GCS → task 0.7's decision** (`fake-gcs-server` or a
-        hand-written mock), with the deciding factor recorded: fidelity on
-        generation preconditions specifically.
+  - [~] 15.1 **S3 → LocalStack: BLOCKED upstream**, August 19, 2026.
+        LocalStack's community S3 image was **discontinued with v2026.03 on
+        23 March 2026** (`localstack/localstack:s3-latest` now prints that and
+        exits; `:latest` exits 55 demanding a licence). The replacement is
+        `localstack-pro`, which is paid. This is a product change, not a
+        technical obstacle — **a licence unblocks it immediately**, and the
+        harness would be the same shape as 15.4's. See Finding 22.
+  - [~] 15.2 **Azure Blob → Azurite: refused on the same grounds as 0.7**,
+        August 19, 2026. Azurite authenticates with **SharedKey**;
+        `azure_blob_client` speaks **AAD bearer tokens only**, because task 0.6
+        decided against a storage SDK precisely on the basis that the credential
+        chain already produces bearer tokens — "no SharedKey signing is written
+        at all" is a recorded decision. Azurite's `--oauth basic` does start over
+        plain HTTP but rejected a hand-formed JWT (`403 AuthenticationFailed`),
+        so its acceptance criteria are undocumented.
+
+        Adding SharedKey to production code so an emulator can be talked to is
+        the trade Finding 21 refused for GCS, and it is refused here for the same
+        reason. `azure_client_config` already accepts an injected
+        `TokenCredential`, so this becomes cheap the day Azurite's OAuth
+        requirements are documented. See Finding 22.
+  - [~] 15.3 **GCS → task 0.7 decided NO**, August 19, 2026, on exactly the
+        deciding factor this bullet names. `fake-gcs-server` clears 2 of the 6
+        bars Finding 12 recorded. The disqualifying one: a stale
+        `ifGenerationMatch` on **DELETE** returns 200 and **deletes the object**,
+        so a fenced suite would go green while the emulator destroyed objects a
+        real bucket would have refused — a false green asserting the fence works
+        when it was never exercised.
+
+        A second gap settled it: the emulator's 404 body is `Not Found`, where
+        GCS sends `No such object: <bucket>/<key>`. `gcp_gcs_client` keys absence
+        on that message as a **whitelist** (Finding 17.1), so the only change
+        that makes the suite pass is widening it — trading a real-service safety
+        property (a misconfigured bucket can never read as an empty Raft log) for
+        emulator convenience. **A tier that requires loosening production safety
+        to go green is not paying for itself.**
+
+        The hand-written mock this bullet offers as the alternative is
+        deliberately **not** written: it would be a third encoding of the same
+        wire format, and Finding 18 showed what a mock that agrees with its
+        client is worth — both OCI defects were invisible to exactly that
+        arrangement. GCS's evidence is the real tier, where it passes 5/5
+        including fencing. See Finding 21.
   - [x] 15.4 **OCI → extended `tests/oci_mock_server.hpp`** with the object
         routes, August 19, 2026. Extended, not duplicated, so the object routes
         inherit the public-key signature verification the control-plane routes
