@@ -1603,11 +1603,36 @@ Reference implementations to study before starting, in this order:
         decision was defensible on the evidence available and was overturned
         by new evidence, not by a change of taste.
 
-        **The input-count ceiling was checked rather than assumed.** GitHub
-        documents a 10-input maximum for `workflow_dispatch`; this file
-        declares **27** and dispatches fine — verified with a zero-cost probe
-        that passed 21 inputs with the master switch explicitly `false`, so
-        every job's `if:` evaluated false and all eleven skipped.
+        **The input-count ceiling was checked, and the check was wrong — this
+        broke `main`.** The probe passed 21 inputs against the *then-current*
+        file and concluded the documented limit was unenforced. 21 is under the
+        real cap of **25**, so the probe proved nothing about the 27 the change
+        would produce. Adding the three OCI inputs made the workflow file
+        **invalid**: GitHub rejects a `workflow_dispatch` block above 25 inputs
+        at validation time, which kills the whole file — not dispatchable, and
+        **not running on its schedule either**.
+
+        Three things made it expensive, and all three are the lesson:
+
+        - **It merged green.** `ci.yml` does not validate
+          `real-cloud-tests.yml`, and a workflow-validation failure is not a PR
+          check. It surfaces only as a zero-job run whose *name is the file
+          path*, which nothing was watching.
+        - **The probe tested the wrong boundary.** A limit probe has to run at
+          the value the change will produce, not the value that already works.
+          Testing 21 to justify 27 is testing that the status quo still works.
+        - **The fix is a guard, not a comment.** `ci.yml` gained a
+          `workflow-input-limits` job that counts every workflow's dispatch
+          inputs and fails above 25, verified in both directions: it passes on
+          the corrected file and fails on the 27-input one. Two unprovisioned
+          monitoring inputs (`gcp_monitoring_enabled`, `oci_monitoring_enabled`,
+          both with unset repository variables) were dropped to get back to 25.
+
+        **A consequence worth knowing before dispatching:** at 25 declared
+        inputs the file is exactly at the cap, so a dispatch can still pass all
+        of them — but there is no room left. Any future bundle input must
+        displace an existing one, and the guard now forces that decision
+        instead of letting it break the workflow.
       - **Only OCI needed a build-target line.** aws/azure/gcp run `cmake
         --build build`, which builds everything; the oci and alibaba jobs
         build named targets precisely because none of their suites is

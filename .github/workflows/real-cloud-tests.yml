@@ -77,6 +77,17 @@ on:
         description: "OCI (overrides REAL_CLOUD_TESTS_OCI_ENABLED for this run only)"
         type: boolean
         required: false
+      # ── HARD LIMIT: 25 workflow_dispatch inputs. This block is AT it. ─────
+      #
+      # More than 25 makes the whole file invalid — not dispatchable, and not
+      # running on its schedule either — and GitHub reports that as a zero-job
+      # run named after the file path, never as a PR check. PR #257 took this
+      # block from 24 to 27, merged green, and killed the workflow on main.
+      #
+      # ci.yml's `workflow-input-limits` job now fails a PR that exceeds the
+      # cap. To add an input here you must remove one; that is a real decision
+      # and the guard exists to make you make it.
+      #
       # All three OCI bundles, not one. This job drove its bundles from
       # repository variables alone until task 19 needed to dispatch a single
       # one of them and could not: with no inputs, the only way to run just
@@ -127,14 +138,6 @@ on:
         required: false
       azure_monitoring_enabled:
         description: "Azure Monitor monitoring config (overrides REAL_CLOUD_TESTS_AZURE_MONITORING_ENABLED for this run only)"
-        type: boolean
-        required: false
-      gcp_monitoring_enabled:
-        description: "GCP Cloud Monitoring monitoring config (overrides REAL_CLOUD_TESTS_GCP_MONITORING_ENABLED for this run only)"
-        type: boolean
-        required: false
-      oci_monitoring_enabled:
-        description: "OCI Monitoring monitoring config (overrides REAL_CLOUD_TESTS_OCI_MONITORING_ENABLED for this run only)"
         type: boolean
         required: false
       alibaba_monitoring_enabled:
