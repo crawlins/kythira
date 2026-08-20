@@ -78,11 +78,17 @@ creation, deletion or configuration.
 | OCI | `object-persistence` | `REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED` | `OCI_OBJECT_PERSISTENCE_BUCKET` | `manage objects in compartment` — see the file's `where`-clause warning |
 | Alibaba | `oss-persistence` | `REAL_CLOUD_TESTS_ALIBABA_OSS_PERSISTENCE_ENABLED` | `ALIBABA_OSS_BUCKET` | RAM policy scoped to the bucket |
 
-AWS, Azure and GCP additionally take a `workflow_dispatch` input
-(`<provider>_bundle_object_persistence`) for enabling the bundle for a single
-run. **OCI takes none, deliberately** — that job drives every bundle from
-repository variables alone, and giving one bundle a second switch would make
-"how do I turn this on once?" have two answers in the same job.
+Every provider takes a `workflow_dispatch` input
+(`<provider>_bundle_object_persistence`, and `alibaba_bundle_oss_persistence`)
+for enabling the bundle for a single run without touching repository state.
+
+**Passing an input is not the same as omitting one.** The expression is
+`(input == 'true') || (input == null && vars.X == 'true')`, so an *omitted*
+input falls back to the repository variable — and several of those are `true`
+for bundles that launch real instances. A dispatch meant to run one bundle
+must pass every other bundle an explicit `false`, not merely leave it out. On a
+`schedule` event `github.event.inputs` is null entirely, so the weekly run
+always reads the variables.
 
 **Cost.** These are the cheapest bundles in this directory by a wide margin,
 and the honest counterpart to the production cost warning in the spec's

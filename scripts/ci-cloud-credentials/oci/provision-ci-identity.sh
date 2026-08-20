@@ -178,6 +178,8 @@ Then set the repository variables for the bundles you selected:
   gh variable set REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED  --body true
   gh variable set OCI_OBJECT_PERSISTENCE_BUCKET --body 'kythira-ci-artifacts'
 
-The oci job takes no workflow_dispatch bundle inputs — repository variables
-are the only switch, deliberately.
+For a single run without touching these variables, dispatch with the
+oci_bundle_* inputs instead. NOTE that an OMITTED input falls back to its
+repository variable, so a dispatch meant to run one bundle must pass the
+others an explicit false.
 EOF
