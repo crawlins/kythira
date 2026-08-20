@@ -172,7 +172,39 @@ crashed run leaves behind. Request charges for these suites are a rounding
 error against any storage minimum (S3 PUTs are ~$0.005/1,000). The real cost
 warning in this spec is about *production* append rates, not about CI.
 
-**Still required before CI can use it:** an object-persistence bundle on the
-CI role, scoped to `arn:aws:s3:::<bucket>/kythira-real-test/*` for
-get/put/delete plus prefix-conditioned `ListBucket` on the bucket — object
-operations only, no bucket administration.
+**Grant, and the CI switches.** The bucket alone is not enough — the CI role
+needs the `object-persistence` bundle, which is
+`policies/object-persistence.json`: get/put/delete on
+`arn:aws:s3:::<bucket>/kythira-real-test/*` plus `ListBucket` on the bucket
+itself, conditioned on that same prefix. Object operations only; no bucket
+administration, and no access to anything outside the prefix.
+
+```sh
+# List EVERY bundle you want the role to keep: put-role-policy replaces the
+# inline policy wholesale, so omitting a bundle revokes it.
+scripts/ci-cloud-credentials/aws/provision-oidc-role.sh \
+    --github-org crawlins --github-repo kythira \
+    --bundles ec2-quorum-manager,ca-cluster-node,ca-cluster-node-rpc-tls,object-persistence \
+    --bucket kythira-ci-827617851594
+```
+
+`--bucket` defaults to `kythira-ci-<account-id>`, which is the same name
+`provision-object-persistence-bucket.sh` creates by default; the resolved
+value is echoed so a mismatch between the two scripts shows up in the output
+rather than as a 403 later.
+
+Then:
+
+```sh
+gh variable set AWS_OBJECT_PERSISTENCE_BUCKET --body kythira-ci-827617851594
+gh variable set REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED --body true
+```
+
+For a single run without touching the variables, use the
+`aws_bundle_object_persistence` `workflow_dispatch` input.
+
+The bundle runs **first** among the AWS job's bundles, ahead of the
+real-EC2 ones: the job mints one-hour session credentials at the top and the
+EC2 suites re-federate as they go, whereas this one takes those credentials
+as they are. It also runs on both the x64 and arm64 matrix legs — it launches
+nothing, so it costs the job no meaningful wall-clock.

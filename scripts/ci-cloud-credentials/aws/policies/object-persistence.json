@@ -1,0 +1,26 @@
+[
+  {
+    "Sid": "ObjectPersistenceObjectPlane",
+    "Effect": "Allow",
+    "Action": [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject"
+    ],
+    "Resource": "arn:aws:s3:::{{BUCKET}}/kythira-real-test/*"
+  },
+  {
+    "Sid": "ObjectPersistenceListTestPrefixOnly",
+    "Effect": "Allow",
+    "Action": "s3:ListBucket",
+    "Resource": "arn:aws:s3:::{{BUCKET}}",
+    "Condition": {
+      "StringLike": {
+        "s3:prefix": [
+          "kythira-real-test/",
+          "kythira-real-test/*"
+        ]
+      }
+    }
+  }
+]

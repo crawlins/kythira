@@ -1516,37 +1516,133 @@ Reference implementations to study before starting, in this order:
       would not compile.
       - _Requirements: 4.5, 5.5, 17.6, 17.7_
 
-- [~] 17. **CI wiring + bucket provisioning** — **the bucket half is done**
-      (August 16, 2026): idempotent `provision-object-persistence-*` scripts in
-      `scripts/ci-cloud-credentials/{aws,azure,gcp}/`, each run twice and each
-      verified with a real write/read/delete round trip, with cost notes and
-      the two traps recorded in their READMEs (Azure's Owner-is-not-blob-data
-      and the unregistered-provider `SubscriptionNotFound`). OCI reuses
-      `kythira-ci-artifacts`, Alibaba reuses `kythira-ci-5633986662052576`.
-      **Not done:** the per-provider least-privilege grants for each CI
-      identity, the repository variables, and the toggles below — there is no
-      suite to enable yet.
+- [x] 17. **CI wiring + bucket provisioning** — bucket half August 16, 2026;
+      **wiring and grants August 19, 2026**. All five providers now have an
+      object-persistence bundle in `.github/workflows/real-cloud-tests.yml`,
+      each with a toggle, a fail-closed variable guard, a least-privilege
+      grant fragment, and an exit-77-becomes-failure run step.
 
-  - Per-provider `REAL_CLOUD_TESTS_<PROVIDER>_OBJECT_PERSISTENCE_ENABLED`
-    bundle toggle plus a matching `workflow_dispatch` input, **inside each
-    provider's existing job** — the credentials, federation steps and
-    zero-bundle guards already live there.
-  - Exit 77 fails the bundle loudly: a real-cloud job that silently skips is
-    indistinguishable from one that passes.
-  - Idempotent provisioning in `scripts/ci-cloud-credentials/<provider>/`
-    with a least-privilege policy per provider scoped to the test bucket and
-    prefix — object get/put/delete/list only, **no bucket administration**.
-  - OCI reuses the existing `kythira-ci-artifacts` bucket; Alibaba reuses
-    whatever bucket the existing `ALIBABA_OSS_BUCKET` repository variable
-    names. Only AWS, Azure and GCP need a new bucket, created with public
-    access blocked and a lifecycle rule expiring test prefixes.
-  - Cost estimates in each provisioning README — these suites' request
-    counts are rounding errors against storage minimums, which is the honest
-    counterpart to Requirement 6's production cost warning.
-  - Verify: workflow YAML parses; a dispatch with the toggles off skips;
-    **a dispatch with a bundle on fails closed naming the missing
-    variables** (verifiable before any bucket exists); each provisioning
-    script run twice is idempotent.
+      **The buckets** (August 16): idempotent `provision-object-persistence-*`
+      scripts in `scripts/ci-cloud-credentials/{aws,azure,gcp}/`, each run
+      twice and each verified with a real write/read/delete round trip, with
+      cost notes and the two traps recorded in their READMEs (Azure's
+      Owner-is-not-blob-data and the unregistered-provider
+      `SubscriptionNotFound`). OCI reuses `kythira-ci-artifacts`, Alibaba
+      reuses `kythira-ci-5633986662052576`.
+
+      **The grants**, one fragment per provider, in each provisioner's
+      existing bundle mechanism so that enabling and disabling a bundle
+      enables and disables its permissions:
+
+      | Provider | Fragment | Grant |
+      |---|---|---|
+      | AWS | `policies/object-persistence.json` | get/put/delete on `<bucket>/kythira-real-test/*` + `ListBucket` conditioned on that prefix |
+      | Azure | `policies/object-persistence.json` | `Storage Blob Data Contributor` at **container** scope |
+      | GCP | `policies/gcp-object-persistence.json` | `roles/storage.objectUser` bound **on the bucket** |
+      | OCI | `policies/object-persistence.txt` | `manage objects in compartment` |
+      | Alibaba | `policies/oss-persistence.json` | already existed; unchanged |
+
+      Three of those needed the provisioner itself extended, and the
+      extensions are where the reasoning is:
+
+      - **GCP's binding is not project-scoped, and nothing in that script
+        could express that before.** Every pre-existing entry in `policies/`
+        is a bare role name applied with `gcloud projects
+        add-iam-policy-binding`, which for `storage.objectUser` would grant
+        object access to *every* bucket in the project — including the ones
+        the real-GCE fixture creates for node binaries. Policy entries now
+        carry an optional `"scope": "bucket"`; absent, it means project,
+        which is what every existing entry meant.
+      - **Azure's scope is the container, not the account**, so the
+        substitution needed `{STORAGE_ACCOUNT}` / `{STORAGE_CONTAINER}` /
+        `{STORAGE_RESOURCE_GROUP}` alongside the existing three. The renderer
+        now **refuses** a scope with an unsubstituted `{`: a wrong container
+        scope produces a role assignment that succeeds and grants nothing.
+      - **AWS's policy needed `{{BUCKET}}`**, mirroring the Alibaba
+        provisioner's existing placeholder. Defaulted to
+        `kythira-ci-<account-id>` — the same name the bucket script creates —
+        and *echoed*, so a mismatch between the two scripts shows in the
+        output rather than as a 403 weeks later.
+
+      **`objectUser` not `objectAdmin`, `manage objects` not `manage
+      object-family`, container not account.** Each of those is one verb
+      narrower than the obvious choice, and each drops a permission this
+      engine provably never uses (`setIamPolicy`, PAR management, other
+      containers). The engine reads and writes objects; no fragment here
+      grants bucket administration.
+
+      **OCI's fragment carries no `where` clause, and that is the finding.**
+      The obvious narrowing — `where target.bucket.name = '…'` — was applied
+      to this compartment's heartbeat policy on August 12, 2026 and reverted
+      within the hour, because an inapplicable condition variable *declines*
+      a request rather than merely not matching, and Object Storage enforces
+      that where Compute does not: a **different** principal's `put_object`
+      started failing `404 BucketNotFound` under a **different**,
+      unconditional policy. This tenancy already declines 3-16% of valid
+      Object Storage requests with exactly that error, so a second condition
+      would make an open question unanswerable rather than merely open. The
+      fragment says all of this at the point where someone would add one.
+
+      **Deliberate asymmetries, preserved rather than smoothed over:**
+
+      - `aws|azure|gcp_bundle_object_persistence` `workflow_dispatch` inputs
+        exist; **OCI takes none.** That job drives every bundle from
+        repository variables alone, and giving one bundle a second switch
+        would make "how do I enable this for one run?" have two answers in
+        the same job. A comment at the inputs block says so, so the absence
+        does not read as an omission.
+      - **Only OCI needed a build-target line.** aws/azure/gcp run `cmake
+        --build build`, which builds everything; the oci and alibaba jobs
+        build named targets precisely because none of their suites is
+        CTest-registered.
+      - **Each provider got its own binary-missing guard**, separate from the
+        existing one, because the gate that can lose this binary differs per
+        provider — Kconfig `AWS_S3_PERSISTENCE`, `AZURE_BLOB_PERSISTENCE`
+        (which additionally needs `HTTP_TRANSPORT_TLS`), `GCP_STORAGE_PERSISTENCE`
+        — and a message naming the wrong knob is worse than none.
+      - **The object-persistence bundle runs FIRST in every job.** Three of
+        these jobs mint short-lived credentials and then run suites that can
+        hold a runner for hours; this suite finishes in under a minute and
+        takes the session credentials as they are, where the EC2 suites
+        re-federate as they go. Running it last would reproduce the
+        expired-credential failure the azure job already documents.
+
+      **Verified, rather than asserted:**
+
+      - The workflow parses **and every step landed in the intended job** —
+        checked by asserting that each provider's test binary appears only in
+        that provider's job, and that no job references another provider's
+        `vars.*`. This check exists because an earlier attempt at this edit
+        spliced AWS's run step into the `gcp` job and Azure's into `oci`, and
+        **the file still parsed as valid YAML**. Valid YAML in the wrong job
+        is worse than invalid YAML; syntax was never the property at risk.
+      - Every new guard body was executed under `bash -e` with the variables
+        both set and unset. Bundle-on-with-variable-unset fails naming the
+        variable; all-bundles-off fires the zero-bundle guard; the OCI target
+        list picks up exactly the enabled targets. **Verifiable before any
+        bucket exists**, which is what the bar asked for.
+      - All four new suites exit **77 naming every missing value** under an
+        empty environment (`env -i`), and `ctest -N` lists **none** of them in
+        either build tree — re-checked here rather than trusted from task 16,
+        because the run steps' exit-77 conversion is only correct if that
+        contract still holds.
+      - The AWS, Azure and GCP provisioners were dry-run against the live
+        accounts with the new bundle selected. Each rendered the intended
+        grant, and each defaulted its bucket/account to exactly the resource
+        provisioned on August 16 (`kythira-ci-827617851594`,
+        `kythirarealtestobj`/`kythira-raft`,
+        `kythira-ci-prefab-sky-500619-s9`). The OCI provisioner was dry-run
+        against the real tenancy and rendered `Allow group kythira-ci to
+        manage objects in compartment kythira-ci`.
+
+      **What is NOT done and belongs to task 19:** the repository variables
+      are documented per provider but not *set*, and no dispatched run has
+      exercised any of these bundles. In particular **no grant here has been
+      exercised by a principal that holds only it** — every live run so far
+      authenticated as a principal already holding a broader policy, so what
+      is proven is that the clients work, not that these fragments are
+      sufficient. The OCI fragment says so explicitly; the instance-pool
+      bundle's history is three rounds of exactly that discovery.
   - _Requirements: 18.1–18.4, 18.6_
 
 - [ ] 18. **Documentation, operator examples, close-out**

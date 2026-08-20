@@ -148,6 +148,40 @@ month; the lifecycle of these tests is create-and-delete. ZRS costs more per
 GB than LRS, which is irrelevant at this volume and is the point of the
 choice.
 
-**Still required before CI can use it:** `Storage Blob Data Contributor` for
-the CI federated identity (`AZURE_CI_CLIENT_ID`), scoped to this account and
-no wider.
+**Grant, and the CI switches.** The container alone is not enough — the CI
+federated identity (`AZURE_CI_CLIENT_ID`) needs `Storage Blob Data
+Contributor`, which is the `object-persistence` bundle here. It is assigned at
+**container** scope, not account scope: a data-plane role on the account would
+also cover any other container that account later grows.
+
+```sh
+# List every bundle you want assigned; role assignments are additive, so
+# re-running with a subset does NOT revoke the others (unlike AWS).
+scripts/ci-cloud-credentials/azure/provision-federated-identity.sh \
+    --github-org crawlins --github-repo kythira \
+    --subscription-id <sub> --resource-group kythira-realtest-rg \
+    --bundles quorum-manager,key-vault,object-persistence \
+    --storage-account kythirarealtestobj --storage-container kythira-raft
+```
+
+The three `--storage-*` options default to what
+`provision-object-persistence-container.sh` creates, and
+`--storage-resource-group` defaults to `--resource-group`. The resolved scope
+is printed before the assignment, because a typo in a container scope produces
+an assignment that succeeds and grants nothing.
+
+Then:
+
+```sh
+gh variable set AZURE_OBJECT_PERSISTENCE_ACCOUNT   --body kythirarealtestobj
+gh variable set AZURE_OBJECT_PERSISTENCE_CONTAINER --body kythira-raft
+gh variable set REAL_CLOUD_TESTS_AZURE_OBJECT_PERSISTENCE_ENABLED --body true
+```
+
+For a single run, the `azure_bundle_object_persistence` `workflow_dispatch`
+input. The bundle runs immediately after `azure/login`, ahead of the other
+two: the AAD session this job mints is short-lived and this suite finishes in
+under a minute.
+
+Remember point 2 above when the suite exits 77 or 403s — **Owner is not
+blob-data access**, and that is the single most likely cause.

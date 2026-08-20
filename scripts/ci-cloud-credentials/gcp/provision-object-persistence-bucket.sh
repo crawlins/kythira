@@ -127,8 +127,13 @@ echo
 echo "done. Set the repository variable:"
 echo "  GCP_OBJECT_PERSISTENCE_BUCKET=${BUCKET}"
 echo
+echo "  REAL_CLOUD_TESTS_GCP_OBJECT_PERSISTENCE_ENABLED=true"
+echo
 echo "NOT done by this script, and still required before CI can use it:"
-echo "  * roles/storage.objectAdmin (or a custom role with"
-echo "    storage.objects.{get,create,delete,list}) for"
-echo "    ${GCP_CI_SERVICE_ACCOUNT:-the CI service account}, scoped to this"
-echo "    bucket via an IAM binding on the bucket — not at project level."
+echo "  * roles/storage.objectUser for"
+echo "    ${GCP_CI_SERVICE_ACCOUNT:-the CI service account}, bound ON THIS"
+echo "    BUCKET rather than at project level. Run:"
+echo "      scripts/ci-cloud-credentials/gcp/provision-workload-identity.sh \\"
+echo "          --project ${PROJECT} --github-org ORG --github-repo REPO \\"
+echo "          --bundles <every bundle you want>,gcp-object-persistence \\"
+echo "          --object-persistence-bucket ${BUCKET}"

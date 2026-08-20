@@ -1,0 +1,74 @@
+# Bundle: object-persistence
+# Test binary: oci_object_storage_persistence_real_test
+# Toggle: REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED
+# Repository variable: OCI_OBJECT_PERSISTENCE_BUCKET (kythira-ci-artifacts)
+#
+# Statements for oci_object_storage_client, the Object Storage member of the
+# key_object_store family object_store_persistence_engine is generic over
+# (.kiro/specs/cloud-object-persistence/ task 17). Substitute {GROUP} and
+# {COMPARTMENT}; lines beginning with '#' are stripped by
+# provision-ci-identity.sh. See instance-pool.txt for why these are statements
+# rather than JSON.
+#
+# THIS BUNDLE PROVISIONS NO BUCKET. It reuses kythira-ci-artifacts, which
+# heartbeat.txt's bundle already created for the writer-binary delivery path,
+# under the separate prefix kythira-real-test/ that the suite creates and tears
+# down for itself. Nothing here touches the heartbeat/ prefix.
+#
+# The five calls the client makes, and nothing else:
+#
+#   GET  /n/                        namespace resolution at construction
+#                                   (task 0.8 — the operator does not have to
+#                                   know the namespace). Requires no permission
+#                                   of its own: it answers with the *caller's*
+#                                   namespace.
+#   GET  /n/{ns}/b/{b}/o/{key}      get_object
+#   GET  /n/{ns}/b/{b}/o?prefix=…   list_keys
+#   PUT  /n/{ns}/b/{b}/o/{key}      put_object, including the conditional
+#                                   writes the fence uses (if-none-match for
+#                                   create-only, if-match for compare-and-swap)
+#   DELETE /n/{ns}/b/{b}/o/{key}    delete_object
+#
+# `objects`, NOT `object-family`. The family additionally carries buckets and
+# pre-authenticated requests; this client creates neither, and the PAR_MANAGE
+# permission the heartbeat bundle genuinely needs has no business being granted
+# twice for two different reasons. Note the consequence: if BOTH bundles are
+# enabled, heartbeat.txt's `manage object-family` is a strict superset of this
+# statement and this one grants nothing new. That is fine and deliberate —
+# turning the heartbeat bundle off must not silently revoke the persistence
+# suite's access.
+Allow group {GROUP} to manage objects in compartment {COMPARTMENT}
+
+# NO `where` CLAUSE. NOT AN OVERSIGHT — READ THIS BEFORE ADDING ONE.
+#
+# The obvious narrowing is `where target.bucket.name = 'kythira-ci-artifacts'`,
+# or a prefix condition. The same instinct was applied to this compartment's
+# heartbeat policy on August 12, 2026 and REVERTED within the hour, because it
+# broke a DIFFERENT principal: with the clause in place the CI group's
+# put_object to kythira-ci-artifacts began failing with `404 BucketNotFound`
+# ("...or you are not authorized"), while the same UPST's Compute calls kept
+# succeeding, and the compartment audit log showed the policy update as the
+# only mutation between the last green run and the failures. OCI documents that
+# a condition variable which is *inapplicable to a request* declines the
+# request rather than merely failing to match the statement, and the services
+# enforce that inconsistently — Object Storage fails closed, Compute does not.
+# heartbeat.txt carries the full account.
+#
+# This matters here more than anywhere else in the tree, because this tenancy
+# ALREADY declines 3-16% of valid Object Storage requests with exactly that
+# `404 BucketNotFound` (spike-notes.md), and the leading hypothesis for it is a
+# policy condition. Adding another one would make the open question
+# unanswerable rather than merely open.
+#
+# Anyone who tries anyway must re-verify EVERY principal/service pair this
+# compartment's policies serve — specifically including put_object by the CI
+# group — not just the persistence suite. The breakage masquerades as a bucket
+# outage.
+#
+# Exercised by a least-privilege principal: NO. Every live run of this suite so
+# far (August 19, 2026, 5/5 green) authenticated as a principal that already
+# held heartbeat.txt's broad `manage object-family`, so what has been proven is
+# that the CLIENT works, not that this statement is sufficient. The first run
+# under a principal holding only the statement above is the one that settles
+# it — the instance-pool bundle's own history is three rounds of exactly that
+# discovery, and the same is expected here.

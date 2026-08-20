@@ -134,6 +134,43 @@ CLOUDSDK_AUTH_ACCESS_TOKEN="$(gcloud auth application-default print-access-token
 **Cost.** Effectively zero: a few small objects, deleted in teardown, with the
 lifecycle rule as the backstop. GCS Class A operations are ~$0.005/1,000.
 
-**Still required before CI can use it:** `roles/storage.objectAdmin` (or a
-custom role with `storage.objects.{get,create,delete,list}`) for
-`GCP_CI_SERVICE_ACCOUNT`, bound **on the bucket** rather than at project level.
+**Grant, and the CI switches.** The bucket alone is not enough — the CI
+service account needs the `gcp-object-persistence` bundle, which binds
+`roles/storage.objectUser` **on the bucket** rather than at project level.
+`objectUser` rather than `objectAdmin`: the latter additionally carries
+`storage.objects.setIamPolicy`, which this engine never calls. Bucket scope
+rather than project scope because a project-level binding would also grant
+object access to every other bucket in the project, including the ones the
+real-GCE fixture creates for node binaries.
+
+This is the only bundle in `policies/` that is not project-scoped, and the
+policy entry says so with `"scope": "bucket"`; entries without that key mean
+project, which is what every pre-existing entry meant.
+
+```sh
+scripts/ci-cloud-credentials/gcp/provision-workload-identity.sh \
+    --project prefab-sky-500619-s9 \
+    --github-org crawlins --github-repo kythira \
+    --bundles gcp-quorum-manager,gcp-privateca,gcp-object-persistence \
+    --object-persistence-bucket kythira-ci-prefab-sky-500619-s9
+```
+
+`--object-persistence-bucket` defaults to `kythira-ci-<project>`, the same
+name the bucket script creates by default.
+
+Then:
+
+```sh
+gh variable set GCP_OBJECT_PERSISTENCE_BUCKET --body kythira-ci-prefab-sky-500619-s9
+gh variable set REAL_CLOUD_TESTS_GCP_OBJECT_PERSISTENCE_ENABLED --body true
+```
+
+For a single run, the `gcp_bundle_object_persistence` `workflow_dispatch`
+input. The bundle runs before the two long ones: this job authenticates at the
+top of the job, ahead of a build that can take an hour from cold, so the
+shortest suite goes first while the WIF credentials are freshest.
+
+**GCS rate-limits mutations of a single object to roughly 1/s**, where S3 took
+the identical pattern unthrottled. The suite's latency case already spaces its
+samples for this; it is recorded here because it is a GCS fact, not a
+Kythira one, and the next person to write a GCS test will meet it again.

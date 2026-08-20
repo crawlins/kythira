@@ -37,6 +37,10 @@ on:
         description: "AWS bundle: ami-build (builds the ca_cluster_node AMI via Packer)"
         type: boolean
         required: false
+      aws_bundle_object_persistence:
+        description: "AWS bundle: object-persistence (S3 objects only, ~free)"
+        type: boolean
+        required: false
       azure_enabled:
         description: "Azure (overrides REAL_CLOUD_TESTS_AZURE_ENABLED for this run only)"
         type: boolean
@@ -47,6 +51,10 @@ on:
         required: false
       azure_bundle_key_vault:
         description: "Azure bundle: key-vault (azure_key_vault_ca_provider)"
+        type: boolean
+        required: false
+      azure_bundle_object_persistence:
+        description: "Azure bundle: object-persistence (Blob objects only, ~free)"
         type: boolean
         required: false
       gcp_enabled:
@@ -61,6 +69,16 @@ on:
         description: "GCP bundle: privateca (Certificate Authority Service)"
         type: boolean
         required: false
+      gcp_bundle_object_persistence:
+        description: "GCP bundle: object-persistence (GCS objects only, ~free)"
+        type: boolean
+        required: false
+      # Deliberately no oci_bundle_* inputs. The oci job drives its bundles
+      # from repository variables alone (see its `env:` block) — including the
+      # object-persistence bundle added for
+      # .kiro/specs/cloud-object-persistence/ task 17. Adding dispatch inputs
+      # for OCI would mean changing how every OCI bundle is selected, not just
+      # the new one, so the difference is preserved rather than smoothed over.
       oci_enabled:
         description: "OCI (not yet implemented — see doc/TODO.md Cloud Provider Support)"
         type: boolean
@@ -165,6 +183,12 @@ jobs:
       BUNDLE_EC2_QUORUM: ${{ (github.event.inputs.aws_bundle_ec2_quorum == 'true') || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED == 'true') }}
       BUNDLE_CA_CLUSTER: ${{ (github.event.inputs.aws_bundle_ca_cluster == 'true') || (github.event.inputs.aws_bundle_ca_cluster == null && vars.REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED == 'true') }}
       BUNDLE_CA_CLUSTER_RPC_TLS: ${{ (github.event.inputs.aws_bundle_ca_cluster_rpc_tls == 'true') || (github.event.inputs.aws_bundle_ca_cluster_rpc_tls == null && vars.REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED == 'true') }}
+      # .kiro/specs/cloud-object-persistence/ task 17. Unlike the three
+      # bundles above this one launches nothing — it writes, reads and
+      # deletes objects under a single prefix of an existing bucket — so it
+      # contributes no meaningful wall-clock to this job's 360-minute budget
+      # and runs on both matrix legs rather than being pinned to x64.
+      BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.aws_bundle_object_persistence == 'true') || (github.event.inputs.aws_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED == 'true') }}
       # ccache >=4.0 defaults to ~/.cache/ccache, not ~/.ccache — without
       # this, the Restore/Save ccache steps below (path: ~/.ccache) never
       # see what ccache actually wrote. See ci.yml's build-and-test job for
@@ -188,9 +212,21 @@ jobs:
       # the script at all. See this job's sibling guard in the azure job for
       # the real occurrence that motivated adding these.
       - name: Fail closed if no test bundle is enabled
-        if: ${{ env.BUNDLE_EC2_QUORUM != 'true' && env.BUNDLE_CA_CLUSTER != 'true' && env.BUNDLE_CA_CLUSTER_RPC_TLS != 'true' }}
+        if: ${{ env.BUNDLE_EC2_QUORUM != 'true' && env.BUNDLE_CA_CLUSTER != 'true' && env.BUNDLE_CA_CLUSTER_RPC_TLS != 'true' && env.BUNDLE_OBJECT_PERSISTENCE != 'true' }}
         run: |
-          echo "::error::The AWS job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set one or more of REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED, or pass the aws_bundle_* workflow_dispatch inputs." >&2
+          echo "::error::The AWS job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set one or more of REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED / REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED, or pass the aws_bundle_* workflow_dispatch inputs." >&2
+          exit 1
+
+      # The bucket is an operator-owned prerequisite — the engine reads and
+      # writes objects and never administers storage — so an unset variable
+      # can only surface as the suite's exit-77 skip, which the run step
+      # below converts into a failure. Failing here instead names the
+      # variable rather than leaving a scavenger hunt, and it does so before
+      # the ~1 hour build rather than after it.
+      - name: Fail closed if the object-persistence bucket variable is unset
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' && vars.AWS_OBJECT_PERSISTENCE_BUCKET == '' }}
+        run: |
+          echo "::error::The object-persistence bundle is enabled but the AWS_OBJECT_PERSISTENCE_BUCKET repository variable is unset. Run scripts/ci-cloud-credentials/aws/provision-object-persistence-bucket.sh and set the variable it prints." >&2
           exit 1
 
       - name: Configure AWS credentials (OIDC)
@@ -325,6 +361,45 @@ jobs:
               exit 1
             fi
           done
+
+      # Separate from the guard above because this binary has its own
+      # configure-time gate (Kconfig AWS_S3_PERSISTENCE, which
+      # tests/CMakeLists.txt reads as _KYTHIRA_GATE_AWS_S3_PERSISTENCE) —
+      # a build with the three real-EC2 binaries present and this one absent
+      # is a defconfig question, not a find_package one, and the message has
+      # to say so.
+      - name: Fail closed if the object-persistence test binary is missing
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' }}
+        run: |
+          if [ ! -x "build/tests/aws_s3_object_persistence_real_test" ]; then
+            echo "::error::aws_s3_object_persistence_real_test was not built — check AWSSDK_FOUND and Kconfig AWS_S3_PERSISTENCE at configure time." >&2
+            exit 1
+          fi
+
+      # Deliberately the FIRST bundle to run, ahead of the three real-EC2
+      # ones. This job mints its credentials at the top and the EC2 bundles
+      # can hold the runner for hours; those suites re-federate as they go
+      # (KYTHIRA_AWS_WEB_IDENTITY_ROLE_ARN below), but this one takes the
+      # static one-hour session credentials as they are. Running it last
+      # would reproduce the expired-credential failure the azure job
+      # documents, for a suite that finishes in under a minute.
+      #
+      # Exit 77 is the suite's "not configured" skip. In CI that is a
+      # misconfiguration, not a skip — the bundle was explicitly enabled —
+      # so it is converted into a loud failure rather than a silent green.
+      - name: Run object-persistence bundle (S3)
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' }}
+        env:
+          KYTHIRA_AWS_S3_BUCKET: ${{ vars.AWS_OBJECT_PERSISTENCE_BUCKET }}
+          KYTHIRA_AWS_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+        run: |
+          rc=0
+          ./build/tests/aws_s3_object_persistence_real_test --log_level=test_suite || rc=$?
+          if [ $rc -eq 77 ]; then
+            echo "::error::The suite skipped for want of configuration, but this bundle was enabled. Check the credentials step, AWS_OBJECT_PERSISTENCE_BUCKET, and that the CI role carries the object-persistence policy." >&2
+            exit 1
+          fi
+          exit $rc
 
       # aws_quorum_manager_real_ec2_test's own RealEc2Fixture re-resolves
       # the AMI via ec2:DescribeImages in its constructor, which Boost.Test
@@ -592,6 +667,8 @@ jobs:
     env:
       BUNDLE_QUORUM_MANAGER: ${{ (github.event.inputs.azure_bundle_quorum_manager == 'true') || (github.event.inputs.azure_bundle_quorum_manager == null && vars.REAL_CLOUD_TESTS_AZURE_QUORUM_MANAGER_ENABLED == 'true') }}
       BUNDLE_KEY_VAULT: ${{ (github.event.inputs.azure_bundle_key_vault == 'true') || (github.event.inputs.azure_bundle_key_vault == null && vars.REAL_CLOUD_TESTS_AZURE_KEY_VAULT_ENABLED == 'true') }}
+      # .kiro/specs/cloud-object-persistence/ task 17.
+      BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.azure_bundle_object_persistence == 'true') || (github.event.inputs.azure_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_AZURE_OBJECT_PERSISTENCE_ENABLED == 'true') }}
       CCACHE_DIR: /home/runner/.ccache
 
     steps:
@@ -618,10 +695,24 @@ jobs:
       # runs but skips its cases, whereas here the workflow step itself is
       # disabled by `if:` and the script is never invoked.
       - name: Fail closed if no test bundle is enabled
-        if: ${{ env.BUNDLE_QUORUM_MANAGER != 'true' && env.BUNDLE_KEY_VAULT != 'true' }}
+        if: ${{ env.BUNDLE_QUORUM_MANAGER != 'true' && env.BUNDLE_KEY_VAULT != 'true' && env.BUNDLE_OBJECT_PERSISTENCE != 'true' }}
         run: |
-          echo "::error::The Azure job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_AZURE_QUORUM_MANAGER_ENABLED and/or REAL_CLOUD_TESTS_AZURE_KEY_VAULT_ENABLED, or pass the azure_bundle_* workflow_dispatch inputs. See scripts/ci-cloud-credentials/azure/README.md." >&2
+          echo "::error::The Azure job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_AZURE_QUORUM_MANAGER_ENABLED, REAL_CLOUD_TESTS_AZURE_KEY_VAULT_ENABLED and/or REAL_CLOUD_TESTS_AZURE_OBJECT_PERSISTENCE_ENABLED, or pass the azure_bundle_* workflow_dispatch inputs. See scripts/ci-cloud-credentials/azure/README.md." >&2
           exit 1
+
+      # Both values, not one: azure_blob_client addresses
+      # https://<account>.blob.core.windows.net/<container>/..., so an unset
+      # account and an unset container are different misconfigurations and
+      # naming only the first would send an operator back here twice. See the
+      # aws job's equivalent guard for why this fails before the build.
+      - name: Fail closed if the object-persistence variables are unset
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' && (vars.AZURE_OBJECT_PERSISTENCE_ACCOUNT == '' || vars.AZURE_OBJECT_PERSISTENCE_CONTAINER == '') }}
+        run: |
+          fail=0
+          [ -z "${{ vars.AZURE_OBJECT_PERSISTENCE_ACCOUNT }}" ] && { echo "::error::AZURE_OBJECT_PERSISTENCE_ACCOUNT repository variable is unset but the object-persistence bundle is enabled." >&2; fail=1; }
+          [ -z "${{ vars.AZURE_OBJECT_PERSISTENCE_CONTAINER }}" ] && { echo "::error::AZURE_OBJECT_PERSISTENCE_CONTAINER repository variable is unset but the object-persistence bundle is enabled." >&2; fail=1; }
+          echo "Run scripts/ci-cloud-credentials/azure/provision-object-persistence-container.sh and set the variables it prints." >&2
+          exit $fail
 
       - name: Install system dependencies
         run: |
@@ -719,6 +810,19 @@ jobs:
             fi
           done
 
+      # Its own guard, and its own message: this binary's configure-time gate
+      # is Kconfig AZURE_BLOB_PERSISTENCE, which additionally depends on
+      # HTTP_TRANSPORT_TLS — azure_blob_client speaks the Blob REST API over
+      # httplib rather than taking a storage-SDK dependency (task 0.6), so a
+      # TLS-less build loses this suite while leaving the two above intact.
+      - name: Fail closed if the object-persistence test binary is missing
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' }}
+        run: |
+          if [ ! -x "build/tests/azure_blob_object_persistence_real_test" ]; then
+            echo "::error::azure_blob_object_persistence_real_test was not built — check KYTHIRA_HAS_AZURE_SDK and Kconfig AZURE_BLOB_PERSISTENCE (which depends on HTTP_TRANSPORT_TLS) at configure time." >&2
+            exit 1
+          fi
+
       # Deliberately placed here, immediately before the test-running steps,
       # not at the top of the job before the build: a real run (PR #125)
       # logged in here first thing, then took ~84 minutes to cold-build the
@@ -740,6 +844,33 @@ jobs:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_CI_SUBSCRIPTION_ID }}
+
+      # First of the three, immediately after the login, for the reason the
+      # login step's own comment gives: the AAD session this job mints is
+      # short-lived, and this suite finishes in under a minute where the
+      # quorum-manager one can run for ten. It is also the only bundle here
+      # that is not CTest-registered — object_persistence_real_support.hpp
+      # explains why — so it is invoked by name rather than through
+      # run-real-cloud-suite.sh, the same contract the alibaba and oci jobs
+      # follow.
+      #
+      # Exit 77 is the suite's "not configured" skip, converted to a loud
+      # failure: the bundle was explicitly enabled, so a skip is a
+      # misconfiguration and a silently-green job is indistinguishable from a
+      # passing one.
+      - name: Run object-persistence bundle (Blob)
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' }}
+        env:
+          KYTHIRA_AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_OBJECT_PERSISTENCE_ACCOUNT }}
+          KYTHIRA_AZURE_BLOB_CONTAINER: ${{ vars.AZURE_OBJECT_PERSISTENCE_CONTAINER }}
+        run: |
+          rc=0
+          ./build/tests/azure_blob_object_persistence_real_test --log_level=test_suite || rc=$?
+          if [ $rc -eq 77 ]; then
+            echo "::error::The suite skipped for want of configuration, but this bundle was enabled. Check the login step, AZURE_OBJECT_PERSISTENCE_ACCOUNT/_CONTAINER, and that AZURE_CI_CLIENT_ID holds Storage Blob Data Contributor on that account — an Owner role does NOT grant blob data access." >&2
+            exit 1
+          fi
+          exit $rc
 
       - name: Run quorum-manager bundle
         if: ${{ env.BUNDLE_QUORUM_MANAGER == 'true' }}
@@ -797,6 +928,8 @@ jobs:
     env:
       BUNDLE_QUORUM_MANAGER: ${{ (github.event.inputs.gcp_bundle_quorum_manager == 'true') || (github.event.inputs.gcp_bundle_quorum_manager == null && vars.REAL_CLOUD_TESTS_GCP_QUORUM_MANAGER_ENABLED == 'true') }}
       BUNDLE_PRIVATECA: ${{ (github.event.inputs.gcp_bundle_privateca == 'true') || (github.event.inputs.gcp_bundle_privateca == null && vars.REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED == 'true') }}
+      # .kiro/specs/cloud-object-persistence/ task 17.
+      BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.gcp_bundle_object_persistence == 'true') || (github.event.inputs.gcp_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_GCP_OBJECT_PERSISTENCE_ENABLED == 'true') }}
       CCACHE_DIR: /home/runner/.ccache
     steps:
       - name: Checkout
@@ -811,9 +944,18 @@ jobs:
       # See the azure job's equivalent guard for the real occurrence that
       # motivated these; the same hole exists in every provider job.
       - name: Fail closed if no test bundle is enabled
-        if: ${{ env.BUNDLE_QUORUM_MANAGER != 'true' && env.BUNDLE_PRIVATECA != 'true' }}
+        if: ${{ env.BUNDLE_QUORUM_MANAGER != 'true' && env.BUNDLE_PRIVATECA != 'true' && env.BUNDLE_OBJECT_PERSISTENCE != 'true' }}
         run: |
-          echo "::error::The GCP job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_GCP_QUORUM_MANAGER_ENABLED and/or REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED, or pass the gcp_bundle_* workflow_dispatch inputs. See scripts/ci-cloud-credentials/gcp/README.md." >&2
+          echo "::error::The GCP job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_GCP_QUORUM_MANAGER_ENABLED, REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED and/or REAL_CLOUD_TESTS_GCP_OBJECT_PERSISTENCE_ENABLED, or pass the gcp_bundle_* workflow_dispatch inputs. See scripts/ci-cloud-credentials/gcp/README.md." >&2
+          exit 1
+
+      # See the aws job's equivalent guard: the bucket is an operator-owned
+      # prerequisite, so an unset variable can only surface as the suite's
+      # exit-77 skip after a full build. Name it here instead.
+      - name: Fail closed if the object-persistence bucket variable is unset
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' && vars.GCP_OBJECT_PERSISTENCE_BUCKET == '' }}
+        run: |
+          echo "::error::The object-persistence bundle is enabled but the GCP_OBJECT_PERSISTENCE_BUCKET repository variable is unset. Run scripts/ci-cloud-credentials/gcp/provision-object-persistence-bucket.sh and set the variable it prints." >&2
           exit 1
 
       - name: Authenticate to Google Cloud (Workload Identity Federation)
@@ -927,6 +1069,45 @@ jobs:
             fi
           done
 
+      # Its own guard because its dependency is a different one: this suite
+      # needs google-cloud-cpp's *storage* component, which Kconfig GCP_STORAGE
+      # finds independently of the compute components the two binaries above
+      # need. The vcpkg gcp feature installs both, so the failure this catches
+      # is a defconfig that turned GCP_STORAGE(_PERSISTENCE) off, not a stale
+      # cache — and the message has to point at the right one.
+      - name: Fail closed if the object-persistence test binary is missing
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' }}
+        run: |
+          if [ ! -x "build/tests/gcp_gcs_object_persistence_real_test" ]; then
+            echo "::error::gcp_gcs_object_persistence_real_test was not built — check that google-cloud-cpp::storage resolved and Kconfig GCP_STORAGE_PERSISTENCE is on at configure time." >&2
+            exit 1
+          fi
+
+      # Runs before the two long bundles: this job authenticates at the top,
+      # ahead of a build that can take an hour from cold, so the shortest
+      # suite goes first and the WIF credentials are at their freshest when
+      # it does. Invoked by name, not through run-real-cloud-suite.sh — the
+      # object-persistence suites are deliberately never CTest-registered
+      # (object_persistence_real_support.hpp says why), so there is no label
+      # to select.
+      #
+      # GCS rate-limits mutations of a single object to roughly 1/s
+      # (spike-notes.md Finding 19); the latency case already spaces its
+      # samples for that, so this step needs no throttling of its own.
+      - name: Run object-persistence bundle (GCS)
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' }}
+        env:
+          KYTHIRA_GCS_BUCKET: ${{ vars.GCP_OBJECT_PERSISTENCE_BUCKET }}
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_REAL_CLOUD_TESTS_PROJECT }}
+        run: |
+          rc=0
+          ./build/tests/gcp_gcs_object_persistence_real_test --log_level=test_suite || rc=$?
+          if [ $rc -eq 77 ]; then
+            echo "::error::The suite skipped for want of configuration, but this bundle was enabled. Check the workload-identity credentials, GCP_OBJECT_PERSISTENCE_BUCKET, and that the CI service account holds an object-level binding ON THAT BUCKET." >&2
+            exit 1
+          fi
+          exit $rc
+
       - name: Run quorum-manager bundle (Compute Engine + MIG)
         if: ${{ env.BUNDLE_QUORUM_MANAGER == 'true' }}
         env:
@@ -974,8 +1155,15 @@ jobs:
         || (github.event.inputs.oci_enabled == null && vars.REAL_CLOUD_TESTS_OCI_ENABLED == 'true'))
 
     env:
+      # Repository variables only, with no workflow_dispatch counterpart —
+      # unlike the aws/azure/gcp jobs above. That is this job's existing
+      # convention and the object-persistence bundle keeps it: giving one
+      # bundle a dispatch input and not the others would make "how do I turn
+      # this on for a single run?" have two answers in the same job.
       BUNDLE_INSTANCE_POOL: ${{ vars.REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED == 'true' }}
       BUNDLE_CERTIFICATES: ${{ vars.REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED == 'true' }}
+      # .kiro/specs/cloud-object-persistence/ task 17.
+      BUNDLE_OBJECT_PERSISTENCE: ${{ vars.REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED == 'true' }}
       CCACHE_DIR: /home/runner/.ccache
 
     steps:
@@ -986,8 +1174,9 @@ jobs:
       # "green because nothing ran" failure this project keeps finding.
       - name: Fail if no bundle is enabled
         run: |
-          if [ "${BUNDLE_INSTANCE_POOL}" != "true" ] && [ "${BUNDLE_CERTIFICATES}" != "true" ]; then
-            echo "::error::The OCI job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED and/or REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED." >&2
+          if [ "${BUNDLE_INSTANCE_POOL}" != "true" ] && [ "${BUNDLE_CERTIFICATES}" != "true" ] \
+             && [ "${BUNDLE_OBJECT_PERSISTENCE}" != "true" ]; then
+            echo "::error::The OCI job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED, REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED and/or REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED." >&2
             exit 1
           fi
 
@@ -1005,6 +1194,14 @@ jobs:
           fi
           if [ "${BUNDLE_CERTIFICATES}" = "true" ] && [ -z "${{ vars.OCI_CI_CERTIFICATE_AUTHORITY_ID }}" ]; then
             echo "::error::OCI_CI_CERTIFICATE_AUTHORITY_ID repository variable is unset but the certificates bundle is enabled." >&2; fail=1
+          fi
+          # No bucket is provisioned for this bundle: it reuses
+          # kythira-ci-artifacts, which the heartbeat bundle already created
+          # and already grants the CI group object access to. The variable
+          # still has to be set, because the suite names the bucket and this
+          # job must not guess it.
+          if [ "${BUNDLE_OBJECT_PERSISTENCE}" = "true" ] && [ -z "${{ vars.OCI_OBJECT_PERSISTENCE_BUCKET }}" ]; then
+            echo "::error::OCI_OBJECT_PERSISTENCE_BUCKET repository variable is unset but the object-persistence bundle is enabled (set it to kythira-ci-artifacts unless a separate bucket was provisioned)." >&2; fail=1
           fi
           exit $fail
 
@@ -1102,6 +1299,11 @@ jobs:
           # the pool image's Ubuntu 24.04 (see cmd/oci_heartbeat_writer/).
           [ "${BUNDLE_INSTANCE_POOL}" = "true" ] && targets="$targets oci_quorum_manager_real_test oci_heartbeat_writer_node"
           [ "${BUNDLE_CERTIFICATES}" = "true" ] && targets="$targets oci_certificates_provider_real_test"
+          # The only provider job that needs a target line for the
+          # object-persistence suite: aws/azure/gcp run `cmake --build build`
+          # over everything, whereas this job builds a named list precisely
+          # because none of its suites is CTest-registered.
+          [ "${BUNDLE_OBJECT_PERSISTENCE}" = "true" ] && targets="$targets oci_object_storage_persistence_real_test"
           # shellcheck disable=SC2086
           cmake --build build --target $targets
 
@@ -1219,9 +1421,39 @@ jobs:
             echo "KYTHIRA_OCI_COMPARTMENT_ID=${{ vars.OCI_CI_COMPARTMENT_ID }}"
             echo "KYTHIRA_OCI_INSTANCE_POOL_ID=${{ vars.OCI_CI_INSTANCE_POOL_ID }}"
             echo "KYTHIRA_OCI_CERTIFICATE_AUTHORITY_ID=${{ vars.OCI_CI_CERTIFICATE_AUTHORITY_ID }}"
+            echo "KYTHIRA_OCI_OBJECT_BUCKET=${{ vars.OCI_OBJECT_PERSISTENCE_BUCKET }}"
           } >> "$GITHUB_ENV"
           rm -f /tmp/oci-session-key.pem
           echo "UPST obtained (${#token} chars); session key exported to the suite environment."
+
+      # First bundle to run, immediately after the credentials step and ahead
+      # of the heartbeat publish, for the reason that step's own comment
+      # gives: the UPST is short-lived and this suite finishes in about a
+      # minute. `|| rc=$?`, not `; rc=$?` — run steps execute under `bash -e`,
+      # so a bare failing command ends the step before the rc check runs.
+      #
+      # ── READ THIS BEFORE TRUSTING A RED RUN OF THIS STEP ─────────────────
+      #
+      # This tenancy intermittently declines VALID Object Storage requests
+      # with `404 BucketNotFound` — measured at 3-16%, across
+      # PUT/GET/DELETE/LIST (spike-notes.md). Until that is understood, a
+      # failure here is ambiguous in a way the other four providers' are not:
+      # it may be a defect or it may be the tenancy. The honest response to
+      # red is to take the `opc-request-id` from the decline and work the
+      # compartment audit log — specifically checking whether a policy `where`
+      # clause was added, which broke this exact path once before
+      # (policies/heartbeat.txt). Re-running until green launders a real
+      # regression into a flake.
+      - name: Object Storage persistence bundle
+        if: env.BUNDLE_OBJECT_PERSISTENCE == 'true'
+        run: |
+          rc=0
+          ./build/tests/oci_object_storage_persistence_real_test --log_level=test_suite || rc=$?
+          if [ $rc -eq 77 ]; then
+            echo "::error::The suite skipped for want of configuration, but this bundle was enabled. Check the credentials step, OCI_OBJECT_PERSISTENCE_BUCKET, and that the CI group's Object Storage policy still covers the compartment." >&2
+            exit 1
+          fi
+          exit $rc
 
       # Requirement 4.4's artifact delivery: ship the on-instance heartbeat
       # binary to the kythira-ci-artifacts bucket and mint a short-lived
