@@ -1480,6 +1480,46 @@ jobs:
   # Deployment is split into `docs-deploy` below so that only the deploy half
   # needs Pages credentials and the `github-pages` environment. A PR build gets
   # the gate without touching a deployment.
+  # Guards a limit GitHub enforces at workflow-VALIDATION time, where nothing
+  # in this file's normal checks can see it. A workflow_dispatch block with
+  # more than 25 inputs makes the whole file invalid: the workflow stops being
+  # dispatchable AND stops running on its schedule, and it surfaces only as a
+  # zero-job run whose name is the file path — never as a PR check.
+  #
+  # That happened. PR #257 took real-cloud-tests.yml from 24 inputs to 27, all
+  # of its checks passed, it merged, and the real-cloud workflow was dead on
+  # main until this guard's fix landed. A comment would not have caught it,
+  # because there was one place to look and no reason to look there.
+  workflow-input-limits:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: No workflow may declare more than 25 workflow_dispatch inputs
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          LIMIT = 25
+          bad = False
+          for path in sorted(glob.glob('.github/workflows/*.yml')):
+              with open(path) as fh:
+                  doc = yaml.safe_load(fh)
+              # PyYAML resolves the bare `on:` key to the boolean True.
+              triggers = doc.get(True) or doc.get('on') or {}
+              dispatch = (triggers or {}).get('workflow_dispatch') or {}
+              inputs = (dispatch or {}).get('inputs') or {}
+              n = len(inputs)
+              if n:
+                  print(f"{path}: {n} workflow_dispatch input(s)")
+              if n > LIMIT:
+                  print(f"::error file={path}::{n} workflow_dispatch inputs exceeds "
+                        f"GitHub's limit of {LIMIT}. The workflow will fail validation "
+                        f"and stop running entirely, including on its schedule.")
+                  bad = True
+          sys.exit(1 if bad else 0)
+          PY
+
   docs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
