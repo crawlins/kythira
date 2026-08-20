@@ -3,6 +3,92 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (August 19, 2026)
+
+- **Cloud key-object persistence lands, on all five providers, live-verified**
+  (`.kiro/specs/cloud-object-persistence/`, tasks 1-18; operator documentation
+  `doc/cloud_object_persistence.md`). Raft state — term, vote, log, snapshot —
+  stored as individual objects in a cloud object store, with **one engine
+  generic over five stores** rather than five sibling engines:
+  `object_store_persistence_engine<Store>` over a new
+  `kythira::key_object_store` concept, plus `aws_s3_client`,
+  `azure_blob_client`, `gcp_gcs_client`, `oci_object_storage_client` and the
+  existing `alibaba_oss_client`. `alibaba_oss_persistence_engine` became an
+  instantiation and kept its name, its constructor and its tests — which is how
+  the hoist was verified: the existing suites, including the real one against a
+  live bucket, pass **unmodified**.
+  - **All five pass the same five checks from one shared file**
+    (`tests/object_persistence_real_cases.hpp`), so "S3 passes" and "GCS
+    passes" are the same claim rather than five copies that drift. Written per
+    provider this would have been five copies of the same reasoning — the
+    fencing case especially.
+  - **The real tier paid for itself immediately: it found two shipped OCI
+    defects, either of which alone made OCI object persistence non-functional
+    against the real service**, and both invisible to 51 passing OCI unit
+    cases. A wrong endpoint suffix (`domain_suffix_for` defaults unknown
+    services to `.oci.oraclecloud.com`; Object Storage needs the bare form), so
+    every request failed TLS hostname verification — invisible because every
+    unit case sets `endpoint_override`, which replaces the host outright. And a
+    `/` percent-encoded in a query value, which OCI answers `401
+    NotAuthenticated`; every listing uses a prefix ending in `/`, so **every
+    `list_keys` call failed** and the engine could not recover a log.
+  - **The generalisation is the durable lesson, and it indicts a whole class of
+    test tier**: a signature-verifying mock checks the signature against the
+    bytes that *arrived*, so client and mock encode identically and **always
+    agree, however wrongly they both encode**. A signature bug of that shape is
+    only observable against a party that computes the signature independently.
+  - **`compare_and_swap` detects a second writer; it does not arbitrate** — a
+    live run corrected the opposite assumption the fencing case had encoded.
+    After a takeover the *stale* writer succeeds and the *new owner* is
+    refused, until the winner writes that same object. **Alibaba OSS cannot
+    fence at all**, confirmed live (`If-Match` on PutObject is `400
+    NotImplemented` for a current ETag as well as a stale one), so the fenced
+    engine over `alibaba_oss_client` does not compile — Requirement 9.8 firing
+    exactly as specified, against the provider the reference implementation
+    came from.
+  - **Measured in-region latency now exists** where the spec had only a
+    cross-ocean upper bound: p50 128 ms (S3 `us-east-1`), 145 ms (GCS
+    `us-central1`), ~350 ms (OCI `us-phoenix-1`, Azure Blob `eastus`). Alibaba's
+    ~1.6 s is a **distance measurement, not a provider one** — its bucket is
+    `ap-southeast-1` and everyone else's is US — and `get_log_entry`'s
+    sub-microsecond result is a **memory-mirror hit, not a round trip**. Both
+    traps are labelled wherever the figures appear. **GCS additionally
+    rate-limits mutations of a single object to ~1/s**, where S3 took the
+    identical pattern unthrottled.
+  - **Teardown could not survive a signal.** `run_teardown` was installed as a
+    `std::signal` handler — undefined behaviour, since it allocates, does TLS
+    I/O and writes to `std::cout`. A real SIGTERM mid-request deadlocked it
+    against the allocator lock and **abandoned 48 objects in a shared bucket**.
+    Signals are now blocked and received by a dedicated `sigtimedwait` thread,
+    where that code is legal, and the sweep **loops until a LIST comes back
+    empty**, because a single pass provably leaks while the main thread keeps
+    writing (measured: one pass left 17). Verified with a real SIGTERM 25 s into
+    a live run: 75 objects deleted in 2 rounds, residual 0.
+  - **The emulator tier did not land, and each refusal was measured rather than
+    assumed.** `fake-gcs-server` returns **200 and deletes the object** for a
+    stale `ifGenerationMatch` on DELETE, so a fenced suite would go green while
+    the emulator destroyed objects a real bucket would have refused; its 404
+    body also differs from GCS's, so the only fix is widening the client's
+    absence whitelist — trading a real-service safety property for emulator
+    convenience. LocalStack's community S3 image was discontinued with
+    v2026.03 and the replacement is licensed. Azurite wants SharedKey, and
+    `azure_blob_client` is AAD-bearer-only by a recorded decision. **The rule
+    that decided all three: a tier that requires loosening production safety to
+    go green is not paying for itself, and one that produces false greens is
+    worse than not existing.**
+  - **CI wiring for all five providers** — an `object-persistence` bundle per
+    provider job in `.github/workflows/real-cloud-tests.yml` with a toggle, a
+    fail-closed variable guard and an exit-77-becomes-failure run step, plus a
+    least-privilege grant fragment per provisioner. OCI's carries **no `where`
+    clause, deliberately**: the obvious narrowing broke a *different*
+    principal's Object Storage access compartment-wide once already, presenting
+    as `404 BucketNotFound`.
+  - **Not verified, on any provider: durability-on-response.** Proving "a 2xx
+    means durable" requires killing the service. Every N1 cell in the
+    documentation is documentation — and OCI's is documentation that **does not
+    exist**: Oracle publishes no "durable before returning success" wording at
+    all, searched and not found.
+
 ### What Changed (August 17, 2026)
 
 - **Task 0's last three providers closed live: Azure Blob, GCS and OCI Object Storage** (`.kiro/specs/cloud-object-persistence/spike-notes.md` Findings 11-14, via three new probes in `scripts/object-store-probes/`). All three express **every** conditional primitive, conditional delete included — which closes the OCI cell design.md had marked unconfirmed and makes **four of the five providers able to carry `fencing_mode::compare_and_swap`; only Alibaba OSS cannot**. Every cell that needed a live service is now closed for all five providers, none by analogy: list-after-write ran 3 × 25 objects with an immediate LIST on each, complete every round.

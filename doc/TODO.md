@@ -2657,16 +2657,51 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   cost grounds (no Alibaba CA will be purchased); revivable — see the spec's
   Requirement 12.
 
-- [ ] **Cloud key-object persistence engines** — one
+- [x] **Cloud key-object persistence engines** — one
   `kythira::persistence_engine` (`include/raft/persistence.hpp`) per
   implemented cloud provider, backed by that provider's key-object store:
   AWS S3, Azure Blob Storage, GCP Cloud Storage, OCI Object Storage (whose
   bucket plumbing, `kythira-ci-artifacts`, already exists from the
   Requirement 4.4 heartbeat work), and the Alibaba OSS engine that already
   ships.
-  **The spec is written** (August 14, 2026):
-  `.kiro/specs/cloud-object-persistence/` — 19 requirements, 20 tasks, none
-  implemented. What remains under this bullet is the implementation.
+  **Done, August 19, 2026.** Spec:
+  `.kiro/specs/cloud-object-persistence/` — 19 requirements, 20 tasks, tasks
+  0-18 closed. Operator documentation: `doc/cloud_object_persistence.md`.
+
+  **Verification status: all five engines are live-verified against their
+  real services**, running the same five checks from one shared file
+  (`tests/object_persistence_real_cases.hpp`) so that "S3 passes" and "GCS
+  passes" are the same claim rather than five copies that drift.
+  Conditional writes, checksums, list-after-write, the fencing race,
+  backup/verify/restore and latency all passed live on S3 (`us-east-1`),
+  GCS (`us-central1`), Azure Blob (`eastus`, ZRS), OCI (`us-phoenix-1`) and
+  Alibaba OSS (`ap-southeast-1`). **What is NOT verified, on any provider,
+  is durability-on-response** — proving "a 2xx means durable" requires
+  killing the service — so every N1 cell in the documentation is
+  documentation, and OCI's is documentation that *does not exist*: Oracle
+  publishes no "durable before returning success" wording at all, searched
+  and not found.
+
+  **The tier paid for itself immediately.** It found two shipped OCI defects,
+  either of which alone made OCI object persistence non-functional against
+  the real service, and both invisible to 51 passing OCI unit cases: a wrong
+  endpoint suffix (invisible because every unit case sets
+  `endpoint_override`, which replaces the host outright) and a `/`
+  percent-encoded in a query value, which made **every** `list_keys` call
+  401. The generalisation is the durable lesson: a signature-verifying mock
+  checks the signature against the bytes that *arrived*, so client and mock
+  encode identically and always agree, however wrongly they both encode. A
+  signature bug of that shape is only observable against a party that signs
+  independently.
+
+  **Still owed (spec task 19):** the CI repository variables are documented
+  per provider but not set, and no dispatched real-cloud run has exercised
+  the new `object-persistence` bundles — so no least-privilege grant has yet
+  been exercised by a principal holding only it. The suites report p99
+  alongside p50 and only p50 was transcribed into the findings, so the
+  election-timeout sizing table's in-region row is a lower bound on the
+  floor rather than the floor.
+
   **What the spec decided**, since these were the open questions:
   - **One engine, five stores.** The Raft-correctness body — layout,
     20-digit padding, the in-memory mirror, mirror-after-acknowledgement
@@ -2683,18 +2718,24 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
     round costs four sequential durable writes, so
     `election_timeout_min ≥ 4 × p99(PUT) + rpc_rtt`, and sustained append
     throughput is bounded by one PUT round trip per entry per node. The only
-    measurement this project has is **~2-3 s per round trip** to
+    measurement the spec started with was **~2-3 s per round trip** to
     `ap-southeast-1` from a developer machine (spike-notes Finding 7) — a
     geography-dominated upper bound the spec forbids quoting as a production
-    number, with in-region measurement as a deliverable.
+    number. **In-region figures now exist** (spike-notes Finding 20): p50
+    128 ms on S3 `us-east-1`, 145 ms on GCS `us-central1`, ~350 ms on OCI and
+    Azure Blob. Alibaba's ~1.6 s remains a **distance** measurement, not a
+    provider one, and is still not quotable as either.
   - **Per-provider consistency and conditional-write tables**, with an
     explicit confirmed-vs-OPEN column. S3 and GCS document strong
-    read-after-write *and* list-after-write explicitly; **list-after-write
-    is OPEN for Azure, OCI and OSS**, and closing it is a spike item,
-    empirically as well as documentarily, because a lagging listing is a
-    silently short log. Azure's durability-on-response depends on the
-    account's redundancy mode (ZRS is the only one documented as
-    synchronous to all replicas).
+    read-after-write *and* list-after-write explicitly; list-after-write was
+    OPEN for Azure, OCI and OSS and is **now closed empirically on all
+    five** — 25 objects under a fresh prefix, LIST immediately, three rounds,
+    complete every round. For Azure and OCI the run *is* the evidence, since
+    neither vendor publishes a listing-specific statement, and the tables say
+    so rather than borrowing S3's wording. Azure's durability-on-response
+    depends on the account's redundancy mode (ZRS is the only one documented
+    as synchronous to all replicas), which is account configuration the
+    engine does not read and cannot enforce.
   - **Fencing**: compare-and-swap on `term`/`voted_for` — the safety
     chokepoint a second writer cannot avoid — plus create-only preconditions
     on log appends, which cost nothing and catch the one corruption path the
@@ -2704,9 +2745,15 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
     coordinate. Azure
     Blob leases were considered and rejected. Where a provider cannot
     express the precondition it is a **compile error**, never a silent
-    degradation — and **Alibaba OSS may be that provider** (only
-    `x-oss-forbid-overwrite` is confirmed, and it is documented as silently
-    ignored under bucket versioning).
+    degradation — and **Alibaba OSS is that provider, confirmed live**:
+    `If-Match` on PutObject is `400 NotImplemented` for a *current* ETag as
+    well as a stale one, so there is no ETag-predicated write to fence on.
+    `alibaba_oss_client` satisfies `key_object_store` and not
+    `conditional_key_object_store`, and the fenced engine over it does not
+    compile. A live run also corrected the spec's own understanding of what
+    the fence buys: `compare_and_swap` **detects** a second writer and does
+    not arbitrate — after a takeover the *stale* writer keeps succeeding and
+    the *new owner* is refused, until the winner writes that same object.
   - **Backup and restore are in scope**, as `object_store_backup` plus a
     `cmd/raft_object_backup` CLI, with two deliberately separate restore
     verbs — clone (same identity) and seed (new cluster from a snapshot,
@@ -2726,8 +2773,18 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   kept deliberate single-slot, no-fencing parity with
   `file_persistence_engine` precisely so the four decisions above could be
   made uniformly here.
-  **Nothing is implemented yet — this entry stays open until the engines
-  are.**
+  **All five engines are implemented and live-verified.** The one thing that
+  did *not* land is the emulator/mock tier for S3, Azure Blob and GCS, and
+  each of the three was refused for a measured reason rather than skipped:
+  LocalStack's community S3 image was discontinued March 2026 and the
+  replacement is licensed; Azurite authenticates with SharedKey and
+  `azure_blob_client` is AAD-bearer-only by a recorded decision;
+  `fake-gcs-server` returns **200 and deletes the object** for a stale
+  `ifGenerationMatch` on DELETE, so a fenced suite would go green while the
+  emulator destroyed objects a real bucket would have refused. The rule that
+  decided all three: **a tier that requires loosening production safety to go
+  green is not paying for itself, and one that produces false greens is worse
+  than not existing.**
 
 ### RPC Serializer Implementations
 
