@@ -1281,3 +1281,56 @@ August 12 breakage. The new constraint above also means a clean re-measurement
 will be harder to interpret than expected: if the mechanism is partly a cache,
 the rate may move slowly after the policy changes, and "it got better" over a
 short window will not be evidence.
+
+## Finding 25 — Pre-registration: the `kythira-ci` decline rate, N = 10 runs
+
+**Written before the first run was dispatched.** That is the whole point of
+this section. Dispatching *to measure* and re-running *until green* produce
+identical-looking rows in the actions list, and the only thing that separates
+them is a count fixed in advance by someone who did not yet know the outcome.
+Finding 23 asked for this rate as its step 2; Finding 24 made it cheap by
+putting every one of this principal's requests in a log with its status.
+
+### Protocol, fixed in advance
+
+| | |
+|---|---|
+| **N** | **exactly 10 dispatched runs** |
+| what | `real-cloud-tests.yml` on `main`, object-persistence bundle **alone**, every other provider and bundle explicitly `false` so nothing launches |
+| principal | `kythira-ci-wif` via GitHub OIDC → UPST, i.e. group `kythira-ci` |
+| measured from | the Object Storage data-plane service logs, **both** categories, over the union of the 10 runs' windows |
+| unit of measurement | **the individual request**, not the run — a run is a bundle of ~19 requests and one un-retried pre-flight, so run-level pass/fail measures the suite's shape rather than the tenancy's |
+| statistic | declined requests ÷ logged requests, with the per-verb split |
+
+### Stopping rule, fixed in advance
+
+**Exactly ten. No early stop, no extension.**
+
+- **Not stopped early if a run comes back green.** That is re-running until
+  green wearing a measurement's clothes.
+- **Not extended if the rate looks wrong.** Ten runs at ~19 requests is ~190
+  observations; at a ~10% rate that is a wide interval and the write-up must
+  say so rather than quietly buying precision with more runs after seeing the
+  answer.
+- **Runs that fail for any reason other than a `404 BucketNotFound` decline**
+  — a build break, a credentials-step failure, a runner problem — are **not
+  counted toward the ten and not counted in the denominator**, because they
+  produce no Object Storage requests to count. Each such run is listed
+  individually below with its reason. This is the one place the protocol has
+  give, so it is the one place a thumb could rest on the scale.
+
+### What each outcome would mean
+
+- **A rate near 10%**, consistent with the single-run 10.5% of Finding 24 and
+  the long-quoted 3-16%: the flake is stable and the `where`-clause test
+  (Finding 23 step 3) has a baseline to be compared against.
+- **A rate near zero**: something changed between August 19 and now, and the
+  first suspect is the observation itself — enabling service logs on the
+  bucket is a change to the bucket. That would be an awkward result and it is
+  named here in advance so it cannot be quietly dropped.
+- **A rate far above 16%**: the flake is worsening, and the priority order
+  changes.
+
+### Results
+
+*(appended after all ten runs completed — see below)*
