@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file telegraf_logger_test.cpp
 /// @brief Behavior tests for the Telegraf logger backend
 ///        (include/raft/telegraf_logger.hpp) with the injected sender seam:

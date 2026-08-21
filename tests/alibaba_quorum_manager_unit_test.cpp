@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file alibaba_quorum_manager_unit_test.cpp
 /// @brief `alibaba_ess_quorum_manager`'s construction contract, its tag-scan
 ///        NodeId assignment, its cluster isolation, decommission idempotency

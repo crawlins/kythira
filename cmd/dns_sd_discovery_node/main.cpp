@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP node for the rfc2136_dns_sd_discovery Docker integration test.
 //
 // Registers PTR + SRV + TXT (freshness) records under cluster.example.local

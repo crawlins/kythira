@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Property 5: Optional Dependency Isolation
 # (.kiro/specs/stdexec-future-backend/, Requirements 4.2, 4.3)
 #

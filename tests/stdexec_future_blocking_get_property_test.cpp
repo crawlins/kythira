@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 9: stdexec Future Blocking Get
 // Correctness**
 // For any stdexec-backed Future<T>, get() should block only until the

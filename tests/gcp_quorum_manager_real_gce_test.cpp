@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #define BOOST_TEST_MODULE gcp_quorum_manager_real_gce_test
 #include <boost/test/unit_test.hpp>
 

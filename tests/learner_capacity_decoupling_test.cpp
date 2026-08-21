@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Tests for decoupling learner capacity from the voting target:
 // .kiro/specs/non-voting-nodes/requirements.md, Requirement 2.4-2.6, 3.4.
 //

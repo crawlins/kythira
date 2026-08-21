@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file grpc_transport_impl.cpp
 /// @brief Translation-unit anchor for the header-only gRPC transport.
 ///

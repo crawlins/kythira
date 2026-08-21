@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #include "test_timeout_scale.hpp"
 /**
  * Property-based test for CoAP multicast message delivery

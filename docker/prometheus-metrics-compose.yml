@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # docker/prometheus-metrics-compose.yml — one chaos_node instance exposing
 # the Prometheus scrape endpoint, plus a real Prometheus server scraping it.
 #

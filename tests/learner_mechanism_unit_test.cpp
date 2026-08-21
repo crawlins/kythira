@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Tests for the learner (non-voting node) mechanism this feature is built on:
 // serialization round-trip, election exclusion, and the add_learner()/
 // remove_learner() admission and removal entry points.

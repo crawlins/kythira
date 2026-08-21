@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Feature: grpc-transport
 //
 // Property + unit tests that need no live gRPC server: protobuf round-trip

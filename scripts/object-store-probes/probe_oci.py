@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """Task 0 probes for OCI Object Storage (.kiro/specs/cloud-object-persistence/).
 
 Cells closed here:

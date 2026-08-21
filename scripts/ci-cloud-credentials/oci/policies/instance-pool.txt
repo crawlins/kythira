@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Bundle: instance-pool
 # CTest binary: oci_quorum_manager_real_test
 # Toggle: REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED

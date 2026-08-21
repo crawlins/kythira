@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Creates everything GitHub Actions CI needs to authenticate to Google Cloud
 # via Workload Identity Federation — no service-account JSON key is ever
 # generated or stored as a GitHub secret. Creates (if absent):

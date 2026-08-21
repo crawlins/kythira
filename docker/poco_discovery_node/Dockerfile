@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive

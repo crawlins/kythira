@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 //! Minimal C FFI over the `lakers` EDHOC crate (RFC 9528), covering exactly
 //! what Kythira's coap-transport-security OSCORE bootstrap needs:
 //! Initiator (coap_client) and Responder (coap_server) roles for the

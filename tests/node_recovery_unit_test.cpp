@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: membership-change, Requirement 8**
 // `initialize_from_storage()` recovery scenarios: a node reloads its durable
 // state (term, log, snapshot, and — since a snapshot or the log may carry a

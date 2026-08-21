@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file loki_logger_test.cpp
 /// @brief Behavior tests for the Loki logger backend
 ///        (include/raft/loki_logger.hpp) with the injected http_poster_fn

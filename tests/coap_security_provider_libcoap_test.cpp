@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #include "test_timeout_scale.hpp"
 // Exercises the real-libcoap (LIBCOAP_AVAILABLE) code paths of every
 // coap_security_provider that coap_dtls_rpk_test.cpp / coap_oscore_

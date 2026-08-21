@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 10: Cross-Backend Concept
 // Compliance**
 // For any generic function templated purely on the concepts in

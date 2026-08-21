@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # no_cloud_defconfig — every cloud provider off, nothing else changed.
 #
 # This is the configuration Requirement 16.3 is written about, made

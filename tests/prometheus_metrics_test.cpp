@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file prometheus_metrics_test.cpp
 /// @brief Behavior tests for the Prometheus metrics backend
 ///        (include/raft/prometheus_metrics.hpp): concept protocol mapping,

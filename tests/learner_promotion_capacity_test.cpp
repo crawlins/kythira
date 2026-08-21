@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Tests for the promotion capacity criterion:
 // .kiro/specs/non-voting-nodes/requirements.md, Requirement 3.
 //

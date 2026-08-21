@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # ci_full_defconfig — the feature set every non-GCP CMake-configuring CI job
 # resolves (the four Build & Test legs, Coverage, ThreadSanitizer, both
 # Full-suite legs; coap-flake-measure.yml configures without any Kconfig

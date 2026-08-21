@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 1: Concept Regenericization
 // Preserves Folly Compliance**
 // For any wrapper type in the existing Folly backend that satisfied a

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 if(NOT folly_FOUND OR NOT Boost_FOUND OR NOT httplib_FOUND)
     return()
 endif()

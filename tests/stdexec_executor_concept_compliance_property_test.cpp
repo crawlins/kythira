@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 4: Executor/Scheduler Shim
 // Correctness**
 // For any function submitted through scheduler_executor_shim::add(), the

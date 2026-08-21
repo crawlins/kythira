@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Example: Basic Connectionless Communication
 // This example demonstrates:
 // 1. Creating a network simulator with DefaultNetworkTypes

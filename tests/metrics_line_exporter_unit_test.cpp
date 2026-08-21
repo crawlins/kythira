@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file metrics_line_exporter_unit_test.cpp
 /// @brief Mechanics tests for the shared line-protocol export engine
 ///        (include/raft/metrics_line_exporter.hpp) with an injected sender —

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Property tests for .kiro/specs/peer2peer-log-replication/ Task 21
 // (design.md Property 6, Requirements 11.1, 11.2, 11.3, 11.5).
 // remove_server_revokes_catch_up_eligibility_immediately in the sibling

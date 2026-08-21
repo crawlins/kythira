@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Docker quorum healing tests (Req 19)
 //
 // These tests exercise the full self-healing loop against real Docker

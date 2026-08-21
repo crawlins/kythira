@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 //! End-to-end smoke test for the FFI surface, using the same test vectors as
 //! upstream lakers' own `test_handshake` (lib/src/lib.rs). Exercises the
 //! bindings exactly as the C++ side will: two independent handles, byte

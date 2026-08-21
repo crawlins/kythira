@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Raft examples
 
 # This CMakeLists.txt builds Raft example programs that demonstrate various

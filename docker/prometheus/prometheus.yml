@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # docker/prometheus/prometheus.yml — example scrape configuration for the
 # Prometheus metrics backend (include/raft/prometheus_metrics.hpp,
 # doc/prometheus_metrics_backend.md).

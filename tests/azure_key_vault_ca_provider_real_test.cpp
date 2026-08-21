@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file azure_key_vault_ca_provider_real_test.cpp
 /// @brief Real-Azure integration tests for `azure_key_vault_ca_provider`.
 ///        Signs against a real, pre-provisioned Key Vault RSA key.

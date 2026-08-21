@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Example: Demonstrating HTTP transport for Raft consensus with transport_types concept
 // This example shows how to:
 // 1. Set up HTTP client and server with transport_types concept

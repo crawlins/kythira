@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP node for the poco_peer_discovery Docker integration test.
 //
 // Reads config from environment variables, registers with poco_peer_discovery,

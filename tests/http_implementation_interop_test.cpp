@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file http_implementation_interop_test.cpp
 /// @brief One HTTP implementation's client against a *different*
 ///        implementation's server (`doc/TODO.md`, "client-implementation ×

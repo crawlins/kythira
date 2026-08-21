@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend** — cross-backend fidelity. Runs the
 // same value/exception/collection scenario through both the Folly backend
 // (kythira::Future/Promise/FutureFactory/FutureCollector,

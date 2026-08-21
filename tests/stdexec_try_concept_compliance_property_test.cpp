@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 6: stdexec Try Fidelity**
 // For any sender completing with a value, error, or stopped signal,
 // into_try should produce a Try<T> whose hasValue()/hasException()/

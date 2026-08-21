@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Pre-commit hook: format check, static analysis, and coverage ratchet.
 #
 # Step 1 — clang-format (fast, staged *.cpp/*.hpp):

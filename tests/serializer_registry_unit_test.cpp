@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file serializer_registry_unit_test.cpp
 /// @brief Unit tests for `single_serializer_registry` / `multi_serializer_registry`
 ///        and the media-type negotiation they implement

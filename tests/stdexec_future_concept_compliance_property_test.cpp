@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 10: Cross-Backend Concept
 // Compliance** (breadth slice — confirms Future<T>/future_continuation/
 // future_transformable hold across a variety of value types, mirroring

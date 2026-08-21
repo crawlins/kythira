@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """Task 0 probes for Alibaba OSS (.kiro/specs/cloud-object-persistence/).
 
 Answers, against the live service rather than the documentation:

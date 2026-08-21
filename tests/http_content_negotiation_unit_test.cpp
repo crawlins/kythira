@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file http_content_negotiation_unit_test.cpp
 /// @brief The negotiation pieces the HTTP transports share
 ///        (`.kiro/specs/transport-multi-serializer/`, Tasks 9 and 10):

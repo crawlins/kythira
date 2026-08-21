@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Tests for the "blocked learner remains active and is reconsidered later"
 // property: .kiro/specs/non-voting-nodes/requirements.md, Requirement 5.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: ca-cluster-rpc-mtls**
 // Real sockets, real OpenSSL: a 2-node tls_tcp_rpc_client/server pair
 // completing a genuine mutual-TLS handshake and one RPC round trip under

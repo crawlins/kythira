@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """Google Cloud Storage request helper — JSON API with an ADC bearer token.
 
 **The JSON API deliberately, not the XML one.** `gcp_gcs_client` is specified

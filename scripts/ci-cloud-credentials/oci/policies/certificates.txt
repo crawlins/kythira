@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Bundle: certificates
 # CTest binary: oci_certificates_provider_real_test
 # Toggle: REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED

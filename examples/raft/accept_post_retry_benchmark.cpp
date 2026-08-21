@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Measures what the media-type negotiation retry actually costs on the wire,
 // and what `Accept-Post` saves -- the number doc/TODO.md's own entries
 // ("Accept-Post layered on top of the 415 retry") recorded as **not

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Assert that a ctest run actually did the work its exit code implies.
 #
 # A green ctest exit code is not evidence that any particular test ran, and a

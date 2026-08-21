@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file azure_quorum_manager_real_test.cpp
 /// @brief Real-Azure integration tests for `azure_vm_quorum_manager` and
 ///        `azure_vmss_quorum_manager`. Provisions actual ARM resources

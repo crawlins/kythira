@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Coverage tests for simulator_network.hpp targeting the paths not reached by other tests:
  *   - move constructor and move assignment of simulator_network_server

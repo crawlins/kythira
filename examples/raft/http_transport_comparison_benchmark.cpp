@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // A real, measured throughput/latency comparison of this project's RPC
 // transports -- cpp-httplib (include/raft/http_transport.hpp),
 // Boost.Beast (include/raft/beast_http_transport.hpp), Proxygen

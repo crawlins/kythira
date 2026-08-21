@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file alibaba_quorum_manager_mock_test.cpp
 /// @brief `alibaba_ess_quorum_manager` driven end to end against
 ///        `alibaba_mock_server` (`.kiro/specs/alibaba-cloud-services/`,

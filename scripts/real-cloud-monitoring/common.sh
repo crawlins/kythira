@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # scripts/real-cloud-monitoring/common.sh — shared machinery for the
 # cloud-vendor monitoring real-service tests (doc/TODO.md "Metrics
 # Backends", cloud-vendor entries, real-cloud tier; operator docs in

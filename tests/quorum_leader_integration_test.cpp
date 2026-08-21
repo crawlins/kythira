@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Integration tests for the leader quorum-management loop (Req 16)
 //
 // Uses a mock_quorum_manager that records calls to assess_quorum /

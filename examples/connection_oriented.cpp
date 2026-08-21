@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Example: Connection-Oriented Client-Server Communication
 // This example demonstrates:
 // 1. Server binding to a port and listening for connections

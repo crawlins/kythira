@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 13: Collective Operation
 // Fidelity**
 // For any vector of Future<T>, FutureCollector::collectAll should preserve

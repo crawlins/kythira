@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file async_scope_unit_test.cpp
 /// @brief Unit tests for `kythira::async_scope`.
 ///

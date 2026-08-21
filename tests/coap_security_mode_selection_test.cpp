@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.1, 9.2**
 // Each of the five coap_auth_mode values selects the correct

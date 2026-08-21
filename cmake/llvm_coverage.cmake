@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # cmake/llvm_coverage.cmake — cmake -P script invoked by the coverage targets.
 #
 # Required -D arguments:

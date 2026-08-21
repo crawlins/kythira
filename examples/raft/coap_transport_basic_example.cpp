@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Example: Demonstrating basic CoAP transport for Raft consensus
 // This example shows how to:
 // 1. Set up CoAP client and server for Raft communication

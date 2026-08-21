@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Multi-node ca_cluster_node coverage: brings up real ca_cluster_node
 // subprocesses (posix_spawn, matching the pattern already established by
 // ca_test_fixture.hpp / ca_service_serve_integration_test.cpp — there is no

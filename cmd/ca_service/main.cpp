@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // ca_service — provisions a shared root CA and per-service leaf certificates for
 // Docker/Podman multi-container test scenarios (oneshot mode), or serves them over
 // an authenticated HTTP API for cross-host use (--serve mode).

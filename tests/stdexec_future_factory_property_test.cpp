@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 11: Factory Operation
 // Fidelity**
 // For any value or exception, stdexec_backend::FutureFactory methods should

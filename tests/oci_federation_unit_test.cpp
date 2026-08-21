@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file oci_federation_unit_test.cpp
 /// @brief Instance Principal federation (`oci_federation.hpp`, Requirement
 ///        1.6) against a real local HTTP server standing in for both the

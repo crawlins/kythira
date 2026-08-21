@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Requirement 19.5/Property 9 (.kiro/specs/proxygen-http-transport/design.md)
 // -- and, satisfied as a direct consequence, .kiro/specs/boost-beast-http-transport/'s
 // own Task 15 (its stated prerequisite: a two-way cpp-httplib-vs-Beast

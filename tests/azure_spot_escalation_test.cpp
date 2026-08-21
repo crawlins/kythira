@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file azure_spot_escalation_test.cpp
 /// @brief Offline unit tests for the spot-first VM launch escalation used by
 ///        `tests/azure_quorum_manager_real_test.cpp`.

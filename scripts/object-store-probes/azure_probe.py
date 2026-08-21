@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """Azure Blob request helper — hand-rolled REST with an AAD bearer token.
 
 Written for the same reason as `aws_probe.py` and `oss_probe.py`: the probes

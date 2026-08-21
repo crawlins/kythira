@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Property 14: Backend Non-Interference (.kiro/specs/stdexec-future-backend/,
 // Requirement 11.4; also .kiro/specs/boost-future-backend/, Requirement
 // 8.5/Property 11, extended into this file per that spec's own Task 16

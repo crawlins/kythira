@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file oci_quorum_manager_mock_test.cpp
 /// @brief `oci_instance_pool_quorum_manager` driven end to end against
 ///        `oci_mock_server` (`.kiro/specs/oci-cloud-provider/`,

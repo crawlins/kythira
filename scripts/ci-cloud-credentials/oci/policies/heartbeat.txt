@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Bundle: heartbeat (Requirement 4.4 — nodes write their own
 # kythira-last-heartbeat tag via Instance Principal)
 # Consumer: oci_heartbeat_writer (include/raft/oci_heartbeat_writer.hpp),

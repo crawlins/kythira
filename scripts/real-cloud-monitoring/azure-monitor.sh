@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # scripts/real-cloud-monitoring/azure-monitor.sh — real-service test for
 # the Azure Monitor monitoring example config (doc/TODO.md "Metrics
 # Backends", Azure Monitor entry, real-cloud tier).

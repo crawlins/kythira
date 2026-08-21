@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Property 21 (Requirements 20.3, 20.5): IP identifiers never attempt
 // dns-01. For any csr_signing_options containing at least one IP address,
 // the ACME requests acme_certificate_provider sends for that identifier show

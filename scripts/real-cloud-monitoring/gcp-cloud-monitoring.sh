@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # scripts/real-cloud-monitoring/gcp-cloud-monitoring.sh — real-service test
 # for the GCP Cloud Monitoring monitoring example config (doc/TODO.md
 # "Metrics Backends", GCP Cloud Monitoring entry, real-cloud tier).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * End-to-end sanity check for ion_rpc_serializer over both the real HTTP
  * (cpp-httplib) and CoAP transports (.kiro/specs/ion-rpc-serializer/tasks.md,

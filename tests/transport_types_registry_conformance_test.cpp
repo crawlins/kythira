@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file transport_types_registry_conformance_test.cpp
 /// @brief Pins the `serializer_registry_type` requirement that Task 5 added to
 ///        `transport_types` (`.kiro/specs/transport-multi-serializer/`).

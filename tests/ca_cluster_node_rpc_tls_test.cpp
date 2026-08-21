@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: ca-cluster-rpc-mtls**
 // Multi-node ca_cluster_node coverage for the RPC-internal mTLS feature:
 // brings up real ca_cluster_node subprocesses started with ONLY a static

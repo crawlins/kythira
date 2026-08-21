@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 10: Cross-Backend Concept
 // Compliance** (SemiPromise<T> slice — see design.md's Correctness
 // Properties). Exercises SemiPromise<T>/SemiPromise<void> at the wrapper

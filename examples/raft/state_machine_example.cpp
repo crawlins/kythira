@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #include "raft/test_state_machine.hpp"
 #include "raft/examples/counter_state_machine.hpp"
 #include <iostream>

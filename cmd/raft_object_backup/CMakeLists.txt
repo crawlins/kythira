@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # cmd/raft_object_backup — the backup/restore CLI (Requirement 10.6).
 #
 # Built unconditionally, and that is the requirement rather than an oversight:

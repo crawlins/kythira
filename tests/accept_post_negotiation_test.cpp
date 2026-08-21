@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file accept_post_negotiation_test.cpp
 /// @brief `Accept-Post` as an optimisation on top of the 415 retry
 ///        (W3C Linked Data Platform 1.0 §7.1), over cpp-httplib.

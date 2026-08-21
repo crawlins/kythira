@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file oci_quorum_manager_unit_test.cpp
 /// @brief `oci_instance_pool_quorum_manager`'s construction contract, its
 ///        tag read-merge-write, and its fault points

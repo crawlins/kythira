@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file alibaba_oss_persistence_mock_test.cpp
 /// @brief `alibaba_oss_persistence_engine` driven end to end against
 ///        `alibaba_mock_server`'s OSS bucket

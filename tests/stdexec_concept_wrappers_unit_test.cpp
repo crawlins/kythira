@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend** — plain (non-property) unit test
 // mirroring folly_concept_wrappers_unit_test.cpp's structure: basic
 // construction/access/behavior checks for Try/Promise/Future, one

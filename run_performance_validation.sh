@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
 
 # Performance Validation Script for Future Conversion
 # This script runs all performance benchmarks and generates a comprehensive report

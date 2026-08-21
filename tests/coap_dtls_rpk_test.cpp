@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.3**
 // RPK peer-key match succeeds; mismatch is rejected (Requirement 3.2).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Example: Proxygen HTTP transport, side by side with the existing
 // cpp-httplib (http_transport_example.cpp) and Boost.Beast
 // (beast_transport_example.cpp) transports. All three are reached purely

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /*
  * Hand-written C header for lakers-kythira-ffi (vcpkg-overlays/lakers/ffi).
  * Keep in sync with ffi/src/lib.rs by hand — there is no cbindgen build
