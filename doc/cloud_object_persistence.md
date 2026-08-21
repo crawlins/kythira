@@ -17,13 +17,15 @@ This engine's write path is **one HTTP round trip per Raft log entry per
 node**, and that single fact decides most deployments:
 
 - Sustained append throughput per node cannot exceed roughly `1 / p50(PUT)`.
-  At the best measured figure here (128 ms) that is **under 8 entries/s**;
-  two to three orders of magnitude below a local NVMe write-ahead log.
+  Measured: **~35 entries/s** for a well-placed node (Azure Blob from inside
+  Azure) down to **~0.9 entries/s** for a cross-ocean one — two to three
+  orders of magnitude below a local NVMe write-ahead log either way.
 - Request charges scale **linearly with append rate**. A three-node cluster
   sustaining 100 entries/s costs roughly **$3,900/month in request charges
   alone**, before storage or egress.
 - Election-path latency is four sequential durable writes, which pushes
-  `election_timeout_min` up by `4 × p99(PUT)`.
+  `election_timeout_min` up by `4 × p99(PUT)` — measured at **≥122 ms** for a
+  well-placed node and **≥4.6 s** for a cross-ocean one.
 
 It is the right engine for a cluster whose state changes at human or
 configuration timescales — service registries, cluster membership, control
@@ -121,13 +123,60 @@ KYTHIRA_LATENCY provider=s3 op=append_log_entry samples=20 p50_ms=… p99_ms=…
 measured=client-side-around-engine-call
 ```
 
+**Two measurement positions, and they disagree by 2-12×.** Both are recorded
+because neither is "the" answer — which is the point.
+
+*From a developer machine* (August 19, 2026), the first figures this project
+had:
+
 | Provider | Region | `save_current_term` p50 | `append_log_entry` p50 |
 |---|---|---|---|
 | S3 | `us-east-1` | 128 ms | 128 ms |
 | GCS | `us-central1` | 145 ms | 113 ms |
 | OCI Object Storage | `us-phoenix-1` | 356 ms | 342 ms |
 | Azure Blob | `eastus` | 348 ms | 365 ms |
-| Alibaba OSS | `ap-southeast-1` | 1648 ms **(distance, not OSS — see below)** | 1476 ms **(ditto)** |
+| Alibaba OSS | `ap-southeast-1` | 1648 ms **(distance, not OSS)** | 1476 ms **(ditto)** |
+
+*From a GitHub-hosted CI runner* (August 21, 2026, run 32432380565) — closer
+to what a cloud-hosted node sees, and the first figures carrying a p99:
+
+| Provider | `save_current_term` p50 / p99 | `append_log_entry` p50 / p99 |
+|---|---|---|
+| Azure Blob | 28.7 / 30.4 ms **(in-provider — see below)** | 28.7 / 42.6 ms **(ditto)** |
+| S3 (x64) | 66.5 / 81.3 ms | 67.1 / 74.8 ms |
+| S3 (arm64) | 62.5 / 69.9 ms | 59.4 / 83.1 ms |
+| GCS | 135.1 / 153.2 ms | 121.0 / 255.0 ms |
+| Alibaba OSS | 1096.9 / 1140.5 ms **(distance, not OSS)** | 1090.3 / 1191.9 ms **(ditto)** |
+
+OCI is absent from the second table because its run did not complete — see
+[Verification status](#verification-status).
+
+**Three of these numbers are traps, and every one of them is a measurement
+position rather than a property of the service.**
+
+1. **Azure Blob's 28.7 ms is an in-provider measurement.** GitHub-hosted
+   runners run on Azure, so that row is a node talking to storage inside its
+   own provider's network. Reading it as "Azure Blob is 2× faster than S3 and
+   5× faster than GCS" would be exactly wrong — it measures proximity. It is
+   also, for that reason, the closest thing here to what a *correctly placed*
+   node sees on any provider: co-locate and the round trip collapses.
+2. **Alibaba's ~1.1 s is a cross-ocean distance measurement.** Its bucket is
+   `ap-southeast-1` and the runners are not. It says nothing about OSS.
+3. **`get_log_entry` measures sub-microsecond on every provider** (~0.00008 ms
+   p50). That is a memory-mirror hit, not a round trip.
+
+**The arm64 row is a deliberate negative result.** S3 on arm64 is within noise
+of x64, which is what should happen: this path is network-dominated and
+nothing in it branches on host architecture. The arm64 leg earns its place by
+compiling the suite, not by measuring anything new.
+
+**On the word "p99".** The suite takes 8 samples for `save_current_term` and
+20 for `append_log_entry`, and computes percentiles by *nearest rank, clamped*
+— deliberately not interpolating, because at these counts interpolation would
+invent precision the data does not carry. At 8 and 20 samples the clamp means
+**the reported p99 is the slowest observed request**, not a 99th percentile in
+any statistical sense. It is a useful worst-of-run; it is not a tail estimate,
+and a true tail over thousands of requests would very likely be worse.
 
 **Two numbers in the neighbourhood of this table are traps.**
 
@@ -160,27 +209,60 @@ election_timeout_min  ≥  4 × p99(PUT) + rpc_rtt + margin
 and the randomized election-timeout **range width** must be at least that same
 quantity, or nodes re-time out inside each other's elections and livelock.
 
-| p(PUT) | Floor on `election_timeout_min` | Verdict |
+| p99(PUT) | Floor on `election_timeout_min` | Verdict |
 |---|---|---|
-| ~3 s (the cross-ocean figure this repo measured before the real tier existed) | **≥ 12 s** | Consistent with the 9.6 s the Alibaba real tier observed for the term+vote case alone. Usable only for clusters that tolerate a 12 s+ leaderless window |
-| 128 ms (**measured p50, S3 `us-east-1`** — the fastest row above) | **≥ 512 ms** + RTT | The realistic shape for an in-region deployment. Treat as a **lower bound**: the rule wants p99, and p99 on an object store is materially worse than p50 |
+| ~3 s (the cross-ocean figure measured before the real tier existed) | **≥ 12 s** | Consistent with the 9.6 s the Alibaba real tier observed for the term+vote case alone. Usable only for clusters that tolerate a 12 s+ leaderless window |
+| **1141 ms** (Alibaba OSS, cross-ocean) | **≥ 4.6 s** + RTT | What a *badly placed* node costs you. Not a property of OSS |
+| **153 ms** (GCS, `us-central1`) | **≥ 612 ms** + RTT | |
+| **81 ms** (S3, `us-east-1`) | **≥ 325 ms** + RTT | |
+| **30 ms** (Azure Blob, **in-provider**) | **≥ 122 ms** + RTT | What a *well placed* node costs you — inside the range Raft deployments normally use. This is the configuration the engine is actually for |
 
-The second row replaces the hypothetical 40 ms placeholder the design carried
-before any measurement existed. It is still not the number the rule asks for —
-that needs p99 — and it is labelled rather than rounded into confidence.
+These replace the hypothetical 40 ms placeholder the design carried before any
+measurement existed, and they are real p99s rather than the p50-derived lower
+bounds this table carried until August 21, 2026.
+
+**Two caveats, and neither is small.** First, "p99" here is **the slowest of 8
+or 20 observations** — see the note under the latency tables — so it is a
+worst-of-run, not a tail estimate; a real tail would be worse. Second, the
+spread across those rows is **almost entirely network placement**, not
+provider choice: the fastest and slowest differ by 38×, and the two extremes
+are the same workload measured from inside the provider's network and from the
+other side of an ocean.
+
+The practical reading: **size against a p99 measured from where your nodes
+actually run**, and treat co-location as the single biggest lever on this
+number — larger than which of the five providers you pick.
 
 ### Throughput
 
 `kythira::persistence_engine` has no batch append, so sustained append
 throughput per node cannot exceed roughly `1 / p50(PUT)` entries per second:
 
-| Provider (p50 above) | Ceiling |
+From the **developer-machine** p50s:
+
+| Provider | Ceiling |
 |---|---|
 | S3 `us-east-1` | ~7.8 entries/s |
 | GCS `us-central1` | ~8.8 entries/s |
 | OCI `us-phoenix-1` | ~2.9 entries/s |
 | Azure Blob `eastus` | ~2.7 entries/s |
 | Alibaba OSS `ap-southeast-1` | ~0.7 entries/s (**distance, not OSS**) |
+
+From the **CI-runner** p50s, which are closer to a cloud-hosted node:
+
+| Provider | Ceiling |
+|---|---|
+| Azure Blob (**in-provider**) | ~35 entries/s |
+| S3 | ~15 entries/s |
+| GCS | ~8 entries/s |
+| Alibaba OSS (**cross-ocean**) | ~0.9 entries/s |
+
+**Placement moves this ceiling by 38×, and provider choice barely moves it at
+all.** The two Azure rows are the same engine against the same service: ~2.7
+entries/s from across the internet, ~35 entries/s from inside the provider's
+network. No provider in this table is fast enough to change the conclusion —
+even the best row is two orders of magnitude below a local NVMe WAL — but a
+badly placed node gives up another order of magnitude on top.
 
 **GCS additionally rate-limits mutations of a single object to roughly 1/s**,
 per object. S3 took the identical pattern unthrottled. The engine's `term`,
@@ -529,8 +611,40 @@ not work around it.
 
 ## Verification status
 
-Written as of **August 19, 2026**, and to be updated as this changes rather
+Written as of **August 21, 2026**, and to be updated as this changes rather
 than written aspirationally.
+
+**Now also verified from CI, not only from a developer machine.** Run
+[32432380565](https://github.com/crawlins/kythira/actions/runs/32432380565)
+dispatched every provider's object-persistence bundle against its real
+service, under the least-privilege CI grants rather than an operator's
+credentials — which is a stronger claim than the earlier runs, because those
+authenticated as principals that already held broader policies:
+
+| Provider | CI result |
+|---|---|
+| AWS S3 (x64 **and** arm64) | **pass**, 5/5 |
+| Azure Blob | **pass**, 5/5 |
+| Alibaba OSS | **pass** |
+| GCS | **pass**, 5/5 on re-run ([32441129124](https://github.com/crawlins/kythira/actions/runs/32441129124)). The first attempt was 4/5: `backup_verify_restore_read_back` hit a Google-side `502` ("the server encountered a temporary error… please try again in 30 seconds") after the client's retry policy was exhausted |
+| OCI Object Storage | **did not run** — the read-only pre-flight was declined `404 BucketNotFound`, the tenancy flake below |
+
+**Those two failures were not the same kind of failure**, and acting on the
+difference is why one was re-run and the other was not. GCS was told by the
+service, in the service's own words, that the request failed temporarily — so
+a re-run was legitimate, and it passed 5/5. OCI was told that a bucket which
+plainly exists does not exist: a wrong answer whose cause is unknown, where
+re-running until green would launder the unknown away. **OCI has therefore not
+been re-run, and its cell above still says "did not run".**
+
+**A note on the GCS transient, which is a design observation rather than a
+defect.** The 502 exhausted the client's retry policy, and
+`object_persistence_options::write_retries` defaults to **1**. That default is
+right for the engine's hot path — and conditional writes are never retried at
+all, deliberately — but the failure landed in *restore*, which is a bulk
+unconditional write far from any Raft invariant. One retry is thin there
+against ordinary cloud transients. Raising it is a per-caller decision the
+option already supports; the default is not changed here.
 
 | Provider | Engine | Live-verified | Documentation-derived |
 |---|---|---|---|
