@@ -21,6 +21,7 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace metrics_scenario {
 
@@ -103,16 +104,37 @@ struct compose_fixture {
 
     /// Print `ps` for the compose project and the logs of every one of its
     /// containers to the test output.
-    auto dump_diagnostics() const -> void {
-        auto prefix = docker_chaos::os::compose_prefix();
-        auto ps_cmd = prefix;
-        ps_cmd.insert(ps_cmd.end(), {"-f", file, "ps", "-a"});
-        auto ps = docker_chaos::os::real_exec(ps_cmd);
-        BOOST_TEST_MESSAGE("compose ps -a:\n" << ps.out);
+    /// `compose ps` with `-a` where it is accepted, without it where it is
+    /// not. **`podman-compose` rejects `-a` outright** ("unrecognized
+    /// arguments: -a", exit 2), which made the whole diagnostic dump a
+    /// no-op under rootless Podman — so a startup failure printed an error
+    /// about `-a` instead of the container state and logs explaining why,
+    /// and the actual cause was invisible. That violated CLAUDE.md's
+    /// both-runtimes rule in the one code path whose entire job is
+    /// explaining a failure.
+    ///
+    /// Falling back rather than dropping `-a` everywhere: on Docker it is
+    /// what includes containers that already exited, which is precisely the
+    /// case being diagnosed.
+    [[nodiscard]] auto compose_ps(const std::vector<std::string>& extra) const
+        -> docker_chaos::os::CmdResult {
+        auto with_a = docker_chaos::os::compose_prefix();
+        with_a.insert(with_a.end(), {"-f", file, "ps", "-a"});
+        with_a.insert(with_a.end(), extra.begin(), extra.end());
+        auto result = docker_chaos::os::real_exec(with_a);
+        if (result.code == 0) return result;
 
-        auto ids_cmd = prefix;
-        ids_cmd.insert(ids_cmd.end(), {"-f", file, "ps", "-a", "-q"});
-        auto ids = docker_chaos::os::real_exec(ids_cmd);
+        auto without_a = docker_chaos::os::compose_prefix();
+        without_a.insert(without_a.end(), {"-f", file, "ps"});
+        without_a.insert(without_a.end(), extra.begin(), extra.end());
+        return docker_chaos::os::real_exec(without_a);
+    }
+
+    auto dump_diagnostics() const -> void {
+        auto ps = compose_ps({});
+        BOOST_TEST_MESSAGE("compose ps:\n" << ps.out);
+
+        auto ids = compose_ps({"-q"});
         std::size_t start = 0;
         while (start < ids.out.size()) {
             auto end = ids.out.find('\n', start);
