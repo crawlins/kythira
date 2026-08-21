@@ -71,6 +71,17 @@ install_collector() {
 start_collector() {
     local config="$1"
     _otelcol_log="${_otelcol_dir}/otelcol.log"
+    # Whether THIS config declares a logs pipeline, read from the config
+    # itself rather than tracked per caller. post_otlp_probe consults it:
+    # the OTLP receiver serves /v1/logs only when a logs pipeline exists,
+    # and 404s otherwise. See that function for what this prevents.
+    _otelcol_has_logs="$(python3 -c "
+import sys, yaml
+with open(sys.argv[1]) as fh:
+    doc = yaml.safe_load(fh) or {}
+pipelines = ((doc.get('service') or {}).get('pipelines') or {})
+print('1' if 'logs' in pipelines else '0')
+" "${config}")"
     "${_otelcol_dir}/otelcol-contrib" --config="${config}" >"${_otelcol_log}" 2>&1 &
     _otelcol_pid=$!
     for _ in $(seq 1 30); do
@@ -126,6 +137,26 @@ post_otlp_probe() {
      "attributes":[{"key":"run_id","value":{"stringValue":"${run_id}"}}]}]}}]}]}]}
 EOF
     echo "[monitoring] posted probe metric (run_id=${run_id})"
+
+    # Only when the config under test actually has a logs pipeline. The OTLP
+    # HTTP receiver serves /v1/logs only if one is configured and **404s
+    # otherwise**, so posting unconditionally killed every run of the one
+    # config that legitimately has no logs pipeline: `curl -fsS` returned 22
+    # and `set -e` ended the script before the metric assertion ran.
+    #
+    # That is exactly what happened to alibaba-cloudmonitor.sh on its first
+    # live run (August 20, 2026). CloudMonitor does not ingest logs at all —
+    # Alibaba's log product is Log Service — so that config ships a
+    # metrics-only pipeline **on purpose**, and its own header says so. Two
+    # correct decisions, in two files, that contradicted each other; nothing
+    # caught it because the real tier had never run.
+    #
+    # Skipping is announced rather than silent: a 404 from a config that DOES
+    # declare a logs pipeline is a real failure, and this must not hide it.
+    if [ "${_otelcol_has_logs:-0}" != "1" ]; then
+        echo "[monitoring] skipping probe log: this config declares no logs pipeline"
+        return 0
+    fi
     curl -fsS -X POST -H 'Content-Type: application/json' \
         "http://127.0.0.1:4318/v1/logs" -d @- <<EOF
 {"resourceLogs":[{"resource":{"attributes":[
