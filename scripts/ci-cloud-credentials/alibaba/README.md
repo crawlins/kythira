@@ -74,6 +74,50 @@ only for the `alibaba-monitoring` job.
 4. Enable via `REAL_CLOUD_TESTS_ALIBABA_MONITORING_ENABLED=true` (or the
    `alibaba_monitoring_enabled` dispatch input for a one-off run).
 
+## The Managed Prometheus instance, and the one grant that could not be scoped
+
+Provisioned August 20, 2026, after the account owner activated **Managed
+Service for Prometheus** in the console — there is no activation API, and
+`CreatePrometheusInstance` answers `400 ... please open the expert version`
+until it is done.
+
+- Instance `kythira-ci-cms` (`rw6e10e15a8a9853c1577a60e99d34`),
+  `ClusterType=remote-write`, `ap-southeast-1`.
+  **`PaymentType: POSTPAY_GB`** — billed by ingested volume, **no standing
+  instance fee**. `StorageDuration: 90` days.
+- Dedicated RAM user `kythira-ci-cms`, whose AccessKey pair is the repository
+  secret pair. It does nothing else.
+
+**Its policy is `arms:*` on `Resource: "*"`, and that is not laziness — it is
+the narrowest grant the service accepts.** Measured, in this order, against a
+real remote write each time:
+
+| Policy `Resource` | Remote write |
+|---|---|
+| `acs:arms:ap-southeast-1:<acct>:prometheus/<instance>` (+ `/*`) | **401** |
+| `acs:arms:ap-southeast-1:<acct>:*` | **401** |
+| `*` | **accepted** |
+
+So the remote-write endpoint does not honour resource-level authorization at
+all. Blast radius is contained by the *identity* instead — a dedicated user
+used for nothing else — because it cannot be contained by the policy. Anyone
+narrowing this must re-measure rather than assume; `arms:*` on `*` is the
+recorded working configuration.
+
+**Use the HTTPS remote-write URL even though the API hands back `http://`.**
+`GetPrometheusInstance` returns `RemoteWriteInterUrl` as `http://…/api/v3/write`;
+the same path over HTTPS completes a real TLS 1.2 handshake with a valid
+certificate for `ap-southeast-1.arms.aliyuncs.com`. That request carries the
+AccessKey as HTTP Basic, so the vendor's own URL would ship the key in
+cleartext. `ALIBABA_CMS_REMOTE_WRITE_URL` is stored as `https`.
+
+**The query endpoint does not enforce authentication.** Port 9090, no TLS, and
+unauthenticated *and* deliberately-wrong credentials both return `200` with a
+valid body — despite the instance reporting `EnableAuthFreeRead: false`. The
+query URL is effectively a capability URL and is stored as a repository
+*variable*, not a secret. One synthetic metric makes the stakes low; the point
+is that the flag does not describe the behaviour.
+
 ## Cost
 
 CloudMonitor 2.0 Prometheus ingestion is billed per sample; one metric per
