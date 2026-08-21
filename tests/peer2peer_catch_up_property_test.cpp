@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Property tests for .kiro/specs/peer2peer-log-replication/ Requirements 9.3,
 // 10.3/10.4 (partial), and 11 — exercised against the real network simulator
 // with static_peer2peer_replicator shared across nodes, matching design.md's

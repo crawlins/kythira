@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file telegraf_metrics_test.cpp
 /// @brief Behavior tests for the Telegraf metrics backend
 ///        (include/raft/telegraf_metrics.hpp): InfluxDB line-protocol

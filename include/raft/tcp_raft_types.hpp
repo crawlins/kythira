@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #pragma once
 
 // Assembles kythira::tcp_raft_types for use in chaos_node and integration tests.

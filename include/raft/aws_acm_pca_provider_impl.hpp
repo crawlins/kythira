@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #pragma once
 
 /// @file aws_acm_pca_provider_impl.hpp

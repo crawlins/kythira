@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: boost-future-backend, Property 6: thenValue/thenError Chaining**
 // **Feature: boost-future-backend, Property 7: Future Flattening**
 // **Feature: boost-future-backend, Property 8: delay/within Timing**

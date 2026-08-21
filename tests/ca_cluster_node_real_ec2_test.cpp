@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Real-EC2 coverage for the 3-AZ ca_cluster_node AWS deployment
 // (Requirement 17.12(b)). Unlike ca_cluster_node_localstack_test.cpp (which
 // can only verify the provisioning topology, since LocalStack's EC2 API is a

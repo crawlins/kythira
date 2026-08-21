@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Install the pre-commit hook (format check + coverage ratchet).
 # Run once after cloning: bash scripts/install-hooks.sh
 set -euo pipefail

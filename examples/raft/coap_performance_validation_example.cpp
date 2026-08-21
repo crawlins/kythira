@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file coap_performance_validation_example.cpp
  * @brief Performance validation and optimization example for CoAP transport

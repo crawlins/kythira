@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // ca_cluster_node — a Kythira Raft cluster member replicating a CA's root
 // material, issuance ledger, and revocation list via `ca_state_machine`, and
 // exposing the same client-facing HTTP API as `ca_service --serve`

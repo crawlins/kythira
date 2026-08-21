@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Builds docker/ca_cluster_node/Dockerfile's "builder" stage and copies the
 # compiled ca_cluster_node binary out. Never runs the container — only
 # creates, copies from, and removes it — so this script's only dependency on

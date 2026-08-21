@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """OCI Object Storage request helper — request signatures written by hand.
 
 Written independently of `include/raft/oci_signing.hpp` for the same reason

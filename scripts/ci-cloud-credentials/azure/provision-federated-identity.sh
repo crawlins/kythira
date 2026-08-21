@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Provisions the Azure AD App Registration + Federated Identity Credential
 # (Workload Identity Federation — no client secret, mirroring the AWS
 # provisioner's OIDC role) that

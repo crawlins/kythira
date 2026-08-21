@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Example: Demonstrating DTLS security configuration for CoAP transport
 // This example shows how to:
 // 1. Configure DTLS/CoAPS for secure communication

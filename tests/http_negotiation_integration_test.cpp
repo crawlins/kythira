@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file http_negotiation_integration_test.cpp
 /// @brief End-to-end content negotiation against a live `cpp_httplib_server`
 ///        (`.kiro/specs/transport-multi-serializer/`, Task 9.3-9.5).

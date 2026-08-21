@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Runs INSIDE the Packer builder instance (uploaded by the "file"
 # provisioner, executed by the "shell" provisioner as root via sudo).
 # Installs software only — no secrets, no per-node configuration.

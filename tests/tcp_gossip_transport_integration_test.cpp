@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Integration test: real TCP sockets, real background gossip thread, multiple
 // tcp_gossip_peer2peer_replicator instances constructed in a single test
 // process on distinct loopback ports. Deliberately NOT spawning subprocesses

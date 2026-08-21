@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """Load every configs/*_defconfig against Kconfig, fail on any parse warning.
 
 Catches drift between Kconfig edits and stale defconfigs (Requirement 5.4).

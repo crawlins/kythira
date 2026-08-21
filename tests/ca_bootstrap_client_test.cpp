@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Property 20: pinned-fingerprint bootstrap accepts only the exact expected
 // root, over TWO independently-TLS'd ca_test_fixtures (each with its own
 // "listener CA" — deliberately DIFFERENT from the fixture's own certificate-

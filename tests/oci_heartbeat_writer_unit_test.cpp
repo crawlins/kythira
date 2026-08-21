@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file oci_heartbeat_writer_unit_test.cpp
 /// @brief `oci_heartbeat_writer` against `oci_mock_server` (Requirement 4.4).
 ///

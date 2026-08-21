@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # scripts/real-cloud-monitoring/aws-cloudwatch.sh — real-service test for
 # the AWS CloudWatch monitoring example config (doc/TODO.md "Metrics
 # Backends", AWS CloudWatch entry, real-cloud tier).

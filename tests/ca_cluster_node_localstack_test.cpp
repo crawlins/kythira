@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // LocalStack coverage for the 3-AZ ca_cluster_node AWS deployment
 // (Requirement 17.12(b), documented in docker/ca_cluster_node/README.md).
 //

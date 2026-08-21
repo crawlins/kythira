@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # scripts/real-cloud-monitoring/alibaba-cloudmonitor.sh — real-service test
 # for the Alibaba Cloud CloudMonitor monitoring example config (doc/TODO.md
 # "Metrics Backends", Alibaba Cloud CloudMonitor entry, real-cloud tier).

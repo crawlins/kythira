@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for tcp_gossip_peer2peer_replicator's merge/prune logic — pure
 // logic, no network I/O. See .kiro/specs/peer2peer-gossip-transport/,
 // Requirement 10.1.

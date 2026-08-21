@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file oci_certificates_provider_real_test.cpp
 /// @brief `oci_certificates_provider` against a **real OCI Certificate
 ///        Authority** (`.kiro/specs/oci-cloud-provider/`, Requirements

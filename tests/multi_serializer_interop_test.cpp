@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file multi_serializer_interop_test.cpp
 /// @brief Multi-serializer <-> single-serializer interoperability over HTTP
 ///        (`.kiro/specs/transport-multi-serializer/`, Task 15).

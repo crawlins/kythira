@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Stage 1 — build ca_cluster_node
 FROM ubuntu:24.04 AS builder
 

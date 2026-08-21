@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Orchestrates a full ca_cluster_node AMI build: extract the binary, then
 # packer init/validate/build. See .kiro/specs/ca-cluster-node-ami/.
 set -euo pipefail

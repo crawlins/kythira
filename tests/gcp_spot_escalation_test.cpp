@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file gcp_spot_escalation_test.cpp
 /// @brief Offline unit tests for the spot-first, zone-laddering launch
 ///        escalation used by `tests/gcp_quorum_manager_real_gce_test.cpp`.

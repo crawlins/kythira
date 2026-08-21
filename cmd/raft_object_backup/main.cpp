@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file main.cpp
 /// @brief `raft_object_backup` — create, inspect and restore backups of a Raft
 ///        node's cloud-object state (Requirement 10.6).

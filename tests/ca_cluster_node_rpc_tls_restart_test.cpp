@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: ca-cluster-rpc-mtls, Property 5: A Restarted, Already-Cutover
 // Node Needs No Bootstrap Credential**
 // Cuts over a 3-node cluster (bootstrap credential only), deletes the

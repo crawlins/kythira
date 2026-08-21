@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file victoriametrics_metrics_test.cpp
 /// @brief Behavior tests for the VictoriaMetrics metrics backend
 ///        (include/raft/victoriametrics_metrics.hpp) with the injected

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file single_serializer_regression_test.cpp
 /// @brief Single-serializer configurations are unchanged by the introduction of
 ///        registries (`.kiro/specs/transport-multi-serializer/`, Task 13).

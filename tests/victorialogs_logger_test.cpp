@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file victorialogs_logger_test.cpp
 /// @brief Behavior tests for the VictoriaLogs logger backend
 ///        (include/raft/victorialogs_logger.hpp) with the injected

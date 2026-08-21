@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Prune GitHub Actions caches that can no longer be restored by anything.
 #
 # This repository sits at GitHub's 10 GB per-repository cache ceiling (measured

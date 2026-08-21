@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file netdata_metrics_test.cpp
 /// @brief Behavior tests for the NetData metrics backend
 ///        (include/raft/netdata_metrics.hpp): StatsD line rendering through

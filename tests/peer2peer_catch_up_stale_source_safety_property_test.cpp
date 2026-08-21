@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Property test for .kiro/specs/peer2peer-log-replication/ Task 19
 // (design.md Property 3, Requirements 6.4/6.5): entries fetched via
 // peer-to-peer catch-up from a source that turns out to hold an abandoned,

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Every docker/*/Dockerfile that builds from source does `COPY . .` from the
 # repository root. Host-side CMake build directories (created by ci.yml or
 # any local `cmake -B build`) bake the host's absolute source path into

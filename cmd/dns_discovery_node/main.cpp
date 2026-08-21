@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP node for the rfc2136_ldns_discovery Docker integration test.
 //
 // Registers an A record for this container under a shared DNS name via

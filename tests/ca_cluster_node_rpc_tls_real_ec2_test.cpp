@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Real-EC2 coverage for the RPC-TLS-enabled 3-AZ ca_cluster_node AWS
 // deployment (.kiro/specs/ca-cluster-rpc-mtls-real-aws/). Extends
 // ca_cluster_node_real_ec2_test.cpp's plain-TCP three_az_network_fixture

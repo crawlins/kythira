@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 if(NOT LIBLDNS_FOUND OR NOT folly_FOUND OR NOT httplib_FOUND)
     message(STATUS "dns_discovery_node: skipped (requires libldns + folly + httplib)")
     return()

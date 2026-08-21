@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Kconfig integration -- see .kiro/specs/kconfig-integration/ for the full
 # design. Included at the very top of the root CMakeLists.txt, before any
 # find_package() call: resolves a Kconfig .config (from -DKYTHIRA_KCONFIG=,

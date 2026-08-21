@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """The one rule every object-store probe in this directory encodes.
 
 **Read the status code, not the effect.** The first version of the OSS probe

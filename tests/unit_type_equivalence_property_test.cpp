@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend, Property 3: Unit Type Equivalence**
 // For any void-valued operation, results obtained through kythira::unit on
 // either backend should be observably equivalent to the pre-existing

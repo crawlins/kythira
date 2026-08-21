@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # docker/cloud-monitoring/gcp-cloud-monitoring-collector-config.yaml —
 # example OpenTelemetry Collector config routing Kythira's telemetry to
 # Google Cloud (doc/TODO.md "Metrics Backends", GCP Cloud Monitoring entry;

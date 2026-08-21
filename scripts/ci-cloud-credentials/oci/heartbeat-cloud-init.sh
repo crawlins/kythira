@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Static cloud-init user_data for the kythira CI pool's instance
 # configuration (Requirement 4.4 on-instance heartbeat).
 #

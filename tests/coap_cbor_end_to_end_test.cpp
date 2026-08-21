@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * End-to-end sanity check for cbor_rpc_serializer over the real CoAP
  * transport (.kiro/specs/cbor-rpc-serializer/tasks.md, task 10.3).

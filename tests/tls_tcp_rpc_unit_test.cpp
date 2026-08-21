@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: ca-cluster-rpc-mtls, Property 4: Dual-Trust Never Accepts a
 // Weaker Credential Than Either Alone**
 // Unit coverage for tls_rpc_trust_policy::accepts() under all three named

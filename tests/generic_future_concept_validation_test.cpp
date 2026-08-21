@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #define BOOST_TEST_MODULE generic_future_concept_validation_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>

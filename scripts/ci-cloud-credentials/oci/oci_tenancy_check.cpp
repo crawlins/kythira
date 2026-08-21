@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file oci_tenancy_check.cpp
 /// @brief Validate OCI Request Signing v1 — and, progressively, an OCI
 ///        tenancy's readiness for the real-OCI test tier — against the real

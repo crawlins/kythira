@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Creates the Azure Blob storage account and container the cloud key-object
 # persistence real tier writes to (.kiro/specs/cloud-object-persistence/
 # task 17): private, TLS 1.2, and **ZRS** — see the durability note below.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file coap_negotiation_failure_test.cpp
 /// @brief CoAP content-negotiation branches driven by a raw libcoap peer
 ///        (`.kiro/specs/transport-multi-serializer/`, Tasks 15 and 16, CoAP half).

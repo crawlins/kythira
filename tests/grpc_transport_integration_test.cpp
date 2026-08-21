@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Feature: grpc-transport
 //
 // End-to-end integration tests for the gRPC transport

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file coap_final_integration_validation.cpp
  * @brief Final integration and validation example for CoAP transport

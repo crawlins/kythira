@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file oci_http_client_unit_test.cpp
 /// @brief `oci_http_client` against a real local HTTP server
 ///        (`.kiro/specs/oci-cloud-provider/`, Requirements 1.7-1.9).

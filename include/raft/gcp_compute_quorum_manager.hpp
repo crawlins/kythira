@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #pragma once
 
 /// @file gcp_compute_quorum_manager.hpp

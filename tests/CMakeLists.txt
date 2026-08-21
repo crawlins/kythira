@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Test configuration
 find_package(Boost REQUIRED COMPONENTS unit_test_framework)
 

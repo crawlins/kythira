@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file negotiation_failure_test.cpp
 /// @brief Content-negotiation failure paths on the **client** side
 ///        (`.kiro/specs/transport-multi-serializer/`, Task 16).

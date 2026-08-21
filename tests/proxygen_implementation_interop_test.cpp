@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file proxygen_implementation_interop_test.cpp
 /// @brief The Proxygen half of the client-implementation ×
 ///        server-implementation interop grid (`doc/TODO.md`,

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Creates the OCI IAM group and policy that Kythira's real-OCI tests run as,
 # scoped to exactly the --bundles given.
 #

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # The on-instance heartbeat process (Requirement 4.4) — see main.cpp.
 #
 # Gated by the caller (root CMakeLists.txt) on the same condition as the OCI

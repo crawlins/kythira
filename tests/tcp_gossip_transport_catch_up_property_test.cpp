@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // End-to-end property tests wiring real tcp_gossip_peer2peer_replicator
 // instances as peer2peer_replicator_type for a multi-node node<Types>
 // cluster whose Raft RPC transport remains the existing in-process network

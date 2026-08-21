@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #pragma once
 
 // clang++/aarch64 workaround for libstdc++'s <ext/opt_random.h>: see the

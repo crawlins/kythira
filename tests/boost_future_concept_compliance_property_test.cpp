@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: boost-future-backend, Property 2: boost Try Fidelity**
 // **Feature: boost-future-backend, Property 3: Promise Exactly-Once Fulfillment**
 // **Feature: boost-future-backend, Property 4: Broken Promise Never Hangs**

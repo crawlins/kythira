@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: stdexec-future-backend**
 // single_shot_channel<T> is the highest-risk new primitive in this spec —
 // it bridges Folly's push-style Promise::setValue (fulfilled from

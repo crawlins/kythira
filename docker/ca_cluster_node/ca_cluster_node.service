@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Sample systemd unit for running one ca_cluster_node instance directly on a
 # Linux host (e.g. an EC2 instance) — the manual half of the 3-AZ deployment
 # path (Requirement 17.12a): deploy this same unit to three EC2 instances,

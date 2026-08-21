@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit test for tcp_gossip_transport's wire encode/decode round-trip.
 // See .kiro/specs/peer2peer-gossip-transport/, Requirements 5.1/5.2, 10.1.
 //

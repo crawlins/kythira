@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # docker/cloudwatch-localstack-compose.yml — one chaos_node instance
 # emitting OTLP to a real OpenTelemetry Collector configured per the AWS
 # CloudWatch example config, delivering into a LocalStack CloudWatch.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Test for leave_multicast_group() implementation
 // **Feature: coap-transport, Task 15.2: leave_multicast_group stub implementation**
 

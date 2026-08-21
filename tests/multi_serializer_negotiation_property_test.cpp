@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file multi_serializer_negotiation_property_test.cpp
 /// @brief Two-serializer content negotiation over a live HTTP transport
 ///        (`.kiro/specs/transport-multi-serializer/`, Task 14).

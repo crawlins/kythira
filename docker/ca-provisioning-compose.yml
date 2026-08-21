@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Demonstrates ca_service (oneshot mode) provisioning a shared root CA and
 # per-service leaf certificates into a named volume before dependent node
 # containers start. The mtls-node1/mtls-node2 services are illustrative stubs

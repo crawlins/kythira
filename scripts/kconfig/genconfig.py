@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """Translate a Kconfig .config/defconfig into CMake and C++ glue.
 
 Not a fork or vendor of Kconfiglib -- a thin wrapper around its public API

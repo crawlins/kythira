@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """Alibaba OSS request helper with V4 (OSS4-HMAC-SHA256) header signing.
 
 The signing here is written from the canonical form documented in

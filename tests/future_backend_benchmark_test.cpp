@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // **Feature: future-backend-performance-benchmark**
 // CTest-registered regression suite for the Folly vs. stdexec future
 // backend benchmark harness. Every assertion here is a hardware-independent

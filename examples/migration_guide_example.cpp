@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file migration_guide_example.cpp
  * @brief Example demonstrating migration from old future patterns to generic futures

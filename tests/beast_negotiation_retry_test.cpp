@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file beast_negotiation_retry_test.cpp
 /// @brief The 415 media-type retry over `boost_beast_client`
 ///        (`.kiro/specs/transport-multi-serializer/`, Requirement 7.3).

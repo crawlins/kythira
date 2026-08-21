@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file main.cpp
 /// @brief The on-instance heartbeat process (Requirement 4.4).
 ///

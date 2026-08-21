@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Helper function for creating example executables
 function(add_network_example example_name source_file)
     add_executable(${example_name} ${source_file})

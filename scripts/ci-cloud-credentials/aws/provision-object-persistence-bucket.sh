@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Creates the S3 bucket the cloud key-object persistence real tier writes to
 # (.kiro/specs/cloud-object-persistence/ task 17): private, encrypted, with a
 # lifecycle rule that expires the test prefix so a shared CI bucket cannot

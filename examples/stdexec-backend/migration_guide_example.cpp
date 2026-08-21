@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file migration_guide_example.cpp
  * @brief Side-by-side comparison of the Folly-backed (default) and

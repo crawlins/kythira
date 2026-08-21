@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Creates, once and idempotently, the static IAM role + instance profile
 # that tests/aws_quorum_manager_real_ec2_test.cpp's launched EC2 instances
 # use — separate from, and unrelated to, provision-oidc-role.sh (which

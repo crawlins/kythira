@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 // Property test for .kiro/specs/peer2peer-log-replication/ Task 18
 // (Requirement 9.3): a follower that falls behind after a real network
 // partition converges via peer-to-peer catch-up once reconnected, rather

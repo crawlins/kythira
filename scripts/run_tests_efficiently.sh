@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # Efficient Test Execution Script
 # This script demonstrates the recommended workflow for running and analyzing tests
 

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file error_handler_async_retry_property_test.cpp
  * @brief Property-based tests for async retry without blocking

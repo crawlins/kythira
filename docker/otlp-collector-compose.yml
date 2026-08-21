@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # docker/otlp-collector-compose.yml — one chaos_node instance emitting real
 # OTLP/HTTP JSON metrics/logs to a real OpenTelemetry Collector container.
 #

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 # provision-oidc-role.sh — create the RAM identity GitHub Actions assumes for
 # Alibaba Cloud real-cloud tests, scoped to exactly the bundles given.
 #

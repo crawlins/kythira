@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file oci_signing_unit_test.cpp
 /// @brief OCI Request Signing Version 1 — canonical form and header shape
 ///        (`.kiro/specs/oci-cloud-provider/`, Requirements 1.4-1.6).

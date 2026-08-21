@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file future_void_specialization_future_returning_callback_test.cpp
  * @brief Comprehensive tests for void specialization with Future-returning callbacks

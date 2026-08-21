@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
 """AWS S3 request helper with SigV4 signing.
 
 Written for the same reason as `oss_probe.py`: these probes need the **raw

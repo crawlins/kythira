@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 #include <raft/json_serializer.hpp>
 
 #define BOOST_TEST_MODULE rpc_serializer_concept_test

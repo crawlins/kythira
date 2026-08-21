@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
 /// @file grpc_transport_example.cpp
 /// @brief End-to-end demonstration of the gRPC Raft transport
 /// (.kiro/specs/grpc-transport/): server/client setup with
