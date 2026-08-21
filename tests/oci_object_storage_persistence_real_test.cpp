@@ -28,10 +28,22 @@
 // ── READ THIS BEFORE TRUSTING A RESULT FROM THIS SUITE ──────────────────────
 //
 // The CI tenancy intermittently declines VALID requests with `404
-// BucketNotFound` — **6.87%, 95% CI 5.6-8.4%**, measured over 1222 logged
-// requests across ten pre-registered runs on 2026-08-21 (spike-notes.md
-// Finding 25). PUT 8.0%, GET 7.4%, DELETE 3.9%. Stable, and inside the 3-16%
-// band quoted before it was counted.
+// BucketNotFound` — and the fault is EPISODIC, not a steady rate. Twelve
+// identical bursts on 2026-08-21 read 0.00% to 13.40%, two consecutive N=1000
+// bursts five minutes apart read 11.70% then 1.70% (spike-notes.md Finding
+// 26). Quote a range, never a point estimate: a single run's rate is not a
+// parameter of anything.
+//
+// The cause is narrowed and is NOT this client and NOT tenancy policy. It
+// needs concurrency (serial 0.30% vs 16-way 11.70%, same principal and
+// request), it is principal-specific (an Administrator is clean across 5000
+// at the same concurrency), and it is Object Storage only — the same
+// principal against Compute in the same compartment is clean. It reproduces
+// under a plain API key, so the WIF/UPST path is not involved. Best
+// supported: Object Storage's authorization path for non-administrator
+// principals in this tenancy fails intermittently under concurrent load.
+// The `Oracle-Tags` policy `where` clause was removed, measured and restored
+// on 2026-08-21: it is EXONERATED (81/5000 with, 122/5000 without).
 //
 // Until that is understood, a failure here is ambiguous in a way the other four
 // providers' failures are not: it may be a defect or it may be the tenancy. The

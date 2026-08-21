@@ -1485,11 +1485,16 @@ jobs:
       #   2. Check the declined entry's `bucketId`. Populated means the bucket
       #      resolved and the 404 is an authorization decline wearing a
       #      not-found status.
-      #   3. Only then look at policy: whether a `where` clause was added,
-      #      which broke this exact path once before (policies/heartbeat.txt).
-      #      Note that a `where` clause alone cannot explain two identical
-      #      requests getting different answers — Finding 24 — so a policy
-      #      change is at most half of any explanation.
+      #   3. Do NOT go looking for an authorization decision in the log --
+      #      there isn't one, and Audit doesn't have it either (Finding 26).
+      #
+      # AND DO NOT RE-LITIGATE POLICY. The `Oracle-Tags` `where` clause was
+      # removed, measured and restored on 2026-08-21: EXONERATED (81/5000
+      # declines with it, 122/5000 without). The fault needs concurrency, is
+      # principal-specific, and is Object Storage only -- the same principal's
+      # Compute calls in the same compartment are clean at the same
+      # concurrency. It is Oracle-side. The open action is a support ticket,
+      # not a policy edit.
       - name: Object Storage persistence bundle
         if: env.BUNDLE_OBJECT_PERSISTENCE == 'true'
         run: |

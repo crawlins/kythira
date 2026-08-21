@@ -1822,7 +1822,7 @@ Reference implementations to study before starting, in this order:
       | Azure Blob | pass, 5/5 |
       | Alibaba OSS | pass |
       | GCS | pass 5/5 on re-run; 4/5 first attempt (Google-side `502`) |
-      | OCI Object Storage | **did not run** — pre-flight declined `404 BucketNotFound` |
+      | OCI Object Storage | **red** — declined `404 BucketNotFound`; cause narrowed to an Oracle-side Object Storage authorization fault under concurrency (Finding 26), **not** the client and **not** tenancy policy |
 
       **This is a stronger claim than the August 17-19 runs, and that is the
       point of doing it in CI at all.** Those authenticated as principals that
@@ -1934,27 +1934,63 @@ Reference implementations to study before starting, in this order:
       tenancy**, which is a property of the tenancy, not of
       `oci_object_storage_client`.
 
-      **Still owed:** Finding 23's step 3 — removing the `where` clause from
-      `kythira-ci-launch-tags` and re-measuring against this baseline. That
-      mutates a tenancy policy, which is what caused the August 12 breakage, so
-      it needs step 4's re-verification of every other principal/service pair
-      in the compartment planned alongside it. Note also that a partly-cached
-      mechanism (Finding 24) means the rate may move slowly afterwards, so
-      "it got better" over a short window will not be evidence.
+      **Finding 23's step 3 is done, and the suspect is EXONERATED**
+      (Finding 26). The clause was removed, the identical 10 x 500 burst
+      re-run, and the clause restored byte-identically: **81 declines / 5000
+      with it, 122 / 5000 without it**, episodes 1 -> 3, Fisher p = 0.58.
+      Removing it does not help. The only named suspect this investigation
+      had is eliminated.
 
-      **The tooling for that next action now exists and has not been run.**
-      `scripts/ci-cloud-credentials/oci/enable-object-storage-logging.sh`
-      creates the read and write service logs on `kythira-ci-artifacts`,
-      touching no IAM policy and refusing a category the service does not
-      offer (a nonexistent one yields a log that silently never fills).
-      `scripts/ci-cloud-credentials/oci/RUNBOOK-object-storage-404-flake.md`
-      carries Finding 23's sequence as ordered steps — enable, capture a live
-      `opc-request-id`, baseline the decline rate, *then* consider the `where`
-      clause, then re-verify every principal/service pair the compartment
-      serves. Both are unexercised against a live tenancy and say so.
-      **Note that logging is prospective**: it explains none of the August
-      failures and makes only the next decline readable, so the capture step
-      needs fresh traffic rather than a search for old request ids.
+      **Two of this spec's own claims were corrected in the process.** The
+      data-plane log **contains no authorization decision** — 24 fields, not
+      one a policy verdict — so the step recorded three times as "read the
+      authorization decision" is not deliverable from OCI's customer-visible
+      logging at all, rather than merely not yet done. And the rate is **not a
+      rate**: twelve identical bursts read 0.00% to 13.40%, two consecutive
+      N=1000 bursts read 11.70% then 1.70%, so the fault is **episodic** and
+      Finding 25's "6.87%, stable" was one window's average across an episode
+      boundary.
+
+      **What the fault actually is, from three one-variable controls:** it
+      requires **concurrency** (serial 0.30% vs 16-way 11.70%, same principal
+      and request), it is **principal-specific** (Administrators clean across
+      5000 at the same concurrency), and it is **Object Storage only** — the
+      same principal against **Compute in the same compartment**, same policy
+      path, same concurrency, is clean, which reproduces deliberately the
+      asymmetry `policies/heartbeat.txt` recorded from one incident. It also
+      reproduces under a plain **API key**, so the WIF/UPST path is not
+      involved. Best-supported statement: **Object Storage's authorization
+      path for non-administrator principals in this tenancy fails
+      intermittently under concurrent load.** That is an Oracle-side fault and
+      the next action is a **support ticket**, not another policy edit.
+
+      **Still owed:** OCI's green run, which remains blocked on that fault.
+      **OCI's row stays red**, and the four-of-five headline above is
+      unchanged by this session's work.
+
+      **The runbook has now been executed end to end**, August 21, 2026, and
+      every one of its steps produced a result (Finding 26). Logging is on and
+      verified by control traffic; a live decline was captured and read back by
+      `opc-request-id`; the rate was baselined; the `where` clause was removed,
+      measured and restored; and every principal/service pair was re-verified.
+
+      **Running `enable-object-storage-logging.sh` for the first time found
+      three defects in it**, each of which produced a wrong answer rather than
+      an obvious failure, all now fixed: its category-verification JMESPath
+      looked for `categories` on the service object rather than under
+      `resource-types[]`, so it returned `[]` and the guard silently did not
+      run — the very failure mode that guard exists to prevent; its
+      idempotency check keyed on a display name inside one log group when the
+      service enforces uniqueness on (service, resource, category) across
+      groups, so it took a 409 and died having already created an empty log
+      group; and `--wait-for-state SUCCEEDED` made it exit 1 for two logs it
+      had just created correctly, because this tenancy's Logging control plane
+      intermittently 404s while polling a work request.
+
+      The logging resources are the ones that script owns: log group
+      `kythira-ci-logs`, logs `kythira-ci-artifacts-read` / `-write`, 30-day
+      retention. Read them with `read-object-storage-log.sh`; measure the
+      decline rate with `probe-object-storage-decline-rate.py`.
 
   - **DONE for four of five providers; OCI outstanding.** Run every
     provider's real suite against a real bucket; fold every live correction

@@ -1,14 +1,42 @@
 # Runbook — the OCI Object Storage `404 BucketNotFound` flake
 
-**Status: open.** This is the one thing
-`.kiro/specs/cloud-object-persistence/` task 19 still owes, and the reason OCI
-is the only one of five providers without a green least-privilege CI run.
+**Status: EXECUTED end to end on August 21, 2026. The named suspect is
+EXONERATED.** Every step below was run against the live tenancy; the results
+are in `spike-notes.md` **Finding 26**. OCI is still the one provider without a
+green least-privilege CI run, but the cause is no longer unknown and is no
+longer thought to be tenancy policy.
 
-**None of this has been executed.** It is written from `spike-notes.md`
-Finding 23, `policies/heartbeat.txt`'s account of the August 12 2026 breakage,
-and the OCI CLI's own command surface (verified against CLI **3.90.3**). The
-CLI *syntax* below is checked; the *responses* are not, because running any of
-it requires tenancy access. Treat every expected output as a prediction.
+**What it found, so nobody repeats it:**
+
+- **The `Oracle-Tags` `where` clause is not the cause.** Removed, measured,
+  restored: **81 declines / 5000 requests with it, 122 / 5000 without it**
+  (Fisher p = 0.58 on episodes). Step 3's "rate goes to zero" branch did not
+  happen; its "rate unchanged → exonerated" branch did.
+- **Step 1's question has an answer, and the answer is that the log does not
+  carry one.** The decline *is* recorded in the data plane — so the "log is
+  empty ⇒ the request never reached the data plane" branch below is also
+  ruled out — but the record has **24 fields and not one is an authorization
+  outcome or a statement**. The entire authorization content is
+  `errorCode: BucketNotFound`. Audit does not have it either. That step is not
+  deliverable from OCI's customer-visible logging at all.
+- **What the fault actually is:** it needs **concurrency** (serial 0.30% vs
+  16-way 11.70%, same principal and request), it is **principal-specific** (an
+  Administrator is clean across 5000 requests at the same concurrency), and it
+  is **Object Storage only** (the same principal's Compute calls in the same
+  compartment are clean). It reproduces under a plain **API key**, so the
+  WIF/UPST path is not involved. Best supported: **Object Storage's
+  authorization path for non-administrator principals in this tenancy fails
+  intermittently under concurrent load.** That is Oracle-side.
+- **The rate is not a rate.** It is *episodic* — twelve identical bursts read
+  0.00% to 13.40%. Single before/after comparisons are worthless; use
+  `probe-object-storage-decline-rate.py --repeat` and compare episode counts.
+
+**The open action is an Oracle support ticket** carrying the `opc-request-id`s,
+the byte-identical successful twins, the concurrency dependence and the two
+matched controls. **It is not another policy edit, and not another run.**
+
+The steps below are kept as executed, with their predictions intact, because
+which predictions held and which did not is the record.
 
 ## What is wrong
 
