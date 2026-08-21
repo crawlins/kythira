@@ -46,6 +46,56 @@ This keeps each working branch's history clean and reviewable — one (or a
 few, logically-separated) well-described commits rather than an
 accumulation of "wip" / "fix typo" / "address feedback" commits.
 
+## Copyright headers
+
+Every **new** file that can carry a comment MUST open with:
+
+```
+Copyright (c) <year> Clark Rawlins
+SPDX-License-Identifier: Apache-2.0
+```
+
+followed by a blank line, using that file type's native comment syntax:
+
+- `//` — C++, Rust, protobuf, BIND `named.conf`
+- `#` — Python, shell, CMake/`CMakeLists.txt`, YAML, Dockerfiles, `Kconfig`
+  and `*_defconfig`, systemd units, HCL, TOML, `.properties`, `.env.example`,
+  Doxyfiles, and the `.gitignore` / `.dockerignore` / `.clang-format` /
+  `.clang-tidy` dotfiles
+- `;` — DNS zone files
+
+Placement rules that override "put it at the top":
+
+- On shell and Python files the header goes **after** the `#!` line, never
+  before it. A header at line 1 displaces the shebang and silently turns the
+  script into a non-executable file. Python encoding cookies (`# -*- coding:
+  ... -*-`) are only honoured on the first two lines, so step over those too.
+- On C++ headers the block goes **above** `#pragma once`.
+
+Use the current year for genuinely new files. Do not bump the year on files
+you merely edit — the notice records creation, and churning it adds diff
+noise for no legal benefit.
+
+### Exempt
+
+Do not add a notice to:
+
+- **Formats with no comment syntax** — JSON above all.
+- **Third-party or vendored content** — `vcpkg-overlays/*` portfiles and
+  patches, bundled upstream licenses, `doc/raft.txt` (the Ongaro & Ousterhout
+  Raft paper). Claiming copyright over someone else's work is a false claim.
+  Note `vcpkg-overlays/lakers/ffi/` is first-party Kythira code despite its
+  location, and IS stamped.
+- **Generated files** — anything rebuilt by the build, e.g.
+  `generated/kythira/autoconf.hpp` from `genconfig.py`. The header would be
+  discarded on the next run; add it to the generator's template instead.
+- **Files parsed literally**, where a leading comment breaks them —
+  `coverage_floor.txt` is read as a bare float by the coverage ratchet.
+- **Binaries**, and Markdown documentation.
+
+When in doubt, prefer adding the notice: the cost of a redundant header is
+two lines, the cost of a missing one is an unlicensed file.
+
 ## Container runtime compatibility
 
 Any test, compose file, or harness code that runs containers MUST work with both:
