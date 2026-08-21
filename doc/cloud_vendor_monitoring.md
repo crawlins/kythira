@@ -112,6 +112,36 @@ two tiers:
     Collector config with the Collector binary's own `validate` command
     (schema-level: a misspelled key or broken exporter config fails), and
     checks the OCI `.properties` for the vendor-documented required keys.
+  - *The remote-write shape additionally gets a real round trip*, without
+    credentials or cost:
+    `tests/docker_chaos/prometheus_remote_write_scenario_test.cpp` (target
+    `docker-prometheus-remote-write-tests`) runs a real chaos_node →
+    Collector (the **unmodified** Alibaba CloudMonitor example config, with
+    only the two environment inputs it already takes repointed) → a real
+    open-source Prometheus started with
+    `--web.enable-remote-write-receiver`, and queries the series back.
+
+    **This closes the gap between "the config parses" and "a well-formed
+    remote-write request left the Collector and a series came back", and it
+    closes nothing else.** Open-source Prometheus is *not* an emulator of
+    CloudMonitor the way LocalStack is an emulator of CloudWatch — it is the
+    **protocol CloudMonitor borrowed**. Three things stay observable only in
+    the real-cloud tier, and the test says so in its own header:
+
+    1. **The path differs**: Prometheus serves `/api/v1/write`, CloudMonitor
+       serves **`/api/v3/write`**. The compose file points at v1 on purpose.
+    2. **The auth is never evaluated.** The `basicauth/cms` extension is fed
+       deliberately fake credentials and this Prometheus does not require
+       Basic auth, so a green proves the extension is *wired*, never that a
+       credential is valid — a party that validates against whatever you
+       send always agrees with you.
+    3. Vendor-side metric-name, label and cardinality rules.
+
+    The sink's `scrape_configs` is **empty**, and a second case asserts
+    Prometheus has no active scrape targets. Without that, the first case
+    would pass whether or not the exporter worked, because the pull path and
+    the push path produce the same series name — the negative control is
+    what makes a green attributable to remote write.
 - **Real-cloud tier (disabled by default — real credentials, real cost):**
   one lightweight job per vendor in
   `.github/workflows/real-cloud-tests.yml` (`<provider>-monitoring`),

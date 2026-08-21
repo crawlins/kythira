@@ -1,0 +1,94 @@
+# docker/prometheus-remote-write-compose.yml — a real OpenTelemetry
+# Collector running an UNMODIFIED cloud-vendor example config, whose
+# prometheusremotewrite exporter delivers into a real open-source Prometheus
+# with its remote-write receiver enabled.
+#
+# Used by tests/docker_chaos/prometheus_remote_write_scenario_test.cpp, which
+# posts one OTLP datapoint at the Collector and queries the series back out
+# of Prometheus.
+#
+# **No chaos_node here, deliberately.** The node -> OTLP -> Collector leg is
+# already proven by otlp_collector_test.cpp; repeating it would add wall
+# clock and an image dependency without adding evidence. What is new in this
+# file is the leg after the Collector — export -> remote-write receiver —
+# so the probe is posted directly at the OTLP receiver, exactly as the
+# real-cloud tier's scripts/real-cloud-monitoring/*.sh do.
+#
+# ## What this proves, and what it deliberately does NOT
+#
+# The four cloud-vendor monitoring entries without a self-hostable emulator
+# of their ingestion API have, until now, only had
+# cloud_monitoring_config_validation_test.cpp — the Collector's own
+# `validate`, which is a SCHEMA check. That leaves real daylight between
+# "the config parses" and "a well-formed remote-write request actually left
+# the Collector and a series came back".
+#
+# This closes that gap for the remote-write shape, with no credentials and
+# no cost, by pointing the shipped Alibaba CloudMonitor config at a local
+# Prometheus through the two environment inputs it already takes.
+#
+# It does NOT test Alibaba. Open-source Prometheus is not an emulator of
+# CloudMonitor the way LocalStack is an emulator of CloudWatch — it is the
+# PROTOCOL CloudMonitor borrowed. Three things stay observable only against
+# the real service, and the real-cloud tier
+# (scripts/real-cloud-monitoring/alibaba-cloudmonitor.sh) is where they are:
+#
+#   1. The path. Prometheus's own receiver serves /api/v1/write; CloudMonitor
+#      serves **/api/v3/write**. This file points at v1 on purpose, and that
+#      difference is the clearest reason not to read a green here as
+#      "CloudMonitor works".
+#   2. The auth. The config's basicauth/cms extension is fed deliberately
+#      fake credentials below. Prometheus does not evaluate them, so this
+#      proves the extension is WIRED, never that any credential is valid —
+#      the mock-agrees-with-its-client trap this repo has paid for before.
+#   3. Vendor-side metric-name, label and cardinality rules.
+#
+# No static IPs (CLAUDE.md container-runtime-compatibility rule): every
+# service is addressed by compose service name, so this runs unmodified
+# under both Docker and rootless Podman.
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    container_name: prometheus-remote-write-test-prometheus
+    hostname: prometheus
+    # --web.enable-remote-write-receiver is the whole point: without it
+    # Prometheus 404s /api/v1/write and the exporter's failure would look
+    # like a config defect rather than a missing server flag.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+      - --web.listen-address=0.0.0.0:9090
+    volumes:
+      - ./prometheus/prometheus-remote-write.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9097:9090"   # query API, for the test's assertions
+    networks:
+      - prometheus-remote-write-net
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    container_name: prometheus-remote-write-test-collector
+    hostname: otel-collector
+    # The UNMODIFIED shipped example config. Only its documented environment
+    # inputs differ, which is exactly how the CloudWatch/LocalStack tier
+    # treats its own example config.
+    volumes:
+      - ./cloud-monitoring/alibaba-cloudmonitor-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      KYTHIRA_CMS_REMOTE_WRITE_URL: "http://prometheus:9090/api/v1/write"
+      # Fake by construction — see note 2 in the header. Prometheus is not
+      # configured to require Basic auth, so these are never evaluated.
+      ALIBABA_CLOUD_ACCESS_KEY_ID: "not-a-real-access-key-id"
+      ALIBABA_CLOUD_ACCESS_KEY_SECRET: "not-a-real-access-key-secret"
+    ports:
+      - "4319:4318"   # OTLP/HTTP, for the test to post its probe into
+    depends_on:
+      - prometheus
+    networks:
+      - prometheus-remote-write-net
+
+networks:
+  prometheus-remote-write-net:
+    driver: bridge

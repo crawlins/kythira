@@ -1,0 +1,18 @@
+# docker/prometheus/prometheus-remote-write.yml — Prometheus config for
+# prometheus-remote-write-compose.yml.
+#
+# Deliberately scrapes NOTHING. The sibling prometheus.yml drives the PULL
+# path (prometheus_metrics_scenario_test.cpp scrapes the node's /metrics);
+# this file's Prometheus is a remote-write SINK only, so a series appearing
+# here can only have arrived by remote write. A scrape config would make a
+# green ambiguous between the two paths, which is the one thing this tier
+# exists to distinguish.
+#
+# The receiver itself is enabled by --web.enable-remote-write-receiver on the
+# command line, not here.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs: []
