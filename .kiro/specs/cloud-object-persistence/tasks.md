@@ -1871,23 +1871,44 @@ Reference implementations to study before starting, in this order:
       target.tag-namespace.name = 'Oracle-Tags'` clause on the very group
       whose Object Storage requests intermittently 404.
 
-  - Run every provider's real suite against a real bucket; fold every live
-    correction back into spike-notes.md/requirements/design **in place**
-    (the OCI doctrine).
-  - **Re-run the Alibaba real suite** (**DONE**, see below) and record the
-    result: this is the
-    verification that the task 2/3 hoist preserved a live-verified
+  - **DONE for four of five providers; OCI outstanding.** Run every
+    provider's real suite against a real bucket; fold every live correction
+    back into spike-notes.md/requirements/design **in place** (the OCI
+    doctrine).
+  - **Re-run the Alibaba real suite** (**DONE**) and record the result: this
+    is the verification that the task 2/3 hoist preserved a live-verified
     component, and it is the reason the hoist was acceptable at all.
     **Done August 16, 2026** — 4/4 green post-hoist, wall times recorded in
-    spike-notes.md Finding 7. The remaining providers' runs, the CI toggles
-    and the measured p50/p99 are still outstanding.
-  - Record each provider's measured p50/p99 in the documentation with its
-    measurement position; update the election-timeout table's second row
-    with real numbers, replacing the hypothetical.
-  - Flip the CI toggles; one green dispatched run per provider bundle.
+    spike-notes.md Finding 7. *(The trailing "remaining providers' runs, CI
+    toggles and measured p50/p99 are still outstanding" that stood here was
+    true when written and was superseded by the August 21 CI runs; see
+    Finding 24 and the three bullets below.)*
+  - **DONE**, August 21, 2026 (Finding 24). Record each provider's measured
+    p50/p99 in the documentation with its measurement position; update the
+    election-timeout table's second row with real numbers, replacing the
+    hypothetical. `doc/cloud_object_persistence.md` now carries the five-row
+    table, each figure labelled with where it was measured from, the
+    election-timeout row reading a real **≥122 ms**, and an explicit note
+    that "p99" here is the slowest of 8 or 20 observations rather than a
+    tail estimate.
+  - **DONE for four of five.** Flip the CI toggles; one green dispatched run
+    per provider bundle. AWS (x64 and arm64), Azure Blob, Alibaba OSS and
+    GCS are green under the least-privilege grants; OCI's pre-flight was
+    declined `404 BucketNotFound` and **has not been re-run**.
   - Verify: green run URLs recorded in spike-notes.md; leak audit clean;
     **the documentation's live-verified column now names more than one
     provider**, and any provider still documentation-derived says so.
+    **Satisfied.** Run URLs are in Finding 24 and in this task's header, and
+    the documentation's status line names **all five** engines live-verified
+    — OCI included, from the August 17-19 runs. What is labelled rather than
+    claimed is narrower and is labelled everywhere it appears: durability
+    wording is *documentation-derived* for S3, Azure Blob and GCS, and
+    *still OPEN* for OCI (task 0.2).
+    **What OCI still lacks is not engine verification but the
+    least-privilege CI run** — its August runs authenticated as a principal
+    already holding broad policies, so they are evidence the client works
+    and no evidence about the grants. That distinction is the whole point of
+    this task and is why 19 stays `[~]`.
   - _Requirements: 4.5, 17.8, 18.5, 19.3_
 
 ## Notes
