@@ -107,9 +107,32 @@ echo
 # will not (older CLI, restricted read), say so and continue -- failing to
 # verify is not the same as verifying a contradiction.
 # ---------------------------------------------------------------------------
+#
+# THE QUERY BELOW IS LOAD-BEARING AND WAS WRONG ON FIRST EXECUTION
+# (2026-08-21). `categories` is NOT a member of the service object -- it is
+# nested under `resource-types[]` (objectstorage's resource type is `bucket`).
+# The original `data[?id==\`objectstorage\`].categories[].name` therefore
+# returned `[]`, which this block reads as "the service would not tell us" and
+# continues WITHOUT verifying. So the guard against a silently-never-filling
+# log was itself a silent no-op -- the exact failure mode its own comment
+# above warns about. Note also that `resource-types` must be double-quoted
+# inside the single-quoted JMESPath: an unquoted hyphenated key is a parse
+# error, not an empty result.
+#
+# `oci logging service list` also 401s intermittently in this tenancy, so a
+# single failed call is not evidence that the service withholds the list;
+# retry before concluding that.
 AVAILABLE=""
-if AVAILABLE="$(oci logging service list --all --query 'data[?id==`objectstorage`].categories[].name' \
-                  --raw-output 2>/dev/null)"; then
+for _attempt in 1 2 3; do
+    if AVAILABLE="$(oci logging service list --all \
+                      --query 'data[?id==`objectstorage`]."resource-types"[].categories[].name' \
+                      --raw-output 2>/dev/null)" \
+       && [[ -n "${AVAILABLE}" && "${AVAILABLE}" != "null" && "${AVAILABLE}" != "[]" ]]; then
+        break
+    fi
+    sleep 3
+done
+if [[ -n "${AVAILABLE}" ]]; then
     if [[ -n "${AVAILABLE}" && "${AVAILABLE}" != "null" && "${AVAILABLE}" != "[]" ]]; then
         echo "objectstorage categories reported by the service: ${AVAILABLE}"
         IFS=',' read -ra WANT <<< "${CATEGORIES}"
@@ -155,16 +178,49 @@ fi
 echo "  ${LOG_GROUP_ID}"
 
 # ---- one service log per category (idempotent) -----------------------------
-# Object Storage permits exactly one read and one write access log per bucket,
-# so a second create is an error rather than a duplicate; check first.
+# Object Storage permits exactly one log per (service, resource, category), and
+# that uniqueness is TENANCY-WIDE, not per log group.
+#
+# FIRST EXECUTION, 2026-08-21: this block checked `--display-name` inside
+# ${LOG_GROUP} only, found nothing, tried to create, and took a
+# `409 Conflict -- A log already exists for this combination of service,
+# resource, and category` from a log of a DIFFERENT name in a DIFFERENT group.
+# The script then died mid-loop, leaving a freshly created but empty log group
+# behind. Display name is not the key the service enforces; the combination is.
+# So: search every log group in the compartment for the combination itself.
+find_existing_log() {  # $1 = category; echoes "<group-ocid> <log-ocid>" if found
+    local category="$1" grp
+    for grp in $(oci logging log-group list --compartment-id "${COMPARTMENT_ID}" \
+                   --all --query 'data[].id' --raw-output 2>/dev/null \
+                 | tr -d '[],"' ); do
+        [[ -n "${grp}" ]] || continue
+        local hit
+        hit="$(oci logging log list --log-group-id "${grp}" --all \
+                 --query "data[?\"log-type\"=='SERVICE'
+                            && configuration.source.service=='objectstorage'
+                            && configuration.source.resource=='${BUCKET}'
+                            && configuration.source.category=='${category}'].id | [0]" \
+                 --raw-output 2>/dev/null || true)"
+        if [[ -n "${hit}" && "${hit}" != "null" ]]; then
+            echo "${grp} ${hit}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 IFS=',' read -ra WANT <<< "${CATEGORIES}"
 for category in "${WANT[@]}"; do
     display="${BUCKET}-${category}"
-    existing="$(oci logging log list --log-group-id "${LOG_GROUP_ID}" \
-        --display-name "${display}" --query 'data[0].id' --raw-output 2>/dev/null || true)"
-    if [[ -n "${existing}" && "${existing}" != "null" ]]; then
-        echo "log ${display} already exists"
-        echo "  ${existing}"
+    if found="$(find_existing_log "${category}")"; then
+        found_grp="${found%% *}"; found_log="${found##* }"
+        echo "log for objectstorage/${BUCKET}/${category} already exists"
+        echo "  ${found_log}"
+        if [[ "${found_grp}" != "${LOG_GROUP_ID}" ]]; then
+            echo "  NOTE: it lives in log group ${found_grp}, not ${LOG_GROUP}."
+            echo "        That is the combination the service enforces, so nothing"
+            echo "        is created here. Delete it first if you want it moved."
+        fi
         continue
     fi
     echo "creating ${category} log on ${BUCKET}"
@@ -182,10 +238,26 @@ print(json.dumps({
 }))
 PY
 )"
-    log_id="$(oci logging log create --log-group-id "${LOG_GROUP_ID}" \
+    # NOT `--wait-for-state`: this tenancy's Logging control plane intermittently
+    # answers `404 NotAuthorizedOrNotFound` when POLLING the work request, which
+    # made this script exit 1 on 2026-08-21 for two logs it had just created
+    # successfully. Reporting failure for work that succeeded is worse than
+    # slow, so create without waiting and then confirm by looking for the
+    # resource itself.
+    oci logging log create --log-group-id "${LOG_GROUP_ID}" \
         --display-name "${display}" --log-type SERVICE --is-enabled true \
         --retention-duration "${RETENTION_DAYS}" --configuration "${config}" \
-        --wait-for-state SUCCEEDED --query 'data.resources[0].identifier' --raw-output)"
+        >/dev/null 2>&1 || true
+    log_id=""
+    for _try in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 3
+        if found="$(find_existing_log "${category}")"; then log_id="${found##* }"; break; fi
+    done
+    if [[ -z "${log_id}" ]]; then
+        echo "FAILED to create the ${category} log on ${BUCKET}, and it does not exist." >&2
+        echo "Re-run: this script is idempotent and will skip whatever did get created." >&2
+        exit 1
+    fi
     echo "  ${log_id}"
 done
 
@@ -201,9 +273,13 @@ policy change is the LAST thing done and the first thing that can be undone:
   1. Generate fresh traffic and capture a decline's opc-request-id.
   2. Read that request id back out of this log:
 
-       oci logging-search search-logs --search-query \\
-         "search \\"${COMPARTMENT_ID}/${LOG_GROUP}\\" | where data.opcRequestId = '<id>'" \\
-         --time-start <ISO8601> --time-end <ISO8601>
+       ./read-object-storage-log.sh <start-rfc3339> <end-rfc3339>
+
+     The search scope needs OCIDs, all three of
+     <compartment>/<logGroup-OCID>/<log-OCID> -- a log group NAME does not
+     resolve, and the two-part form answers "No log sources found to be read".
+     read-object-storage-log.sh carries them and retries the intermittent
+     declines; prefer it over a hand-written search-logs call.
 
   3. Measure a baseline decline rate over a fixed burst BEFORE changing
      anything, so there is a number rather than a remembered 3-16%.
