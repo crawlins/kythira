@@ -153,7 +153,8 @@ requests, neither of which this client touches) and deliberately carrying **no
 the short version is that a `where` clause on this compartment's Object
 Storage policy broke a *different* principal's `put_object` on August 12,
 2026, presenting as `404 BucketNotFound`, and this tenancy already declines
-3-16% of valid Object Storage requests with exactly that error. Another
+**6.87%** of valid Object Storage requests with exactly that error (95% CI
+5.6-8.4%, n=1222; spike-notes.md Finding 25). Another
 condition would make an open question unanswerable rather than merely open.
 
 **Cost:** a few hundred object operations and a few hundred kilobytes for the

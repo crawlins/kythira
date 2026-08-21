@@ -1892,10 +1892,12 @@ Reference implementations to study before starting, in this order:
       **60 times, zero declines**. The flake tracks the *principal*, not the
       bucket, the request or the service.
 
-      **A rate, counted rather than remembered: 2 declines in 19 logged
+      **A first rate, counted rather than remembered: 2 declines in 19 logged
       requests, 10.5%** — inside the 3-16% band this flake has always been
-      quoted at, and the first time that band has been checked against an
-      enumeration of the requests. The two declines ended differently, and the
+      quoted at, and the first time that band was checked against an
+      enumeration of the requests. *n=19 makes this a very wide interval;
+      it is superseded below by Finding 25's 6.87% over 1222 requests, which
+      it does not contradict.* The two declines ended differently, and the
       difference is retry: the declined **PUT was absorbed** (reissued on the
       same path 286 ms later, 200), which is why `fresh_engine_read_back`
       passed, while the declined **LIST was the pre-flight**, which issues one
@@ -1906,13 +1908,39 @@ Reference implementations to study before starting, in this order:
       and is deliberately not done: it would hide a tenancy fault and leave no
       signal for a defect nobody understands yet.
 
-      **Still owed:** OCI's green run, and ahead of it Finding 23's step 2 — a
-      decline **rate** for the `kythira-ci` principal, which is now cheap to
-      collect because every request that principal makes to this bucket is
-      logged with its status. Those runs must be dispatched **to measure**,
-      with the count fixed before they start; that is a different act from
-      re-running until green, and keeping the two apart is the whole reason
-      this flake has not been laundered into a green board.
+      **Finding 23's step 2 is now done** (Finding 25). Ten runs, pre-registered
+      at ten with the stopping rule written down before the first dispatch:
+      **84 declines in 1222 logged requests — 6.87%, 95% CI 5.6-8.4%**, every
+      one `BucketNotFound`, spread across PUT (8.0%), GET (7.4%) and DELETE
+      (3.9%). Six `IfMatchFailed` responses were excluded as the fencing case's
+      own negative control. The rate is **stable** — indistinguishable from
+      Finding 24's single-run 10.5% and inside the long-quoted 3-16% — so
+      nothing escalated and nothing healed, and the pre-registered "near zero"
+      branch that would have implicated the logging itself did not occur.
+
+      **One of the ten runs was green, and it is not OCI's green run.** It is
+      the ~1-in-10 outcome of a suite drawing every request from a 7% decline
+      distribution. Citing it as verification is the exact laundering this task
+      has refused for a month, and **OCI's row stays red.**
+
+      **It is not worth nothing, though.** That run passed **all five checks**
+      against the live service — fencing and backup/restore included, "No
+      errors detected". As a verification that is near-worthless; as an
+      **existence proof** it is real, and it points the same way as Finding
+      24's byte-identical twin. Together they separate two claims that have
+      been tangled since this flake appeared: **the client is correct** — every
+      check in this design has now been seen passing end-to-end against real
+      OCI Object Storage — and **what is unverified is reliability against this
+      tenancy**, which is a property of the tenancy, not of
+      `oci_object_storage_client`.
+
+      **Still owed:** Finding 23's step 3 — removing the `where` clause from
+      `kythira-ci-launch-tags` and re-measuring against this baseline. That
+      mutates a tenancy policy, which is what caused the August 12 breakage, so
+      it needs step 4's re-verification of every other principal/service pair
+      in the compartment planned alongside it. Note also that a partly-cached
+      mechanism (Finding 24) means the rate may move slowly afterwards, so
+      "it got better" over a short window will not be evidence.
 
       **The tooling for that next action now exists and has not been run.**
       `scripts/ci-cloud-credentials/oci/enable-object-storage-logging.sh`

@@ -1333,4 +1333,108 @@ putting every one of this principal's requests in a log with its status.
 
 ### Results
 
-*(appended after all ten runs completed — see below)*
+**All ten ran. None was excluded** — the escape clause in the protocol (runs
+failing before issuing any Object Storage request) was never invoked, so the
+denominator is every request the ten produced.
+
+Runs `32479406650`, `32479434587`, `32479462555`, `32479491479`, `32479517102`,
+`32479543322`, `32479568311`, `32479597711`, `32479627546`, `32479655246`,
+dispatched 11:55:08Z-11:58:22Z on 2026-08-21.
+
+| | |
+|---|---|
+| logged requests by `kythira-ci-wif` | **1222** |
+| declined `404 BucketNotFound` | **84** |
+| **rate** | **6.87%** |
+| 95% Wilson interval | **5.6% - 8.4%** |
+| error codes among declines | `BucketNotFound` × 84, nothing else |
+
+| verb | requests | declined | rate |
+|---|---|---|---|
+| PUT | 612 | 49 | 8.0% |
+| GET | 325 | 24 | 7.4% |
+| DELETE | 285 | 11 | 3.9% |
+
+Six `IfMatchFailed` responses were **excluded**: those are the fencing case's
+own negative control succeeding, and counting a suite's passing assertions as
+service declines would have inflated the rate by nearly a tenth.
+
+**The rate is stable.** 6.87% [5.6-8.4] sits inside the long-quoted 3-16% band
+and is statistically indistinguishable from Finding 24's single-run 10.5%
+(n=19, an interval far too wide to separate the two). Nothing has escalated
+and nothing has healed. The pre-registered "near zero" branch — which would
+have implicated the act of enabling service logs — **did not occur**, so
+observing the bucket does not appear to change it.
+
+**Run-level, recorded but not the measurement: 1 of 10 green** (`32479543322`).
+The request rate does not translate into a run rate by any simple power,
+because the engine retries PUTs and the suite's pre-flight is un-retried, so
+which requests are load-bearing matters more than how many there are. This is
+exactly why the protocol fixed the request as the unit **before** the numbers
+existed.
+
+**That one green run is not "OCI verified", and must not be cited as such.**
+It is the ~1-in-10 outcome of a suite whose every request drew from a 7%
+decline distribution. The other four providers' green runs mean the provider
+works *reliably*; this one means the dice cooperated once. Task 19's OCI row
+stays red.
+
+**But it is not worth nothing either, and the distinction is worth being
+precise about.** That run passed **all five checks** — `fresh_engine_read_back`,
+`measured_latency`, `fencing_race_with_negative_control`,
+`backup_verify_restore_read_back`, `list_after_write` — against the live
+service, "No errors detected". As a *verification* that is near-worthless: you
+cannot establish reliability from a 1-in-10 draw. As an **existence proof** it
+is real, and it is the second independent line of evidence pointing the same
+way as Finding 24's byte-identical twin:
+
+- **The client is correct.** Every check this design specifies has now been
+  observed passing end-to-end against real OCI Object Storage, including
+  fencing over `compare_and_swap`.
+- **What is unverified is reliability against *this tenancy*** — which is a
+  property of the tenancy, not of `oci_object_storage_client`.
+
+Keeping those two apart is what stops the flake from being either overstated
+(as a client defect) or understated (as a green board). The engine is
+demonstrated; the environment is not trustworthy.
+
+### The concurrency confound, named and then partly answered
+
+The ten runs **overlapped in time**, where the Finding 24 baseline was a single
+run in isolation. The protocol did not say "serially", and it should have — a
+10× change in offered concurrency is exactly the kind of difference that makes
+two numbers incomparable, and it was introduced by accident rather than chosen.
+
+It happens to be answerable from the result. **If throttling were the
+mechanism, ten concurrent runs should have pushed the rate up; it went from
+10.5% to 6.87%, i.e. not up.** That is weak evidence against a rate-limiter
+and it is worth exactly that much — the intervals overlap, so the honest
+statement is "concurrency did not inflate the rate", not "concurrency is
+irrelevant".
+
+### A mistake this measurement caught, recorded because the protocol caught it
+
+On seeing the first five runs come back red — where the baseline run had
+passed its first case — the reaction was that the flake had escalated
+dramatically. **It had not.** That was run-level outcomes being read as
+request-level rates, and at ~7% per request over ~120 requests per run, almost
+every run failing is the *expected* result rather than a surprising one.
+
+The pre-registration's line that "the unit of measurement is the individual
+request, not the run" was written to guard against exactly this, before there
+was anything to be wrong about, and it is the reason the wrong conclusion
+lasted minutes rather than reaching a document.
+
+### A third silent-truncation near-miss, and the fix
+
+Fetching the window in slices returned **150 records where a single wider query
+had returned 903**. The slice queries were being declined by
+`logging-search` itself (Finding 24's separate observation), and a declined
+query with stderr redirected looks exactly like *an empty window*.
+
+That is the third time in this investigation that a short log result nearly
+became a small number in a document. **`read-object-storage-log.sh` now retries
+six times, verifies the payload rather than the exit code, exits non-zero
+rather than reporting zero entries, and warns when a window hits the
+1000-record page cap.** A counting script that can silently under-count is
+worse than no counting script.
