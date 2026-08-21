@@ -1859,17 +1859,60 @@ Reference implementations to study before starting, in this order:
       inline in every table that carries it, because quoted bare it would read
       as "Azure Blob is 5× faster than GCS" when it measures proximity.
 
-      **Still owed:** OCI's green run, which is blocked behind the tenancy
-      flake rather than behind anything in this spec. The next action there is
-      **not** another run — it is enabling Object Storage **data-plane** event
-      logging on `kythira-ci-artifacts`, because `oci audit event list` over
-      the failure window returns nothing: data events are not audited by
-      default, which is why the "take an opc-request-id to the audit log" step
-      recorded since the flake was first measured has never actually been
-      performable. A named suspect exists (spike-notes Finding 23): the
-      tenancy policy `kythira-ci-launch-tags` carries a `where
-      target.tag-namespace.name = 'Oracle-Tags'` clause on the very group
-      whose Object Storage requests intermittently 404.
+      **The decline is now captured, August 21, 2026** (spike-notes Finding
+      24). Object Storage **data-plane service logs** are enabled on
+      `kythira-ci-artifacts` — log group `kythira-ci-object-storage`, read and
+      write categories, 30-day retention — enabled *before* the next decline
+      because the point was to catch one, and then run
+      [32444971282](https://github.com/crawlins/kythira/actions/runs/32444971282)
+      was dispatched and allowed to fail. Audit was never the right place:
+      data-plane operations are not audited by default, which is why the "take
+      an opc-request-id to the audit log" step recorded since the flake was
+      first measured was never performable.
+
+      **What the log says.** The declined `ListObjects` has a **byte-identical
+      twin that succeeded 6.7 seconds earlier in the same job** — same URI,
+      same UPST, same `principalId`, same `bucketId`, same client IP, same user
+      agent; 200 at 03:54:37.523Z, 404 `BucketNotFound` at 03:54:44.236Z. Two
+      consequences: **the client is exonerated from the service's own side of
+      the wire** (every client-shaped explanation needs the two requests to
+      differ, and they do not), and **the bucket was resolved before the 404
+      was chosen** — the declined entry carries a populated `bucketId` for the
+      bucket it reports as absent, so this is an authorization decline wearing
+      a not-found status.
+
+      **And the variable is not in the request.** A `where` clause evaluated
+      against an inapplicable request variable is deterministic per request
+      shape; it would decline this LIST every time rather than one time in two.
+      Whatever chooses between 200 and 404 is **server-side state**. Finding
+      23's suspect is not refuted, but it is now known to be at most half of
+      the mechanism.
+
+      **The control ran too**: the byte-identical LIST as an Administrator,
+      **60 times, zero declines**. The flake tracks the *principal*, not the
+      bucket, the request or the service.
+
+      **A rate, counted rather than remembered: 2 declines in 19 logged
+      requests, 10.5%** — inside the 3-16% band this flake has always been
+      quoted at, and the first time that band has been checked against an
+      enumeration of the requests. The two declines ended differently, and the
+      difference is retry: the declined **PUT was absorbed** (reissued on the
+      same path 286 ms later, 200), which is why `fresh_engine_read_back`
+      passed, while the declined **LIST was the pre-flight**, which issues one
+      request and has none. **The suite is therefore more fragile than the
+      engine it tests** — a red OCI run does not imply a broken engine — and
+      `write_retries`' default of 1 is measurably earning its keep against this
+      tenancy. Giving the pre-flight a retry would have turned this run green
+      and is deliberately not done: it would hide a tenancy fault and leave no
+      signal for a defect nobody understands yet.
+
+      **Still owed:** OCI's green run, and ahead of it Finding 23's step 2 — a
+      decline **rate** for the `kythira-ci` principal, which is now cheap to
+      collect because every request that principal makes to this bucket is
+      logged with its status. Those runs must be dispatched **to measure**,
+      with the count fixed before they start; that is a different act from
+      re-running until green, and keeping the two apart is the whole reason
+      this flake has not been laundered into a green board.
 
       **The tooling for that next action now exists and has not been run.**
       `scripts/ci-cloud-credentials/oci/enable-object-storage-logging.sh`

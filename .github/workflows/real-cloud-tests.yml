@@ -1468,12 +1468,28 @@ jobs:
       # with `404 BucketNotFound` — measured at 3-16%, across
       # PUT/GET/DELETE/LIST (spike-notes.md). Until that is understood, a
       # failure here is ambiguous in a way the other four providers' are not:
-      # it may be a defect or it may be the tenancy. The honest response to
-      # red is to take the `opc-request-id` from the decline and work the
-      # compartment audit log — specifically checking whether a policy `where`
-      # clause was added, which broke this exact path once before
-      # (policies/heartbeat.txt). Re-running until green launders a real
-      # regression into a flake.
+      # it may be a defect or it may be the tenancy. Re-running until green
+      # launders a real regression into a flake.
+      #
+      # The honest response to red is to READ THE DATA-PLANE SERVICE LOG, with
+      # `scripts/ci-cloud-credentials/oci/read-object-storage-log.sh`. NOT the
+      # audit log: Object Storage data-plane operations are not audited by
+      # default, so `oci audit event list` over the failure window returns
+      # nothing, and the instruction that used to stand here was never
+      # performable (spike-notes.md Finding 24).
+      #
+      # What to look for, in order:
+      #   1. Find the 404 and a NEARBY 200 for the same requestResourcePath.
+      #      A byte-identical pair means the client is not at fault — that
+      #      comparison is what exonerated it on 2026-08-21.
+      #   2. Check the declined entry's `bucketId`. Populated means the bucket
+      #      resolved and the 404 is an authorization decline wearing a
+      #      not-found status.
+      #   3. Only then look at policy: whether a `where` clause was added,
+      #      which broke this exact path once before (policies/heartbeat.txt).
+      #      Note that a `where` clause alone cannot explain two identical
+      #      requests getting different answers — Finding 24 — so a policy
+      #      change is at most half of any explanation.
       - name: Object Storage persistence bundle
         if: env.BUNDLE_OBJECT_PERSISTENCE == 'true'
         run: |

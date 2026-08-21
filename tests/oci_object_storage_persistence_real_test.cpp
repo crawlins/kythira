@@ -28,16 +28,35 @@
 // ── READ THIS BEFORE TRUSTING A RESULT FROM THIS SUITE ──────────────────────
 //
 // The CI tenancy intermittently declines VALID requests with `404
-// BucketNotFound` — measured at 3-16%, across PUT/GET/DELETE/LIST, body-
-// carrying or not (spike-notes.md). It resembles a policy `where` clause
-// declining a different principal's Object Storage requests.
+// BucketNotFound` — 2 of 19 logged requests, 10.5%, in the job of 2026-08-21,
+// inside the 3-16% band measured earlier across PUT/GET/DELETE/LIST
+// (spike-notes.md Findings 23 and 24).
 //
 // Until that is understood, a failure here is ambiguous in a way the other four
 // providers' failures are not: it may be a defect or it may be the tenancy. The
 // suite is therefore run and reported like the others, but its result is
-// **weaker evidence**, and the honest response to a red run is to investigate
-// the decline's opc-request-id in the compartment audit log — not to re-run
-// until it is green, which would launder a real regression into a flake.
+// **weaker evidence**, and the honest response to a red run is to read the
+// Object Storage data-plane service log —
+// `scripts/ci-cloud-credentials/oci/read-object-storage-log.sh <start> <end>`
+// — not to re-run until it is green, which would launder a real regression
+// into a flake. NOT the audit log: data-plane operations are not audited by
+// default, which is why the instruction that stood here until 2026-08-21 was
+// never performable.
+//
+// TWO THINGS THAT LOG HAS ALREADY ESTABLISHED, so a red run is not re-argued
+// from scratch. A declined ListObjects had a **byte-identical twin that
+// succeeded 6.7 s earlier** in the same job — same URI, same UPST, same
+// principal, same bucketId — so the client is exonerated from the service's
+// own side of the wire, and the decline is server-side state rather than
+// anything in the request. And the same request as an Administrator ran 60
+// times with zero declines, so the flake tracks the principal.
+//
+// AND A REASON A GREEN RUN IS NOT PROOF THE TENANCY BEHAVED. That same job's
+// other decline was a PUT, and the engine's retry absorbed it 286 ms later.
+// This suite's pre-flight LIST is the one request in the run with no retry,
+// which makes the suite more fragile than the engine it tests. Giving the
+// pre-flight a retry would turn red runs green and hide the tenancy fault;
+// that is a decision about tolerating red, not a fix.
 
 using namespace kythira;
 namespace obj = kythira::object_real;
