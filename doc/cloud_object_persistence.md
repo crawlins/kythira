@@ -661,9 +661,9 @@ the five plus four of its own: the fencing case is *uninstantiable* over a
 store that is not a `conditional_key_object_store`, and would not compile.
 
 **One caveat specific to OCI.** The CI tenancy intermittently declines valid
-Object Storage requests with `404 BucketNotFound` — **6.87%** (95% CI
-5.6–8.4%), measured over 1222 requests across ten runs on August 21, 2026, and
-seen on every verb. Until that is understood, a *failed* OCI run is ambiguous in a way the
+Object Storage requests with `404 BucketNotFound`, **episodically** —
+identical bursts measured anywhere from 0.00% to 13.40% on August 21, 2026,
+on every verb. Until that is understood, a *failed* OCI run is ambiguous in a way the
 other four are not, and the honest response to red is to read the Object
 Storage **data-plane service log** rather than re-run until green. It does not
 weaken the passing results; it weakens the failing ones.

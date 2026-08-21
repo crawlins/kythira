@@ -27,6 +27,19 @@
 #      the 404 is an authorization decline wearing a not-found status.
 #   3. `--raw` dumps the full JSON records for a field-by-field diff.
 #
+# WHAT THIS LOG DOES *NOT* CONTAIN, so you do not go looking (Finding 26):
+# there is NO authorization decision in it. The record carries 24 data fields
+# and not one is a policy verdict, a matched statement, or a "denied by" --
+# the entire authorization content is `errorCode: BucketNotFound`. Audit does
+# not have it either (data-plane operations are unaudited). "Take the
+# opc-request-id and read the authorization decision" was written down as the
+# next action three times; it is not deliverable from OCI's customer-visible
+# logging at all.
+#
+# To characterise the fault, use ./probe-object-storage-decline-rate.py, which
+# measures it directly. Note it is EPISODIC: a single burst's rate is not a
+# parameter of anything, and single before/after comparisons are worthless.
+#
 # TWO TRAPS, both of which produced a wrong answer first (Finding 24):
 #
 #   * INGESTION LAG. A query run minutes after the event can return the

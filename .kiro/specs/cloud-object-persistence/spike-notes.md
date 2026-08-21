@@ -1438,3 +1438,182 @@ six times, verifies the payload rather than the exit code, exits non-zero
 rather than reporting zero entries, and warns when a window hits the
 1000-record page cap.** A counting script that can silently under-count is
 worse than no counting script.
+
+## Finding 26 — The `Oracle-Tags` clause is EXONERATED. The fault is Object Storage authorization under concurrency.
+
+August 21, 2026. Finding 23's step 3 was executed: the clause was removed, the
+identical burst re-run, and the clause restored. **It is not the cause.** Along
+the way three earlier claims in this file needed correcting, and the mechanism
+narrowed to something specific enough to take to Oracle.
+
+### CORRECTED — the data-plane log does not contain an authorization decision
+
+**WAS (Finding 24, and task 19's "still owed"):** *"read the authorization
+decision for the declined `ListObjects`"* from the Object Storage service log.
+
+**CORRECTED: no such field exists.** A fresh decline was generated on purpose,
+its `opc-request-id` captured client-side
+(`phx-1:jxRkdhlTXQ9USL6dNOuz3QzFyY9kevWHHOUuLMBctKYeeCMyxEM2Ua-OPuemNeVE`) and
+matched to its log record. The **complete** record carries 24 data fields —
+principal, bucket, path, status, timings, credentials fingerprint — and **not
+one of them is a policy verdict, a matched statement, or a "denied by".** The
+entire authorization content is `errorCode: BucketNotFound`.
+
+Audit does not have it either (data-plane operations are unaudited). So the
+step this flake has carried since it was first measured is **not deliverable
+from OCI's customer-visible logging at all** — not "not yet done". That is worth
+stating plainly, because it has been written down as the next action three
+times and is unperformable as phrased.
+
+### The runbook's two predictions, scored
+
+`RUNBOOK-object-storage-404-flake.md` was written before any of it could be
+run, and said so. Both of its step-1 branches turn out to be wrong, which is
+worth recording because they were the reasonable guesses:
+
+- *"whether the decline is recorded as an authorization outcome at all, and
+  **against which statement**"* — it is recorded, but **not as an authorization
+  outcome**, and no statement is named anywhere. The third possibility, that
+  the log records the request and says nothing about the decision, was not on
+  the list.
+- *"If the log is empty for a request you know was declined, that is itself a
+  finding: the request never reached the data plane."* — **the log is not
+  empty.** Declines are logged, with a populated `bucketId` for the bucket
+  they report as absent, so the request *did* reach the data plane. This
+  branch is ruled out.
+
+Step 3's branches scored one for two: *"rate unchanged → the clause is
+exonerated"* is what happened; *"rate goes to zero → task 19 can close"* did
+not. And its closing line — *"step 1's audit answer is the remaining thread"* —
+is now known to be a thread that does not exist.
+
+### CORRECTED — the rate is not a rate. It is episodic.
+
+**WAS (Finding 25):** "6.87%, 95% CI 5.6-8.4%. **The rate is stable.**"
+
+**CORRECTED: the process is non-stationary and bimodal**, and Finding 25's
+interval was computed as though it were binomial, which overstates its meaning.
+Twelve identical N=500-1000 bursts, same principal, same instrument, minutes
+apart, nothing changed between them:
+
+```
+0.00  0.00  0.20  0.20  0.20  0.40  0.40  0.60  0.80  1.70  11.70  13.40   (%)
+```
+
+Nine of twelve sit at or below 0.8%; the rest jump past 11%. **Two consecutive
+N=1000 bursts five minutes apart read 11.70% and 1.70%.** The flake arrives in
+*episodes* during which a large fraction of requests fail, and is otherwise
+near-clean. Finding 25's single number was one window's average across an
+episode boundary; it was not wrong so much as not a parameter of anything.
+
+**This is why a single before/after pair could not have answered step 3**, and
+the variance had to be characterised before the policy was touched.
+
+### The clause: removed, measured, restored, EXONERATED
+
+Instrument fixed before the change and unchanged after: **10 bursts × 500
+`ListObjects`, 16-way concurrent**, principal `kythira-ci`, bucket
+`kythira-ci-artifacts`, prefix `kythira-real-test/`.
+
+| | bursts | requests | declines | overall | episodes (≥5%) |
+|---|---|---|---|---|---|
+| **clause present** | 10 | 5000 | 81 | 1.62% | **1** |
+| **clause removed** | 10 | 5000 | 122 | 2.44% | **3** |
+
+Fisher exact on episodes-per-burst — the correct unit, since requests inside an
+episode are correlated and a per-request test would badly overstate power —
+gives **p = 0.58**. **No improvement.** The count moved the wrong way, which is
+itself inside this metric's own swing and is not evidence of harm either.
+
+`Allow group kythira-ci to use tag-namespaces in tenancy where
+target.tag-namespace.name = 'Oracle-Tags'` was restored **byte-identically**
+and verified by re-read. Only the `group kythira-ci` statement was ever
+touched; `dynamic-group kythira-ci-pool-dg`'s was left alone.
+
+**The only named suspect this investigation had is eliminated.** Finding 23's
+reasoning was sound and the analogy to August 12 was reasonable — but note the
+difference that now looks material: the August 12 clause was a
+**variable-to-variable** comparison (`request.principal.id =
+target.instance.id`), undocumented syntax; this one is **variable-to-literal**,
+the documented, supported form. That distinction was available before the test
+and nobody drew it.
+
+### CONFIRMED, and now measured: the fault needs principal AND service AND concurrency
+
+Every cell below is the same host, same bucket, same operation, same session.
+
+| principal | service | conc. | N | declines |
+|---|---|---|---|---|
+| `kythira-ci` | Object Storage | **16** | 5000 | **81, episodic to 13.4%** |
+| `kythira-ci` | Object Storage | **1** | 1000 | 3 (0.30%) |
+| **Administrators** | Object Storage | 16 | 5000 | **0** |
+| `kythira-ci` | **Compute** `ListInstances` (compartment-scoped) | 16 | 500 | **0** |
+| `kythira-ci` | **Identity** `ListRegions` | 16 | 500 | **0** |
+
+Three independent discriminators, all one-variable changes:
+
+1. **Concurrency is required.** Serial: 0.30%. 16-way: 11.70%. Same principal,
+   same credential, same request, minutes apart. A policy `where` clause is
+   evaluated per request and cannot care how many are in flight — which is the
+   structural reason the clause was never a good fit for these observations,
+   and it was visible before the clause was removed.
+2. **It is the principal, not the request.** Administrators, at identical
+   concurrency, is clean across **5000** requests. (Consistent with the clause
+   hypothesis, and equally consistent with its replacement.)
+3. **It is Object Storage, not this principal's authorization generally.**
+   `kythira-ci` against **Compute in the same compartment** — the same
+   policy-evaluation path, the same group, the same 16-way concurrency — is
+   clean. **This is exactly the asymmetry `policies/heartbeat.txt` recorded on
+   August 12 from a single incident** ("Object Storage fails closed, Compute
+   does not"), now reproduced deliberately with numbers on both sides.
+
+**And it is not the WIF/UPST path.** Every measurement above used a plain
+**API key** on IAM user `kythira-ci`, not a token-exchange UPST. The flake
+reproduces identically, which removes token exchange, token lifetime and claim
+resolution from the suspect list in one step.
+
+**The `401 NotAuthenticated` tell.** Some Object Storage bursts return a mix of
+`404 BucketNotFound` **and `401 NotAuthenticated`** (11 of 1000 in one, 9 of
+1000 in another) — for a request that is correctly signed and succeeds on
+either side of it. A 401 is an *authentication*-layer answer. Its presence,
+alongside 404s, for a valid signature, points at the request failing before or
+inside principal resolution and Object Storage rendering that failure as either
+an honest 401 or a fail-closed 404.
+
+### Conclusion, and what is left
+
+The best-supported statement the evidence allows: **in this tenancy, Object
+Storage's authorization path for non-administrator principals fails
+intermittently under concurrent load, surfacing as `404 BucketNotFound` and
+occasionally `401 NotAuthenticated`.** It is not the client, not the request,
+not the credential type, not this tenancy's policy statements, and not a
+property of OCI IAM generally, because the same principal's Compute and
+Identity calls are clean at the same concurrency.
+
+**That is an Oracle-side fault, and the next action is a support ticket**, not
+another policy edit. The ticket has what it needs and could not have had
+before: `opc-request-id`s for declines, byte-identical successful twins,
+the concurrency dependence, and the two matched controls.
+
+### Step 5 — every principal/service pair re-verified after the restore
+
+The August 12 breakage looked like a bucket outage because only one path was
+checked. All of these ran **after** the policy was restored, as `kythira-ci`:
+
+| check | result |
+|---|---|
+| `oci_tenancy_check` stages 1-5 (signing, compartment, GetInstancePool, ListInstancePoolInstances, GetCertificateAuthorityBundle) | **all pass** |
+| `oci_certificates_provider_real_test` | **3/3 pass** |
+| `oci_quorum_manager_real_test` — launches a real instance, tags it, decommissions it | **4/4 pass**, $0.00064, no instance left running |
+| `oci_object_storage_persistence_real_test` | **FAILED on the flake** — not re-run |
+
+The instance-pool suite is the one that matters most here, because
+`kythira-ci-launch-tags` is precisely the launch-time tagging policy that was
+mutated. It provisioned, assessed and decommissioned a real instance after the
+restore. The heartbeat phase skipped for want of
+`KYTHIRA_OCI_HEARTBEAT_ARTIFACT_URL`, which is minted in CI and is expected to
+be absent locally; the pool's dynamic-group statement was never modified.
+
+**The object-persistence suite's failure is the known flake, not a regression**
+— it failed the same way before the policy was touched, and the burst data
+brackets it on both sides. It was run once and left red.
