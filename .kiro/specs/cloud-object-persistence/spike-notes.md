@@ -968,3 +968,151 @@ Its absence is a genuine gap in CI economics, not in correctness evidence. The
 real tier covers everything the emulators would have, and covers it better —
 Finding 18's two OCI defects were invisible to every local tier and would have
 been invisible to an emulator too.
+
+## Finding 23 — Task 17's grants provisioned live, and a concrete lead on the OCI flake
+
+August 19-20, 2026. Provisioning the five CI identities' object-persistence
+grants surfaced two things worth recording: one about what the grants actually
+needed, and one about the **open `404 BucketNotFound` flake** that has made
+every OCI result weaker evidence than the other four providers'.
+
+### Two of the five needed no grant at all, for opposite reasons
+
+| Provider | Applied | Result |
+|---|---|---|
+| AWS | `provision-oidc-role.sh --bundles …,object-persistence --bucket kythira-ci-827617851594` | 2 statements added; **verified nothing was lost** (see below) |
+| Azure | `provision-federated-identity.sh --bundles object-persistence` | `Storage Blob Data Contributor` assigned at **container** scope on `kythirarealtestobj/kythira-raft` |
+| GCP | `provision-workload-identity.sh --bundles gcp-object-persistence` | `roles/storage.objectUser` bound **on the bucket**, confirmed in the returned bucket IAM policy |
+| **OCI** | *(nothing)* | **Already granted.** Policy `kythira-ci-artifacts` carries `Allow group kythira-ci to manage object-family in compartment kythira-ci` — a strict superset of the fragment. Running the provisioner would have **replaced** policy `kythira-ci`'s statements to add a permission the group already had |
+| **Alibaba** | *(nothing)* | `kythira-ci-oss-persistence` was already attached to the RAM role, from the bundle that predates this spec |
+
+**The AWS run is the one that needed a control, and got one.**
+`put-role-policy` replaces the inline policy wholesale, so the invocation had to
+name **all six** bundles rather than only the new one. The Sid set was captured
+before and diffed after: `lost: NONE`, `added:
+{ObjectPersistenceObjectPlane, ObjectPersistenceListTestPrefixOnly}`. Writing
+the diff down is the point — "I remembered to pass the other bundles" and "the
+other bundles are still there" are different claims, and only the second is
+evidence.
+
+### The lead: a tenancy-level `where` clause on a variable no Object Storage request has
+
+Listing the tenancy's policies to work out OCI's bundle set turned up a policy
+that nothing in this spec had looked at:
+
+```
+Policy kythira-ci-launch-tags (in tenancy):
+  Allow group kythira-ci to use tag-namespaces in tenancy
+      where target.tag-namespace.name = 'Oracle-Tags'
+  Allow dynamic-group kythira-ci-pool-dg to use tag-namespaces in tenancy
+      where target.tag-namespace.name = 'Oracle-Tags'
+```
+
+**That is the exact shape that broke this compartment once already.** The
+mechanism is documented by Oracle and was measured here on August 12, 2026
+(`scripts/ci-cloud-credentials/oci/policies/heartbeat.txt`): *a condition
+variable that is inapplicable to a request declines the request rather than
+merely failing to match the statement*, and the services enforce that
+inconsistently — **Object Storage fails closed where Compute does not**. On that
+occasion a `where` clause added to the *heartbeat* policy made the **CI group's
+`put_object` to `kythira-ci-artifacts` fail with `404 BucketNotFound`**, while
+the same principal's `ListInstances` kept succeeding.
+
+The open flake has every one of those characteristics:
+
+- the same group, `kythira-ci`;
+- the same error, `404 BucketNotFound` ("...or you are not authorized");
+- **intermittent, 3-16%** — consistent with a condition evaluated per request
+  against a variable the request may or may not carry, rather than with a
+  permission that is simply absent;
+- across **all verbs**, body-carrying or not, which rules out most
+  request-shape explanations.
+
+`target.tag-namespace.name` is not a variable an Object Storage `PutObject`,
+`GetObject`, `DeleteObject` or `ListObjects` supplies. By the documented rule
+that is an *inapplicable* variable, and the recorded local behaviour of an
+inapplicable variable in this compartment is a declined request.
+
+**This is a hypothesis with a clear test, not a conclusion.** It has not been
+tested, deliberately: mutating a tenancy policy is precisely the action that
+caused the August 12 breakage, and the honest sequence is to establish the
+before-picture first. The test, in order:
+
+1. Take an `opc-request-id` from a live decline to the **compartment audit
+   log** and read what the authorization decision actually says. This step is
+   owed regardless and has been owed since the flake was first measured.
+2. Measure the decline rate over a fixed burst as the `kythira-ci` principal,
+   so there is a baseline number rather than a remembered range.
+3. Only then, remove the `where` clause from `kythira-ci-launch-tags` (the
+   statement's purpose — letting the pool tag instances with `Oracle-Tags` —
+   survives the clause's removal, at the cost of allowing other tag
+   namespaces), and re-measure the same burst.
+4. **Re-verify every other principal/service pair the compartment serves**,
+   not just Object Storage. That is what the August 12 attempt failed to do in
+   the other direction, and it is why the breakage looked like a bucket outage.
+
+If the rate goes to zero, the flake is a policy artifact and OCI's results stop
+being weaker evidence than the other four providers'. If it does not, the clause
+is exonerated and step 1's audit-log answer is the remaining thread.
+
+**Until then nothing changes**: an OCI real-tier failure stays ambiguous, and
+the honest response to red stays the audit log rather than re-running until
+green.
+
+
+## Finding 24 — The CI runs, and what measuring from a second position taught
+
+August 21, 2026. Runs
+[32432380565](https://github.com/crawlins/kythira/actions/runs/32432380565) and
+[32441129124](https://github.com/crawlins/kythira/actions/runs/32441129124):
+every provider's object-persistence bundle dispatched against its real service,
+**under the least-privilege CI grants** rather than an operator's credentials.
+AWS (x64 and arm64), Azure Blob, Alibaba OSS and GCS all pass; OCI's pre-flight
+was declined `404 BucketNotFound` and was **not re-run**.
+
+**Every least-privilege grant was sufficient, first try.** Task 17 recorded the
+expectation that at least one would come up short, on the reasoning that no
+grant had ever been exercised by a principal holding only it. That expectation
+was wrong, and it is worth recording as wrong: the grants were derived from the
+call lists in each client header, and that turned out to be enough.
+
+**The measurement-position lesson, which is the real finding.** Finding 20's
+figures came from a developer machine. These come from a GitHub-hosted runner,
+and they disagree by 2-12×. Both are correct; neither is "the" number:
+
+| provider | dev machine p50 | runner p50 | runner p99 |
+|---|---|---|---|
+| Azure Blob | 348 ms | **28.7 ms** | 30.4 ms |
+| S3 | 128 ms | 66.5 ms | 81.3 ms |
+| GCS | 145 ms | 135.1 ms | 153.2 ms |
+| Alibaba OSS | 1648 ms | 1096.9 ms | 1140.5 ms |
+
+**Azure moved 12×, and the reason is that GitHub's runners run on Azure.** That
+row is a node talking to storage inside its own provider's network — the
+in-provider case, which is what a correctly placed production node looks like.
+Read bare it says "Azure Blob is 5× faster than GCS", which is false; it
+measures proximity, and it is now labelled inline in every table that carries
+it, exactly as Alibaba's cross-ocean figure already was.
+
+**The spread is placement, not provider.** 30 ms to 1141 ms p99 across the same
+engine and the same five checks — 38×, of which almost none is attributable to
+which object store was chosen. `doc/cloud_object_persistence.md`'s
+election-timeout guidance was rewritten around that: co-location is a bigger
+lever than provider selection.
+
+**"p99" needs an asterisk and now carries one.** The suite takes 8 samples for
+`save_current_term` and 20 for `append_log_entry`, and picks percentiles by
+nearest rank, *clamped*. At those counts the clamp lands on the last element,
+so **the reported p99 is the slowest observed request** — a worst-of-run, not a
+tail estimate. Useful for sizing; not a distribution claim. The
+non-interpolating choice is right (interpolating would invent precision), but
+it makes the label misleading unless said out loud.
+
+**Two failures, two different kinds.** GCS's first attempt hit a Google-side
+`502` carrying the service's own "temporary error, try again in 30 seconds"
+page, after the client's retry policy was exhausted — a transient, re-run,
+green. OCI was told a bucket that exists does not exist. Only the first
+justifies a re-run, and treating them alike is how a regression becomes a
+flake. Noted in passing: the GCS transient landed in **restore**, a bulk
+unconditional write where `write_retries`' default of 1 is thin; the default is
+right for the Raft hot path and is left alone.

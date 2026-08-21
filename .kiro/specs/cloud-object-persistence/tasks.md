@@ -1771,7 +1771,68 @@ Reference implementations to study before starting, in this order:
     quoted for another.
   - _Requirements: 6.2–6.5, 19.1–19.5_
 
-- [ ] 19. **Live verification**
+- [~] 19. **Live verification** — **four of five providers green in CI under
+      least-privilege grants**, August 21, 2026. OCI is the exception and is
+      deliberately left red; see below.
+
+      **Runs:** [32432380565](https://github.com/crawlins/kythira/actions/runs/32432380565)
+      (all bundles) and [32441129124](https://github.com/crawlins/kythira/actions/runs/32441129124)
+      (GCS + Alibaba monitoring re-run).
+
+      | Provider | Result |
+      |---|---|
+      | AWS S3, x64 **and** arm64 | pass, 5/5 |
+      | Azure Blob | pass, 5/5 |
+      | Alibaba OSS | pass |
+      | GCS | pass 5/5 on re-run; 4/5 first attempt (Google-side `502`) |
+      | OCI Object Storage | **did not run** — pre-flight declined `404 BucketNotFound` |
+
+      **This is a stronger claim than the August 17-19 runs, and that is the
+      point of doing it in CI at all.** Those authenticated as principals that
+      already held broad policies, so they proved the clients worked and
+      nothing about the grants. These ran under the least-privilege grants
+      task 17 wrote — and **every one of them was sufficient**, first try, on
+      all four providers that ran. The expectation recorded in task 17 was
+      that at least one would come up short; it did not.
+
+      **The two red results were not the same kind of red, and were treated
+      differently on purpose.** GCS was told by the service, in its own words,
+      that the request had failed temporarily — a transient, legitimately
+      re-run, green on the retry. OCI was told a bucket that plainly exists
+      does not exist: a *wrong answer* whose cause is unknown. **It has not
+      been re-run.** Re-running until green is precisely how a real regression
+      gets laundered into a flake, and the workflow step, the suite header and
+      `policies/object-persistence.txt` all say so.
+
+      **The measured latency changed what the documentation advises**, which
+      was not the expected outcome of merely filling in a table. Real p99s
+      now exist (previously only p50, and only from a developer machine), and
+      they show the spread across providers is **almost entirely network
+      placement**: 30 ms p99 for Azure Blob measured from inside Azure — where
+      GitHub's runners live — against 1141 ms for a cross-ocean OSS bucket.
+      **38×, same engine, same five checks.** So the election-timeout table is
+      now five rows spanning ≥122 ms to ≥4.6 s, and the guidance is that
+      co-location is a bigger lever than provider choice.
+
+      Two honesty corrections came with it. **"p99" here is the slowest of 8
+      or 20 observations** — nearest-rank, clamped, deliberately
+      non-interpolating — so it is a worst-of-run, not a tail estimate; the
+      docs now say so rather than presenting `4 × p99` as *the* floor. And
+      **Azure's 28.7 ms is an in-provider measurement**, labelled as such
+      inline in every table that carries it, because quoted bare it would read
+      as "Azure Blob is 5× faster than GCS" when it measures proximity.
+
+      **Still owed:** OCI's green run, which is blocked behind the tenancy
+      flake rather than behind anything in this spec. The next action there is
+      **not** another run — it is enabling Object Storage **data-plane** event
+      logging on `kythira-ci-artifacts`, because `oci audit event list` over
+      the failure window returns nothing: data events are not audited by
+      default, which is why the "take an opc-request-id to the audit log" step
+      recorded since the flake was first measured has never actually been
+      performable. A named suspect exists (spike-notes Finding 23): the
+      tenancy policy `kythira-ci-launch-tags` carries a `where
+      target.tag-namespace.name = 'Oracle-Tags'` clause on the very group
+      whose Object Storage requests intermittently 404.
 
   - Run every provider's real suite against a real bucket; fold every live
     correction back into spike-notes.md/requirements/design **in place**
