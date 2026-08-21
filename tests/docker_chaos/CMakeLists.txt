@@ -119,6 +119,14 @@ add_docker_chaos_scenario_test(docker_otlp_collector_test
 add_docker_chaos_scenario_test(docker_prometheus_metrics_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/prometheus_metrics_scenario_test.cpp")
 
+# The remote-write PUSH path, as distinct from the scrape PULL path above:
+# a Collector running an unmodified cloud-vendor example config exports into
+# a real Prometheus whose scrape_configs are empty, so a queryable series can
+# only have arrived by remote write. See the test's header for what a green
+# here does and does not mean.
+add_docker_chaos_scenario_test(docker_prometheus_remote_write_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/prometheus_remote_write_scenario_test.cpp")
+
 add_docker_chaos_scenario_test(docker_victoriametrics_metrics_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/victoriametrics_metrics_scenario_test.cpp")
 
@@ -181,6 +189,7 @@ if(_RUNTIME_EXE)
     set(_DNS_SD_DISCOVERY_DOCKERFILE     "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/Dockerfile")
     set(_OTLP_COLLECTOR_COMPOSE_FILE     "${CMAKE_SOURCE_DIR}/docker/otlp-collector-compose.yml")
     set(_PROMETHEUS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/prometheus-metrics-compose.yml")
+    set(_PROMETHEUS_REMOTE_WRITE_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/prometheus-remote-write-compose.yml")
     set(_VICTORIAMETRICS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/victoriametrics-metrics-compose.yml")
     set(_TELEGRAF_METRICS_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/telegraf-metrics-compose.yml")
     set(_NETDATA_METRICS_COMPOSE_FILE    "${CMAKE_SOURCE_DIR}/docker/netdata-metrics-compose.yml")
@@ -423,6 +432,17 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    add_custom_target(docker-prometheus-remote-write-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_PROMETHEUS_REMOTE_WRITE_COMPOSE_FILE=${_PROMETHEUS_REMOTE_WRITE_COMPOSE_FILE}
+                $<TARGET_FILE:docker_prometheus_remote_write_test>
+                --log_level=message
+        DEPENDS docker-chaos-image docker_prometheus_remote_write_test
+        COMMENT "Running Prometheus remote-write scenario test (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
     add_custom_target(docker-victoriametrics-metrics-tests
         COMMAND ${CMAKE_COMMAND} -E env
                 ${_RT_ENV}
@@ -489,7 +509,8 @@ if(_RUNTIME_EXE)
         "docker-dns-discovery-image, docker-dns-discovery-tests, "
         "docker-dns-sd-discovery-image, docker-dns-sd-discovery-tests, "
         "docker-otlp-collector-tests, "
-        "docker-prometheus-metrics-tests, docker-victoriametrics-metrics-tests, "
+        "docker-prometheus-metrics-tests, docker-prometheus-remote-write-tests, "
+        "docker-victoriametrics-metrics-tests, "
         "docker-telegraf-metrics-tests, docker-netdata-metrics-tests, "
         "docker-cloudwatch-metrics-tests, docker-cloud-monitoring-config-tests targets available")
 else()
@@ -501,7 +522,8 @@ else()
         docker-dns-discovery-image docker-dns-discovery-tests
         docker-dns-sd-discovery-image docker-dns-sd-discovery-tests
         docker-otlp-collector-tests
-        docker-prometheus-metrics-tests docker-victoriametrics-metrics-tests
+        docker-prometheus-metrics-tests docker-prometheus-remote-write-tests
+        docker-victoriametrics-metrics-tests
         docker-telegraf-metrics-tests docker-netdata-metrics-tests
         docker-cloudwatch-metrics-tests docker-cloud-monitoring-config-tests)
         add_custom_target(${_t}
