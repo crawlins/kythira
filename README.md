@@ -1668,4 +1668,5 @@ See [HTTP Transport Troubleshooting](https://github.com/crawlins/kythira/blob/ma
 
 ## License
 
-TBD
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the
+full text, or <http://www.apache.org/licenses/LICENSE-2.0>.
