@@ -167,13 +167,25 @@ Reference implementations to study before starting, in this order:
 
 ## Tasks
 
-- [ ] 0. **Spike: close every OPEN cell before building on it**
+- [x] 0. **Spike: close every OPEN cell before building on it** — **all eight
+      sub-items closed**, August 17-19, 2026. 0.7 was the last, and it closed
+      *negative* (Finding 21).
 
   Run against vendor documentation **and** live services. Record findings in
   `spike-notes.md` with the OCI spec's CONFIRMED/CORRECTED/WAS format,
   folding every correction back into requirements.md/design.md **in place**.
   Every cell marked OPEN in design.md's Data Models tables is a sub-item
   here, and none of them may be closed by analogy to another provider.
+
+  **One cell is still marked OPEN in design.md, and that is the closed
+  outcome rather than an unfinished one.** The OCI durability-on-response
+  cell (N1) reads "searched and not found" because 0.2 went looking for
+  primary documentation that a 2xx PUT means durably stored and established
+  that Oracle does not publish it. Requirement 4.2's honesty rule is what
+  keeps that cell OPEN instead of letting the four confirmed providers'
+  wording stand in for it; overwriting it would be the defect. Every other
+  OPEN cell is CONFIRMED with a citation or CORRECTED in place, and none was
+  closed by analogy.
 
   - [x] 0.1 **List-after-write, empirically** — for Azure Blob, OCI Object
         Storage and Alibaba OSS (S3 and GCS document it explicitly and need
@@ -296,19 +308,26 @@ Reference implementations to study before starting, in this order:
         **success is 201 on PUT and 202 on DELETE**, the machine-readable error
         code is the **`x-ms-error-code` response header**, and a bodiless PUT
         still needs an explicit `Content-Length: 0` (Finding 11).
-  - [~] 0.7 **GCS mock tier decision.** No Google-supplied GCS emulator
-        exists. Assess `fake-gcs-server`'s fidelity **specifically on
-        generation preconditions**; if it is not trustworthy there, the
-        fallback is a hand-written mock. Emulator fidelity on the newest,
-        least uniformly implemented feature in this design is exactly what
-        cannot be assumed.
-        **Still open, and deliberately not guessed at** — it needs the emulator
-        run and this development host has no container runtime. What the live
-        run *did* produce is the **fidelity bar**, now stated as measurements
-        rather than expectations (Finding 12): `ifGenerationMatch=0` on an
-        existing object must be **412 `conditionNotMet`** and must leave the
-        object unchanged; a stale `ifGenerationMatch` must refuse an upload
-        *and* a delete; and the generation must advance on every write.
+  - [x] 0.7 **GCS mock tier decision — closed NO, August 19, 2026**
+        (Finding 21). No Google-supplied GCS emulator exists, so the question
+        was whether `fake-gcs-server` could be trusted **specifically on
+        generation preconditions** — emulator fidelity on the newest, least
+        uniformly implemented feature in this design being exactly what cannot
+        be assumed.
+        It was measured against the fidelity bar Finding 12 recorded as
+        observations of the real service, so the outcome is a comparison and
+        not a judgement call. **It clears 2 of 6 bars.** Generation advance and
+        the *multipart* `ifGenerationMatch=0` pass; media-upload preconditions
+        are ignored, the 404 body does not distinguish an absent object, and —
+        disqualifying on its own — **a stale `ifGenerationMatch` on DELETE
+        returns 200 and deletes the object**, so a fenced suite would go green
+        while the emulator destroyed objects a real bucket would have refused.
+        The hand-written mock this bullet offered as the fallback is
+        deliberately **not** written either: it would be a third encoding of
+        the same wire format, and Finding 18 showed what a mock that agrees
+        with its client is worth. **GCS's evidence is the real tier**, where it
+        passes 5/5 including fencing. Task 15.3 records the same decision from
+        the tier side.
   - [x] 0.8 **OCI namespace and endpoint** — **closed live, August 17,
         2026** (Finding 13). The endpoint is
         `https://objectstorage.<region>.oraclecloud.com` and the namespace is
@@ -1350,7 +1369,25 @@ Reference implementations to study before starting, in this order:
       which is not enough to build the endpoint).
       - _Requirements: 10.6, 16.4_
 
-- [ ] 15. **Per-provider emulator / mock tiers**
+- [~] 15. **Per-provider emulator / mock tiers** — **every sub-item is
+      terminal; two tiers were built and three deliberately were not**,
+      August 19, 2026. Left `[~]` rather than `[x]` because 15.1 and 15.2 are
+      *blocked*, not refused: each unblocks on an external change (a
+      LocalStack licence; documented Azurite OAuth acceptance criteria) and
+      neither needs new thinking to resume.
+
+  **The verify clause below — "the same conformance suite is green against
+  all five substrates" — is superseded by the sub-item decisions and cannot
+  be satisfied as written.** It is kept rather than edited because the reason
+  each substrate is absent is the finding. What is actually green: the
+  52-case conformance suite over the OCI mock (15.4) and 74 cases over the
+  Alibaba mock (15.5). S3 is blocked on a paid licence, Azure Blob and GCS
+  were **refused on the same principle** — Azurite would require adding
+  SharedKey signing to production code that deliberately speaks bearer tokens
+  only, and `fake-gcs-server` would require widening a real-service safety
+  whitelist. A tier that requires loosening production safety to go green is
+  not paying for itself, and all three providers' evidence is the real tier
+  instead.
 
   - [~] 15.1 **S3 → LocalStack: BLOCKED upstream**, August 19, 2026.
         LocalStack's community S3 image was **discontinued with v2026.03 on
