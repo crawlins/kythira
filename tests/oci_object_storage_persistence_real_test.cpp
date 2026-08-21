@@ -28,9 +28,10 @@
 // ── READ THIS BEFORE TRUSTING A RESULT FROM THIS SUITE ──────────────────────
 //
 // The CI tenancy intermittently declines VALID requests with `404
-// BucketNotFound` — 2 of 19 logged requests, 10.5%, in the job of 2026-08-21,
-// inside the 3-16% band measured earlier across PUT/GET/DELETE/LIST
-// (spike-notes.md Findings 23 and 24).
+// BucketNotFound` — **6.87%, 95% CI 5.6-8.4%**, measured over 1222 logged
+// requests across ten pre-registered runs on 2026-08-21 (spike-notes.md
+// Finding 25). PUT 8.0%, GET 7.4%, DELETE 3.9%. Stable, and inside the 3-16%
+// band quoted before it was counted.
 //
 // Until that is understood, a failure here is ambiguous in a way the other four
 // providers' failures are not: it may be a defect or it may be the tenancy. The

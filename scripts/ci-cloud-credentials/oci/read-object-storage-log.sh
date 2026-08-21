@@ -62,14 +62,36 @@ case "$which" in
 esac
 
 for log in "${logs[@]}"; do
-  out=$(oci logging-search search-logs \
-          --time-start "$start" --time-end "$end" \
-          --search-query "search \"${COMPARTMENT}/${LOG_GROUP}/${log}\"" \
-          --limit 1000 2>&1) || {
-    echo "search failed for ${log}:" >&2
-    printf '%s\n' "$out" >&2
-    continue
-  }
+  # RETRY, and verify the payload rather than the exit code. `logging-search`
+  # itself declines intermittently in this tenancy (~5 of 30 observed, then 0
+  # of 10 — see spike-notes Finding 24), and a declined query returns a
+  # ServiceError where a caller redirecting stderr sees an EMPTY RESULT rather
+  # than a failure. That silently under-counts, which is the single most
+  # dangerous failure mode for a script whose whole job is counting: it
+  # produced a 6x undercount before this loop existed. Never treat a short
+  # result as a small result.
+  out=""
+  for attempt in 1 2 3 4 5 6; do
+    if out=$(oci logging-search search-logs \
+               --time-start "$start" --time-end "$end" \
+               --search-query "search \"${COMPARTMENT}/${LOG_GROUP}/${log}\"" \
+               --limit 1000 2>&1) && [ "${out#\{}" != "$out" ]; then
+      break
+    fi
+    out=""
+    sleep 4
+  done
+  if [ -z "$out" ]; then
+    echo "SEARCH FAILED after 6 attempts for ${log} over ${start}..${end}." >&2
+    echo "DO NOT treat this as zero entries — the window was not read." >&2
+    exit 1
+  fi
+
+  # A full page means the window may be truncated; the caller must narrow it.
+  if printf '%s' "$out" | python3 -c 'import json,sys; sys.exit(0 if len(json.load(sys.stdin)["data"]["results"])<1000 else 1)'; then :; else
+    echo "WARNING: 1000-record page limit hit for ${log} over ${start}..${end}." >&2
+    echo "         Counts from this window are TRUNCATED — re-run in shorter slices." >&2
+  fi
 
   if [ "$raw" = 1 ]; then
     printf '%s\n' "$out"
