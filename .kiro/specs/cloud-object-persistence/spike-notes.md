@@ -1116,3 +1116,168 @@ justifies a re-run, and treating them alike is how a regression becomes a
 flake. Noted in passing: the GCS transient landed in **restore**, a bulk
 unconditional write where `write_retries`' default of 1 is thin; the default is
 right for the Raft hot path and is left alone.
+
+## Finding 24 — The OCI decline, captured. It is principal-bound, and the request is not the variable.
+
+August 21, 2026. The step this flake has carried since it was first measured —
+*"take an `opc-request-id` from a decline to the compartment audit log"* — was
+**never performable, and the audit log was never the right place.** Object
+Storage data-plane operations are not audited by default, which is why
+`oci audit event list` over the exact failure window returns one unrelated
+event. The mechanism is **Logging service logs**, not Audit.
+
+### What was enabled, and the order it had to happen in
+
+Log group `kythira-ci-object-storage` in compartment `kythira-ci`, carrying two
+`OCISERVICE` logs over `bucket kythira-ci-artifacts` — category `read`
+(`kythira-ci-artifacts-read`) and category `write`
+(`kythira-ci-artifacts-write`), 30-day retention, both `ACTIVE`.
+
+**Enabled before the next decline, deliberately**, since the entire point is to
+capture one. Then run [32444971282](https://github.com/crawlins/kythira/actions/runs/32444971282)
+dispatched the object-persistence bundle alone and was allowed to fail.
+
+### The decline and its byte-identical twin
+
+The suite's first case, `fresh_engine_read_back`, **passed**. Its second,
+`measured_latency`, was declined on the pre-flight LIST 6.7 seconds later. Both
+requests are in the log, and they are the same request:
+
+| field | 03:54:37.523Z | 03:54:44.236Z |
+|---|---|---|
+| `requestResourcePath` | `/n/axunmw4f0mln/b/kythira-ci-artifacts/o?limit=1000&prefix=kythira-real-test/` | **identical** |
+| `credentials` (the UPST) | `ST$eyJraWQiOiJhc3dfcGh4…` | **identical** |
+| `principalId` | `…aaaaaaaartsswebilvdi6pt3ym2lqxssriw5…` (`kythira-ci-wif`) | **identical** |
+| `bucketId` | `ocid1.bucket.oc1.phx.aaaaaaaajtoovqotaslyvkxxcdpzvg26o3d5zdehucghkqumsplx2m7ojiba` | **identical** |
+| `clientIpAddress`, `userAgent` | `20.102.46.193`, `cpp-httplib/0.27.0` | **identical** |
+| `statusCode` / `errorCode` | **200**, "List of Objects retrieved." | **404 `BucketNotFound`** |
+
+`opcRequestId` of the decline:
+`phx-1:EfvQoI4P714JGboXITYkDCUlKBpRtAs01rUhPH7URKzBcRUNVbc2gKUuLmjng7aF`.
+
+**This settles two things and constrains a third.**
+
+**The client is exonerated, from the service's own side of the wire.** Every
+remaining client-shaped explanation — wrong namespace, wrong bucket name,
+wrong endpoint derivation, a signing defect that corrupts the path — requires
+the two requests to differ. They do not differ in any field the service
+recorded.
+
+**The bucket was resolved before the 404 was chosen.** The declined entry
+carries `bucketId` and `bucketCreator`, populated, for the very bucket it then
+reported as not found. The 404 is an **authorization decline wearing a
+not-found status** — which is what Oracle's own "...or you are not authorized"
+wording permits, and which no client can distinguish at runtime.
+
+**The variable is not in the request; it is server-side state.** This is the
+new constraint, and it is the one the earlier evidence could not supply. A
+policy `where` clause evaluated against an inapplicable request variable
+(Finding 23) is *deterministic per request shape*: it would decline this LIST
+every time, not 1 time in 2. Whatever selects between 200 and 404 changes
+between two identical requests 6.7 s apart, so it is state on the service side
+— an authorization cache, a statement set hydrated per request, or a
+replica that disagrees — with the policy as the thing that state is *about*.
+Finding 23's suspect is not refuted; it is now known to be at most half the
+mechanism.
+
+### The control: the same request as an Administrator, 60 times
+
+| principal | request | N | declines |
+|---|---|---|---|
+| `kythira-ci-wif` (group `kythira-ci`), UPST | the LIST above | 2 logged | **1** |
+| `clark@bit63.org` (group `Administrators`), API key | **byte-identical LIST** | **60** | **0** |
+
+**The flake tracks the principal, not the bucket, the request, or the service.**
+That is the first evidence that discriminates between "this compartment's
+Object Storage is unwell" and "this *principal's* authorization is unwell", and
+it points at the second. It is also, for whatever it is worth, consistent with
+Finding 23: `Administrators` holds an unconditional `manage all-resources IN
+TENANCY` and is not subject to either `where` clause in the tenancy.
+
+Both `where` clauses were enumerated rather than assumed. The whole tenancy
+contains exactly two, both in `kythira-ci-launch-tags`, both
+`where target.tag-namespace.name = 'Oracle-Tags'`, one on `group kythira-ci`
+and one on `dynamic-group kythira-ci-pool-dg`. No other policy in the tenancy
+or the compartment carries a condition.
+
+### Recorded but explicitly not folded in: the Logging service did the same thing
+
+While reading these logs, `logging-search search-logs` declined **as an
+Administrator** with `404 NotAuthorizedOrNotFound` — 2 of 8, then 3 of 12,
+then **0 of 10** on a third burst with the logs 30 minutes old. That kills the
+obvious "freshly-created log has not propagated" explanation without
+establishing anything in its place.
+
+It is a different service, a different principal and a different credential
+type from the Object Storage flake, and 5-in-30-then-0-in-10 is a bursty
+shape rather than a rate. **It is written down because it was seen, not
+because it is the same phenomenon** — asserting one cause for two observations
+this far apart is the guess this spec keeps refusing to make.
+
+### Two traps in reading these logs, both of which produced a wrong answer first
+
+**A log search that comes back short is not evidence of absence.** The first
+query, run ~10 minutes after the job, returned the job's successful requests
+and *not* the decline, and the conclusion drawn from it — "declines are not
+logged, the request never reaches the bucket" — was wrong, interesting, and
+would have redirected the whole investigation. A re-query after the ingestion
+lag returned the 404. Always re-query before concluding a log is missing an
+entry.
+
+**The search scope must be `<compartment>/<logGroup>/<logOcid>`, all three.**
+One mistake produces three unrelated errors: the two-part
+`<compartment>/<logGroup>` form answers `400 InvalidParameter — "No log sources
+found to be read"`, and scoping to the tenancy answers `401 NotAuthenticated`.
+Neither says "name the log".
+
+### The rate, enumerated — and why the suite is more fragile than the engine
+
+Reading **both** categories rather than only `read` turned up a **second
+decline in the same job that the first pass had missed**, and with it the first
+decline rate that is counted rather than remembered:
+
+| | |
+|---|---|
+| logged Object Storage requests in the job | **19** (11 GET, 8 PUT) |
+| declined `404 BucketNotFound` | **2 — 10.5%** |
+| which requests | `PUT` at 03:54:40.427Z, `GET`/LIST at 03:54:44.236Z |
+
+10.5% sits inside the 3-16% band this flake has always been quoted at, which
+is the first time that band has been confirmed against an enumeration of the
+actual requests.
+
+**The two declines had opposite outcomes, and the difference is retry.** The
+declined PUT was **absorbed**: the engine reissued it on the same path 286 ms
+later and got a 200, which is why the suite's first case,
+`fresh_engine_read_back`, passed with no sign of trouble. The declined LIST was
+the **pre-flight**, which issues one request and skips the suite if it fails.
+
+So: **the suite is more fragile than the engine it tests.** A red OCI run does
+not imply a broken engine; it means the one request in the whole run that has
+no retry drew the short straw. That cuts both ways and both are worth saying —
+`write_retries`' default of 1 is quietly doing real work against this tenancy,
+and it is now measured doing it.
+
+**The obvious fix is deliberately not applied.** Giving the pre-flight a retry
+would have turned this run green. It would also have hidden a tenancy fault
+behind the same engine retry that already hides it in the hot path, and left
+the project with no signal at all for a defect that is not yet understood. That
+is a decision about how much red to tolerate, and it belongs to whoever is
+weighing the flake against a green board — not to a change made while
+investigating it.
+
+### What is owed now
+
+Finding 23's step 2 — a decline *rate* for the `kythira-ci` principal — is
+still owed and is now cheap to collect, since every request that principal makes
+to this bucket is logged with its status. It needs dispatched runs to generate
+the traffic, and those runs must be dispatched **to measure**, with the count
+recorded before they start. That is a different act from re-running until green,
+and the distinction is the whole reason this flake has not been laundered.
+
+Step 3 — removing the `where` clause — stays blocked behind that number, for
+the reason Finding 23 gave: mutating a tenancy policy is what caused the
+August 12 breakage. The new constraint above also means a clean re-measurement
+will be harder to interpret than expected: if the mechanism is partly a cache,
+the rate may move slowly after the policy changes, and "it got better" over a
+short window will not be evidence.

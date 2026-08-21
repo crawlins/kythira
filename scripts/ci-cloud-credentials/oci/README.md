@@ -161,9 +161,30 @@ length of the run. The bucket already exists for the heartbeat path, so this
 bundle adds no standing cost at all.
 
 **A red run of this bundle is weaker evidence than the other four providers'.**
-The suite's own header and the workflow step both say so: take the
-`opc-request-id` from the decline to the compartment audit log rather than
-re-running until green, which would launder a regression into a flake.
+The suite's own header and the workflow step both say so, and re-running until
+green would launder a regression into a flake.
+
+**To investigate one, read the data-plane service log**, with
+`./read-object-storage-log.sh <start> <end>` — *not* the audit log, which was
+the instruction here until August 21, 2026 and was never performable: Object
+Storage data-plane operations are not audited by default, so
+`oci audit event list` over a failure window returns nothing (spike-notes.md
+Finding 24). The log group `kythira-ci-object-storage` and its two
+`OCISERVICE` logs over `kythira-ci-artifacts` (categories `read` and `write`,
+30-day retention) exist to make that reading possible; deleting them puts the
+flake back out of reach.
+
+What that log established on its first use, so the next reader does not repeat
+it: a declined `ListObjects` had a **byte-identical twin that succeeded 6.7 s
+earlier** in the same job — same URI, same UPST, same principal, same
+`bucketId` — which exonerates the client from the service's side of the wire;
+the declined entry carries a **populated `bucketId`**, so the bucket resolved
+and the 404 is an authorization decline wearing a not-found status; and the
+same request as an Administrator ran **60 times with zero declines**, so the
+flake tracks the principal rather than the bucket. Read **both** categories:
+the job's second decline was a PUT, invisible in the `read` log, and it was
+absorbed by the engine's retry — which is why a green run is not proof the
+tenancy behaved.
 
 ## Monitoring-config test
 

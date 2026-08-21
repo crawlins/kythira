@@ -661,11 +661,18 @@ the five plus four of its own: the fencing case is *uninstantiable* over a
 store that is not a `conditional_key_object_store`, and would not compile.
 
 **One caveat specific to OCI.** The CI tenancy intermittently declines valid
-Object Storage requests with `404 BucketNotFound` — measured at 3–16%, across
-all verbs. Until that is understood, a *failed* OCI run is ambiguous in a way
-the other four are not, and the honest response to red is the compartment
-audit log rather than re-running until green. It does not weaken the passing
-results; it weakens the failing ones.
+Object Storage requests with `404 BucketNotFound` — 10.5% of the requests in
+the August 21, 2026 run, inside the 3–16% band measured earlier, across all
+verbs. Until that is understood, a *failed* OCI run is ambiguous in a way the
+other four are not, and the honest response to red is to read the Object
+Storage **data-plane service log** rather than re-run until green. It does not
+weaken the passing results; it weakens the failing ones.
+
+**This is a property of one tenancy, not of the client or of OCI**, and the
+service's own log now says so: a declined `ListObjects` has a byte-identical
+twin that succeeded seconds earlier under the same credential, and the same
+request issued by a differently-privileged principal was declined zero times
+in sixty. Operators should not read it as guidance about `oci_object_storage_client`.
 
 **What the local test tiers cannot prove, recorded because assuming otherwise
 cost real defects.** The real tier found two shipped OCI defects, each of
