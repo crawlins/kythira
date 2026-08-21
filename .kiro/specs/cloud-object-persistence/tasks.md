@@ -1871,6 +1871,20 @@ Reference implementations to study before starting, in this order:
       target.tag-namespace.name = 'Oracle-Tags'` clause on the very group
       whose Object Storage requests intermittently 404.
 
+      **The tooling for that next action now exists and has not been run.**
+      `scripts/ci-cloud-credentials/oci/enable-object-storage-logging.sh`
+      creates the read and write service logs on `kythira-ci-artifacts`,
+      touching no IAM policy and refusing a category the service does not
+      offer (a nonexistent one yields a log that silently never fills).
+      `scripts/ci-cloud-credentials/oci/RUNBOOK-object-storage-404-flake.md`
+      carries Finding 23's sequence as ordered steps — enable, capture a live
+      `opc-request-id`, baseline the decline rate, *then* consider the `where`
+      clause, then re-verify every principal/service pair the compartment
+      serves. Both are unexercised against a live tenancy and say so.
+      **Note that logging is prospective**: it explains none of the August
+      failures and makes only the next decline readable, so the capture step
+      needs fresh traffic rather than a search for old request ids.
+
   - **DONE for four of five providers; OCI outstanding.** Run every
     provider's real suite against a real bucket; fold every live correction
     back into spike-notes.md/requirements/design **in place** (the OCI
