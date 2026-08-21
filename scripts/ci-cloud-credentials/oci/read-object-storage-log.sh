@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
 #
 # Read the Object Storage data-plane service log for kythira-ci-artifacts.
+#
+# The OCIDs below are the ones enable-object-storage-logging.sh creates (log
+# group kythira-ci-logs). If that group is ever recreated they change; override
+# with OCI_CI_OBJECT_LOG_GROUP_ID / _READ_ID / _WRITE_ID rather than editing.
 #
 # This is the tool the `404 BucketNotFound` flake is investigated with. It is
 # NOT the audit log: Object Storage data-plane operations are not audited by
@@ -35,9 +41,9 @@
 set -euo pipefail
 
 COMPARTMENT="${OCI_CI_COMPARTMENT_ID:-ocid1.compartment.oc1..aaaaaaaarzymnowy6xsbe5sj5z7evtpigcomd2vm5nwayhkzcjckkalau5tq}"
-LOG_GROUP="${OCI_CI_OBJECT_LOG_GROUP_ID:-ocid1.loggroup.oc1.phx.amaaaaaaqu4kakiaomthhnnwv4kvwr2xdvzf3ti6wlbj6wd3szzbdmhr3m3q}"
-LOG_READ="${OCI_CI_OBJECT_LOG_READ_ID:-ocid1.log.oc1.phx.amaaaaaaqu4kakiaqvxlhh4rrjii3a6k4kt6cdcz7wkdwh5z3ljitsg7mwcq}"
-LOG_WRITE="${OCI_CI_OBJECT_LOG_WRITE_ID:-ocid1.log.oc1.phx.amaaaaaaqu4kakiaguujm2w3f4dqtx6zjzpwliq2a7j5imx5oqq7llbsfkoq}"
+LOG_GROUP="${OCI_CI_OBJECT_LOG_GROUP_ID:-ocid1.loggroup.oc1.phx.amaaaaaaqu4kakiagl5e7rhyfsoshn2lbe7y5ldtijjjvlxdywya52poa7eq}"
+LOG_READ="${OCI_CI_OBJECT_LOG_READ_ID:-ocid1.log.oc1.phx.amaaaaaaqu4kakia23asznnqvrn3c6q7pcl5srpdig5q6q5xa7smffxafcdq}"
+LOG_WRITE="${OCI_CI_OBJECT_LOG_WRITE_ID:-ocid1.log.oc1.phx.amaaaaaaqu4kakiamdy53sam2gytixrgdc3csd7fli5sxxta3562k2m5kwba}"
 
 raw=0
 args=()
