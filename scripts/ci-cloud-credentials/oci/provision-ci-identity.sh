@@ -42,7 +42,23 @@ GROUP_NAME="kythira-ci"
 POLICY_NAME="kythira-ci-policy"
 DRY_RUN=0
 
-usage() { sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() {
+    # Print this file's leading comment block as help text. Deliberately NOT a
+    # `sed -n 'A,Bp'` line range: that idiom was used here until the SPDX and
+    # copyright header was added above, at which point every range silently
+    # shifted by three lines and `--help` began printing the licence and
+    # dropping its own last three lines. Match on content instead, so the
+    # header can grow again without breaking this.
+    awk '
+        NR==1 && /^#!/                  { next }   # shebang
+        /^# *Copyright \(c\)/           { next }   # licence header
+        /^# *SPDX-License-Identifier:/  { next }
+        /^#/    { line = $0; sub(/^# ?/, "", line); print line; started = 1; next }
+        /^[[:space:]]*$/ { if (started) print ""; next }
+        { exit }                                   # first code line ends the block
+    ' "${BASH_SOURCE[0]}"
+    exit "${1:-0}"
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

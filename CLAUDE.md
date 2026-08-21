@@ -71,6 +71,11 @@ Placement rules that override "put it at the top":
   script into a non-executable file. Python encoding cookies (`# -*- coding:
   ... -*-`) are only honoured on the first two lines, so step over those too.
 - On C++ headers the block goes **above** `#pragma once`.
+- If a script prints **its own header** as `--help` text, match on content —
+  never a `sed -n 'A,Bp'` line range. Adding this notice shifts every line
+  down by three, and a range silently starts printing the licence while
+  dropping the last three lines of the real help. Both OCI provisioning
+  scripts were broken exactly this way.
 
 Use the current year for genuinely new files. Do not bump the year on files
 you merely edit — the notice records creation, and churning it adds diff
