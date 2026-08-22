@@ -31,6 +31,37 @@ longer thought to be tenancy policy.
   0.00% to 13.40%. Single before/after comparisons are worthless; use
   `probe-object-storage-decline-rate.py --repeat` and compare episode counts.
 
+## Reproducing it on demand
+
+`reproduce-oci-object-storage-404.py` runs the whole matrix and prints a
+verdict. It is **tenancy-agnostic** — every OCID is an argument and it reads
+standard `~/.oci/config` profiles — so it can be handed to Oracle support to
+run against a tenancy of their own.
+
+```bash
+pip install oci
+./reproduce-oci-object-storage-404.py \
+    --subject-profile KYTHIRA_CI --control-profile DEFAULT \
+    --compartment-id "$OCI_CI_COMPARTMENT_ID" \
+    --bucket kythira-ci-artifacts --prefix kythira-real-test/ \
+    --json /tmp/repro.json
+```
+
+Confirmed reproducing on 2026-08-22: **14 declines / 1800** concurrent requests
+for the subject principal, **0 / 1800** for an Administrator at the same
+concurrency in the same minutes, and 0 for the same subject against Compute and
+Identity.
+
+**A clean run is not a refutation** — the fault is episodic and the subject
+principal is near-clean between episodes. Re-run or raise `--repeat`; exit
+status 1 means "not observed", not "not present".
+
+**Multi-region.** `--regions a,b,c` runs the matrix per region and prints a
+cross-region summary; `--create-bucket` makes the throwaway bucket each region
+needs, since buckets are regional. Declines in one region only implicate that
+region's fleet; declines everywhere implicate the tenancy or the principal.
+*Not yet run* — this tenancy is subscribed to `us-phoenix-1` only.
+
 **The open action is an Oracle support ticket** carrying the `opc-request-id`s,
 the byte-identical successful twins, the concurrency dependence and the two
 matched controls. **It is not another policy edit, and not another run.**
