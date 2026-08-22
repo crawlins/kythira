@@ -166,6 +166,15 @@ bundle adds no standing cost at all.
 The suite's own header and the workflow step both say so, and re-running until
 green would launder a regression into a flake.
 
+**To reproduce it on demand**, run
+`./reproduce-oci-object-storage-404.py --subject-profile <non-admin> \
+--control-profile <admin> --compartment-id <c> --bucket kythira-ci-artifacts`.
+It runs the full matrix — serial vs concurrent, subject vs administrator,
+Object Storage vs Compute vs Identity — and prints a verdict with
+`opc-request-id`s. It is tenancy-agnostic and takes `--regions` for the
+cross-region comparison. A clean run is not a refutation: the fault is
+episodic.
+
 **To investigate one, read the data-plane service log**, with
 `./read-object-storage-log.sh <start> <end>` — *not* the audit log, which was
 the instruction here until August 21, 2026 and was never performable: Object
