@@ -1,10 +1,14 @@
 # Runbook — the OCI Object Storage `404 BucketNotFound` flake
 
-**Status: EXECUTED end to end on August 21, 2026. The named suspect is
-EXONERATED.** Every step below was run against the live tenancy; the results
-are in `spike-notes.md` **Finding 26**. OCI is still the one provider without a
-green least-privilege CI run, but the cause is no longer unknown and is no
-longer thought to be tenancy policy.
+**Status: RESOLVED 2026-08-22 — but the cause was never confirmed, so this
+runbook is kept live.** The fault stopped on its own after ~86,000 clean
+requests, correlating to within minutes with a billing-account upgrade
+(trial → pay-as-you-go). That correlation is plausible and **untestable** — the
+account cannot be reverted — so **the fault may return**. OCI's suite has since
+passed **3/3 CI runs at 5/5 cases** and task 19 is closed (spike-notes Finding
+27).
+
+**If red returns, start here — most of the search space is already eliminated.**
 
 **What it found, so nobody repeats it:**
 

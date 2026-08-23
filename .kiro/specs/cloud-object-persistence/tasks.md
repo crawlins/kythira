@@ -1808,9 +1808,12 @@ Reference implementations to study before starting, in this order:
     quoted for another.
   - _Requirements: 6.2–6.5, 19.1–19.5_
 
-- [~] 19. **Live verification** — **four of five providers green in CI under
-      least-privilege grants**, August 21, 2026. OCI is the exception and is
-      deliberately left red; see below.
+- [x] 19. **Live verification** — **ALL FIVE providers green in CI under
+      least-privilege grants.** Four on August 21, 2026; **OCI on August 23**,
+      3/3 dispatched runs, 5/5 test cases each (Finding 27). OCI was the last
+      and closed without any change to this tree: the tenancy stopped
+      declining requests, correlating with a billing-account upgrade whose
+      mechanism was never confirmed and now cannot be tested.
 
       **Runs:** [32432380565](https://github.com/crawlins/kythira/actions/runs/32432380565)
       (all bundles) and [32441129124](https://github.com/crawlins/kythira/actions/runs/32441129124)
@@ -1822,7 +1825,7 @@ Reference implementations to study before starting, in this order:
       | Azure Blob | pass, 5/5 |
       | Alibaba OSS | pass |
       | GCS | pass 5/5 on re-run; 4/5 first attempt (Google-side `502`) |
-      | OCI Object Storage | **red** — declined `404 BucketNotFound`; cause narrowed to an Oracle-side Object Storage authorization fault under concurrency (Finding 26), **not** the client and **not** tenancy policy |
+      | OCI Object Storage | **pass, 5/5 — 3/3 dispatched runs**, August 23 (Finding 27). Was red until Aug 22 on a tenancy-side `404 BucketNotFound` that stopped on its own; **never** the client and **never** tenancy policy |
 
       **This is a stronger claim than the August 17-19 runs, and that is the
       point of doing it in CI at all.** Those authenticated as principals that
@@ -1964,9 +1967,33 @@ Reference implementations to study before starting, in this order:
       intermittently under concurrent load.** That is an Oracle-side fault and
       the next action is a **support ticket**, not another policy edit.
 
-      **Still owed:** OCI's green run, which remains blocked on that fault.
-      **OCI's row stays red**, and the four-of-five headline above is
-      unchanged by this session's work.
+      **OCI's green run landed on August 23, 2026** (Finding 27), and it is
+      the last thing this task owed. Runs
+      [32641351919](https://github.com/crawlins/kythira/actions/runs/32641351919),
+      [32641370321](https://github.com/crawlins/kythira/actions/runs/32641370321)
+      and [32641387727](https://github.com/crawlins/kythira/actions/runs/32641387727)
+      — **3/3 green, 5/5 cases each**, under the WIF/UPST least-privilege
+      principal. Three dispatches rather than one on purpose: a single green is
+      indistinguishable from the ~1-in-10 outcome this task recorded in
+      August, and three consecutive are not.
+
+      **Nothing in this tree changed to achieve it.** The tenancy stopped
+      declining requests: ~86,000 requests over fourteen hours with none, where
+      every previously observed quiet stretch was minutes. The stop correlates
+      to within minutes with a **billing-account upgrade** (trial → pay-as-you-go,
+      pinned by `us-ashburn-1` credentials becoming usable at 23:23:47Z on
+      Aug 22). That is a correlation with a plausible mechanism — a trial-account
+      limit surfacing as `BucketNotFound` would explain both the intermittency
+      and the decay — but it is **not a demonstrated cause and is not testable**,
+      because the account cannot be reverted. It also does not explain the
+      principal asymmetry, which stays unaccounted for.
+
+      **The cross-region and per-bucket comparisons are unanswerable as posed**
+      and are deliberately not recorded as results: `us-ashburn-1` measured
+      0/20,700 and a fresh-vs-old bucket A/B measured 0/4,800 each, but every
+      one of those samples was taken *after* the fault stopped, in windows where
+      Phoenix also measured zero. Both instruments are kept; they were run in
+      the wrong window, which nothing could have prevented.
 
       **The runbook has now been executed end to end**, August 21, 2026, and
       every one of its steps produced a result (Finding 26). Logging is on and

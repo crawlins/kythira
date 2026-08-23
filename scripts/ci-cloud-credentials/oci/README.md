@@ -162,9 +162,13 @@ condition would make an open question unanswerable rather than merely open.
 length of the run. The bucket already exists for the heartbeat path, so this
 bundle adds no standing cost at all.
 
-**A red run of this bundle is weaker evidence than the other four providers'.**
-The suite's own header and the workflow step both say so, and re-running until
-green would launder a regression into a flake.
+**This bundle is now green — 3/3 dispatched runs, 5/5 cases, August 23, 2026**
+(spike-notes.md Finding 27). It was red for ten days on a tenancy-side
+`404 BucketNotFound` that stopped on its own, correlating with a
+billing-account upgrade whose mechanism was never confirmed and is no longer
+testable. **The fault may return**; the tooling below is kept for that reason.
+Re-running a red run until green would launder a regression into a flake, and
+that rule outlives the fault.
 
 **To reproduce it on demand**, run
 `./reproduce-oci-object-storage-404.py --subject-profile <non-admin> \

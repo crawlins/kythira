@@ -1617,3 +1617,103 @@ be absent locally; the pool's dynamic-group statement was never modified.
 **The object-persistence suite's failure is the known flake, not a regression**
 — it failed the same way before the policy was touched, and the burst data
 brackets it on both sides. It was run once and left red.
+
+## Finding 27 — The flake stopped. OCI is green, 3/3 in CI. Task 19 closes.
+
+August 23, 2026. **All five providers now pass their real suites in CI under
+least-privilege grants.** OCI was the last, and it is green not because
+anything in this tree changed but because the tenancy stopped declining
+requests.
+
+### The measurement
+
+| when | subject principal, 16-way concurrent | note |
+|---|---|---|
+| Aug 21 21:56-22:10 | 0.30% → **11.70%** | the episodic fault, Findings 24-26 |
+| Aug 22 13:02 | 0.78% (14 / 1800) | |
+| Aug 22 23:20 | 0.08% (4 / 5000) | last declines ever observed |
+| **Aug 22 23:23** | — | **the paid-account upgrade takes effect** |
+| Aug 22 23:32 - Aug 23 03:31 | **0 / 62,100** | 138 rounds, three arms, continuous |
+| Aug 23 (spot checks) | **0 / 4,000** | |
+
+**Total since the last decline: ~86,000 requests, zero.** Previous quiet
+stretches were minutes; this one is over fourteen hours.
+
+**The suites agree.** The local real suite passed **5 of 5** consecutive runs
+(pre-registered at five, no early stop). Three CI dispatches under the
+**WIF/UPST least-privilege principal** — runs
+[32641351919](https://github.com/crawlins/kythira/actions/runs/32641351919),
+[32641370321](https://github.com/crawlins/kythira/actions/runs/32641370321),
+[32641387727](https://github.com/crawlins/kythira/actions/runs/32641387727) —
+were **3/3 green, 5/5 test cases each, "No errors detected"**. Three rather
+than one on purpose: a single green is indistinguishable from the ~1-in-10
+outcome Finding 25 recorded, and three consecutive are not.
+
+### CORRECTED — the cause was never established, and now cannot be
+
+**WAS (Finding 26):** *"Object Storage's authorization path for
+non-administrator principals in this tenancy fails intermittently under
+concurrent load. That is an Oracle-side fault and the next action is a support
+ticket."*
+
+**CORRECTED to: the fault's disappearance correlates with a billing-account
+change, and the mechanism was never confirmed.** The tenancy was upgraded from
+a trial/Free Tier account to pay-as-you-go so a support ticket could be filed
+at all. The upgrade's effective moment is pinned by a side effect — subscribing
+to a second region requires a paid account, and `us-ashburn-1` credentials went
+from a uniform `401` to working at **23:23:47Z on Aug 22**. The decline rate
+had been decaying through that day and reached zero within minutes of it.
+
+**A trial-account limit surfacing as `404 BucketNotFound` fits the two oddest
+features of this fault**: that it was intermittent rather than absolute (a
+quota-like condition, not a policy one), and that it *decayed* rather than
+switching off (a state propagating). It does not obviously explain the
+principal asymmetry — an Administrator was clean across 5000 where the CI user
+episoded — and that remains unaccounted for.
+
+**This is a correlation with a plausible mechanism, not a demonstrated cause,
+and it is not testable**: the account cannot be reverted to its previous state.
+The honest competing explanation is that the fault is episodic on a cycle
+longer than anything sampled. Against that: ~86,000 requests over fourteen
+hours with none, where every previously observed quiet stretch was minutes.
+
+**What Findings 24-26 established still stands**, and none of it was wasted:
+the client was exonerated from the service's own side of the wire, the
+`Oracle-Tags` `where` clause was tested and is genuinely not the cause, and the
+concurrency/principal/service discriminators are all still valid descriptions
+of how the fault behaved while it was firing. Those had to be ruled out
+whatever ended it.
+
+### The cross-region comparison is UNANSWERABLE as posed, and is not recorded as a result
+
+`us-ashburn-1` was measured at **0 / 20,700** across the sampler's runs. **That
+is not evidence Ashburn is healthy.** Ashburn only became usable at 23:23:47Z —
+*after* the fault stopped — so every Ashburn sample was taken from a quiet
+tenancy, and Phoenix measured 0 in the same windows while being the region that
+demonstrably had the fault. A regional claim requires both arms sampled during
+an episode, and no episode has occurred since the region existed.
+
+The same applies to the bucket question. An interleaved A/B between
+`kythira-ci-artifacts` and a fresh bucket in the same region — alternating
+bursts so an episode could not favour one arm — returned **0 / 4,800 each**.
+Also inconclusive, and for the same reason.
+
+Both instruments are kept (`reproduce-oci-object-storage-404.py --regions`,
+and the sampler pattern) because they are the right instruments; they were run
+in the wrong window, which nothing could have prevented.
+
+### What this means for the OCI results' standing
+
+Every OCI result recorded in this spec before Aug 22 was taken under a tenancy
+that was declining ~3-12% of this principal's Object Storage requests. Those
+results are therefore *stronger* than they looked, not weaker: the two shipped
+OCI defects Finding 18 found were found **through** that noise, and the suite
+passed 5/5 on Aug 21 despite it.
+
+**The "a red OCI run is weaker evidence" caveat is now retired from the
+suite header and the operator documentation**, but the *doctrine* is not:
+re-running a red suite hoping for green remains how a regression is laundered
+into a flake, and the tooling that made this investigable stays in place. If
+the fault returns, `probe-object-storage-decline-rate.py` and
+`read-object-storage-log.sh` are there, and Finding 26 records what has already
+been ruled out.

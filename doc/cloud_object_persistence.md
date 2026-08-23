@@ -660,19 +660,20 @@ are the same claim rather than five copies that drift. Alibaba runs three of
 the five plus four of its own: the fencing case is *uninstantiable* over a
 store that is not a `conditional_key_object_store`, and would not compile.
 
-**One caveat specific to OCI.** The CI tenancy intermittently declines valid
-Object Storage requests with `404 BucketNotFound`, **episodically** —
-identical bursts measured anywhere from 0.00% to 13.40% on August 21, 2026,
-on every verb. Until that is understood, a *failed* OCI run is ambiguous in a way the
-other four are not, and the honest response to red is to read the Object
-Storage **data-plane service log** rather than re-run until green. It does not
-weaken the passing results; it weakens the failing ones.
+**A resolved caveat specific to OCI, kept because it shaped the evidence.**
+Between August 12 and 22, 2026 the CI tenancy episodically declined valid
+Object Storage requests with `404 BucketNotFound` — identical bursts measured
+0.00% to 13.40%, on every verb. It stopped on its own, and OCI's suite has
+since passed 3/3 CI runs at 5/5 cases.
 
-**This is a property of one tenancy, not of the client or of OCI**, and the
-service's own log now says so: a declined `ListObjects` has a byte-identical
-twin that succeeded seconds earlier under the same credential, and the same
-request issued by a differently-privileged principal was declined zero times
-in sixty. Operators should not read it as guidance about `oci_object_storage_client`.
+**It was a property of one tenancy, never of the client or of OCI**, and the
+service's own log said so: a declined `ListObjects` had a byte-identical twin
+that succeeded seconds earlier under the same credential, and the same request
+from a differently-privileged principal was declined zero times in five
+thousand. Operators should not read any of it as guidance about
+`oci_object_storage_client`. Every OCI figure in this document measured before
+August 22 was taken *through* that noise, which makes it stronger evidence than
+it looked at the time, not weaker.
 
 **What the local test tiers cannot prove, recorded because assuming otherwise
 cost real defects.** The real tier found two shipped OCI defects, each of
