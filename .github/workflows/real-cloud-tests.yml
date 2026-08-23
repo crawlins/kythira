@@ -1464,12 +1464,14 @@ jobs:
       #
       # ── READ THIS BEFORE TRUSTING A RED RUN OF THIS STEP ─────────────────
       #
-      # This tenancy intermittently declines VALID Object Storage requests
-      # with `404 BucketNotFound` — measured at 3-16%, across
-      # PUT/GET/DELETE/LIST (spike-notes.md). Until that is understood, a
-      # failure here is ambiguous in a way the other four providers' are not:
-      # it may be a defect or it may be the tenancy. Re-running until green
-      # launders a real regression into a flake.
+      # RESOLVED 2026-08-22, and this bundle is green: 3/3 dispatched runs,
+      # 5/5 cases (spike-notes Finding 27). From 2026-08-12 to 08-22 this
+      # tenancy episodically declined VALID Object Storage requests with
+      # `404 BucketNotFound` (0.00%-13.40% across identical bursts). It
+      # stopped on its own, correlating with a billing-account upgrade whose
+      # mechanism was never confirmed and is no longer testable -- so it MAY
+      # RETURN. Re-running until green launders a real regression into a
+      # flake, and that rule outlives the fault.
       #
       # The honest response to red is to READ THE DATA-PLANE SERVICE LOG, with
       # `scripts/ci-cloud-credentials/oci/read-object-storage-log.sh`. NOT the

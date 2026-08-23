@@ -25,51 +25,56 @@
 // The namespace is deliberately left empty and resolved once at construction
 // via `GET /n/` (task 0.8), so an operator does not need to know it.
 //
-// ── READ THIS BEFORE TRUSTING A RESULT FROM THIS SUITE ──────────────────────
+// ── THE TENANCY FLAKE: RESOLVED 2026-08-22, BUT READ THIS IF RED RETURNS ────
 //
-// The CI tenancy intermittently declines VALID requests with `404
-// BucketNotFound` — and the fault is EPISODIC, not a steady rate. Twelve
-// identical bursts on 2026-08-21 read 0.00% to 13.40%, two consecutive N=1000
-// bursts five minutes apart read 11.70% then 1.70% (spike-notes.md Finding
-// 26). Quote a range, never a point estimate: a single run's rate is not a
-// parameter of anything.
+// This suite passes: 5/5 cases, 3/3 dispatched CI runs on 2026-08-23 under the
+// least-privilege WIF principal (spike-notes.md Finding 27). It is reported
+// exactly like the other four providers'.
 //
-// The cause is narrowed and is NOT this client and NOT tenancy policy. It
-// needs concurrency (serial 0.30% vs 16-way 11.70%, same principal and
-// request), it is principal-specific (an Administrator is clean across 5000
-// at the same concurrency), and it is Object Storage only — the same
-// principal against Compute in the same compartment is clean. It reproduces
-// under a plain API key, so the WIF/UPST path is not involved. Best
-// supported: Object Storage's authorization path for non-administrator
-// principals in this tenancy fails intermittently under concurrent load.
-// The `Oracle-Tags` policy `where` clause was removed, measured and restored
-// on 2026-08-21: it is EXONERATED (81/5000 with, 122/5000 without).
+// It was not always so. From 2026-08-12 to 2026-08-22 this tenancy declined
+// VALID Object Storage requests from the CI principal with `404
+// BucketNotFound`, EPISODICALLY -- twelve identical bursts read 0.00% to
+// 13.40%. It stopped on its own after ~86,000 clean requests, correlating to
+// within minutes with a billing-account upgrade (trial -> pay-as-you-go). That
+// correlation is plausible but was never confirmed and is no longer testable,
+// so THE FAULT MAY RETURN.
 //
-// Until that is understood, a failure here is ambiguous in a way the other four
-// providers' failures are not: it may be a defect or it may be the tenancy. The
-// suite is therefore run and reported like the others, but its result is
-// **weaker evidence**, and the honest response to a red run is to read the
-// Object Storage data-plane service log —
-// `scripts/ci-cloud-credentials/oci/read-object-storage-log.sh <start> <end>`
-// — not to re-run until it is green, which would launder a real regression
-// into a flake. NOT the audit log: data-plane operations are not audited by
-// default, which is why the instruction that stood here until 2026-08-21 was
-// never performable.
+// If it does, do not re-investigate from scratch. Findings 24-27 already
+// eliminated:
 //
-// TWO THINGS THAT LOG HAS ALREADY ESTABLISHED, so a red run is not re-argued
-// from scratch. A declined ListObjects had a **byte-identical twin that
-// succeeded 6.7 s earlier** in the same job — same URI, same UPST, same
-// principal, same bucketId — so the client is exonerated from the service's
-// own side of the wire, and the decline is server-side state rather than
-// anything in the request. And the same request as an Administrator ran 60
-// times with zero declines, so the flake tracks the principal.
+//   * THIS CLIENT. A declined ListObjects had a byte-identical twin that
+//     succeeded 6.7 s earlier in the same job -- same URI, UPST, principal and
+//     bucketId. No client-shaped explanation survives that comparison.
+//   * TENANCY POLICY. The `Oracle-Tags` `where` clause was removed, measured
+//     and restored: 81/5000 declines with it, 122/5000 without. Exonerated.
+//   * THE CREDENTIAL TYPE. It reproduced under a plain API key, not only the
+//     CI's token-exchange UPST.
 //
-// AND A REASON A GREEN RUN IS NOT PROOF THE TENANCY BEHAVED. That same job's
-// other decline was a PUT, and the engine's retry absorbed it 286 ms later.
-// This suite's pre-flight LIST is the one request in the run with no retry,
-// which makes the suite more fragile than the engine it tests. Giving the
-// pre-flight a retry would turn red runs green and hide the tenancy fault;
-// that is a decision about tolerating red, not a fix.
+// and established that it needed all three of a non-administrator principal,
+// Object Storage, and concurrency: serial 0.30% vs 16-way 11.70% for the same
+// principal and request; an Administrator clean across 5000 at that same
+// concurrency; the same principal's Compute calls in the same compartment
+// clean.
+//
+// Reproduce it with scripts/ci-cloud-credentials/oci/
+// reproduce-oci-object-storage-404.py, read the data-plane log with
+// read-object-storage-log.sh. NOT the audit log -- data-plane operations are
+// not audited by default, and neither log records an authorization decision
+// at all.
+//
+// TWO RULES THAT OUTLIVE THE FAULT:
+//
+//   * Never re-run a red run hoping for green. That is how a real regression
+//     is laundered into a flake, and it is why this suite stayed red for ten
+//     days rather than being quietly retried.
+//   * Quote a range, never a point estimate, for anything episodic. A single
+//     run's rate is not a parameter of anything.
+//
+// And one temptation refused, recorded so it is refused deliberately if ever
+// taken: the engine retries writes, but this suite's pre-flight LIST is the
+// one request in a run with no retry, which makes the suite more fragile than
+// the engine it tests. Giving it a retry would have turned red runs green
+// while hiding the fault. That is a decision about tolerating red, not a fix.
 
 using namespace kythira;
 namespace obj = kythira::object_real;
