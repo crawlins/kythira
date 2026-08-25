@@ -712,6 +712,14 @@ add_raft_completion_test(membership_change_leave_rpc_unit_test membership_change
 add_raft_completion_test(membership_change_leave_rpc_property_test membership_change_leave_rpc_property_test.cpp)
 add_raft_completion_test(node_recovery_unit_test node_recovery_unit_test.cpp)
 
+# Multi-Raft sharding — .kiro/specs/multi-raft/
+# Phases 1-3 are strictly additive: these targets exercise the sharding value
+# types, the routing table and its tiling invariant, and the typed errors,
+# none of which the single-group path can reach.
+add_raft_completion_test(shard_types_unit_test shard_types_unit_test.cpp)
+add_raft_completion_test(shard_map_unit_test shard_map_unit_test.cpp)
+add_raft_completion_test(shard_exceptions_unit_test shard_exceptions_unit_test.cpp)
+
 # Peer-to-peer log replication (gossip catch-up) — .kiro/specs/peer2peer-log-replication/
 add_raft_completion_test(peer2peer_replication_unit_test peer2peer_replication_unit_test.cpp)
 add_raft_completion_test(peer2peer_catch_up_property_test peer2peer_catch_up_property_test.cpp)
