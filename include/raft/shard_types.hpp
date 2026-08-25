@@ -1,0 +1,520 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+#pragma once
+
+/// @file shard_types.hpp
+/// @brief Value types for the multi-Raft sharding layer: keys, ranges, epochs,
+///        descriptors, statistics, and the decision records a policy returns.
+///
+/// Everything in this header is a plain value: no I/O, no synchronisation, no
+/// dependency on `node<Types>`. That is deliberate — these types cross the
+/// boundary between the host (`multi_raft`), the policy channels, the
+/// placement driver, and the Raft log itself, so they must be cheap to copy
+/// and trivially serialisable.
+///
+/// See `.kiro/specs/multi-raft/design.md` §1 and §6.1.
+
+#include <raft/types.hpp>
+#include <algorithm>
+#include <chrono>
+#include <compare>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <ostream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace kythira {
+
+namespace detail {
+
+/// @brief Renders a value into a diagnostic message when it is streamable, and
+/// a placeholder when it is not.
+///
+/// A diagnostic's whole value is naming the offending key, group or bound, but
+/// neither `shard_key` nor `raft_group_id` requires streamability — an
+/// application key may be a struct with only `<=>`. Degrading to a placeholder
+/// keeps the diagnostic useful for the common case without narrowing either
+/// concept for everyone.
+template<typename T> [[nodiscard]] auto describe_value(const T& v) -> std::string {
+    if constexpr (requires(std::ostringstream& os) { os << v; }) {
+        std::ostringstream os;
+        os << v;
+        return os.str();
+    } else {
+        return "<opaque>";
+    }
+}
+
+/// @brief Renders an optional range bound, with `nullopt` shown as an infinity.
+template<typename T>
+[[nodiscard]] auto describe_bound(const std::optional<T>& v, const char* unbounded) -> std::string {
+    return v.has_value() ? describe_value(*v) : std::string{unbounded};
+}
+
+}  // namespace detail
+
+/// @brief Concept for a routing key.
+///
+/// Kythira never interprets a key beyond comparing and copying it — the
+/// application owns its meaning. A key must be totally ordered because the
+/// routing table is an ordered map over half-open ranges, copyable because
+/// descriptors are values, and default-initialisable so that container
+/// machinery works without a sentinel.
+template<typename K>
+concept shard_key = std::totally_ordered<K> && std::copyable<K> && std::default_initializable<K>;
+
+/// @brief Concept for a Raft group identifier.
+///
+/// Adopted from MicroRaft's `[group id, node id]` composite replica identity.
+/// Hashability is required because the host's registry and the transport
+/// demultiplexer are both hash maps keyed on the group id; total ordering is
+/// required so that a set of group ids has a stable presentation order in logs
+/// and reports.
+///
+/// Every use site in this library defaults it to `std::uint64_t`.
+template<typename T>
+concept raft_group_id = std::regular<T> && std::totally_ordered<T> && requires(const T& g) {
+    { std::hash<T>{}(g) } -> std::convertible_to<std::size_t>;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ranges
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Orders two range *start* bounds, with `nullopt` meaning "unbounded
+/// below" and therefore sorting first.
+///
+/// This is exactly `std::optional`'s own ordering, named here so that the
+/// asymmetry with `compare_end_bound` is visible at both call sites rather
+/// than only at one.
+template<shard_key Key>
+[[nodiscard]] constexpr auto compare_start_bound(const std::optional<Key>& lhs,
+                                                 const std::optional<Key>& rhs)
+    -> std::strong_ordering {
+    if (!lhs.has_value() && !rhs.has_value()) {
+        return std::strong_ordering::equal;
+    }
+    if (!lhs.has_value()) {
+        return std::strong_ordering::less;
+    }
+    if (!rhs.has_value()) {
+        return std::strong_ordering::greater;
+    }
+    return *lhs < *rhs   ? std::strong_ordering::less
+           : *rhs < *lhs ? std::strong_ordering::greater
+                         : std::strong_ordering::equal;
+}
+
+/// @brief Orders two range *end* bounds, with `nullopt` meaning "unbounded
+/// above" and therefore sorting **last**.
+///
+/// The inversion relative to `compare_start_bound` is the whole reason both
+/// helpers exist: `std::optional`'s built-in ordering puts `nullopt` first,
+/// which is right for a start bound and exactly backwards for an end bound.
+/// Using the built-in ordering for both would make `(-inf, +inf)` sort before
+/// `(-inf, b)`, and the routing table's tiling checks would report phantom
+/// overlaps.
+template<shard_key Key>
+[[nodiscard]] constexpr auto compare_end_bound(const std::optional<Key>& lhs,
+                                               const std::optional<Key>& rhs)
+    -> std::strong_ordering {
+    if (!lhs.has_value() && !rhs.has_value()) {
+        return std::strong_ordering::equal;
+    }
+    if (!lhs.has_value()) {
+        return std::strong_ordering::greater;
+    }
+    if (!rhs.has_value()) {
+        return std::strong_ordering::less;
+    }
+    return *lhs < *rhs   ? std::strong_ordering::less
+           : *rhs < *lhs ? std::strong_ordering::greater
+                         : std::strong_ordering::equal;
+}
+
+/// @brief A half-open key range `[start, end)` with explicit unbounded ends.
+///
+/// `std::optional` for each bound is what lets the initial single shard be
+/// `(-inf, +inf)` and its first split work without the application reserving a
+/// minimum and a maximum value out of its own key domain. TiKV can use `""`
+/// and `b"\xff…"` because its key domain is bytes; Kythira's domain is
+/// whatever the application chose, and it may have no representable extremes.
+///
+/// @tparam Key Must satisfy `shard_key`.
+template<shard_key Key> struct shard_range {
+    std::optional<Key> _start;  ///< `nullopt` == unbounded below.
+    std::optional<Key> _end;    ///< `nullopt` == unbounded above.
+
+    [[nodiscard]] auto start() const -> const std::optional<Key>& { return _start; }
+    [[nodiscard]] auto end() const -> const std::optional<Key>& { return _end; }
+
+    /// @brief Whether `k` falls in this half-open range.
+    [[nodiscard]] auto contains(const Key& k) const -> bool {
+        if (_start.has_value() && k < *_start) {
+            return false;
+        }
+        if (_end.has_value() && !(k < *_end)) {
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Whether this range's end bound is exactly `other`'s start bound.
+    ///
+    /// Two unbounded sides are never adjacent: `(-inf, +inf)` is not adjacent
+    /// to anything, and neither is a pair whose facing bounds are both open,
+    /// because there is no key at which one stops and the other starts.
+    [[nodiscard]] auto is_adjacent_left_of(const shard_range& other) const -> bool {
+        return _end.has_value() && other._start.has_value() && *_end == *other._start;
+    }
+
+    /// @brief Whether the range admits no key at all (`start >= end`).
+    ///
+    /// A range with either bound unbounded is never empty.
+    [[nodiscard]] auto is_empty() const -> bool {
+        if (!_start.has_value() || !_end.has_value()) {
+            return false;
+        }
+        return !(*_start < *_end);
+    }
+
+    /// @brief Whether this range fully covers `other`.
+    [[nodiscard]] auto covers(const shard_range& other) const -> bool {
+        return compare_start_bound<Key>(_start, other._start) <= 0 &&
+               compare_end_bound<Key>(_end, other._end) >= 0;
+    }
+
+    /// @brief Orders by start bound, then by end bound.
+    ///
+    /// `nullopt` sorts first as a start bound and last as an end bound, so the
+    /// ordering matches the geometric left-to-right ordering of ranges on the
+    /// key line — see `compare_start_bound` / `compare_end_bound`.
+    [[nodiscard]] auto operator<=>(const shard_range& other) const -> std::strong_ordering {
+        if (auto c = compare_start_bound<Key>(_start, other._start); c != 0) {
+            return c;
+        }
+        return compare_end_bound<Key>(_end, other._end);
+    }
+
+    [[nodiscard]] auto operator==(const shard_range& other) const -> bool {
+        return _start == other._start && _end == other._end;
+    }
+};
+
+/// @brief The unbounded range every freshly bootstrapped shard map starts with.
+template<shard_key Key> [[nodiscard]] constexpr auto unbounded_shard_range() -> shard_range<Key> {
+    return shard_range<Key>{._start = std::nullopt, ._end = std::nullopt};
+}
+
+namespace detail {
+
+/// @brief Renders a range as `[start, end)` for diagnostics.
+template<shard_key Key>
+[[nodiscard]] auto describe_range(const shard_range<Key>& r) -> std::string {
+    return "[" + describe_bound(r._start, "-inf") + ", " + describe_bound(r._end, "+inf") + ")";
+}
+
+}  // namespace detail
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Epoch
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Version pair identifying a shard's generation, exactly TiKV's `RegionEpoch`.
+///
+/// The two counters are separate because a membership change and a range
+/// change are independently stale-making: a client holding an old `_version`
+/// has the wrong *range*, while a peer holding an old `_conf_version` has the
+/// wrong *voters*. Collapsing them into one counter would force a client to
+/// refresh its routing table on every membership change, and a peer to
+/// re-derive its voter set on every split.
+///
+/// The rules, enforced at both admission and apply time:
+/// - split into N children: every child takes `version = parent.version + N`;
+/// - merge: the survivor takes `version = max(src.version, tgt.version) + 1`;
+/// - any committed configuration entry: `conf_version + 1`.
+struct shard_epoch {
+    std::uint64_t _version{0};       ///< Incremented on every range change.
+    std::uint64_t _conf_version{0};  ///< Incremented on every membership change.
+
+    [[nodiscard]] auto version() const -> std::uint64_t { return _version; }
+    [[nodiscard]] auto conf_version() const -> std::uint64_t { return _conf_version; }
+
+    auto operator<=>(const shard_epoch&) const = default;
+};
+
+inline auto operator<<(std::ostream& os, const shard_epoch& e) -> std::ostream& {
+    return os << "{v=" << e._version << ",cv=" << e._conf_version << "}";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Descriptor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The authoritative routing record for one shard.
+///
+/// A descriptor is a *value*: the owning group's Raft log is the authority for
+/// its contents, and every other copy in the cluster — a client's routing
+/// cache, a peer's shard map, a placement driver's view — is a cache that the
+/// epoch check makes safe to be stale.
+///
+/// @tparam GroupId Must satisfy `raft_group_id`.
+/// @tparam Key     Must satisfy `shard_key`.
+/// @tparam NodeId  Must satisfy `node_id`.
+template<raft_group_id GroupId, shard_key Key, typename NodeId = std::uint64_t>
+requires node_id<NodeId>
+struct shard_descriptor {
+    GroupId _group_id{};
+    shard_range<Key> _range{};
+    shard_epoch _epoch{};
+    std::vector<NodeId> _voters{};
+    std::vector<NodeId> _learners{};
+    std::optional<NodeId> _leader_hint{};
+
+    [[nodiscard]] auto group_id() const -> const GroupId& { return _group_id; }
+    [[nodiscard]] auto range() const -> const shard_range<Key>& { return _range; }
+    [[nodiscard]] auto epoch() const -> const shard_epoch& { return _epoch; }
+    [[nodiscard]] auto voters() const -> const std::vector<NodeId>& { return _voters; }
+    [[nodiscard]] auto learners() const -> const std::vector<NodeId>& { return _learners; }
+    [[nodiscard]] auto leader_hint() const -> const std::optional<NodeId>& { return _leader_hint; }
+
+    /// @brief Whether `n` is a voter of this shard.
+    [[nodiscard]] auto has_voter(const NodeId& n) const -> bool {
+        return std::find(_voters.begin(), _voters.end(), n) != _voters.end();
+    }
+
+    /// @brief Whether `n` holds a replica of this shard in any role.
+    [[nodiscard]] auto has_replica(const NodeId& n) const -> bool {
+        return has_voter(n) || std::find(_learners.begin(), _learners.end(), n) != _learners.end();
+    }
+
+    [[nodiscard]] auto operator==(const shard_descriptor& other) const -> bool {
+        return _group_id == other._group_id && _range == other._range && _epoch == other._epoch &&
+               _voters == other._voters && _learners == other._learners &&
+               _leader_hint == other._leader_hint;
+    }
+};
+
+/// @brief Whether two descriptors name the same node set in the same roles.
+///
+/// Colocation is a merge precondition (design §5.5): each target replica
+/// absorbs state from the source replica *on its own machine*, so a target
+/// replica with no local source peer cannot apply `merge_commit`. Order is
+/// insignificant, which is why this is not `_voters == _voters`.
+template<raft_group_id GroupId, shard_key Key, typename NodeId>
+[[nodiscard]] auto is_colocated(const shard_descriptor<GroupId, Key, NodeId>& lhs,
+                                const shard_descriptor<GroupId, Key, NodeId>& rhs) -> bool {
+    auto same_set = [](std::vector<NodeId> a, std::vector<NodeId> b) {
+        std::sort(a.begin(), a.end());
+        std::sort(b.begin(), b.end());
+        return a == b;
+    };
+    return same_set(lhs._voters, rhs._voters) && same_set(lhs._learners, rhs._learners);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Decisions
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Why a split was proposed. Carried into logs and metrics as a dimension.
+enum class split_reason : std::uint8_t {
+    size = 0,              ///< Approximate state size crossed the split threshold.
+    key_count = 1,         ///< Approximate key count crossed the split threshold.
+    read_load = 2,         ///< Load-based split (design §6.3), read side.
+    write_load = 3,        ///< Load-based split (design §6.3), write side.
+    admin = 4,             ///< An explicit operator command.
+    placement_driver = 5,  ///< An advisory operator from the placement driver.
+    pre_split = 6,         ///< A bulk-load pre-split over an empty shard.
+};
+
+inline auto operator<<(std::ostream& os, split_reason r) -> std::ostream& {
+    switch (r) {
+        case split_reason::size:
+            return os << "size";
+        case split_reason::key_count:
+            return os << "key_count";
+        case split_reason::read_load:
+            return os << "read_load";
+        case split_reason::write_load:
+            return os << "write_load";
+        case split_reason::admin:
+            return os << "admin";
+        case split_reason::placement_driver:
+            return os << "placement_driver";
+        case split_reason::pre_split:
+            return os << "pre_split";
+        default:
+            return os << "unknown";
+    }
+}
+
+/// @brief Why a merge was proposed.
+enum class merge_reason : std::uint8_t {
+    size = 0,              ///< Both shards fell under the merge size threshold.
+    key_count = 1,         ///< Both shards fell under the merge key-count threshold.
+    admin = 2,             ///< An explicit operator command.
+    placement_driver = 3,  ///< An advisory operator from the placement driver.
+};
+
+inline auto operator<<(std::ostream& os, merge_reason r) -> std::ostream& {
+    switch (r) {
+        case merge_reason::size:
+            return os << "size";
+        case merge_reason::key_count:
+            return os << "key_count";
+        case merge_reason::admin:
+            return os << "admin";
+        case merge_reason::placement_driver:
+            return os << "placement_driver";
+        default:
+            return os << "unknown";
+    }
+}
+
+/// @brief A policy's answer to "should this shard split, and where".
+///
+/// An empty `_at_keys` with `_split == true` means "yes, but you choose" — the
+/// host then falls through to the state machine's `suggest_split_keys`
+/// (design §6.4).
+template<shard_key Key> struct split_decision {
+    bool _split{false};
+    std::vector<Key> _at_keys{};
+    split_reason _reason{split_reason::size};
+
+    [[nodiscard]] auto should_split() const -> bool { return _split; }
+    [[nodiscard]] auto at_keys() const -> const std::vector<Key>& { return _at_keys; }
+    [[nodiscard]] auto reason() const -> split_reason { return _reason; }
+};
+
+/// @brief Which neighbour a shard merges into.
+///
+/// Not cosmetic: the survivor's replicas run `absorb` and the other group is
+/// destroyed, so the direction decides which state machine does the work and
+/// which group id disappears. A bare `bool merge` would leave that to the host
+/// and make "merge this shard into its *left* neighbour" inexpressible.
+enum class merge_direction : std::uint8_t {
+    into_left_sibling = 0,
+    into_right_sibling = 1,
+};
+
+inline auto operator<<(std::ostream& os, merge_direction d) -> std::ostream& {
+    return os << (d == merge_direction::into_left_sibling ? "into_left_sibling"
+                                                          : "into_right_sibling");
+}
+
+/// @brief A policy's answer to "should this shard merge into a neighbour".
+struct merge_decision {
+    bool _merge{false};
+    merge_direction _direction{merge_direction::into_left_sibling};
+    merge_reason _reason{merge_reason::size};
+
+    [[nodiscard]] auto should_merge() const -> bool { return _merge; }
+    [[nodiscard]] auto direction() const -> merge_direction { return _direction; }
+    [[nodiscard]] auto reason() const -> merge_reason { return _reason; }
+};
+
+/// @brief One candidate split key surfaced by the load-based sampler (design §6.3).
+///
+/// The counts are of accesses strictly left of `_key` and at-or-right of it,
+/// over one sampling window. The sampler emits the most balanced candidate;
+/// a candidate whose `one_sided_fraction()` exceeds the configured bound means
+/// the load is a single hot key and a split cannot help.
+template<shard_key Key> struct hot_key_sample {
+    Key _key{};
+    std::uint64_t _left_accesses{0};
+    std::uint64_t _right_accesses{0};
+
+    [[nodiscard]] auto key() const -> const Key& { return _key; }
+    [[nodiscard]] auto left_accesses() const -> std::uint64_t { return _left_accesses; }
+    [[nodiscard]] auto right_accesses() const -> std::uint64_t { return _right_accesses; }
+
+    [[nodiscard]] auto total_accesses() const -> std::uint64_t {
+        return _left_accesses + _right_accesses;
+    }
+
+    /// @brief Fraction of accesses on the heavier side, in `[0.5, 1.0]`.
+    ///
+    /// Returns 1.0 for an empty sample: no observed accesses is indistinguishable
+    /// from perfectly one-sided as far as "is a split worth it" goes, and
+    /// treating it as balanced would propose splits from no evidence.
+    [[nodiscard]] auto one_sided_fraction() const -> double {
+        const auto total = total_accesses();
+        if (total == 0) {
+            return 1.0;
+        }
+        const auto heavier = _left_accesses > _right_accesses ? _left_accesses : _right_accesses;
+        return static_cast<double>(heavier) / static_cast<double>(total);
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Statistics
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Everything a split/merge policy is allowed to see about one shard.
+///
+/// A policy receives this by value and returns a decision; it performs no I/O
+/// and mutates nothing (design §6.1). Load figures are measured by the host at
+/// the routing layer, so load-based decisions work for *any* state machine,
+/// including one with no sizing hooks at all.
+///
+/// @tparam GroupId  Must satisfy `raft_group_id`.
+/// @tparam Key      Must satisfy `shard_key`.
+/// @tparam NodeId   Must satisfy `node_id`.
+/// @tparam LogIndex Must satisfy `log_index`.
+template<raft_group_id GroupId, shard_key Key, typename NodeId = std::uint64_t,
+         typename LogIndex = std::uint64_t>
+requires node_id<NodeId> && log_index<LogIndex>
+struct shard_stats {
+    shard_descriptor<GroupId, Key, NodeId> _descriptor{};
+
+    // ── size, from the splittable_state_machine extension (design §6.4) ──────
+    std::size_t _approximate_size_bytes{0};
+    std::size_t _approximate_key_count{0};
+    /// @brief `false` when the state machine has no sizing hooks.
+    ///
+    /// Deliberate, and reported once at construction rather than left silent:
+    /// a state machine without sizing hooks makes size-based split impossible,
+    /// and an operator should not spend a week wondering why nothing splits.
+    bool _size_available{false};
+
+    // ── log and apply ────────────────────────────────────────────────────────
+    std::size_t _log_size_bytes{0};
+    LogIndex _last_applied_index{0};
+    double _applied_entries_per_sec{0.0};
+    std::chrono::nanoseconds _p99_apply_latency{};
+
+    // ── load, measured at the routing layer ──────────────────────────────────
+    double _read_qps{0.0};
+    double _write_qps{0.0};
+    double _read_bytes_per_sec{0.0};
+    double _write_bytes_per_sec{0.0};
+
+    // ── history: the anti-oscillation inputs ─────────────────────────────────
+    std::chrono::milliseconds _time_since_last_split{};
+    std::chrono::milliseconds _time_since_last_merge{};
+    std::chrono::milliseconds _leader_since{};
+
+    // ── membership ───────────────────────────────────────────────────────────
+    std::size_t _voter_count{0};
+    std::size_t _learner_count{0};
+    std::size_t _down_replica_count{0};
+
+    // ── load-split sampler output; empty when sampling is off or inconclusive ─
+    std::vector<hot_key_sample<Key>> _hot_key_samples{};
+
+    [[nodiscard]] auto descriptor() const -> const shard_descriptor<GroupId, Key, NodeId>& {
+        return _descriptor;
+    }
+    [[nodiscard]] auto group_id() const -> const GroupId& { return _descriptor._group_id; }
+    [[nodiscard]] auto epoch() const -> const shard_epoch& { return _descriptor._epoch; }
+    [[nodiscard]] auto size_available() const -> bool { return _size_available; }
+};
+
+}  // namespace kythira

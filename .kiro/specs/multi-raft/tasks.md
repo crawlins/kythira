@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: Not started
+## Status: In progress — Phase 1 complete (tasks 1-3)
 
 **Last Updated**: August 23, 2026
 
@@ -51,7 +51,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 1: Shard Value Types (Tasks 1–3)
 
-- [ ] 1. Add `include/raft/shard_types.hpp`
+- [x] 1. Add `include/raft/shard_types.hpp`
   - Define `shard_key` concept (`std::totally_ordered && std::copyable &&
     std::default_initializable`) and `raft_group_id` concept (`std::regular &&
     std::totally_ordered &&` hashable), the latter defaulting to
@@ -71,7 +71,7 @@ Phases 6–8, after the mechanics it drives.
     and false when either side is unbounded; epoch ordering.
   - _Requirements: 1.2, 2.1, 2.2, 3.1, 6.5, 6.6, 6.8_
 
-- [ ] 2. Add `include/raft/shard_map.hpp`
+- [x] 2. Add `include/raft/shard_map.hpp`
   - `shard_map<GroupId, Key, NodeId>` over
     `std::map<std::optional<Key>, descriptor, start_bound_less>`.
   - `lookup(key)` via `upper_bound` then step back; `range_scan(range)`;
@@ -86,7 +86,7 @@ Phases 6–8, after the mechanics it drives.
     is a no-op.
   - _Requirements: 2.3, 2.4_
 
-- [ ] 3. Add `include/raft/shard_exceptions.hpp`
+- [x] 3. Add `include/raft/shard_exceptions.hpp`
   - `shard_epoch_mismatch_exception` (carries the current descriptors for the
     targeted range), `shard_epoch_ahead_exception`,
     `shard_not_adjacent_exception`, `shard_busy_exception`,
