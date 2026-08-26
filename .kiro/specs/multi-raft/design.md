@@ -81,7 +81,7 @@ user actually meets this feature.
 
 | File | Change | Why |
 |---|---|---|
-| `include/raft/types.hpp` | `group_id()` accessor + `_group_id` field on the six RPC request/response structs; `entry_type` gains `split`, `merge_prepare`, `merge_commit`, `merge_rollback`, `merge_abandoned` | Requirement 4.1, 11.1, 13.3 |
+| `include/raft/types.hpp` | `group_id()` accessor + `_group_id` field on the six RPC request/response structs; `entry_type` gains `split`, `merge_prepare`, `merge_commit`, `merge_rollback`, `merge_abandoned` | Requirement 4.1, 12.1, 14.3 |
 | `include/raft/raft.hpp` | `set_admin_entry_handler()`; admin entries are **not** passed to `state_machine.apply()`; `propose_admin_entry()`; expose `match_index_of(node)` for merge `min_index` | Split/merge logic stays out of the consensus core |
 | `include/raft/{json,cbor,ion,protobuf}_serializer.hpp`, `grpc_message_conversion.hpp`, `proto/raft*.proto` | round-trip `group_id`, absent ⇒ default | Requirement 4.2–4.3 |
 | everything else | untouched | |
@@ -96,7 +96,8 @@ include/raft/group_transport.hpp      multi_group_network_{server,client},
                                       group_scoped_{server,client}
 include/raft/group_storage.hpp        group_scoped_persistence, batching ext,
                                       tombstone set
-include/raft/split_merge_policy.hpp   the policy concept + threshold_* default
+include/raft/split_merge_policy.hpp   the policy concept, threshold_* default,
+                                      composite_split_merge_policy
 include/raft/load_split_sampler.hpp   RFC-0045 sampler
 include/raft/shard_placement_driver.hpp   PD concept + no_op default
 include/raft/multi_raft.hpp           the host: registry, tick, arbiter,
@@ -285,7 +286,7 @@ public:
     auto register_group(GroupId, group_handlers h) -> void;
     auto unregister_group(GroupId) -> void;
 
-    /// Called by multi_raft for group ids with no local replica (Requirement 12).
+    /// Called by multi_raft for group ids with no local replica (Requirement 13).
     auto set_unknown_group_handler(std::function<unknown_group_action(GroupId)>) -> void;
 
     auto start() -> void;   // registers ONE handler per RPC type with `inner`
@@ -376,7 +377,7 @@ atomicity of split apply.
 
 A durable `tombstone_set<GroupId>` records groups destroyed on this node (by
 merge, or by replica removal). `multi_group_network_server`'s unknown-group
-path consults it first (Requirement 12.4). Without it, a partitioned peer's
+path consults it first (Requirement 13.4). Without it, a partitioned peer's
 stale `AppendEntries` for a merged-away group resurrects a replica whose range
 is now owned by someone else — a silent double-ownership bug and the exact
 failure the tiling invariant would catch too late.
@@ -395,14 +396,14 @@ public:
 
     explicit multi_raft(multi_raft_config<Types, Key, GroupId> cfg);
 
-    // ── client surface (Requirement 16) ────────────────────────────────────
+    // ── client surface (Requirement 17) ────────────────────────────────────
     auto submit_command(const Key&, const std::vector<std::byte>&,
                         std::chrono::milliseconds) -> future_type;
     auto submit_command(GroupId, shard_epoch, const std::vector<std::byte>&,
                         std::chrono::milliseconds) -> future_type;
     auto read_state(const Key&, std::chrono::milliseconds) -> future_type;
 
-    // ── admin signal surface (Requirement 10, §6.2) ────────────────────────
+    // ── admin signal surface (Requirement 11, §6.2) ────────────────────────
     auto split_shard(GroupId, std::vector<Key>, split_options)  -> future<std::vector<descriptor>>;
     auto merge_shards(GroupId source, GroupId target, merge_options) -> future<descriptor>;
     auto pre_split(std::vector<Key> boundaries)                 -> future<std::vector<descriptor>>;
@@ -577,7 +578,7 @@ inventing ids locally is how you get two different shards with the same group
 id in two partitions.
 
 Step 2's ordering — the veto first, the suggestion as fallback — is what
-Requirement 9.4 buys the application: a policy that says "split at key K"
+Requirement 10.4 buys the application: a policy that says "split at key K"
 cannot cut through an entity the state machine says is indivisible.
 
 ### 5.4 Split: applying (every replica)
@@ -829,8 +830,10 @@ struct split_decision {
 
 enum class merge_direction : std::uint8_t { into_left_sibling, into_right_sibling };
 
+enum class merge_verdict : std::uint8_t { propose, abstain, veto };
+
 struct merge_decision {
-    bool _merge{false};
+    merge_verdict _verdict{merge_verdict::abstain};
     merge_direction _direction{merge_direction::into_left_sibling};
     merge_reason _reason{merge_reason::size};
 };
@@ -840,6 +843,12 @@ struct merge_decision {
 the direction determines which group's state machine runs `absorb` and which
 group is destroyed. A `bool merge` alone would leave that to the host and make
 "merge this shard into its left neighbour, not its right one" inexpressible.
+
+`merge_verdict` is tri-state for a reason that only becomes visible once
+policies compose (§6.1.3): a two-state answer conflates *"I object to this
+merge"* with *"merging is not my concern"*, and under the unanimity rule those
+two have opposite effects. `abstain` is the default, so a policy that never
+thinks about merges behaves exactly as it did when the field was `bool`.
 
 ### 6.1.1 `shard_stats` — what a policy gets to see
 
@@ -882,7 +891,7 @@ struct shard_stats {
 
 `_size_available` is deliberate. A state machine without the sizing hooks makes
 size-based split impossible, and the host says so **once at construction**
-(Requirement 9.6) rather than leaving an operator to wonder for a week why
+(Requirement 10.6) rather than leaving an operator to wonder for a week why
 nothing ever splits. Silent no-ops are the worst failure mode a policy layer
 can have.
 
@@ -947,6 +956,86 @@ custom policy that forgets the cooldown still cannot oscillate, because the
 arbiter refuses a merge on a shard whose `_time_since_last_split <
 split_merge_interval`. Defence in depth on the one knob whose misconfiguration
 is unbounded.
+
+### 6.1.3 Composing policies
+
+A host runs **one** policy. Combining several is a property of that policy, not
+of `multi_raft_config`:
+
+```cpp
+template<typename... Ps>
+class composite_split_merge_policy {   // itself satisfies split_merge_policy
+    std::tuple<Ps...> _members;
+public:
+    auto evaluate_split(const shard_stats<GroupId, Key>&) -> split_decision<Key>;
+    auto evaluate_merge(const shard_stats<GroupId, Key>& self,
+                        const shard_stats<GroupId, Key>& sibling) -> merge_decision;
+    auto cooldown() -> std::chrono::milliseconds;   // max over members
+    auto validate() -> bool;                        // including cross-member, below
+    auto get_validation_errors() -> std::vector<std::string>;
+};
+```
+
+The alternative — a list of policies in `multi_raft_config` — was considered and
+rejected. `node_config<Types>` holds every component **by value at a concrete
+type** from the `Types` bundle (raft.hpp:71); "optional" there means "has an
+in-struct default", not `std::optional`. A homogeneous `std::vector<P>` composes
+nothing worth composing, and a heterogeneous list costs either a variadic
+`multi_raft<Types, Key, GroupId, Ps...>` — which leaks into every alias,
+deduction guide, and test fixture — or a type-erased virtual policy interface,
+which would be the first such interface in a codebase whose extension mechanism
+is uniformly concepts plus `if constexpr`. The composite gives up only a policy
+set assembled at runtime from a config file, which nothing in this spec asks
+for, and it gains the one thing the list cannot offer: cross-member validation,
+which needs the concrete types.
+
+**The combination rules, and why they are asymmetric:**
+
+| | Rule | Why |
+|---|---|---|
+| split | any-wins; `at_keys` is the sorted, de-duplicated union | more shards is the recoverable direction, and a member proposing a split has seen something the others did not |
+| merge | unanimous — at least one `propose`, no `veto` | a merge destroys a group and moves data through `absorb`; any-wins would let a size policy merge away a shard a load policy was deliberately keeping |
+
+Three smaller rules fall out of the same place:
+
+- **Deferral does not union.** A member returning `_split = true` with an empty
+  `_at_keys` means "split, you choose" (Requirement 6.7) and cannot be unioned
+  with a concrete key vector. Concrete keys win; the composite falls through to
+  `suggest_split_keys` only when *no* member named a key.
+- **Opposite merge directions are a mutual veto**, logged. Silently picking one
+  would make the answer depend on member order.
+- **Order is not semantically significant.** Every rule above is commutative and
+  associative. A first-wins rule would have let a config-file reordering
+  silently change how the cluster shards — the kind of coupling that is
+  discovered during an incident, not during review.
+
+**`batch_split_limit` has to move.** It is a knob of the default policy's own
+config (§6.1.2), respected by each policy internally — so a union of N members'
+proposals can exceed every participant's limit while each participant behaved
+correctly. It therefore joins `split_merge_interval` as a **host-level gate**
+(§6.6), applied to the proposal that actually reaches Raft. Truncating the union
+is an override of a policy's stated decision, so it is logged and counted, never
+silent.
+
+**Cross-member oscillation is the real hazard.** The `validate()` rule of
+§6.1.2 — `2 * merge_max < split_size` — is *intra*-policy. Member A's merge
+ceiling against member B's split floor is the identical failure mode: both
+members validate clean alone, and the pair oscillates forever at whatever rate
+the host interval gate permits, moving real data through `split_state` and
+`absorb` on every cycle. The composite holds its members as concrete types
+precisely so it can check this. Members may expose `split_floor()` and
+`merge_ceiling()`, detected with `if constexpr` exactly as
+`splittable_state_machine` is (§6.4); a member exposing neither is reported by
+`get_validation_errors()` as **uncheckable** rather than silently assumed safe.
+Unanimous merge already defuses most of the hazard — B will not consent to
+merging a shard it would split — which is the second reason the merge rule is
+what it is.
+
+An empty composition is legal and means exactly what configuring no policy
+means: channel (a) silent, channels (b), (c) and (d) untouched. It is logged
+once at construction, because `{}` is far too easy to arrive at by accident for
+the difference between *no policies configured* and *policies configured, never
+firing* to be invisible — the same doctrine as `_size_available` in §6.1.1.
 
 ### 6.2 Channel (b) — the imperative admin API
 
@@ -1028,7 +1117,7 @@ Two of these branches are the interesting ones:
   still hot, and it proposes again — a split storm that shrinks shards toward
   one key each. The back-off marks the shard and moves on.
 
-`_scatter_children` is not optional for load splits (Requirement 8.6): a load
+`_scatter_children` is not optional for load splits (Requirement 9.6): a load
 split whose children's leaders both land on the machine that was already hot
 has accomplished exactly nothing.
 
@@ -1095,7 +1184,7 @@ frozen, or over the concurrency limit, drops the operator and logs
 `skipped_operator`; the PD notices from the next heartbeat and reissues.
 
 Each operator carries `operation_id` and the epoch it was computed against; an
-operator whose epoch is stale is discarded on receipt (Requirement 14.6). This
+operator whose epoch is stale is discarded on receipt (Requirement 15.6). This
 is what keeps a PD decision computed from a 30-second-old heartbeat from
 undoing a split that happened 5 seconds ago.
 
@@ -1138,7 +1227,7 @@ Channel (c) never initiates; it only chooses and vetoes keys for an operation
 one of the three above started.
 
 A loser is logged with reason `preempted_by={channel}` and counted — never
-silently dropped (Requirement 15.6). An operator debugging "why didn't my
+silently dropped (Requirement 16.6). An operator debugging "why didn't my
 policy fire" needs to see that the PD outranked it.
 
 **Gates applied to every channel:**
@@ -1152,6 +1241,7 @@ policy fire" needs to see that the PD outranked it.
 | epoch changed since the decision was computed | — | `epoch` |
 | state-machine veto exhausted | — | `no_valid_split_key` |
 | merge alignment missing | — | `alignment_required` |
+| proposal exceeds `batch_split_limit` | 10 | `split_keys_truncated` — truncate and log, not refuse |
 
 `max_concurrent_split_merge` is enforced **before proposing**, never by
 aborting something already committed — the same discipline as TiKV's
@@ -1164,10 +1254,12 @@ Every decision, accepted or rejected, emits both a log line and a metric with
 the reason as a dimension:
 
 ```
-kythira.multiraft.split.proposed{group, reason, channel}
+kythira.multiraft.split.proposed{group, reason, channel, policy}
 kythira.multiraft.split.rejected{group, gate}
+kythira.multiraft.split.truncated{group, proposed_keys, kept_keys}
 kythira.multiraft.split.applied{group}          + duration
-kythira.multiraft.merge.proposed{group, reason, channel}
+kythira.multiraft.merge.proposed{group, reason, channel, policy}
+kythira.multiraft.merge.vetoed{group, policy}
 kythira.multiraft.merge.rejected{group, gate}
 kythira.multiraft.merge.applied{group}          + duration
 kythira.multiraft.merge.rolled_back{group, reason}
@@ -1179,6 +1271,12 @@ kythira.multiraft.epoch_mismatch{group, direction}
 
 Thresholds are untunable without this. An operator who cannot see
 `split.rejected{gate=cooldown}` will conclude the feature is broken.
+
+The `policy` dimension exists because `reason` alone stops identifying the
+decider once a composition is in play (§6.1.3) — two members can both propose
+`size`. `merge.vetoed` is separately counted for the same reason: under
+unanimity a single member can hold the whole cluster's merges hostage, and the
+first question an operator will ask is *which one*.
 
 ---
 
@@ -1227,7 +1325,7 @@ Kythira does not yet have and which is scoped as its own task in §11).
 `no_op_shard_placement_driver` ships as the default, in the exact shape of
 `no_op_quorum_manager`: it allocates ids from a locally configured reserved
 range (so static, pre-split deployments work with no control plane at all) and
-returns no operators. Requirement 14.7.
+returns no operators. Requirement 15.7.
 
 Heartbeats are batched — one call carrying every local shard's report per
 interval, not one call per shard. At 1000 shards and a 10-second interval the
@@ -1260,7 +1358,7 @@ targeted*, so the client repairs its map from the rejection itself rather than
 going to the PD.
 
 Cross-shard commands are rejected, not silently mis-applied
-(Requirement 16.6): if the partitioner yields a key outside the resolved
+(Requirement 17.6): if the partitioner yields a key outside the resolved
 shard's range at apply admission, the command fails with
 `cross_shard_command_exception`. There is no distributed transaction here and
 pretending otherwise would be the worst possible failure mode.
@@ -1273,7 +1371,7 @@ pretending otherwise would be the worst possible failure mode.
 |---|---|---|
 | Crash mid-split, after children written, before parent index advanced | replay of the split entry is a no-op (idempotence check, §5.4 step B) | none |
 | Crash mid-split, before children written | split entry replays from the start | none |
-| Node missed a split entirely (log compacted past it) | lazy replica creation (§Requirement 12) on first message; `InstallSnapshot` populates it | one snapshot transfer |
+| Node missed a split entirely (log compacted past it) | lazy replica creation (§Requirement 13) on first message; `InstallSnapshot` populates it | one snapshot transfer |
 | Stale `AppendEntries` for a merged-away group | tombstone set drops it | none |
 | Merge target leader unreachable after `merge_prepare` | source stays frozen; `merge.stalled` metric + warning | source unavailable until resolved — correct but visible |
 | Merge target splits mid-merge | abandon handshake; source rolls back | one wasted round trip |
@@ -1350,7 +1448,7 @@ The phases are chosen so each one lands something usable and testable.
 | 3 | `multi_raft` registry, striped executor, batched `tick()`, hibernation, client routing | a working static multi-Raft cluster |
 | 4 | admin entries in `raft.hpp`, split protocol, lazy replica creation | `split_shard()` works; channel (b) live |
 | 5 | merge protocol, abandon handshake, alignment checks | `merge_shards()` works |
-| 6 | `split_merge_policy`, `threshold_*` default, arbiter, gates, metrics | channel (a) live — automatic split/merge |
+| 6 | `split_merge_policy`, `threshold_*` default, `composite_*`, arbiter, gates, metrics | channel (a) live — automatic split/merge, one policy or several |
 | 7 | `shard_placement_driver`, heartbeats, operators, leader transfer, scatter | channel (d) live |
 | 8 | load-split sampler | channel (c′) live |
 | 9 | transport message batching, `buckets`-style sub-shard stats | scale refinements |
