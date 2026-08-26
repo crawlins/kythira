@@ -139,6 +139,34 @@ struct tick_batch_controller {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Partitioning
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Extracts the routing key from a serialised command.
+///
+/// One function, deliberately. Kythira never parses a command — the
+/// application already has a parser and hands over just the routing key. For a
+/// state machine whose commands carry several keys, `key_of` returns the
+/// *routing* key and the state machine owns the rest, with `can_split_at`
+/// (design §6.4) as the tool that keeps a multi-key command's keys inside one
+/// shard.
+template<typename P, typename Key>
+concept partitioner = requires(const P& p, const std::vector<std::byte>& command) {
+    { p.key_of(command) } -> std::same_as<Key>;
+};
+
+/// @brief Type-erases a `partitioner` for storage in `multi_raft_config`.
+///
+/// The concept is the contract an application implements; this is how the host
+/// holds one without becoming a template over it. Keeping both means an
+/// application's partitioner is concept-checked at the call site rather than
+/// silently accepted as any old callable.
+template<typename Key, partitioner<Key> P>
+[[nodiscard]] auto make_partitioner(P p) -> std::function<Key(const std::vector<std::byte>&)> {
+    return [p = std::move(p)](const std::vector<std::byte>& command) { return p.key_of(command); };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -210,6 +238,22 @@ struct multi_raft_config {
 
     /// How long a tombstone is kept before garbage collection.
     std::chrono::milliseconds tombstone_horizon{std::chrono::hours{24}};
+
+    /// Extracts a command's routing key. Optional: a caller that always names
+    /// the key explicitly needs none, but without it the cross-shard admission
+    /// check cannot run and a mis-routed command would be applied silently.
+    std::function<Key(const std::vector<std::byte>&)> partitioner{};
+
+    /// How many times a routed request re-resolves before giving up.
+    ///
+    /// Each retry follows a *specific* repair — a refreshed routing row, a
+    /// finished merge — so the bound is small on purpose. Exceeding it
+    /// surfaces the last real error rather than a generic timeout, because
+    /// "epoch mismatch five times" and "timed out" call for different actions.
+    std::size_t max_route_retries{5};
+
+    /// Backoff between routing retries.
+    std::chrono::milliseconds route_retry_backoff{std::chrono::milliseconds{5}};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -273,6 +317,11 @@ public:
     /// Synchronous: when it returns there is no joinable thread left and no
     /// group callback is executing. A stop/start/stop sequence is supported,
     /// mirroring the regression `node::stop()` itself guards against.
+    ///
+    /// Safe against a `tick()` already in flight on another thread: the tick
+    /// holds the executor alive for its own duration and then finds it
+    /// stopped. It is still the caller's job not to *start* a tick after
+    /// `stop()` and expect it to drive anything.
     auto stop() -> void;
 
     [[nodiscard]] auto is_running() const -> bool;
@@ -312,6 +361,54 @@ public:
 
     /// @brief The group's `node`, or `nullptr`. For tests and host-internal use.
     [[nodiscard]] auto group_node(const GroupId& group) -> group_node_type*;
+    /// @}
+
+    /// @name Client surface (Requirement 16)
+    /// @{
+
+    /// @brief Route `command` by `key` and submit it to the owning shard.
+    ///
+    /// Resolves the key against the local routing map, checks the resolved
+    /// shard's epoch against the local replica's, and submits. The retry loop
+    /// handles the two failures a *host* can repair without leaving the
+    /// process: a stale routing row (repaired from the local groups'
+    /// authoritative descriptors, then retried) and a shard frozen mid-merge
+    /// (backed off, then retried).
+    ///
+    /// **It does not forward to another node.** Kythira's transport carries no
+    /// client-command RPC — commands reach a node through whatever the
+    /// application already speaks — so a request whose local replica is not
+    /// the leader fails with `shard_not_leader_exception` carrying the hint,
+    /// and the caller does the hop. That is MicroRaft's contract, surfaced at
+    /// the boundary that can actually honour it.
+    ///
+    /// @throws unrouted_key_exception       no shard owns the key
+    /// @throws unknown_shard_exception      no local replica of the owning shard
+    /// @throws shard_not_leader_exception   local replica is not the leader
+    /// @throws cross_shard_command_exception  the command's own key is elsewhere
+    auto submit_command(const Key& key, const std::vector<std::byte>& command,
+                        std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief Submit to a named shard at a named epoch.
+    ///
+    /// The form a client uses once it holds a descriptor: no key lookup, and
+    /// the epoch is checked rather than derived, so a request computed against
+    /// a routing table that has since moved is rejected instead of served.
+    auto submit_command(const GroupId& group, shard_epoch expected_epoch,
+                        const std::vector<std::byte>& command, std::chrono::milliseconds timeout)
+        -> future_type;
+
+    /// @brief Submit using the configured partitioner to derive the key.
+    ///
+    /// @throws std::logic_error if no partitioner is configured.
+    auto submit_command(const std::vector<std::byte>& command, std::chrono::milliseconds timeout)
+        -> future_type;
+
+    /// @brief Linearisable read against the shard owning `key`.
+    auto read_state(const Key& key, std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief Resolve `key` to a descriptor without submitting anything.
+    [[nodiscard]] auto resolve(const Key& key) const -> std::optional<descriptor_type>;
     /// @}
 
     /// @name Driving
@@ -355,6 +452,48 @@ public:
 
     /// @brief Merge descriptors learned from elsewhere into the local map.
     auto learn_descriptors(const std::vector<descriptor_type>& descriptors) -> bool;
+
+    /// @brief Replace a local group's authoritative descriptor *and* publish it.
+    ///
+    /// The local replica of a group is the authority for that group's row; the
+    /// routing map is a cache of it. Split and merge apply call this; nothing
+    /// else should.
+    auto update_descriptor(const GroupId& group, const descriptor_type& descriptor) -> bool;
+
+    /// @brief Replace a local group's authoritative descriptor *without*
+    /// publishing it to the routing map.
+    ///
+    /// The two halves are separate because split apply performs them at
+    /// separate points: the descriptor rows are written durably in step E and
+    /// the map is published in step G, with the parent frozen in between. A
+    /// caller that publishes early advertises a range whose children are not
+    /// durable yet.
+    auto set_local_descriptor(const GroupId& group, const descriptor_type& descriptor) -> bool;
+
+    /// @brief Publish a local group's descriptor into the routing map.
+    auto publish_descriptor(const GroupId& group) -> bool;
+
+    /// @brief Drop a routing row without touching the replica.
+    ///
+    /// Merge apply removes the source's row once the survivor owns its range.
+    /// A row dropped while the replica is still local is repaired by the next
+    /// resolution, which is what makes this safe to call out of order.
+    auto forget_routing_row(const GroupId& group) -> bool;
+
+    /// @brief The descriptor the local replica of `group` believes is current.
+    [[nodiscard]] auto local_descriptor(const GroupId& group) const
+        -> std::optional<descriptor_type>;
+
+    /// @brief Repair the routing map from every local group's own descriptor.
+    ///
+    /// Returns `true` if anything changed. This is what the routing retry loop
+    /// does after an epoch mismatch, and it is why a stale map costs one extra
+    /// resolution rather than a control-plane query.
+    auto refresh_map_from_local_groups() -> bool;
+
+    /// @brief Commands and reads routed to `group` since it was created.
+    [[nodiscard]] auto load_counters(const GroupId& group) const
+        -> std::pair<std::uint64_t, std::uint64_t>;
 
     [[nodiscard]] auto is_tombstoned(const GroupId& group) const -> bool;
 
@@ -436,6 +575,20 @@ private:
 
     auto persist_tombstones() -> void;
 
+    /// @brief A reference to the current pool that stays valid while held.
+    [[nodiscard]] auto current_executor() const -> std::shared_ptr<striped_serial_executor>;
+
+    /// @brief Shared body of the routing retry loop.
+    ///
+    /// `resolve_key` is `nullopt` for the group-addressed form, which skips the
+    /// key lookup but keeps every other gate.
+    auto route_and_run(std::optional<Key> key, std::optional<GroupId> group,
+                       std::optional<shard_epoch> expected_epoch,
+                       const std::vector<std::byte>* command, bool is_read,
+                       std::chrono::milliseconds timeout) -> future_type;
+
+    [[nodiscard]] static auto failed_future(std::exception_ptr error) -> future_type;
+
     [[nodiscard]] static auto now_ns() -> std::int64_t;
 
     // ── members ──────────────────────────────────────────────────────────────
@@ -454,7 +607,16 @@ private:
     /// but a `striped_serial_executor` cannot be restarted once its threads are
     /// joined. Holding it by pointer is what lets `stop()` honour both halves:
     /// join everything, then build a fresh pool on the next `start()`.
-    std::unique_ptr<striped_serial_executor> _executor;
+    ///
+    /// `shared_ptr`, not `unique_ptr`, and every reader takes a copy under
+    /// `_executor_mutex`. A `tick()` running concurrently with `stop()` is
+    /// plausible — a driver thread is mid-tick when an operator stops the host
+    /// — and with a bare pointer that tick dereferences a pool `stop()` has
+    /// already destroyed. A copied `shared_ptr` keeps the pool alive for the
+    /// tick's duration; the tick then finds it stopped, its `post()` calls
+    /// fail, and it falls back to running inline.
+    mutable std::mutex _executor_mutex;
+    std::shared_ptr<striped_serial_executor> _executor;
 
     mutable std::shared_mutex _registry_mutex;
     std::unordered_map<GroupId, group_ptr> _groups;

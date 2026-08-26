@@ -22,6 +22,7 @@
 #include <raft/exceptions.hpp>
 #include <raft/shard_types.hpp>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -268,6 +269,36 @@ public:
 private:
     GroupId _group_id;
     GroupId _target_group_id;
+};
+
+/// @brief The local replica of the resolved shard is not its leader.
+///
+/// Carries the leader hint, taking MicroRaft's contract directly — "when
+/// clients contact non-leaders, responses include the leader's endpoint,
+/// enabling client-side routing" — so a leader change costs one extra hop
+/// rather than a control-plane round trip.
+///
+/// The hint is `nullopt` while the group has not yet heard from any leader,
+/// which is a real state (an election in progress) and not an error: a caller
+/// with no hint should retry any voter rather than give up.
+template<raft_group_id GroupId, typename NodeId = std::uint64_t>
+requires node_id<NodeId>
+class shard_not_leader_exception : public shard_exception {
+public:
+    shard_not_leader_exception(GroupId group, std::optional<NodeId> leader_hint)
+        : shard_exception("shard " + detail::describe_value(group) +
+                          ": this replica is not the leader" +
+                          (leader_hint.has_value() ? "; try " + detail::describe_value(*leader_hint)
+                                                   : "; no leader is known yet")),
+          _group_id(std::move(group)),
+          _leader_hint(std::move(leader_hint)) {}
+
+    [[nodiscard]] auto group_id() const -> const GroupId& { return _group_id; }
+    [[nodiscard]] auto leader_hint() const -> const std::optional<NodeId>& { return _leader_hint; }
+
+private:
+    GroupId _group_id;
+    std::optional<NodeId> _leader_hint;
 };
 
 /// @brief A command's routing key falls outside the shard it was admitted to.
