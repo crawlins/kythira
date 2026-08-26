@@ -7382,7 +7382,12 @@ auto coap_server<Types>::handle_multicast_request_vote(const std::vector<std::by
         _logger.debug("Processing multicast RequestVote",
                       {{"sender_address", sender_address},
                        {"term", std::to_string(request.term())},
-                       {"candidate_id", std::to_string(request.candidate_id())}});
+                       {"candidate_id", std::to_string(request.candidate_id())},
+                       // The multi-Raft group selector rides inside the
+                       // serializer's framing, not this transport's own — CoAP
+                       // hands the whole message to Types::serializer_type. It
+                       // is logged here only so a demux mismatch is visible.
+                       {"group_id", std::to_string(request.group_id())}});
 
         // Call the registered handler
         auto response = _request_vote_handler(request);

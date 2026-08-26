@@ -57,10 +57,11 @@ public:
 
     // Serialize RequestVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
-    [[nodiscard]] auto serialize(const request_vote_request<NodeId, TermId, LogIndex>& req) const
-        -> Data {
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const request_vote_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         raft_pb::RequestVoteRequest msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
         msg.set_term(static_cast<std::uint64_t>(req.term()));
         *msg.mutable_candidate_id() = to_node_id_value<NodeId>(req.candidate_id());
         msg.set_last_log_index(static_cast<std::uint64_t>(req.last_log_index()));
@@ -69,9 +70,10 @@ public:
     }
 
     // Serialize RequestVote Response
-    template<typename TermId = std::uint64_t>
-    [[nodiscard]] auto serialize(const request_vote_response<TermId>& resp) const -> Data {
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const request_vote_response<TermId, GroupId>& resp) const -> Data {
         raft_pb::RequestVoteResponse msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
         msg.set_term(static_cast<std::uint64_t>(resp.term()));
         msg.set_vote_granted(resp.vote_granted());
         return encode(message_tag::request_vote_response, msg);
@@ -79,10 +81,11 @@ public:
 
     // Serialize RequestPreVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const request_pre_vote_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        const request_pre_vote_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         raft_pb::RequestPreVoteRequest msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
         msg.set_term(static_cast<std::uint64_t>(req.term()));
         *msg.mutable_candidate_id() = to_node_id_value<NodeId>(req.candidate_id());
         msg.set_last_log_index(static_cast<std::uint64_t>(req.last_log_index()));
@@ -91,9 +94,11 @@ public:
     }
 
     // Serialize RequestPreVote Response
-    template<typename TermId = std::uint64_t>
-    [[nodiscard]] auto serialize(const request_pre_vote_response<TermId>& resp) const -> Data {
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const request_pre_vote_response<TermId, GroupId>& resp) const
+        -> Data {
         raft_pb::RequestPreVoteResponse msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
         msg.set_term(static_cast<std::uint64_t>(resp.term()));
         msg.set_vote_granted(resp.vote_granted());
         return encode(message_tag::request_pre_vote_response, msg);
@@ -101,10 +106,13 @@ public:
 
     // Serialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const append_entries_request<NodeId, TermId, LogIndex, LogEntry>& req) const -> Data {
+        const append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId>& req) const
+        -> Data {
         raft_pb::AppendEntriesRequest msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
         msg.set_term(static_cast<std::uint64_t>(req.term()));
         *msg.mutable_leader_id() = to_node_id_value<NodeId>(req.leader_id());
         msg.set_prev_log_index(static_cast<std::uint64_t>(req.prev_log_index()));
@@ -117,10 +125,12 @@ public:
     }
 
     // Serialize AppendEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
-    [[nodiscard]] auto serialize(const append_entries_response<TermId, LogIndex>& resp) const
-        -> Data {
+    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+             typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const append_entries_response<TermId, LogIndex, GroupId>& resp) const -> Data {
         raft_pb::AppendEntriesResponse msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
         msg.set_term(static_cast<std::uint64_t>(resp.term()));
         msg.set_success(resp.success());
         if (const auto& ci = resp.conflict_index()) {
@@ -134,10 +144,11 @@ public:
 
     // Serialize InstallSnapshot Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const install_snapshot_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        const install_snapshot_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         raft_pb::InstallSnapshotRequest msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
         msg.set_term(static_cast<std::uint64_t>(req.term()));
         *msg.mutable_leader_id() = to_node_id_value<NodeId>(req.leader_id());
         msg.set_last_included_index(static_cast<std::uint64_t>(req.last_included_index()));
@@ -149,9 +160,11 @@ public:
     }
 
     // Serialize InstallSnapshot Response
-    template<typename TermId = std::uint64_t>
-    [[nodiscard]] auto serialize(const install_snapshot_response<TermId>& resp) const -> Data {
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const install_snapshot_response<TermId, GroupId>& resp) const
+        -> Data {
         raft_pb::InstallSnapshotResponse msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
         msg.set_term(static_cast<std::uint64_t>(resp.term()));
         return encode(message_tag::install_snapshot_response, msg);
     }
@@ -200,10 +213,11 @@ public:
 
     // Serialize FetchLogEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        const fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         raft_pb::FetchLogEntriesRequest msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
         *msg.mutable_requester_id() = to_node_id_value<NodeId>(req.requester_id());
         msg.set_from_index(static_cast<std::uint64_t>(req.from_index()));
         msg.set_to_index(static_cast<std::uint64_t>(req.to_index()));
@@ -212,10 +226,11 @@ public:
 
     // Serialize FetchLogEntries Response
     template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_response<TermId, LogIndex, LogEntry>& resp) const -> Data {
+        const fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>& resp) const -> Data {
         raft_pb::FetchLogEntriesResponse msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
         // responder_id stays a bare uint64 (see raft_messages.proto note).
         msg.set_responder_id(static_cast<std::uint64_t>(resp.responder_id()));
         msg.set_available(resp.available());
@@ -230,12 +245,13 @@ public:
 
     // Deserialize RequestVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_vote_request(const Data& data) const
-        -> request_vote_request<NodeId, TermId, LogIndex> {
+        -> request_vote_request<NodeId, TermId, LogIndex, GroupId> {
         auto msg = decode<raft_pb::RequestVoteRequest>(message_tag::request_vote_request, data);
 
-        request_vote_request<NodeId, TermId, LogIndex> req;
+        request_vote_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = from_group_id_value<GroupId>(msg.group_id());
         req._term = static_cast<TermId>(msg.term());
         req._candidate_id = from_node_id_value<NodeId>(msg.candidate_id());
         req._last_log_index = static_cast<LogIndex>(msg.last_log_index());
@@ -244,12 +260,13 @@ public:
     }
 
     // Deserialize RequestVote Response
-    template<typename TermId = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_vote_response(const Data& data) const
-        -> request_vote_response<TermId> {
+        -> request_vote_response<TermId, GroupId> {
         auto msg = decode<raft_pb::RequestVoteResponse>(message_tag::request_vote_response, data);
 
-        request_vote_response<TermId> resp;
+        request_vote_response<TermId, GroupId> resp;
+        resp._group_id = from_group_id_value<GroupId>(msg.group_id());
         resp._term = static_cast<TermId>(msg.term());
         resp._vote_granted = msg.vote_granted();
         return resp;
@@ -257,13 +274,14 @@ public:
 
     // Deserialize RequestPreVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_pre_vote_request(const Data& data) const
-        -> request_pre_vote_request<NodeId, TermId, LogIndex> {
+        -> request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> {
         auto msg =
             decode<raft_pb::RequestPreVoteRequest>(message_tag::request_pre_vote_request, data);
 
-        request_pre_vote_request<NodeId, TermId, LogIndex> req;
+        request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = from_group_id_value<GroupId>(msg.group_id());
         req._term = static_cast<TermId>(msg.term());
         req._candidate_id = from_node_id_value<NodeId>(msg.candidate_id());
         req._last_log_index = static_cast<LogIndex>(msg.last_log_index());
@@ -272,13 +290,14 @@ public:
     }
 
     // Deserialize RequestPreVote Response
-    template<typename TermId = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_pre_vote_response(const Data& data) const
-        -> request_pre_vote_response<TermId> {
+        -> request_pre_vote_response<TermId, GroupId> {
         auto msg =
             decode<raft_pb::RequestPreVoteResponse>(message_tag::request_pre_vote_response, data);
 
-        request_pre_vote_response<TermId> resp;
+        request_pre_vote_response<TermId, GroupId> resp;
+        resp._group_id = from_group_id_value<GroupId>(msg.group_id());
         resp._term = static_cast<TermId>(msg.term());
         resp._vote_granted = msg.vote_granted();
         return resp;
@@ -286,12 +305,14 @@ public:
 
     // Deserialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_append_entries_request(const Data& data) const
-        -> append_entries_request<NodeId, TermId, LogIndex, LogEntry> {
+        -> append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> {
         auto msg = decode<raft_pb::AppendEntriesRequest>(message_tag::append_entries_request, data);
 
-        append_entries_request<NodeId, TermId, LogIndex, LogEntry> req;
+        append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> req;
+        req._group_id = from_group_id_value<GroupId>(msg.group_id());
         req._term = static_cast<TermId>(msg.term());
         req._leader_id = from_node_id_value<NodeId>(msg.leader_id());
         req._prev_log_index = static_cast<LogIndex>(msg.prev_log_index());
@@ -305,13 +326,15 @@ public:
     }
 
     // Deserialize AppendEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_append_entries_response(const Data& data) const
-        -> append_entries_response<TermId, LogIndex> {
+        -> append_entries_response<TermId, LogIndex, GroupId> {
         auto msg =
             decode<raft_pb::AppendEntriesResponse>(message_tag::append_entries_response, data);
 
-        append_entries_response<TermId, LogIndex> resp;
+        append_entries_response<TermId, LogIndex, GroupId> resp;
+        resp._group_id = from_group_id_value<GroupId>(msg.group_id());
         resp._term = static_cast<TermId>(msg.term());
         resp._success = msg.success();
         if (msg.has_conflict_index()) {
@@ -325,13 +348,14 @@ public:
 
     // Deserialize InstallSnapshot Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_install_snapshot_request(const Data& data) const
-        -> install_snapshot_request<NodeId, TermId, LogIndex> {
+        -> install_snapshot_request<NodeId, TermId, LogIndex, GroupId> {
         auto msg =
             decode<raft_pb::InstallSnapshotRequest>(message_tag::install_snapshot_request, data);
 
-        install_snapshot_request<NodeId, TermId, LogIndex> req;
+        install_snapshot_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = from_group_id_value<GroupId>(msg.group_id());
         req._term = static_cast<TermId>(msg.term());
         req._leader_id = from_node_id_value<NodeId>(msg.leader_id());
         req._last_included_index = static_cast<LogIndex>(msg.last_included_index());
@@ -343,13 +367,14 @@ public:
     }
 
     // Deserialize InstallSnapshot Response
-    template<typename TermId = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_install_snapshot_response(const Data& data) const
-        -> install_snapshot_response<TermId> {
+        -> install_snapshot_response<TermId, GroupId> {
         auto msg =
             decode<raft_pb::InstallSnapshotResponse>(message_tag::install_snapshot_response, data);
 
-        install_snapshot_response<TermId> resp;
+        install_snapshot_response<TermId, GroupId> resp;
+        resp._group_id = from_group_id_value<GroupId>(msg.group_id());
         resp._term = static_cast<TermId>(msg.term());
         return resp;
     }
@@ -409,13 +434,14 @@ public:
 
     // Deserialize FetchLogEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_request(const Data& data) const
-        -> fetch_log_entries_request<NodeId, TermId, LogIndex> {
+        -> fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> {
         auto msg =
             decode<raft_pb::FetchLogEntriesRequest>(message_tag::fetch_log_entries_request, data);
 
-        fetch_log_entries_request<NodeId, TermId, LogIndex> req;
+        fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = from_group_id_value<GroupId>(msg.group_id());
         req._requester_id = from_node_id_value<NodeId>(msg.requester_id());
         req._from_index = static_cast<LogIndex>(msg.from_index());
         req._to_index = static_cast<LogIndex>(msg.to_index());
@@ -424,13 +450,14 @@ public:
 
     // Deserialize FetchLogEntries Response
     template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_response(const Data& data) const
-        -> fetch_log_entries_response<TermId, LogIndex, LogEntry> {
+        -> fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> {
         auto msg =
             decode<raft_pb::FetchLogEntriesResponse>(message_tag::fetch_log_entries_response, data);
 
-        fetch_log_entries_response<TermId, LogIndex, LogEntry> resp;
+        fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> resp;
+        resp._group_id = from_group_id_value<GroupId>(msg.group_id());
         resp._responder_id = static_cast<std::uint64_t>(msg.responder_id());
         resp._available = msg.available();
         resp._prev_log_term = static_cast<TermId>(msg.prev_log_term());
@@ -588,6 +615,52 @@ private:
                 throw serialization_exception("NodeIdValue: expected numeric, got string");
             }
             return static_cast<NodeId>(v.numeric());
+        }
+    }
+
+    // ── GroupId <-> GroupIdValue oneof wrapper (multi-Raft, design §2.2) ─────
+
+    /// @brief Encode a `GroupId` (either `std::uint64_t` or `std::string`) into
+    /// the `GroupIdValue` oneof, selecting the case at compile time.
+    ///
+    /// Separate from `to_node_id_value` because `NodeId` and `GroupId` are
+    /// independent template parameters, and sharing one wire type would make a
+    /// future change to either of them a change to both.
+    template<typename GroupId>
+    [[nodiscard]] auto to_group_id_value(const GroupId& id) const -> raft_pb::GroupIdValue {
+        raft_pb::GroupIdValue v;
+        if constexpr (std::same_as<GroupId, std::string>) {
+            v.set_text(id);
+        } else {
+            v.set_numeric(static_cast<std::uint64_t>(id));
+        }
+        return v;
+    }
+
+    /// @brief Decode a `GroupIdValue`, treating an UNSET oneof as `GroupId{}`.
+    ///
+    /// This is the one place the group id's decode rule differs from the node
+    /// id's, and it is the whole backward-compatibility story: every payload
+    /// recorded before multi-Raft carries no `group_id` field, proto3 hands
+    /// those back as a default-constructed submessage with no case set, and
+    /// `GroupId{}` is exactly what "the single group" has always meant. A
+    /// populated case of the *wrong* type is still an error — that is a real
+    /// type mismatch rather than an old payload.
+    template<typename GroupId>
+    [[nodiscard]] auto from_group_id_value(const raft_pb::GroupIdValue& v) const -> GroupId {
+        if (v.value_case() == raft_pb::GroupIdValue::VALUE_NOT_SET) {
+            return GroupId{};
+        }
+        if constexpr (std::same_as<GroupId, std::string>) {
+            if (v.value_case() != raft_pb::GroupIdValue::kText) {
+                throw serialization_exception("GroupIdValue: expected string, got numeric");
+            }
+            return v.text();
+        } else {
+            if (v.value_case() != raft_pb::GroupIdValue::kNumeric) {
+                throw serialization_exception("GroupIdValue: expected numeric, got string");
+            }
+            return static_cast<GroupId>(v.numeric());
         }
     }
 

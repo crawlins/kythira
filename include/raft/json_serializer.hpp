@@ -18,13 +18,39 @@ template<typename Data>
 requires std::ranges::range<Data> && std::same_as<std::ranges::range_value_t<Data>, std::byte>
 class json_rpc_serializer {
 public:
+    // ── multi-Raft group id (.kiro/specs/multi-raft/ design §2.2) ────────────
+    //
+    // The key is emitted unconditionally, and an absent key decodes to
+    // `GroupId{}` rather than throwing. That pair is the whole backward
+    // compatibility story: every payload recorded before multi-Raft existed
+    // still decodes, and it decodes to "the single group", which is what it
+    // always meant.
+
+    template<typename GroupId>
+    static auto encode_group_id(boost::json::object& obj, const GroupId& group) -> void {
+        obj["group_id"] = group;
+    }
+
+    template<typename GroupId>
+    [[nodiscard]] static auto decode_group_id(const boost::json::object& obj) -> GroupId {
+        if (!obj.contains("group_id")) {
+            return GroupId{};
+        }
+        if constexpr (std::same_as<GroupId, std::string>) {
+            return std::string(obj.at("group_id").as_string());
+        } else {
+            return static_cast<GroupId>(obj.at("group_id").as_int64());
+        }
+    }
+
     // Serialize RequestVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
-    [[nodiscard]] auto serialize(const request_vote_request<NodeId, TermId, LogIndex>& req) const
-        -> Data {
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const request_vote_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "request_vote_request";
+        encode_group_id(obj, req.group_id());
         obj["term"] = req.term();
         obj["candidate_id"] = req.candidate_id();
         obj["last_log_index"] = req.last_log_index();
@@ -34,10 +60,11 @@ public:
     }
 
     // Serialize RequestVote Response
-    template<typename TermId = std::uint64_t>
-    [[nodiscard]] auto serialize(const request_vote_response<TermId>& resp) const -> Data {
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const request_vote_response<TermId, GroupId>& resp) const -> Data {
         boost::json::object obj;
         obj["type"] = "request_vote_response";
+        encode_group_id(obj, resp.group_id());
         obj["term"] = resp.term();
         obj["vote_granted"] = resp.vote_granted();
 
@@ -46,11 +73,12 @@ public:
 
     // Serialize RequestPreVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const request_pre_vote_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        const request_pre_vote_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "request_pre_vote_request";
+        encode_group_id(obj, req.group_id());
         obj["term"] = req.term();
         obj["candidate_id"] = req.candidate_id();
         obj["last_log_index"] = req.last_log_index();
@@ -60,10 +88,12 @@ public:
     }
 
     // Serialize RequestPreVote Response
-    template<typename TermId = std::uint64_t>
-    [[nodiscard]] auto serialize(const request_pre_vote_response<TermId>& resp) const -> Data {
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const request_pre_vote_response<TermId, GroupId>& resp) const
+        -> Data {
         boost::json::object obj;
         obj["type"] = "request_pre_vote_response";
+        encode_group_id(obj, resp.group_id());
         obj["term"] = resp.term();
         obj["vote_granted"] = resp.vote_granted();
 
@@ -72,11 +102,14 @@ public:
 
     // Serialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const append_entries_request<NodeId, TermId, LogIndex, LogEntry>& req) const -> Data {
+        const append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId>& req) const
+        -> Data {
         boost::json::object obj;
         obj["type"] = "append_entries_request";
+        encode_group_id(obj, req.group_id());
         obj["term"] = req.term();
         obj["leader_id"] = req.leader_id();
         obj["prev_log_index"] = req.prev_log_index();
@@ -99,11 +132,13 @@ public:
     }
 
     // Serialize AppendEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
-    [[nodiscard]] auto serialize(const append_entries_response<TermId, LogIndex>& resp) const
-        -> Data {
+    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+             typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const append_entries_response<TermId, LogIndex, GroupId>& resp) const -> Data {
         boost::json::object obj;
         obj["type"] = "append_entries_response";
+        encode_group_id(obj, resp.group_id());
         obj["term"] = resp.term();
         obj["success"] = resp.success();
 
@@ -120,11 +155,12 @@ public:
 
     // Serialize InstallSnapshot Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const install_snapshot_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        const install_snapshot_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "install_snapshot_request";
+        encode_group_id(obj, req.group_id());
         obj["term"] = req.term();
         obj["leader_id"] = req.leader_id();
         obj["last_included_index"] = req.last_included_index();
@@ -137,10 +173,12 @@ public:
     }
 
     // Serialize InstallSnapshot Response
-    template<typename TermId = std::uint64_t>
-    [[nodiscard]] auto serialize(const install_snapshot_response<TermId>& resp) const -> Data {
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const install_snapshot_response<TermId, GroupId>& resp) const
+        -> Data {
         boost::json::object obj;
         obj["type"] = "install_snapshot_response";
+        encode_group_id(obj, resp.group_id());
         obj["term"] = resp.term();
 
         return json_to_bytes(boost::json::serialize(obj));
@@ -148,9 +186,9 @@ public:
 
     // Deserialize RequestVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_vote_request(const Data& data) const
-        -> request_vote_request<NodeId, TermId, LogIndex> {
+        -> request_vote_request<NodeId, TermId, LogIndex, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -158,7 +196,8 @@ public:
             throw serialization_exception("Invalid message type for request_vote_request");
         }
 
-        request_vote_request<NodeId, TermId, LogIndex> req;
+        request_vote_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = decode_group_id<GroupId>(obj);
         req._term = static_cast<TermId>(obj["term"].as_int64());
         req._last_log_index = static_cast<LogIndex>(obj["last_log_index"].as_int64());
         req._last_log_term = static_cast<TermId>(obj["last_log_term"].as_int64());
@@ -173,9 +212,9 @@ public:
     }
 
     // Deserialize RequestVote Response
-    template<typename TermId = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_vote_response(const Data& data) const
-        -> request_vote_response<TermId> {
+        -> request_vote_response<TermId, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -183,7 +222,8 @@ public:
             throw serialization_exception("Invalid message type for request_vote_response");
         }
 
-        request_vote_response<TermId> resp;
+        request_vote_response<TermId, GroupId> resp;
+        resp._group_id = decode_group_id<GroupId>(obj);
         resp._term = static_cast<TermId>(obj["term"].as_int64());
         resp._vote_granted = obj["vote_granted"].as_bool();
 
@@ -192,9 +232,9 @@ public:
 
     // Deserialize RequestPreVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_pre_vote_request(const Data& data) const
-        -> request_pre_vote_request<NodeId, TermId, LogIndex> {
+        -> request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -202,7 +242,8 @@ public:
             throw serialization_exception("Invalid message type for request_pre_vote_request");
         }
 
-        request_pre_vote_request<NodeId, TermId, LogIndex> req;
+        request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = decode_group_id<GroupId>(obj);
         req._term = static_cast<TermId>(obj["term"].as_int64());
         req._last_log_index = static_cast<LogIndex>(obj["last_log_index"].as_int64());
         req._last_log_term = static_cast<TermId>(obj["last_log_term"].as_int64());
@@ -217,9 +258,9 @@ public:
     }
 
     // Deserialize RequestPreVote Response
-    template<typename TermId = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_pre_vote_response(const Data& data) const
-        -> request_pre_vote_response<TermId> {
+        -> request_pre_vote_response<TermId, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -227,7 +268,8 @@ public:
             throw serialization_exception("Invalid message type for request_pre_vote_response");
         }
 
-        request_pre_vote_response<TermId> resp;
+        request_pre_vote_response<TermId, GroupId> resp;
+        resp._group_id = decode_group_id<GroupId>(obj);
         resp._term = static_cast<TermId>(obj["term"].as_int64());
         resp._vote_granted = obj["vote_granted"].as_bool();
 
@@ -236,9 +278,10 @@ public:
 
     // Deserialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_append_entries_request(const Data& data) const
-        -> append_entries_request<NodeId, TermId, LogIndex, LogEntry> {
+        -> append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -246,7 +289,8 @@ public:
             throw serialization_exception("Invalid message type for append_entries_request");
         }
 
-        append_entries_request<NodeId, TermId, LogIndex, LogEntry> req;
+        append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> req;
+        req._group_id = decode_group_id<GroupId>(obj);
         req._term = static_cast<TermId>(obj["term"].as_int64());
         req._prev_log_index = static_cast<LogIndex>(obj["prev_log_index"].as_int64());
         req._prev_log_term = static_cast<TermId>(obj["prev_log_term"].as_int64());
@@ -276,9 +320,10 @@ public:
     }
 
     // Deserialize AppendEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_append_entries_response(const Data& data) const
-        -> append_entries_response<TermId, LogIndex> {
+        -> append_entries_response<TermId, LogIndex, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -286,7 +331,8 @@ public:
             throw serialization_exception("Invalid message type for append_entries_response");
         }
 
-        append_entries_response<TermId, LogIndex> resp;
+        append_entries_response<TermId, LogIndex, GroupId> resp;
+        resp._group_id = decode_group_id<GroupId>(obj);
         resp._term = static_cast<TermId>(obj["term"].as_int64());
         resp._success = obj["success"].as_bool();
 
@@ -303,9 +349,9 @@ public:
 
     // Deserialize InstallSnapshot Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_install_snapshot_request(const Data& data) const
-        -> install_snapshot_request<NodeId, TermId, LogIndex> {
+        -> install_snapshot_request<NodeId, TermId, LogIndex, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -313,7 +359,8 @@ public:
             throw serialization_exception("Invalid message type for install_snapshot_request");
         }
 
-        install_snapshot_request<NodeId, TermId, LogIndex> req;
+        install_snapshot_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = decode_group_id<GroupId>(obj);
         req._term = static_cast<TermId>(obj["term"].as_int64());
         req._last_included_index = static_cast<LogIndex>(obj["last_included_index"].as_int64());
         req._last_included_term = static_cast<TermId>(obj["last_included_term"].as_int64());
@@ -331,9 +378,9 @@ public:
     }
 
     // Deserialize InstallSnapshot Response
-    template<typename TermId = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_install_snapshot_response(const Data& data) const
-        -> install_snapshot_response<TermId> {
+        -> install_snapshot_response<TermId, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -341,7 +388,8 @@ public:
             throw serialization_exception("Invalid message type for install_snapshot_response");
         }
 
-        install_snapshot_response<TermId> resp;
+        install_snapshot_response<TermId, GroupId> resp;
+        resp._group_id = decode_group_id<GroupId>(obj);
         resp._term = static_cast<TermId>(obj["term"].as_int64());
 
         return resp;
@@ -496,11 +544,12 @@ public:
 
     // Serialize FetchLogEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        const fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "fetch_log_entries_request";
+        encode_group_id(obj, req.group_id());
         obj["requester_id"] = req.requester_id();
         obj["from_index"] = req.from_index();
         obj["to_index"] = req.to_index();
@@ -509,11 +558,12 @@ public:
 
     // Serialize FetchLogEntries Response
     template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_response<TermId, LogIndex, LogEntry>& resp) const -> Data {
+        const fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>& resp) const -> Data {
         boost::json::object obj;
         obj["type"] = "fetch_log_entries_response";
+        encode_group_id(obj, resp.group_id());
         obj["responder_id"] = resp.responder_id();
         obj["available"] = resp.available();
         obj["prev_log_term"] = resp.prev_log_term();
@@ -534,9 +584,9 @@ public:
 
     // Deserialize FetchLogEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_request(const Data& data) const
-        -> fetch_log_entries_request<NodeId, TermId, LogIndex> {
+        -> fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -544,7 +594,8 @@ public:
             throw serialization_exception("Invalid message type for fetch_log_entries_request");
         }
 
-        fetch_log_entries_request<NodeId, TermId, LogIndex> req;
+        fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = decode_group_id<GroupId>(obj);
         if constexpr (std::same_as<NodeId, std::string>) {
             req._requester_id = std::string(obj["requester_id"].as_string());
         } else {
@@ -557,9 +608,9 @@ public:
 
     // Deserialize FetchLogEntries Response
     template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_response(const Data& data) const
-        -> fetch_log_entries_response<TermId, LogIndex, LogEntry> {
+        -> fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -567,7 +618,8 @@ public:
             throw serialization_exception("Invalid message type for fetch_log_entries_response");
         }
 
-        fetch_log_entries_response<TermId, LogIndex, LogEntry> resp;
+        fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> resp;
+        resp._group_id = decode_group_id<GroupId>(obj);
         resp._responder_id = static_cast<std::uint64_t>(obj["responder_id"].as_int64());
         resp._available = obj["available"].as_bool();
         resp._prev_log_term = static_cast<TermId>(obj["prev_log_term"].as_int64());

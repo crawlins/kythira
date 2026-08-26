@@ -67,15 +67,38 @@ inline auto operator<<(std::ostream& os, server_state state) -> std::ostream& {
     }
 }
 
-/// @brief Discriminant distinguishing normal state-machine entries from configuration entries.
+/// @brief Discriminant distinguishing normal state-machine entries from configuration
+/// and sharding-administration entries.
+///
+/// Values 3-7 are the multi-Raft admin entries (`.kiro/specs/multi-raft/`
+/// design §5.1). Like `no_op`, and unlike `normal`, they are **never** passed
+/// to `state_machine.apply()`: `node<Types>` routes them to the admin-entry
+/// handler the sharding host installs. That is what keeps every line of split
+/// and merge logic out of the consensus core.
 enum class entry_type : std::uint8_t {
-    normal = 0,         ///< Application command to be applied to the state machine.
-    configuration = 1,  ///< Joint-consensus or final cluster-configuration record.
-    no_op = 2           ///< Leadership-change barrier entry (Raft §5.4.2); never applied
-                        ///< to the state machine, exists only to let a new leader commit
-                        ///< something in its own term so commit_index can advance past
-                        ///< entries inherited from previous terms.
+    normal = 0,          ///< Application command to be applied to the state machine.
+    configuration = 1,   ///< Joint-consensus or final cluster-configuration record.
+    no_op = 2,           ///< Leadership-change barrier entry (Raft §5.4.2); never applied
+                         ///< to the state machine, exists only to let a new leader commit
+                         ///< something in its own term so commit_index can advance past
+                         ///< entries inherited from previous terms.
+    split = 3,           ///< Shard split, carrying fully derived child descriptors.
+    merge_prepare = 4,   ///< Source shard freezes for a merge into a named target.
+    merge_commit = 5,    ///< Target shard absorbs the source's state and range.
+    merge_rollback = 6,  ///< Source shard resumes after an abandoned merge.
+    merge_abandoned = 7  ///< Target shard records, in its own log, that it will not commit.
 };
+
+/// @brief Whether an entry type is one of the multi-Raft administration entries.
+///
+/// Kept next to the enum rather than in the sharding headers so that
+/// `node<Types>`'s apply loop can ask the question without depending on
+/// anything above it.
+[[nodiscard]] constexpr auto is_admin_entry_type(entry_type t) -> bool {
+    return t == entry_type::split || t == entry_type::merge_prepare ||
+           t == entry_type::merge_commit || t == entry_type::merge_rollback ||
+           t == entry_type::merge_abandoned;
+}
 
 /// @brief Concept for a log entry: carries term, index, command bytes, and entry type.
 /// @tparam T        Concrete log-entry type.
@@ -302,6 +325,30 @@ concept install_snapshot_response_type = requires(const T& resp) {
     { resp.term() } -> std::same_as<TermId>;
 };
 
+/// @page multiraft_group_id The `_group_id` field on every RPC struct
+///
+/// Each RPC request and response carries a `GroupId _group_id` and a
+/// `group_id()` accessor so that one transport can serve many Raft groups in
+/// one process (`.kiro/specs/multi-raft/` design §2.2). The transport
+/// demultiplexer dispatches on it; nothing inside `node<Types>` reads it.
+///
+/// Two decisions are load-bearing and neither is reversible cheaply:
+///
+/// - **The field is appended at the end of the aggregate, never prepended.**
+///   These structs are initialised with designated initialisers throughout
+///   `raft.hpp`, the transports and the test suite; a field at the front would
+///   break every one of those call sites at once, and a positional aggregate
+///   initialiser would silently mean something different.
+/// - **Backward compatibility is by default value, not by a format version.**
+///   A default-constructed group id means "the single group". Old recorded
+///   payloads decode to it, proto3 decodes an absent scalar to it, and the
+///   JSON/CBOR/Ion decoders yield it for a missing key — so no coordinated
+///   upgrade of five serializers and two .proto files was needed.
+///
+/// `GroupId` is a trailing template parameter defaulting to `std::uint64_t` on
+/// every one of these structs, so `request_vote_request<>` and friends keep
+/// naming exactly the type they named before.
+
 /// @brief Request for the peer-to-peer `fetch_log_entries` RPC
 /// (`.kiro/specs/peer2peer-log-replication/`).
 ///
@@ -312,16 +359,19 @@ concept install_snapshot_response_type = requires(const T& resp) {
 /// @tparam TermId   Term number type; defaults to `uint64_t`.
 /// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-         typename LogIndex = std::uint64_t>
+         typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
 struct fetch_log_entries_request {
     NodeId _requester_id;
     LogIndex _from_index;
     LogIndex _to_index;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto requester_id() const -> NodeId { return _requester_id; }
     [[nodiscard]] auto from_index() const -> LogIndex { return _from_index; }
     [[nodiscard]] auto to_index() const -> LogIndex { return _to_index; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Response to a `fetch_log_entries_request`.
@@ -335,7 +385,7 @@ struct fetch_log_entries_request {
 /// @tparam LogIndex Log index type; defaults to `uint64_t`.
 /// @tparam LogEntry Log-entry type; defaults to `log_entry<TermId, LogIndex>`.
 template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-         typename LogEntry = log_entry<TermId, LogIndex>>
+         typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
 requires term_id<TermId> && log_index<LogIndex> && log_entry_type<LogEntry, TermId, LogIndex>
 struct fetch_log_entries_response {
     std::uint64_t _responder_id;
@@ -343,10 +393,13 @@ struct fetch_log_entries_response {
     TermId _prev_log_term;
     std::vector<LogEntry> _entries;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto responder_id() const -> std::uint64_t { return _responder_id; }
     [[nodiscard]] auto available() const -> bool { return _available; }
     [[nodiscard]] auto prev_log_term() const -> TermId { return _prev_log_term; }
     [[nodiscard]] auto entries() const -> const std::vector<LogEntry>& { return _entries; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Default RequestVote request.
@@ -354,7 +407,7 @@ struct fetch_log_entries_response {
 /// @tparam TermId   Term number type; defaults to `uint64_t`.
 /// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-         typename LogIndex = std::uint64_t>
+         typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
 struct request_vote_request {
     TermId _term;
@@ -362,22 +415,28 @@ struct request_vote_request {
     LogIndex _last_log_index;
     TermId _last_log_term;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto candidate_id() const -> NodeId { return _candidate_id; }
     [[nodiscard]] auto last_log_index() const -> LogIndex { return _last_log_index; }
     [[nodiscard]] auto last_log_term() const -> TermId { return _last_log_term; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Default RequestVote response.
 /// @tparam TermId Term number type; defaults to `uint64_t`.
-template<typename TermId = std::uint64_t>
+template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
 requires term_id<TermId>
 struct request_vote_response {
     TermId _term;
     bool _vote_granted;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto vote_granted() const -> bool { return _vote_granted; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Default RequestPreVote request. Same shape as `request_vote_request`
@@ -387,7 +446,7 @@ struct request_vote_response {
 /// @tparam TermId   Term number type; defaults to `uint64_t`.
 /// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-         typename LogIndex = std::uint64_t>
+         typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
 struct request_pre_vote_request {
     TermId _term;
@@ -395,22 +454,28 @@ struct request_pre_vote_request {
     LogIndex _last_log_index;
     TermId _last_log_term;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto candidate_id() const -> NodeId { return _candidate_id; }
     [[nodiscard]] auto last_log_index() const -> LogIndex { return _last_log_index; }
     [[nodiscard]] auto last_log_term() const -> TermId { return _last_log_term; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Default RequestPreVote response.
 /// @tparam TermId Term number type; defaults to `uint64_t`.
-template<typename TermId = std::uint64_t>
+template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
 requires term_id<TermId>
 struct request_pre_vote_response {
     TermId _term;
     bool _vote_granted;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto vote_granted() const -> bool { return _vote_granted; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Default AppendEntries request.
@@ -419,7 +484,8 @@ struct request_pre_vote_response {
 /// @tparam LogIndex Log index type; defaults to `uint64_t`.
 /// @tparam LogEntry Log-entry type; defaults to `log_entry<TermId, LogIndex>`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-         typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
+         typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+         typename GroupId = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex> &&
          log_entry_type<LogEntry, TermId, LogIndex>
 struct append_entries_request {
@@ -430,18 +496,22 @@ struct append_entries_request {
     std::vector<LogEntry> _entries;
     LogIndex _leader_commit;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto leader_id() const -> NodeId { return _leader_id; }
     [[nodiscard]] auto prev_log_index() const -> LogIndex { return _prev_log_index; }
     [[nodiscard]] auto prev_log_term() const -> TermId { return _prev_log_term; }
     [[nodiscard]] auto entries() const -> const std::vector<LogEntry>& { return _entries; }
     [[nodiscard]] auto leader_commit() const -> LogIndex { return _leader_commit; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Default AppendEntries response.
 /// @tparam TermId   Term number type; defaults to `uint64_t`.
 /// @tparam LogIndex Log index type; defaults to `uint64_t`.
-template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+         typename GroupId = std::uint64_t>
 requires term_id<TermId> && log_index<LogIndex>
 struct append_entries_response {
     TermId _term;
@@ -449,10 +519,13 @@ struct append_entries_response {
     std::optional<LogIndex> _conflict_index;
     std::optional<TermId> _conflict_term;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto success() const -> bool { return _success; }
     [[nodiscard]] auto conflict_index() const -> std::optional<LogIndex> { return _conflict_index; }
     [[nodiscard]] auto conflict_term() const -> std::optional<TermId> { return _conflict_term; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Default InstallSnapshot request.
@@ -460,7 +533,7 @@ struct append_entries_response {
 /// @tparam TermId   Term number type; defaults to `uint64_t`.
 /// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-         typename LogIndex = std::uint64_t>
+         typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
 struct install_snapshot_request {
     TermId _term;
@@ -471,6 +544,8 @@ struct install_snapshot_request {
     std::vector<std::byte> _data;
     bool _done;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto leader_id() const -> NodeId { return _leader_id; }
     [[nodiscard]] auto last_included_index() const -> LogIndex { return _last_included_index; }
@@ -478,16 +553,20 @@ struct install_snapshot_request {
     [[nodiscard]] auto offset() const -> std::size_t { return _offset; }
     [[nodiscard]] auto data() const -> const std::vector<std::byte>& { return _data; }
     [[nodiscard]] auto done() const -> bool { return _done; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Default InstallSnapshot response.
 /// @tparam TermId Term number type; defaults to `uint64_t`.
-template<typename TermId = std::uint64_t>
+template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
 requires term_id<TermId>
 struct install_snapshot_response {
     TermId _term;
 
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
 /// @brief Concept constraining the serialized-data container to a `std::byte` range.
@@ -1090,6 +1169,9 @@ struct default_raft_types {
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
     using log_index_type = std::uint64_t;
+    /// Multi-Raft group selector. A bundle that never shards leaves every
+    /// message's `_group_id` at zero and behaves exactly as before.
+    using group_id_type = std::uint64_t;
 
     using serialized_data_type = std::vector<std::byte>;
     using serializer_type = json_rpc_serializer<serialized_data_type>;
@@ -1118,14 +1200,16 @@ struct default_raft_types {
     using cluster_leave_response_type = cluster_leave_response<node_id_type, address_type>;
 
     using request_vote_request_type =
-        request_vote_request<node_id_type, term_id_type, log_index_type>;
-    using request_vote_response_type = request_vote_response<term_id_type>;
+        request_vote_request<node_id_type, term_id_type, log_index_type, group_id_type>;
+    using request_vote_response_type = request_vote_response<term_id_type, group_id_type>;
     using append_entries_request_type =
-        append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-    using append_entries_response_type = append_entries_response<term_id_type, log_index_type>;
+        append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type,
+                               group_id_type>;
+    using append_entries_response_type =
+        append_entries_response<term_id_type, log_index_type, group_id_type>;
     using install_snapshot_request_type =
-        install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-    using install_snapshot_response_type = install_snapshot_response<term_id_type>;
+        install_snapshot_request<node_id_type, term_id_type, log_index_type, group_id_type>;
+    using install_snapshot_response_type = install_snapshot_response<term_id_type, group_id_type>;
 };
 
 }  // namespace kythira
