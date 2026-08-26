@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phases 1-4 complete (tasks 1-12)
+## Status: In progress — Phases 1-5 complete (tasks 1-14)
 
 **Last Updated**: August 23, 2026
 
@@ -254,7 +254,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 5: Client Routing (Tasks 13–14)
 
-- [ ] 13. Add client routing and the `partitioner` concept
+- [x] 13. Add client routing and the `partitioner` concept
   - `partitioner<P, Key>` concept: `key_of(command) -> Key`.
   - `submit_command(Key, …)`, `submit_command(GroupId, shard_epoch, …)`,
     `read_state(Key, …)` per design §8, with the retry loop: not-leader →
@@ -269,7 +269,7 @@ Phases 6–8, after the mechanics it drives.
     `max_route_retries` surfaces the last error, not a generic timeout.
   - _Requirements: 2.5, 18.1, 18.2, 18.3, 18.4, 18.5, 18.6_
 
-- [ ] 14. Static multi-group integration test
+- [x] 14. Static multi-group integration test
   - Three simulated nodes, four statically configured shards, no split/merge.
     Drive a mixed read/write workload through `submit_command(key, …)`; kill and
     restart nodes; assert every command commits and the tiling invariant holds

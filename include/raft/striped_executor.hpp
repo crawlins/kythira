@@ -117,10 +117,14 @@ public:
             } catch (...) {
                 failure = std::current_exception();
             }
-            {
-                std::lock_guard lock(done_mutex);
-                done = true;
-            }
+            // Notify INSIDE the lock. `done_mutex`, `done_cv` and `failure` all
+            // live on the waiting thread's stack: if the notify happened after
+            // the unlock, the waiter could wake, return, and unwind that stack
+            // while this thread was still inside `notify_one()`. That is a use
+            // of a destroyed condition_variable, and it presents as stack
+            // corruption a long way from here.
+            std::lock_guard lock(done_mutex);
+            done = true;
             done_cv.notify_one();
         });
         if (!queued) {

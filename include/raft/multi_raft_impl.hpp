@@ -30,7 +30,7 @@ multi_raft<Types, Key, GroupId>::multi_raft(config_type cfg)
       _demux(std::move(_cfg.network_server)),
       _stripe_count(_cfg.executor_stripes == 0 ? striped_serial_executor::default_stripe_count()
                                                : _cfg.executor_stripes),
-      _executor(std::make_unique<striped_serial_executor>(_stripe_count)) {
+      _executor(std::make_shared<striped_serial_executor>(_stripe_count)) {
     if (!_cfg.store_factory) {
         throw std::invalid_argument(
             "multi_raft: store_factory is required — a group's store is scoped by its "
@@ -66,8 +66,11 @@ auto multi_raft<Types, Key, GroupId>::start() -> void {
     if (_running.exchange(true)) {
         return;
     }
-    if (!_executor) {
-        _executor = std::make_unique<striped_serial_executor>(_stripe_count);
+    {
+        std::lock_guard lock(_executor_mutex);
+        if (!_executor) {
+            _executor = std::make_shared<striped_serial_executor>(_stripe_count);
+        }
     }
     _demux.start();
     for (const auto& g : all_groups()) {
@@ -82,10 +85,12 @@ auto multi_raft<Types, Key, GroupId>::stop() -> void {
         return;
     }
 
+    auto executor = current_executor();
+
     // Drain before stopping the nodes: a queued phase task holds a group_ptr
     // and would otherwise run against a node that stop() has already torn down.
-    if (_executor) {
-        _executor->drain_all();
+    if (executor) {
+        executor->drain_all();
     }
 
     for (const auto& g : all_groups()) {
@@ -97,11 +102,25 @@ auto multi_raft<Types, Key, GroupId>::stop() -> void {
     // `node` has no destructor, so a joinable thread surviving stop() aborts
     // the process at teardown rather than merely leaking — leaving nothing
     // joinable is the contract, and restartability is the other half of it.
-    if (_executor) {
-        _executor->stop();
+    //
+    // The member is cleared first and the local copy stopped after, so a
+    // `tick()` that took its own copy a moment ago keeps a live pool rather
+    // than a dangling pointer.
+    {
+        std::lock_guard lock(_executor_mutex);
         _executor.reset();
     }
+    if (executor) {
+        executor->stop();
+    }
     persist_tombstones();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::current_executor() const
+    -> std::shared_ptr<striped_serial_executor> {
+    std::lock_guard lock(_executor_mutex);
+    return _executor;
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -220,9 +239,10 @@ auto multi_raft<Types, Key, GroupId>::destroy_group(const GroupId& group, tombst
     // Drain the group's own stripe so nothing is executing inside the node we
     // are about to destroy. `post_and_wait` refuses to run from that stripe,
     // which is exactly the case that would deadlock.
-    if (_executor && !_executor->stopped() &&
+    if (auto executor = current_executor();
+        executor && !executor->stopped() &&
         striped_serial_executor::current_stripe() != state->_stripe) {
-        _executor->post_and_wait(state->_stripe, [] {});
+        executor->post_and_wait(state->_stripe, [] {});
     }
 
     state->_node->stop();
@@ -470,7 +490,10 @@ auto multi_raft<Types, Key, GroupId>::run_phase(const std::vector<group_ptr>& re
     std::condition_variable cv;
     std::size_t remaining = ready.size();
 
-    if (!_executor || _executor->stopped()) {
+    // One copy for the whole phase: `stop()` may clear the member while this
+    // phase is running, and the copy is what keeps the pool alive underneath it.
+    auto executor = current_executor();
+    if (!executor || executor->stopped()) {
         // No pool: the host is stopped, so there is nothing to serialise
         // against and running inline is equivalent.
         for (const auto& g : ready) {
@@ -483,7 +506,7 @@ auto multi_raft<Types, Key, GroupId>::run_phase(const std::vector<group_ptr>& re
     }
 
     for (const auto& g : ready) {
-        const bool queued = _executor->post(g->_stripe, [&, g] {
+        const bool queued = executor->post(g->_stripe, [&, g] {
             try {
                 fn(*g);
             } catch (...) {
@@ -492,15 +515,18 @@ auto multi_raft<Types, Key, GroupId>::run_phase(const std::vector<group_ptr>& re
                 // would stop being driven. The node's own error handling has
                 // already logged whatever this was.
             }
-            {
-                std::lock_guard lock(m);
-                --remaining;
-            }
+            // Notify INSIDE the lock: `m`, `cv` and `remaining` live on this
+            // function's stack, and a notify after the unlock lets the waiter
+            // return and unwind them while this thread is still inside
+            // `notify_one()`. See the same fix in `striped_serial_executor`.
+            std::lock_guard lock(m);
+            --remaining;
             cv.notify_one();
         });
         if (!queued) {
             std::lock_guard lock(m);
             --remaining;
+            cv.notify_one();
         }
     }
 
@@ -657,6 +683,240 @@ auto multi_raft<Types, Key, GroupId>::persist_tombstones() -> void {
     }
     std::lock_guard lock(_tombstone_mutex);
     _tombstones.save_to_file(_cfg.host_data_dir / "tombstones");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Client routing
+// ─────────────────────────────────────────────────────────────────────────────
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::failed_future(std::exception_ptr error) -> future_type {
+    typename Types::promise_type promise;
+    auto future = promise.getFuture();
+    promise.setException(std::move(error));
+    return future;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::resolve(const Key& key) const
+    -> std::optional<descriptor_type> {
+    std::shared_lock lock(_map_mutex);
+    return _shard_map.lookup(key);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::update_descriptor(const GroupId& group,
+                                                        const descriptor_type& descriptor) -> bool {
+    auto g = find_group(group);
+    if (!g) {
+        return false;
+    }
+    g->_descriptor = descriptor;
+    std::unique_lock lock(_map_mutex);
+    _shard_map.upsert(descriptor);
+    return true;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::set_local_descriptor(const GroupId& group,
+                                                           const descriptor_type& descriptor)
+    -> bool {
+    auto g = find_group(group);
+    if (!g) {
+        return false;
+    }
+    g->_descriptor = descriptor;
+    return true;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::publish_descriptor(const GroupId& group) -> bool {
+    auto g = find_group(group);
+    if (!g) {
+        return false;
+    }
+    std::unique_lock lock(_map_mutex);
+    return _shard_map.upsert(g->_descriptor);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::forget_routing_row(const GroupId& group) -> bool {
+    std::unique_lock lock(_map_mutex);
+    return _shard_map.erase_group(group);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::local_descriptor(const GroupId& group) const
+    -> std::optional<descriptor_type> {
+    auto g = find_group(group);
+    return g ? std::optional{g->_descriptor} : std::nullopt;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::refresh_map_from_local_groups() -> bool {
+    std::vector<descriptor_type> rows;
+    for (const auto& g : all_groups()) {
+        rows.push_back(g->_descriptor);
+    }
+    std::unique_lock lock(_map_mutex);
+    return _shard_map.upsert_all(rows);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::load_counters(const GroupId& group) const
+    -> std::pair<std::uint64_t, std::uint64_t> {
+    auto g = find_group(group);
+    if (!g) {
+        return {0, 0};
+    }
+    return {g->_reads.load(std::memory_order_relaxed), g->_writes.load(std::memory_order_relaxed)};
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
+                                                    std::optional<GroupId> group,
+                                                    std::optional<shard_epoch> expected_epoch,
+                                                    const std::vector<std::byte>* command,
+                                                    bool is_read, std::chrono::milliseconds timeout)
+    -> future_type {
+    std::exception_ptr last_error;
+
+    for (std::size_t attempt = 0; attempt <= _cfg.max_route_retries; ++attempt) {
+        // ── resolve ──────────────────────────────────────────────────────────
+        std::optional<descriptor_type> desc;
+        if (key.has_value()) {
+            std::shared_lock lock(_map_mutex);
+            desc = _shard_map.lookup(*key);
+        } else {
+            std::shared_lock lock(_map_mutex);
+            desc = _shard_map.find(*group);
+        }
+
+        if (!desc.has_value()) {
+            // A hole in the map is repairable from the local groups exactly
+            // once; if it survives that, the shard genuinely is not here.
+            if (attempt == 0 && refresh_map_from_local_groups()) {
+                continue;
+            }
+            last_error = key.has_value()
+                             ? std::make_exception_ptr(unrouted_key_exception<Key>{*key})
+                             : std::make_exception_ptr(
+                                   unknown_shard_exception<GroupId>{*group, "no routing row"});
+            break;
+        }
+
+        auto local = find_group(desc->_group_id);
+        if (!local) {
+            // The routing row exists but the replica is elsewhere. Nothing this
+            // host can do; the caller must reach one of the shard's voters.
+            last_error = std::make_exception_ptr(unknown_shard_exception<GroupId>{
+                desc->_group_id, "no local replica; try one of its voters"});
+            break;
+        }
+
+        // ── epoch ────────────────────────────────────────────────────────────
+        //
+        // The local replica's own descriptor is the authority; the map is a
+        // cache of it. A disagreement means the map is stale, so repair it and
+        // re-resolve — that is what makes a split cost an in-flight request one
+        // extra resolution instead of a placement-driver query.
+        if (local->_descriptor._epoch != desc->_epoch) {
+            last_error =
+                std::make_exception_ptr(shard_epoch_mismatch_exception<GroupId, Key, node_id_type>{
+                    desc->_group_id,
+                    desc->_epoch,
+                    local->_descriptor._epoch,
+                    {local->_descriptor}});
+            refresh_map_from_local_groups();
+            continue;
+        }
+        if (expected_epoch.has_value() && *expected_epoch != local->_descriptor._epoch) {
+            // The caller computed this request against a descriptor that has
+            // since moved. Serving it would apply a command to a range the
+            // caller no longer believes is there.
+            last_error =
+                std::make_exception_ptr(shard_epoch_mismatch_exception<GroupId, Key, node_id_type>{
+                    desc->_group_id,
+                    *expected_epoch,
+                    local->_descriptor._epoch,
+                    {local->_descriptor}});
+            break;
+        }
+
+        // ── cross-shard admission ────────────────────────────────────────────
+        //
+        // There is no distributed transaction here, and pretending otherwise
+        // would be the worst available failure: a command silently applied to a
+        // shard that does not own its key produces a state no invariant catches.
+        if (command != nullptr && _cfg.partitioner) {
+            const auto command_key = _cfg.partitioner(*command);
+            if (!local->_descriptor._range.contains(command_key)) {
+                last_error = std::make_exception_ptr(cross_shard_command_exception<GroupId, Key>{
+                    desc->_group_id, command_key, local->_descriptor._range});
+                break;
+            }
+        }
+
+        // ── leadership ───────────────────────────────────────────────────────
+        note_activity(*local);
+        if (!local->_node->is_leader()) {
+            last_error = std::make_exception_ptr(shard_not_leader_exception<GroupId, node_id_type>{
+                desc->_group_id, local->_node->known_leader()});
+            break;
+        }
+
+        // ── submit ───────────────────────────────────────────────────────────
+        //
+        // Load is counted here, at the routing layer, so that load-based split
+        // works for ANY state machine — including one with no sizing hooks.
+        if (is_read) {
+            local->_reads.fetch_add(1, std::memory_order_relaxed);
+            return local->_node->read_state(timeout);
+        }
+        local->_writes.fetch_add(1, std::memory_order_relaxed);
+        return local->_node->submit_command(*command, timeout);
+    }
+
+    if (!last_error) {
+        last_error = std::make_exception_ptr(
+            std::runtime_error("multi_raft: routing exhausted its retries with no recorded error"));
+    }
+    return failed_future(std::move(last_error));
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::submit_command(const Key& key,
+                                                     const std::vector<std::byte>& command,
+                                                     std::chrono::milliseconds timeout)
+    -> future_type {
+    return route_and_run(key, std::nullopt, std::nullopt, &command, false, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::submit_command(const GroupId& group,
+                                                     shard_epoch expected_epoch,
+                                                     const std::vector<std::byte>& command,
+                                                     std::chrono::milliseconds timeout)
+    -> future_type {
+    return route_and_run(std::nullopt, group, expected_epoch, &command, false, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::submit_command(const std::vector<std::byte>& command,
+                                                     std::chrono::milliseconds timeout)
+    -> future_type {
+    if (!_cfg.partitioner) {
+        return failed_future(std::make_exception_ptr(std::logic_error(
+            "multi_raft: submit_command(command) needs a partitioner; name the key instead")));
+    }
+    return route_and_run(_cfg.partitioner(command), std::nullopt, std::nullopt, &command, false,
+                         timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::read_state(const Key& key, std::chrono::milliseconds timeout)
+    -> future_type {
+    return route_and_run(key, std::nullopt, std::nullopt, nullptr, true, timeout);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
