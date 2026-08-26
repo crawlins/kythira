@@ -617,6 +617,12 @@ private:
     // not hosted by `multi_raft`, which is why the apply loop checks it.
     admin_entry_handler_type _admin_entry_handler;
 
+    // Reassembly buffer for an InstallSnapshot transfer in progress. Guarded by
+    // `_mutex` like every other piece of node state; see the note in
+    // handle_install_snapshot for what it replaced and why.
+    std::vector<std::byte> _snapshot_buffer;
+    bool _snapshot_buffer_open{false};
+
     // Configuration synchronizer for safe configuration changes. Its internal
     // "did this phase commit" signal is bool-valued, distinct from
     // future_type/promise_type above (which are std::vector<std::byte>-valued,
@@ -3809,11 +3815,21 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     // Rule 3: Create new snapshot file if first chunk (offset is 0)
     // For simplicity, we'll accumulate chunks in memory and install when done
     // In production, you'd want to write chunks to disk incrementally
-    static std::unordered_map<node_id_type, std::vector<std::byte>> snapshot_buffers;
+    //
+    // The buffer is a MEMBER, not a function-local static keyed by node id.
+    // It was the latter, which is a process-wide table shared by every
+    // `node<Types>` instance of this instantiation. That was survivable while
+    // one process hosted one Raft group; under multi-Raft
+    // (`.kiro/specs/multi-raft/`) every group's replica on a host carries the
+    // SAME node id, so all of them collided on one entry and one group's
+    // snapshot overwrote another's mid-transfer — a replica silently ending up
+    // with a different shard's state, which no Raft-level invariant re-checks.
+    // It was also mutated without synchronisation from several threads.
 
     if (request.offset() == 0) {
         // First chunk - initialize buffer
-        snapshot_buffers[_node_id] = request.data();
+        _snapshot_buffer = request.data();
+        _snapshot_buffer_open = true;
 
         _logger.debug("Started receiving snapshot",
                       {{"node_id", node_id_to_string(_node_id)},
@@ -3822,7 +3838,7 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
                        {"first_chunk_size", std::to_string(request.data().size())}});
     } else {
         // Subsequent chunk - append to buffer
-        if (snapshot_buffers.find(_node_id) == snapshot_buffers.end()) {
+        if (!_snapshot_buffer_open) {
             // Missing first chunk - reject
             _logger.error("Received snapshot chunk without first chunk",
                           {{"node_id", node_id_to_string(_node_id)},
@@ -3837,7 +3853,7 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
             return install_snapshot_response_type{_current_term};
         }
 
-        auto& buffer = snapshot_buffers[_node_id];
+        auto& buffer = _snapshot_buffer;
         if (buffer.size() != request.offset()) {
             // Offset mismatch - reject
             _logger.error("Snapshot chunk offset mismatch",
@@ -3868,13 +3884,13 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     if (!request.done()) {
         _logger.debug("Waiting for more snapshot chunks",
                       {{"node_id", node_id_to_string(_node_id)},
-                       {"bytes_received", std::to_string(snapshot_buffers[_node_id].size())}});
+                       {"bytes_received", std::to_string(_snapshot_buffer.size())}});
 
         return install_snapshot_response_type{_current_term};
     }
 
     // Rule 5: Save snapshot file, discard any existing or partial snapshot with smaller index
-    auto& complete_snapshot_data = snapshot_buffers[_node_id];
+    auto& complete_snapshot_data = _snapshot_buffer;
 
     _logger.info("Installing complete snapshot",
                  {{"node_id", node_id_to_string(_node_id)},
@@ -3935,8 +3951,12 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     _persistence.save_snapshot(snap);
     _persistence.save_current_term(_current_term);
 
-    // Clean up snapshot buffer
-    snapshot_buffers.erase(_node_id);
+    // Clean up snapshot buffer. Copied out first: `complete_snapshot_data` is a
+    // reference INTO it, and the metric below still reads the size.
+    const auto installed_bytes = _snapshot_buffer.size();
+    _snapshot_buffer.clear();
+    _snapshot_buffer.shrink_to_fit();
+    _snapshot_buffer_open = false;
 
     _logger.info("Successfully installed snapshot",
                  {{"node_id", node_id_to_string(_node_id)},
@@ -3948,7 +3968,7 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
 
     _metrics.set_metric_name("raft_install_snapshot_success");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-    _metrics.add_dimension("snapshot_size", std::to_string(complete_snapshot_data.size()));
+    _metrics.add_dimension("snapshot_size", std::to_string(installed_bytes));
     _metrics.add_one();
     _metrics.emit();
 
