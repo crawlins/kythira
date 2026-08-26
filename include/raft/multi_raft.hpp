@@ -32,6 +32,7 @@
 #include <raft/group_storage.hpp>
 #include <raft/group_transport.hpp>
 #include <raft/shard_commands.hpp>
+#include <raft/split_merge_policy.hpp>
 #include <raft/splittable_state_machine.hpp>
 #include <raft/raft.hpp>
 #include <raft/shard_exceptions.hpp>
@@ -167,6 +168,156 @@ template<typename Key, partitioner<Key> P>
 [[nodiscard]] auto make_partitioner(P p) -> std::function<Key(const std::vector<std::byte>&)> {
     return [p = std::move(p)](const std::vector<std::byte>& command) { return p.key_of(command); };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The signal surface (design §6.2, §6.6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Which channel asked for an operation.
+///
+/// Precedence is `admin` ▸ `placement_driver` ▸ `policy`, and a loser is logged
+/// with `preempted_by` rather than silently dropped — an operator debugging
+/// "why didn't my policy fire" needs to see that the placement driver outranked
+/// it (Requirement 15.6).
+enum class signal_channel : std::uint8_t {
+    admin = 0,
+    placement_driver = 1,
+    policy = 2,
+};
+
+inline auto to_string(signal_channel c) -> std::string {
+    switch (c) {
+        case signal_channel::admin:
+            return "admin";
+        case signal_channel::placement_driver:
+            return "placement_driver";
+        case signal_channel::policy:
+            return "policy";
+        default:
+            return "unknown";
+    }
+}
+
+/// @brief Why the arbiter refused an operation.
+///
+/// A named gate rather than a bool, because thresholds are untunable without
+/// it: an operator who cannot see `split.rejected{gate=cooldown}` will conclude
+/// the feature is broken.
+enum class arbiter_gate : std::uint8_t {
+    admitted = 0,
+    state = 1,               ///< The shard is not `stable` (or `frozen` and this is not admin).
+    cooldown = 2,            ///< Inside `split_merge_interval` of the last operation.
+    concurrency_limit = 3,   ///< `max_concurrent_split_merge` already in flight.
+    globally_disabled = 4,   ///< The kill switch is off.
+    epoch = 5,               ///< The epoch moved since the decision was computed.
+    no_valid_split_key = 6,  ///< Every candidate was vetoed and none was suggested.
+    alignment_required = 7,  ///< A merge whose replica sets are not colocated.
+    pd_unavailable = 8,      ///< The shard-id authority could not be reached.
+    not_leader = 9,          ///< This replica does not lead the shard.
+    preempted = 10,          ///< A higher-precedence channel holds the shard.
+};
+
+inline auto to_string(arbiter_gate g) -> std::string {
+    switch (g) {
+        case arbiter_gate::admitted:
+            return "admitted";
+        case arbiter_gate::state:
+            return "state";
+        case arbiter_gate::cooldown:
+            return "cooldown";
+        case arbiter_gate::concurrency_limit:
+            return "concurrency_limit";
+        case arbiter_gate::globally_disabled:
+            return "globally_disabled";
+        case arbiter_gate::epoch:
+            return "epoch";
+        case arbiter_gate::no_valid_split_key:
+            return "no_valid_split_key";
+        case arbiter_gate::alignment_required:
+            return "alignment_required";
+        case arbiter_gate::pd_unavailable:
+            return "pd_unavailable";
+        case arbiter_gate::not_leader:
+            return "not_leader";
+        case arbiter_gate::preempted:
+            return "preempted_by";
+        default:
+            return "unknown";
+    }
+}
+
+/// @brief Operator control over one split (design §6.2).
+struct split_options {
+    /// @brief Resolve on apply, not merely on commit.
+    ///
+    /// Default true. Resolving on commit would return success before the
+    /// children exist, and an operator scripting a pre-split followed by a bulk
+    /// load would race their own split. Commit is not the interesting event
+    /// here; apply is.
+    bool _wait_for_apply{true};
+
+    /// Ask the placement driver to spread the new leaders. Not optional for a
+    /// load split: children whose leaders both land on the machine that was
+    /// already hot have accomplished nothing.
+    bool _scatter_children{false};
+
+    /// @brief Skip `split_merge_interval`. Off, and it exists.
+    ///
+    /// The cooldown guards against *automatic* oscillation. An operator who has
+    /// diagnosed a hot shard should not have to wait an hour or edit config —
+    /// but they should have to say so.
+    bool _override_cooldown{false};
+
+    /// @brief Fall back to the state machine's suggestion when a named key is
+    /// vetoed, rather than failing.
+    ///
+    /// On by default: an operator naming a forbidden key gets a nearby valid
+    /// one and a log line, unless they explicitly ask for the strict behaviour.
+    bool _allow_state_machine_veto{true};
+
+    signal_channel _channel{signal_channel::admin};
+    split_reason _reason{split_reason::admin};
+};
+
+/// @brief Operator control over one merge (design §6.2).
+struct merge_options {
+    bool _wait_for_apply{true};
+
+    /// @brief Let the placement driver colocate the replicas first, then retry.
+    ///
+    /// **Off by default.** Colocating replicas moves data. An operator asking
+    /// for a merge should not silently trigger replica movement across the
+    /// cluster; they should be told alignment is needed and opt in.
+    bool _auto_align{false};
+    std::chrono::milliseconds _align_timeout{std::chrono::minutes{5}};
+
+    signal_channel _channel{signal_channel::admin};
+    merge_reason _reason{merge_reason::admin};
+};
+
+/// @brief What the arbiter decided, and why.
+template<raft_group_id GroupId> struct arbiter_decision {
+    bool _admitted{false};
+    arbiter_gate _gate{arbiter_gate::admitted};
+    signal_channel _channel{signal_channel::policy};
+    /// Set when `_gate == preempted`: the channel that holds the shard.
+    std::optional<signal_channel> _preempted_by{};
+
+    [[nodiscard]] explicit operator bool() const { return _admitted; }
+};
+
+/// @brief A role or membership change on one group, for `set_report_listener`.
+///
+/// Mirrors MicroRaft's `RaftNodeReportListener`: an operator watching a
+/// thousand groups needs the transitions pushed at them, not polled for.
+template<raft_group_id GroupId, typename NodeId> struct group_report {
+    GroupId _group_id{};
+    server_state _role{server_state::follower};
+    std::uint64_t _term{0};
+    std::uint64_t _commit_index{0};
+    std::vector<NodeId> _voters{};
+    shard_operation_state _operation{shard_operation_state::stable};
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
@@ -332,6 +483,38 @@ struct multi_raft_config {
     /// An operator who turns this on is taking on an assumption the rest of the
     /// system does not make.
     bool merge_lease_mode{false};
+
+    // ── the arbiter (Requirement 15, design §6.6) ────────────────────────────
+
+    /// @brief The declarative policy, channel (a). Absent means no automatic
+    /// split or merge — which is a legitimate, fully static deployment.
+    std::function<split_decision<Key>(const shard_stats<GroupId, Key, node_id_type>&)>
+        evaluate_split{};
+    std::function<merge_decision(const shard_stats<GroupId, Key, node_id_type>&,
+                                 const shard_stats<GroupId, Key, node_id_type>&)>
+        evaluate_merge{};
+
+    /// @brief Global kill switch for the AUTOMATIC channels.
+    ///
+    /// Admin commands are unaffected. Turning this off is what an operator
+    /// reaches for when the cluster is misbehaving and they want it to stop
+    /// moving while they look.
+    bool automatic_split_merge_enabled{true};
+
+    /// @brief Minimum time between operations on one shard, enforced by the
+    /// HOST rather than by the policy (Requirement 7.6).
+    ///
+    /// A custom policy that forgets its own cooldown still cannot oscillate.
+    /// Defence in depth on the one knob whose misconfiguration is unbounded.
+    std::chrono::milliseconds split_merge_interval{std::chrono::hours{1}};
+
+    /// @brief How many split or merge operations may be in flight at once.
+    ///
+    /// Enforced BEFORE proposing, never by aborting something already
+    /// committed — the same discipline as TiKV's schedule limits, and for the
+    /// same reason: a rebalancing storm that saturates the network is worse
+    /// than a slow rebalance.
+    std::size_t max_concurrent_split_merge{4};
 
     /// @brief How long a frozen source waits before reporting itself stalled.
     ///
@@ -534,6 +717,54 @@ public:
     ///   `std::runtime_error`               the id authority was unavailable
     auto split_shard(const GroupId& group, std::vector<Key> at_keys,
                      std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief Split with explicit operator control (design §6.2).
+    auto split_shard(const GroupId& group, std::vector<Key> at_keys, split_options options,
+                     std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief Pre-split an EMPTY shard at `boundaries`.
+    ///
+    /// For the bulk-load case TiKV RFC 0082 names: "in the very beginning,
+    /// writes will only happen in a single region, the problem can be solved by
+    /// pre-split + scatter". Refused on a non-empty shard, deliberately —
+    /// otherwise it becomes a second, weaker `split_shard` that skips the
+    /// state machine's veto.
+    auto pre_split(const GroupId& group, std::vector<Key> boundaries,
+                   std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief Remove a shard from the automatic channels.
+    ///
+    /// Freezing blocks the policy, the state-machine hints and the placement
+    /// driver — but NOT explicit admin commands. Freezing an operator out of
+    /// their own escape hatch would be a bad joke at 3 a.m.
+    auto freeze_shard(const GroupId& group) -> bool;
+    auto thaw_shard(const GroupId& group) -> bool;
+
+    /// @brief The global kill switch for the automatic channels.
+    auto set_automatic_split_merge_enabled(bool enabled) -> void;
+    [[nodiscard]] auto automatic_split_merge_enabled() const -> bool;
+
+    /// @brief Ask the arbiter whether an operation would be admitted, without
+    /// starting one. Diagnostic; the real gates run inside the operations.
+    [[nodiscard]] auto would_admit(const GroupId& group, signal_channel channel) const
+        -> arbiter_decision<GroupId>;
+
+    /// @brief Statistics for one shard, as a policy would see them.
+    [[nodiscard]] auto stats_for(const GroupId& group) const
+        -> std::optional<shard_stats<GroupId, Key, node_id_type>>;
+
+    /// @brief How many operations the arbiter has refused, by gate.
+    [[nodiscard]] auto rejection_count(arbiter_gate gate) const -> std::uint64_t;
+
+    /// @brief How many operations are in flight across every local shard.
+    [[nodiscard]] auto operations_in_flight() const -> std::size_t;
+
+    /// @brief Called on every role, term or membership transition.
+    ///
+    /// MicroRaft's `RaftNodeReportListener`, and the reason it is a push rather
+    /// than a poll: an operator watching a thousand groups cannot poll them.
+    auto set_report_listener(
+        std::function<void(const group_report<GroupId, node_id_type>&)> listener) -> void;
 
     /// @brief The shard's current operation state, or `nullopt` if not local.
     [[nodiscard]] auto operation_state(const GroupId& group) const
@@ -788,6 +1019,15 @@ private:
         bool _merge_abandoned{false};
         /// When the source was frozen, for the stall warning.
         std::chrono::steady_clock::time_point _merge_frozen_at{};
+
+        // ── arbiter history (the anti-oscillation inputs) ────────────────────
+        std::atomic<std::int64_t> _last_split_ns{0};
+        std::atomic<std::int64_t> _last_merge_ns{0};
+        std::atomic<std::int64_t> _leader_since_ns{0};
+        /// Set by `freeze_shard`. Distinct from the operation state, because a
+        /// frozen shard that starts an admin operation must return to FROZEN,
+        /// not to stable.
+        std::atomic<bool> _frozen{false};
     };
 
     using group_ptr = std::shared_ptr<group_state>;
@@ -871,6 +1111,22 @@ private:
                                                  const group_ptr& target_state) const
         -> std::exception_ptr;
 
+    /// @brief Every gate from design §6.6's table, in one place.
+    ///
+    /// The state gate is a *transition*, not a check: `admit` claims the shard
+    /// by compare-exchange, so two channels racing in the same interval cannot
+    /// both proceed. `release` puts it back.
+    [[nodiscard]] auto admit(group_state& g, signal_channel channel, shard_operation_state to,
+                             bool override_cooldown) -> arbiter_decision<GroupId>;
+    auto release(group_state& g) -> void;
+    auto note_rejection(const GroupId& group, arbiter_gate gate, signal_channel channel,
+                        const char* operation) -> void;
+    auto publish_report(group_state& g) -> void;
+
+    /// @brief Channel (a): ask the policy about every local leader, once per
+    /// `policy_interval`.
+    auto evaluate_policy(const std::vector<group_ptr>& ready) -> void;
+
     /// @brief The configured key codec, or the default, as one object.
     [[nodiscard]] auto make_key_codec() const -> key_codec_adapter<Key>;
 
@@ -932,6 +1188,11 @@ private:
     std::atomic<std::uint64_t> _applied_merges{0};
     std::atomic<std::uint64_t> _rolled_back_merges{0};
     std::atomic<std::uint64_t> _stalled_merges{0};
+
+    std::atomic<bool> _automatic_enabled{true};
+    mutable std::mutex _rejection_mutex;
+    std::unordered_map<std::uint8_t, std::uint64_t> _rejections;
+    std::function<void(const group_report<GroupId, node_id_type>&)> _report_listener;
     std::atomic<std::uint64_t> _lazy_replicas{0};
     std::atomic<std::uint64_t> _descriptor_lookups{0};
 

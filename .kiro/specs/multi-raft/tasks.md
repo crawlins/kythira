@@ -1,8 +1,8 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phases 1-8 complete (tasks 1-22)
+## Status: In progress — Phases 1-9 complete (tasks 1-26)
 
-**Last Updated**: August 23, 2026
+**Last Updated**: August 26, 2026
 
 This plan implements `.kiro/specs/multi-raft/design.md`. Twelve phases, 36 tasks.
 Phases 1–3 are strictly additive and cannot regress single-group behaviour;
@@ -420,7 +420,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 9: Signals (Tasks 23–26, 35–36)
 
-- [ ] 23. `split_merge_policy` concept
+- [x] 23. `split_merge_policy` concept
   - `include/raft/split_merge_policy.hpp`: the concept per design §6.1, with
     header documentation stating in the first paragraph that the policy is
     leader-only and **not required to be deterministic**, because its output is
@@ -436,7 +436,7 @@ Phases 6–8, after the mechanics it drives.
     exactly once.
   - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 11.6_
 
-- [ ] 24. `threshold_split_merge_policy`
+- [x] 24. `threshold_split_merge_policy`
   - Config struct and defaults per design §6.1.2.
   - Split key generation following TiKV RFC 0006's `SizeChecker`: record a key
     every `_shard_split_size_bytes`, stop at
@@ -452,7 +452,7 @@ Phases 6–8, after the mechanics it drives.
     the message mentions oscillation; the shipped defaults validate.
   - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.7, 6.6, 6.7_
 
-- [ ] 25. The arbiter
+- [x] 25. The arbiter
   - Per-shard operation state machine (`stable | splitting | merging_source |
     merging_target | frozen | tombstoned`) as the *only* way an operation
     starts, per design §6.6.

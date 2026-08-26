@@ -355,6 +355,12 @@ private:
         cfg.hibernation = hibernation_mode::off;
         cfg.executor_stripes = 2;
         cfg.allocate_group_ids = [this](std::size_t n) { return _ids.allocate(n); };
+        // No cooldown here. The arbiter's one-hour default is right for a real
+        // deployment and would mask every case in this file behind the first
+        // split's gate — the cooldown has its own tests in
+        // `multi_raft_arbiter_unit_test`, where it is the subject rather than
+        // an obstacle.
+        cfg.split_merge_interval = std::chrono::milliseconds{0};
         if (_tweak) {
             _tweak(cfg);
         }
