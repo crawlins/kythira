@@ -56,6 +56,7 @@ multi_raft<Types, Key, GroupId>::multi_raft(config_type cfg)
     _demux.set_unknown_group_handler(
         [this](const GroupId& g) { return this->handle_unknown_group(g); });
 
+    _automatic_enabled.store(_cfg.automatic_split_merge_enabled);
     _last_policy_run = std::chrono::steady_clock::now();
 }
 
@@ -597,7 +598,21 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
     // ── PHASE 2: send ────────────────────────────────────────────────────────
     {
         const auto t0 = clock::now();
-        run_phase(ready, [](group_state& g) { g._node->replicate_to_followers(); });
+        run_phase(ready, [this](group_state& g) {
+            // Leadership is sampled here rather than pushed from `node`,
+            // because `node` has no hook for it and adding one would widen the
+            // consensus core's surface for a statistic.
+            const bool leader = g._node->is_leader();
+            const auto was = g._leader_since_ns.load(std::memory_order_relaxed);
+            if (leader && was == 0) {
+                g._leader_since_ns.store(now_ns(), std::memory_order_relaxed);
+                publish_report(g);
+            } else if (!leader && was != 0) {
+                g._leader_since_ns.store(0, std::memory_order_relaxed);
+                publish_report(g);
+            }
+            g._node->replicate_to_followers();
+        });
         report._send_duration = clock::now() - t0;
     }
 
@@ -660,15 +675,83 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
                 }
             }
 
-            // The arbiter and the policy channels land in Phase 9 (tasks 23-25).
-            // The phase exists now so that when they do, they are already
-            // ordered after apply and running on each group's own stripe.
+            evaluate_policy(ready);
         }
         report._policy_duration = clock::now() - t0;
     }
 
     evaluate_hibernation(ready);
     return report;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::evaluate_policy(const std::vector<group_ptr>& ready) -> void {
+    if (!_automatic_enabled.load() || (!_cfg.evaluate_split && !_cfg.evaluate_merge)) {
+        return;
+    }
+
+    for (const auto& g : ready) {
+        if (!g->_node || !g->_node->is_leader()) {
+            // Leader-only. The policy's answer is frozen into the entry every
+            // replica applies, so exactly one replica may decide — and the
+            // leader is the only one that can propose.
+            continue;
+        }
+        // The kill switch and the freeze are checked here as well as inside
+        // `admit`, so a frozen shard is never even evaluated: an operator who
+        // froze a shard should not see policy activity against it in the logs.
+        if (g->_frozen.load(std::memory_order_relaxed) ||
+            g->_operation.load(std::memory_order_relaxed) != shard_operation_state::stable) {
+            continue;
+        }
+
+        auto stats = stats_for(g->_group_id);
+        if (!stats.has_value()) {
+            continue;
+        }
+
+        if (_cfg.evaluate_split) {
+            const auto decision = _cfg.evaluate_split(*stats);
+            if (decision.should_split()) {
+                split_options options{};
+                options._channel = signal_channel::policy;
+                options._reason = decision.reason();
+                // A load split ALWAYS scatters: children whose leaders both
+                // land on the machine that was already hot have accomplished
+                // exactly nothing (Requirement 8.6).
+                options._scatter_children = decision.reason() == split_reason::read_load ||
+                                            decision.reason() == split_reason::write_load;
+                // Fire and forget: the arbiter's gates decide whether it
+                // happens, and a rejection is already logged with its gate.
+                std::ignore = split_shard(g->_group_id, decision.at_keys(), options,
+                                          std::chrono::seconds{30});
+                continue;
+            }
+        }
+
+        if (_cfg.evaluate_merge) {
+            // Only a left-adjacent sibling can be a merge SOURCE for this
+            // shard, and only if this node holds it too — colocation is a
+            // precondition and checking it here saves a rejection.
+            std::optional<descriptor_type> sibling;
+            {
+                std::shared_lock lock(_map_mutex);
+                sibling = _shard_map.left_sibling(g->_group_id);
+            }
+            if (!sibling.has_value()) {
+                continue;
+            }
+            auto sibling_stats = stats_for(sibling->_group_id);
+            if (!sibling_stats.has_value()) {
+                continue;
+            }
+            const auto decision = _cfg.evaluate_merge(*stats, *sibling_stats);
+            if (decision.should_merge()) {
+                std::ignore =
+                    merge_shards(sibling->_group_id, g->_group_id, std::chrono::seconds{30});
+            }
+        }
+    }
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -686,6 +769,274 @@ auto multi_raft<Types, Key, GroupId>::defer_to_apply_phase(const GroupId& group,
     // would otherwise never be selected to run it.
     note_activity(*g);
     return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The arbiter (design §6.6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::note_rejection(const GroupId& group, arbiter_gate gate,
+                                                     signal_channel channel, const char* operation)
+    -> void {
+    {
+        std::lock_guard lock(_rejection_mutex);
+        ++_rejections[static_cast<std::uint8_t>(gate)];
+    }
+    // Every decision, accepted or rejected, gets a line with the reason as a
+    // dimension. Thresholds are untunable without this: an operator who cannot
+    // see `split.rejected{gate=cooldown}` will conclude the feature is broken.
+    _cfg.logger.info(std::string{operation} + ".rejected",
+                     {{"group", detail::describe_value(group)},
+                      {"gate", to_string(gate)},
+                      {"channel", to_string(channel)}});
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::operations_in_flight() const -> std::size_t {
+    std::size_t n = 0;
+    for (const auto& g : all_groups()) {
+        switch (g->_operation.load(std::memory_order_relaxed)) {
+            case shard_operation_state::splitting:
+            case shard_operation_state::merging_source:
+            case shard_operation_state::merging_target:
+                ++n;
+                break;
+            default:
+                break;
+        }
+    }
+    return n;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::admit(group_state& g, signal_channel channel,
+                                            shard_operation_state to, bool override_cooldown)
+    -> arbiter_decision<GroupId> {
+    using decision = arbiter_decision<GroupId>;
+
+    // The kill switch stops the AUTOMATIC channels only. An operator who has
+    // turned it off wants the cluster to stop moving on its own, not to lose
+    // their own escape hatch.
+    if (channel != signal_channel::admin && !_automatic_enabled.load()) {
+        return decision{
+            ._admitted = false, ._gate = arbiter_gate::globally_disabled, ._channel = channel};
+    }
+
+    // `freeze_shard` blocks the automatic channels and not admin, for the same
+    // reason.
+    if (channel != signal_channel::admin && g._frozen.load(std::memory_order_relaxed)) {
+        return decision{._admitted = false, ._gate = arbiter_gate::state, ._channel = channel};
+    }
+
+    // The cooldown. Enforced HERE, by the host, so that a custom policy which
+    // forgets it still cannot oscillate — the one knob whose misconfiguration
+    // is unbounded gets defence in depth.
+    if (!override_cooldown) {
+        const auto now = now_ns();
+        const auto interval =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(_cfg.split_merge_interval).count();
+        const auto last_split = g._last_split_ns.load(std::memory_order_relaxed);
+        const auto last_merge = g._last_merge_ns.load(std::memory_order_relaxed);
+        if ((last_split != 0 && now - last_split < interval) ||
+            (last_merge != 0 && now - last_merge < interval)) {
+            return decision{
+                ._admitted = false, ._gate = arbiter_gate::cooldown, ._channel = channel};
+        }
+    }
+
+    // The concurrency limit, checked BEFORE the transition and never enforced
+    // by aborting something already committed.
+    if (operations_in_flight() >= _cfg.max_concurrent_split_merge) {
+        return decision{
+            ._admitted = false, ._gate = arbiter_gate::concurrency_limit, ._channel = channel};
+    }
+
+    // The state gate is a TRANSITION, not a check. Two channels racing in the
+    // same interval cannot both proceed, because only one compare-exchange can
+    // win — conflicting operations are impossible by construction rather than
+    // by check-then-act.
+    auto expected = shard_operation_state::stable;
+    if (g._operation.compare_exchange_strong(expected, to)) {
+        return decision{._admitted = true, ._gate = arbiter_gate::admitted, ._channel = channel};
+    }
+
+    // `frozen` admits an explicit admin command and nothing else, transitioning
+    // straight into the operation. `release` puts it back to `frozen` rather
+    // than to `stable`, so the operator's freeze survives their own command.
+    if (channel == signal_channel::admin) {
+        auto frozen = shard_operation_state::frozen;
+        if (g._operation.compare_exchange_strong(frozen, to)) {
+            return decision{
+                ._admitted = true, ._gate = arbiter_gate::admitted, ._channel = channel};
+        }
+    }
+    return decision{._admitted = false,
+                    ._gate = arbiter_gate::state,
+                    ._channel = channel,
+                    ._preempted_by = std::nullopt};
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::release(group_state& g) -> void {
+    // A shard an operator froze returns to FROZEN, not to stable: an admin
+    // command run against a frozen shard must not quietly thaw it.
+    g._operation.store(g._frozen.load(std::memory_order_relaxed) ? shard_operation_state::frozen
+                                                                 : shard_operation_state::stable);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::would_admit(const GroupId& group,
+                                                  signal_channel channel) const
+    -> arbiter_decision<GroupId> {
+    using decision = arbiter_decision<GroupId>;
+    auto g = find_group(group);
+    if (!g) {
+        return decision{._admitted = false, ._gate = arbiter_gate::state, ._channel = channel};
+    }
+    if (channel != signal_channel::admin && !_automatic_enabled.load()) {
+        return decision{
+            ._admitted = false, ._gate = arbiter_gate::globally_disabled, ._channel = channel};
+    }
+    if (channel != signal_channel::admin && g->_frozen.load(std::memory_order_relaxed)) {
+        return decision{._admitted = false, ._gate = arbiter_gate::state, ._channel = channel};
+    }
+    const auto state = g->_operation.load(std::memory_order_relaxed);
+    const bool startable =
+        state == shard_operation_state::stable ||
+        (channel == signal_channel::admin && state == shard_operation_state::frozen);
+    if (!startable) {
+        return decision{._admitted = false, ._gate = arbiter_gate::state, ._channel = channel};
+    }
+    const auto now = now_ns();
+    const auto interval =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(_cfg.split_merge_interval).count();
+    const auto last_split = g->_last_split_ns.load(std::memory_order_relaxed);
+    const auto last_merge = g->_last_merge_ns.load(std::memory_order_relaxed);
+    if ((last_split != 0 && now - last_split < interval) ||
+        (last_merge != 0 && now - last_merge < interval)) {
+        return decision{._admitted = false, ._gate = arbiter_gate::cooldown, ._channel = channel};
+    }
+    if (operations_in_flight() >= _cfg.max_concurrent_split_merge) {
+        return decision{
+            ._admitted = false, ._gate = arbiter_gate::concurrency_limit, ._channel = channel};
+    }
+    return decision{._admitted = true, ._gate = arbiter_gate::admitted, ._channel = channel};
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::freeze_shard(const GroupId& group) -> bool {
+    auto g = find_group(group);
+    if (!g) {
+        return false;
+    }
+    g->_frozen.store(true, std::memory_order_relaxed);
+    auto expected = shard_operation_state::stable;
+    // Only an idle shard changes state now; one mid-operation picks the frozen
+    // state up when it releases.
+    std::ignore = g->_operation.compare_exchange_strong(expected, shard_operation_state::frozen);
+    _cfg.logger.info("Shard frozen: automatic channels blocked, admin commands still accepted",
+                     {{"group", detail::describe_value(group)}});
+    return true;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::thaw_shard(const GroupId& group) -> bool {
+    auto g = find_group(group);
+    if (!g) {
+        return false;
+    }
+    g->_frozen.store(false, std::memory_order_relaxed);
+    auto expected = shard_operation_state::frozen;
+    std::ignore = g->_operation.compare_exchange_strong(expected, shard_operation_state::stable);
+    _cfg.logger.info("Shard thawed", {{"group", detail::describe_value(group)}});
+    return true;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::set_automatic_split_merge_enabled(bool enabled) -> void {
+    _automatic_enabled.store(enabled);
+    _cfg.logger.info(enabled ? "Automatic split and merge enabled"
+                             : "Automatic split and merge disabled; admin commands unaffected",
+                     {});
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::automatic_split_merge_enabled() const -> bool {
+    return _automatic_enabled.load();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::rejection_count(arbiter_gate gate) const -> std::uint64_t {
+    std::lock_guard lock(_rejection_mutex);
+    auto it = _rejections.find(static_cast<std::uint8_t>(gate));
+    return it == _rejections.end() ? 0 : it->second;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::set_report_listener(
+    std::function<void(const group_report<GroupId, node_id_type>&)> listener) -> void {
+    _report_listener = std::move(listener);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::publish_report(group_state& g) -> void {
+    if (!_report_listener || !g._node) {
+        return;
+    }
+    group_report<GroupId, node_id_type> report{
+        ._group_id = g._group_id,
+        ._role = g._node->get_state(),
+        ._term = static_cast<std::uint64_t>(g._node->get_current_term()),
+        ._commit_index = static_cast<std::uint64_t>(g._node->last_applied_index()),
+        ._voters = g._descriptor._voters,
+        ._operation = g._operation.load(std::memory_order_relaxed)};
+    _report_listener(report);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::stats_for(const GroupId& group) const
+    -> std::optional<shard_stats<GroupId, Key, node_id_type>> {
+    auto g = find_group(group);
+    if (!g || !g->_node) {
+        return std::nullopt;
+    }
+
+    shard_stats<GroupId, Key, node_id_type> stats;
+    stats._descriptor = g->_descriptor;
+    stats._last_applied_index = g->_node->last_applied_index();
+
+    // Sizes come from the state machine's extension, and `_size_available`
+    // stays false without it. That flag is deliberate: a silent no-op is the
+    // worst failure mode a policy layer can have, so the absence is a fact the
+    // policy can see rather than a zero it would misread as "small".
+    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+        g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
+            stats._approximate_size_bytes = sm.approximate_size_bytes();
+            stats._approximate_key_count = sm.approximate_key_count();
+        });
+        stats._size_available = true;
+    }
+
+    // Load is measured HERE, at the routing layer, which is what makes
+    // load-based split work for any state machine — including one with no
+    // sizing hooks at all.
+    stats._read_qps = static_cast<double>(g->_reads.load(std::memory_order_relaxed));
+    stats._write_qps = static_cast<double>(g->_writes.load(std::memory_order_relaxed));
+
+    const auto now = now_ns();
+    const auto since = [now](std::int64_t stamp) {
+        return stamp == 0 ? std::chrono::milliseconds::max()
+                          : std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::nanoseconds{now - stamp});
+    };
+    stats._time_since_last_split = since(g->_last_split_ns.load(std::memory_order_relaxed));
+    stats._time_since_last_merge = since(g->_last_merge_ns.load(std::memory_order_relaxed));
+    stats._leader_since = since(g->_leader_since_ns.load(std::memory_order_relaxed));
+
+    stats._voter_count = g->_descriptor._voters.size();
+    stats._learner_count = g->_descriptor._learners.size();
+    return stats;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -890,6 +1241,55 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vector<Key> at_keys,
                                                   std::chrono::milliseconds timeout)
     -> future_type {
+    return split_shard(group, std::move(at_keys), split_options{}, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::pre_split(const GroupId& group, std::vector<Key> boundaries,
+                                                std::chrono::milliseconds timeout) -> future_type {
+    auto g = find_group(group);
+    if (!g) {
+        return failed_future(
+            std::make_exception_ptr(unknown_shard_exception<GroupId>{group, "no local replica"}));
+    }
+
+    // Refused on a non-empty shard, deliberately. Pre-split exists for the
+    // bulk-load case — cut the range up BEFORE the writes arrive — and allowing
+    // it on a populated shard would make it a second, weaker `split_shard` that
+    // skips the state machine's veto entirely.
+    bool empty = true;
+    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+        g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
+            empty = sm.approximate_key_count() == 0;
+        });
+    }
+    if (!empty) {
+        note_rejection(group, arbiter_gate::state, signal_channel::admin, "pre_split");
+        return failed_future(std::make_exception_ptr(shard_busy_exception<GroupId>{
+            group, "not empty; pre_split is for a shard that has not been written to yet"}));
+    }
+
+    split_options options{};
+    options._reason = split_reason::pre_split;
+    // The cooldown guards against automatic oscillation; a pre-split happens
+    // once, before the shard has ever been written to, and waiting an hour to
+    // do it would defeat the point.
+    options._override_cooldown = true;
+    // Empty means "you choose", and a state machine with no keys has nothing to
+    // suggest — so a pre-split with no boundaries is a no-op the caller should
+    // hear about rather than a silent success.
+    if (boundaries.empty()) {
+        return failed_future(
+            std::make_exception_ptr(no_valid_split_key_exception<GroupId>{group, 0}));
+    }
+    return split_shard(group, std::move(boundaries), options, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vector<Key> at_keys,
+                                                  split_options options,
+                                                  std::chrono::milliseconds timeout)
+    -> future_type {
     auto g = find_group(group);
     if (!g) {
         return failed_future(
@@ -897,23 +1297,22 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     }
 
     // ── step 1: gate ─────────────────────────────────────────────────────────
-    //
-    // Only `stable` admits a new operation. Compare-exchange rather than
-    // check-then-set: two channels proposing in the same interval is exactly
-    // the case the operation state exists to make impossible.
     if (!g->_node->is_leader()) {
+        note_rejection(group, arbiter_gate::not_leader, options._channel, "split");
         return failed_future(std::make_exception_ptr(
             shard_not_leader_exception<GroupId, node_id_type>{group, g->_node->known_leader()}));
     }
-    auto expected = shard_operation_state::stable;
-    if (!g->_operation.compare_exchange_strong(expected, shard_operation_state::splitting)) {
-        return failed_future(
-            std::make_exception_ptr(shard_busy_exception<GroupId>{group, to_string(expected)}));
+    const auto admitted =
+        admit(*g, options._channel, shard_operation_state::splitting, options._override_cooldown);
+    if (!admitted) {
+        note_rejection(group, admitted._gate, options._channel, "split");
+        return failed_future(std::make_exception_ptr(
+            shard_busy_exception<GroupId>{group, to_string(admitted._gate)}));
     }
 
     // From here every failure path must put the state back, or the shard is
     // wedged in `splitting` with nothing running.
-    auto release = [g] { g->_operation.store(shard_operation_state::stable); };
+    auto release_gate = [this, g] { this->release(*g); };
 
     const auto parent = g->_descriptor;
 
@@ -927,7 +1326,7 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     std::size_t candidates_considered = at_keys.size();
     for (const auto& k : at_keys) {
         if (!parent._range.contains(k)) {
-            release();
+            release_gate();
             return failed_future(std::make_exception_ptr(
                 split_key_out_of_range_exception<GroupId, Key>{group, k, parent._range}));
         }
@@ -937,13 +1336,17 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
         const auto limit = _cfg.batch_split_limit;
         const auto& range = parent._range;
+        const bool allow_fallback = options._allow_state_machine_veto || at_keys.empty();
         g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
             for (const auto& k : at_keys) {
                 if (sm.can_split_at(k)) {
                     chosen.push_back(k);
                 }
             }
-            if (chosen.empty()) {
+            // The fallback is what `_allow_state_machine_veto` controls: on by
+            // default, an operator naming a forbidden key gets a nearby valid
+            // one; off, they get the failure they asked for.
+            if (chosen.empty() && allow_fallback) {
                 auto suggested = sm.suggest_split_keys(limit);
                 candidates_considered += suggested.size();
                 for (const auto& k : suggested) {
@@ -966,7 +1369,8 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     }
 
     if (chosen.empty()) {
-        release();
+        release_gate();
+        note_rejection(group, arbiter_gate::no_valid_split_key, options._channel, "split");
         return failed_future(std::make_exception_ptr(
             no_valid_split_key_exception<GroupId>{group, candidates_considered}));
     }
@@ -983,14 +1387,15 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     std::vector<GroupId> new_ids;
     if (new_ids_needed > 0) {
         if (!_cfg.allocate_group_ids) {
-            release();
+            release_gate();
             return failed_future(std::make_exception_ptr(std::runtime_error(
                 "multi_raft: split needs allocate_group_ids; ids must come from a "
                 "cluster-scope authority, never from the proposing node")));
         }
         new_ids = _cfg.allocate_group_ids(new_ids_needed);
         if (new_ids.size() < new_ids_needed) {
-            release();
+            release_gate();
+            note_rejection(group, arbiter_gate::pd_unavailable, options._channel, "split");
             _cfg.logger.warning("Split abandoned: id authority unavailable",
                                 {{"group", detail::describe_value(group)},
                                  {"needed", std::to_string(new_ids_needed)},
@@ -1039,7 +1444,7 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
                            ._at_keys = chosen,
                            ._children = children,
                            ._right_derive = _cfg.right_derive,
-                           ._reason = split_reason::admin,
+                           ._reason = options._reason,
                            ._pd_operation_id = std::nullopt};
 
     auto payload = encode_split_command<GroupId, Key, node_id_type>(cmd, make_key_codec());
@@ -1054,9 +1459,10 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     // The operation state is cleared by apply on success. A proposal that never
     // commits would otherwise wedge the shard, so the release is chained onto
     // the future's failure path too.
-    return std::move(future).thenTry([g](auto&& result) {
+    auto self = this;
+    return std::move(future).thenTry([self, g](auto&& result) {
         if (result.hasException()) {
-            g->_operation.store(shard_operation_state::stable);
+            self->release(*g);
         }
         return std::forward<decltype(result)>(result).value();
     });
@@ -1206,8 +1612,14 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
 #endif
 
     // ── H: unfreeze ──────────────────────────────────────────────────────────
-    parent._operation.store(shard_operation_state::stable);
+    //
+    // The history stamp goes here, at APPLY, not at proposal: the cooldown is
+    // about how recently the shard actually changed shape, and a proposal that
+    // never committed changed nothing.
+    parent._last_split_ns.store(now_ns(), std::memory_order_relaxed);
+    release(parent);
     _applied_splits.fetch_add(1, std::memory_order_relaxed);
+    publish_report(parent);
 
     _cfg.logger.info("Applied split",
                      {{"group", detail::describe_value(parent._group_id)},
@@ -1372,6 +1784,7 @@ auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const 
     const auto target_desc = target_state->_descriptor;
     if (auto problem =
             check_merge_preconditions(source_desc, target_desc, source_state, target_state)) {
+        note_rejection(source, arbiter_gate::alignment_required, signal_channel::admin, "merge");
         return failed_future(problem);
     }
 
@@ -1394,14 +1807,16 @@ auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const 
         min_index = 0;
     }
 
-    // Claim the source by transition, not by check-then-act: two channels
-    // proposing in the same interval is exactly what the operation state is
-    // for. Apply sets it again, idempotently, on every replica.
-    auto expected = shard_operation_state::stable;
-    if (!source_state->_operation.compare_exchange_strong(expected,
-                                                          shard_operation_state::merging_source)) {
-        return failed_future(
-            std::make_exception_ptr(shard_busy_exception<GroupId>{source, to_string(expected)}));
+    // Claim the source through the arbiter: every gate in one place, and the
+    // state gate is a transition rather than a check, so two channels racing in
+    // the same interval cannot both proceed. Apply sets it again, idempotently,
+    // on every replica.
+    const auto admitted =
+        admit(*source_state, signal_channel::admin, shard_operation_state::merging_source, false);
+    if (!admitted) {
+        note_rejection(source, admitted._gate, signal_channel::admin, "merge");
+        return failed_future(std::make_exception_ptr(
+            shard_busy_exception<GroupId>{source, to_string(admitted._gate)}));
     }
 
     merge_prepare_command_type cmd{._source = source_desc,
@@ -1420,9 +1835,10 @@ auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const 
     // A proposal that never commits would leave the source wedged in
     // `merging_source` with nothing running, so the release is chained onto the
     // failure path. On success, apply owns the state.
-    return std::move(future).thenTry([source_state](auto&& result) {
+    auto self = this;
+    return std::move(future).thenTry([self, source_state](auto&& result) {
         if (result.hasException()) {
-            source_state->_operation.store(shard_operation_state::stable);
+            self->release(*source_state);
         }
         return std::forward<decltype(result)>(result).value();
     });
@@ -1627,13 +2043,15 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
         source->_node.reset();
     });
 
-    target._operation.store(shard_operation_state::stable);
+    target._last_merge_ns.store(now_ns(), std::memory_order_relaxed);
+    release(target);
     {
         std::lock_guard lock(target._merge_mutex);
         target._merge_source.reset();
         target._merge_commit_proposed = false;
     }
     _applied_merges.fetch_add(1, std::memory_order_relaxed);
+    publish_report(target);
     persist_tombstones();
 
 #ifndef NDEBUG
@@ -1662,8 +2080,9 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_rollback(group_state& source,
         source._merge_prepare_index = 0;
         source._merge_min_index = 0;
     }
-    source._operation.store(shard_operation_state::stable);
+    release(source);
     _rolled_back_merges.fetch_add(1, std::memory_order_relaxed);
+    publish_report(source);
     _cfg.logger.info("Merge rolled back; source resumes serving",
                      {{"source", detail::describe_value(source._group_id)},
                       {"target", detail::describe_value(cmd._target_group)}});
