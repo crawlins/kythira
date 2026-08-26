@@ -48,7 +48,7 @@ per-process host that owns many groups, or any split/merge protocol.
 
 **The emphasis of this specification is the signal surface**: how a *user* —
 an application developer, an operator, or an external control plane — tells
-Kythira when to split and when to merge. Requirement 6 through Requirement 11
+Kythira when to split and when to merge. Requirement 6 through Requirement 12
 cover that surface; the rest of the document specifies the machinery those
 signals drive.
 
@@ -216,7 +216,7 @@ count.
 6. Per TiKV's stated design, the transport SHALL reuse one connection between a
    pair of nodes across all groups.
 7. WHEN a request arrives for a `group_id` with no local replica THEN the
-   adapter SHALL apply Requirement 13's lazy-replica-creation rule rather than
+   adapter SHALL apply Requirement 14's lazy-replica-creation rule rather than
    silently dropping the message.
 
 ---
@@ -279,15 +279,16 @@ statistics, so that I do not have to write a control loop.
 5. `shard_stats` SHALL carry at minimum: the shard descriptor; approximate size
    in bytes and approximate key count; log size in bytes and last-applied
    index; read and write QPS; read and write bytes/sec; applied-entries/sec;
-   p99 apply latency; time since last split; time since last merge; voting and
-   learner member counts; time since this replica became leader; and the
-   hot-key sample set from Requirement 9.
+   p99 apply latency and p99 read latency; time since last split; time since
+   last merge; voting and learner member counts; time since this replica became
+   leader; and the hot-key sample set from Requirement 9. The two latency
+   fields are governed by Requirement 10.
 6. `split_decision<Key>` SHALL be `{bool split; std::vector<Key> at_keys;
    split_reason reason;}`. A vector — not a single key — so that batch split
    (one entry producing N children, per TiKV RFC 0006) is expressible and a
    fast-filling shard cannot be outrun by one-split-at-a-time.
 7. WHEN `split == true` and `at_keys` is empty THEN the host SHALL request keys
-   from the state machine per Requirement 10, treating the policy as having said
+   from the state machine per Requirement 11, treating the policy as having said
    "split, you choose where".
 8. `merge_decision` SHALL carry a tri-state verdict — `propose`, `abstain`, or
    `veto` — and, for `propose`, the merge direction (into the left sibling or
@@ -382,7 +383,7 @@ parts of the default I still want.
    any member does, with `at_keys` the sorted, de-duplicated union of the
    members' keys. A member proposing a split with empty `at_keys` ("split, you
    choose", Requirement 6.7) SHALL defer to any member that named concrete
-   keys; the composite SHALL fall through to Requirement 10's state-machine
+   keys; the composite SHALL fall through to Requirement 11's state-machine
    hints only when no member named a key.
 4. Merge combination SHALL be **unanimous**: the composite proposes a merge
    only when at least one member returns `propose` and no member returns
@@ -397,7 +398,7 @@ parts of the default I still want.
    members — one member's merge ceiling against another member's split floor —
    and not only within each member. Members MAY expose `split_floor()` and
    `merge_ceiling()` for this purpose, detected structurally with `if
-   constexpr` as in Requirement 10.5; a member exposing neither SHALL be
+   constexpr` as in Requirement 11.5; a member exposing neither SHALL be
    reported as uncheckable by `get_validation_errors()` rather than silently
    assumed safe.
 7. `get_validation_errors()` SHALL name the member each error came from.
@@ -410,7 +411,7 @@ parts of the default I still want.
 10. A composition of zero members SHALL be legal and SHALL be exactly
     equivalent to configuring no policy — channel (a) silent, channels (b),
     (c) and (d) unaffected — and SHALL be logged once at construction, on the
-    same reasoning as Requirement 10.6: an empty list is easy to arrive at by
+    same reasoning as Requirement 11.6: an empty list is easy to arrive at by
     accident and otherwise indistinguishable from a policy set that never
     fires.
 
@@ -449,7 +450,63 @@ can be scattered across machines.
 
 ---
 
-### Requirement 10: State-Machine-Derived Split Hints and Veto
+### Requirement 10: Latency Statistics
+
+**User Story:** As an operator, I want to see how slow a shard's reads and
+applies actually are, and as an application developer I want that available to
+a policy, because a shard can be within every size and QPS threshold and still
+be the thing my users are waiting on.
+
+#### Acceptance Criteria
+
+1. `shard_stats` SHALL carry `_p99_read_latency` alongside `_p99_apply_latency`
+   (Requirement 6.5). Both SHALL be documented as percentiles over a bounded,
+   recent window — never over the lifetime of the shard.
+2. The window SHALL be a rotating ring of sub-windows spanning a configured
+   multiple of `policy_interval`, and both fields SHALL use the same window and
+   the same estimator, so the two cannot come to mean different things. A
+   lifetime percentile never decays, which would make any latency-derived
+   policy permanently sticky once a shard has had one bad minute.
+3. Percentiles SHALL be computed in-process. The `metrics` concept records
+   samples for an external back-end and cannot be read back, so a policy
+   running on the group's stripe has no access to what Prometheus or OTLP
+   computed from the same samples.
+4. The estimator SHALL be a fixed-bucket logarithmic histogram — bounded
+   memory, no allocation on the record path, O(1) record, mergeable — rather
+   than a reservoir requiring a sort at read time.
+5. Read latency SHALL be sampled in `multi_raft::read_state`, at the routing
+   layer, into the same per-group accumulators that already produce
+   `_read_qps` and `_read_bytes_per_sec`, so that the sample includes shard-map
+   lookup and epoch validation. Sampling inside `node<Types>::read_state`
+   SHALL NOT be used: it cannot see routing, it cannot attribute a read
+   rejected before it ran, and `node<Types>` is closed to changes beyond those
+   named in Requirements 4 and 13.
+6. Samples SHALL be captured in nanoseconds from a monotonic clock. The
+   existing `raft_read_latency` emission truncates through
+   `duration_cast<milliseconds>` before widening back to nanoseconds, so every
+   sub-millisecond read records as zero; that path SHALL NOT be the source of a
+   percentile, and the truncation SHALL be corrected where it stands.
+7. A completed read and a read that timed out SHALL both be sampled, the
+   timeout clamped at its deadline. A read rejected before execution —
+   `not_leader`, `shard_epoch_mismatch` — SHALL NOT be sampled, being a routing
+   miss rather than evidence of load. A percentile over successes alone reports
+   only the health of the requests that survived.
+8. Apply latency SHALL be collected through the same estimator, sampled where
+   the tick's apply phase drives each group. No apply-latency instrumentation
+   exists today, which is why `_p99_apply_latency` has been an unpopulated
+   field since the first draft.
+9. `_p99_read_latency` SHALL NOT be a trigger of the default threshold policy.
+   Under Requirement 18.5 a read returns the whole state-machine blob, so read
+   latency scales with shard size and would duplicate the size trigger it
+   appears to complement. It is specified as an input available to a custom or
+   composite policy and as an operator-facing diagnostic.
+10. `split_reason` SHALL gain a `latency` enumerator so that a policy which
+    does act on backpressure can attribute its decision. The default policy
+    SHALL NOT produce it.
+
+---
+
+### Requirement 11: State-Machine-Derived Split Hints and Veto
 
 **User Story:** As an application developer, I want Kythira to ask *my* state
 machine where its data actually sits, and I want to be able to forbid a split
@@ -488,7 +545,7 @@ that would break an invariant of mine.
 
 ---
 
-### Requirement 11: Imperative Admin Signals
+### Requirement 12: Imperative Admin Signals
 
 **User Story:** As an operator, I want to force a split or merge right now,
 pre-split an empty keyspace before a bulk load, and freeze automatic decisions
@@ -524,7 +581,7 @@ for one shard while I investigate.
 
 ---
 
-### Requirement 12: Split Protocol
+### Requirement 13: Split Protocol
 
 **User Story:** As a library user, I want a split to be atomic, data-movement-
 free, and crash-safe, so that no committed command is lost or duplicated and no
@@ -573,7 +630,7 @@ key is briefly served by two shards or none.
 
 ---
 
-### Requirement 13: Lazy Replica Creation
+### Requirement 14: Lazy Replica Creation
 
 **User Story:** As a library user, I want a node that missed a split — because
 it was down, or because the parent compacted past the split entry — to acquire
@@ -600,7 +657,7 @@ the child replica correctly rather than dropping its messages.
 
 ---
 
-### Requirement 14: Merge Protocol
+### Requirement 15: Merge Protocol
 
 **User Story:** As an operator whose data has been deleted, I want small
 adjacent shards to combine so that shard count — and its per-shard overhead —
@@ -656,7 +713,7 @@ comes back down.
 
 ---
 
-### Requirement 15: Placement Driver
+### Requirement 16: Placement Driver
 
 **User Story:** As an operator, I want a cluster-scope authority that sees every
 shard on every machine and rebalances replicas, leaderships, and shard
@@ -697,7 +754,7 @@ boundaries, because no single group's leader has the information to do it.
 
 ---
 
-### Requirement 16: Signal Arbitration and Concurrency Limits
+### Requirement 17: Signal Arbitration and Concurrency Limits
 
 **User Story:** As an operator, I want the four signal channels to have a
 defined precedence and a bounded blast radius, so that a policy, a placement
@@ -713,7 +770,7 @@ cluster.
    check-then-act.
 2. Signal precedence SHALL be, highest first: (1) explicit admin command,
    (2) placement-driver operator, (3) local policy. State-machine hints
-   (Requirement 10) SHALL never initiate an operation; they only choose or veto
+   (Requirement 11) SHALL never initiate an operation; they only choose or veto
    keys for an operation another channel initiated.
 3. An accepted admin command SHALL suspend the automatic channels for the
    affected shards until it resolves.
@@ -731,7 +788,7 @@ cluster.
 
 ---
 
-### Requirement 17: Client Routing
+### Requirement 18: Client Routing
 
 **User Story:** As an application developer, I want to submit a command with a
 key and have it reach the right leader, retrying correctly through splits,
@@ -759,7 +816,7 @@ merges, and leader changes.
 
 ---
 
-### Requirement 18: Observability
+### Requirement 19: Observability
 
 **User Story:** As an operator, I want to see why the system split or merged,
 and to diagnose an oscillation or a stuck merge without attaching a debugger.
@@ -782,7 +839,7 @@ and to diagnose an oscillation or a stuck merge without attaching a debugger.
 
 ---
 
-### Requirement 19: Testing and Verification
+### Requirement 20: Testing and Verification
 
 **User Story:** As a maintainer, I want the safety invariants of sharding
 checked mechanically, because a split/merge bug corrupts data silently.
@@ -822,7 +879,7 @@ checked mechanically, because a split/merge bug corrupts data silently.
 ## Out of Scope
 
 - **Cross-shard transactions.** No two-phase commit, no distributed snapshot
-  isolation. Requirement 17.6 makes the boundary explicit and enforced.
+  isolation. Requirement 18.6 makes the boundary explicit and enforced.
 - **Automatic key-domain discovery.** The application supplies the partitioner
   and the ordering; Kythira does not infer them.
 - **Follower/learner reads as a hot-spot remedy.** Orthogonal, and TiKV's own
@@ -832,5 +889,5 @@ checked mechanically, because a split/merge bug corrupts data silently.
   refinement of the load signal; the `shard_stats` structure is designed so it
   can be added without breaking the policy concept.
 - **Rewriting `node<Types>`.** Multi-Raft is built as a layer above it. The
-  only changes to `node<Types>` are the admin-entry hook (Requirement 12) and
+  only changes to `node<Types>` are the admin-entry hook (Requirement 13) and
   the group-id field on messages (Requirement 4), both additive.

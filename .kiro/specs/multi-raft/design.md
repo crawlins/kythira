@@ -81,8 +81,8 @@ user actually meets this feature.
 
 | File | Change | Why |
 |---|---|---|
-| `include/raft/types.hpp` | `group_id()` accessor + `_group_id` field on the six RPC request/response structs; `entry_type` gains `split`, `merge_prepare`, `merge_commit`, `merge_rollback`, `merge_abandoned` | Requirement 4.1, 12.1, 14.3 |
-| `include/raft/raft.hpp` | `set_admin_entry_handler()`; admin entries are **not** passed to `state_machine.apply()`; `propose_admin_entry()`; expose `match_index_of(node)` for merge `min_index` | Split/merge logic stays out of the consensus core |
+| `include/raft/types.hpp` | `group_id()` accessor + `_group_id` field on the six RPC request/response structs; `entry_type` gains `split`, `merge_prepare`, `merge_commit`, `merge_rollback`, `merge_abandoned` | Requirement 4.1, 13.1, 15.3 |
+| `include/raft/raft.hpp` | `set_admin_entry_handler()`; admin entries are **not** passed to `state_machine.apply()`; `propose_admin_entry()`; expose `match_index_of(node)` for merge `min_index`; record `raft_read_latency` in nanoseconds instead of millisecond-truncated | Split/merge logic stays out of the consensus core; the truncation makes every sub-millisecond read read as zero (§6.1.4) |
 | `include/raft/{json,cbor,ion,protobuf}_serializer.hpp`, `grpc_message_conversion.hpp`, `proto/raft*.proto` | round-trip `group_id`, absent ⇒ default | Requirement 4.2–4.3 |
 | everything else | untouched | |
 
@@ -99,6 +99,7 @@ include/raft/group_storage.hpp        group_scoped_persistence, batching ext,
 include/raft/split_merge_policy.hpp   the policy concept, threshold_* default,
                                       composite_split_merge_policy
 include/raft/load_split_sampler.hpp   RFC-0045 sampler
+include/raft/latency_digest.hpp       windowed fixed-bucket latency histogram
 include/raft/shard_placement_driver.hpp   PD concept + no_op default
 include/raft/multi_raft.hpp           the host: registry, tick, arbiter,
                                       split/merge orchestration
@@ -286,7 +287,7 @@ public:
     auto register_group(GroupId, group_handlers h) -> void;
     auto unregister_group(GroupId) -> void;
 
-    /// Called by multi_raft for group ids with no local replica (Requirement 13).
+    /// Called by multi_raft for group ids with no local replica (Requirement 14).
     auto set_unknown_group_handler(std::function<unknown_group_action(GroupId)>) -> void;
 
     auto start() -> void;   // registers ONE handler per RPC type with `inner`
@@ -377,7 +378,7 @@ atomicity of split apply.
 
 A durable `tombstone_set<GroupId>` records groups destroyed on this node (by
 merge, or by replica removal). `multi_group_network_server`'s unknown-group
-path consults it first (Requirement 13.4). Without it, a partitioned peer's
+path consults it first (Requirement 14.4). Without it, a partitioned peer's
 stale `AppendEntries` for a merged-away group resurrects a replica whose range
 is now owned by someone else — a silent double-ownership bug and the exact
 failure the tiling invariant would catch too late.
@@ -396,14 +397,14 @@ public:
 
     explicit multi_raft(multi_raft_config<Types, Key, GroupId> cfg);
 
-    // ── client surface (Requirement 17) ────────────────────────────────────
+    // ── client surface (Requirement 18) ────────────────────────────────────
     auto submit_command(const Key&, const std::vector<std::byte>&,
                         std::chrono::milliseconds) -> future_type;
     auto submit_command(GroupId, shard_epoch, const std::vector<std::byte>&,
                         std::chrono::milliseconds) -> future_type;
     auto read_state(const Key&, std::chrono::milliseconds) -> future_type;
 
-    // ── admin signal surface (Requirement 11, §6.2) ────────────────────────
+    // ── admin signal surface (Requirement 12, §6.2) ────────────────────────
     auto split_shard(GroupId, std::vector<Key>, split_options)  -> future<std::vector<descriptor>>;
     auto merge_shards(GroupId source, GroupId target, merge_options) -> future<descriptor>;
     auto pre_split(std::vector<Key> boundaries)                 -> future<std::vector<descriptor>>;
@@ -578,7 +579,7 @@ inventing ids locally is how you get two different shards with the same group
 id in two partitions.
 
 Step 2's ordering — the veto first, the suggestion as fallback — is what
-Requirement 10.4 buys the application: a policy that says "split at key K"
+Requirement 11.4 buys the application: a policy that says "split at key K"
 cannot cut through an entity the state machine says is indivisible.
 
 ### 5.4 Split: applying (every replica)
@@ -818,7 +819,8 @@ Three properties, each of which is a design decision worth defending:
 
 ```cpp
 enum class split_reason : std::uint8_t {
-    size, key_count, read_load, write_load, admin, placement_driver, pre_split,
+    size, key_count, read_load, write_load, latency, admin, placement_driver,
+    pre_split,
 };
 
 template<shard_key Key>
@@ -866,13 +868,16 @@ struct shard_stats {
     std::size_t      _log_size_bytes{0};
     log_index_type   _last_applied_index{0};
     double           _applied_entries_per_sec{0.0};
-    std::chrono::nanoseconds _p99_apply_latency{};
 
     // load — measured at the routing layer, no SM support needed
     double _read_qps{0.0};
     double _write_qps{0.0};
     double _read_bytes_per_sec{0.0};
     double _write_bytes_per_sec{0.0};
+
+    // latency — percentiles over a bounded recent window, never lifetime (§6.1.4)
+    std::chrono::nanoseconds _p99_apply_latency{};
+    std::chrono::nanoseconds _p99_read_latency{};
 
     // history — the anti-oscillation inputs
     std::chrono::milliseconds _time_since_last_split{};
@@ -891,13 +896,15 @@ struct shard_stats {
 
 `_size_available` is deliberate. A state machine without the sizing hooks makes
 size-based split impossible, and the host says so **once at construction**
-(Requirement 10.6) rather than leaving an operator to wonder for a week why
+(Requirement 11.6) rather than leaving an operator to wonder for a week why
 nothing ever splits. Silent no-ops are the worst failure mode a policy layer
 can have.
 
 Load figures are measured by `multi_raft` at the routing layer — it already
 sees every `submit_command` and every `read_state` — so load-based split works
-for *any* state machine, including one with no sizing hooks at all.
+for *any* state machine, including one with no sizing hooks at all. The two
+latency percentiles come from the same accumulators; §6.1.4 says how, and why
+they are the one part of `shard_stats` with a window attached.
 
 ### 6.1.2 The default policy and the oscillation guard
 
@@ -1036,6 +1043,65 @@ means: channel (a) silent, channels (b), (c) and (d) untouched. It is logged
 once at construction, because `{}` is far too easy to arrive at by accident for
 the difference between *no policies configured* and *policies configured, never
 firing* to be invisible — the same doctrine as `_size_available` in §6.1.1.
+
+### 6.1.4 Latency: where the samples come from
+
+`_p99_apply_latency` was in `shard_stats` from the first draft with nothing
+producing it — `raft.hpp` has no apply-latency instrumentation at all — and
+nothing consuming it. `_p99_read_latency` joins it. Both need three decisions
+the rest of `shard_stats` does not, because a percentile is not a counter.
+
+**Where the sample is taken: `multi_raft::read_state`, at the routing layer.**
+Not `node<Types>::read_state`. Three reasons, in order of weight: the node
+cannot see shard-map lookup or epoch validation, which is latency the client
+actually pays; the node cannot attribute a read rejected before it ran; and
+`node<Types>` is explicitly closed to changes beyond the admin-entry hook and
+the group-id field. This is the same call site that already produces
+`_read_qps` and `_read_bytes_per_sec`, feeding the same per-`group_state`
+accumulators, so nothing new is plumbed. Apply latency is sampled where the
+tick's apply phase (§4.2, phase 3) drives each group.
+
+**What counts as a sample.** A completed read and a read that timed out are
+both sampled, the timeout clamped at its deadline. A read rejected before
+execution — `not_leader`, `shard_epoch_mismatch` — is not: that is a routing
+miss, not evidence of load. Excluding timeouts would be the more natural
+implementation and the wrong one, since a percentile over the requests that
+survived reports the health of the survivors.
+
+**How the percentile is computed: in-process, over a rotating window.** The
+`metrics` concept (`include/raft/metrics.hpp:23`) is `add_duration` → `emit`:
+samples go to Prometheus or OTLP, which computes percentiles *out of process*,
+where a policy running on the group's stripe cannot read them back. So the host
+keeps its own estimator — a fixed-bucket logarithmic histogram in
+`latency_digest.hpp`: bounded memory, no allocation on the record path, O(1)
+record, mergeable, and a bucket walk to read. A reservoir would need a sort at
+read time; a t-digest buys accuracy that a threshold comparison does not spend.
+
+The window matters more than the estimator. A lifetime percentile never decays,
+so a shard that was hot an hour ago still reads as hot and any latency-derived
+policy becomes permanently sticky. The digest is therefore a ring of
+sub-windows spanning a configured multiple of `policy_interval`, rotated on the
+policy tick, and **both** latency fields use it — the two cannot be allowed to
+mean different things.
+
+One trap in the existing code: `node::read_state` already emits
+`raft_read_latency`, but it computes the duration through
+`duration_cast<milliseconds>` and only then widens back to nanoseconds
+(raft.hpp:1745-1770 and 1944-1966), so every sub-millisecond read records as
+zero. That path is not a usable source for a percentile, and the truncation is
+worth fixing where it stands.
+
+**What this is not.** `_p99_read_latency` is not a trigger of the default
+policy. Under Requirement 18.5 a read returns the whole state-machine blob
+(`raft.hpp:1749`), so read latency scales with shard size and would largely
+duplicate the size trigger it appears to complement — it would fire on big
+shards, not busy ones. It is specified as an input a custom or composite policy
+may use as backpressure evidence (queueing behind the read-index heartbeat
+round is the interesting signal, not serialization cost) and as an
+operator-facing diagnostic. `split_reason::latency` exists so a policy that
+does act on it can attribute the decision; the default policy never produces
+that reason. Open question 5 (§12) is what would make this a first-class
+signal.
 
 ### 6.2 Channel (b) — the imperative admin API
 
@@ -1184,7 +1250,7 @@ frozen, or over the concurrency limit, drops the operator and logs
 `skipped_operator`; the PD notices from the next heartbeat and reissues.
 
 Each operator carries `operation_id` and the epoch it was computed against; an
-operator whose epoch is stale is discarded on receipt (Requirement 15.6). This
+operator whose epoch is stale is discarded on receipt (Requirement 16.6). This
 is what keeps a PD decision computed from a 30-second-old heartbeat from
 undoing a split that happened 5 seconds ago.
 
@@ -1227,7 +1293,7 @@ Channel (c) never initiates; it only chooses and vetoes keys for an operation
 one of the three above started.
 
 A loser is logged with reason `preempted_by={channel}` and counted — never
-silently dropped (Requirement 16.6). An operator debugging "why didn't my
+silently dropped (Requirement 17.6). An operator debugging "why didn't my
 policy fire" needs to see that the PD outranked it.
 
 **Gates applied to every channel:**
@@ -1325,7 +1391,7 @@ Kythira does not yet have and which is scoped as its own task in §11).
 `no_op_shard_placement_driver` ships as the default, in the exact shape of
 `no_op_quorum_manager`: it allocates ids from a locally configured reserved
 range (so static, pre-split deployments work with no control plane at all) and
-returns no operators. Requirement 15.7.
+returns no operators. Requirement 16.7.
 
 Heartbeats are batched — one call carrying every local shard's report per
 interval, not one call per shard. At 1000 shards and a 10-second interval the
@@ -1358,7 +1424,7 @@ targeted*, so the client repairs its map from the rejection itself rather than
 going to the PD.
 
 Cross-shard commands are rejected, not silently mis-applied
-(Requirement 17.6): if the partitioner yields a key outside the resolved
+(Requirement 18.6): if the partitioner yields a key outside the resolved
 shard's range at apply admission, the command fails with
 `cross_shard_command_exception`. There is no distributed transaction here and
 pretending otherwise would be the worst possible failure mode.
@@ -1371,7 +1437,7 @@ pretending otherwise would be the worst possible failure mode.
 |---|---|---|
 | Crash mid-split, after children written, before parent index advanced | replay of the split entry is a no-op (idempotence check, §5.4 step B) | none |
 | Crash mid-split, before children written | split entry replays from the start | none |
-| Node missed a split entirely (log compacted past it) | lazy replica creation (§Requirement 13) on first message; `InstallSnapshot` populates it | one snapshot transfer |
+| Node missed a split entirely (log compacted past it) | lazy replica creation (§Requirement 14) on first message; `InstallSnapshot` populates it | one snapshot transfer |
 | Stale `AppendEntries` for a merged-away group | tombstone set drops it | none |
 | Merge target leader unreachable after `merge_prepare` | source stays frozen; `merge.stalled` metric + warning | source unavailable until resolved — correct but visible |
 | Merge target splits mid-merge | abandon handshake; source rolls back | one wasted round trip |
@@ -1450,7 +1516,7 @@ The phases are chosen so each one lands something usable and testable.
 | 5 | merge protocol, abandon handshake, alignment checks | `merge_shards()` works |
 | 6 | `split_merge_policy`, `threshold_*` default, `composite_*`, arbiter, gates, metrics | channel (a) live — automatic split/merge, one policy or several |
 | 7 | `shard_placement_driver`, heartbeats, operators, leader transfer, scatter | channel (d) live |
-| 8 | load-split sampler | channel (c′) live |
+| 8 | load-split sampler, `latency_digest` and the two latency percentiles | channel (c′) live; backpressure visible to custom policies |
 | 9 | transport message batching, `buckets`-style sub-shard stats | scale refinements |
 
 Phases 1–3 are strictly additive and cannot regress single-group behaviour.
@@ -1479,7 +1545,13 @@ methods and one enum.
    load signal considerably. `shard_stats` is shaped so it can be added as a
    field without breaking the policy concept, and it is deliberately out of
    scope for this pass.
-5. **Shard map durability format.** Storing it per-group (each group persists
+5. **Per-key reads.** `read_state` returns the whole state-machine blob, so
+   read latency and read bytes/sec both scale with shard size rather than with
+   how busy a shard is (§6.1.4). Until there is a read that names a key the way
+   `submit_command` does, `_p99_read_latency` stays a diagnostic and a custom-
+   policy input rather than a split trigger, and `_read_bytes_per_sec` is a
+   weaker load signal than it looks. Worth deciding alongside the buckets work.
+6. **Shard map durability format.** Storing it per-group (each group persists
    its own row) is simplest and reconstructs the map on restart, but recovering
    rows for groups this node does *not* host requires a PD query. An operator
    running `no_op_shard_placement_driver` would need a static map file. Decide
