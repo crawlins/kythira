@@ -719,6 +719,18 @@ add_raft_completion_test(node_recovery_unit_test node_recovery_unit_test.cpp)
 add_raft_completion_test(shard_types_unit_test shard_types_unit_test.cpp)
 add_raft_completion_test(shard_map_unit_test shard_map_unit_test.cpp)
 add_raft_completion_test(shard_exceptions_unit_test shard_exceptions_unit_test.cpp)
+# The group_id wire guarantee is split by serializer availability on purpose:
+# JSON and CBOR ship in every configuration and must be tested in every
+# configuration, so gating all of it on protobuf or ionc would quietly stop
+# testing the always-present half.
+add_executable(shard_group_id_wire_property_test shard_group_id_wire_property_test.cpp)
+target_link_libraries(shard_group_id_wire_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(shard_group_id_wire_property_test PRIVATE cxx_std_23)
+add_test(NAME shard_group_id_wire_property_test COMMAND shard_group_id_wire_property_test)
 
 # Peer-to-peer log replication (gossip catch-up) — .kiro/specs/peer2peer-log-replication/
 add_raft_completion_test(peer2peer_replication_unit_test peer2peer_replication_unit_test.cpp)
@@ -1590,6 +1602,19 @@ if(PROTOBUF_SERIALIZER_FOUND)
     add_test(NAME protobuf_rpc_serialization_property_test
              COMMAND protobuf_rpc_serialization_property_test)
 
+    # group_id on the wire + pre-multi-Raft payload decode (multi-raft task 5).
+    add_executable(shard_group_id_protobuf_wire_property_test
+                   shard_group_id_protobuf_wire_property_test.cpp)
+    target_link_libraries(shard_group_id_protobuf_wire_property_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        raft_protobuf_serializer
+    )
+    target_compile_features(shard_group_id_protobuf_wire_property_test PRIVATE cxx_std_23)
+    add_test(NAME shard_group_id_protobuf_wire_property_test
+             COMMAND shard_group_id_protobuf_wire_property_test)
+
     # Malformed / wrong-tag rejection (Requirement 10.3, Properties 3 & 4).
     add_executable(protobuf_rpc_malformed_message_property_test
                    protobuf_rpc_malformed_message_property_test.cpp)
@@ -1666,6 +1691,19 @@ if(TARGET raft_ion_serializer)
     )
     target_compile_features(ion_serializer_concept_test PRIVATE cxx_std_23)
     add_test(NAME ion_serializer_concept_test COMMAND ion_serializer_concept_test)
+
+    # group_id on the wire + pre-multi-Raft payload decode (multi-raft task 5).
+    add_executable(shard_group_id_ion_wire_property_test
+                   shard_group_id_ion_wire_property_test.cpp)
+    target_link_libraries(shard_group_id_ion_wire_property_test PRIVATE
+        raft_ion_serializer
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    target_compile_features(shard_group_id_ion_wire_property_test PRIVATE cxx_std_23)
+    add_test(NAME shard_group_id_ion_wire_property_test
+             COMMAND shard_group_id_ion_wire_property_test)
 
     add_executable(ion_serialization_property_test ion_serialization_property_test.cpp)
     target_link_libraries(ion_serialization_property_test PRIVATE

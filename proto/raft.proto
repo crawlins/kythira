@@ -26,6 +26,14 @@ enum EntryType {
   ENTRY_TYPE_NORMAL = 0;
   ENTRY_TYPE_CONFIGURATION = 1;
   ENTRY_TYPE_NO_OP = 2;
+  // Multi-Raft administration entries (.kiro/specs/multi-raft/ design §5.1).
+  // Like NO_OP, these are never handed to the state machine; node<Types>
+  // routes them to the sharding host's admin-entry handler.
+  ENTRY_TYPE_SPLIT = 3;
+  ENTRY_TYPE_MERGE_PREPARE = 4;
+  ENTRY_TYPE_MERGE_COMMIT = 5;
+  ENTRY_TYPE_MERGE_ROLLBACK = 6;
+  ENTRY_TYPE_MERGE_ABANDONED = 7;
 }
 
 // Mirrors kythira::log_entry<TermId, LogIndex>. `command` is opaque state-machine
@@ -44,11 +52,15 @@ message RequestVoteRequest {
   uint64 candidate_id = 2;
   uint64 last_log_index = 3;
   uint64 last_log_term = 4;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 5;
 }
 
 message RequestVoteResponse {
   uint64 term = 1;
   bool vote_granted = 2;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 3;
 }
 
 message AppendEntriesRequest {
@@ -58,6 +70,8 @@ message AppendEntriesRequest {
   uint64 prev_log_term = 4;
   repeated LogEntry entries = 5;
   uint64 leader_commit = 6;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 7;
 }
 
 message AppendEntriesResponse {
@@ -67,6 +81,8 @@ message AppendEntriesResponse {
   // a zero that the requester would misread as "conflict at index 0".
   optional uint64 conflict_index = 3;
   optional uint64 conflict_term = 4;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 5;
 }
 
 message InstallSnapshotRequest {
@@ -80,10 +96,14 @@ message InstallSnapshotRequest {
   uint64 offset = 5;
   bytes data = 6;
   bool done = 7;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 8;
 }
 
 message InstallSnapshotResponse {
   uint64 term = 1;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 2;
 }
 
 // The base, minimal service surface — matches every other transport's core
@@ -110,11 +130,15 @@ message RequestPreVoteRequest {
   uint64 candidate_id = 2;
   uint64 last_log_index = 3;
   uint64 last_log_term = 4;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 5;
 }
 
 message RequestPreVoteResponse {
   uint64 term = 1;
   bool vote_granted = 2;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 3;
 }
 
 service RaftElectionExtensionService {
@@ -160,6 +184,8 @@ message FetchLogEntriesRequest {
   uint64 requester_id = 1;
   uint64 from_index = 2;
   uint64 to_index = 3;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 4;
 }
 
 message FetchLogEntriesResponse {
@@ -167,6 +193,8 @@ message FetchLogEntriesResponse {
   bool available = 2;
   uint64 prev_log_term = 3;
   repeated LogEntry entries = 4;
+  // Multi-Raft group selector; 0 means the single group.
+  uint64 group_id = 5;
 }
 
 service RaftPeerReplicationService {

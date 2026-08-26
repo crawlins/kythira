@@ -33,12 +33,38 @@ message NodeIdValue {
   }
 }
 
+// Wrapper for the multi-Raft group id (.kiro/specs/multi-raft/ design §2.2).
+// Same shape as NodeIdValue and deliberately a separate message: NodeId and
+// GroupId are independent template parameters of the kythira structs, and
+// sharing one wire type would make a future change to either of them a change
+// to both.
+//
+// Unlike NodeIdValue, an UNSET value is legal on decode and decodes to
+// GroupId{} — "the single group". Every payload recorded before multi-Raft
+// existed carries no group_id field at all, and proto3 hands those back as a
+// default-constructed submessage; treating that as an error would break every
+// such payload for no gain.
+message GroupIdValue {
+  oneof value {
+    uint64 numeric = 1;
+    string text = 2;
+  }
+}
+
 // Mirrors kythira::entry_type (include/raft/types.hpp). Proto3 enums must have
 // a zero value, which aligns with entry_type::normal == 0.
 enum EntryType {
   ENTRY_TYPE_NORMAL = 0;
   ENTRY_TYPE_CONFIGURATION = 1;
   ENTRY_TYPE_NO_OP = 2;
+  // Multi-Raft administration entries (.kiro/specs/multi-raft/ design §5.1).
+  // Like NO_OP, these are never handed to the state machine; node<Types>
+  // routes them to the sharding host's admin-entry handler.
+  ENTRY_TYPE_SPLIT = 3;
+  ENTRY_TYPE_MERGE_PREPARE = 4;
+  ENTRY_TYPE_MERGE_COMMIT = 5;
+  ENTRY_TYPE_MERGE_ROLLBACK = 6;
+  ENTRY_TYPE_MERGE_ABANDONED = 7;
 }
 
 // Mirrors kythira::log_entry<TermId, LogIndex>. `command` is a native protobuf
@@ -57,11 +83,15 @@ message RequestVoteRequest {
   NodeIdValue candidate_id = 2;
   uint64 last_log_index = 3;
   uint64 last_log_term = 4;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 5;
 }
 
 message RequestVoteResponse {
   uint64 term = 1;
   bool vote_granted = 2;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 3;
 }
 
 message RequestPreVoteRequest {
@@ -69,11 +99,15 @@ message RequestPreVoteRequest {
   NodeIdValue candidate_id = 2;
   uint64 last_log_index = 3;
   uint64 last_log_term = 4;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 5;
 }
 
 message RequestPreVoteResponse {
   uint64 term = 1;
   bool vote_granted = 2;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 3;
 }
 
 message AppendEntriesRequest {
@@ -83,6 +117,8 @@ message AppendEntriesRequest {
   uint64 prev_log_term = 4;
   repeated LogEntry entries = 5;
   uint64 leader_commit = 6;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 7;
 }
 
 // conflict_index/conflict_term are proto3 `optional` (explicit field presence),
@@ -93,6 +129,8 @@ message AppendEntriesResponse {
   bool success = 2;
   optional uint64 conflict_index = 3;
   optional uint64 conflict_term = 4;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 5;
 }
 
 message InstallSnapshotRequest {
@@ -103,10 +141,14 @@ message InstallSnapshotRequest {
   uint64 offset = 5;
   bytes data = 6;
   bool done = 7;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 8;
 }
 
 message InstallSnapshotResponse {
   uint64 term = 1;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 2;
 }
 
 // Mirrors kythira::peer_info<NodeId, Address>. Address is always std::string
@@ -141,6 +183,8 @@ message FetchLogEntriesRequest {
   NodeIdValue requester_id = 1;
   uint64 from_index = 2;
   uint64 to_index = 3;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 4;
 }
 
 // responder_id is a bare uint64, not a NodeIdValue: kythira's
@@ -153,4 +197,6 @@ message FetchLogEntriesResponse {
   bool available = 2;
   uint64 prev_log_term = 3;
   repeated LogEntry entries = 4;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 5;
 }

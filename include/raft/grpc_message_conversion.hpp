@@ -85,6 +85,16 @@ inline auto to_proto(entry_type type) -> raft::v1::EntryType {
             return raft::v1::ENTRY_TYPE_CONFIGURATION;
         case entry_type::no_op:
             return raft::v1::ENTRY_TYPE_NO_OP;
+        case entry_type::split:
+            return raft::v1::ENTRY_TYPE_SPLIT;
+        case entry_type::merge_prepare:
+            return raft::v1::ENTRY_TYPE_MERGE_PREPARE;
+        case entry_type::merge_commit:
+            return raft::v1::ENTRY_TYPE_MERGE_COMMIT;
+        case entry_type::merge_rollback:
+            return raft::v1::ENTRY_TYPE_MERGE_ROLLBACK;
+        case entry_type::merge_abandoned:
+            return raft::v1::ENTRY_TYPE_MERGE_ABANDONED;
     }
     // entry_type is a closed C++ enum; an out-of-range value is UB upstream, so
     // reaching here means the caller handed us a corrupt value — fail closed.
@@ -99,6 +109,16 @@ inline auto entry_type_from_proto(raft::v1::EntryType type) -> entry_type {
             return entry_type::configuration;
         case raft::v1::ENTRY_TYPE_NO_OP:
             return entry_type::no_op;
+        case raft::v1::ENTRY_TYPE_SPLIT:
+            return entry_type::split;
+        case raft::v1::ENTRY_TYPE_MERGE_PREPARE:
+            return entry_type::merge_prepare;
+        case raft::v1::ENTRY_TYPE_MERGE_COMMIT:
+            return entry_type::merge_commit;
+        case raft::v1::ENTRY_TYPE_MERGE_ROLLBACK:
+            return entry_type::merge_rollback;
+        case raft::v1::ENTRY_TYPE_MERGE_ABANDONED:
+            return entry_type::merge_abandoned;
         default:
             // proto3 open enums preserve unknown wire values as their raw int
             // (e.g. a tag a newer peer added) — reject rather than silently
@@ -133,6 +153,7 @@ inline auto to_proto(const request_vote_request<>& req) -> raft::v1::RequestVote
     proto.set_candidate_id(req.candidate_id());
     proto.set_last_log_index(req.last_log_index());
     proto.set_last_log_term(req.last_log_term());
+    proto.set_group_id(req.group_id());
     return proto;
 }
 
@@ -140,18 +161,22 @@ inline auto from_proto(const raft::v1::RequestVoteRequest& proto) -> request_vot
     return request_vote_request<>{._term = proto.term(),
                                   ._candidate_id = proto.candidate_id(),
                                   ._last_log_index = proto.last_log_index(),
-                                  ._last_log_term = proto.last_log_term()};
+                                  ._last_log_term = proto.last_log_term(),
+                                  ._group_id = proto.group_id()};
 }
 
 inline auto to_proto(const request_vote_response<>& resp) -> raft::v1::RequestVoteResponse {
     raft::v1::RequestVoteResponse proto;
     proto.set_term(resp.term());
     proto.set_vote_granted(resp.vote_granted());
+    proto.set_group_id(resp.group_id());
     return proto;
 }
 
 inline auto from_proto(const raft::v1::RequestVoteResponse& proto) -> request_vote_response<> {
-    return request_vote_response<>{._term = proto.term(), ._vote_granted = proto.vote_granted()};
+    return request_vote_response<>{._term = proto.term(),
+                                   ._vote_granted = proto.vote_granted(),
+                                   ._group_id = proto.group_id()};
 }
 
 // ── RequestPreVote (same shape as RequestVote, Requirement 16) ───────────────
@@ -162,6 +187,7 @@ inline auto to_proto(const request_pre_vote_request<>& req) -> raft::v1::Request
     proto.set_candidate_id(req.candidate_id());
     proto.set_last_log_index(req.last_log_index());
     proto.set_last_log_term(req.last_log_term());
+    proto.set_group_id(req.group_id());
     return proto;
 }
 
@@ -169,20 +195,23 @@ inline auto from_proto(const raft::v1::RequestPreVoteRequest& proto) -> request_
     return request_pre_vote_request<>{._term = proto.term(),
                                       ._candidate_id = proto.candidate_id(),
                                       ._last_log_index = proto.last_log_index(),
-                                      ._last_log_term = proto.last_log_term()};
+                                      ._last_log_term = proto.last_log_term(),
+                                      ._group_id = proto.group_id()};
 }
 
 inline auto to_proto(const request_pre_vote_response<>& resp) -> raft::v1::RequestPreVoteResponse {
     raft::v1::RequestPreVoteResponse proto;
     proto.set_term(resp.term());
     proto.set_vote_granted(resp.vote_granted());
+    proto.set_group_id(resp.group_id());
     return proto;
 }
 
 inline auto from_proto(const raft::v1::RequestPreVoteResponse& proto)
     -> request_pre_vote_response<> {
     return request_pre_vote_response<>{._term = proto.term(),
-                                       ._vote_granted = proto.vote_granted()};
+                                       ._vote_granted = proto.vote_granted(),
+                                       ._group_id = proto.group_id()};
 }
 
 // ── AppendEntries ───────────────────────────────────────────────────────────
@@ -194,6 +223,7 @@ inline auto to_proto(const append_entries_request<>& req) -> raft::v1::AppendEnt
     proto.set_prev_log_index(req.prev_log_index());
     proto.set_prev_log_term(req.prev_log_term());
     proto.set_leader_commit(req.leader_commit());
+    proto.set_group_id(req.group_id());
     for (const auto& entry : req.entries()) {
         *proto.add_entries() = to_proto(entry);
     }
@@ -206,7 +236,8 @@ inline auto from_proto(const raft::v1::AppendEntriesRequest& proto) -> append_en
                                  ._prev_log_index = proto.prev_log_index(),
                                  ._prev_log_term = proto.prev_log_term(),
                                  ._entries = {},
-                                 ._leader_commit = proto.leader_commit()};
+                                 ._leader_commit = proto.leader_commit(),
+                                 ._group_id = proto.group_id()};
     req._entries.reserve(static_cast<std::size_t>(proto.entries_size()));
     for (const auto& entry : proto.entries()) {
         req._entries.push_back(from_proto(entry));
@@ -226,6 +257,7 @@ inline auto to_proto(const append_entries_response<>& resp) -> raft::v1::AppendE
     if (resp.conflict_term().has_value()) {
         proto.set_conflict_term(resp.conflict_term().value());
     }
+    proto.set_group_id(resp.group_id());
     return proto;
 }
 
@@ -233,7 +265,8 @@ inline auto from_proto(const raft::v1::AppendEntriesResponse& proto) -> append_e
     append_entries_response<> resp{._term = proto.term(),
                                    ._success = proto.success(),
                                    ._conflict_index = std::nullopt,
-                                   ._conflict_term = std::nullopt};
+                                   ._conflict_term = std::nullopt,
+                                   ._group_id = proto.group_id()};
     if (proto.has_conflict_index()) {
         resp._conflict_index = proto.conflict_index();
     }
@@ -254,6 +287,7 @@ inline auto to_proto(const install_snapshot_request<>& req) -> raft::v1::Install
     proto.set_offset(static_cast<std::uint64_t>(req.offset()));
     proto.set_data(grpc_detail::bytes_to_proto(req.data()));
     proto.set_done(req.done());
+    proto.set_group_id(req.group_id());
     return proto;
 }
 
@@ -265,18 +299,20 @@ inline auto from_proto(const raft::v1::InstallSnapshotRequest& proto)
                                       ._last_included_term = proto.last_included_term(),
                                       ._offset = grpc_detail::uint64_to_size(proto.offset()),
                                       ._data = grpc_detail::bytes_from_proto(proto.data()),
-                                      ._done = proto.done()};
+                                      ._done = proto.done(),
+                                      ._group_id = proto.group_id()};
 }
 
 inline auto to_proto(const install_snapshot_response<>& resp) -> raft::v1::InstallSnapshotResponse {
     raft::v1::InstallSnapshotResponse proto;
     proto.set_term(resp.term());
+    proto.set_group_id(resp.group_id());
     return proto;
 }
 
 inline auto from_proto(const raft::v1::InstallSnapshotResponse& proto)
     -> install_snapshot_response<> {
-    return install_snapshot_response<>{._term = proto.term()};
+    return install_snapshot_response<>{._term = proto.term(), ._group_id = proto.group_id()};
 }
 
 // ── PeerInfo / peer_info redirect hint (Requirement 15.4) ────────────────────
@@ -360,6 +396,7 @@ inline auto to_proto(const fetch_log_entries_request<>& req) -> raft::v1::FetchL
     proto.set_requester_id(req.requester_id());
     proto.set_from_index(req.from_index());
     proto.set_to_index(req.to_index());
+    proto.set_group_id(req.group_id());
     return proto;
 }
 
@@ -367,7 +404,8 @@ inline auto from_proto(const raft::v1::FetchLogEntriesRequest& proto)
     -> fetch_log_entries_request<> {
     return fetch_log_entries_request<>{._requester_id = proto.requester_id(),
                                        ._from_index = proto.from_index(),
-                                       ._to_index = proto.to_index()};
+                                       ._to_index = proto.to_index(),
+                                       ._group_id = proto.group_id()};
 }
 
 inline auto to_proto(const fetch_log_entries_response<>& resp)
@@ -376,6 +414,7 @@ inline auto to_proto(const fetch_log_entries_response<>& resp)
     proto.set_responder_id(resp.responder_id());
     proto.set_available(resp.available());
     proto.set_prev_log_term(resp.prev_log_term());
+    proto.set_group_id(resp.group_id());
     for (const auto& entry : resp.entries()) {
         *proto.add_entries() = to_proto(entry);
     }
@@ -387,7 +426,8 @@ inline auto from_proto(const raft::v1::FetchLogEntriesResponse& proto)
     fetch_log_entries_response<> resp{._responder_id = proto.responder_id(),
                                       ._available = proto.available(),
                                       ._prev_log_term = proto.prev_log_term(),
-                                      ._entries = {}};
+                                      ._entries = {},
+                                      ._group_id = proto.group_id()};
     resp._entries.reserve(static_cast<std::size_t>(proto.entries_size()));
     for (const auto& entry : proto.entries()) {
         resp._entries.push_back(from_proto(entry));

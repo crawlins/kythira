@@ -109,12 +109,13 @@ public:
 
     // Serialize RequestVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
-    [[nodiscard]] auto serialize(const request_vote_request<NodeId, TermId, LogIndex>& req) const
-        -> Data {
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const request_vote_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         return encode(base_estimate, [&](hWRITER w) {
             write_annotation(w, "request_vote_request");
             start_struct(w);
+            write_field_id(w, "group_id", req.group_id());
             write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
             write_field_id(w, "candidate_id", req.candidate_id());
             write_field_int(w, "last_log_index", static_cast<std::int64_t>(req.last_log_index()));
@@ -124,11 +125,12 @@ public:
     }
 
     // Serialize RequestVote Response
-    template<typename TermId = std::uint64_t>
-    [[nodiscard]] auto serialize(const request_vote_response<TermId>& resp) const -> Data {
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const request_vote_response<TermId, GroupId>& resp) const -> Data {
         return encode(base_estimate, [&](hWRITER w) {
             write_annotation(w, "request_vote_response");
             start_struct(w);
+            write_field_id(w, "group_id", resp.group_id());
             write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
             write_field_bool(w, "vote_granted", resp.vote_granted());
             finish_struct(w);
@@ -137,12 +139,13 @@ public:
 
     // Serialize RequestPreVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const request_pre_vote_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        const request_pre_vote_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         return encode(base_estimate, [&](hWRITER w) {
             write_annotation(w, "request_pre_vote_request");
             start_struct(w);
+            write_field_id(w, "group_id", req.group_id());
             write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
             write_field_id(w, "candidate_id", req.candidate_id());
             write_field_int(w, "last_log_index", static_cast<std::int64_t>(req.last_log_index()));
@@ -152,11 +155,13 @@ public:
     }
 
     // Serialize RequestPreVote Response
-    template<typename TermId = std::uint64_t>
-    [[nodiscard]] auto serialize(const request_pre_vote_response<TermId>& resp) const -> Data {
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const request_pre_vote_response<TermId, GroupId>& resp) const
+        -> Data {
         return encode(base_estimate, [&](hWRITER w) {
             write_annotation(w, "request_pre_vote_response");
             start_struct(w);
+            write_field_id(w, "group_id", resp.group_id());
             write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
             write_field_bool(w, "vote_granted", resp.vote_granted());
             finish_struct(w);
@@ -165,12 +170,15 @@ public:
 
     // Serialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const append_entries_request<NodeId, TermId, LogIndex, LogEntry>& req) const -> Data {
+        const append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId>& req) const
+        -> Data {
         return encode(base_estimate + entries_estimate(req.entries()), [&](hWRITER w) {
             write_annotation(w, "append_entries_request");
             start_struct(w);
+            write_field_id(w, "group_id", req.group_id());
             write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
             write_field_id(w, "leader_id", req.leader_id());
             write_field_int(w, "prev_log_index", static_cast<std::int64_t>(req.prev_log_index()));
@@ -182,12 +190,14 @@ public:
     }
 
     // Serialize AppendEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
-    [[nodiscard]] auto serialize(const append_entries_response<TermId, LogIndex>& resp) const
-        -> Data {
+    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+             typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const append_entries_response<TermId, LogIndex, GroupId>& resp) const -> Data {
         return encode(base_estimate, [&](hWRITER w) {
             write_annotation(w, "append_entries_response");
             start_struct(w);
+            write_field_id(w, "group_id", resp.group_id());
             write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
             write_field_bool(w, "success", resp.success());
             // Absent optionals are omitted struct fields (never Ion null), so
@@ -204,12 +214,13 @@ public:
 
     // Serialize InstallSnapshot Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const install_snapshot_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        const install_snapshot_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         return encode(base_estimate + req.data().size() * 2, [&](hWRITER w) {
             write_annotation(w, "install_snapshot_request");
             start_struct(w);
+            write_field_id(w, "group_id", req.group_id());
             write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
             write_field_id(w, "leader_id", req.leader_id());
             write_field_int(w, "last_included_index",
@@ -224,11 +235,13 @@ public:
     }
 
     // Serialize InstallSnapshot Response
-    template<typename TermId = std::uint64_t>
-    [[nodiscard]] auto serialize(const install_snapshot_response<TermId>& resp) const -> Data {
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const install_snapshot_response<TermId, GroupId>& resp) const
+        -> Data {
         return encode(base_estimate, [&](hWRITER w) {
             write_annotation(w, "install_snapshot_response");
             start_struct(w);
+            write_field_id(w, "group_id", resp.group_id());
             write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
             finish_struct(w);
         });
@@ -290,12 +303,13 @@ public:
 
     // Serialize FetchLogEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        const fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         return encode(base_estimate, [&](hWRITER w) {
             write_annotation(w, "fetch_log_entries_request");
             start_struct(w);
+            write_field_id(w, "group_id", req.group_id());
             write_field_id(w, "requester_id", req.requester_id());
             write_field_int(w, "from_index", static_cast<std::int64_t>(req.from_index()));
             write_field_int(w, "to_index", static_cast<std::int64_t>(req.to_index()));
@@ -305,12 +319,13 @@ public:
 
     // Serialize FetchLogEntries Response
     template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_response<TermId, LogIndex, LogEntry>& resp) const -> Data {
+        const fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>& resp) const -> Data {
         return encode(base_estimate + entries_estimate(resp.entries()), [&](hWRITER w) {
             write_annotation(w, "fetch_log_entries_response");
             start_struct(w);
+            write_field_id(w, "group_id", resp.group_id());
             write_field_int(w, "responder_id", static_cast<std::int64_t>(resp.responder_id()));
             write_field_bool(w, "available", resp.available());
             write_field_int(w, "prev_log_term", static_cast<std::int64_t>(resp.prev_log_term()));
@@ -323,10 +338,10 @@ public:
 
     // Deserialize RequestVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_vote_request(const Data& data) const
-        -> request_vote_request<NodeId, TermId, LogIndex> {
-        request_vote_request<NodeId, TermId, LogIndex> req{};
+        -> request_vote_request<NodeId, TermId, LogIndex, GroupId> {
+        request_vote_request<NodeId, TermId, LogIndex, GroupId> req{};
         bool have_term = false, have_candidate = false, have_lli = false, have_llt = false;
         decode(data, "request_vote_request", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
@@ -342,6 +357,11 @@ public:
                 } else if (key == "last_log_term") {
                     req._last_log_term = read_int<TermId>(r, t);
                     have_llt = true;
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    req._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception("Unexpected field in request_vote_request: " +
                                                   key);
@@ -355,10 +375,10 @@ public:
     }
 
     // Deserialize RequestVote Response
-    template<typename TermId = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_vote_response(const Data& data) const
-        -> request_vote_response<TermId> {
-        request_vote_response<TermId> resp{};
+        -> request_vote_response<TermId, GroupId> {
+        request_vote_response<TermId, GroupId> resp{};
         bool have_term = false, have_granted = false;
         decode(data, "request_vote_response", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
@@ -368,6 +388,11 @@ public:
                 } else if (key == "vote_granted") {
                     resp._vote_granted = read_bool(r, t);
                     have_granted = true;
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    resp._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception("Unexpected field in request_vote_response: " +
                                                   key);
@@ -382,10 +407,10 @@ public:
 
     // Deserialize RequestPreVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_pre_vote_request(const Data& data) const
-        -> request_pre_vote_request<NodeId, TermId, LogIndex> {
-        request_pre_vote_request<NodeId, TermId, LogIndex> req{};
+        -> request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> {
+        request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> req{};
         bool have_term = false, have_candidate = false, have_lli = false, have_llt = false;
         decode(data, "request_pre_vote_request", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
@@ -401,6 +426,11 @@ public:
                 } else if (key == "last_log_term") {
                     req._last_log_term = read_int<TermId>(r, t);
                     have_llt = true;
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    req._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception("Unexpected field in request_pre_vote_request: " +
                                                   key);
@@ -414,10 +444,10 @@ public:
     }
 
     // Deserialize RequestPreVote Response
-    template<typename TermId = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_pre_vote_response(const Data& data) const
-        -> request_pre_vote_response<TermId> {
-        request_pre_vote_response<TermId> resp{};
+        -> request_pre_vote_response<TermId, GroupId> {
+        request_pre_vote_response<TermId, GroupId> resp{};
         bool have_term = false, have_granted = false;
         decode(data, "request_pre_vote_response", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
@@ -427,6 +457,11 @@ public:
                 } else if (key == "vote_granted") {
                     resp._vote_granted = read_bool(r, t);
                     have_granted = true;
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    resp._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception(
                         "Unexpected field in request_pre_vote_response: " + key);
@@ -441,10 +476,11 @@ public:
 
     // Deserialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_append_entries_request(const Data& data) const
-        -> append_entries_request<NodeId, TermId, LogIndex, LogEntry> {
-        append_entries_request<NodeId, TermId, LogIndex, LogEntry> req{};
+        -> append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> {
+        append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> req{};
         bool have_term = false, have_leader = false, have_pli = false, have_plt = false,
              have_commit = false, have_entries = false;
         decode(data, "append_entries_request", [&](hREADER r) {
@@ -467,6 +503,11 @@ public:
                 } else if (key == "entries") {
                     req._entries = read_entries<TermId, LogIndex, LogEntry>(r, t);
                     have_entries = true;
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    req._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception("Unexpected field in append_entries_request: " +
                                                   key);
@@ -480,10 +521,11 @@ public:
     }
 
     // Deserialize AppendEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_append_entries_response(const Data& data) const
-        -> append_entries_response<TermId, LogIndex> {
-        append_entries_response<TermId, LogIndex> resp{};
+        -> append_entries_response<TermId, LogIndex, GroupId> {
+        append_entries_response<TermId, LogIndex, GroupId> resp{};
         bool have_term = false, have_success = false;
         decode(data, "append_entries_response", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
@@ -497,6 +539,11 @@ public:
                     resp._conflict_index = read_int<LogIndex>(r, t);
                 } else if (key == "conflict_term") {
                     resp._conflict_term = read_int<TermId>(r, t);
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    resp._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception("Unexpected field in append_entries_response: " +
                                                   key);
@@ -511,10 +558,10 @@ public:
 
     // Deserialize InstallSnapshot Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_install_snapshot_request(const Data& data) const
-        -> install_snapshot_request<NodeId, TermId, LogIndex> {
-        install_snapshot_request<NodeId, TermId, LogIndex> req{};
+        -> install_snapshot_request<NodeId, TermId, LogIndex, GroupId> {
+        install_snapshot_request<NodeId, TermId, LogIndex, GroupId> req{};
         bool have_term = false, have_leader = false, have_lii = false, have_lit = false,
              have_offset = false, have_data = false, have_done = false;
         decode(data, "install_snapshot_request", [&](hREADER r) {
@@ -540,6 +587,11 @@ public:
                 } else if (key == "done") {
                     req._done = read_bool(r, t);
                     have_done = true;
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    req._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception("Unexpected field in install_snapshot_request: " +
                                                   key);
@@ -554,16 +606,21 @@ public:
     }
 
     // Deserialize InstallSnapshot Response
-    template<typename TermId = std::uint64_t>
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_install_snapshot_response(const Data& data) const
-        -> install_snapshot_response<TermId> {
-        install_snapshot_response<TermId> resp{};
+        -> install_snapshot_response<TermId, GroupId> {
+        install_snapshot_response<TermId, GroupId> resp{};
         bool have_term = false;
         decode(data, "install_snapshot_response", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
                 if (key == "term") {
                     resp._term = read_int<TermId>(r, t);
                     have_term = true;
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    resp._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception(
                         "Unexpected field in install_snapshot_response: " + key);
@@ -679,10 +736,10 @@ public:
 
     // Deserialize FetchLogEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
-             typename LogIndex = std::uint64_t>
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_request(const Data& data) const
-        -> fetch_log_entries_request<NodeId, TermId, LogIndex> {
-        fetch_log_entries_request<NodeId, TermId, LogIndex> req{};
+        -> fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> {
+        fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> req{};
         bool have_requester = false, have_from = false, have_to = false;
         decode(data, "fetch_log_entries_request", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
@@ -695,6 +752,11 @@ public:
                 } else if (key == "to_index") {
                     req._to_index = read_int<LogIndex>(r, t);
                     have_to = true;
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    req._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception(
                         "Unexpected field in fetch_log_entries_request: " + key);
@@ -709,10 +771,10 @@ public:
 
     // Deserialize FetchLogEntries Response
     template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>>
+             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_response(const Data& data) const
-        -> fetch_log_entries_response<TermId, LogIndex, LogEntry> {
-        fetch_log_entries_response<TermId, LogIndex, LogEntry> resp{};
+        -> fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> {
+        fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> resp{};
         bool have_responder = false, have_available = false, have_plt = false, have_entries = false;
         decode(data, "fetch_log_entries_response", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
@@ -728,6 +790,11 @@ public:
                 } else if (key == "entries") {
                     resp._entries = read_entries<TermId, LogIndex, LogEntry>(r, t);
                     have_entries = true;
+                } else if (key == "group_id") {
+                    // Absent from any payload recorded before multi-Raft. The
+                    // default value is exactly "the single group", so a missing
+                    // field is not an error and carries no required-field flag.
+                    resp._group_id = read_id<GroupId>(r, t);
                 } else {
                     throw serialization_exception(
                         "Unexpected field in fetch_log_entries_response: " + key);

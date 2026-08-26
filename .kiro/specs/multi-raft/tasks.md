@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phase 1 complete (tasks 1-3)
+## Status: In progress — Phases 1-2 complete (tasks 1-5)
 
 **Last Updated**: August 23, 2026
 
@@ -104,7 +104,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 2: Group Id on the Wire (Tasks 4–5)
 
-- [ ] 4. Add `_group_id` to the six RPC structs
+- [x] 4. Add `_group_id` to the six RPC structs
   - Append (never prepend — every call site uses designated initialisers) a
     `GroupId _group_id{}` field and a `group_id()` accessor to
     `request_vote_request/response`, `request_pre_vote_request/response`,
@@ -118,7 +118,7 @@ Phases 6–8, after the mechanics it drives.
     this task's success criterion is *no behavioural diff*.
   - _Requirements: 4.1, 4.2, 5.1 (entry types), 11.1, 13.3_
 
-- [ ] 5. Round-trip `group_id` through all five serializers
+- [x] 5. Round-trip `group_id` through all five serializers
   - `json_serializer.hpp`, `cbor_serializer.hpp`, `ion_serializer.hpp`: emit
     the key unconditionally; on decode, a missing key yields `GroupId{}`.
   - `proto/raft_messages.proto` and `proto/raft.proto`: add `group_id` as a new
