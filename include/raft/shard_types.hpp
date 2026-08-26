@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <type_traits>
 #include <optional>
 #include <ostream>
 #include <sstream>
@@ -317,6 +318,135 @@ template<raft_group_id GroupId, shard_key Key, typename NodeId>
     };
     return same_set(lhs._voters, rhs._voters) && same_set(lhs._learners, rhs._learners);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operation state
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief What a shard is currently doing, per design §6.6.
+///
+/// Conflicting operations are made impossible **by construction** rather than
+/// by check-then-act: starting an operation *is* a transition, and only
+/// `stable` admits a new one. `frozen` admits nothing automatic but still
+/// admits an explicit admin command — freezing an operator out of their own
+/// escape hatch would be a bad joke at 3 a.m.
+enum class shard_operation_state : std::uint8_t {
+    stable = 0,
+    splitting = 1,
+    merging_source = 2,
+    merging_target = 3,
+    frozen = 4,
+    tombstoned = 5,
+};
+
+inline auto to_string(shard_operation_state s) -> std::string {
+    switch (s) {
+        case shard_operation_state::stable:
+            return "stable";
+        case shard_operation_state::splitting:
+            return "splitting";
+        case shard_operation_state::merging_source:
+            return "merging_source";
+        case shard_operation_state::merging_target:
+            return "merging_target";
+        case shard_operation_state::frozen:
+            return "frozen";
+        case shard_operation_state::tombstoned:
+            return "tombstoned";
+        default:
+            return "unknown";
+    }
+}
+
+inline auto operator<<(std::ostream& os, shard_operation_state s) -> std::ostream& {
+    return os << to_string(s);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Key and node-id codecs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Turns a routing key into bytes and back.
+///
+/// Needed because a split's chosen keys travel **inside a Raft log entry**:
+/// every replica must decode exactly the keys the leader encoded, or they will
+/// cut their state machines in different places. `shard_key` itself requires
+/// only ordering and copying — deliberately, since Kythira never interprets a
+/// key — so the encoding has to come from somewhere else, and this is it.
+template<typename C, typename Key>
+concept shard_key_codec = requires(const C& c, const Key& k, const std::vector<std::byte>& bytes) {
+    { c.encode(k) } -> std::same_as<std::vector<std::byte>>;
+    { c.decode(bytes) } -> std::same_as<Key>;
+};
+
+/// @brief Codec for the two key types this library ships support for.
+///
+/// `std::string` round-trips its bytes; an unsigned integral round-trips as
+/// eight big-endian bytes. Big-endian, not native: a log entry written on one
+/// machine is decoded on another, and a native-endian encoding would make the
+/// split silently cut somewhere else on a differently-ordered peer.
+///
+/// An application whose key is neither supplies its own codec.
+template<shard_key Key> struct default_shard_key_codec {
+    [[nodiscard]] auto encode(const Key& k) const -> std::vector<std::byte> {
+        std::vector<std::byte> out;
+        if constexpr (std::same_as<Key, std::string>) {
+            out.reserve(k.size());
+            for (char c : k) {
+                out.push_back(static_cast<std::byte>(static_cast<unsigned char>(c)));
+            }
+        } else {
+            static_assert(std::unsigned_integral<Key>,
+                          "default_shard_key_codec supports std::string and unsigned integral "
+                          "keys; supply your own codec for anything else");
+            auto v = static_cast<std::uint64_t>(k);
+            out.resize(sizeof(std::uint64_t));
+            for (std::size_t i = 0; i < sizeof(std::uint64_t); ++i) {
+                out[sizeof(std::uint64_t) - 1 - i] = static_cast<std::byte>(v & 0xFFU);
+                v >>= 8U;
+            }
+        }
+        return out;
+    }
+
+    [[nodiscard]] auto decode(const std::vector<std::byte>& bytes) const -> Key {
+        if constexpr (std::same_as<Key, std::string>) {
+            std::string out;
+            out.reserve(bytes.size());
+            for (auto b : bytes) {
+                out.push_back(static_cast<char>(b));
+            }
+            return out;
+        } else {
+            static_assert(std::unsigned_integral<Key>,
+                          "default_shard_key_codec supports std::string and unsigned integral "
+                          "keys; supply your own codec for anything else");
+            std::uint64_t v = 0;
+            for (auto b : bytes) {
+                v = (v << 8U) | static_cast<std::uint64_t>(b);
+            }
+            return static_cast<Key>(v);
+        }
+    }
+};
+
+/// @brief Wraps a pair of `std::function`s as a `shard_key_codec`.
+///
+/// The host holds its codec type-erased, because it is configuration; the
+/// encode and decode functions want it as a concept-satisfying object. This
+/// adapter is the join, and it exists so that the *concept* stays the contract
+/// an application implements rather than being replaced by a pair of loose
+/// callables nothing checks.
+template<shard_key Key> struct key_codec_adapter {
+    std::function<std::vector<std::byte>(const Key&)> _encode;
+    std::function<Key(const std::vector<std::byte>&)> _decode;
+
+    [[nodiscard]] auto encode(const Key& k) const -> std::vector<std::byte> { return _encode(k); }
+    [[nodiscard]] auto decode(const std::vector<std::byte>& b) const -> Key { return _decode(b); }
+};
+
+template<typename E, typename D>
+key_codec_adapter(E, D) -> key_codec_adapter<std::invoke_result_t<D, std::vector<std::byte>>>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Decisions
