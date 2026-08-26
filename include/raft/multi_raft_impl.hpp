@@ -9,6 +9,7 @@
 /// Include this rather than `multi_raft.hpp` to use the class; the split
 /// follows `raft.hpp`'s own declaration/definition pattern.
 
+#include <raft/fault_injection.hpp>
 #include <raft/multi_raft.hpp>
 
 #include <algorithm>
@@ -50,8 +51,8 @@ multi_raft<Types, Key, GroupId>::multi_raft(config_type cfg)
     // Every inbound message is a wake signal (Requirement 5.5).
     _demux.set_message_observer([this](const GroupId& g) { this->note_activity(g); });
 
-    // Until task 19 installs lazy replica creation, dropping is the safe answer.
-    _demux.set_unknown_group_handler([](const GroupId&) { return unknown_group_action::drop; });
+    _demux.set_unknown_group_handler(
+        [this](const GroupId& g) { return this->handle_unknown_group(g); });
 
     _last_policy_run = std::chrono::steady_clock::now();
 }
@@ -134,6 +135,13 @@ auto multi_raft<Types, Key, GroupId>::is_running() const -> bool {
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::create_group(const descriptor_type& descriptor) -> void {
+    create_group(descriptor, {});
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::create_group(
+    const descriptor_type& descriptor,
+    const std::function<void(typename Types::persistence_engine_type&)>& seed) -> void {
     const auto& group = descriptor._group_id;
 
     {
@@ -148,11 +156,19 @@ auto multi_raft<Types, Key, GroupId>::create_group(const descriptor_type& descri
     state->_descriptor = descriptor;
     state->_stripe = std::hash<GroupId>{}(group) % _stripe_count;
 
+    // Seeded BEFORE the node opens it: a split child begins at the parent's
+    // apply index with an empty log and a synthetic snapshot, and
+    // `node::start()` reads that snapshot during initialize_from_storage().
+    auto store = _cfg.store_factory(group);
+    if (seed) {
+        seed(store);
+    }
+
     node_config<group_types> node_cfg{
         .node_id = _cfg.node_id,
         .network_client = typename group_types::network_client_type{_client, group},
         .network_server = typename group_types::network_server_type{_demux, group},
-        .persistence = _cfg.store_factory(group),
+        .persistence = std::move(store),
         // Each group gets its OWN logger, metrics sink and membership manager,
         // built by a factory or default-constructed. Never a copy of the host's
         // own: `console_logger` is move-only, and several metrics backends own
@@ -172,6 +188,7 @@ auto multi_raft<Types, Key, GroupId>::create_group(const descriptor_type& descri
     if (!descriptor._voters.empty()) {
         state->_node->set_cluster_configuration(descriptor._voters);
     }
+    install_admin_handler(*state);
     note_activity(*state);
 
     {
@@ -637,6 +654,515 @@ auto multi_raft<Types, Key, GroupId>::defer_to_apply_phase(const GroupId& group,
     // would otherwise never be selected to run it.
     note_activity(*g);
     return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Split (design §5.3 propose, §5.4 apply)
+// ─────────────────────────────────────────────────────────────────────────────
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::handle_unknown_group(const GroupId& group)
+    -> unknown_group_action {
+    if (!_cfg.lazy_replica_creation) {
+        return unknown_group_action::drop;
+    }
+    // The tombstone check already happened in the transport, before this was
+    // called: a merged-away group must never be re-created here, and putting
+    // that check upstream is what guarantees this function never sees one.
+
+    // 1. The local routing map. A node that missed a split still learns the
+    //    child from the first peer that tells it about one.
+    std::optional<descriptor_type> desc;
+    {
+        std::shared_lock lock(_map_mutex);
+        desc = _shard_map.find(group);
+    }
+
+    // 2. One rate-limited external lookup. An unknown group id arriving at
+    //    message rate must not become a control-plane query at message rate —
+    //    a partitioned peer retrying an AppendEntries would otherwise be a
+    //    denial of service against the placement driver.
+    if (!desc.has_value() && _cfg.lookup_descriptor) {
+        bool may_query = false;
+        {
+            const auto now = std::chrono::steady_clock::now();
+            std::lock_guard lock(_lookup_mutex);
+            auto it = _last_lookup.find(group);
+            if (it == _last_lookup.end() ||
+                now - it->second >= _cfg.unknown_group_lookup_interval) {
+                _last_lookup[group] = now;
+                may_query = true;
+            }
+        }
+        if (may_query) {
+            _descriptor_lookups.fetch_add(1, std::memory_order_relaxed);
+            desc = _cfg.lookup_descriptor(group);
+        }
+    }
+
+    if (!desc.has_value()) {
+        return unknown_group_action::drop;
+    }
+
+    // 3. Membership. A message naming a group this node is not a member of must
+    //    never create a replica: doing so would place a replica the cluster's
+    //    configuration does not know about, and no membership change would ever
+    //    remove it.
+    if (!desc->has_replica(_cfg.node_id)) {
+        return unknown_group_action::drop;
+    }
+
+    // 4. An UNINITIALISED replica: empty store, empty log. It is populated by
+    //    the InstallSnapshot the leader sends once it sees how far behind this
+    //    replica is — exactly the one snapshot transfer design §9 prices this
+    //    recovery at.
+    try {
+        create_group(*desc);
+    } catch (const std::exception& e) {
+        _cfg.logger.warning("Lazy replica creation failed",
+                            {{"group", detail::describe_value(group)}, {"error", e.what()}});
+        return unknown_group_action::drop;
+    }
+    _lazy_replicas.fetch_add(1, std::memory_order_relaxed);
+    _cfg.logger.info("Created a replica from an inbound message",
+                     {{"group", detail::describe_value(group)}});
+    return unknown_group_action::created;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::lazily_created_replica_count() const -> std::uint64_t {
+    return _lazy_replicas.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::descriptor_lookup_count() const -> std::uint64_t {
+    return _descriptor_lookups.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::encode_key_or_default(const Key& k) const
+    -> std::vector<std::byte> {
+    if (_cfg.encode_key) {
+        return _cfg.encode_key(k);
+    }
+    return default_shard_key_codec<Key>{}.encode(k);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::decode_key_or_default(
+    const std::vector<std::byte>& bytes) const -> Key {
+    if (_cfg.decode_key) {
+        return _cfg.decode_key(bytes);
+    }
+    return default_shard_key_codec<Key>{}.decode(bytes);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::operation_state(const GroupId& group) const
+    -> std::optional<shard_operation_state> {
+    auto g = find_group(group);
+    return g ? std::optional{g->_operation.load(std::memory_order_relaxed)} : std::nullopt;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::applied_split_count() const -> std::uint64_t {
+    return _applied_splits.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::node_id() const -> const node_id_type& {
+    return _cfg.node_id;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::replay_admin_entry(const GroupId& group,
+                                                         const log_entry_type& entry,
+                                                         log_index_type index) -> bool {
+    auto g = find_group(group);
+    if (!g || !is_admin_entry_type(entry.type())) {
+        return false;
+    }
+    // Through `with_state_machine` so the replay takes the same lock and sees
+    // the same state machine reference the apply loop would hand the handler.
+    g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
+        if (entry.type() == entry_type::split) {
+            auto cmd = decode_split_command<GroupId, Key, node_id_type>(
+                entry.command(),
+                key_codec_adapter{
+                    [this](const Key& k) { return encode_key_or_default(k); },
+                    [this](const std::vector<std::byte>& b) { return decode_key_or_default(b); }});
+            apply_split(*g, cmd, index, entry.term(), sm);
+        }
+    });
+    return true;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::install_admin_handler(group_state& g) -> void {
+    // Captured by raw pointer, not by `shared_ptr`: the handler lives on the
+    // node, the node lives on the group_state, and a strong reference here
+    // would make the pair immortal. `destroy_group` tears the node down before
+    // the group_state goes, so the handler cannot outlive what it points at.
+    auto* state = &g;
+    g._node->set_admin_entry_handler([this, state](const log_entry_type& entry,
+                                                   log_index_type index,
+                                                   typename Types::state_machine_type& sm) {
+        switch (entry.type()) {
+            case entry_type::split: {
+                auto cmd = decode_split_command<GroupId, Key, node_id_type>(
+                    entry.command(),
+                    key_codec_adapter{[this](const Key& k) { return encode_key_or_default(k); },
+                                      [this](const std::vector<std::byte>& b) {
+                                          return decode_key_or_default(b);
+                                      }});
+                apply_split(*state, cmd, index, entry.term(), sm);
+                break;
+            }
+            default:
+                // The merge entry types land in Phase 8 (tasks 20-22). Until
+                // then nothing proposes them, so reaching here means a peer is
+                // running a newer binary — worth saying so rather than
+                // silently ignoring.
+                _cfg.logger.warning("Administration entry type not handled by this build",
+                                    {{"group", detail::describe_value(state->_group_id)},
+                                     {"entry_type", std::to_string(static_cast<int>(entry.type()))},
+                                     {"index", std::to_string(index)}});
+                break;
+        }
+    });
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vector<Key> at_keys,
+                                                  std::chrono::milliseconds timeout)
+    -> future_type {
+    auto g = find_group(group);
+    if (!g) {
+        return failed_future(
+            std::make_exception_ptr(unknown_shard_exception<GroupId>{group, "no local replica"}));
+    }
+
+    // ── step 1: gate ─────────────────────────────────────────────────────────
+    //
+    // Only `stable` admits a new operation. Compare-exchange rather than
+    // check-then-set: two channels proposing in the same interval is exactly
+    // the case the operation state exists to make impossible.
+    if (!g->_node->is_leader()) {
+        return failed_future(std::make_exception_ptr(
+            shard_not_leader_exception<GroupId, node_id_type>{group, g->_node->known_leader()}));
+    }
+    auto expected = shard_operation_state::stable;
+    if (!g->_operation.compare_exchange_strong(expected, shard_operation_state::splitting)) {
+        return failed_future(
+            std::make_exception_ptr(shard_busy_exception<GroupId>{group, to_string(expected)}));
+    }
+
+    // From here every failure path must put the state back, or the shard is
+    // wedged in `splitting` with nothing running.
+    auto release = [g] { g->_operation.store(shard_operation_state::stable); };
+
+    const auto parent = g->_descriptor;
+
+    // ── step 2: keys ─────────────────────────────────────────────────────────
+    //
+    // Requested keys minus the state machine's vetoes; if that leaves nothing,
+    // the state machine's own suggestions minus its vetoes. The veto comes
+    // FIRST and the suggestion is the fallback, which is what Requirement 9.4
+    // buys the application: a policy saying "split at K" cannot cut through an
+    // entity the state machine says is indivisible.
+    std::size_t candidates_considered = at_keys.size();
+    for (const auto& k : at_keys) {
+        if (!parent._range.contains(k)) {
+            release();
+            return failed_future(std::make_exception_ptr(
+                split_key_out_of_range_exception<GroupId, Key>{group, k, parent._range}));
+        }
+    }
+
+    std::vector<Key> chosen;
+    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+        const auto limit = _cfg.batch_split_limit;
+        const auto& range = parent._range;
+        g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
+            for (const auto& k : at_keys) {
+                if (sm.can_split_at(k)) {
+                    chosen.push_back(k);
+                }
+            }
+            if (chosen.empty()) {
+                auto suggested = sm.suggest_split_keys(limit);
+                candidates_considered += suggested.size();
+                for (const auto& k : suggested) {
+                    if (range.contains(k) && sm.can_split_at(k)) {
+                        chosen.push_back(k);
+                    }
+                }
+            }
+        });
+    } else {
+        // Without the extension there is no veto and no suggestion: the caller
+        // must name the keys, and an empty request cannot be served.
+        chosen = at_keys;
+    }
+
+    std::sort(chosen.begin(), chosen.end());
+    chosen.erase(std::unique(chosen.begin(), chosen.end()), chosen.end());
+    if (chosen.size() > _cfg.batch_split_limit) {
+        chosen.resize(_cfg.batch_split_limit);
+    }
+
+    if (chosen.empty()) {
+        release();
+        return failed_future(std::make_exception_ptr(
+            no_valid_split_key_exception<GroupId>{group, candidates_considered}));
+    }
+
+    // ── step 3: ids ──────────────────────────────────────────────────────────
+    //
+    // Not optional and not local. Every replica must derive identical group
+    // ids, and only a cluster-scope authority can guarantee uniqueness — so an
+    // unavailable authority ABANDONS the split rather than queueing it with
+    // locally invented ids, which is how two partitions end up with two
+    // different shards sharing one group id.
+    const std::size_t child_count = chosen.size() + 1;
+    const std::size_t new_ids_needed = child_count - 1;  // one child reuses the parent's id
+    std::vector<GroupId> new_ids;
+    if (new_ids_needed > 0) {
+        if (!_cfg.allocate_group_ids) {
+            release();
+            return failed_future(std::make_exception_ptr(std::runtime_error(
+                "multi_raft: split needs allocate_group_ids; ids must come from a "
+                "cluster-scope authority, never from the proposing node")));
+        }
+        new_ids = _cfg.allocate_group_ids(new_ids_needed);
+        if (new_ids.size() < new_ids_needed) {
+            release();
+            _cfg.logger.warning("Split abandoned: id authority unavailable",
+                                {{"group", detail::describe_value(group)},
+                                 {"needed", std::to_string(new_ids_needed)},
+                                 {"got", std::to_string(new_ids.size())}});
+            return failed_future(std::make_exception_ptr(std::runtime_error(
+                "multi_raft: split abandoned, the shard-id authority is unavailable")));
+        }
+    }
+
+    // ── step 4: derive ───────────────────────────────────────────────────────
+    //
+    // Children take `version = parent.version + N`, a single value rather than
+    // a per-child increment: it keeps epoch ordering total, so "did I miss a
+    // split" is a comparison rather than a set difference.
+    const shard_epoch child_epoch{._version = parent._epoch._version + child_count,
+                                  ._conf_version = parent._epoch._conf_version};
+
+    std::vector<descriptor_type> children;
+    children.reserve(child_count);
+    for (std::size_t i = 0; i < child_count; ++i) {
+        descriptor_type child;
+        child._range._start = i == 0 ? parent._range._start : std::optional{chosen[i - 1]};
+        child._range._end = i + 1 == child_count ? parent._range._end : std::optional{chosen[i]};
+        child._epoch = child_epoch;
+        // Members one-for-one with the parent's: a child replica is created on
+        // exactly the machines that already hold a parent replica, so no data
+        // moves.
+        child._voters = parent._voters;
+        child._learners = parent._learners;
+        child._leader_hint = std::nullopt;
+        children.push_back(std::move(child));
+    }
+
+    const std::size_t derived_index = _cfg.right_derive ? child_count - 1 : 0;
+    children[derived_index]._group_id = parent._group_id;
+    children[derived_index]._leader_hint = parent._leader_hint;
+    for (std::size_t i = 0, next = 0; i < child_count; ++i) {
+        if (i != derived_index) {
+            children[i]._group_id = new_ids[next++];
+        }
+    }
+
+    // ── step 6: propose ──────────────────────────────────────────────────────
+    split_command_type cmd{._parent_group = parent._group_id,
+                           ._parent_epoch = parent._epoch,
+                           ._at_keys = chosen,
+                           ._children = children,
+                           ._right_derive = _cfg.right_derive,
+                           ._reason = split_reason::admin,
+                           ._pd_operation_id = std::nullopt};
+
+    auto payload = encode_split_command<GroupId, Key, node_id_type>(
+        cmd, key_codec_adapter{
+                 [this](const Key& k) { return encode_key_or_default(k); },
+                 [this](const std::vector<std::byte>& b) { return decode_key_or_default(b); }});
+
+    _cfg.logger.info("Proposing split", {{"group", detail::describe_value(group)},
+                                         {"children", std::to_string(child_count)},
+                                         {"parent_version", std::to_string(parent._epoch._version)},
+                                         {"child_version", std::to_string(child_epoch._version)}});
+
+    auto future = g->_node->propose_admin_entry(entry_type::split, std::move(payload), timeout);
+
+    // The operation state is cleared by apply on success. A proposal that never
+    // commits would otherwise wedge the shard, so the release is chained onto
+    // the future's failure path too.
+    return std::move(future).thenTry([g](auto&& result) {
+        if (result.hasException()) {
+            g->_operation.store(shard_operation_state::stable);
+        }
+        return std::forward<decltype(result)>(result).value();
+    });
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
+                                                  const split_command_type& cmd,
+                                                  log_index_type at_index, term_id_type at_term,
+                                                  typename Types::state_machine_type& parent_sm)
+    -> void {
+    // ── A: epoch ─────────────────────────────────────────────────────────────
+    //
+    // An entry proposed under one epoch can commit after the epoch moved
+    // (Requirement 3.7). Applying it anyway would cut a shard whose membership
+    // the entry no longer describes.
+    if (parent._descriptor._epoch != cmd._parent_epoch) {
+        _cfg.logger.warning(
+            "Skipping split entry: parent epoch moved",
+            {{"group", detail::describe_value(parent._group_id)},
+             {"entry_version", std::to_string(cmd._parent_epoch._version)},
+             {"local_version", std::to_string(parent._descriptor._epoch._version)}});
+        return;
+    }
+
+    // ── B: idempotence ───────────────────────────────────────────────────────
+    //
+    // Checked before ANYTHING else happens, so replaying the entry after a
+    // crash is a no-op. This is what makes step E's "children first, then the
+    // parent's apply index" ordering safe without a batched store.
+    bool all_present = true;
+    for (const auto& child : cmd._children) {
+        if (child._group_id == cmd._parent_group) {
+            continue;
+        }
+        auto existing = find_group(child._group_id);
+        if (!existing || existing->_descriptor._epoch != child._epoch) {
+            all_present = false;
+            break;
+        }
+    }
+    if (all_present && parent._descriptor._epoch == cmd._children.front()._epoch) {
+        return;
+    }
+
+    // ── C: freeze ────────────────────────────────────────────────────────────
+    parent._operation.store(shard_operation_state::splitting);
+
+    // ── D: cut ───────────────────────────────────────────────────────────────
+    //
+    // Deterministic across replicas by contract (the round-trip law); every
+    // replica therefore produces byte-identical children.
+    std::vector<std::vector<std::byte>> blobs;
+    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+        blobs = parent_sm.split_state(cmd._at_keys);
+    }
+    if (blobs.size() != cmd._children.size()) {
+        // A state machine that cannot cut cannot be split. Failing loudly beats
+        // creating children with no state, which would silently lose every key
+        // in their ranges.
+        parent._operation.store(shard_operation_state::stable);
+        throw shard_exception("split apply: state machine produced " +
+                              std::to_string(blobs.size()) + " parts for " +
+                              std::to_string(cmd._children.size()) + " children");
+    }
+
+    // ── E: durable state ─────────────────────────────────────────────────────
+    //
+    // The children's initial state and the parent's advanced descriptor must
+    // land together. Without a store that spans groups they cannot, so the
+    // order is children FIRST and the parent afterwards: a crash between them
+    // replays the entry, and step B finds the children already present. The
+    // reverse order loses a child permanently and silently — nothing notices
+    // until a client asks for a key in that range.
+    //
+    // The synthetic snapshot is why a split moves no data. The child does not
+    // copy the parent's log; it begins at the parent's apply index with an
+    // EMPTY log and a snapshot that *is* its share of the parent's state.
+    std::size_t derived_index = 0;
+    for (std::size_t i = 0; i < cmd._children.size(); ++i) {
+        if (cmd._children[i]._group_id == cmd._parent_group) {
+            derived_index = i;
+        }
+    }
+
+    for (std::size_t i = 0; i < cmd._children.size(); ++i) {
+        const auto& child = cmd._children[i];
+        if (i == derived_index) {
+            continue;
+        }
+        // This node holds a replica of the child only where it holds one of the
+        // parent — which is everywhere, since members are one-for-one.
+        if (!child.has_replica(_cfg.node_id)) {
+            continue;
+        }
+        if (find_group(child._group_id)) {
+            continue;  // replayed
+        }
+
+        fiu_do_on("raft/multiraft/split/before_children",
+                  throw shard_exception("chaos: split/before_children"););
+
+        const auto blob = blobs[i];
+        const auto members = child._voters;
+        const auto learners = child._learners;
+        create_group(child, [&](typename Types::persistence_engine_type& store) {
+            snapshot_type snap{};
+            snap._last_included_index = at_index;
+            snap._last_included_term = at_term;
+            snap._configuration =
+                typename Types::cluster_configuration_type{members, false, std::nullopt, learners};
+            snap._state_machine_state = blob;
+            store.save_snapshot(snap);
+            store.save_current_term(at_term);
+        });
+
+        fiu_do_on("raft/multiraft/split/between_children",
+                  throw shard_exception("chaos: split/between_children"););
+    }
+
+    fiu_do_on("raft/multiraft/split/after_children_before_parent",
+              throw shard_exception("chaos: split/after_children_before_parent"););
+
+    // The derived child keeps the parent's group id, log and term; only its
+    // range narrows and its state machine is reduced to its own share.
+    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+        parent_sm.restore_from_snapshot(blobs[derived_index], at_index);
+    }
+    parent._descriptor = cmd._children[derived_index];
+
+    // ── F/G: publish ─────────────────────────────────────────────────────────
+    {
+        std::unique_lock lock(_map_mutex);
+        for (const auto& child : cmd._children) {
+            _shard_map.upsert(child);
+        }
+    }
+    fiu_do_on("raft/multiraft/split/after_publish",
+              throw shard_exception("chaos: split/after_publish"););
+
+#ifndef NDEBUG
+    if (auto problem = shard_map_snapshot().check_tiling(); problem.has_value()) {
+        _cfg.logger.error(
+            "Split broke the tiling invariant",
+            {{"group", detail::describe_value(parent._group_id)}, {"problem", *problem}});
+    }
+#endif
+
+    // ── H: unfreeze ──────────────────────────────────────────────────────────
+    parent._operation.store(shard_operation_state::stable);
+    _applied_splits.fetch_add(1, std::memory_order_relaxed);
+
+    _cfg.logger.info("Applied split",
+                     {{"group", detail::describe_value(parent._group_id)},
+                      {"children", std::to_string(cmd._children.size())},
+                      {"at_index", std::to_string(at_index)},
+                      {"new_version", std::to_string(cmd._children.front()._epoch._version)}});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

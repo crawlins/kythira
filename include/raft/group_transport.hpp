@@ -39,6 +39,7 @@
 #include <raft/types.hpp>
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -118,6 +119,15 @@ template<typename Messages = group_rpc_messages<>> struct group_rpc_handlers {
     std::function<typename Messages::fetch_log_entries_response_type(
         const typename Messages::fetch_log_entries_request_type&)>
         _fetch_log_entries;
+
+    /// @brief The group these handlers belong to, stamped by the registering
+    /// `group_scoped_server`.
+    ///
+    /// Carried so the demultiplexer can check that the table it looked up is
+    /// the table it asked for. A misrouted message would otherwise deliver one
+    /// group's RPC to another group's replica, which at the Raft level looks
+    /// like ordinary traffic and corrupts state that no invariant re-checks.
+    typename Messages::group_id_type _group{};
 };
 
 /// @brief Wraps one real `network_server` and fans its messages out by group id.
@@ -324,6 +334,14 @@ private:
         }
 
         if (auto handlers = lookup(group); handlers) {
+            // The table is stamped with the group it was registered under, and
+            // that stamp is checked here rather than trusted. A misrouted
+            // message delivers one group's RPC to another group's replica,
+            // which looks like ordinary traffic at the Raft level and corrupts
+            // state nothing re-checks — the class of bug this whole layer is
+            // most exposed to, and the cheapest one to assert away.
+            assert(handlers->_group == group &&
+                   "multi_group_network_server: handler table stamped with a different group");
             const auto& fn = select(*handlers);
             // An empty slot is an optional RPC this group's node never
             // registered — not a stale group, so it is not counted as one.
@@ -451,6 +469,7 @@ public:
 private:
     auto publish() -> void {
         if (_demux != nullptr) {
+            _handlers._group = _group;
             _demux->register_group(_group, _handlers);
         }
     }

@@ -432,6 +432,29 @@ public:
     auto propose_admin_entry(entry_type type, std::vector<std::byte> payload,
                              std::chrono::milliseconds timeout) -> future_type;
 
+    /// @brief Run `f` against this node's state machine under the node's lock.
+    ///
+    /// The sharding host needs the state machine's *leader-only* hooks —
+    /// `can_split_at` and `suggest_split_keys` — before it proposes a split
+    /// (design §5.3 step 2), and `node` owns the state machine. Without this
+    /// there is no way to reach them at all: the host cannot hold its own copy
+    /// (there would be two divergent state machines) and the admin-entry
+    /// handler runs far too late, after the decision is already frozen in a
+    /// committed entry.
+    ///
+    /// This is a deliberate fourth addition to the consensus core beyond the
+    /// three the design anticipated. The design's §5.3 assumes the caller can
+    /// reach `state_machine.can_split_at(...)` and does not say how; this is
+    /// the smallest honest answer.
+    ///
+    /// `f` runs with `_mutex` held, so it must not call back into this node and
+    /// must not block. It is for the cheap, read-only hooks; anything else
+    /// belongs in the admin-entry handler, which is handed the same reference.
+    template<typename F> auto with_state_machine(F&& f) -> decltype(auto) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        return std::forward<F>(f)(_state_machine);
+    }
+
     /// @brief The highest log index known to be replicated on `node`.
     ///
     /// `std::nullopt` when this node is not the leader (it tracks no match

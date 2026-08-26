@@ -31,6 +31,8 @@
 
 #include <raft/group_storage.hpp>
 #include <raft/group_transport.hpp>
+#include <raft/shard_commands.hpp>
+#include <raft/splittable_state_machine.hpp>
 #include <raft/raft.hpp>
 #include <raft/shard_exceptions.hpp>
 #include <raft/shard_map.hpp>
@@ -254,6 +256,67 @@ struct multi_raft_config {
 
     /// Backoff between routing retries.
     std::chrono::milliseconds route_retry_backoff{std::chrono::milliseconds{5}};
+
+    // ── split (design §5.3) ──────────────────────────────────────────────────
+
+    /// @brief Allocates `n` cluster-unique group ids for a split's children.
+    ///
+    /// Returning fewer than `n` (including none) means the authority is
+    /// unavailable, and the split is **abandoned** rather than queued. This is
+    /// not optional and not local: every replica must derive identical group
+    /// ids, and only a cluster-scope authority can guarantee uniqueness.
+    /// Inventing ids locally is how two different shards in two partitions end
+    /// up with the same group id — TiKV makes the same call with
+    /// `AskBatchSplit`. Phase 10's placement driver supplies this; until then a
+    /// static allocator serves a pre-split deployment.
+    std::function<std::vector<GroupId>(std::size_t)> allocate_group_ids{};
+
+    /// @brief Turns a routing key into the bytes that ride inside a split entry.
+    ///
+    /// Every replica must decode exactly the keys the leader encoded, or they
+    /// cut their state machines in different places.
+    std::function<std::vector<std::byte>(const Key&)> encode_key{};
+    std::function<Key(const std::vector<std::byte>&)> decode_key{};
+
+    /// @brief Maximum children one split may produce (TiKV RFC 0006's batch split).
+    ///
+    /// A one-key-at-a-time API cannot express the fix RFC 0006 exists for: "the
+    /// split speed cannot keep up with write speed" under a fast sequential
+    /// write.
+    std::size_t batch_split_limit{10};
+
+    /// @brief Whether the RIGHTMOST child inherits the parent's group id, log
+    /// and term. Default is the leftmost, matching the `(-inf, k)` reading.
+    bool right_derive{false};
+
+    // ── lazy replica creation (Requirement 12, design §5.4 step F) ───────────
+
+    /// @brief Whether a message for an unknown group may create a replica.
+    ///
+    /// On by default: it is how a node held offline through a split acquires
+    /// its child, and the alternative is a control-plane push that has to
+    /// retry until the node comes back.
+    bool lazy_replica_creation{true};
+
+    /// @brief Looks a group's descriptor up outside the local routing map.
+    ///
+    /// Consulted only when the local map has no row, and only once per group
+    /// per `unknown_group_lookup_interval` — an unknown group id arriving at
+    /// message rate must not turn into a control-plane query at message rate.
+    /// Phase 10's placement driver supplies this.
+    std::function<std::optional<descriptor_type>(const GroupId&)> lookup_descriptor{};
+
+    /// @brief Minimum gap between external lookups for the same group id.
+    std::chrono::milliseconds unknown_group_lookup_interval{std::chrono::seconds{1}};
+
+    /// @brief Extra election-timeout stagger applied to each non-derived child.
+    ///
+    /// N children electing simultaneously across the same machines produce a
+    /// burst of RequestVote traffic and a correlated latency spike on every
+    /// child. Staggering keeps the unavailability window to roughly one
+    /// election timeout for one child, and near zero for the derived one, which
+    /// campaigns immediately if it sits on the parent's leader.
+    std::chrono::milliseconds child_election_stagger{std::chrono::milliseconds{50}};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -325,6 +388,9 @@ public:
     auto stop() -> void;
 
     [[nodiscard]] auto is_running() const -> bool;
+
+    /// @brief This host's node identifier, shared by every group's replica.
+    [[nodiscard]] auto node_id() const -> const node_id_type&;
     /// @}
 
     /// @name Group registry
@@ -343,6 +409,17 @@ public:
     ///
     /// The bootstrap shape: one group owning `(-inf, +inf)`.
     auto create_group(const GroupId& group, const std::vector<node_id_type>& voters) -> void;
+
+    /// @brief Create a local replica whose store is seeded before the node opens it.
+    ///
+    /// Split apply needs this: a child begins life at the parent's apply index
+    /// with an EMPTY log and a synthetic snapshot that *is* its share of the
+    /// parent's state, and `node::start()` reads that snapshot during
+    /// `initialize_from_storage()`. Seeding after construction would be too
+    /// late.
+    auto create_group(const descriptor_type& descriptor,
+                      const std::function<void(typename Types::persistence_engine_type&)>& seed)
+        -> void;
 
     /// @brief Tear down a local replica.
     ///
@@ -409,6 +486,51 @@ public:
 
     /// @brief Resolve `key` to a descriptor without submitting anything.
     [[nodiscard]] auto resolve(const Key& key) const -> std::optional<descriptor_type>;
+    /// @}
+
+    /// @name Split (Requirement 11, design §5.3 and §5.4)
+    /// @{
+
+    /// @brief Propose a split of `group` at `at_keys`. Leader-only.
+    ///
+    /// Runs design §5.3's sequence: gate, then candidate keys minus the state
+    /// machine's vetoes, then a fallback to `suggest_split_keys`, then the id
+    /// allocation, then the derived children, then the proposal.
+    ///
+    /// The returned future resolves when the split entry has been committed and
+    /// applied on this replica.
+    ///
+    /// @param at_keys Empty means "you choose": the state machine's suggestions
+    ///                are used, which is how a policy that says "split, I don't
+    ///                care where" is served.
+    ///
+    /// @throws (via the future)
+    ///   `shard_busy_exception`             the shard is not `stable`
+    ///   `shard_not_leader_exception`       this replica does not lead it
+    ///   `split_key_out_of_range_exception` a named key is outside the range
+    ///   `no_valid_split_key_exception`     every candidate was vetoed and the
+    ///                                      state machine suggested none
+    ///   `std::runtime_error`               the id authority was unavailable
+    auto split_shard(const GroupId& group, std::vector<Key> at_keys,
+                     std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief The shard's current operation state, or `nullopt` if not local.
+    [[nodiscard]] auto operation_state(const GroupId& group) const
+        -> std::optional<shard_operation_state>;
+
+    /// @brief How many splits this node has applied. Test and diagnostic use.
+    [[nodiscard]] auto applied_split_count() const -> std::uint64_t;
+
+    /// @brief Re-apply a committed administration entry, as a crash-recovery
+    /// replay does.
+    ///
+    /// Administration entries are idempotent by contract — that is what makes
+    /// split apply's "children first, then the parent" ordering safe without a
+    /// store that spans groups — and this is how that contract is exercised
+    /// without corrupting a log to reach it. Returns `false` if the group is
+    /// not local or the entry is not an administration entry.
+    auto replay_admin_entry(const GroupId& group, const log_entry_type& entry, log_index_type index)
+        -> bool;
     /// @}
 
     /// @name Driving
@@ -512,12 +634,34 @@ public:
     /// @brief Which stripe a group runs on. `npos` if the group is unknown.
     [[nodiscard]] auto stripe_of(const GroupId& group) const -> std::size_t;
 
-    /// @brief Called for a message whose group has no local replica.
+    /// @brief Override the default unknown-group behaviour.
     ///
-    /// Phase 7 (task 19) replaces the default with lazy replica creation; until
-    /// then the default drops, which is the safe answer.
+    /// The default is `lazy_replica_creation` (Requirement 12): tombstone check
+    /// in the transport, then the local routing map, then one rate-limited
+    /// external lookup, then a replica if and only if this node is a listed
+    /// member. Replacing it replaces all of that.
     auto set_unknown_group_handler(std::function<unknown_group_action(const GroupId&)> handler)
         -> void;
+
+    /// @brief How many replicas were created by the lazy path.
+    [[nodiscard]] auto lazily_created_replica_count() const -> std::uint64_t;
+
+    /// @brief How many external descriptor lookups the lazy path has made.
+    ///
+    /// The rate limit is the point: an unknown group id arriving at message
+    /// rate must not become a control-plane query at message rate.
+    [[nodiscard]] auto descriptor_lookup_count() const -> std::uint64_t;
+
+    /// @brief Requirement 12's decision for a message with no local replica.
+    ///
+    /// This is the callback the transport installs; it is public because it is
+    /// the whole of the lazy-creation policy and a caller replacing it wants to
+    /// be able to delegate back to it.
+    ///
+    /// It does **not** consult the tombstone set: that check lives upstream in
+    /// the transport, deliberately, so that a tombstoned group's message never
+    /// reaches replica creation at all.
+    auto handle_unknown_group(const GroupId& group) -> unknown_group_action;
     /// @}
 
 private:
@@ -544,6 +688,15 @@ private:
         /// Load counters, read by the policy channel from Phase 9 onward.
         std::atomic<std::uint64_t> _reads{0};
         std::atomic<std::uint64_t> _writes{0};
+
+        /// @brief The arbiter's per-shard state (design §6.6).
+        ///
+        /// Only `stable` admits a new operation, so a conflicting split and
+        /// merge are impossible by construction rather than by check-then-act.
+        /// The full transition table and the remaining gates land with the
+        /// arbiter in Phase 9; the state itself lives here from Phase 7 because
+        /// split already needs it.
+        std::atomic<shard_operation_state> _operation{shard_operation_state::stable};
     };
 
     using group_ptr = std::shared_ptr<group_state>;
@@ -577,6 +730,24 @@ private:
 
     /// @brief A reference to the current pool that stays valid while held.
     [[nodiscard]] auto current_executor() const -> std::shared_ptr<striped_serial_executor>;
+
+    // ── split ────────────────────────────────────────────────────────────────
+
+    using split_command_type = split_command<GroupId, Key, node_id_type>;
+    using snapshot_type = typename Types::snapshot_type;
+
+    /// @brief Install the administration-entry handler on a group's node.
+    auto install_admin_handler(group_state& g) -> void;
+
+    /// @brief Design §5.4 steps A-J, on every replica, inside the apply loop.
+    ///
+    /// Runs with the parent node's mutex held and with the parent's state
+    /// machine by reference — which is why it never calls back into that node.
+    auto apply_split(group_state& parent, const split_command_type& cmd, log_index_type at_index,
+                     term_id_type at_term, typename Types::state_machine_type& parent_sm) -> void;
+
+    [[nodiscard]] auto encode_key_or_default(const Key& k) const -> std::vector<std::byte>;
+    [[nodiscard]] auto decode_key_or_default(const std::vector<std::byte>& b) const -> Key;
 
     /// @brief Shared body of the routing retry loop.
     ///
@@ -629,6 +800,14 @@ private:
 
     std::atomic<bool> _running{false};
     std::chrono::steady_clock::time_point _last_policy_run{};
+    std::atomic<std::uint64_t> _applied_splits{0};
+    std::atomic<std::uint64_t> _lazy_replicas{0};
+    std::atomic<std::uint64_t> _descriptor_lookups{0};
+
+    /// When each group id was last looked up externally, so the lazy path
+    /// cannot turn a message flood into a control-plane flood.
+    mutable std::mutex _lookup_mutex;
+    std::unordered_map<GroupId, std::chrono::steady_clock::time_point> _last_lookup;
 };
 
 }  // namespace kythira

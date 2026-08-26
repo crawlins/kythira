@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phases 1-6 complete (tasks 1-16)
+## Status: In progress — Phases 1-7 complete (tasks 1-19)
 
 **Last Updated**: August 23, 2026
 
@@ -320,7 +320,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 7: Split (Tasks 17–19)
 
-- [ ] 17. Split proposal path
+- [x] 17. Split proposal path
   - `split_command<GroupId, Key, NodeId>` payload per design §5.2, with a
     serializer.
   - Leader-side sequence per design §5.3: arbiter gate → candidate keys minus
@@ -334,7 +334,7 @@ Phases 6–8, after the mechanics it drives.
     the proposed entry's children carry exactly the parent's member set.
   - _Requirements: 11.2, 11.4, 11.5, 13.2, 13.3, 13.10_
 
-- [ ] 18. Split apply path
+- [x] 18. Split apply path
   - Steps A–J of design §5.4 in the admin-entry handler, on every replica.
   - Idempotence check (step B) before anything else, so replay after a crash is
     a no-op.
@@ -356,7 +356,7 @@ Phases 6–8, after the mechanics it drives.
     replay test: re-deliver the split entry and assert nothing changes.
   - _Requirements: 13.4, 13.5, 13.6, 13.7, 13.8, 13.9_
 
-- [ ] 19. Lazy replica creation
+- [x] 19. Lazy replica creation
   - `multi_group_network_server`'s unknown-group callback: tombstone check →
     local shard map → rate-limited single PD query → create an *uninitialised*
     replica if and only if this node is a listed member; otherwise drop and
