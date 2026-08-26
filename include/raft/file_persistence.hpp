@@ -11,6 +11,10 @@
 
 #include <filesystem>
 #include <fstream>
+#if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -51,7 +55,10 @@ public:
           _current_term(other._current_term),
           _voted_for(std::move(other._voted_for)),
           _log(std::move(other._log)),
-          _snapshot(std::move(other._snapshot)) {}
+          _snapshot(std::move(other._snapshot)),
+          _batching(other._batching),
+          _batch_lines(std::move(other._batch_lines)),
+          _batch_undo(std::move(other._batch_undo)) {}
 
     file_persistence_engine& operator=(file_persistence_engine&&) = delete;
     file_persistence_engine(const file_persistence_engine&) = delete;
@@ -97,16 +104,92 @@ public:
         fiu_do_on("raft/persistence/append_log_entry",
                   throw std::runtime_error("chaos: append_log_entry"););
         std::lock_guard lock(_mu);
+
+        if (_batching) {
+            // Remember what this index held so abort_batch() can put it back.
+            // Only the FIRST observation per index is recorded: a batch that
+            // appends twice at one index must roll back to the pre-batch value,
+            // not to the intermediate one.
+            if (!_batch_undo.contains(entry.index())) {
+                auto existing = _log.find(entry.index());
+                _batch_undo.emplace(entry.index(), existing == _log.end()
+                                                       ? std::nullopt
+                                                       : std::optional{existing->second});
+            }
+            _log[entry.index()] = entry;
+            _batch_lines += entry_to_json(entry) + "\n";
+            return;
+        }
+
         _log[entry.index()] = entry;
         // Append one JSON line to the log file
         auto line = entry_to_json(entry) + "\n";
-        auto path = _dir / "log";
-        std::ofstream f(path, std::ios::app | std::ios::binary);
-        if (!f) {
-            throw std::runtime_error("file_persistence: cannot open log for append");
+        append_to_log_file(line);
+    }
+
+    // ── batched_persistence_engine (include/raft/group_storage.hpp) ──────────
+    //
+    // Buffers appends so that N of them cost one durability barrier instead of
+    // N. At 1000 groups per process that difference is the whole reason a
+    // batched tick is worth having (design §3.2), and split apply relies on it
+    // for the atomicity of "children's state and parent's apply index land
+    // together" (design §5.4 step E).
+    //
+    // Deliberately appends ONLY. `save_current_term` and `save_voted_for` keep
+    // writing synchronously even inside a batch, because Raft requires both
+    // durable *before* the node responds to the RPC that changed them —
+    // deferring them into a batch would break the algorithm's own ordering
+    // requirement to save a syscall.
+
+    /// @brief Begin buffering log appends. Nested batches are not supported.
+    auto begin_batch() -> void {
+        std::lock_guard lock(_mu);
+        if (_batching) {
+            throw std::runtime_error("file_persistence: begin_batch inside an open batch");
         }
-        f.write(line.data(), static_cast<std::streamsize>(line.size()));
-        f.flush();
+        _batching = true;
+        _batch_lines.clear();
+        _batch_undo.clear();
+    }
+
+    /// @brief Flush every buffered append and issue exactly one durability barrier.
+    auto commit_batch() -> void {
+        std::lock_guard lock(_mu);
+        if (!_batching) {
+            throw std::runtime_error("file_persistence: commit_batch with no open batch");
+        }
+        _batching = false;
+        _batch_undo.clear();
+        if (_batch_lines.empty()) {
+            return;
+        }
+        append_to_log_file(_batch_lines);
+        _batch_lines.clear();
+        sync_log_and_directory();
+    }
+
+    /// @brief Discard every buffered append, restoring the pre-batch state.
+    auto abort_batch() -> void {
+        std::lock_guard lock(_mu);
+        if (!_batching) {
+            throw std::runtime_error("file_persistence: abort_batch with no open batch");
+        }
+        _batching = false;
+        _batch_lines.clear();
+        for (const auto& [index, previous] : _batch_undo) {
+            if (previous.has_value()) {
+                _log[index] = *previous;
+            } else {
+                _log.erase(index);
+            }
+        }
+        _batch_undo.clear();
+    }
+
+    /// @brief Whether a batch is currently open. Test and diagnostic use only.
+    [[nodiscard]] auto batch_open() const -> bool {
+        std::lock_guard lock(_mu);
+        return _batching;
     }
 
     auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
@@ -240,6 +323,41 @@ private:
             return std::nullopt;
         }
         return std::string(std::istreambuf_iterator<char>(f), {});
+    }
+
+    void append_to_log_file(std::string_view content) {
+        auto path = _dir / "log";
+        std::ofstream f(path, std::ios::app | std::ios::binary);
+        if (!f) {
+            throw std::runtime_error("file_persistence: cannot open log for append");
+        }
+        f.write(content.data(), static_cast<std::streamsize>(content.size()));
+        f.flush();
+    }
+
+    /// @brief One durability barrier for the log file and the directory entry.
+    ///
+    /// Both are needed: fsync on the file makes the bytes durable, and fsync on
+    /// the containing directory makes the *name* durable. An engine that syncs
+    /// only the file can still come back from a crash with no `log` at all the
+    /// first time it is created.
+    ///
+    /// A platform without POSIX fsync degrades to the stream flush
+    /// `append_to_log_file` already did, which is what this engine did
+    /// everywhere before batching existed — weaker, but not a regression.
+    void sync_log_and_directory() {
+#if defined(__unix__) || defined(__APPLE__)
+        auto sync_path = [](const std::filesystem::path& p, int flags) {
+            const int fd = ::open(p.c_str(), flags);
+            if (fd < 0) {
+                return;
+            }
+            ::fsync(fd);
+            ::close(fd);
+        };
+        sync_path(_dir / "log", O_WRONLY);
+        sync_path(_dir, O_RDONLY | O_DIRECTORY);
+#endif
     }
 
     void atomic_write(const std::filesystem::path& path, std::string_view content) {
@@ -414,6 +532,14 @@ private:
     std::optional<NodeId> _voted_for;
     std::unordered_map<LogIndex, log_entry_t> _log;
     std::optional<snapshot_t> _snapshot;
+
+    // ── batching state (see begin_batch) ─────────────────────────────────────
+    bool _batching{false};
+    std::string _batch_lines;
+    /// Pre-batch value of every index the open batch has touched, so
+    /// `abort_batch()` can restore the in-memory log exactly. `nullopt` means
+    /// the index did not exist before the batch.
+    std::unordered_map<LogIndex, std::optional<log_entry_t>> _batch_undo;
 };
 
 }  // namespace kythira
