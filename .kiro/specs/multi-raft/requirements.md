@@ -48,7 +48,7 @@ per-process host that owns many groups, or any split/merge protocol.
 
 **The emphasis of this specification is the signal surface**: how a *user* —
 an application developer, an operator, or an external control plane — tells
-Kythira when to split and when to merge. Requirement 6 through Requirement 10
+Kythira when to split and when to merge. Requirement 6 through Requirement 11
 cover that surface; the rest of the document specifies the machinery those
 signals drive.
 
@@ -216,7 +216,7 @@ count.
 6. Per TiKV's stated design, the transport SHALL reuse one connection between a
    pair of nodes across all groups.
 7. WHEN a request arrives for a `group_id` with no local replica THEN the
-   adapter SHALL apply Requirement 12's lazy-replica-creation rule rather than
+   adapter SHALL apply Requirement 13's lazy-replica-creation rule rather than
    silently dropping the message.
 
 ---
@@ -281,20 +281,32 @@ statistics, so that I do not have to write a control loop.
    index; read and write QPS; read and write bytes/sec; applied-entries/sec;
    p99 apply latency; time since last split; time since last merge; voting and
    learner member counts; time since this replica became leader; and the
-   hot-key sample set from Requirement 8.
+   hot-key sample set from Requirement 9.
 6. `split_decision<Key>` SHALL be `{bool split; std::vector<Key> at_keys;
    split_reason reason;}`. A vector — not a single key — so that batch split
    (one entry producing N children, per TiKV RFC 0006) is expressible and a
    fast-filling shard cannot be outrun by one-split-at-a-time.
 7. WHEN `split == true` and `at_keys` is empty THEN the host SHALL request keys
-   from the state machine per Requirement 9, treating the policy as having said
+   from the state machine per Requirement 10, treating the policy as having said
    "split, you choose where".
-8. `merge_decision` SHALL identify the merge direction (into the left sibling
-   or the right sibling), since the two are not equivalent — the surviving
-   shard's replicas are the ones that must absorb state.
+8. `merge_decision` SHALL carry a tri-state verdict — `propose`, `abstain`, or
+   `veto` — and, for `propose`, the merge direction (into the left sibling or
+   the right sibling), since the two are not equivalent: the surviving shard's
+   replicas are the ones that must absorb state. A two-state `bool merge`
+   conflates "I object to this merge" with "merging is not my concern", and
+   Requirement 8.4 gives those two answers opposite effects. `abstain` SHALL
+   be the default, so that a policy which never reasons about merges behaves as
+   it did when the field was a `bool`.
 9. Every policy decision, accepted or rejected, SHALL emit a structured log
    entry and a metric carrying the reason. A rejected split that is invisible
    is untunable.
+10. A policy SHALL NOT be required to hold an opinion on every question. A
+    policy that reasons only about load SHALL be able to abstain from merge
+    decisions without thereby preventing every merge in the cluster.
+11. WHERE more than one policy is configured (Requirement 8), every log entry
+    and metric required by 6.9 SHALL additionally carry the identity of the
+    deciding policy. `split_reason` alone cannot attribute a decision once two
+    policies can produce the same reason.
 
 ---
 
@@ -310,7 +322,7 @@ a configuration that would make shards split and merge forever.
    `shard_max_size_bytes`, `shard_split_size_bytes`, `shard_max_keys`,
    `shard_split_keys`, `shard_merge_max_size_bytes`, `shard_merge_max_keys`,
    `split_merge_interval`, `batch_split_limit`, and the load-split knobs from
-   Requirement 8.
+   Requirement 9.
 2. Defaults SHALL be `shard_max_size_bytes = 144 MiB`,
    `shard_split_size_bytes = 96 MiB`, `shard_max_keys = 1'440'000`,
    `shard_split_keys = 960'000`, `shard_merge_max_size_bytes = 20 MiB`,
@@ -329,16 +341,82 @@ a configuration that would make shards split and merge forever.
    each just under the merge threshold merge into one shard that is
    immediately over the split threshold, and the pair oscillates forever.
    TiKV's load-split RFC states the same rule of thumb — the merge threshold
-   must sit well below the split threshold.
+   must sit well below the split threshold. This check is *intra*-policy;
+   Requirement 8.6 extends it across a composition, where the same failure
+   mode appears between two individually-valid policies.
 6. `split_merge_interval` SHALL be enforced by the host as a hard gate on every
    channel, not only inside the default policy, so that a custom policy cannot
    accidentally remove the anti-oscillation guard.
 7. The policy's `validate()` and `get_validation_errors()` SHALL follow the
    shape already established by `raft_configuration`.
+8. `batch_split_limit` SHALL likewise be enforced by the host, on the proposal
+   that actually reaches Raft, and not only inside the default policy — for the
+   same reason as 7.6. A composition (Requirement 8) can produce a union of
+   split keys exceeding every member's own limit while each member behaved
+   correctly. Truncation to the limit SHALL be logged and counted, never
+   silent, because it overrides a decision a policy actually made.
 
 ---
 
-### Requirement 8: Load-Based Split Signal
+### Requirement 8: Policy Composition
+
+**User Story:** As an application developer, I want to run the shipped
+threshold policy *and* a rule of my own together, without reimplementing the
+parts of the default I still want.
+
+#### Acceptance Criteria
+
+1. Composition SHALL be expressed as a `composite_split_merge_policy<Ps...>`
+   which itself satisfies `split_merge_policy` (Requirement 6.1) and holds its
+   members as concrete types. `multi_raft_config` SHALL continue to carry
+   exactly one policy slot: combination is a property of the policy, not of the
+   host configuration.
+2. The rejected alternative and its cost SHALL be recorded in the design: a
+   heterogeneous list of policies in the config requires either making
+   `multi_raft` variadic in its policy types — which leaks into every alias,
+   deduction guide and test fixture — or introducing a type-erased virtual
+   policy interface, which would be the first in a codebase whose extension
+   mechanism is uniformly concepts and `if constexpr`. Neither buys anything
+   this spec needs, and both forfeit acceptance criterion 6 below.
+3. Split combination SHALL be **any-wins**: the composite proposes a split if
+   any member does, with `at_keys` the sorted, de-duplicated union of the
+   members' keys. A member proposing a split with empty `at_keys` ("split, you
+   choose", Requirement 6.7) SHALL defer to any member that named concrete
+   keys; the composite SHALL fall through to Requirement 10's state-machine
+   hints only when no member named a key.
+4. Merge combination SHALL be **unanimous**: the composite proposes a merge
+   only when at least one member returns `propose` and no member returns
+   `veto`. Abstentions SHALL NOT count against a proposal. Merge is not the
+   mirror of split — it destroys a group and moves data through `absorb` — so
+   any-wins semantics would let a size-driven policy merge away a shard a
+   load-driven policy was deliberately keeping.
+5. Members proposing merges in opposite directions SHALL be treated as a mutual
+   veto and logged. The composite SHALL NOT silently pick one, which would make
+   its answer depend on member order.
+6. `validate()` SHALL check the Requirement 7.5 oscillation bound **across**
+   members — one member's merge ceiling against another member's split floor —
+   and not only within each member. Members MAY expose `split_floor()` and
+   `merge_ceiling()` for this purpose, detected structurally with `if
+   constexpr` as in Requirement 10.5; a member exposing neither SHALL be
+   reported as uncheckable by `get_validation_errors()` rather than silently
+   assumed safe.
+7. `get_validation_errors()` SHALL name the member each error came from.
+8. `cooldown()` SHALL return the maximum over the members'. The binding
+   anti-oscillation guard remains the host-level `split_merge_interval` gate of
+   Requirement 7.6.
+9. Member order SHALL NOT be semantically significant: every rule in 3–5 SHALL
+   be commutative and associative, so that reordering a composition cannot
+   change what it does.
+10. A composition of zero members SHALL be legal and SHALL be exactly
+    equivalent to configuring no policy — channel (a) silent, channels (b),
+    (c) and (d) unaffected — and SHALL be logged once at construction, on the
+    same reasoning as Requirement 10.6: an empty list is easy to arrive at by
+    accident and otherwise indistinguishable from a policy set that never
+    fires.
+
+---
+
+### Requirement 9: Load-Based Split Signal
 
 **User Story:** As an operator whose hot shard is small but overwhelmed, I want
 it split by *load*, not only by size, so that the resulting shards' leaderships
@@ -371,7 +449,7 @@ can be scattered across machines.
 
 ---
 
-### Requirement 9: State-Machine-Derived Split Hints and Veto
+### Requirement 10: State-Machine-Derived Split Hints and Veto
 
 **User Story:** As an application developer, I want Kythira to ask *my* state
 machine where its data actually sits, and I want to be able to forbid a split
@@ -410,7 +488,7 @@ that would break an invariant of mine.
 
 ---
 
-### Requirement 10: Imperative Admin Signals
+### Requirement 11: Imperative Admin Signals
 
 **User Story:** As an operator, I want to force a split or merge right now,
 pre-split an empty keyspace before a bulk load, and freeze automatic decisions
@@ -446,7 +524,7 @@ for one shard while I investigate.
 
 ---
 
-### Requirement 11: Split Protocol
+### Requirement 12: Split Protocol
 
 **User Story:** As a library user, I want a split to be atomic, data-movement-
 free, and crash-safe, so that no committed command is lost or duplicated and no
@@ -495,7 +573,7 @@ key is briefly served by two shards or none.
 
 ---
 
-### Requirement 12: Lazy Replica Creation
+### Requirement 13: Lazy Replica Creation
 
 **User Story:** As a library user, I want a node that missed a split — because
 it was down, or because the parent compacted past the split entry — to acquire
@@ -522,7 +600,7 @@ the child replica correctly rather than dropping its messages.
 
 ---
 
-### Requirement 13: Merge Protocol
+### Requirement 14: Merge Protocol
 
 **User Story:** As an operator whose data has been deleted, I want small
 adjacent shards to combine so that shard count — and its per-shard overhead —
@@ -578,7 +656,7 @@ comes back down.
 
 ---
 
-### Requirement 14: Placement Driver
+### Requirement 15: Placement Driver
 
 **User Story:** As an operator, I want a cluster-scope authority that sees every
 shard on every machine and rebalances replicas, leaderships, and shard
@@ -619,7 +697,7 @@ boundaries, because no single group's leader has the information to do it.
 
 ---
 
-### Requirement 15: Signal Arbitration and Concurrency Limits
+### Requirement 16: Signal Arbitration and Concurrency Limits
 
 **User Story:** As an operator, I want the four signal channels to have a
 defined precedence and a bounded blast radius, so that a policy, a placement
@@ -635,7 +713,7 @@ cluster.
    check-then-act.
 2. Signal precedence SHALL be, highest first: (1) explicit admin command,
    (2) placement-driver operator, (3) local policy. State-machine hints
-   (Requirement 9) SHALL never initiate an operation; they only choose or veto
+   (Requirement 10) SHALL never initiate an operation; they only choose or veto
    keys for an operation another channel initiated.
 3. An accepted admin command SHALL suspend the automatic channels for the
    affected shards until it resolves.
@@ -653,7 +731,7 @@ cluster.
 
 ---
 
-### Requirement 16: Client Routing
+### Requirement 17: Client Routing
 
 **User Story:** As an application developer, I want to submit a command with a
 key and have it reach the right leader, retrying correctly through splits,
@@ -681,7 +759,7 @@ merges, and leader changes.
 
 ---
 
-### Requirement 17: Observability
+### Requirement 18: Observability
 
 **User Story:** As an operator, I want to see why the system split or merged,
 and to diagnose an oscillation or a stuck merge without attaching a debugger.
@@ -704,7 +782,7 @@ and to diagnose an oscillation or a stuck merge without attaching a debugger.
 
 ---
 
-### Requirement 18: Testing and Verification
+### Requirement 19: Testing and Verification
 
 **User Story:** As a maintainer, I want the safety invariants of sharding
 checked mechanically, because a split/merge bug corrupts data silently.
@@ -732,13 +810,19 @@ checked mechanically, because a split/merge bug corrupts data silently.
 7. All tests SHALL run under both Docker and rootless Podman per the project's
    container-runtime rules, and SHALL avoid piping multi-process test output
    through `tail`/`head`.
+8. The oscillation test of acceptance criterion 5 above SHALL additionally be
+   run against a `composite_split_merge_policy` whose members are each
+   individually valid but whose thresholds interleave, asserting that
+   `validate()` rejects the composition (Requirement 8.6) and that, with the
+   check forced past, the host-level interval gate still bounds the operation
+   count.
 
 ---
 
 ## Out of Scope
 
 - **Cross-shard transactions.** No two-phase commit, no distributed snapshot
-  isolation. Requirement 16.6 makes the boundary explicit and enforced.
+  isolation. Requirement 17.6 makes the boundary explicit and enforced.
 - **Automatic key-domain discovery.** The application supplies the partitioner
   and the ordering; Kythira does not infer them.
 - **Follower/learner reads as a hot-spot remedy.** Orthogonal, and TiKV's own
@@ -748,5 +832,5 @@ checked mechanically, because a split/merge bug corrupts data silently.
   refinement of the load signal; the `shard_stats` structure is designed so it
   can be added without breaking the policy concept.
 - **Rewriting `node<Types>`.** Multi-Raft is built as a layer above it. The
-  only changes to `node<Types>` are the admin-entry hook (Requirement 11) and
+  only changes to `node<Types>` are the admin-entry hook (Requirement 12) and
   the group-id field on messages (Requirement 4), both additive.

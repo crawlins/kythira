@@ -4,7 +4,7 @@
 
 **Last Updated**: August 23, 2026
 
-This plan implements `.kiro/specs/multi-raft/design.md`. Nine phases, 34 tasks.
+This plan implements `.kiro/specs/multi-raft/design.md`. Twelve phases, 35 tasks.
 Phases 1–3 are strictly additive and cannot regress single-group behaviour;
 Phase 4 contains the only changes to `include/raft/raft.hpp` (two methods, one
 enum extension, one apply-loop branch).
@@ -35,7 +35,7 @@ Phases 6–8, after the mechanics it drives.
     { "wave": 6, "tasks": [15, 16], "description": "Admin-entry hook in raft.hpp and the splittable_state_machine extension" },
     { "wave": 7, "tasks": [17, 18, 19], "description": "Split: propose, apply, lazy replica creation" },
     { "wave": 8, "tasks": [20, 21, 22], "description": "Merge: prepare/commit, abandon handshake, alignment" },
-    { "wave": 9, "tasks": [23, 24, 25, 26], "description": "Signals: policy concept, default policy, arbiter, metrics" },
+    { "wave": 9, "tasks": [23, 24, 25, 26, 35], "description": "Signals: policy concept, default policy, composition, arbiter, metrics" },
     { "wave": 10, "tasks": [27, 28, 29], "description": "Placement driver, operators, leader transfer" },
     { "wave": 11, "tasks": [30], "description": "Load-split sampler" },
     { "wave": 12, "tasks": [31, 32, 33, 34], "description": "Property tests, crash consistency, oscillation, scale" }
@@ -98,7 +98,7 @@ Phases 6–8, after the mechanics it drives.
     applicable, the epoch.
   - Verify: unit test asserting `what()` text names the group and epoch, and
     that `shard_epoch_mismatch_exception` round-trips its descriptor payload.
-  - _Requirements: 3.5, 3.6, 10.2, 13.1, 16.6_
+  - _Requirements: 3.5, 3.6, 11.2, 14.1, 17.6_
 
 ---
 
@@ -184,7 +184,7 @@ Phases 6–8, after the mechanics it drives.
   - Verify: unit test — a message for a tombstoned group is dropped and never
     reaches the unknown-group callback; the tombstone survives a simulated
     restart; GC removes an entry past the horizon and not before.
-  - _Requirements: 12.4, 12.5_
+  - _Requirements: 13.4, 13.5_
 
 ---
 
@@ -195,7 +195,11 @@ Phases 6–8, after the mechanics it drives.
     split follows `raft.hpp`'s own pattern).
   - `multi_raft_config<…>` named-parameter aggregate mirroring
     `node_config<Types>`: required transport/store/logger/metrics, optional
-    policy, placement driver, partitioner, hibernation and tick knobs.
+    policy, placement driver, partitioner, hibernation and tick knobs. The
+    policy slot is **one** concrete type with an in-struct default, exactly as
+    `node_config` treats every component — not a list, and not
+    `std::optional`. Combining policies is Task 35's composite, per design
+    §6.1.3.
   - Registry of `GroupId -> shared_ptr<group_state>`, where `group_state` holds
     the `node`, its scoped store, its operation state, its statistics
     accumulators, and its stripe index.
@@ -263,7 +267,7 @@ Phases 6–8, after the mechanics it drives.
     exactly one epoch-mismatch rejection then succeeds; a not-leader response
     retries against the hint without a PD call; exceeding
     `max_route_retries` surfaces the last error, not a generic timeout.
-  - _Requirements: 2.5, 16.1, 16.2, 16.3, 16.4, 16.5, 16.6_
+  - _Requirements: 2.5, 17.1, 17.2, 17.3, 17.4, 17.5, 17.6_
 
 - [ ] 14. Static multi-group integration test
   - Three simulated nodes, four statically configured shards, no split/merge.
@@ -295,7 +299,7 @@ Phases 6–8, after the mechanics it drives.
     assert the handler fires exactly once on each replica at the same index,
     that `state_machine.apply()` was not called for it, and that a follower
     that receives the entry via `AppendEntries` fires it too.
-  - _Requirements: 11.1, 13.3_
+  - _Requirements: 12.1, 14.3_
 
 - [ ] 16. Add the `splittable_state_machine` extension concept
   - Concept per design §6.4: `approximate_size_bytes`, `approximate_key_count`,
@@ -310,7 +314,7 @@ Phases 6–8, after the mechanics it drives.
     that `ca_state_machine` does not (and still compiles); a round-trip unit
     test asserting `split_state({k})` then `absorb(right)` reproduces
     `get_state()` byte-for-byte.
-  - _Requirements: 9.1, 9.3, 9.6, 9.7_
+  - _Requirements: 10.1, 10.3, 10.6, 10.7_
 
 ---
 
@@ -328,7 +332,7 @@ Phases 6–8, after the mechanics it drives.
     vetoed yields `no_valid_split_key_exception` and no log entry; a failing
     PD yields no log entry and a `split.rejected{gate=pd_unavailable}` metric;
     the proposed entry's children carry exactly the parent's member set.
-  - _Requirements: 9.2, 9.4, 9.5, 11.2, 11.3, 11.10_
+  - _Requirements: 10.2, 10.4, 10.5, 12.2, 12.3, 12.10_
 
 - [ ] 18. Split apply path
   - Steps A–J of design §5.4 in the admin-entry handler, on every replica.
@@ -350,7 +354,7 @@ Phases 6–8, after the mechanics it drives.
     derived child kept the parent's group id and term, and each non-derived
     child's log is empty with `last_included_index == split index`. Plus a
     replay test: re-deliver the split entry and assert nothing changes.
-  - _Requirements: 11.4, 11.5, 11.6, 11.7, 11.8, 11.9_
+  - _Requirements: 12.4, 12.5, 12.6, 12.7, 12.8, 12.9_
 
 - [ ] 19. Lazy replica creation
   - `multi_group_network_server`'s unknown-group callback: tombstone check →
@@ -362,7 +366,7 @@ Phases 6–8, after the mechanics it drives.
     message naming a node that is not a member never creates a replica; a
     message for a tombstoned group never creates one; the PD is queried at most
     once per rate-limit window regardless of message rate.
-  - _Requirements: 12.1, 12.2, 12.3_
+  - _Requirements: 13.1, 13.2, 13.3_
 
 ---
 
@@ -382,7 +386,7 @@ Phases 6–8, after the mechanics it drives.
     all three target replicas produce byte-identical post-absorb state; the
     source group is tombstoned everywhere; tiling holds; a client of the source
     receives `shard_epoch_mismatch` carrying the survivor's descriptor.
-  - _Requirements: 13.3, 13.4, 13.7_
+  - _Requirements: 14.3, 14.4, 14.7_
 
 - [ ] 21. Abandon handshake and rollback
   - Source leader → target leader `abandon_request`; target refuses if
@@ -398,7 +402,7 @@ Phases 6–8, after the mechanics it drives.
     new target leader still refuses to commit; a race where `merge_commit` is
     proposed just before the abandon request arrives → commit wins, no
     rollback, no double ownership.
-  - _Requirements: 13.5, 13.6, 13.8_
+  - _Requirements: 14.5, 14.6, 14.8_
 
 - [ ] 22. Merge preconditions and alignment
   - Adjacency, epoch match, colocation, joint-consensus, and operation-state
@@ -410,11 +414,11 @@ Phases 6–8, after the mechanics it drives.
     right typed exception; a non-colocated pair fails fast rather than
     attempting a cross-network state transfer; `_auto_align = true` issues the
     expected PD operators and then succeeds.
-  - _Requirements: 13.1, 13.2, 10.2_
+  - _Requirements: 14.1, 14.2, 11.2_
 
 ---
 
-## Phase 9: Signals (Tasks 23–26)
+## Phase 9: Signals (Tasks 23–26, 35)
 
 - [ ] 23. `split_merge_policy` concept
   - `include/raft/split_merge_policy.hpp`: the concept per design §6.1, with
@@ -430,7 +434,7 @@ Phases 6–8, after the mechanics it drives.
   - Verify: unit test — `shard_stats` is populated correctly for a sizing-capable
     and a sizing-incapable state machine; the construction-time warning fires
     exactly once.
-  - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 9.6_
+  - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 10.6_
 
 - [ ] 24. `threshold_split_merge_policy`
   - Config struct and defaults per design §6.1.2.
@@ -456,6 +460,8 @@ Phases 6–8, after the mechanics it drives.
     initiate. An accepted admin command suspends the automatic channels for the
     affected shards until it resolves.
   - Gates: state, `split_merge_interval` (enforced by the host, not the policy),
+    `batch_split_limit` (likewise host-enforced, truncating and logging rather
+    than refusing — a composition can exceed every member's own limit),
     `max_concurrent_split_merge` (default 4, enforced before proposing, never by
     aborting), global kill switch, epoch, veto exhaustion, alignment.
   - Admin API: `split_shard`, `merge_shards`, `pre_split`, `freeze_shard`,
@@ -468,10 +474,13 @@ Phases 6–8, after the mechanics it drives.
     ignores the interval; the 5th concurrent operation is refused before
     proposing; `pre_split` on a non-empty shard is refused; a frozen shard
     refuses policy but accepts `split_shard`.
-  - _Requirements: 6.9, 7.6, 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 15.1–15.7_
+  - _Requirements: 6.9, 7.6, 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 16.1–16.7_
 
 - [ ] 26. Signal metrics and structured logs
-  - The metric set from design §6.7, with `reason` and `gate` as dimensions.
+  - The metric set from design §6.7, with `reason`, `gate` and `policy` as
+    dimensions; `merge.vetoed{group, policy}` and
+    `split.truncated{group, proposed_keys, kept_keys}` included, since under a
+    composition the first question is always *which member*.
   - A structured log entry for every split and merge — proposed, applied,
     rejected, rolled back — carrying group id, epoch before and after, the
     deciding channel, and the reason.
@@ -480,7 +489,39 @@ Phases 6–8, after the mechanics it drives.
   - Verify: unit test asserting a rejected split emits
     `split.rejected{gate=cooldown}` with the group dimension set, and that the
     listener fires on role and membership transitions.
-  - _Requirements: 6.9, 15.7, 17.1, 17.2, 17.3, 17.4_
+  - _Requirements: 6.9, 16.7, 18.1, 18.2, 18.3, 18.4_
+
+- [ ] 35. `composite_split_merge_policy`
+  - `include/raft/split_merge_policy.hpp`: a variadic composite holding
+    `std::tuple<Ps...>` that itself satisfies `split_merge_policy`, per design
+    §6.1.3. The config slot stays singular (Task 9); this is how several
+    policies run at once.
+  - `merge_decision` becomes tri-state (`merge_verdict{propose, abstain,
+    veto}`, default `abstain`) — the one type change composition forces, and
+    the reason it is forced: under unanimity a two-state answer would make a
+    load-only policy veto every merge in the cluster while looking correct in
+    isolation.
+  - Combination: split any-wins with a sorted de-duplicated union of `at_keys`;
+    merge unanimous (≥1 `propose`, 0 `veto`); a member deferring with empty
+    `at_keys` yields to any member naming concrete keys; opposite merge
+    directions are a mutual veto, logged. Every rule commutative and
+    associative — member order must not be observable.
+  - `validate()` checks the §6.1.2 oscillation bound *across* members via
+    optional `split_floor()` / `merge_ceiling()` detected with `if constexpr`;
+    a member exposing neither is reported *uncheckable*, not assumed safe.
+    `get_validation_errors()` names the member each error came from.
+  - `cooldown()` is the max over members. An empty composition is legal, equals
+    "no policy", and logs once at construction.
+  - Verify: unit test — a composition of the threshold default with a
+    load-only stub proposes splits from either member and unions their keys;
+    the load-only stub abstaining does not block a merge the threshold policy
+    proposes, while the same stub returning `veto` does; two members proposing
+    opposite directions produce no merge and a log line; shuffling the member
+    order changes no decision across a randomised sweep; `validate()` rejects a
+    pair whose thresholds interleave and names both members; a member without
+    the floor/ceiling accessors yields an *uncheckable* error string rather
+    than silence; an empty composition proposes nothing and logs once.
+  - _Requirements: 8.1–8.10, 6.8, 6.10, 6.11, 7.8_
 
 ---
 
@@ -495,7 +536,7 @@ Phases 6–8, after the mechanics it drives.
     operators, so a static pre-split deployment needs no control plane.
   - Verify: `static_assert` the no-op satisfies the concept; a static
     three-shard cluster runs end-to-end against it with splits disabled.
-  - _Requirements: 14.1, 14.2, 14.3, 14.7_
+  - _Requirements: 15.1, 15.2, 15.3, 15.7_
 
 - [ ] 28. Heartbeats and advisory operators
   - Batched shard heartbeats — one call per interval carrying every local
@@ -511,7 +552,7 @@ Phases 6–8, after the mechanics it drives.
     stale-epoch operator is discarded without side effects; an operator arriving
     for a shard that is mid-merge is skipped and counted, and the same operator
     is accepted once the shard returns to `stable`.
-  - _Requirements: 14.4, 14.5, 14.6, 14.8_
+  - _Requirements: 15.4, 15.5, 15.6, 15.8_
 
 - [ ] 29. Leader transfer and scatter
   - Raft leadership transfer (TimeoutNow) on `node<Types>`, needed by the PD's
@@ -524,7 +565,7 @@ Phases 6–8, after the mechanics it drives.
     election timeout without an intervening term bump on a third node; after a
     load split with `_scatter_children`, the two children's leaders are on
     different nodes.
-  - _Requirements: 14.4, 8.6_
+  - _Requirements: 15.4, 9.6_
 
 ---
 
@@ -544,7 +585,7 @@ Phases 6–8, after the mechanics it drives.
     concentrated on one key produces no proposal and marks the shard ineligible
     for `_load_split_backoff`; the disabled path costs one branch (assert via
     a call-count instrument, not a timing measurement).
-  - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7_
+  - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7_
 
 ---
 
@@ -558,7 +599,7 @@ Phases 6–8, after the mechanics it drives.
     `get_state()`, I3 epoch monotonicity, I4 stale-epoch requests always
     rejected, I5 the `split_state`/`absorb` round-trip law.
   - Verify: the property tests above, seeded reproducibly.
-  - _Requirements: 18.1, 18.2, 18.3, 5.6 (round-trip law from 9.7)_
+  - _Requirements: 19.1, 19.2, 19.3, 5.6 (round-trip law from 9.7)_
 
 - [ ] 32. Crash-consistency tests
   - New `fiu_do_on` fault points: `raft/multiraft/split/before_children`,
@@ -569,7 +610,7 @@ Phases 6–8, after the mechanics it drives.
   - Crash-and-recover at each point, then assert I1–I4.
   - Verify: the eight scenarios above, each asserting recovery to a consistent
     state and no lost child / no double ownership.
-  - _Requirements: 18.4, 11.6_
+  - _Requirements: 19.4, 12.6_
 
 - [ ] 33. Oscillation test
   - Drive `threshold_split_merge_policy` for 10 000 simulated ticks with shard
@@ -578,8 +619,13 @@ Phases 6–8, after the mechanics it drives.
   - Repeat with `validate()`-rejected knobs forced past the check and assert the
     host-level `split_merge_interval` gate still bounds the count — the
     defence-in-depth claim in design §6.1.2 must be demonstrated, not asserted.
-  - Verify: both runs above.
-  - _Requirements: 18.5, 7.5, 7.6_
+  - Repeat once more against a `composite_split_merge_policy` (Task 35) whose
+    members each validate alone but whose thresholds interleave: assert
+    `validate()` rejects the composition, and that forcing past it still leaves
+    the count bounded by the host interval gate. Cross-member oscillation is
+    the failure the single-policy check cannot see.
+  - Verify: all three runs above.
+  - _Requirements: 19.5, 19.8, 7.5, 7.6, 8.6_
 
 - [ ] 34. Scale test
   - 1000 groups across three simulated nodes; assert `tick()` duration tracks
@@ -590,7 +636,7 @@ Phases 6–8, after the mechanics it drives.
     multi-process output through `tail`/`head`.
   - Verify: the scale test above plus a Podman run of any container scenario it
     adds.
-  - _Requirements: 18.6, 18.7, 5.5_
+  - _Requirements: 19.6, 19.7, 5.5_
 
 ---
 
