@@ -4,11 +4,16 @@
 #pragma once
 
 #include <raft/fault_injection.hpp>
+#include <raft/shard_types.hpp>
+#include <raft/splittable_state_machine.hpp>
 #include <raft/types.hpp>
-#include <unordered_map>
-#include <string>
+#include <algorithm>
 #include <cstring>
+#include <functional>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace kythira {
 
@@ -112,36 +117,13 @@ public:
     // Get the current state of the state machine for snapshot creation
     // Format: [num_entries (8 bytes)][entry1_key_len (4 bytes)][entry1_key][entry1_val_len (4
     // bytes)][entry1_val]...
+    //
+    // Entries are written in key order, because `_store` is ordered. That makes
+    // the snapshot bytes a function of the store's CONTENTS rather than of the
+    // order the keys were written in, which is what lets two replicas that took
+    // the same writes in different orders be compared byte for byte.
     [[nodiscard]] auto get_state() const -> std::vector<std::byte> {
-        std::vector<std::byte> state;
-
-        // Write number of entries
-        std::uint64_t num_entries = _store.size();
-        std::size_t offset = 0;
-        state.resize(sizeof(std::uint64_t));
-        std::memcpy(state.data(), &num_entries, sizeof(std::uint64_t));
-        offset += sizeof(std::uint64_t);
-
-        // Write each key-value pair
-        for (const auto& [key, value] : _store) {
-            // Write key length and key
-            std::uint32_t key_length = static_cast<std::uint32_t>(key.size());
-            state.resize(state.size() + sizeof(std::uint32_t) + key.size());
-            std::memcpy(state.data() + offset, &key_length, sizeof(std::uint32_t));
-            offset += sizeof(std::uint32_t);
-            std::memcpy(state.data() + offset, key.data(), key.size());
-            offset += key.size();
-
-            // Write value length and value
-            std::uint32_t value_length = static_cast<std::uint32_t>(value.size());
-            state.resize(state.size() + sizeof(std::uint32_t) + value.size());
-            std::memcpy(state.data() + offset, &value_length, sizeof(std::uint32_t));
-            offset += sizeof(std::uint32_t);
-            std::memcpy(state.data() + offset, value.data(), value.size());
-            offset += value.size();
-        }
-
-        return state;
+        return serialize_store(_store);
     }
 
     // Restore the state machine from a snapshot
@@ -291,10 +273,217 @@ public:
         return command;
     }
 
+    // ── splittable_state_machine (multi-Raft, design §6.4) ───────────────────
+    //
+    // The reference implementation of the extension, and the vehicle its
+    // round-trip law is tested against. All six hooks are straightforward here
+    // for one reason: `_store` is ordered, so "everything below k" is a
+    // contiguous run rather than a filter over an arbitrary iteration order.
+
+    /// @brief Approximate bytes held, counting the same framing `get_state()`
+    /// writes so the figure a policy sees matches the snapshot it would produce.
+    [[nodiscard]] auto approximate_size_bytes() const -> std::size_t {
+        std::size_t total = sizeof(std::uint64_t);
+        for (const auto& [key, value] : _store) {
+            total += 2 * sizeof(std::uint32_t) + key.size() + value.size();
+        }
+        return total;
+    }
+
+    [[nodiscard]] auto approximate_key_count() const -> std::size_t { return _store.size(); }
+
+    /// @brief Up to `max` evenly spaced split keys, in key order.
+    ///
+    /// Evenly spaced by *key count* rather than by bytes: this state machine's
+    /// values are uniform in the tests that use it, and a size-weighted walk
+    /// would be a second, untested implementation of the `SizeChecker` the
+    /// default policy already owns.
+    ///
+    /// Never returns the very first key — cutting there produces an empty left
+    /// child, which is a legal shard and a useless one.
+    [[nodiscard]] auto suggest_split_keys(std::size_t max) -> std::vector<std::string> {
+        std::vector<std::string> out;
+        if (max == 0 || _store.size() < 2) {
+            return out;
+        }
+        const std::size_t wanted = std::min(max, _store.size() - 1);
+        const std::size_t stride = _store.size() / (wanted + 1);
+        if (stride == 0) {
+            return out;
+        }
+        std::size_t index = 0;
+        std::size_t taken = 0;
+        for (const auto& [key, value] : _store) {
+            ++index;
+            if (taken < wanted && index % stride == 0 && index < _store.size()) {
+                out.push_back(key);
+                ++taken;
+            }
+        }
+        return out;
+    }
+
+    /// @brief The application's veto. Permissive by default.
+    ///
+    /// A real state machine refuses to cut between a row and its index entries;
+    /// this one has no such structure, so the veto is a settable predicate that
+    /// exists to make the host's fallback chain testable. Without it the
+    /// "vetoed key falls back to the state machine's suggestion" path would
+    /// have no way to be exercised.
+    [[nodiscard]] auto can_split_at(const std::string& key) const -> bool {
+        return _split_veto ? !_split_veto(key) : true;
+    }
+
+    /// @brief Install a veto predicate. Test hook; see `can_split_at`.
+    auto set_split_veto(std::function<bool(const std::string&)> veto) -> void {
+        _split_veto = std::move(veto);
+    }
+
+    /// @brief Cut the store at `keys`, returning `keys.size() + 1` blobs.
+    ///
+    /// Deterministic: the store is ordered and each blob is written in the same
+    /// `get_state()` format, so every replica produces byte-identical children.
+    /// Keys that are out of order or duplicated are sorted and deduplicated
+    /// first, so a caller's ordering mistake cannot silently produce
+    /// overlapping children.
+    [[nodiscard]] auto split_state(const std::vector<std::string>& keys)
+        -> std::vector<std::vector<std::byte>> {
+        std::vector<std::string> cuts = keys;
+        std::sort(cuts.begin(), cuts.end());
+        cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+
+        std::vector<std::vector<std::byte>> out;
+        out.reserve(cuts.size() + 1);
+
+        auto it = _store.begin();
+        for (const auto& cut : cuts) {
+            std::map<std::string, std::string> part;
+            while (it != _store.end() && it->first < cut) {
+                part.insert(*it);
+                ++it;
+            }
+            out.push_back(serialize_store(part));
+        }
+        std::map<std::string, std::string> tail;
+        while (it != _store.end()) {
+            tail.insert(*it);
+            ++it;
+        }
+        out.push_back(serialize_store(tail));
+        return out;
+    }
+
+    /// @brief Take on another shard's state.
+    ///
+    /// `range` is unused here and that is not an oversight: this state machine
+    /// keeps no per-range metadata, so there is nothing for it to update. A
+    /// state machine that maintains range-scoped structure — a secondary index
+    /// bounded by the shard's range, say — needs it, which is why it is in the
+    /// concept.
+    auto absorb(const std::vector<std::byte>& other_state, const shard_range<std::string>& range)
+        -> void {
+        (void)range;
+        auto incoming = deserialize_store(other_state);
+        for (auto& [key, value] : incoming) {
+            _store[key] = std::move(value);
+        }
+    }
+
 private:
-    std::unordered_map<std::string, std::string> _store;
+    /// @brief Write a store in exactly `get_state()`'s format.
+    ///
+    /// Shared with `get_state()` rather than reimplemented, because the
+    /// round-trip law compares `split_state` output against `get_state()`
+    /// output and two encoders that drifted apart would break it silently.
+    [[nodiscard]] static auto serialize_store(const std::map<std::string, std::string>& store)
+        -> std::vector<std::byte> {
+        std::vector<std::byte> state;
+        std::uint64_t num_entries = store.size();
+        std::size_t offset = 0;
+        state.resize(sizeof(std::uint64_t));
+        std::memcpy(state.data(), &num_entries, sizeof(std::uint64_t));
+        offset += sizeof(std::uint64_t);
+
+        for (const auto& [key, value] : store) {
+            auto key_length = static_cast<std::uint32_t>(key.size());
+            state.resize(state.size() + sizeof(std::uint32_t) + key.size());
+            std::memcpy(state.data() + offset, &key_length, sizeof(std::uint32_t));
+            offset += sizeof(std::uint32_t);
+            std::memcpy(state.data() + offset, key.data(), key.size());
+            offset += key.size();
+
+            auto value_length = static_cast<std::uint32_t>(value.size());
+            state.resize(state.size() + sizeof(std::uint32_t) + value.size());
+            std::memcpy(state.data() + offset, &value_length, sizeof(std::uint32_t));
+            offset += sizeof(std::uint32_t);
+            std::memcpy(state.data() + offset, value.data(), value.size());
+            offset += value.size();
+        }
+        return state;
+    }
+
+    [[nodiscard]] static auto deserialize_store(const std::vector<std::byte>& blob)
+        -> std::map<std::string, std::string> {
+        std::map<std::string, std::string> out;
+        if (blob.empty()) {
+            return out;
+        }
+        std::size_t offset = 0;
+        if (offset + sizeof(std::uint64_t) > blob.size()) {
+            throw std::invalid_argument("Invalid state blob: missing entry count");
+        }
+        std::uint64_t num_entries{};
+        std::memcpy(&num_entries, blob.data(), sizeof(std::uint64_t));
+        offset += sizeof(std::uint64_t);
+
+        for (std::uint64_t i = 0; i < num_entries; ++i) {
+            if (offset + sizeof(std::uint32_t) > blob.size()) {
+                throw std::invalid_argument("Invalid state blob: missing key length");
+            }
+            std::uint32_t key_length{};
+            std::memcpy(&key_length, blob.data() + offset, sizeof(std::uint32_t));
+            offset += sizeof(std::uint32_t);
+            if (offset + key_length > blob.size()) {
+                throw std::invalid_argument("Invalid state blob: key length exceeds data size");
+            }
+            std::string key(reinterpret_cast<const char*>(blob.data() + offset),  // NOLINT
+                            key_length);
+            offset += key_length;
+
+            if (offset + sizeof(std::uint32_t) > blob.size()) {
+                throw std::invalid_argument("Invalid state blob: missing value length");
+            }
+            std::uint32_t value_length{};
+            std::memcpy(&value_length, blob.data() + offset, sizeof(std::uint32_t));
+            offset += sizeof(std::uint32_t);
+            if (offset + value_length > blob.size()) {
+                throw std::invalid_argument("Invalid state blob: value length exceeds data size");
+            }
+            std::string value(reinterpret_cast<const char*>(blob.data() + offset),  // NOLINT
+                              value_length);
+            offset += value_length;
+
+            out.emplace(std::move(key), std::move(value));
+        }
+        return out;
+    }
+
+    /// Ordered, not hashed. Two reasons, and the second is the load-bearing
+    /// one: `split_state` needs "everything below k" to be a contiguous run,
+    /// and `get_state()` has to produce byte-identical output on every replica
+    /// regardless of the order the keys were written in. An unordered container
+    /// gives neither, and the divergence it would cause is invisible at the
+    /// Raft level — the logs would still match.
+    std::map<std::string, std::string> _store;
+    std::function<bool(const std::string&)> _split_veto;
     LogIndex _last_applied_index{0};
 };
+
+// The extension is structural: this is the reference implementation, and the
+// assertion is here so that a change to either the concept or the class that
+// broke the pairing fails at the definition rather than at some distant use.
+static_assert(splittable_state_machine<test_key_value_state_machine<std::uint64_t>, std::string>,
+              "test_key_value_state_machine must satisfy splittable_state_machine");
 
 // Validate that test_key_value_state_machine satisfies the state_machine concept
 static_assert(state_machine<test_key_value_state_machine<std::uint64_t>, std::uint64_t>,

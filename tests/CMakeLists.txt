@@ -738,6 +738,8 @@ add_raft_completion_test(multi_raft_host_unit_test multi_raft_host_unit_test.cpp
 add_raft_completion_test(multi_raft_routing_unit_test multi_raft_routing_unit_test.cpp)
 add_raft_completion_test(multi_raft_static_cluster_integration_test
                          multi_raft_static_cluster_integration_test.cpp)
+add_raft_completion_test(admin_entry_unit_test admin_entry_unit_test.cpp)
+add_raft_completion_test(splittable_state_machine_unit_test splittable_state_machine_unit_test.cpp)
 
 # Peer-to-peer log replication (gossip catch-up) — .kiro/specs/peer2peer-log-replication/
 add_raft_completion_test(peer2peer_replication_unit_test peer2peer_replication_unit_test.cpp)
