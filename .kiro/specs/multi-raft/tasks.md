@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phases 1-2 complete (tasks 1-5)
+## Status: In progress — Phases 1-4 complete (tasks 1-12)
 
 **Last Updated**: August 23, 2026
 
@@ -136,7 +136,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 3: Demux, Storage, Tombstones (Tasks 6–8)
 
-- [ ] 6. Add `include/raft/group_transport.hpp`
+- [x] 6. Add `include/raft/group_transport.hpp`
   - `multi_group_network_server<Server, GroupId, …>`: holds the inner server,
     a `synchronized<std::unordered_map<GroupId, group_handlers>>`, and an
     unknown-group callback. `start()` installs exactly one handler per RPC type
@@ -157,7 +157,7 @@ Phases 6–8, after the mechanics it drives.
     optional extension concepts all hold via `static_assert`.
   - _Requirements: 4.4, 4.5, 4.6, 4.7_
 
-- [ ] 7. Add `include/raft/group_storage.hpp`
+- [x] 7. Add `include/raft/group_storage.hpp`
   - `group_scoped_persistence<Engine, GroupId>` satisfying `persistence_engine`,
     prefixing every key/path with the group id.
   - `batched_persistence_engine` optional concept (`begin_batch` /
@@ -174,7 +174,7 @@ Phases 6–8, after the mechanics it drives.
     (assert via a counting mock).
   - _Requirements: 1.3, 1.5, 5.3, 5.4_
 
-- [ ] 8. Add the durable tombstone set
+- [x] 8. Add the durable tombstone set
   - `tombstone_set<GroupId>` persisted alongside the host's own state, with
     `insert(group, reason, when)`, `contains(group)`, and a GC pass on a
     configurable horizon.
@@ -190,7 +190,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 4: Host Skeleton (Tasks 9–12)
 
-- [ ] 9. Add `multi_raft<Types, Key, GroupId>` registry and lifecycle
+- [x] 9. Add `multi_raft<Types, Key, GroupId>` registry and lifecycle
   - `include/raft/multi_raft.hpp` + `multi_raft_impl.hpp` (declaration/definition
     split follows `raft.hpp`'s own pattern).
   - `multi_raft_config<…>` named-parameter aggregate mirroring
@@ -212,7 +212,7 @@ Phases 6–8, after the mechanics it drives.
     sequence works (the same regression `node::stop()` guards against).
   - _Requirements: 1.1, 1.3, 1.4, 1.7_
 
-- [ ] 10. Add the striped serial executor
+- [x] 10. Add the striped serial executor
   - Fixed-size pool with per-group serial queues, `stripe = hash(group) %
     pool_size`. All work for a group — inbound RPC dispatch, tick phases, policy
     evaluation — runs on its stripe.
@@ -223,7 +223,7 @@ Phases 6–8, after the mechanics it drives.
     that thread count is independent of group count.
   - _Requirements: 5.6_
 
-- [ ] 11. Add the batched `tick()`
+- [x] 11. Add the batched `tick()`
   - Four phases per design §4.2: persist (batched via `if constexpr` when the
     store advertises it), send, apply, policy. Persist strictly before send;
     apply strictly after send.
@@ -236,7 +236,7 @@ Phases 6–8, after the mechanics it drives.
     ordering by recording a call trace.
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.7_
 
-- [ ] 12. Add hibernation
+- [x] 12. Add hibernation
   - `hibernation_mode{off, on, auto_above_group_count}` defaulting to
     `auto_above_group_count = 64`; `hibernate_after` defaulting to
     10 × `heartbeat_interval`.
