@@ -381,6 +381,70 @@ public:
     auto replicate_to_followers() -> void;
     /// @}
 
+    /// @name Administration entries (multi-Raft, `.kiro/specs/multi-raft/` §5.1)
+    /// @{
+
+    /// @brief Handler for committed administration entries.
+    ///
+    /// `entry_type::split` and the four merge types are **never** passed to
+    /// `state_machine.apply()` — exactly as `no_op` and `configuration` are
+    /// not. They are routed here instead, which is what keeps every line of
+    /// split and merge logic out of the consensus core.
+    ///
+    /// Three properties of this callback are load-bearing:
+    ///
+    /// 1. **It runs on every replica, not just the leader.** It fires inside
+    ///    the apply loop at the same log index on each one, which is precisely
+    ///    what makes split and merge deterministic across replicas: the
+    ///    decision was frozen into the entry by the leader, and every replica
+    ///    then applies the same frozen decision.
+    /// 2. **It runs with this node's internal mutex held.** It must not call
+    ///    back into this `node` — the mutex is not recursive — and it must not
+    ///    block. Anything slow belongs on the host's own queue.
+    /// 3. **It is handed the state machine by reference.** That is a
+    ///    deliberate departure from a bare `(entry, index)` signature: split
+    ///    apply has to call `split_state()` on this replica's state machine and
+    ///    `restore_from_snapshot()` on the derived child, and with the mutex
+    ///    held it cannot reach either through a public `node` method without
+    ///    deadlocking. Passing the reference is what lets the whole apply step
+    ///    happen inside the apply loop, where its durability ordering belongs,
+    ///    rather than being deferred to a later tick where a crash could lose
+    ///    it.
+    using admin_entry_handler_type =
+        std::function<void(const log_entry_type&, log_index_type, state_machine_type&)>;
+
+    /// @brief Install the administration-entry handler. Pass `{}` to remove it.
+    ///
+    /// An admin entry that commits with no handler installed is applied as a
+    /// no-op and logged at warning level: silently discarding a split would
+    /// leave the shard map and the replicas permanently disagreeing.
+    auto set_admin_entry_handler(admin_entry_handler_type handler) -> void;
+
+    /// @brief Append an administration entry to the log and replicate it.
+    ///
+    /// Leader-only, like `submit_command`. The returned future resolves once
+    /// the entry is committed **and applied**, which for these entries means
+    /// once the handler has run on this replica.
+    ///
+    /// @throws (via the future) `std::invalid_argument` if `type` is not one of
+    ///         the five administration types — proposing a `normal` entry
+    ///         through this path would bypass the state machine entirely.
+    auto propose_admin_entry(entry_type type, std::vector<std::byte> payload,
+                             std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief The highest log index known to be replicated on `node`.
+    ///
+    /// `std::nullopt` when this node is not the leader (it tracks no match
+    /// indices) or when `node` is not a tracked peer.
+    ///
+    /// Exists so the merge coordinator can compute `min_index` over the
+    /// source's voters (design §5.5) without reaching into private state. That
+    /// bound is what keeps `merge_commit` carrying only the tail
+    /// `(min_index, prepare_index]` rather than the source's whole log.
+    [[nodiscard]] auto match_index_of(const node_id_type& node) const
+        -> std::optional<log_index_type>;
+    /// @}
+
     /// @name Configuration helpers
     /// @{
 
@@ -548,6 +612,10 @@ private:
     // Commit waiter for client operations using generic future types
     using commit_waiter_t = kythira::commit_waiter<log_index_type>;
     commit_waiter_t _commit_waiter;
+
+    // Administration-entry handler (multi-Raft). Empty on every node that is
+    // not hosted by `multi_raft`, which is why the apply loop checks it.
+    admin_entry_handler_type _admin_entry_handler;
 
     // Configuration synchronizer for safe configuration changes. Its internal
     // "did this phase commit" signal is bool-valued, distinct from
@@ -1542,6 +1610,116 @@ auto node<Types>::submit_command(const std::vector<std::byte>& command,
     // Step 4: Return future that completes when entry is committed AND applied
     // The future will be fulfilled by CommitWaiter when apply_committed_entries
     // calls notify_committed_and_applied
+    return future;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Administration entries (multi-Raft, `.kiro/specs/multi-raft/` §5.1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+template<raft_types Types>
+auto node<Types>::set_admin_entry_handler(admin_entry_handler_type handler) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _admin_entry_handler = std::move(handler);
+}
+
+template<raft_types Types>
+auto node<Types>::match_index_of(const node_id_type& node) const -> std::optional<log_index_type> {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_state != kythira::server_state::leader) {
+        // Only a leader tracks match indices; a follower's map is stale
+        // leftovers from a term it no longer leads, and returning those would
+        // let a merge coordinator compute min_index from fiction.
+        return std::nullopt;
+    }
+    if (node == _node_id) {
+        // The leader holds everything in its own log by definition, and it is
+        // not in `_match_index`.
+        return get_last_log_index();
+    }
+    auto it = _match_index.find(node);
+    return it == _match_index.end() ? std::nullopt : std::optional{it->second};
+}
+
+template<raft_types Types>
+auto node<Types>::propose_admin_entry(entry_type type, std::vector<std::byte> payload,
+                                      std::chrono::milliseconds timeout) -> future_type {
+    if (!is_admin_entry_type(type)) {
+        // Proposing a `normal` entry through this path would append a command
+        // that the apply loop then routes AWAY from the state machine — the
+        // command would be silently lost.
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::make_exception_ptr(std::invalid_argument(
+            "propose_admin_entry: entry type is not an administration type")));
+        return future;
+    }
+
+    std::unique_lock<std::mutex> lock(_mutex);
+
+    if (_state != kythira::server_state::leader) {
+        _logger.debug("Rejected administration entry: not leader",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"entry_type", std::to_string(static_cast<int>(type))}});
+        _metrics.set_metric_name("admin_entry_rejected");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("reason", "not_leader");
+        _metrics.add_one();
+        _metrics.emit();
+
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::make_exception_ptr(std::runtime_error("Not leader")));
+        return future;
+    }
+
+    log_entry_type entry{._term = _current_term,
+                         ._index = get_last_log_index() + 1,
+                         ._command = std::move(payload),
+                         ._type = type};
+
+    try {
+        _persistence.append_log_entry(entry);
+        _log.push_back(entry);
+    } catch (const std::exception& e) {
+        _logger.error("Failed to append administration entry",
+                      {{"node_id", node_id_to_string(_node_id)}, {"error", e.what()}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::current_exception());
+        return future;
+    }
+
+    const auto entry_index = entry._index;
+
+    _logger.info("Proposed administration entry",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"log_index", std::to_string(entry_index)},
+                  {"term", std::to_string(_current_term)},
+                  {"entry_type", std::to_string(static_cast<int>(type))}});
+    _metrics.set_metric_name("admin_entry_proposed");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_dimension("entry_type", std::to_string(static_cast<int>(type)));
+    _metrics.add_one();
+    _metrics.emit();
+
+    // Registered BEFORE replication, exactly as submit_command does: a fast
+    // majority could otherwise commit and apply the entry before there is
+    // anything waiting to be told.
+    promise_type promise;
+    auto future = promise.getFuture();
+    auto shared_promise = std::make_shared<promise_type>(std::move(promise));
+
+    _commit_waiter.register_operation(
+        entry_index,
+        [shared_promise](std::vector<std::byte> result) mutable {
+            shared_promise->setValue(std::move(result));
+        },
+        [shared_promise](std::exception_ptr ex) mutable { shared_promise->setException(ex); },
+        timeout > std::chrono::milliseconds{0} ? std::optional{timeout} : std::nullopt);
+
+    lock.unlock();
+    replicate_to_followers();
     return future;
 }
 
@@ -5625,6 +5803,45 @@ auto node<Types>::apply_committed_entries() -> void {
         }
 
         auto& entry = entry_opt.value();
+
+        // Administration entries (multi-Raft, `.kiro/specs/multi-raft/` §5.1) are
+        // NOT applied to the state machine either. They are routed to the
+        // sharding host's handler, which runs here — inside the apply loop, on
+        // EVERY replica, at the same index — because that is what makes split
+        // and merge deterministic across replicas.
+        if (is_admin_entry_type(entry.type())) {
+            if (_admin_entry_handler) {
+                try {
+                    _admin_entry_handler(entry, next_index, _state_machine);
+                } catch (const std::exception& e) {
+                    // The entry is committed: it is in the log on a majority and
+                    // every other replica will apply it. Refusing to advance
+                    // last_applied here would stall this replica forever on an
+                    // entry it can never skip, so the failure is recorded loudly
+                    // and application continues.
+                    _logger.error("Administration entry handler failed",
+                                  {{"node_id", node_id_to_string(_node_id)},
+                                   {"entry_index", std::to_string(next_index)},
+                                   {"entry_type", std::to_string(static_cast<int>(entry.type()))},
+                                   {"error", e.what()}});
+                    _metrics.set_metric_name("admin_entry_handler_failed");
+                    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                    _metrics.add_one();
+                    _metrics.emit();
+                }
+            } else {
+                // Silently discarding a split would leave this replica's shard
+                // map and the rest of the cluster's permanently disagreeing.
+                _logger.warning("Administration entry committed with no handler installed",
+                                {{"node_id", node_id_to_string(_node_id)},
+                                 {"entry_index", std::to_string(next_index)},
+                                 {"entry_type", std::to_string(static_cast<int>(entry.type()))}});
+            }
+            _commit_waiter.notify_committed_and_applied(next_index);
+            _last_applied = next_index;
+            entries_applied_in_batch++;
+            continue;
+        }
 
         // No-op barrier entries (Raft §5.4.2) are NOT applied to the state machine; their
         // sole purpose is to occupy a slot in the leader's own term so that

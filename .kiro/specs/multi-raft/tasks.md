@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phases 1-5 complete (tasks 1-14)
+## Status: In progress — Phases 1-6 complete (tasks 1-16)
 
 **Last Updated**: August 23, 2026
 
@@ -284,7 +284,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 6: Admin Entries and Splittable State Machines (Tasks 15–16)
 
-- [ ] 15. Add the admin-entry hook to `node<Types>`
+- [x] 15. Add the admin-entry hook to `node<Types>`
   - `set_admin_entry_handler(std::function<void(const log_entry_type&,
     log_index_type)>)`; `propose_admin_entry(entry_type, payload, timeout) ->
     future_type`; `match_index_of(node_id_type) const ->
@@ -301,7 +301,7 @@ Phases 6–8, after the mechanics it drives.
     that receives the entry via `AppendEntries` fires it too.
   - _Requirements: 13.1, 15.3_
 
-- [ ] 16. Add the `splittable_state_machine` extension concept
+- [x] 16. Add the `splittable_state_machine` extension concept
   - Concept per design §6.4: `approximate_size_bytes`, `approximate_key_count`,
     `suggest_split_keys(max)`, `can_split_at(key)`, `split_state(keys)`,
     `absorb(blob, range)`. Detected structurally with `if constexpr`.
