@@ -97,6 +97,112 @@ struct split_command {
     }
 };
 
+/// @brief The body of an `entry_type::merge_prepare` log entry, in the SOURCE's log.
+///
+/// Applying it freezes the source: it stops accepting proposals and reads, and
+/// refuses further configuration changes. From here the source is released only
+/// by a `merge_rollback` in its own log, never by a timer — see
+/// `merge_abandoned_command` for why.
+///
+/// It is also the **notification**. Design §5.5 has the source leader tell the
+/// target leader out of band; this implementation does not need to, because
+/// merge requires colocated replicas, so the machine leading the target
+/// necessarily holds a source replica and learns of the merge by applying this
+/// entry like everyone else. One fewer channel, and one fewer way for the two
+/// sides to disagree.
+template<raft_group_id GroupId, shard_key Key, typename NodeId = std::uint64_t>
+requires node_id<NodeId>
+struct merge_prepare_command {
+    using descriptor_type = shard_descriptor<GroupId, Key, NodeId>;
+
+    descriptor_type _source{};
+    descriptor_type _target{};
+    /// @brief The lowest index every source voter is known to hold.
+    ///
+    /// Bounds what `merge_commit` must carry: only the tail
+    /// `(min_index, prepare_index]` travels, rather than the source's whole log
+    /// or its whole state.
+    std::uint64_t _min_index{0};
+    merge_reason _reason{merge_reason::size};
+
+    [[nodiscard]] auto operator==(const merge_prepare_command& other) const -> bool {
+        return _source == other._source && _target == other._target &&
+               _min_index == other._min_index && _reason == other._reason;
+    }
+};
+
+/// @brief The body of an `entry_type::merge_commit` log entry, in the TARGET's log.
+///
+/// Carries the source's descriptor and the tail of its log that the target's
+/// replicas may not have seen applied on their own local source replicas. Every
+/// target replica force-applies that same tail before reading the source's
+/// state, which is what makes the absorb deterministic across them: they all
+/// read a source that stands at exactly the prepare index.
+template<raft_group_id GroupId, shard_key Key, typename NodeId = std::uint64_t,
+         typename LogEntry = log_entry<>>
+requires node_id<NodeId>
+struct merge_commit_command {
+    using descriptor_type = shard_descriptor<GroupId, Key, NodeId>;
+
+    descriptor_type _source{};
+    descriptor_type _target{};
+    /// The index the source stands at once the tail is applied.
+    std::uint64_t _prepare_index{0};
+    /// Entries `(min_index, prepare_index]` from the source's log, in order.
+    std::vector<LogEntry> _entries{};
+
+    [[nodiscard]] auto operator==(const merge_commit_command& other) const -> bool {
+        if (!(_source == other._source && _target == other._target &&
+              _prepare_index == other._prepare_index && _entries.size() == other._entries.size())) {
+            return false;
+        }
+        for (std::size_t i = 0; i < _entries.size(); ++i) {
+            if (_entries[i].term() != other._entries[i].term() ||
+                _entries[i].index() != other._entries[i].index() ||
+                _entries[i].command() != other._entries[i].command() ||
+                _entries[i].type() != other._entries[i].type()) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
+/// @brief The body of an `entry_type::merge_rollback` entry, in the SOURCE's log.
+///
+/// Releases a source frozen by `merge_prepare`. The source leader proposes it
+/// only after observing a committed `merge_abandoned` in the TARGET's log —
+/// never on a timer.
+template<raft_group_id GroupId> struct merge_rollback_command {
+    GroupId _source_group{};
+    GroupId _target_group{};
+
+    [[nodiscard]] auto operator==(const merge_rollback_command&) const -> bool = default;
+};
+
+/// @brief The body of an `entry_type::merge_abandoned` entry, in the TARGET's log.
+///
+/// The one deliberate deviation from TiKV, and the reason the whole rollback
+/// path exists in this shape. TiKV releases a frozen source on a timing
+/// argument; Kythira has no clock-synchronisation guarantee anywhere, and
+/// introducing one here would be a silent correctness dependency.
+///
+/// So the decision to abandon is made a **committed fact in the target's own
+/// log**. A target leader failover cannot lose it: the new leader replays this
+/// entry and will refuse to propose `merge_commit`. Symmetrically, once
+/// `merge_commit` is proposed the target refuses to abandon. Commit and abandon
+/// are mutually exclusive because both are decided by the same single log.
+///
+/// Releasing a source wrongly is the one way this protocol corrupts data: a
+/// source that resumes serving while some target replica has already applied
+/// the commit means two shards own one range.
+template<raft_group_id GroupId> struct merge_abandoned_command {
+    GroupId _source_group{};
+    GroupId _target_group{};
+
+    [[nodiscard]] auto operator==(const merge_abandoned_command&) const -> bool = default;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Encoding primitives
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,6 +314,62 @@ template<typename Id> auto read_id(reader& r) -> Id {
     }
 }
 
+template<raft_group_id GroupId, shard_key Key, typename NodeId, typename KeyCodec>
+auto write_descriptor(std::vector<std::byte>& out, const shard_descriptor<GroupId, Key, NodeId>& d,
+                      const KeyCodec& codec) -> void {
+    write_id<GroupId>(out, d._group_id);
+    write_bool(out, d._range._start.has_value());
+    if (d._range._start.has_value()) {
+        write_blob(out, codec.encode(*d._range._start));
+    }
+    write_bool(out, d._range._end.has_value());
+    if (d._range._end.has_value()) {
+        write_blob(out, codec.encode(*d._range._end));
+    }
+    write_u64(out, d._epoch._version);
+    write_u64(out, d._epoch._conf_version);
+    write_u64(out, d._voters.size());
+    for (const auto& v : d._voters) {
+        write_id<NodeId>(out, v);
+    }
+    write_u64(out, d._learners.size());
+    for (const auto& l : d._learners) {
+        write_id<NodeId>(out, l);
+    }
+    write_bool(out, d._leader_hint.has_value());
+    if (d._leader_hint.has_value()) {
+        write_id<NodeId>(out, *d._leader_hint);
+    }
+}
+
+template<raft_group_id GroupId, shard_key Key, typename NodeId, typename KeyCodec>
+auto read_descriptor(reader& r, const KeyCodec& codec) -> shard_descriptor<GroupId, Key, NodeId> {
+    shard_descriptor<GroupId, Key, NodeId> d;
+    d._group_id = read_id<GroupId>(r);
+    if (r.boolean()) {
+        d._range._start = codec.decode(r.blob());
+    }
+    if (r.boolean()) {
+        d._range._end = codec.decode(r.blob());
+    }
+    d._epoch._version = r.u64();
+    d._epoch._conf_version = r.u64();
+    const auto voters = static_cast<std::size_t>(r.u64());
+    d._voters.reserve(voters);
+    for (std::size_t i = 0; i < voters; ++i) {
+        d._voters.push_back(read_id<NodeId>(r));
+    }
+    const auto learners = static_cast<std::size_t>(r.u64());
+    d._learners.reserve(learners);
+    for (std::size_t i = 0; i < learners; ++i) {
+        d._learners.push_back(read_id<NodeId>(r));
+    }
+    if (r.boolean()) {
+        d._leader_hint = read_id<NodeId>(r);
+    }
+    return d;
+}
+
 }  // namespace shard_wire
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -243,30 +405,7 @@ template<raft_group_id GroupId, shard_key Key, typename NodeId,
 
     write_u64(out, cmd._children.size());
     for (const auto& child : cmd._children) {
-        write_id<GroupId>(out, child._group_id);
-        write_bool(out, child._range._start.has_value());
-        if (child._range._start.has_value()) {
-            write_blob(out, codec.encode(*child._range._start));
-        }
-        write_bool(out, child._range._end.has_value());
-        if (child._range._end.has_value()) {
-            write_blob(out, codec.encode(*child._range._end));
-        }
-        write_u64(out, child._epoch._version);
-        write_u64(out, child._epoch._conf_version);
-
-        write_u64(out, child._voters.size());
-        for (const auto& v : child._voters) {
-            write_id<NodeId>(out, v);
-        }
-        write_u64(out, child._learners.size());
-        for (const auto& l : child._learners) {
-            write_id<NodeId>(out, l);
-        }
-        write_bool(out, child._leader_hint.has_value());
-        if (child._leader_hint.has_value()) {
-            write_id<NodeId>(out, *child._leader_hint);
-        }
+        write_descriptor<GroupId, Key, NodeId>(out, child, codec);
     }
 
     write_bool(out, cmd._right_derive);
@@ -308,31 +447,7 @@ template<raft_group_id GroupId, shard_key Key, typename NodeId,
     const auto child_count = static_cast<std::size_t>(r.u64());
     cmd._children.reserve(child_count);
     for (std::size_t i = 0; i < child_count; ++i) {
-        shard_descriptor<GroupId, Key, NodeId> child;
-        child._group_id = read_id<GroupId>(r);
-        if (r.boolean()) {
-            child._range._start = codec.decode(r.blob());
-        }
-        if (r.boolean()) {
-            child._range._end = codec.decode(r.blob());
-        }
-        child._epoch._version = r.u64();
-        child._epoch._conf_version = r.u64();
-
-        const auto voter_count = static_cast<std::size_t>(r.u64());
-        child._voters.reserve(voter_count);
-        for (std::size_t v = 0; v < voter_count; ++v) {
-            child._voters.push_back(read_id<NodeId>(r));
-        }
-        const auto learner_count = static_cast<std::size_t>(r.u64());
-        child._learners.reserve(learner_count);
-        for (std::size_t l = 0; l < learner_count; ++l) {
-            child._learners.push_back(read_id<NodeId>(r));
-        }
-        if (r.boolean()) {
-            child._leader_hint = read_id<NodeId>(r);
-        }
-        cmd._children.push_back(std::move(child));
+        cmd._children.push_back(read_descriptor<GroupId, Key, NodeId>(r, codec));
     }
 
     cmd._right_derive = r.boolean();
@@ -340,6 +455,145 @@ template<raft_group_id GroupId, shard_key Key, typename NodeId,
     if (r.boolean()) {
         cmd._pd_operation_id = r.u64();
     }
+    return cmd;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Merge codecs
+// ─────────────────────────────────────────────────────────────────────────────
+
+template<raft_group_id GroupId, shard_key Key, typename NodeId,
+         shard_key_codec<Key> KeyCodec = default_shard_key_codec<Key>>
+[[nodiscard]] auto encode_merge_prepare_command(
+    const merge_prepare_command<GroupId, Key, NodeId>& cmd, const KeyCodec& codec = KeyCodec{})
+    -> std::vector<std::byte> {
+    using namespace shard_wire;
+    std::vector<std::byte> out;
+    write_u8(out, k_shard_command_version);
+    write_descriptor<GroupId, Key, NodeId>(out, cmd._source, codec);
+    write_descriptor<GroupId, Key, NodeId>(out, cmd._target, codec);
+    write_u64(out, cmd._min_index);
+    write_u8(out, static_cast<std::uint8_t>(cmd._reason));
+    return out;
+}
+
+template<raft_group_id GroupId, shard_key Key, typename NodeId,
+         shard_key_codec<Key> KeyCodec = default_shard_key_codec<Key>>
+[[nodiscard]] auto decode_merge_prepare_command(const std::vector<std::byte>& bytes,
+                                                const KeyCodec& codec = KeyCodec{})
+    -> merge_prepare_command<GroupId, Key, NodeId> {
+    using namespace shard_wire;
+    reader r{bytes, "merge_prepare_command"};
+    if (const auto version = r.u8(); version != k_shard_command_version) {
+        throw serialization_exception("merge_prepare_command: unknown payload version " +
+                                      std::to_string(version));
+    }
+    merge_prepare_command<GroupId, Key, NodeId> cmd;
+    cmd._source = read_descriptor<GroupId, Key, NodeId>(r, codec);
+    cmd._target = read_descriptor<GroupId, Key, NodeId>(r, codec);
+    cmd._min_index = r.u64();
+    cmd._reason = static_cast<merge_reason>(r.u8());
+    return cmd;
+}
+
+template<raft_group_id GroupId, shard_key Key, typename NodeId, typename LogEntry,
+         shard_key_codec<Key> KeyCodec = default_shard_key_codec<Key>>
+[[nodiscard]] auto encode_merge_commit_command(
+    const merge_commit_command<GroupId, Key, NodeId, LogEntry>& cmd,
+    const KeyCodec& codec = KeyCodec{}) -> std::vector<std::byte> {
+    using namespace shard_wire;
+    std::vector<std::byte> out;
+    write_u8(out, k_shard_command_version);
+    write_descriptor<GroupId, Key, NodeId>(out, cmd._source, codec);
+    write_descriptor<GroupId, Key, NodeId>(out, cmd._target, codec);
+    write_u64(out, cmd._prepare_index);
+    write_u64(out, cmd._entries.size());
+    for (const auto& e : cmd._entries) {
+        write_u64(out, static_cast<std::uint64_t>(e.term()));
+        write_u64(out, static_cast<std::uint64_t>(e.index()));
+        write_u8(out, static_cast<std::uint8_t>(e.type()));
+        write_blob(out, e.command());
+    }
+    return out;
+}
+
+template<raft_group_id GroupId, shard_key Key, typename NodeId, typename LogEntry,
+         shard_key_codec<Key> KeyCodec = default_shard_key_codec<Key>>
+[[nodiscard]] auto decode_merge_commit_command(const std::vector<std::byte>& bytes,
+                                               const KeyCodec& codec = KeyCodec{})
+    -> merge_commit_command<GroupId, Key, NodeId, LogEntry> {
+    using namespace shard_wire;
+    reader r{bytes, "merge_commit_command"};
+    if (const auto version = r.u8(); version != k_shard_command_version) {
+        throw serialization_exception("merge_commit_command: unknown payload version " +
+                                      std::to_string(version));
+    }
+    merge_commit_command<GroupId, Key, NodeId, LogEntry> cmd;
+    cmd._source = read_descriptor<GroupId, Key, NodeId>(r, codec);
+    cmd._target = read_descriptor<GroupId, Key, NodeId>(r, codec);
+    cmd._prepare_index = r.u64();
+    const auto count = static_cast<std::size_t>(r.u64());
+    cmd._entries.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        LogEntry e{};
+        e._term = static_cast<decltype(e._term)>(r.u64());
+        e._index = static_cast<decltype(e._index)>(r.u64());
+        e._type = static_cast<entry_type>(r.u8());
+        e._command = r.blob();
+        cmd._entries.push_back(std::move(e));
+    }
+    return cmd;
+}
+
+template<raft_group_id GroupId>
+[[nodiscard]] auto encode_merge_rollback_command(const merge_rollback_command<GroupId>& cmd)
+    -> std::vector<std::byte> {
+    using namespace shard_wire;
+    std::vector<std::byte> out;
+    write_u8(out, k_shard_command_version);
+    write_id<GroupId>(out, cmd._source_group);
+    write_id<GroupId>(out, cmd._target_group);
+    return out;
+}
+
+template<raft_group_id GroupId>
+[[nodiscard]] auto decode_merge_rollback_command(const std::vector<std::byte>& bytes)
+    -> merge_rollback_command<GroupId> {
+    using namespace shard_wire;
+    reader r{bytes, "merge_rollback_command"};
+    if (const auto version = r.u8(); version != k_shard_command_version) {
+        throw serialization_exception("merge_rollback_command: unknown payload version " +
+                                      std::to_string(version));
+    }
+    merge_rollback_command<GroupId> cmd;
+    cmd._source_group = read_id<GroupId>(r);
+    cmd._target_group = read_id<GroupId>(r);
+    return cmd;
+}
+
+template<raft_group_id GroupId>
+[[nodiscard]] auto encode_merge_abandoned_command(const merge_abandoned_command<GroupId>& cmd)
+    -> std::vector<std::byte> {
+    using namespace shard_wire;
+    std::vector<std::byte> out;
+    write_u8(out, k_shard_command_version);
+    write_id<GroupId>(out, cmd._source_group);
+    write_id<GroupId>(out, cmd._target_group);
+    return out;
+}
+
+template<raft_group_id GroupId>
+[[nodiscard]] auto decode_merge_abandoned_command(const std::vector<std::byte>& bytes)
+    -> merge_abandoned_command<GroupId> {
+    using namespace shard_wire;
+    reader r{bytes, "merge_abandoned_command"};
+    if (const auto version = r.u8(); version != k_shard_command_version) {
+        throw serialization_exception("merge_abandoned_command: unknown payload version " +
+                                      std::to_string(version));
+    }
+    merge_abandoned_command<GroupId> cmd;
+    cmd._source_group = read_id<GroupId>(r);
+    cmd._target_group = read_id<GroupId>(r);
     return cmd;
 }
 

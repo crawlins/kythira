@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phases 1-7 complete (tasks 1-19)
+## Status: In progress — Phases 1-8 complete (tasks 1-22)
 
 **Last Updated**: August 23, 2026
 
@@ -372,7 +372,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 8: Merge (Tasks 20–22)
 
-- [ ] 20. `merge_prepare` and `merge_commit`
+- [x] 20. `merge_prepare` and `merge_commit`
   - Payloads and serializers for both; `min_index` computed via
     `match_index_of` over the source's voters.
   - Source apply of `merge_prepare`: enter `merging_source`; reject proposals
@@ -388,7 +388,7 @@ Phases 6–8, after the mechanics it drives.
     receives `shard_epoch_mismatch` carrying the survivor's descriptor.
   - _Requirements: 15.3, 15.4, 15.7_
 
-- [ ] 21. Abandon handshake and rollback
+- [x] 21. Abandon handshake and rollback
   - Source leader → target leader `abandon_request`; target refuses if
     `merge_commit` is already proposed, else commits `merge_abandoned` in the
     **target's** log; source observes that committed record, then proposes
@@ -404,7 +404,7 @@ Phases 6–8, after the mechanics it drives.
     rollback, no double ownership.
   - _Requirements: 15.5, 15.6, 15.8_
 
-- [ ] 22. Merge preconditions and alignment
+- [x] 22. Merge preconditions and alignment
   - Adjacency, epoch match, colocation, joint-consensus, and operation-state
     checks at proposal **and** re-checked at apply.
   - `shard_alignment_required_exception` when replica sets are not colocated;

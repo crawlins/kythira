@@ -317,6 +317,27 @@ struct multi_raft_config {
     /// election timeout for one child, and near zero for the derived one, which
     /// campaigns immediately if it sits on the parent's leader.
     std::chrono::milliseconds child_election_stagger{std::chrono::milliseconds{50}};
+
+    // ── merge (Requirement 13, design §5.5) ──────────────────────────────────
+
+    /// @brief Enable the timing-based rollback variant.
+    ///
+    /// **Off by default, and its assumption is stated first: it requires
+    /// bounded clock skew, which nothing else in Kythira assumes.** With it
+    /// off, a source frozen by `merge_prepare` is released only by observing a
+    /// committed `merge_abandoned` in the target's own log. With it on, the
+    /// source releases itself after a deadline — which is faster, and which
+    /// makes "two shards own one range" reachable if the clocks disagree.
+    ///
+    /// An operator who turns this on is taking on an assumption the rest of the
+    /// system does not make.
+    bool merge_lease_mode{false};
+
+    /// @brief How long a frozen source waits before reporting itself stalled.
+    ///
+    /// A stuck merge leaves the source unavailable but *correct*. That is the
+    /// right trade, and it is surfaced rather than left to be guessed at.
+    std::chrono::milliseconds merge_stall_warning_after{std::chrono::seconds{30}};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -521,6 +542,52 @@ public:
     /// @brief How many splits this node has applied. Test and diagnostic use.
     [[nodiscard]] auto applied_split_count() const -> std::uint64_t;
 
+    /// @brief Merge `source` into `target`. Proposed by the source's leader.
+    ///
+    /// Runs design §5.5's protocol. This host must lead the source; the target
+    /// side is driven by whichever host leads the target, which learns of the
+    /// merge by applying the `merge_prepare` entry on its own local source
+    /// replica. That works because merge **requires colocated replicas**, so
+    /// the machine leading the target necessarily holds one — one fewer channel
+    /// than design §5.5's out-of-band notification, and one fewer way for the
+    /// two sides to disagree.
+    ///
+    /// The returned future resolves when `merge_prepare` has been committed and
+    /// applied on this replica — that is, when the source is frozen and the
+    /// merge is under way. It does **not** wait for the target to commit;
+    /// `merge_state()` reports that.
+    ///
+    /// @throws (via the future)
+    ///   `shard_not_adjacent_exception`        the ranges do not touch
+    ///   `shard_alignment_required_exception`  the replica sets are not colocated
+    ///   `shard_busy_exception`                either shard is not `stable`
+    ///   `shard_epoch_mismatch_exception`      either descriptor has moved
+    ///   `shard_not_leader_exception`          this replica does not lead the source
+    auto merge_shards(const GroupId& source, const GroupId& target,
+                      std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief Abandon a merge this host's source leader started.
+    ///
+    /// Asks the target to record `merge_abandoned` in its own log; once that is
+    /// committed, the source proposes `merge_rollback` and resumes serving. The
+    /// target refuses if `merge_commit` is already proposed — commit always
+    /// wins, because both decisions are made by the same single log.
+    auto abandon_merge(const GroupId& source, std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief How many merges this node has applied on a target. Diagnostic.
+    [[nodiscard]] auto applied_merge_count() const -> std::uint64_t;
+
+    /// @brief How many merges this node has rolled back. Diagnostic.
+    [[nodiscard]] auto rolled_back_merge_count() const -> std::uint64_t;
+
+    /// @brief How many times a frozen source has been reported stalled.
+    ///
+    /// The host publishes this as `merge.stalled{group, target}`.
+    [[nodiscard]] auto stalled_merge_report_count() const -> std::uint64_t;
+
+    /// @brief The target a frozen source is merging into, if it is frozen.
+    [[nodiscard]] auto merge_target_of(const GroupId& source) const -> std::optional<GroupId>;
+
     /// @brief Re-apply a committed administration entry, as a crash-recovery
     /// replay does.
     ///
@@ -697,6 +764,30 @@ private:
         /// arbiter in Phase 9; the state itself lives here from Phase 7 because
         /// split already needs it.
         std::atomic<shard_operation_state> _operation{shard_operation_state::stable};
+
+        // ── merge bookkeeping (design §5.5) ──────────────────────────────────
+        //
+        // Guarded by `_merge_mutex` rather than atomics: these move together,
+        // and a half-updated merge record is exactly the state that lets a
+        // frozen source resume while a target replica has already committed.
+        mutable std::mutex _merge_mutex;
+        /// Set on a frozen source: the target it is merging into.
+        std::optional<GroupId> _merge_target;
+        /// Set on a target that has accepted a merge: the source it is taking.
+        std::optional<GroupId> _merge_source;
+        /// The index `merge_prepare` was applied at on a frozen source.
+        log_index_type _merge_prepare_index{0};
+        /// The lowest index every source voter was known to hold at prepare.
+        log_index_type _merge_min_index{0};
+        /// Set once this target has proposed `merge_commit`: from then on it
+        /// refuses to abandon. Commit always wins.
+        bool _merge_commit_proposed{false};
+        /// Set once this target has committed `merge_abandoned`: from then on
+        /// it refuses to commit, and a new target leader replaying the entry
+        /// inherits the refusal.
+        bool _merge_abandoned{false};
+        /// When the source was frozen, for the stall warning.
+        std::chrono::steady_clock::time_point _merge_frozen_at{};
     };
 
     using group_ptr = std::shared_ptr<group_state>;
@@ -745,6 +836,43 @@ private:
     /// machine by reference — which is why it never calls back into that node.
     auto apply_split(group_state& parent, const split_command_type& cmd, log_index_type at_index,
                      term_id_type at_term, typename Types::state_machine_type& parent_sm) -> void;
+
+    using merge_prepare_command_type = merge_prepare_command<GroupId, Key, node_id_type>;
+    using merge_commit_command_type =
+        merge_commit_command<GroupId, Key, node_id_type, log_entry_type>;
+    using merge_rollback_command_type = merge_rollback_command<GroupId>;
+    using merge_abandoned_command_type = merge_abandoned_command<GroupId>;
+
+    /// @brief Design §5.5's source-side apply: freeze, and notify by committing.
+    auto apply_merge_prepare(group_state& source, const merge_prepare_command_type& cmd,
+                             log_index_type at_index) -> void;
+
+    /// @brief Design §5.5's target-side apply, on every target replica.
+    auto apply_merge_commit(group_state& target, const merge_commit_command_type& cmd,
+                            typename Types::state_machine_type& target_sm) -> void;
+
+    auto apply_merge_rollback(group_state& source, const merge_rollback_command_type& cmd) -> void;
+    auto apply_merge_abandoned(group_state& target, const merge_abandoned_command_type& cmd)
+        -> void;
+
+    /// @brief Propose `merge_commit` if this host leads `target`.
+    ///
+    /// Called after a `merge_prepare` is applied on the local source replica.
+    /// The prepare entry IS the notification; see `merge_shards`.
+    auto maybe_propose_merge_commit(const merge_prepare_command_type& cmd) -> void;
+
+    /// @brief Every precondition from design §5.5's table, in one place.
+    ///
+    /// Checked at proposal AND re-checked at apply, because an entry proposed
+    /// under one epoch can commit after the epoch moved.
+    [[nodiscard]] auto check_merge_preconditions(const descriptor_type& source,
+                                                 const descriptor_type& target,
+                                                 const group_ptr& source_state,
+                                                 const group_ptr& target_state) const
+        -> std::exception_ptr;
+
+    /// @brief The configured key codec, or the default, as one object.
+    [[nodiscard]] auto make_key_codec() const -> key_codec_adapter<Key>;
 
     [[nodiscard]] auto encode_key_or_default(const Key& k) const -> std::vector<std::byte>;
     [[nodiscard]] auto decode_key_or_default(const std::vector<std::byte>& b) const -> Key;
@@ -801,6 +929,9 @@ private:
     std::atomic<bool> _running{false};
     std::chrono::steady_clock::time_point _last_policy_run{};
     std::atomic<std::uint64_t> _applied_splits{0};
+    std::atomic<std::uint64_t> _applied_merges{0};
+    std::atomic<std::uint64_t> _rolled_back_merges{0};
+    std::atomic<std::uint64_t> _stalled_merges{0};
     std::atomic<std::uint64_t> _lazy_replicas{0};
     std::atomic<std::uint64_t> _descriptor_lookups{0};
 

@@ -455,6 +455,30 @@ public:
         return std::forward<F>(f)(_state_machine);
     }
 
+    /// @brief The highest log index this replica has applied to its state machine.
+    ///
+    /// Read under the node's lock, unlike `debug_state()`, whose span is only
+    /// valid while nothing is mutating. The merge path needs it to force-apply
+    /// exactly the entries a local source replica has NOT already applied —
+    /// re-applying one is safe only for a state machine whose commands happen
+    /// to be idempotent, which the `state_machine` concept does not require.
+    /// `shard_stats` reports it too.
+    [[nodiscard]] auto last_applied_index() const -> log_index_type;
+
+    /// @brief Copy the log entries in `[from, to]` out under the node's lock.
+    ///
+    /// The merge coordinator carries the source's log tail inside
+    /// `merge_commit` so that every target replica can bring its own local
+    /// source replica to the same point before reading its state.
+    /// `debug_state()` exposes a span into the live log and is documented as
+    /// valid only while nothing mutates; this copies, under the lock, which is
+    /// what a coordinator running concurrently with replication needs.
+    ///
+    /// Indices with no entry — compacted away, or beyond the end — are simply
+    /// absent from the result rather than reported as an error.
+    [[nodiscard]] auto log_entries_between(log_index_type from, log_index_type to) const
+        -> std::vector<log_entry_type>;
+
     /// @brief The highest log index known to be replicated on `node`.
     ///
     /// `std::nullopt` when this node is not the leader (it tracks no match
@@ -1650,6 +1674,31 @@ template<raft_types Types>
 auto node<Types>::set_admin_entry_handler(admin_entry_handler_type handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _admin_entry_handler = std::move(handler);
+}
+
+template<raft_types Types>
+auto node<Types>::log_entries_between(log_index_type from, log_index_type to) const
+    -> std::vector<log_entry_type> {
+    std::lock_guard<std::mutex> lock(_mutex);
+    std::vector<log_entry_type> out;
+    if (to < from) {
+        return out;
+    }
+    out.reserve(static_cast<std::size_t>(to - from) + 1);
+    for (const auto& entry : _log) {
+        if (entry.index() >= from && entry.index() <= to) {
+            out.push_back(entry);
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const log_entry_type& a, const log_entry_type& b) {
+        return a.index() < b.index();
+    });
+    return out;
+}
+
+template<raft_types Types> auto node<Types>::last_applied_index() const -> log_index_type {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _last_applied;
 }
 
 template<raft_types Types>

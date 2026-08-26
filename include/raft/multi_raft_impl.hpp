@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
+#include <thread>
 #include <condition_variable>
 #include <stdexcept>
 #include <utility>
@@ -628,6 +630,36 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
         if (now - _last_policy_run >= _cfg.policy_interval) {
             _last_policy_run = now;
             report._policy_ran = true;
+
+            // A merge whose target leader is unreachable leaves the source
+            // frozen: unavailable but CORRECT, which is the right trade and
+            // the one design §5.7 makes deliberately. What is not acceptable is
+            // leaving an operator to guess, so it is surfaced by name.
+            for (const auto& g : ready) {
+                if (g->_operation.load(std::memory_order_relaxed) !=
+                    shard_operation_state::merging_source) {
+                    continue;
+                }
+                std::chrono::steady_clock::time_point frozen_at{};
+                GroupId merge_target{};
+                {
+                    std::lock_guard lock(g->_merge_mutex);
+                    frozen_at = g->_merge_frozen_at;
+                    merge_target = g->_merge_target.value_or(GroupId{});
+                }
+                if (now - frozen_at >= _cfg.merge_stall_warning_after) {
+                    _stalled_merges.fetch_add(1, std::memory_order_relaxed);
+                    _cfg.logger.warning(
+                        "Merge stalled: the source has been frozen past the warning threshold",
+                        {{"source", detail::describe_value(g->_group_id)},
+                         {"target", detail::describe_value(merge_target)},
+                         {"frozen_ms",
+                          std::to_string(
+                              std::chrono::duration_cast<std::chrono::milliseconds>(now - frozen_at)
+                                  .count())}});
+                }
+            }
+
             // The arbiter and the policy channels land in Phase 9 (tasks 23-25).
             // The phase exists now so that when they do, they are already
             // ordered after apply and running on each group's own stripe.
@@ -749,6 +781,13 @@ auto multi_raft<Types, Key, GroupId>::encode_key_or_default(const Key& k) const
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::make_key_codec() const -> key_codec_adapter<Key> {
+    return key_codec_adapter<Key>{
+        [this](const Key& k) { return encode_key_or_default(k); },
+        [this](const std::vector<std::byte>& b) { return decode_key_or_default(b); }};
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::decode_key_or_default(
     const std::vector<std::byte>& bytes) const -> Key {
     if (_cfg.decode_key) {
@@ -786,11 +825,8 @@ auto multi_raft<Types, Key, GroupId>::replay_admin_entry(const GroupId& group,
     // the same state machine reference the apply loop would hand the handler.
     g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
         if (entry.type() == entry_type::split) {
-            auto cmd = decode_split_command<GroupId, Key, node_id_type>(
-                entry.command(),
-                key_codec_adapter{
-                    [this](const Key& k) { return encode_key_or_default(k); },
-                    [this](const std::vector<std::byte>& b) { return decode_key_or_default(b); }});
+            auto cmd =
+                decode_split_command<GroupId, Key, node_id_type>(entry.command(), make_key_codec());
             apply_split(*g, cmd, index, entry.term(), sm);
         }
     });
@@ -809,20 +845,38 @@ auto multi_raft<Types, Key, GroupId>::install_admin_handler(group_state& g) -> v
                                                    typename Types::state_machine_type& sm) {
         switch (entry.type()) {
             case entry_type::split: {
-                auto cmd = decode_split_command<GroupId, Key, node_id_type>(
-                    entry.command(),
-                    key_codec_adapter{[this](const Key& k) { return encode_key_or_default(k); },
-                                      [this](const std::vector<std::byte>& b) {
-                                          return decode_key_or_default(b);
-                                      }});
+                auto cmd = decode_split_command<GroupId, Key, node_id_type>(entry.command(),
+                                                                            make_key_codec());
                 apply_split(*state, cmd, index, entry.term(), sm);
                 break;
             }
+            case entry_type::merge_prepare: {
+                auto cmd = decode_merge_prepare_command<GroupId, Key, node_id_type>(
+                    entry.command(), make_key_codec());
+                apply_merge_prepare(*state, cmd, index);
+                break;
+            }
+            case entry_type::merge_commit: {
+                auto cmd = decode_merge_commit_command<GroupId, Key, node_id_type, log_entry_type>(
+                    entry.command(), make_key_codec());
+                apply_merge_commit(*state, cmd, sm);
+                break;
+            }
+            case entry_type::merge_rollback: {
+                auto cmd = decode_merge_rollback_command<GroupId>(entry.command());
+                apply_merge_rollback(*state, cmd);
+                break;
+            }
+            case entry_type::merge_abandoned: {
+                auto cmd = decode_merge_abandoned_command<GroupId>(entry.command());
+                apply_merge_abandoned(*state, cmd);
+                break;
+            }
             default:
-                // The merge entry types land in Phase 8 (tasks 20-22). Until
-                // then nothing proposes them, so reaching here means a peer is
-                // running a newer binary — worth saying so rather than
-                // silently ignoring.
+                // Reaching here means a peer is running a newer binary and
+                // proposed an entry type this build does not know. Worth saying
+                // so: the alternative is silently diverging from the rest of
+                // the cluster about what that entry did.
                 _cfg.logger.warning("Administration entry type not handled by this build",
                                     {{"group", detail::describe_value(state->_group_id)},
                                      {"entry_type", std::to_string(static_cast<int>(entry.type()))},
@@ -988,10 +1042,7 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
                            ._reason = split_reason::admin,
                            ._pd_operation_id = std::nullopt};
 
-    auto payload = encode_split_command<GroupId, Key, node_id_type>(
-        cmd, key_codec_adapter{
-                 [this](const Key& k) { return encode_key_or_default(k); },
-                 [this](const std::vector<std::byte>& b) { return decode_key_or_default(b); }});
+    auto payload = encode_split_command<GroupId, Key, node_id_type>(cmd, make_key_codec());
 
     _cfg.logger.info("Proposing split", {{"group", detail::describe_value(group)},
                                          {"children", std::to_string(child_count)},
@@ -1212,6 +1263,504 @@ auto multi_raft<Types, Key, GroupId>::persist_tombstones() -> void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Merge (design §5.5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::applied_merge_count() const -> std::uint64_t {
+    return _applied_merges.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::rolled_back_merge_count() const -> std::uint64_t {
+    return _rolled_back_merges.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::stalled_merge_report_count() const -> std::uint64_t {
+    return _stalled_merges.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::merge_target_of(const GroupId& source) const
+    -> std::optional<GroupId> {
+    auto g = find_group(source);
+    if (!g) {
+        return std::nullopt;
+    }
+    std::lock_guard lock(g->_merge_mutex);
+    return g->_merge_target;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::check_merge_preconditions(const descriptor_type& source,
+                                                                const descriptor_type& target,
+                                                                const group_ptr& source_state,
+                                                                const group_ptr& target_state) const
+    -> std::exception_ptr {
+    // Adjacency. Either order is legal — a shard may merge into the neighbour
+    // on either side, which is what `merge_direction` exists to express.
+    if (!source._range.is_adjacent_left_of(target._range) &&
+        !target._range.is_adjacent_left_of(source._range)) {
+        return std::make_exception_ptr(shard_not_adjacent_exception<GroupId, Key>{
+            source._group_id, target._group_id, source._range, target._range});
+    }
+
+    // Colocation. Each target replica absorbs state from the source replica ON
+    // ITS OWN MACHINE, so a target replica with no local source peer simply
+    // cannot apply `merge_commit`. This fails fast rather than shipping state
+    // across the network mid-merge, which is the operation the whole design is
+    // built to avoid.
+    if (!is_colocated(source, target)) {
+        return std::make_exception_ptr(shard_alignment_required_exception<GroupId, node_id_type>{
+            source._group_id, target._group_id, source._voters, target._voters});
+    }
+
+    // Operation state. Only `stable` admits a new operation, on both sides.
+    if (source_state) {
+        const auto st = source_state->_operation.load(std::memory_order_relaxed);
+        if (st != shard_operation_state::stable) {
+            return std::make_exception_ptr(
+                shard_busy_exception<GroupId>{source._group_id, to_string(st)});
+        }
+    }
+    if (target_state) {
+        const auto st = target_state->_operation.load(std::memory_order_relaxed);
+        if (st != shard_operation_state::stable) {
+            return std::make_exception_ptr(
+                shard_busy_exception<GroupId>{target._group_id, to_string(st)});
+        }
+    }
+
+    // Joint consensus. A membership change in flight on either side would move
+    // the replica sets out from under the colocation check we just made.
+    if (source_state && source_state->_node->get_cluster_size() != source._voters.size()) {
+        return std::make_exception_ptr(
+            shard_busy_exception<GroupId>{source._group_id, "configuration change in flight"});
+    }
+    if (target_state && target_state->_node->get_cluster_size() != target._voters.size()) {
+        return std::make_exception_ptr(
+            shard_busy_exception<GroupId>{target._group_id, "configuration change in flight"});
+    }
+    return nullptr;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const GroupId& target,
+                                                   std::chrono::milliseconds timeout)
+    -> future_type {
+    auto source_state = find_group(source);
+    auto target_state = find_group(target);
+    if (!source_state) {
+        return failed_future(std::make_exception_ptr(
+            unknown_shard_exception<GroupId>{source, "no local replica of the source"}));
+    }
+    if (!target_state) {
+        // Colocation is a precondition, so a host that leads the source and has
+        // no target replica is telling us the sets are not aligned.
+        return failed_future(
+            std::make_exception_ptr(shard_alignment_required_exception<GroupId, node_id_type>{
+                source, target, source_state->_descriptor._voters, {}}));
+    }
+    if (!source_state->_node->is_leader()) {
+        return failed_future(
+            std::make_exception_ptr(shard_not_leader_exception<GroupId, node_id_type>{
+                source, source_state->_node->known_leader()}));
+    }
+
+    const auto source_desc = source_state->_descriptor;
+    const auto target_desc = target_state->_descriptor;
+    if (auto problem =
+            check_merge_preconditions(source_desc, target_desc, source_state, target_state)) {
+        return failed_future(problem);
+    }
+
+    // `min_index` over the source's VOTERS bounds what `merge_commit` carries:
+    // every voter is known to hold everything up to it, so only the tail
+    // beyond it has to travel. Without it the commit entry would carry the
+    // source's whole log or its whole state.
+    //
+    // A down voter's stale match index drags this figure down and makes the
+    // carried tail larger — correct but wasteful. Design §12 open question 3
+    // covers the alternative; taking the minimum over live voters only would
+    // need a rule for a source replica that is behind `min_index`, and getting
+    // that wrong loses entries.
+    log_index_type min_index = std::numeric_limits<log_index_type>::max();
+    for (const auto& voter : source_desc._voters) {
+        const auto m = source_state->_node->match_index_of(voter);
+        min_index = std::min(min_index, m.value_or(log_index_type{0}));
+    }
+    if (min_index == std::numeric_limits<log_index_type>::max()) {
+        min_index = 0;
+    }
+
+    // Claim the source by transition, not by check-then-act: two channels
+    // proposing in the same interval is exactly what the operation state is
+    // for. Apply sets it again, idempotently, on every replica.
+    auto expected = shard_operation_state::stable;
+    if (!source_state->_operation.compare_exchange_strong(expected,
+                                                          shard_operation_state::merging_source)) {
+        return failed_future(
+            std::make_exception_ptr(shard_busy_exception<GroupId>{source, to_string(expected)}));
+    }
+
+    merge_prepare_command_type cmd{._source = source_desc,
+                                   ._target = target_desc,
+                                   ._min_index = static_cast<std::uint64_t>(min_index),
+                                   ._reason = merge_reason::admin};
+
+    _cfg.logger.info("Proposing merge_prepare", {{"source", detail::describe_value(source)},
+                                                 {"target", detail::describe_value(target)},
+                                                 {"min_index", std::to_string(min_index)}});
+
+    auto payload = encode_merge_prepare_command<GroupId, Key, node_id_type>(cmd, make_key_codec());
+    auto future = source_state->_node->propose_admin_entry(entry_type::merge_prepare,
+                                                           std::move(payload), timeout);
+
+    // A proposal that never commits would leave the source wedged in
+    // `merging_source` with nothing running, so the release is chained onto the
+    // failure path. On success, apply owns the state.
+    return std::move(future).thenTry([source_state](auto&& result) {
+        if (result.hasException()) {
+            source_state->_operation.store(shard_operation_state::stable);
+        }
+        return std::forward<decltype(result)>(result).value();
+    });
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::apply_merge_prepare(group_state& source,
+                                                          const merge_prepare_command_type& cmd,
+                                                          log_index_type at_index) -> void {
+    // Re-checked at apply, not merely at proposal: an entry proposed under one
+    // epoch can commit after the epoch has moved.
+    if (source._descriptor._epoch != cmd._source._epoch) {
+        _cfg.logger.warning("Skipping merge_prepare: source epoch moved",
+                            {{"source", detail::describe_value(source._group_id)}});
+        return;
+    }
+
+    {
+        std::lock_guard lock(source._merge_mutex);
+        if (source._merge_target.has_value()) {
+            return;  // replayed
+        }
+        source._merge_target = cmd._target._group_id;
+        source._merge_prepare_index = at_index;
+        source._merge_min_index = static_cast<log_index_type>(cmd._min_index);
+        source._merge_frozen_at = std::chrono::steady_clock::now();
+    }
+    // From here the source rejects proposals and reads. It is released ONLY by
+    // a `merge_rollback` in its own log — never by a timer, unless the operator
+    // has explicitly taken on `merge_lease_mode`'s clock assumption.
+    source._operation.store(shard_operation_state::merging_source);
+
+    fiu_do_on("raft/multiraft/merge/after_prepare",
+              throw shard_exception("chaos: merge/after_prepare"););
+
+    _cfg.logger.info("Source frozen for merge",
+                     {{"source", detail::describe_value(source._group_id)},
+                      {"target", detail::describe_value(cmd._target._group_id)},
+                      {"prepare_index", std::to_string(at_index)}});
+
+    // The prepare entry IS the notification. Colocation guarantees the machine
+    // leading the target holds a source replica, so it learns of the merge by
+    // applying this entry — no out-of-band channel, and no second place for the
+    // two sides to disagree about whether the merge started.
+    //
+    // DEFERRED, not called inline. This runs inside the SOURCE node's apply
+    // loop with the source's mutex held, and proposing on the target takes the
+    // TARGET's mutex. `apply_merge_commit` crosses the same two locks in the
+    // opposite direction — target's held, source's wanted — so doing both
+    // inline is a textbook ABBA deadlock. Deferring this one leaves exactly one
+    // crossing direction (target then source), which cannot deadlock, and the
+    // apply phase runs it on the target's own stripe with no node lock held.
+    defer_to_apply_phase(cmd._target._group_id,
+                         [this, cmd] { this->maybe_propose_merge_commit(cmd); });
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::maybe_propose_merge_commit(
+    const merge_prepare_command_type& cmd) -> void {
+    auto target = find_group(cmd._target._group_id);
+    if (!target || !target->_node->is_leader()) {
+        return;  // some other machine leads the target; it will do this.
+    }
+
+    {
+        std::lock_guard lock(target->_merge_mutex);
+        if (target->_merge_abandoned) {
+            // This target already committed `merge_abandoned` for this merge.
+            // Once abandoned, never committed: both decisions are made by this
+            // one log, which is what makes them mutually exclusive.
+            return;
+        }
+        if (target->_merge_commit_proposed) {
+            return;  // already under way
+        }
+        target->_merge_commit_proposed = true;
+        target->_merge_source = cmd._source._group_id;
+    }
+    target->_operation.store(shard_operation_state::merging_target);
+
+    auto source = find_group(cmd._source._group_id);
+    if (!source) {
+        return;
+    }
+
+    // Carry the tail `(min_index, prepare_index]` so that every target replica
+    // can bring its own local source replica to exactly the prepare index
+    // before reading its state. That is what makes the absorb deterministic
+    // across target replicas — they all read the same source.
+    merge_commit_command_type commit{
+        ._source = cmd._source, ._target = cmd._target, ._prepare_index = 0, ._entries = {}};
+    {
+        std::lock_guard lock(source->_merge_mutex);
+        commit._prepare_index = static_cast<std::uint64_t>(source->_merge_prepare_index);
+    }
+    const auto from = static_cast<log_index_type>(cmd._min_index) + 1;
+    const auto to = static_cast<log_index_type>(commit._prepare_index);
+    commit._entries = source->_node->log_entries_between(from, to);
+
+    _cfg.logger.info("Proposing merge_commit",
+                     {{"source", detail::describe_value(cmd._source._group_id)},
+                      {"target", detail::describe_value(cmd._target._group_id)},
+                      {"tail_entries", std::to_string(commit._entries.size())}});
+
+    auto payload = encode_merge_commit_command<GroupId, Key, node_id_type, log_entry_type>(
+        commit, make_key_codec());
+    std::ignore = target->_node->propose_admin_entry(entry_type::merge_commit, std::move(payload),
+                                                     std::chrono::seconds{30});
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
+    group_state& target, const merge_commit_command_type& cmd,
+    typename Types::state_machine_type& target_sm) -> void {
+    // Idempotence first, as in split apply: a replayed commit must be a no-op.
+    if (target._descriptor._range.covers(cmd._source._range)) {
+        return;
+    }
+
+    auto source = find_group(cmd._source._group_id);
+    if (!source) {
+        // No local source replica means colocation was violated between the
+        // proposal and now. Absorbing nothing would silently lose the source's
+        // whole range, so this fails loudly instead.
+        throw shard_alignment_required_exception<GroupId, node_id_type>{
+            cmd._source._group_id, target._group_id, cmd._source._voters,
+            target._descriptor._voters};
+    }
+
+    // (a) Force-apply the carried tail to the LOCAL source replica, so it
+    //     stands exactly at the prepare index. Only entries this replica has
+    //     NOT applied are replayed: re-applying a command is safe only for a
+    //     state machine whose commands happen to be idempotent, which the
+    //     `state_machine` concept does not require.
+    std::vector<std::byte> source_state_bytes;
+    const auto already_applied = source->_node->last_applied_index();
+    source->_node->with_state_machine([&](typename Types::state_machine_type& source_sm) {
+        for (const auto& e : cmd._entries) {
+            if (e.index() > already_applied && e.type() == entry_type::normal &&
+                !e.command().empty()) {
+                std::ignore = source_sm.apply(e.command(), e.index());
+            }
+        }
+        fiu_do_on("raft/multiraft/merge/mid_commit_catchup",
+                  throw shard_exception("chaos: merge/mid_commit_catchup"););
+        source_state_bytes = source_sm.get_state();
+    });
+
+    // (b) Absorb. Deterministic by contract, and the exact inverse of
+    //     `split_state` — the round-trip law is what makes this safe.
+    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+        target_sm.absorb(source_state_bytes, cmd._source._range);
+    } else {
+        throw shard_exception(
+            "merge apply: the state machine cannot absorb; "
+            "splittable_state_machine is required for merge");
+    }
+
+    // (c) Extend the range over the source's, and (d) take
+    //     `version = max(src, tgt).version + 1`.
+    auto survivor = target._descriptor;
+    if (cmd._source._range.is_adjacent_left_of(survivor._range)) {
+        survivor._range._start = cmd._source._range._start;
+    } else {
+        survivor._range._end = cmd._source._range._end;
+    }
+    survivor._epoch._version =
+        std::max(cmd._source._epoch._version, target._descriptor._epoch._version) + 1;
+    target._descriptor = survivor;
+
+    fiu_do_on("raft/multiraft/merge/after_absorb_before_destroy",
+              throw shard_exception("chaos: merge/after_absorb_before_destroy"););
+
+    // (e) Destroy and tombstone the local source replica.
+    //
+    // The correctness-critical half happens NOW, synchronously: the source is
+    // unregistered from the transport and tombstoned, so it can neither serve
+    // nor be resurrected. The expensive half — stopping the node, which joins
+    // threads — is deferred to the host's apply phase, because doing it here
+    // would join threads while holding the target node's mutex, and would
+    // deadlock outright if the source happened to share the target's stripe.
+    const auto source_group = cmd._source._group_id;
+    _demux.unregister_group(source_group);
+    {
+        std::lock_guard lock(_tombstone_mutex);
+        _tombstones.insert(source_group, tombstone_reason::merged_away,
+                           std::chrono::system_clock::now());
+    }
+    {
+        std::unique_lock lock(_registry_mutex);
+        _groups.erase(source_group);
+    }
+    {
+        std::unique_lock lock(_map_mutex);
+        _shard_map.erase_group(source_group);
+        _shard_map.upsert(survivor);
+    }
+    // `source` is the last strong reference; handing it to the apply phase is
+    // what keeps the node alive until it can be stopped off this thread.
+    defer_to_apply_phase(target._group_id, [source]() mutable {
+        source->_node->stop();
+        source->_node.reset();
+    });
+
+    target._operation.store(shard_operation_state::stable);
+    {
+        std::lock_guard lock(target._merge_mutex);
+        target._merge_source.reset();
+        target._merge_commit_proposed = false;
+    }
+    _applied_merges.fetch_add(1, std::memory_order_relaxed);
+    persist_tombstones();
+
+#ifndef NDEBUG
+    if (auto problem = shard_map_snapshot().check_tiling(); problem.has_value()) {
+        _cfg.logger.error(
+            "Merge broke the tiling invariant",
+            {{"target", detail::describe_value(target._group_id)}, {"problem", *problem}});
+    }
+#endif
+
+    _cfg.logger.info("Applied merge", {{"source", detail::describe_value(source_group)},
+                                       {"target", detail::describe_value(target._group_id)},
+                                       {"new_version", std::to_string(survivor._epoch._version)}});
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::apply_merge_rollback(group_state& source,
+                                                           const merge_rollback_command_type& cmd)
+    -> void {
+    {
+        std::lock_guard lock(source._merge_mutex);
+        if (!source._merge_target.has_value()) {
+            return;  // replayed, or never frozen
+        }
+        source._merge_target.reset();
+        source._merge_prepare_index = 0;
+        source._merge_min_index = 0;
+    }
+    source._operation.store(shard_operation_state::stable);
+    _rolled_back_merges.fetch_add(1, std::memory_order_relaxed);
+    _cfg.logger.info("Merge rolled back; source resumes serving",
+                     {{"source", detail::describe_value(source._group_id)},
+                      {"target", detail::describe_value(cmd._target_group)}});
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::apply_merge_abandoned(group_state& target,
+                                                            const merge_abandoned_command_type& cmd)
+    -> void {
+    // A committed fact in the TARGET's own log. A target leader failover cannot
+    // lose it: the new leader replays this entry and inherits the refusal to
+    // commit. That is the whole reason the abandon is a log entry rather than a
+    // message.
+    {
+        std::lock_guard lock(target._merge_mutex);
+        target._merge_abandoned = true;
+        target._merge_source.reset();
+        target._merge_commit_proposed = false;
+    }
+    if (target._operation.load(std::memory_order_relaxed) ==
+        shard_operation_state::merging_target) {
+        target._operation.store(shard_operation_state::stable);
+    }
+    _cfg.logger.info("Merge abandoned by the target",
+                     {{"source", detail::describe_value(cmd._source_group)},
+                      {"target", detail::describe_value(target._group_id)}});
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::abandon_merge(const GroupId& source,
+                                                    std::chrono::milliseconds timeout)
+    -> future_type {
+    auto source_state = find_group(source);
+    if (!source_state) {
+        return failed_future(
+            std::make_exception_ptr(unknown_shard_exception<GroupId>{source, "no local replica"}));
+    }
+
+    GroupId target_group{};
+    {
+        std::lock_guard lock(source_state->_merge_mutex);
+        if (!source_state->_merge_target.has_value()) {
+            return failed_future(std::make_exception_ptr(
+                shard_busy_exception<GroupId>{source, "not frozen for a merge"}));
+        }
+        target_group = *source_state->_merge_target;
+    }
+
+    auto target_state = find_group(target_group);
+    if (!target_state || !target_state->_node->is_leader()) {
+        // The abandon has to be recorded in the TARGET's log, so only the
+        // target's leader can do it. A source stuck here stays frozen —
+        // unavailable but correct — which is the trade design §5.7 makes.
+        _cfg.logger.warning("Merge stalled: cannot reach the target's leader to abandon",
+                            {{"source", detail::describe_value(source)},
+                             {"target", detail::describe_value(target_group)}});
+        return failed_future(
+            std::make_exception_ptr(shard_merging_exception<GroupId>{source, target_group}));
+    }
+
+    {
+        std::lock_guard lock(target_state->_merge_mutex);
+        if (target_state->_merge_commit_proposed) {
+            // Commit always wins. Once proposed, the target refuses to abandon,
+            // because a source that resumed while a target replica had already
+            // applied the commit would mean two shards owning one range.
+            return failed_future(std::make_exception_ptr(
+                shard_busy_exception<GroupId>{target_group, "merge_commit already proposed"}));
+        }
+    }
+
+    merge_abandoned_command_type abandoned{._source_group = source, ._target_group = target_group};
+    auto payload = encode_merge_abandoned_command<GroupId>(abandoned);
+    auto future = target_state->_node->propose_admin_entry(entry_type::merge_abandoned,
+                                                           std::move(payload), timeout);
+
+    // The source proposes `merge_rollback` only after OBSERVING the committed
+    // abandon record — never on the strength of having asked for it.
+    auto self = this;
+    const auto src = source;
+    const auto tgt = target_group;
+    return std::move(future).thenValue([self, src, tgt, timeout](auto&& value) {
+        auto source_state = self->find_group(src);
+        if (!source_state || !source_state->_node->is_leader()) {
+            return std::forward<decltype(value)>(value);
+        }
+        fiu_do_on("raft/multiraft/merge/after_abandon_before_rollback",
+                  throw shard_exception("chaos: merge/after_abandon_before_rollback"););
+        merge_rollback_command_type rollback{._source_group = src, ._target_group = tgt};
+        auto rollback_payload = encode_merge_rollback_command<GroupId>(rollback);
+        std::ignore = source_state->_node->propose_admin_entry(
+            entry_type::merge_rollback, std::move(rollback_payload), timeout);
+        return std::forward<decltype(value)>(value);
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Client routing
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1381,6 +1930,31 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
                     desc->_group_id, command_key, local->_descriptor._range});
                 break;
             }
+        }
+
+        // ── the merge freeze ─────────────────────────────────────────────────
+        //
+        // A source that has applied `merge_prepare` no longer owns its range in
+        // any useful sense: the target is about to take it. Serving a proposal
+        // or a read here would produce a write the survivor never absorbs, or a
+        // read of state that is about to move. The client backs off and retries;
+        // the retry either succeeds against the source again (the merge rolled
+        // back) or is redirected by an epoch mismatch (it committed).
+        if (local->_operation.load(std::memory_order_relaxed) ==
+            shard_operation_state::merging_source) {
+            GroupId merge_target{};
+            {
+                std::lock_guard merge_lock(local->_merge_mutex);
+                merge_target = local->_merge_target.value_or(GroupId{});
+            }
+            last_error = std::make_exception_ptr(
+                shard_merging_exception<GroupId>{desc->_group_id, merge_target});
+            if (attempt < _cfg.max_route_retries) {
+                std::this_thread::sleep_for(_cfg.route_retry_backoff);
+                refresh_map_from_local_groups();
+                continue;
+            }
+            break;
         }
 
         // ── leadership ───────────────────────────────────────────────────────

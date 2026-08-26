@@ -743,6 +743,8 @@ add_raft_completion_test(splittable_state_machine_unit_test splittable_state_mac
 add_raft_completion_test(shard_commands_unit_test shard_commands_unit_test.cpp)
 add_raft_completion_test(multi_raft_split_integration_test
                          multi_raft_split_integration_test.cpp)
+add_raft_completion_test(multi_raft_merge_integration_test
+                         multi_raft_merge_integration_test.cpp)
 
 # Peer-to-peer log replication (gossip catch-up) — .kiro/specs/peer2peer-log-replication/
 add_raft_completion_test(peer2peer_replication_unit_test peer2peer_replication_unit_test.cpp)
