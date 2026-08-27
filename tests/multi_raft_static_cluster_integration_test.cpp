@@ -352,7 +352,7 @@ public:
                                            std::chrono::milliseconds{2000});
                 if (f.wait(std::chrono::milliseconds{2000})) {
                     try {
-                        std::ignore = f.get();
+                        std::ignore = std::move(f).get();
                         return true;
                     } catch (...) {
                         // Leadership moved between the check and the submit;

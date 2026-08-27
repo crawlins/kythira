@@ -294,7 +294,7 @@ BOOST_AUTO_TEST_CASE(an_admin_entry_fires_on_every_replica_at_the_same_index,
     auto f = leader->propose_admin_entry(entry_type::split, payload_of("split-payload"),
                                          std::chrono::milliseconds{5000});
     BOOST_REQUIRE(f.wait(std::chrono::milliseconds{5000}));
-    BOOST_CHECK_NO_THROW(std::ignore = f.get());
+    BOOST_CHECK_NO_THROW(std::ignore = std::move(f).get());
 
     // Every replica, not just the leader — the property that makes split and
     // merge deterministic without a second protocol to tell followers.
@@ -327,12 +327,12 @@ BOOST_AUTO_TEST_CASE(an_admin_entry_never_reaches_the_state_machine,
         leader->submit_command(host_types::state_machine_type::make_put_command("alpha", "1"),
                                std::chrono::milliseconds{5000});
     BOOST_REQUIRE(normal.wait(std::chrono::milliseconds{5000}));
-    BOOST_CHECK_NO_THROW(std::ignore = normal.get());
+    BOOST_CHECK_NO_THROW(std::ignore = std::move(normal).get());
 
     auto admin = leader->propose_admin_entry(entry_type::merge_prepare, payload_of("prepare"),
                                              std::chrono::milliseconds{5000});
     BOOST_REQUIRE(admin.wait(std::chrono::milliseconds{5000}));
-    BOOST_CHECK_NO_THROW(std::ignore = admin.get());
+    BOOST_CHECK_NO_THROW(std::ignore = std::move(admin).get());
 
     BOOST_REQUIRE(g.await_observations(k_node_count, std::chrono::seconds{20}));
 
@@ -381,7 +381,7 @@ BOOST_AUTO_TEST_CASE(all_five_admin_types_are_routed_to_the_handler,
         BOOST_REQUIRE(leader != nullptr);
         auto f = leader->propose_admin_entry(t, payload_of("p"), std::chrono::milliseconds{5000});
         BOOST_REQUIRE(f.wait(std::chrono::milliseconds{5000}));
-        BOOST_CHECK_NO_THROW(std::ignore = f.get());
+        BOOST_CHECK_NO_THROW(std::ignore = std::move(f).get());
     }
 
     BOOST_REQUIRE(g.await_observations(types.size() * k_node_count, std::chrono::seconds{30}));
@@ -403,7 +403,7 @@ BOOST_AUTO_TEST_CASE(a_non_admin_type_is_refused_rather_than_silently_losing_the
     for (auto t : {entry_type::normal, entry_type::configuration, entry_type::no_op}) {
         auto f = leader->propose_admin_entry(t, payload_of("p"), std::chrono::milliseconds{1000});
         BOOST_REQUIRE(f.wait(std::chrono::milliseconds{1000}));
-        BOOST_CHECK_THROW(std::ignore = f.get(), std::invalid_argument);
+        BOOST_CHECK_THROW(std::ignore = std::move(f).get(), std::invalid_argument);
     }
     BOOST_CHECK(g.observations().empty());
 }
@@ -421,7 +421,7 @@ BOOST_AUTO_TEST_CASE(a_follower_refuses_to_propose_an_admin_entry,
         auto f = g.node(id)->propose_admin_entry(entry_type::split, payload_of("p"),
                                                  std::chrono::milliseconds{1000});
         BOOST_REQUIRE(f.wait(std::chrono::milliseconds{1000}));
-        BOOST_CHECK_THROW(std::ignore = f.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::ignore = std::move(f).get(), std::runtime_error);
     }
 }
 
@@ -481,7 +481,7 @@ BOOST_AUTO_TEST_CASE(removing_the_handler_leaves_the_entry_applied_as_a_no_op,
     auto f = leader->propose_admin_entry(entry_type::split, payload_of("p"),
                                          std::chrono::milliseconds{5000});
     BOOST_REQUIRE(f.wait(std::chrono::milliseconds{5000}));
-    BOOST_CHECK_NO_THROW(std::ignore = f.get());
+    BOOST_CHECK_NO_THROW(std::ignore = std::move(f).get());
     BOOST_CHECK(g.observations().empty());
 
     // And the group is still usable afterwards.
@@ -489,7 +489,7 @@ BOOST_AUTO_TEST_CASE(removing_the_handler_leaves_the_entry_applied_as_a_no_op,
         leader->submit_command(host_types::state_machine_type::make_put_command("beta", "2"),
                                std::chrono::milliseconds{5000});
     BOOST_REQUIRE(after.wait(std::chrono::milliseconds{5000}));
-    BOOST_CHECK_NO_THROW(std::ignore = after.get());
+    BOOST_CHECK_NO_THROW(std::ignore = std::move(after).get());
 }
 
 BOOST_AUTO_TEST_CASE(a_throwing_handler_does_not_stall_the_apply_loop,
@@ -510,13 +510,13 @@ BOOST_AUTO_TEST_CASE(a_throwing_handler_does_not_stall_the_apply_loop,
     auto f = leader->propose_admin_entry(entry_type::split, payload_of("p"),
                                          std::chrono::milliseconds{5000});
     BOOST_REQUIRE(f.wait(std::chrono::milliseconds{5000}));
-    BOOST_CHECK_NO_THROW(std::ignore = f.get());
+    BOOST_CHECK_NO_THROW(std::ignore = std::move(f).get());
 
     auto after =
         leader->submit_command(host_types::state_machine_type::make_put_command("gamma", "3"),
                                std::chrono::milliseconds{5000});
     BOOST_REQUIRE(after.wait(std::chrono::milliseconds{5000}));
-    BOOST_CHECK_NO_THROW(std::ignore = after.get());
+    BOOST_CHECK_NO_THROW(std::ignore = std::move(after).get());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

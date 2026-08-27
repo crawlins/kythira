@@ -249,7 +249,7 @@ public:
                     std::chrono::milliseconds{2000});
                 if (f.wait(std::chrono::milliseconds{2000})) {
                     try {
-                        std::ignore = f.get();
+                        std::ignore = std::move(f).get();
                         return true;
                     } catch (...) {
                     }
@@ -432,7 +432,7 @@ public:
             _host->tick();
         }
         try {
-            std::ignore = f.get();
+            std::ignore = std::move(f).get();
             return nullptr;
         } catch (...) {
             return std::current_exception();
@@ -451,7 +451,7 @@ public:
             _host->tick();
         }
         try {
-            std::ignore = f.get();
+            std::ignore = std::move(f).get();
         } catch (...) {
             return false;
         }
@@ -470,7 +470,7 @@ auto settle(Future&& f, std::chrono::milliseconds budget = std::chrono::millisec
         return std::make_exception_ptr(std::runtime_error("settle: future never resolved"));
     }
     try {
-        std::ignore = f.get();
+        std::ignore = std::move(f).get();
         return nullptr;
     } catch (...) {
         return std::current_exception();
@@ -631,7 +631,7 @@ BOOST_AUTO_TEST_CASE(a_frozen_source_refuses_proposals_and_reads, *boost::unit_t
     BOOST_REQUIRE(read.wait(std::chrono::milliseconds{2000}));
     bool read_refused = false;
     try {
-        std::ignore = read.get();
+        std::ignore = std::move(read).get();
     } catch (const merging&) {
         read_refused = true;
     } catch (...) {
@@ -659,7 +659,7 @@ BOOST_AUTO_TEST_CASE(a_frozen_source_resumes_serving_after_a_rollback,
         h.host().tick();
     }
     BOOST_REQUIRE(f.wait(std::chrono::milliseconds{100}));
-    BOOST_CHECK_NO_THROW(std::ignore = f.get());
+    BOOST_CHECK_NO_THROW(std::ignore = std::move(f).get());
 
     BOOST_REQUIRE(h.tick_until(
         [&] { return h.host().operation_state(k_right) == shard_operation_state::stable; }));

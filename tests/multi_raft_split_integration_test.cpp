@@ -272,7 +272,7 @@ public:
                     std::chrono::milliseconds{2000});
                 if (f.wait(std::chrono::milliseconds{2000})) {
                     try {
-                        std::ignore = f.get();
+                        std::ignore = std::move(f).get();
                         return true;
                     } catch (...) {
                     }
@@ -392,7 +392,7 @@ auto settle(Future&& f, std::chrono::milliseconds budget = std::chrono::millisec
         return std::make_exception_ptr(std::runtime_error("settle: future never resolved"));
     }
     try {
-        std::ignore = f.get();
+        std::ignore = std::move(f).get();
         return nullptr;
     } catch (...) {
         return std::current_exception();
@@ -946,7 +946,7 @@ BOOST_AUTO_TEST_CASE(a_message_for_a_tombstoned_group_never_creates_a_replica,
                                                                                ._group_id = 600},
                                        std::chrono::milliseconds{2000});
     BOOST_REQUIRE(f.wait(std::chrono::milliseconds{2000}));
-    BOOST_CHECK(!f.get().success());
+    BOOST_CHECK(!std::move(f).get().success());
 
     BOOST_CHECK(c.host(1).group_node(600) == nullptr);
     BOOST_CHECK_GT(c.host(1).stale_group_message_count(), stale_before);
