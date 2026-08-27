@@ -493,8 +493,17 @@ BOOST_AUTO_TEST_CASE(shard_stats_report_what_the_policy_needs, *boost::unit_test
     BOOST_CHECK_EQUAL(stats->_approximate_key_count, workload_keys().size());
     BOOST_CHECK_GT(stats->_approximate_size_bytes, 0u);
     // Load is counted at the routing layer, which is what makes load-based
-    // split work for a state machine with no sizing hooks at all.
-    BOOST_CHECK_EQUAL(stats->_write_qps, static_cast<double>(workload_keys().size()));
+    // split work for a state machine with no sizing hooks at all — and it is
+    // reported as a RATE, derived on the policy tick from two observations of
+    // the cumulative counters. Before the second tick there is no interval to
+    // divide by, so the honest answer is zero rather than a count wearing the
+    // units of a rate.
+    BOOST_CHECK_EQUAL(stats->_write_qps, 0.0);
+    for (int i = 0; i < 4; ++i) {
+        h.host().tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    BOOST_CHECK_GE(h.host().stats_for(k_group)->_write_qps, 0.0);
     BOOST_CHECK_GT(stats->_last_applied_index, 0u);
     BOOST_CHECK_EQUAL(stats->_voter_count, 1u);
 
@@ -756,6 +765,109 @@ BOOST_AUTO_TEST_CASE(apply_latency_is_populated, *boost::unit_test::timeout(120)
     auto stats = h.host().stats_for(k_group);
     BOOST_REQUIRE(stats.has_value());
     BOOST_CHECK_GT(stats->_p99_apply_latency.count(), 0);
+}
+
+// ── channel (c′): the load sampler wired into the host ───────────────────────
+
+BOOST_AUTO_TEST_CASE(a_sustained_key_addressed_load_produces_a_load_split,
+                     *boost::unit_test::timeout(180)) {
+    // End to end through the host: the routing layer feeds the sampler, the
+    // policy tick derives rates and advances it, the hot key reaches
+    // `shard_stats`, and the default policy turns it into a split whose reason
+    // is the load — on a shard far too small for the size trigger to fire.
+    arbiter_host h{[](config_type& cfg) {
+        cfg.load_split._enabled = true;
+        cfg.load_split._qps_threshold = 1.0;
+        cfg.load_split._bytes_threshold = 1e12;
+        cfg.load_split._duration = std::chrono::milliseconds{100};
+        cfg.load_split._one_sided_fraction = 0.99;
+        cfg.load_split._seed = 20260826;
+
+        kythira::threshold_split_merge_policy_config policy_cfg;
+        policy_cfg._load_split_enabled = true;
+        policy_cfg._load_split_qps_threshold = 1.0;
+        // Far out of reach, so a size or key-count split cannot be what fires.
+        policy_cfg._shard_split_size_bytes = 1ULL << 40;
+        policy_cfg._shard_max_size_bytes = 1ULL << 41;
+        policy_cfg._shard_split_keys = 1'000'000'000;
+        policy_cfg._shard_max_keys = 2'000'000'000;
+        policy_cfg._shard_merge_max_size_bytes = 1;
+        policy_cfg._shard_merge_max_keys = 1;
+        auto policy = std::make_shared<policy_type>(policy_cfg);
+        cfg.evaluate_split = [policy](const stats_type& s) { return policy->evaluate_split(s); };
+        cfg.policy_interval = std::chrono::milliseconds{20};
+        cfg.split_merge_interval = std::chrono::milliseconds{0};
+    }};
+    BOOST_REQUIRE(h.await_leader());
+
+    // Balanced traffic across the key space, sustained past the window.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+    while (h.host().applied_split_count() == 0 && std::chrono::steady_clock::now() < deadline) {
+        for (const auto& k : workload_keys()) {
+            std::ignore = h.put(k, "v");
+        }
+        h.host().tick();
+    }
+
+    BOOST_CHECK_MESSAGE(h.host().applied_split_count() >= 1u,
+                        "a sustained balanced load should produce a load split");
+    BOOST_CHECK(!h.host().shard_map_snapshot().check_tiling().has_value());
+
+    // The sampler's own account of what it did. "No load split happened" is the
+    // same observable outcome for a cold shard, a spike that ended early and a
+    // shard backed off after a single-hot-key verdict; only these counters tell
+    // them apart.
+    const auto counters = h.host().load_sampler_counters(k_group).value();
+    BOOST_CHECK_GE(counters[0], 1u);     // windows started
+    BOOST_CHECK_GE(counters[3], 1u);     // proposals
+    BOOST_CHECK_EQUAL(counters[2], 0u);  // no single-hot-key verdict
+}
+
+BOOST_AUTO_TEST_CASE(a_load_concentrated_on_one_key_produces_no_split,
+                     *boost::unit_test::timeout(180)) {
+    // The split storm this prevents: the key is indivisible, so the split would
+    // not help, the shard would still be hot, and it would propose again —
+    // shrinking shards toward one key each.
+    arbiter_host h{[](config_type& cfg) {
+        cfg.load_split._enabled = true;
+        cfg.load_split._qps_threshold = 1.0;
+        cfg.load_split._bytes_threshold = 1e12;
+        cfg.load_split._duration = std::chrono::milliseconds{100};
+        cfg.load_split._one_sided_fraction = 0.99;
+        cfg.load_split._seed = 20260826;
+
+        kythira::threshold_split_merge_policy_config policy_cfg;
+        policy_cfg._load_split_enabled = true;
+        policy_cfg._load_split_qps_threshold = 1.0;
+        policy_cfg._shard_split_size_bytes = 1ULL << 40;
+        policy_cfg._shard_max_size_bytes = 1ULL << 41;
+        policy_cfg._shard_split_keys = 1'000'000'000;
+        policy_cfg._shard_max_keys = 2'000'000'000;
+        policy_cfg._shard_merge_max_size_bytes = 1;
+        policy_cfg._shard_merge_max_keys = 1;
+        auto policy = std::make_shared<policy_type>(policy_cfg);
+        cfg.evaluate_split = [policy](const stats_type& s) { return policy->evaluate_split(s); };
+        cfg.policy_interval = std::chrono::milliseconds{20};
+        cfg.split_merge_interval = std::chrono::milliseconds{0};
+    }};
+    BOOST_REQUIRE(h.await_leader());
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::ignore = h.put("echo", "v");
+        h.host().tick();
+    }
+
+    BOOST_CHECK_EQUAL(h.host().applied_split_count(), 0u);
+
+    // ...and the reason is recorded: the sampler saw the load, found it
+    // concentrated on one key, and backed the shard off rather than proposing
+    // a split that could not have helped.
+    const auto counters = h.host().load_sampler_counters(k_group).value();
+    BOOST_CHECK_GE(counters[2], 1u);     // single-hot-key verdicts
+    BOOST_CHECK_EQUAL(counters[3], 0u);  // proposals
+    BOOST_CHECK(h.host().load_sampler_state_of(k_group) ==
+                std::optional{kythira::load_sampler_state::backoff});
 }
 
 BOOST_AUTO_TEST_SUITE_END()

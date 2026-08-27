@@ -747,6 +747,7 @@ add_raft_completion_test(multi_raft_merge_integration_test
                          multi_raft_merge_integration_test.cpp)
 add_raft_completion_test(split_merge_policy_unit_test split_merge_policy_unit_test.cpp)
 add_raft_completion_test(multi_raft_arbiter_unit_test multi_raft_arbiter_unit_test.cpp)
+add_raft_completion_test(load_split_sampler_unit_test load_split_sampler_unit_test.cpp)
 add_raft_completion_test(latency_digest_unit_test latency_digest_unit_test.cpp)
 add_raft_completion_test(composite_policy_unit_test composite_policy_unit_test.cpp)
 add_raft_completion_test(shard_placement_driver_unit_test shard_placement_driver_unit_test.cpp)

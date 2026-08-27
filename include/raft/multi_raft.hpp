@@ -38,10 +38,12 @@
 #include <raft/shard_exceptions.hpp>
 #include <raft/shard_map.hpp>
 #include <raft/latency_digest.hpp>
+#include <raft/load_split_sampler.hpp>
 #include <raft/shard_placement_driver.hpp>
 #include <raft/shard_types.hpp>
 #include <raft/striped_executor.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -404,6 +406,14 @@ struct multi_raft_config {
     /// How often the policy phase runs. Policy evaluation is far coarser than
     /// the tick and running it every tick would dominate the loop.
     std::chrono::milliseconds policy_interval{std::chrono::seconds{10}};
+
+    /// @brief Channel (c′): the load-based split sampler (design §6.3).
+    ///
+    /// Off by default. When off, its cost is one predictably-taken branch per
+    /// routed request (Requirement 9.7) — `observe()` returns on a state check
+    /// before touching anything else, and the host never takes the sampler
+    /// lock at all.
+    load_split_sampler_config load_split{};
 
     /// @brief Sub-windows in each group's latency digest (design §6.1.4).
     ///
@@ -842,6 +852,20 @@ public:
     [[nodiscard]] auto stats_for(const GroupId& group) const
         -> std::optional<shard_stats<GroupId, Key, node_id_type>>;
 
+    /// @brief What channel (c′)'s sampler is doing for one shard.
+    ///
+    /// Diagnostic, and not a luxury: "no load split happened" is the same
+    /// observable outcome for a cold shard, a shard mid-window, a shard whose
+    /// spike ended early, and a shard backed off after a single-hot-key
+    /// verdict. Only the last is something an operator can act on.
+    [[nodiscard]] auto load_sampler_state_of(const GroupId& group) const
+        -> std::optional<load_sampler_state>;
+
+    /// @brief The sampler's counters for one shard: windows started, spikes
+    ///        abandoned, single-hot-key verdicts, proposals.
+    [[nodiscard]] auto load_sampler_counters(const GroupId& group) const
+        -> std::optional<std::array<std::uint64_t, 4>>;
+
     /// @brief How many operations the arbiter has refused, by gate.
     [[nodiscard]] auto rejection_count(arbiter_gate gate) const -> std::uint64_t;
 
@@ -1124,8 +1148,11 @@ private:
     struct group_state {
         /// @param latency_windows Sub-windows in each latency digest's ring;
         ///        see `multi_raft_config::latency_window_count`.
-        explicit group_state(std::size_t latency_windows = latency_digest::k_default_windows)
-            : _read_latency(latency_windows), _apply_latency(latency_windows) {}
+        explicit group_state(std::size_t latency_windows = latency_digest::k_default_windows,
+                             load_split_sampler_config sampler = {})
+            : _load_sampler(sampler),
+              _read_latency(latency_windows),
+              _apply_latency(latency_windows) {}
 
         GroupId _group_id{};
         std::size_t _stripe{0};
@@ -1141,8 +1168,41 @@ private:
         std::vector<std::function<void()>> _deferred;
 
         /// Load counters, read by the policy channel from Phase 9 onward.
+        ///
+        /// Cumulative. The *rates* below are derived from them on the policy
+        /// tick, which is the only place with two observations and the interval
+        /// between them.
         std::atomic<std::uint64_t> _reads{0};
         std::atomic<std::uint64_t> _writes{0};
+        std::atomic<std::uint64_t> _read_bytes{0};
+        std::atomic<std::uint64_t> _write_bytes{0};
+
+        /// Rates as of the last policy tick, in per-second units. Published in
+        /// `shard_stats` and used as the sampler's entry test — a cumulative
+        /// count cannot be compared against a threshold expressed in QPS.
+        std::atomic<double> _read_qps{0.0};
+        std::atomic<double> _write_qps{0.0};
+        std::atomic<double> _read_bytes_per_sec{0.0};
+        std::atomic<double> _write_bytes_per_sec{0.0};
+
+        /// Previous observation, for the rate derivation. Touched only on the
+        /// policy tick, which runs on this group's stripe.
+        std::uint64_t _prev_reads{0};
+        std::uint64_t _prev_writes{0};
+        std::uint64_t _prev_read_bytes{0};
+        std::uint64_t _prev_write_bytes{0};
+        std::chrono::steady_clock::time_point _rate_sampled_at{};
+
+        /// @brief The load sampler and the hot keys it last produced.
+        ///
+        /// The sampler is not thread-safe by design — it holds a reservoir and
+        /// a state machine, and a lock inside it would put one on the request
+        /// path. The host takes `_sampler_mutex` around it instead, and only
+        /// when sampling is configured on, so the disabled case never
+        /// contends.
+        mutable std::mutex _sampler_mutex;
+        load_split_sampler<Key> _load_sampler;
+        std::vector<hot_key_sample<Key>> _hot_keys;
 
         /// @brief Latency percentiles over a bounded recent window (design
         ///        §6.1.4), rotated on the policy tick.
@@ -1302,6 +1362,13 @@ private:
     }
     auto publish_report(group_state& g) -> void;
     auto note_merge_veto(const GroupId& group, const char* policy, merge_reason reason) -> void;
+
+    /// @brief Turn the cumulative load counters into per-second rates, and
+    ///        advance channel (c′)'s sampler off them.
+    ///
+    /// Called once per policy tick, which is the only place holding two
+    /// observations and the interval between them.
+    auto update_load_rates(group_state& g, std::chrono::steady_clock::time_point now) -> void;
 
     /// @brief Channel (a): ask the policy about every local leader, once per
     /// `policy_interval`.
