@@ -145,6 +145,14 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::create_group(
     const descriptor_type& descriptor,
     const std::function<void(typename Types::persistence_engine_type&)>& seed) -> void {
+    create_group_impl(descriptor, seed, true);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::create_group_impl(
+    const descriptor_type& descriptor,
+    const std::function<void(typename Types::persistence_engine_type&)>& seed, bool publish)
+    -> void {
     const auto& group = descriptor._group_id;
 
     {
@@ -201,7 +209,7 @@ auto multi_raft<Types, Key, GroupId>::create_group(
             throw unknown_shard_exception<GroupId>{group, "already exists on this node"};
         }
     }
-    {
+    if (publish) {
         std::unique_lock lock(_map_mutex);
         _shard_map.upsert(descriptor);
     }
@@ -1358,13 +1366,46 @@ auto multi_raft<Types, Key, GroupId>::replay_admin_entry(const GroupId& group,
     if (!g || !is_admin_entry_type(entry.type())) {
         return false;
     }
+    // Every administration entry type, not only `split`. Handling one and
+    // silently ignoring the rest while still returning `true` was worse than
+    // not handling them at all: a caller replaying a `merge_commit` after a
+    // crash got a success report for work that never happened, and the source
+    // shard stayed alive holding a range the survivor had already absorbed.
+    //
     // Through `with_state_machine` so the replay takes the same lock and sees
     // the same state machine reference the apply loop would hand the handler.
     g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
-        if (entry.type() == entry_type::split) {
-            auto cmd =
-                decode_split_command<GroupId, Key, node_id_type>(entry.command(), make_key_codec());
-            apply_split(*g, cmd, index, entry.term(), sm);
+        switch (entry.type()) {
+            case entry_type::split: {
+                auto cmd = decode_split_command<GroupId, Key, node_id_type>(entry.command(),
+                                                                            make_key_codec());
+                apply_split(*g, cmd, index, entry.term(), sm);
+                break;
+            }
+            case entry_type::merge_prepare: {
+                auto cmd = decode_merge_prepare_command<GroupId, Key, node_id_type>(
+                    entry.command(), make_key_codec());
+                apply_merge_prepare(*g, cmd, index);
+                break;
+            }
+            case entry_type::merge_commit: {
+                auto cmd = decode_merge_commit_command<GroupId, Key, node_id_type, log_entry_type>(
+                    entry.command(), make_key_codec());
+                apply_merge_commit(*g, cmd, sm);
+                break;
+            }
+            case entry_type::merge_rollback: {
+                auto cmd = decode_merge_rollback_command<GroupId>(entry.command());
+                apply_merge_rollback(*g, cmd);
+                break;
+            }
+            case entry_type::merge_abandoned: {
+                auto cmd = decode_merge_abandoned_command<GroupId>(entry.command());
+                apply_merge_abandoned(*g, cmd);
+                break;
+            }
+            default:
+                break;
         }
     });
     return true;
@@ -1511,7 +1552,9 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     // entity the state machine says is indivisible.
     std::size_t candidates_considered = at_keys.size();
     for (const auto& k : at_keys) {
-        if (!parent._range.contains(k)) {
+        // `is_interior`, not `contains`: the start bound is inside the range but
+        // is not a place it can be cut, because the left child would be empty.
+        if (!parent._range.is_interior(k)) {
             release_gate();
             return failed_future(std::make_exception_ptr(
                 split_key_out_of_range_exception<GroupId, Key>{group, k, parent._range}));
@@ -1536,7 +1579,10 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
                 auto suggested = sm.suggest_split_keys(limit);
                 candidates_considered += suggested.size();
                 for (const auto& k : suggested) {
-                    if (range.contains(k) && sm.can_split_at(k)) {
+                    // A state machine suggesting its own smallest key is the
+                    // common case, not an odd one, and that key is the shard's
+                    // lower bound whenever the shard is bounded below.
+                    if (range.is_interior(k) && sm.can_split_at(k)) {
                         chosen.push_back(k);
                     }
                 }
@@ -1719,25 +1765,31 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
                                                   log_index_type at_index, term_id_type at_term,
                                                   typename Types::state_machine_type& parent_sm)
     -> void {
-    // ── A: epoch ─────────────────────────────────────────────────────────────
-    //
-    // An entry proposed under one epoch can commit after the epoch moved
-    // (Requirement 3.7). Applying it anyway would cut a shard whose membership
-    // the entry no longer describes.
-    if (parent._descriptor._epoch != cmd._parent_epoch) {
-        _cfg.logger.warning(
-            "Skipping split entry: parent epoch moved",
-            {{"group", detail::describe_value(parent._group_id)},
-             {"entry_version", std::to_string(cmd._parent_epoch._version)},
-             {"local_version", std::to_string(parent._descriptor._epoch._version)}});
-        return;
+    std::size_t derived_index = 0;
+    for (std::size_t i = 0; i < cmd._children.size(); ++i) {
+        if (cmd._children[i]._group_id == cmd._parent_group) {
+            derived_index = i;
+        }
     }
 
     // ── B: idempotence ───────────────────────────────────────────────────────
     //
-    // Checked before ANYTHING else happens, so replaying the entry after a
-    // crash is a no-op. This is what makes step E's "children first, then the
-    // parent's apply index" ordering safe without a batched store.
+    // Checked before ANYTHING else happens — including before step A's
+    // stale-epoch guard, and that order is load-bearing.
+    //
+    // "The parent's epoch does not match the entry" is true in two situations
+    // that call for opposite responses: something ELSE moved the epoch, so the
+    // entry is stale and must be skipped; or **this very entry** moved it, so
+    // the entry is already applied and recovery must still finish whatever the
+    // original apply did not reach. Checking A first collapsed the second case
+    // into the first, which made step B unreachable in precisely the situation
+    // it was written for — a replay after a crash. A crash in the last step
+    // (rows published, parent not yet unfrozen) then wedged the shard in
+    // `splitting` forever, and replaying could not fix it.
+    //
+    // B's own condition is what distinguishes them: it holds only when the
+    // parent already carries the epoch THIS entry produces and every child it
+    // names already exists.
     bool all_present = true;
     for (const auto& child : cmd._children) {
         if (child._group_id == cmd._parent_group) {
@@ -1749,7 +1801,33 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
             break;
         }
     }
-    if (all_present && parent._descriptor._epoch == cmd._children.front()._epoch) {
+    if (all_present && parent._descriptor._epoch == cmd._children[derived_index]._epoch) {
+        // Already applied — but RELEASE before returning. A crash in the last
+        // step of the original apply (after the rows were published, before
+        // step H unfroze the parent) leaves the shard in `splitting` with
+        // nothing running, and replay is the documented recovery for exactly
+        // that. An early return that skipped the release would leave the shard
+        // wedged permanently, refusing every future split, merge and operator
+        // with `gate=state`, and no amount of replaying would help.
+        //
+        // `release` is idempotent and returns a frozen shard to `frozen`, so
+        // this costs nothing on the ordinary already-applied path.
+        release(parent);
+        return;
+    }
+
+    // ── A: epoch ─────────────────────────────────────────────────────────────
+    //
+    // An entry proposed under one epoch can commit after the epoch moved
+    // (Requirement 3.7). Applying it anyway would cut a shard whose membership
+    // the entry no longer describes. Reached only when B ruled out "this entry
+    // is what moved it".
+    if (parent._descriptor._epoch != cmd._parent_epoch) {
+        _cfg.logger.warning(
+            "Skipping split entry: parent epoch moved",
+            {{"group", detail::describe_value(parent._group_id)},
+             {"entry_version", std::to_string(cmd._parent_epoch._version)},
+             {"local_version", std::to_string(parent._descriptor._epoch._version)}});
         return;
     }
 
@@ -1786,13 +1864,6 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
     // The synthetic snapshot is why a split moves no data. The child does not
     // copy the parent's log; it begins at the parent's apply index with an
     // EMPTY log and a snapshot that *is* its share of the parent's state.
-    std::size_t derived_index = 0;
-    for (std::size_t i = 0; i < cmd._children.size(); ++i) {
-        if (cmd._children[i]._group_id == cmd._parent_group) {
-            derived_index = i;
-        }
-    }
-
     for (std::size_t i = 0; i < cmd._children.size(); ++i) {
         const auto& child = cmd._children[i];
         if (i == derived_index) {
@@ -1813,16 +1884,24 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
         const auto blob = blobs[i];
         const auto members = child._voters;
         const auto learners = child._learners;
-        create_group(child, [&](typename Types::persistence_engine_type& store) {
-            snapshot_type snap{};
-            snap._last_included_index = at_index;
-            snap._last_included_term = at_term;
-            snap._configuration =
-                typename Types::cluster_configuration_type{members, false, std::nullopt, learners};
-            snap._state_machine_state = blob;
-            store.save_snapshot(snap);
-            store.save_current_term(at_term);
-        });
+        // Created WITHOUT publishing: the routing rows for every child go in
+        // together at step F/G below, after the parent has narrowed. Publishing
+        // here would let a child's row evict the parent's overlapping one while
+        // the parent still owns the whole range, leaving the part the child does
+        // not cover routed to nothing.
+        create_group_impl(
+            child,
+            [&](typename Types::persistence_engine_type& store) {
+                snapshot_type snap{};
+                snap._last_included_index = at_index;
+                snap._last_included_term = at_term;
+                snap._configuration = typename Types::cluster_configuration_type{
+                    members, false, std::nullopt, learners};
+                snap._state_machine_state = blob;
+                store.save_snapshot(snap);
+                store.save_current_term(at_term);
+            },
+            false);
 
         fiu_do_on("raft/multiraft/split/between_children",
                   throw shard_exception("chaos: split/between_children"););
@@ -2204,22 +2283,80 @@ auto multi_raft<Types, Key, GroupId>::maybe_propose_merge_commit(
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
-auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
-    group_state& target, const merge_commit_command_type& cmd,
-    typename Types::state_machine_type& target_sm) -> void {
-    // Idempotence first, as in split apply: a replayed commit must be a no-op.
-    if (target._descriptor._range.covers(cmd._source._range)) {
+auto multi_raft<Types, Key, GroupId>::destroy_merged_source(group_state& target,
+                                                            const GroupId& source_group) -> void {
+    auto source = find_group(source_group);
+    if (!source) {
         return;
     }
 
+    // The correctness-critical half happens NOW, synchronously: the source is
+    // unregistered from the transport and tombstoned, so it can neither serve
+    // nor be resurrected. The expensive half — stopping the node, which joins
+    // threads — is deferred to the host's apply phase, because doing it here
+    // would join threads while holding the target node's mutex, and would
+    // deadlock outright if the source happened to share the target's stripe.
+    _demux.unregister_group(source_group);
+    {
+        std::lock_guard lock(_tombstone_mutex);
+        _tombstones.insert(source_group, tombstone_reason::merged_away,
+                           std::chrono::system_clock::now());
+    }
+    {
+        std::unique_lock lock(_registry_mutex);
+        _groups.erase(source_group);
+    }
+    {
+        std::unique_lock lock(_map_mutex);
+        _shard_map.erase_group(source_group);
+        _shard_map.upsert(target._descriptor);
+    }
+    // `source` is the last strong reference; handing it to the apply phase is
+    // what keeps the node alive until it can be stopped off this thread.
+    defer_to_apply_phase(target._group_id, [source]() mutable {
+        source->_node->stop();
+        source->_node.reset();
+    });
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
+    group_state& target, const merge_commit_command_type& cmd,
+    typename Types::state_machine_type& target_sm) -> void {
+    // Idempotence, in two parts — and the second part is the one a naive
+    // implementation gets wrong.
+    //
+    // "The target's range already covers the source's" means the absorb and the
+    // range extension are done. It does NOT mean the whole entry is done: the
+    // source teardown in step (e) comes afterwards, and a crash between them
+    // leaves the survivor holding the data while the source is still alive and
+    // still owns its old range. Treating "absorbed" alone as "already applied"
+    // makes the replay a no-op and leaves that double ownership permanent —
+    // which is exactly the state `raft/multiraft/merge/after_absorb_before_destroy`
+    // exists to produce, and which the crash-consistency test found.
+    //
+    // The entry is fully applied only when the range is extended AND the local
+    // source replica is gone.
+    const bool absorbed = target._descriptor._range.covers(cmd._source._range);
     auto source = find_group(cmd._source._group_id);
-    if (!source) {
+    if (absorbed && !source) {
+        return;
+    }
+    if (!absorbed && !source) {
         // No local source replica means colocation was violated between the
         // proposal and now. Absorbing nothing would silently lose the source's
         // whole range, so this fails loudly instead.
         throw shard_alignment_required_exception<GroupId, node_id_type>{
             cmd._source._group_id, target._group_id, cmd._source._voters,
             target._descriptor._voters};
+    }
+
+    if (absorbed) {
+        // Recovery from a crash between (d) and (e). The data and the range are
+        // already the survivor's; re-absorbing would apply the source's state a
+        // second time, so this jumps straight to the teardown.
+        destroy_merged_source(target, cmd._source._group_id);
+        return;
     }
 
     // (a) Force-apply the carried tail to the LOCAL source replica, so it
@@ -2267,35 +2404,7 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
               throw shard_exception("chaos: merge/after_absorb_before_destroy"););
 
     // (e) Destroy and tombstone the local source replica.
-    //
-    // The correctness-critical half happens NOW, synchronously: the source is
-    // unregistered from the transport and tombstoned, so it can neither serve
-    // nor be resurrected. The expensive half — stopping the node, which joins
-    // threads — is deferred to the host's apply phase, because doing it here
-    // would join threads while holding the target node's mutex, and would
-    // deadlock outright if the source happened to share the target's stripe.
-    const auto source_group = cmd._source._group_id;
-    _demux.unregister_group(source_group);
-    {
-        std::lock_guard lock(_tombstone_mutex);
-        _tombstones.insert(source_group, tombstone_reason::merged_away,
-                           std::chrono::system_clock::now());
-    }
-    {
-        std::unique_lock lock(_registry_mutex);
-        _groups.erase(source_group);
-    }
-    {
-        std::unique_lock lock(_map_mutex);
-        _shard_map.erase_group(source_group);
-        _shard_map.upsert(survivor);
-    }
-    // `source` is the last strong reference; handing it to the apply phase is
-    // what keeps the node alive until it can be stopped off this thread.
-    defer_to_apply_phase(target._group_id, [source]() mutable {
-        source->_node->stop();
-        source->_node.reset();
-    });
+    destroy_merged_source(target, cmd._source._group_id);
 
     target._last_merge_ns.store(now_ns(), std::memory_order_relaxed);
     if (_cfg.report_merge && target._node && target._node->is_leader()) {
@@ -2323,7 +2432,7 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
     }
 #endif
 
-    _cfg.logger.info("Applied merge", {{"source", detail::describe_value(source_group)},
+    _cfg.logger.info("Applied merge", {{"source", detail::describe_value(cmd._source._group_id)},
                                        {"target", detail::describe_value(target._group_id)},
                                        {"new_version", std::to_string(survivor._epoch._version)}});
 }

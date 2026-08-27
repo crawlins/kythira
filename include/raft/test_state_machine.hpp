@@ -389,12 +389,16 @@ public:
         }
     }
 
-private:
     /// @brief Write a store in exactly `get_state()`'s format.
     ///
     /// Shared with `get_state()` rather than reimplemented, because the
     /// round-trip law compares `split_state` output against `get_state()`
     /// output and two encoders that drifted apart would break it silently.
+    ///
+    /// Public alongside its inverse below, because the sharding invariant tests
+    /// have to read back what `get_state()` produced. A test that re-implemented
+    /// this format would be checking its own copy of the encoder against the
+    /// real one, which is precisely the drift this pair exists to prevent.
     [[nodiscard]] static auto serialize_store(const std::map<std::string, std::string>& store)
         -> std::vector<std::byte> {
         std::vector<std::byte> state;
@@ -468,6 +472,7 @@ private:
         return out;
     }
 
+private:
     /// Ordered, not hashed. Two reasons, and the second is the load-bearing
     /// one: `split_state` needs "everything below k" to be a contiguous run,
     /// and `get_state()` has to produce byte-identical output on every replica

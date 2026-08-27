@@ -270,4 +270,42 @@ BOOST_AUTO_TEST_CASE(stats_default_to_size_unavailable) {
     BOOST_CHECK(s._hot_key_samples.empty());
 }
 
+BOOST_AUTO_TEST_CASE(the_start_bound_is_inside_a_range_but_is_not_a_place_to_cut_it) {
+    // `contains` and `is_interior` differ by exactly one key, and that key is
+    // the one a state machine is most likely to suggest: the smallest key it
+    // holds, which for a bounded shard is its own lower bound. Cutting there
+    // yields a left child `[start, start)` — an empty shard that owns nothing,
+    // cannot be routed to, and whose routing row overlaps its right sibling's.
+    const kythira::shard_range<std::string> bounded{._start = std::string{"m"},
+                                                    ._end = std::string{"t"}};
+
+    BOOST_CHECK(bounded.contains("m"));
+    BOOST_CHECK(!bounded.is_interior("m"));
+
+    BOOST_CHECK(bounded.contains("n"));
+    BOOST_CHECK(bounded.is_interior("n"));
+
+    // The end bound is outside the range already, so both agree.
+    BOOST_CHECK(!bounded.contains("t"));
+    BOOST_CHECK(!bounded.is_interior("t"));
+
+    // Below the start: outside by both measures.
+    BOOST_CHECK(!bounded.is_interior("a"));
+}
+
+BOOST_AUTO_TEST_CASE(every_key_of_an_unbounded_start_is_interior) {
+    // With no lower bound there is no key that could produce an empty left
+    // child, so `is_interior` degenerates to `contains` — which is what makes
+    // the very first shard splittable anywhere.
+    const kythira::shard_range<std::string> left_open{._start = std::nullopt,
+                                                      ._end = std::string{"t"}};
+    BOOST_CHECK(left_open.is_interior("a"));
+    BOOST_CHECK(left_open.is_interior("s"));
+    BOOST_CHECK(!left_open.is_interior("t"));
+
+    const auto unbounded = kythira::unbounded_shard_range<std::string>();
+    BOOST_CHECK(unbounded.is_interior("a"));
+    BOOST_CHECK(unbounded.is_interior("zzzz"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

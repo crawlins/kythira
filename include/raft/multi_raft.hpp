@@ -1154,6 +1154,29 @@ private:
               _read_latency(latency_windows),
               _apply_latency(latency_windows) {}
 
+        /// @brief Stop the node before destroying it, on EVERY path.
+        ///
+        /// `node<Types>` has no destructor that joins its own threads — that is
+        /// deliberate, `stop()` is the synchronous teardown — so destroying a
+        /// node that was never stopped calls `std::terminate()` on a joinable
+        /// thread. `destroy_group()` stops it explicitly, but `destroy_group()`
+        /// is not the only thing that can drop the last reference: a deferred
+        /// closure capturing this `shared_ptr` can outlive the registry entry,
+        /// and then `~group_state` runs wherever that closure is finally
+        /// destroyed. The merge path does exactly this, and the invariant
+        /// property test found it as an abort during teardown.
+        ///
+        /// `node::stop()` is idempotent and handles the never-started case, so
+        /// this costs nothing on the ordinary path.
+        ~group_state() {
+            if (_node) {
+                _node->stop();
+            }
+        }
+
+        group_state(const group_state&) = delete;
+        auto operator=(const group_state&) -> group_state& = delete;
+
         GroupId _group_id{};
         std::size_t _stripe{0};
         std::unique_ptr<group_node_type> _node;
@@ -1296,6 +1319,25 @@ private:
     using split_command_type = split_command<GroupId, Key, node_id_type>;
     using snapshot_type = typename Types::snapshot_type;
 
+    /// @brief `create_group`, with control over whether the routing row is
+    ///        published at the same time.
+    ///
+    /// Split apply needs the two halves separated. It creates every child, then
+    /// narrows the parent, and only THEN publishes all the rows together
+    /// (design §5.4 steps E-G). Publishing a child's row as it is created would
+    /// open a window in which the child's row has already evicted the parent's
+    /// overlapping one while the parent has not yet narrowed — leaving part of
+    /// the parent's own range covered by nothing, and any client resolving a
+    /// key there getting `unrouted_key_exception` for a range that has never
+    /// stopped existing.
+    ///
+    /// The window is short. It is also entirely avoidable, and a crash inside
+    /// it leaves the gap until the next map repair rather than for microseconds.
+    auto create_group_impl(
+        const descriptor_type& descriptor,
+        const std::function<void(typename Types::persistence_engine_type&)>& seed, bool publish)
+        -> void;
+
     /// @brief Install the administration-entry handler on a group's node.
     auto install_admin_handler(group_state& g) -> void;
 
@@ -1315,6 +1357,14 @@ private:
     /// @brief Design §5.5's source-side apply: freeze, and notify by committing.
     auto apply_merge_prepare(group_state& source, const merge_prepare_command_type& cmd,
                              log_index_type at_index) -> void;
+
+    /// @brief Step (e) of merge commit: unregister, tombstone and tear down the
+    ///        local source replica, and publish the survivor's row.
+    ///
+    /// Extracted because it is reached from two places — the ordinary apply and
+    /// the recovery replay of an entry that crashed between the absorb and the
+    /// teardown. Idempotent: a source that is already gone is not an error.
+    auto destroy_merged_source(group_state& target, const GroupId& source_group) -> void;
 
     /// @brief Design §5.5's target-side apply, on every target replica.
     auto apply_merge_commit(group_state& target, const merge_commit_command_type& cmd,
