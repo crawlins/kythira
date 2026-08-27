@@ -72,6 +72,9 @@ struct fabric_endpoint {
     std::function<fabric_messages::fetch_log_entries_response_type(
         const fabric_messages::fetch_log_entries_request_type&)>
         _fetch_log_entries;
+    std::function<fabric_messages::timeout_now_response_type(
+        const fabric_messages::timeout_now_request_type&)>
+        _timeout_now;
     bool _running{false};
 };
 
@@ -237,8 +240,8 @@ private:
 
 /// @brief The one shared client a `multi_raft` host owns.
 ///
-/// Satisfies `network_client` plus the pre-vote and log-fetch extensions, so
-/// that the group-scoped views over it advertise them too.
+/// Satisfies `network_client` plus the pre-vote, log-fetch and TimeoutNow
+/// extensions, so that the group-scoped views over it advertise them too.
 class fabric_client {
 public:
     fabric_client() = default;
@@ -284,6 +287,14 @@ public:
             _self, target, req, [](const fabric_endpoint& e) { return e._fetch_log_entries; });
     }
 
+    auto send_timeout_now(std::uint64_t target,
+                          const fabric_messages::timeout_now_request_type& req,
+                          std::chrono::milliseconds)
+        -> kythira::future_default<fabric_messages::timeout_now_response_type> {
+        return _fabric->deliver<fabric_messages::timeout_now_response_type>(
+            _self, target, req, [](const fabric_endpoint& e) { return e._timeout_now; });
+    }
+
 private:
     message_fabric* _fabric{nullptr};
     std::uint64_t _self{0};
@@ -291,7 +302,8 @@ private:
 
 /// @brief The one shared server a `multi_raft` host owns.
 ///
-/// Satisfies `network_server` plus the pre-vote and log-fetch extensions.
+/// Satisfies `network_server` plus the pre-vote, log-fetch and TimeoutNow
+/// extensions.
 /// `multi_group_network_server` wraps one of these and installs exactly one
 /// handler per RPC type on it, which is what makes the fabric node-addressed
 /// and the demultiplex group-addressed.
@@ -332,6 +344,13 @@ public:
             const fabric_messages::fetch_log_entries_request_type&)>
             h) -> void {
         _endpoint._fetch_log_entries = std::move(h);
+        publish();
+    }
+
+    auto register_timeout_now_handler(std::function<fabric_messages::timeout_now_response_type(
+                                          const fabric_messages::timeout_now_request_type&)>
+                                          h) -> void {
+        _endpoint._timeout_now = std::move(h);
         publish();
     }
 

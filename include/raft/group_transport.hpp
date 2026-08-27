@@ -80,6 +80,8 @@ struct group_rpc_messages {
         fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId>;
     using fetch_log_entries_response_type =
         fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>;
+    using timeout_now_request_type = timeout_now_request<NodeId, TermId, LogIndex, GroupId>;
+    using timeout_now_response_type = timeout_now_response<TermId, GroupId>;
 };
 
 /// @brief What the host decided to do about a message for a group with no
@@ -100,9 +102,10 @@ enum class unknown_group_action : std::uint8_t {
 
 /// @brief The per-group handler table one `node<Types>` installs.
 ///
-/// The two optional slots mirror the optional `network_server_*` extension
-/// concepts: a `node` whose transport does not speak pre-vote or log-fetch
-/// never registers them, and the corresponding `std::function` stays empty.
+/// The optional slots mirror the optional `network_server_*` extension
+/// concepts: a `node` whose transport does not speak pre-vote, log-fetch or
+/// TimeoutNow never registers them, and the corresponding `std::function` stays
+/// empty.
 template<typename Messages = group_rpc_messages<>> struct group_rpc_handlers {
     std::function<typename Messages::request_vote_response_type(
         const typename Messages::request_vote_request_type&)>
@@ -119,6 +122,9 @@ template<typename Messages = group_rpc_messages<>> struct group_rpc_handlers {
     std::function<typename Messages::fetch_log_entries_response_type(
         const typename Messages::fetch_log_entries_request_type&)>
         _fetch_log_entries;
+    std::function<typename Messages::timeout_now_response_type(
+        const typename Messages::timeout_now_request_type&)>
+        _timeout_now;
 
     /// @brief The group these handlers belong to, stamped by the registering
     /// `group_scoped_server`.
@@ -258,6 +264,23 @@ public:
                             return typename Messages::request_pre_vote_response_type{
                                 ._term = req.term(),
                                 ._vote_granted = false,
+                                ._group_id = req.group_id()};
+                        });
+                });
+        }
+
+        if constexpr (network_server_with_timeout_now<Server>) {
+            _inner.register_timeout_now_handler(
+                [this](const typename Messages::timeout_now_request_type& req) {
+                    return dispatch(
+                        req, [](const handlers_type& h) -> const auto& { return h._timeout_now; },
+                        [&req] {
+                            // A refusal at the sender's own term. The transfer
+                            // simply does not happen, which is exactly what an
+                            // advisory operator is allowed to conclude.
+                            return typename Messages::timeout_now_response_type{
+                                ._term = req.term(),
+                                ._success = false,
                                 ._group_id = req.group_id()};
                         });
                 });
@@ -439,6 +462,14 @@ public:
         publish();
     }
 
+    auto register_timeout_now_handler(
+        std::function<typename messages_type::timeout_now_response_type(
+            const typename messages_type::timeout_now_request_type&)>
+            handler) -> void {
+        _handlers._timeout_now = std::move(handler);
+        publish();
+    }
+
     auto register_install_snapshot_handler(
         std::function<typename messages_type::install_snapshot_response_type(
             const typename messages_type::install_snapshot_request_type&)>
@@ -539,6 +570,14 @@ public:
     requires network_client_with_log_fetch<Client>
     {
         return _inner->send_fetch_log_entries(target, stamped(req), timeout);
+    }
+
+    auto send_timeout_now(typename Messages::node_id_type target,
+                          const typename Messages::timeout_now_request_type& req,
+                          std::chrono::milliseconds timeout)
+    requires network_client_with_timeout_now<Client>
+    {
+        return _inner->send_timeout_now(target, stamped(req), timeout);
     }
 
     /// @brief Forwarded unstamped: `cluster_join_request` carries no group id.

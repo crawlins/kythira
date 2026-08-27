@@ -100,6 +100,33 @@ public:
         return json_to_bytes(boost::json::serialize(obj));
     }
 
+    // Serialize TimeoutNow Request (leadership transfer, dissertation §3.10)
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const timeout_now_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
+        boost::json::object obj;
+        obj["type"] = "timeout_now_request";
+        encode_group_id(obj, req.group_id());
+        obj["term"] = req.term();
+        obj["leader_id"] = req.leader_id();
+        obj["last_log_index"] = req.last_log_index();
+
+        return json_to_bytes(boost::json::serialize(obj));
+    }
+
+    // Serialize TimeoutNow Response
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const timeout_now_response<TermId, GroupId>& resp) const -> Data {
+        boost::json::object obj;
+        obj["type"] = "timeout_now_response";
+        encode_group_id(obj, resp.group_id());
+        obj["term"] = resp.term();
+        obj["success"] = resp.success();
+
+        return json_to_bytes(boost::json::serialize(obj));
+    }
+
     // Serialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
@@ -272,6 +299,51 @@ public:
         resp._group_id = decode_group_id<GroupId>(obj);
         resp._term = static_cast<TermId>(obj["term"].as_int64());
         resp._vote_granted = obj["vote_granted"].as_bool();
+
+        return resp;
+    }
+
+    // Deserialize TimeoutNow Request
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto deserialize_timeout_now_request(const Data& data) const
+        -> timeout_now_request<NodeId, TermId, LogIndex, GroupId> {
+        auto json_str = bytes_to_string(data);
+        auto obj = boost::json::parse(json_str).as_object();
+
+        if (obj["type"].as_string() != "timeout_now_request") {
+            throw serialization_exception("Invalid message type for timeout_now_request");
+        }
+
+        timeout_now_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = decode_group_id<GroupId>(obj);
+        req._term = static_cast<TermId>(obj["term"].as_int64());
+        req._last_log_index = static_cast<LogIndex>(obj["last_log_index"].as_int64());
+
+        if constexpr (std::same_as<NodeId, std::string>) {
+            req._leader_id = std::string(obj["leader_id"].as_string());
+        } else {
+            req._leader_id = static_cast<NodeId>(obj["leader_id"].as_int64());
+        }
+
+        return req;
+    }
+
+    // Deserialize TimeoutNow Response
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto deserialize_timeout_now_response(const Data& data) const
+        -> timeout_now_response<TermId, GroupId> {
+        auto json_str = bytes_to_string(data);
+        auto obj = boost::json::parse(json_str).as_object();
+
+        if (obj["type"].as_string() != "timeout_now_response") {
+            throw serialization_exception("Invalid message type for timeout_now_response");
+        }
+
+        timeout_now_response<TermId, GroupId> resp;
+        resp._group_id = decode_group_id<GroupId>(obj);
+        resp._term = static_cast<TermId>(obj["term"].as_int64());
+        resp._success = obj["success"].as_bool();
 
         return resp;
     }
@@ -650,6 +722,10 @@ public:
             return deserialize_request_pre_vote_request(data);
         } else if constexpr (std::same_as<T, request_pre_vote_response<>>) {
             return deserialize_request_pre_vote_response(data);
+        } else if constexpr (std::same_as<T, timeout_now_request<>>) {
+            return deserialize_timeout_now_request(data);
+        } else if constexpr (std::same_as<T, timeout_now_response<>>) {
+            return deserialize_timeout_now_response(data);
         } else if constexpr (std::same_as<T, append_entries_request<>>) {
             return deserialize_append_entries_request(data);
         } else if constexpr (std::same_as<T, append_entries_response<>>) {

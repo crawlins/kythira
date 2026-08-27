@@ -37,6 +37,7 @@
 #include <raft/raft.hpp>
 #include <raft/shard_exceptions.hpp>
 #include <raft/shard_map.hpp>
+#include <raft/shard_placement_driver.hpp>
 #include <raft/shard_types.hpp>
 #include <raft/striped_executor.hpp>
 
@@ -521,6 +522,60 @@ struct multi_raft_config {
     /// A stuck merge leaves the source unavailable but *correct*. That is the
     /// right trade, and it is surfaced rather than left to be guessed at.
     std::chrono::milliseconds merge_stall_warning_after{std::chrono::seconds{30}};
+
+    // ── the placement driver, channel (d) (Requirement 14, design §7) ────────
+
+    using shard_report_type = shard_report<GroupId, Key, node_id_type>;
+    using shard_operation_type = shard_operation<GroupId, Key, node_id_type>;
+    using node_report_type = node_report<node_id_type>;
+
+    /// @brief One call per interval carrying EVERY local leader's report.
+    ///
+    /// Batched, not per shard. At a thousand shards and a ten-second interval
+    /// the difference is 100 RPS of control-plane traffic from one machine
+    /// against 0.1 RPS, and a control plane whose load grows with shard count
+    /// fails at exactly the scale sharding was adopted to reach.
+    ///
+    /// Called from `tick()`, on the ticking thread, once per
+    /// `heartbeat_interval`. A driver that cannot answer promptly should return
+    /// an empty operator list rather than block: operators are advisory and
+    /// there is another heartbeat coming.
+    std::function<std::vector<shard_operation_type>(const std::vector<shard_report_type>&)>
+        report_shard_heartbeat{};
+
+    /// @brief One call per interval describing this machine.
+    std::function<void(const node_report_type&)> report_node_heartbeat{};
+
+    /// @brief Told at apply time rather than waited for on the next heartbeat.
+    ///
+    /// A split changes the routing table for the whole cluster, and up to a
+    /// heartbeat interval of clients holding descriptors for a range that no
+    /// longer exists is a cost with no corresponding benefit.
+    std::function<void(const descriptor_type&, const std::vector<descriptor_type>&)> report_split{};
+    std::function<void(const descriptor_type&, const descriptor_type&)> report_merge{};
+
+    /// @brief Heartbeat cadence. Zero disables the tick-driven heartbeat
+    ///        entirely, leaving `heartbeat()` for a caller that drives it from
+    ///        its own thread.
+    std::chrono::milliseconds heartbeat_interval{std::chrono::seconds{10}};
+
+    /// @brief Failure-domain labels for this machine, forwarded in the node
+    ///        report. The same vocabulary `quorum_manager` provisions against.
+    std::vector<std::string> node_labels{};
+
+    /// @brief Total and available bytes on this machine's storage.
+    ///
+    /// A hook rather than a `statvfs` call, because the host does not know
+    /// which filesystem the state machines actually live on — an object-store
+    /// backed engine has no local capacity to report at all, and reporting the
+    /// root filesystem's would be worse than reporting nothing.
+    std::function<std::pair<std::uint64_t, std::uint64_t>()> capacity_probe{};
+
+    /// @brief The machine is asking not to be given more work.
+    ///
+    /// Evaluated per heartbeat. Left unset, the host reports "not overloaded",
+    /// which is the honest answer for a host with no way to tell.
+    std::function<bool()> overload_probe{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -563,6 +618,9 @@ public:
     using shard_map_type = shard_map<GroupId, Key, node_id_type>;
     using config_type = multi_raft_config<Types, Key, GroupId>;
     using tombstone_set_type = tombstone_set<GroupId>;
+    using shard_report_type = shard_report<GroupId, Key, node_id_type>;
+    using shard_operation_type = shard_operation<GroupId, Key, node_id_type>;
+    using node_report_type = node_report<node_id_type>;
     /// @}
 
     explicit multi_raft(config_type cfg);
@@ -758,6 +816,60 @@ public:
 
     /// @brief How many operations are in flight across every local shard.
     [[nodiscard]] auto operations_in_flight() const -> std::size_t;
+
+    /// @name Placement driver, channel (d) (Requirement 14, design §7)
+    /// @{
+
+    /// @brief Send one batched heartbeat now and act on what comes back.
+    ///
+    /// Returns the number of operators received. Safe to call from any thread;
+    /// `tick()` also calls it on the configured cadence.
+    auto heartbeat() -> std::size_t;
+
+    /// @brief One report per shard this host currently **leads**.
+    ///
+    /// Leader-only, following TiKV. A follower's view of size and load is the
+    /// leader's view delayed, so N-1 copies of a stale report would cost
+    /// bandwidth to tell the driver nothing it does not already know.
+    [[nodiscard]] auto build_shard_reports() const -> std::vector<shard_report_type>;
+
+    /// @brief This machine's own report: capacity, counts, rates, labels.
+    [[nodiscard]] auto build_node_report() const -> node_report_type;
+
+    /// @brief Act on one operator, or decline it with a counted reason.
+    ///
+    /// Every rejection here is a **normal** outcome, not an error: the driver
+    /// computed the operator from a report that is at most one heartbeat old,
+    /// and one heartbeat is exactly how out of date it is allowed to be. The
+    /// driver reissues if it still wants the operator, so nothing needs undoing
+    /// and nothing needs queueing.
+    auto apply_operator(const shard_operation_type& op) -> operator_outcome;
+
+    /// @brief Move `group`'s leadership to `to`. Requires a TimeoutNow-capable
+    ///        transport; see `network_client_with_timeout_now`.
+    auto transfer_leadership(const GroupId& group, const node_id_type& to,
+                             std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief Hand `group`'s leadership to some *other* voter.
+    ///
+    /// The point of a scatter is that the children of a split must not all lead
+    /// from the machine that was already the hotspot. The target is chosen
+    /// round-robin over the descriptor's voters, from purely local information
+    /// — this host knows which groups *it* leads and nothing about anyone
+    /// else's leader count, so anything more informed would be a guess dressed
+    /// up as a measurement. The placement driver's `transfer_leader` operator
+    /// is the informed version; this is the version that works with no control
+    /// plane at all.
+    auto scatter(const GroupId& group, std::chrono::milliseconds timeout) -> future_type;
+
+    [[nodiscard]] auto heartbeat_count() const -> std::uint64_t;
+    [[nodiscard]] auto received_operator_count() const -> std::uint64_t;
+    [[nodiscard]] auto accepted_operator_count() const -> std::uint64_t;
+    [[nodiscard]] auto skipped_operator_count() const -> std::uint64_t;
+    /// @brief How many operators were skipped for one specific reason.
+    [[nodiscard]] auto skipped_operator_count(skipped_operator_reason reason) const
+        -> std::uint64_t;
+    /// @}
 
     /// @brief Called on every role, term or membership transition.
     ///
@@ -1127,6 +1239,12 @@ private:
     /// `policy_interval`.
     auto evaluate_policy(const std::vector<group_ptr>& ready) -> void;
 
+    /// @brief Channel (d): heartbeat on the configured cadence, from `tick()`.
+    auto maybe_heartbeat() -> void;
+
+    auto note_skipped_operator(const shard_operation_type& op, skipped_operator_reason reason)
+        -> operator_outcome;
+
     /// @brief The configured key codec, or the default, as one object.
     [[nodiscard]] auto make_key_codec() const -> key_codec_adapter<Key>;
 
@@ -1190,6 +1308,17 @@ private:
     std::atomic<std::uint64_t> _stalled_merges{0};
 
     std::atomic<bool> _automatic_enabled{true};
+    std::chrono::steady_clock::time_point _last_heartbeat{};
+    std::atomic<std::uint64_t> _heartbeats{0};
+    std::atomic<std::uint64_t> _operators_received{0};
+    std::atomic<std::uint64_t> _operators_accepted{0};
+    std::atomic<std::uint64_t> _operators_skipped{0};
+    mutable std::mutex _skip_mutex;
+    std::unordered_map<std::uint8_t, std::uint64_t> _operator_skips;
+    /// Round-robin cursor for `scatter`. Local, and deliberately so: it is what
+    /// makes two consecutive scatters on this host pick different targets, and
+    /// nothing more is claimed for it.
+    std::atomic<std::uint64_t> _scatter_cursor{0};
     mutable std::mutex _rejection_mutex;
     std::unordered_map<std::uint8_t, std::uint64_t> _rejections;
     std::function<void(const group_report<GroupId, node_id_type>&)> _report_listener;
