@@ -11,10 +11,19 @@
 #include <raft/executor_default.hpp>
 #include <raft/network.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
+#include <netinet/in.h>
 #include <random>
+#include <string>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
 #include <unordered_map>
+#include <vector>
 
 // Client-focused slice of the one-file-per-concern split of what used to be
 // tests/beast_transport_test.cpp -- one-to-one with tests/http_client_*,
@@ -104,6 +113,162 @@ BOOST_AUTO_TEST_CASE(client_reload_tls_material) {
     // exercises reload()'s own re-validation rather than the constructor's.
     std::filesystem::remove(tls.key_path);
     BOOST_CHECK_THROW(client.reload_tls_material(), std::exception);
+}
+
+// ── concurrent RPCs to one target ────────────────────────────────────────────
+//
+// A regression test for a crash, and the reason this client no longer shares a
+// single connection per target between concurrent RPCs.
+//
+// The class used to keep exactly one connection per target and let every
+// concurrent RPC to that target use it at once, on the reasoning that the
+// connection's `net::strand` serialized them. A strand serializes handler
+// invocation, not composed operations: `async_write` then `async_read` is two
+// composed operations, and two RPCs sharing one stream interleave regardless of
+// strand. The second RPC's response framing broke and surfaced as
+// `end of stream`; the failure path then tore the shared connection down
+// underneath the *other* in-flight RPCs; and because `send_rpc` held a
+// `pooled_connection&` into the map that teardown erased, the reference
+// dangled and `connection->is_open()` faulted at address 0x0.
+//
+// It took real concurrency to see: every pre-existing suite drove either one
+// RPC at a time or several to *different* targets, which is the case that
+// always worked. It was found by a multi-Raft workload, where four groups on
+// four executor stripes replicate to the same two peers simultaneously.
+//
+// The control is the sequential arm. If both arms are clean the fix holds; if
+// only the sequential arm is clean the pooling has regressed to sharing.
+namespace {
+
+[[nodiscard]] auto reserve_loopback_port() -> std::uint16_t {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    BOOST_REQUIRE_MESSAGE(fd >= 0, "socket() failed");
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    BOOST_REQUIRE_MESSAGE(::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0,
+                          "bind() failed");
+    socklen_t len = sizeof(addr);
+    BOOST_REQUIRE_MESSAGE(::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0,
+                          "getsockname() failed");
+    const auto port = ntohs(addr.sin_port);
+    ::close(fd);
+    return port;
+}
+
+struct concurrency_arm_result {
+    std::size_t attempted{0};
+    std::size_t failed{0};
+    std::string first_error;
+};
+
+auto run_same_target_arm(std::size_t threads, std::size_t per_thread) -> concurrency_arm_result {
+    boost::asio::io_context ioc;
+    auto work = boost::asio::make_work_guard(ioc);
+    std::vector<std::thread> io_threads;
+    for (int i = 0; i < 4; ++i) {
+        io_threads.emplace_back([&ioc] { ioc.run(); });
+    }
+
+    const auto port = reserve_loopback_port();
+    kythira::boost_beast_server<test_transport_types> server(
+        ioc, "127.0.0.1", port, kythira::boost_beast_server_config{}, kythira::noop_metrics{});
+    server.register_request_vote_handler(
+        [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+            kythira::request_vote_response<> resp{};
+            resp._term = req.term();
+            resp._vote_granted = true;
+            return resp;
+        });
+    server.register_append_entries_handler(
+        [](const kythira::append_entries_request<>& req) -> kythira::append_entries_response<> {
+            kythira::append_entries_response<> resp{};
+            resp._term = req.term();
+            resp._success = true;
+            return resp;
+        });
+    server.register_install_snapshot_handler(
+        [](const kythira::install_snapshot_request<>& req) -> kythira::install_snapshot_response<> {
+            kythira::install_snapshot_response<> resp{};
+            resp._term = req.term();
+            return resp;
+        });
+    server.start();
+
+    std::unordered_map<std::uint64_t, std::string> urls{
+        {test_node_id, std::string("http://127.0.0.1:") + std::to_string(port)}};
+    kythira::boost_beast_client<test_transport_types> client(
+        ioc, urls, kythira::boost_beast_client_config{}, kythira::noop_metrics{});
+
+    std::atomic<std::size_t> failed{0};
+    std::mutex first_error_mutex;
+    std::string first_error;
+    {
+        std::vector<std::thread> workers;
+        workers.reserve(threads);
+        for (std::size_t t = 0; t < threads; ++t) {
+            workers.emplace_back([&, t] {
+                for (std::size_t i = 0; i < per_thread; ++i) {
+                    kythira::request_vote_request<> req{};
+                    req._term = static_cast<std::uint64_t>(t * per_thread + i + 1);
+                    try {
+                        auto response =
+                            std::move(client.send_request_vote(test_node_id, req,
+                                                               std::chrono::milliseconds{5000}))
+                                .get();
+                        // The response has to belong to THIS request. Two RPCs
+                        // interleaved on one stream can each read a well-formed
+                        // response that answers the other one, which a
+                        // did-it-throw check alone would call success.
+                        if (response.term() != req.term()) {
+                            failed.fetch_add(1);
+                            std::lock_guard lock(first_error_mutex);
+                            if (first_error.empty()) {
+                                first_error = "response carried term " +
+                                              std::to_string(response.term()) + ", expected " +
+                                              std::to_string(req.term());
+                            }
+                        }
+                    } catch (const std::exception& e) {
+                        failed.fetch_add(1);
+                        std::lock_guard lock(first_error_mutex);
+                        if (first_error.empty()) {
+                            first_error = e.what();
+                        }
+                    }
+                }
+            });
+        }
+        for (auto& w : workers) {
+            w.join();
+        }
+    }
+
+    server.stop();
+    work.reset();
+    ioc.stop();
+    for (auto& t : io_threads) {
+        t.join();
+    }
+
+    return concurrency_arm_result{threads * per_thread, failed.load(), first_error};
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(client_sequential_rpcs_to_one_target, *boost::unit_test::timeout(120)) {
+    const auto arm = run_same_target_arm(1, 40);
+    BOOST_TEST_MESSAGE("sequential (1 x 40): " << arm.failed << "/" << arm.attempted << " failed");
+    BOOST_CHECK_MESSAGE(arm.failed == 0, "sequential RPCs failed: " << arm.first_error);
+}
+
+BOOST_AUTO_TEST_CASE(client_concurrent_rpcs_to_one_target, *boost::unit_test::timeout(120)) {
+    const auto arm = run_same_target_arm(8, 20);
+    BOOST_TEST_MESSAGE("concurrent (8 x 20): " << arm.failed << "/" << arm.attempted << " failed");
+    BOOST_CHECK_MESSAGE(arm.failed == 0, "concurrent RPCs to one target failed ("
+                                             << arm.failed << "/" << arm.attempted
+                                             << "): " << arm.first_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

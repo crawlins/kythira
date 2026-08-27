@@ -141,6 +141,12 @@ concept future_default_transport_types =
 ///     `configure_ssl_client` has to leave several of them
 ///     validated-but-not-fully-applied -- see `http_transport_impl.hpp`).
 struct boost_beast_client_config {
+    /// Maximum idle connections retained **per target**. Connections are
+    /// checked out exclusively for one RPC, so this bounds what is kept for
+    /// reuse, not what may be in flight at once. (It previously bounded the
+    /// number of distinct targets, which is not what the name says and evicted
+    /// an unrelated node's connection when the eleventh peer was first
+    /// contacted.)
     std::size_t connection_pool_size{10};
     std::chrono::milliseconds connection_timeout{5000};
     std::chrono::milliseconds request_timeout{10000};
@@ -403,7 +409,26 @@ private:
 
 #else
 
-class asio_strand_executor final : public folly::Executor {
+/// Held by `shared_ptr` and self-pinned for as long as Folly holds a
+/// `KeepAlive` to it, which is what lets the object that owns it be destroyed
+/// first.
+///
+/// Folly's future cores keep a `KeepAlive<Executor>` alive past the callbacks
+/// they schedule, and use it to `add()` the *next* link of a chain from inside
+/// `setResult_`. When this executor was a plain by-value member of a connection,
+/// releasing that connection from one of its own continuations destroyed the
+/// executor the core was about to call — `pure virtual method called`, caught by
+/// the ThreadSanitizer job. The predecessor of the pooling code never destroyed
+/// a connection at all, so the hazard was unreachable and the ownership question
+/// never had to be answered.
+///
+/// It is answered here rather than by pinning the owner, because `add()` needs
+/// nothing from the owner: `_ex` is a copy of the stream's Asio executor and
+/// stays valid as long as the caller's `io_context` does, which this transport
+/// already requires. So the executor simply outlives its owner when it has to,
+/// and no ownership cycle is created.
+class asio_strand_executor final : public folly::Executor,
+                                   public std::enable_shared_from_this<asio_strand_executor> {
 public:
     explicit asio_strand_executor(net::any_io_executor ex) : _ex(std::move(ex)) {}
 
@@ -411,8 +436,48 @@ public:
 
     auto handle() -> folly::Executor& { return *this; }
 
+    /// @brief Take a keep-alive token. Returning `true` opts this executor into
+    /// Folly's reference-counted protocol, so `KeepAlive` will pair every
+    /// acquire with a release.
+    auto keepAliveAcquire() noexcept -> bool override {
+        // `server_session` holds its executor by value rather than by
+        // `shared_ptr`, and a by-value executor has no control block to pin
+        // itself with — `shared_from_this()` would throw `bad_weak_ptr`.
+        // Returning `false` there is exactly Folly's default and exactly the
+        // behaviour that class already had and still needs: its sessions are
+        // `shared_ptr`-managed and their continuations capture `self`, so the
+        // executor cannot outlive its chains anyway. The answer is stable per
+        // object — a given executor is either shared-owned for its whole life
+        // or never — which is what Folly requires of this predicate.
+        auto self = weak_from_this().lock();
+        if (!self) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(_keep_alive_mutex);
+        if (_keep_alive_count++ == 0) {
+            _self = std::move(self);
+        }
+        return true;
+    }
+
+    auto keepAliveRelease() noexcept -> void override {
+        std::shared_ptr<asio_strand_executor> release_outside_lock;
+        {
+            std::lock_guard<std::mutex> lock(_keep_alive_mutex);
+            if (--_keep_alive_count == 0) {
+                release_outside_lock = std::move(_self);
+            }
+        }
+        // Dropped with the lock released, and as the very last thing this
+        // function does: it may be the reference that destroys `*this`, so
+        // nothing below may touch a member.
+    }
+
 private:
     net::any_io_executor _ex;
+    std::mutex _keep_alive_mutex;
+    std::size_t _keep_alive_count{0};
+    std::shared_ptr<asio_strand_executor> _self;
 };
 
 #endif
@@ -428,7 +493,19 @@ private:
 ///     `beast::tcp_stream` whether or not a TLS layer sits on top of it --
 ///     the one piece of Beast machinery that lets this interface stay
 ///     transport-agnostic without a `std::variant`/`std::visit`.
-class beast_connection {
+/// Derives from `enable_shared_from_this` so that every asynchronous operation
+/// a connection starts can keep the connection itself alive for the operation's
+/// duration. Beast's composed operations hold the stream by reference and the
+/// continuation chains below capture `this`, so a connection destroyed with an
+/// op still pending is a use-after-free -- observed as `pure virtual method
+/// called` when a queued handler reaches a partially destroyed object.
+///
+/// The predecessor of this design never destroyed a connection at all: retired
+/// ones were parked in a `_retired_connections` vector that lived as long as
+/// the client, which made the hazard unreachable at the cost of never
+/// reclaiming a connection. Ownership by the operations themselves is the same
+/// guarantee without the leak.
+class beast_connection : public std::enable_shared_from_this<beast_connection> {
 public:
     virtual ~beast_connection() = default;
 
@@ -461,7 +538,7 @@ private:
     // _stream.get_executor() -- see asio_strand_executor's own comment
     // above for why every async_*_kf future this connection creates needs
     // to be via()'d onto it.
-    asio_strand_executor _executor;
+    std::shared_ptr<asio_strand_executor> _executor;
     // basic_stream's timeout (set via expires_after()) covers only the
     // *next* logical read/write/connect operation issued after it's armed --
     // send_rpc() calls set_timeout() once, before connect(), but connect()
@@ -488,7 +565,7 @@ public:
 private:
     beast::ssl_stream<beast::tcp_stream> _stream;
     // See plain_beast_connection::_executor above -- same reason.
-    asio_strand_executor _executor;
+    std::shared_ptr<asio_strand_executor> _executor;
     // See plain_beast_connection::_timeout above -- same reason.
     std::chrono::milliseconds _timeout{};
 };
@@ -501,18 +578,30 @@ private:
 ///     progress happens without a caller-run `io_context::run()` thread, and
 ///     nothing in this class ever calls `_ioc.stop()`.
 ///
-/// One persistent connection per target node is kept in `_connections`,
-/// reused across RPCs (Requirement 9) the same way `cpp_httplib_client`'s own
-/// `_http_clients` map reuses `httplib::Client` instances. Each pooled
-/// connection's own `beast::tcp_stream`/`beast::ssl_stream<beast::tcp_stream>`
-/// is constructed on a `net::strand` (`net::make_strand(ioc)`), so every
-/// asynchronous operation issued on it is automatically serialized with
-/// respect to every other operation on that same connection -- concurrent
-/// RPCs to the *same* target queue on that strand, while RPCs to *different*
-/// targets, each with their own connection and strand, run genuinely
-/// concurrently (Property 6). `_connections_mutex` only guards the map's own
-/// structure (insert/erase), not a connection's I/O -- narrow lock scope,
-/// matching `cpp_httplib_client`'s own `_mutex` usage.
+/// Connections are pooled per target and **checked out exclusively** for the
+/// duration of one RPC (`acquire_connection` / `connection_lease`), then
+/// returned to the pool. Reuse across RPCs is preserved (Requirement 9), and
+/// concurrent RPCs to the same target each take their own connection.
+///
+/// ### Why exclusive checkout, and not one shared connection per target
+///
+/// This class previously kept exactly one connection per target and let every
+/// concurrent RPC to that target use it at once, on the reasoning that the
+/// connection's `net::strand` would serialize them. **A strand serializes
+/// handler invocation, not composed operations.** `async_write` followed by
+/// `async_read` is two composed operations, and two RPCs sharing a stream
+/// interleave their writes and reads no matter whose strand they run on —
+/// Beast is explicit that a stream may have at most one outstanding read and
+/// one outstanding write. In practice the second RPC's response framing broke
+/// and surfaced as `end of stream`, each failure tore the shared connection
+/// down underneath the other in-flight RPCs, and the resulting
+/// dangling-reference window segfaulted.
+///
+/// Exclusive checkout removes both failure modes by construction: a stream is
+/// only ever driven by one RPC, and a lease hands back a connection *by value*
+/// so no caller ever holds a reference into the pool across an unlocked window.
+///
+/// `_mutex` guards only the pool's structure, never a connection's I/O.
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
 class boost_beast_client {
@@ -546,12 +635,14 @@ public:
                                std::chrono::milliseconds timeout)
         -> future_template<kythira::install_snapshot_response<>>;
 
-    /// @brief Validates the configured TLS material, then retires every
-    ///     pooled connection so subsequent RPCs build fresh ones using the
-    ///     reloaded material. Retired connections are kept alive (not
-    ///     destroyed) -- a concurrent in-flight RPC may still hold a
-    ///     reference obtained from `get_or_create_connection()` before the
-    ///     reload (Property 7, Requirement 7.3).
+    /// @brief Validates the configured TLS material, then drops every pooled
+    ///     connection so subsequent RPCs build fresh ones using the reloaded
+    ///     material.
+    ///
+    ///     A connection currently leased by an in-flight RPC stays alive —
+    ///     the lease holds a `shared_ptr` — and is dropped rather than pooled
+    ///     when that RPC finishes, because the TLS generation it was built
+    ///     under no longer matches (Property 7, Requirement 7.3).
     auto reload_tls_material() -> void;
 
     /// @brief Starts a background thread that polls `client_cert_path`'s
@@ -564,49 +655,6 @@ public:
     auto disable_auto_reload() -> void;
 
 private:
-    struct pooled_connection {
-        std::unique_ptr<beast_detail::beast_connection> connection;
-        net::ip::tcp::endpoint endpoint;
-        std::string host_header;
-        std::chrono::steady_clock::time_point last_used;
-    };
-
-    net::io_context& _ioc;
-    serializer_type _serializer;
-    /// Negotiation goes through the registry; `_serializer` stays because the
-    /// surrounding code names it and the two agree for a single-serializer
-    /// bundle.
-    serializer_registry_type _registry;
-    /// What each peer last answered in. Advisory only — the full `Accept` list
-    /// still rides on every request.
-    peer_capability_cache<std::uint64_t> _capability_cache;
-    std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
-    boost_beast_client_config _config;
-    metrics_type _metrics;
-    std::optional<net::ssl::context> _ssl_ctx;
-    mutable std::mutex _mutex;
-    std::unordered_map<std::uint64_t, pooled_connection> _connections;
-    std::vector<std::unique_ptr<beast_detail::beast_connection>> _retired_connections;
-    std::jthread _auto_reload_thread;
-    std::filesystem::file_time_type _last_reloaded_cert_mtime{};
-
-    // Tracks RPCs with a live connect/handshake/send/read still in flight on
-    // an io_context worker thread, so the destructor can wait for all of
-    // them to finish (their completion handler running is what decrements
-    // this) before _connections/_ssl_ctx are torn down -- the client-side
-    // equivalent of boost_beast_server::stop()'s Property 8 drain. Without
-    // this, ~boost_beast_client() could destroy _ssl_ctx while a worker
-    // thread was still mid SSL_do_handshake() on a connection referencing
-    // it, a genuine (TSan-caught, not a false positive) use-after-free-shaped
-    // race, not merely a theoretical one.
-    mutable std::mutex _drain_mutex;
-    std::condition_variable _drain_cv;
-    std::size_t _in_flight_operations{0};
-
-    /// RAII: increments _in_flight_operations on construction, decrements
-    /// (and notifies _drain_cv once it reaches zero) on destruction. Held via
-    /// shared_ptr across a send_rpc call's whole thenValue/thenError chain so
-    /// whichever branch actually runs releases the last reference.
     struct in_flight_guard {
         boost_beast_client* client;
 
@@ -628,11 +676,148 @@ private:
         }
     };
 
+    /// @brief Where a target lives, resolved once and cached.
+    ///
+    /// Resolution is synchronous and happens under `_mutex`. Under the previous
+    /// one-connection-per-target scheme that cost was paid once per target; with
+    /// exclusive checkout a burst of concurrent RPCs to a cold target would
+    /// otherwise each resolve it, serialized behind the lock.
+    struct resolved_target {
+        net::ip::tcp::endpoint endpoint;
+        std::string host_header;
+    };
+
+    /// @brief One connection plus what is needed to re-establish it.
+    ///
+    /// `shared_ptr` rather than `unique_ptr` so that an in-flight RPC's own
+    /// reference keeps the connection alive even when the pool has dropped it
+    /// — the guarantee the old `_retired_connections` vector existed to fake,
+    /// obtained here from ownership instead of from a side list.
+    struct pooled_connection {
+        std::shared_ptr<beast_detail::beast_connection> connection;
+        net::ip::tcp::endpoint endpoint;
+        std::string host_header;
+        std::chrono::steady_clock::time_point last_used;
+        /// The TLS generation this connection was built under. A reload bumps
+        /// the client's counter; a lease acquired before it must not be pooled
+        /// afterwards, since it is still using the superseded context.
+        std::uint64_t tls_generation{0};
+    };
+
+    /// @brief Exclusive checkout of one pooled connection, returned on
+    /// destruction.
+    ///
+    /// Held as a `shared_ptr` by every continuation in `send_rpc`'s chain, so
+    /// the connection goes back to the pool exactly once, when the last link
+    /// of whichever branch actually ran drops it. Only a lease that
+    /// `mark_reusable()` was called on is pooled again; anything else is
+    /// dropped, which is the per-connection form of what `remove_connection`
+    /// used to do per target — and strictly narrower, since one RPC's failure
+    /// no longer tears down a connection another RPC is using.
+    class connection_lease {
+    public:
+        connection_lease(boost_beast_client* owner, std::uint64_t target, pooled_connection conn,
+                         std::shared_ptr<in_flight_guard> in_flight)
+            : _owner(owner),
+              _target(target),
+              _conn(std::move(conn)),
+              _in_flight(std::move(in_flight)) {}
+
+        connection_lease(const connection_lease&) = delete;
+        auto operator=(const connection_lease&) -> connection_lease& = delete;
+        connection_lease(connection_lease&&) = delete;
+        auto operator=(connection_lease&&) -> connection_lease& = delete;
+
+        ~connection_lease() { _owner->release_connection(_target, std::move(_conn), _reusable); }
+
+        /// @brief The exchange completed cleanly; the connection may be reused.
+        auto mark_reusable() -> void { _reusable = true; }
+
+        [[nodiscard]] auto connection() const -> beast_detail::beast_connection* {
+            return _conn.connection.get();
+        }
+        [[nodiscard]] auto endpoint() const -> const net::ip::tcp::endpoint& {
+            return _conn.endpoint;
+        }
+        [[nodiscard]] auto host_header() const -> const std::string& { return _conn.host_header; }
+
+    private:
+        boost_beast_client* _owner;
+        std::uint64_t _target;
+        pooled_connection _conn;
+        /// Held so the destructor's `release_connection` — which takes the
+        /// client's `_mutex` and touches `_idle_connections` — provably runs
+        /// while the drain counter is still raised. Without it the last
+        /// continuation could drop the in-flight guard first, letting
+        /// `~boost_beast_client` finish its drain and destroy the pool out
+        /// from under this destructor's own body.
+        std::shared_ptr<in_flight_guard> _in_flight;
+        bool _reusable{false};
+    };
+
+    net::io_context& _ioc;
+    serializer_type _serializer;
+    /// Negotiation goes through the registry; `_serializer` stays because the
+    /// surrounding code names it and the two agree for a single-serializer
+    /// bundle.
+    serializer_registry_type _registry;
+    /// What each peer last answered in. Advisory only — the full `Accept` list
+    /// still rides on every request.
+    peer_capability_cache<std::uint64_t> _capability_cache;
+    std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
+    boost_beast_client_config _config;
+    metrics_type _metrics;
+    std::optional<net::ssl::context> _ssl_ctx;
+    mutable std::mutex _mutex;
+    /// Idle connections per target, available for checkout. A connection that
+    /// is currently leased is in nobody's map — its lease owns it.
+    std::unordered_map<std::uint64_t, std::vector<pooled_connection>> _idle_connections;
+    /// Every connection this client has created and not yet seen destroyed,
+    /// weakly. The destructor force-closes through this so that a *leased*
+    /// connection — absent from `_idle_connections` by definition — is closed
+    /// too, which is what makes the drain below terminate.
+    std::vector<std::weak_ptr<beast_detail::beast_connection>> _all_connections;
+    std::unordered_map<std::uint64_t, resolved_target> _resolved_targets;
+    std::uint64_t _tls_generation{0};
+    std::jthread _auto_reload_thread;
+    std::filesystem::file_time_type _last_reloaded_cert_mtime{};
+
+    // Tracks RPCs with a live connect/handshake/send/read still in flight on
+    // an io_context worker thread, so the destructor can wait for all of
+    // them to finish (their completion handler running is what decrements
+    // this) before _connections/_ssl_ctx are torn down -- the client-side
+    // equivalent of boost_beast_server::stop()'s Property 8 drain. Without
+    // this, ~boost_beast_client() could destroy _ssl_ctx while a worker
+    // thread was still mid SSL_do_handshake() on a connection referencing
+    // it, a genuine (TSan-caught, not a false positive) use-after-free-shaped
+    // race, not merely a theoretical one.
+    mutable std::mutex _drain_mutex;
+    std::condition_variable _drain_cv;
+    std::size_t _in_flight_operations{0};
+
+    /// RAII: increments _in_flight_operations on construction, decrements
+    /// (and notifies _drain_cv once it reaches zero) on destruction. Held via
+    /// shared_ptr across a send_rpc call's whole thenValue/thenError chain so
+    /// whichever branch actually runs releases the last reference.
+
     auto validate_certificate_files() const -> void;
     auto load_client_certificates() -> void;
     auto build_ssl_context() -> net::ssl::context;
-    auto get_or_create_connection(std::uint64_t target) -> pooled_connection&;
-    auto remove_connection(std::uint64_t target) -> void;
+    /// @brief Take a connection for this target out of the pool, or build one.
+    ///
+    /// Returns **by value**: the caller owns it for the RPC's duration and no
+    /// reference into the pool outlives `_mutex`. That is the whole fix for the
+    /// dangling-reference crash — the old signature returned
+    /// `pooled_connection&`, and any concurrent teardown erased the map node
+    /// underneath it.
+    auto acquire_connection(std::uint64_t target) -> pooled_connection;
+    /// @brief Return a leased connection. Pooled only when `reusable` and the
+    /// TLS generation still matches; dropped otherwise.
+    auto release_connection(std::uint64_t target, pooled_connection conn, bool reusable) -> void;
+    /// @brief Build a fresh connection to `target`. Caller holds `_mutex`.
+    auto make_connection(std::uint64_t target) -> pooled_connection;
+
+    auto resolve_target(std::uint64_t target) -> const resolved_target&;
 
     /// @param attempted Media types already refused by this peer for this call.
     ///        Empty on the caller's first entry; the 415 retry path re-enters
