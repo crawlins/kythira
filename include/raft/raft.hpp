@@ -2399,8 +2399,14 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
                 auto state = _state_machine.get_state();
 
                 auto end_time = std::chrono::steady_clock::now();
-                auto duration =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                // Nanoseconds, kept at full resolution for the metric. The
+                // millisecond cast below is for the human-readable log line
+                // only: casting first and widening back — which this code did
+                // — recorded every sub-millisecond read as exactly zero, which
+                // is most of them.
+                auto elapsed =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
 
                 _logger.debug("Read request completed (single-node)",
                               {{"node_id", node_id_to_string(_node_id)},
@@ -2415,8 +2421,7 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
 
                 _metrics.set_metric_name("raft_read_latency");
                 _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-                _metrics.add_duration(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
+                _metrics.add_duration(elapsed);
                 _metrics.emit();
 
                 promise_type promise;
@@ -2594,8 +2599,12 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
                     auto state = _state_machine.get_state();
 
                     auto end_time = std::chrono::steady_clock::now();
-                    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        end_time - start_time);
+                    // See the single-node path above: full-resolution
+                    // nanoseconds for the metric, milliseconds only for the log
+                    // line.
+                    auto elapsed =
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
+                    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
 
                     _logger.info("Read request completed successfully",
                                  {{"node_id", node_id_to_string(node_id)},
@@ -2611,8 +2620,7 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
 
                     _metrics.set_metric_name("raft_read_latency");
                     _metrics.add_dimension("node_id", node_id_to_string(node_id));
-                    _metrics.add_duration(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
+                    _metrics.add_duration(elapsed);
                     _metrics.emit();
 
                     return state;

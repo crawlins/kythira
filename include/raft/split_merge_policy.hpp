@@ -17,7 +17,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
+#include <functional>
+#include <optional>
 #include <string>
+#include <tuple>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace kythira {
@@ -170,8 +176,12 @@ public:
 
     [[nodiscard]] auto evaluate_merge(const stats_type& self, const stats_type& sibling)
         -> merge_decision {
+        // No measurement is an ABSTENTION, not an objection. This policy has
+        // nothing to say about shards it cannot size, and under the composite's
+        // unanimity rule (design §6.1.3) saying anything stronger would let a
+        // state machine without sizing hooks block every merge in the cluster.
         if (!self._size_available || !sibling._size_available) {
-            return {};
+            return merge_decision::abstain();
         }
         // BOTH sides must be under BOTH thresholds. Two rules in one:
         //
@@ -188,22 +198,43 @@ public:
             sibling._approximate_size_bytes <= _cfg._shard_merge_max_size_bytes;
         const bool small_by_keys = self._approximate_key_count <= _cfg._shard_merge_max_keys &&
                                    sibling._approximate_key_count <= _cfg._shard_merge_max_keys;
+        // A VETO, not an abstention. "These shards are too big to merge" is a
+        // genuine objection, and it is the objection this policy exists to
+        // raise: under unanimity, abstaining here would let a load-driven
+        // member merge two 90 MiB shards into one 180 MiB shard that splits
+        // straight back — the oscillation `validate()` guards against,
+        // arriving through the one door `validate()` cannot watch.
         if (!small_by_size || !small_by_keys) {
-            return {};
+            return merge_decision::veto(small_by_size ? merge_reason::key_count
+                                                      : merge_reason::size);
         }
 
-        // A shard that split recently must not merge back. The host enforces
-        // this too; a policy that agreed with the host here saves the arbiter a
-        // rejection to log.
+        // A shard that split recently must not merge back. Also a veto, for the
+        // same reason: it is an anti-oscillation objection, not indifference.
+        // The host enforces this too; a policy that agrees with the host here
+        // saves the arbiter a rejection to log.
         if (self._time_since_last_split < _cfg._split_merge_interval ||
             sibling._time_since_last_split < _cfg._split_merge_interval) {
-            return {};
+            return merge_decision::veto(merge_reason::size);
         }
 
-        return merge_decision{
-            ._merge = true,
-            ._direction = merge_direction::into_left_sibling,
-            ._reason = small_by_size ? merge_reason::size : merge_reason::key_count};
+        return merge_decision::propose(
+            merge_direction::into_left_sibling,
+            small_by_size ? merge_reason::size : merge_reason::key_count);
+    }
+
+    /// @brief The smallest approximate size at which this policy proposes a
+    ///        split, for the composite's cross-member oscillation check.
+    ///
+    /// Optional by design (§6.1.3): the composite detects it with `if
+    /// constexpr`, and a member exposing neither this nor `merge_ceiling()` is
+    /// reported as *uncheckable* rather than silently assumed safe.
+    [[nodiscard]] auto split_floor() const -> std::size_t { return _cfg._shard_split_size_bytes; }
+
+    /// @brief The largest approximate size at which this policy proposes a
+    ///        merge. See `split_floor()`.
+    [[nodiscard]] auto merge_ceiling() const -> std::size_t {
+        return _cfg._shard_merge_max_size_bytes;
     }
 
     [[nodiscard]] auto cooldown() const -> std::chrono::milliseconds {
@@ -293,8 +324,395 @@ public:
         return std::min(keys, _cfg._batch_split_limit);
     }
 
+    /// @brief A stable name for the `policy` metric dimension.
+    ///
+    /// Static storage, per `split_decision::_policy`'s lifetime rule.
+    [[nodiscard]] static auto name() -> const char* { return "threshold"; }
+
 private:
     config_type _cfg{};
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Composition (design §6.1.3, Requirement 8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Detects the optional cross-member oscillation accessors.
+///
+/// Structural detection with `if constexpr`, exactly as
+/// `splittable_state_machine` is detected: a policy opts in by having the
+/// members, not by inheriting anything.
+template<typename P>
+concept has_oscillation_bounds = requires(const P& p) {
+    { p.split_floor() } -> std::convertible_to<std::size_t>;
+    { p.merge_ceiling() } -> std::convertible_to<std::size_t>;
+};
+
+/// @brief Detects a policy that names itself for the `policy` dimension.
+template<typename P>
+concept has_policy_name = requires(const P& p) {
+    { p.name() } -> std::convertible_to<const char*>;
+};
+
+/// @brief Runs several policies as one.
+///
+/// A host runs exactly **one** policy. Combining several is a property of that
+/// policy, not of `multi_raft_config` — which is why this is a policy that
+/// happens to contain policies rather than a list in the configuration.
+///
+/// ### Why not a list in the config
+///
+/// A homogeneous `std::vector<P>` composes nothing worth composing. A
+/// heterogeneous list costs either a variadic `multi_raft<Types, Key, GroupId,
+/// Ps...>`, which leaks into every alias, deduction guide and test fixture, or
+/// a type-erased virtual policy interface, which would be the first such
+/// interface in a codebase whose extension mechanism is uniformly concepts and
+/// `if constexpr`. The composite gives up only a policy set assembled at run
+/// time from a config file — which nothing in this specification asks for —
+/// and gains the one thing a list cannot offer: cross-member validation, which
+/// needs the concrete types.
+///
+/// ### The combination rules, and why they are asymmetric
+///
+/// | | Rule | Why |
+/// |---|---|---|
+/// | split | any-wins; `at_keys` is the sorted, de-duplicated union | more shards is the
+/// recoverable direction, and a member proposing a split has seen something the others did not | |
+/// merge | unanimous — at least one `propose`, no `veto` | a merge destroys a group and moves data
+/// through `absorb`; any-wins would let a size policy merge away a shard a load policy was
+/// deliberately keeping |
+///
+/// Three smaller rules fall out of the same place:
+///
+/// - **Deferral does not union.** A member returning `_split = true` with empty
+///   `_at_keys` means "split, you choose" and cannot be unioned with a concrete
+///   key vector. Concrete keys win; the composite falls through to the state
+///   machine's suggestions only when *no* member named a key.
+/// - **Opposite merge directions are a mutual veto**, logged. Silently picking
+///   one would make the answer depend on member order.
+/// - **Order is not semantically significant.** Every rule above is commutative
+///   and associative, including the attribution tie-break. A first-wins rule
+///   would let reordering a composition silently change how the cluster shards
+///   — the kind of coupling discovered during an incident, not during review.
+///
+/// @tparam Ps The member policies, held by value at their concrete types.
+template<typename... Ps> class composite_split_merge_policy {
+public:
+    using members_type = std::tuple<Ps...>;
+
+    /// @brief Where construction-time and decision-time notices go.
+    ///
+    /// A sink rather than a logger type, because this header knows nothing
+    /// about `Types` and a policy has no business owning a logger.
+    using notice_sink = std::function<void(const std::string&)>;
+
+    /// Default-constructs every member. For a zero-member composition this is
+    /// the only constructor, which is why the variadic one below is guarded:
+    /// with `sizeof...(Ps) == 0` the two would have identical signatures.
+    composite_split_merge_policy() { announce_if_empty(); }
+
+    explicit composite_split_merge_policy(Ps... members)
+    requires(sizeof...(Ps) > 0)
+        : _members(std::move(members)...) {
+        announce_if_empty();
+    }
+
+    composite_split_merge_policy(notice_sink sink, Ps... members)
+        : _members(std::move(members)...), _sink(std::move(sink)) {
+        announce_if_empty();
+    }
+
+    /// @brief Install the sink after construction.
+    ///
+    /// Re-announces the empty-composition notice if one was produced before a
+    /// sink existed, so wiring the logger later does not lose it.
+    auto set_notice_sink(notice_sink sink) -> void {
+        _sink = std::move(sink);
+        if (_sink) {
+            for (const auto& n : _notices) {
+                _sink(n);
+            }
+        }
+    }
+
+    /// @brief Every notice this composite has produced, oldest first.
+    ///
+    /// Exposed so a test can assert "logged exactly once" without standing up a
+    /// logger, and so an operator can ask a running host what its policy said
+    /// about itself at construction.
+    [[nodiscard]] auto notices() const -> const std::vector<std::string>& { return _notices; }
+
+    [[nodiscard]] static constexpr auto size() -> std::size_t { return sizeof...(Ps); }
+
+    [[nodiscard]] static auto name() -> const char* { return "composite"; }
+
+    // ── split: any-wins, union of concrete keys ──────────────────────────────
+
+    template<typename Stats>
+    [[nodiscard]] auto evaluate_split(const Stats& self)
+        -> split_decision<typename Stats::key_type> {
+        using key_type = typename Stats::key_type;
+        using decision_type = split_decision<key_type>;
+
+        decision_type out;
+        bool any_deferred = false;
+        const char* winner_name = nullptr;
+        split_reason winner_reason = split_reason::size;
+        bool have_winner = false;
+
+        std::apply(
+            [&](auto&... members) {
+                (
+                    [&] {
+                        auto d = members.evaluate_split(self);
+                        if (!d.should_split()) {
+                            return;
+                        }
+                        const char* who = member_name(members, d._policy);
+                        // Attribution tie-break: the lexicographically smallest
+                        // member name. Any rule would do EXCEPT "the first one",
+                        // which is the one rule that makes member order
+                        // observable.
+                        if (!have_winner || less_name(who, winner_name)) {
+                            have_winner = true;
+                            winner_name = who;
+                            winner_reason = d.reason();
+                        }
+                        if (d.at_keys().empty()) {
+                            any_deferred = true;
+                            return;
+                        }
+                        out._at_keys.insert(out._at_keys.end(), d.at_keys().begin(),
+                                            d.at_keys().end());
+                    }(),
+                    ...);
+            },
+            _members);
+
+        if (!have_winner) {
+            return out;  // nobody proposed
+        }
+
+        out._split = true;
+        out._reason = winner_reason;
+        out._policy = winner_name;
+
+        // Concrete keys win over deferral. A member saying "split, you choose"
+        // cannot be unioned with a member that named where; and if the only
+        // proposals were deferrals, the empty vector IS the deferral, which the
+        // host turns into `suggest_split_keys`.
+        if (!out._at_keys.empty()) {
+            std::sort(out._at_keys.begin(), out._at_keys.end());
+            out._at_keys.erase(std::unique(out._at_keys.begin(), out._at_keys.end()),
+                               out._at_keys.end());
+        } else if (!any_deferred) {
+            out._split = false;
+        }
+        return out;
+    }
+
+    // ── merge: unanimous ─────────────────────────────────────────────────────
+
+    template<typename Stats>
+    [[nodiscard]] auto evaluate_merge(const Stats& self, const Stats& sibling) -> merge_decision {
+        bool any_propose = false;
+        bool vetoed = false;
+        const char* veto_name = nullptr;
+        merge_reason veto_reason = merge_reason::size;
+
+        const char* propose_name = nullptr;
+        merge_reason propose_reason = merge_reason::size;
+        std::optional<merge_direction> direction;
+        bool direction_conflict = false;
+
+        std::apply(
+            [&](auto&... members) {
+                (
+                    [&] {
+                        auto d = members.evaluate_merge(self, sibling);
+                        const char* who = member_name(members, d._policy);
+                        if (d.vetoed()) {
+                            if (!vetoed || less_name(who, veto_name)) {
+                                veto_name = who;
+                                veto_reason = d.reason();
+                            }
+                            vetoed = true;
+                            return;
+                        }
+                        if (!d.should_merge()) {
+                            // An abstention. It neither supports nor blocks —
+                            // that is the entire reason the verdict is
+                            // tri-state.
+                            return;
+                        }
+                        if (direction.has_value() && *direction != d.direction()) {
+                            direction_conflict = true;
+                        }
+                        direction = d.direction();
+                        if (!any_propose || less_name(who, propose_name)) {
+                            propose_name = who;
+                            propose_reason = d.reason();
+                        }
+                        any_propose = true;
+                    }(),
+                    ...);
+            },
+            _members);
+
+        if (vetoed) {
+            return merge_decision::veto(veto_reason, veto_name);
+        }
+        if (direction_conflict) {
+            // A mutual veto, not a coin toss. Picking one would make the
+            // composite's answer depend on the order its members were written
+            // down, which is the one thing member order must never do.
+            note(std::string{"composite policy: members proposed opposite merge directions; "} +
+                 "treating as a mutual veto");
+            return merge_decision::veto(propose_reason, name());
+        }
+        if (!any_propose) {
+            return merge_decision::abstain();
+        }
+        return merge_decision::propose(*direction, propose_reason, propose_name);
+    }
+
+    // ── the rest of the concept ──────────────────────────────────────────────
+
+    /// @brief The maximum over the members'.
+    ///
+    /// The binding anti-oscillation guard is the host-level
+    /// `split_merge_interval` gate, not this; taking the maximum only ensures
+    /// the composite is never *more* eager than its most conservative member.
+    [[nodiscard]] auto cooldown() const -> std::chrono::milliseconds {
+        std::chrono::milliseconds out{0};
+        std::apply([&](const auto&... m) { ((out = std::max(out, m.cooldown())), ...); }, _members);
+        return out;
+    }
+
+    [[nodiscard]] auto validate() const -> bool { return get_validation_errors().empty(); }
+
+    /// @brief Every member's own errors, plus the cross-member oscillation
+    ///        check the members cannot perform for themselves.
+    ///
+    /// The cross-member check is the reason this class holds concrete types.
+    /// `2 * merge_ceiling < split_floor` is *intra*-policy in
+    /// `threshold_split_merge_policy`; member A's merge ceiling against member
+    /// B's split floor is the identical failure mode, both members validate
+    /// clean alone, and the pair oscillates forever — moving real data through
+    /// `split_state` and `absorb` on every cycle.
+    [[nodiscard]] auto get_validation_errors() const -> std::vector<std::string> {
+        std::vector<std::string> errors;
+
+        // 1. Each member's own opinion of itself, attributed.
+        for_each_member([&](std::size_t index, const auto& m) {
+            for (auto& e : m.get_validation_errors()) {
+                errors.push_back(label(index, m) + ": " + e);
+            }
+        });
+
+        // 2. Members that cannot participate in the cross-member check. Named
+        //    rather than assumed safe: "we did not check" and "we checked and
+        //    it is fine" are different facts, and only one of them justifies
+        //    running the composition.
+        for_each_member([&](std::size_t index, const auto& m) {
+            if constexpr (!has_oscillation_bounds<std::remove_cvref_t<decltype(m)>>) {
+                errors.push_back(
+                    label(index, m) +
+                    ": uncheckable — exposes neither split_floor() nor merge_ceiling(), so the "
+                    "cross-member oscillation bound (2 * merge_ceiling < split_floor) cannot be "
+                    "verified against the other members of this composition");
+            }
+        });
+
+        // 3. The cross-member bound itself, over ordered pairs: A's merge
+        //    ceiling against B's split floor is a different question from B's
+        //    against A's, so both orders are checked.
+        for_each_member([&](std::size_t i, const auto& a) {
+            if constexpr (has_oscillation_bounds<std::remove_cvref_t<decltype(a)>>) {
+                for_each_member([&](std::size_t j, const auto& b) {
+                    if constexpr (has_oscillation_bounds<std::remove_cvref_t<decltype(b)>>) {
+                        if (i == j) {
+                            return;
+                        }
+                        if (2 * a.merge_ceiling() >= b.split_floor()) {
+                            errors.push_back(
+                                label(i, a) + " and " + label(j, b) + ": 2 * " +
+                                std::to_string(a.merge_ceiling()) +
+                                " (merge_ceiling) must be strictly below " +
+                                std::to_string(b.split_floor()) +
+                                " (split_floor): otherwise two shards the first policy merges "
+                                "produce one shard the second policy splits straight back, and "
+                                "the pair oscillates forever — each member validating cleanly on "
+                                "its own");
+                        }
+                    }
+                });
+            }
+        });
+
+        return errors;
+    }
+
+private:
+    template<typename F> auto for_each_member(F&& f) const -> void {
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+            (f(I, std::get<I>(_members)), ...);
+        }(std::index_sequence_for<Ps...>{});
+    }
+
+    template<typename P>
+    [[nodiscard]] static auto member_name(const P& p, const char* from_decision) -> const char* {
+        if (from_decision != nullptr) {
+            return from_decision;
+        }
+        if constexpr (has_policy_name<P>) {
+            return p.name();
+        } else {
+            return "unnamed";
+        }
+    }
+
+    template<typename P>
+    [[nodiscard]] static auto label(std::size_t index, const P& p) -> std::string {
+        return "member " + std::to_string(index) + " (" + member_name(p, nullptr) + ")";
+    }
+
+    /// Lexicographic, with `nullptr` sorting last so an unattributed decision
+    /// never wins the tie-break over a named one.
+    [[nodiscard]] static auto less_name(const char* lhs, const char* rhs) -> bool {
+        if (lhs == nullptr) {
+            return false;
+        }
+        if (rhs == nullptr) {
+            return true;
+        }
+        return std::strcmp(lhs, rhs) < 0;
+    }
+
+    auto note(std::string message) -> void {
+        if (_sink) {
+            _sink(message);
+        }
+        _notices.push_back(std::move(message));
+    }
+
+    auto announce_if_empty() -> void {
+        if constexpr (sizeof...(Ps) == 0) {
+            // `{}` is far too easy to arrive at by accident for the difference
+            // between "no policies configured" and "policies configured, never
+            // firing" to be invisible — the same doctrine as `_size_available`.
+            note(
+                "composite policy: zero members; channel (a) is silent, exactly as configuring "
+                "no policy at all");
+        }
+    }
+
+    members_type _members{};
+    notice_sink _sink{};
+    std::vector<std::string> _notices;
+};
+
+/// @brief Deduction guide, so `composite_split_merge_policy{a, b}` works.
+template<typename... Ps> composite_split_merge_policy(Ps...) -> composite_split_merge_policy<Ps...>;
 
 }  // namespace kythira

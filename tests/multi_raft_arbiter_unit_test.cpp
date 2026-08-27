@@ -622,4 +622,140 @@ BOOST_AUTO_TEST_CASE(a_frozen_shard_is_not_even_evaluated, *boost::unit_test::ti
     BOOST_CHECK_EQUAL(h.host().rejection_count(arbiter_gate::state), 0u);
 }
 
+// ── batch_split_limit as a HOST gate (Requirement 7.8) ───────────────────────
+
+BOOST_AUTO_TEST_CASE(a_proposal_over_the_batch_limit_is_truncated_not_refused,
+                     *boost::unit_test::timeout(120)) {
+    // A composition unions its members' split keys, so the proposal that
+    // actually reaches Raft can exceed a limit every member respected. The
+    // shard genuinely does need splitting, so the host truncates: fewer
+    // children is a worse answer than what was asked for and a far better one
+    // than no split at all.
+    arbiter_host h{[](config_type& cfg) { cfg.batch_split_limit = 3; }};
+    BOOST_REQUIRE(h.await_leader());
+    h.seed();
+
+    // Six keys named, three allowed.
+    auto error =
+        h.settle(h.host().split_shard(k_group, workload_keys(), std::chrono::milliseconds{4000}));
+    BOOST_CHECK_MESSAGE(error == nullptr, "the split must happen, merely smaller");
+
+    // Four children: three cut points make four ranges.
+    BOOST_CHECK_EQUAL(h.host().group_count(), 4u);
+    BOOST_CHECK(!h.host().shard_map_snapshot().check_tiling().has_value());
+
+    // ...and the override is counted under its own gate, never silent.
+    BOOST_CHECK_EQUAL(h.host().rejection_count(arbiter_gate::split_keys_truncated), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(a_proposal_inside_the_batch_limit_is_not_counted_as_truncated,
+                     *boost::unit_test::timeout(120)) {
+    arbiter_host h{[](config_type& cfg) { cfg.batch_split_limit = 10; }};
+    BOOST_REQUIRE(h.await_leader());
+    h.seed();
+
+    auto error =
+        h.settle(h.host().split_shard(k_group, {"delta"}, std::chrono::milliseconds{4000}));
+    BOOST_CHECK(error == nullptr);
+    BOOST_CHECK_EQUAL(h.host().rejection_count(arbiter_gate::split_keys_truncated), 0u);
+}
+
+// ── the merge veto counter (Requirement 6.9 / design §6.7) ───────────────────
+
+BOOST_AUTO_TEST_CASE(a_policy_veto_is_counted_against_the_policy_that_cast_it,
+                     *boost::unit_test::timeout(120)) {
+    // Under the composite's unanimity rule a single member can hold every merge
+    // in the cluster hostage, so the first question an operator asks when
+    // merges stop happening is *which one*. A veto that only showed up as an
+    // absence of merges could not answer it.
+    arbiter_host h{[](config_type& cfg) {
+        cfg.evaluate_merge = [](const stats_type&, const stats_type&) {
+            return kythira::merge_decision::veto(kythira::merge_reason::size, "grumpy");
+        };
+        cfg.policy_interval = std::chrono::milliseconds{10};
+    }};
+    BOOST_REQUIRE(h.await_leader());
+    h.seed();
+
+    // Split first, so there is an adjacent sibling for a merge to be about.
+    BOOST_REQUIRE(h.settle(h.host().split_shard(k_group, {"delta"},
+                                                std::chrono::milliseconds{4000})) == nullptr);
+
+    for (int i = 0; i < 80 && h.host().merge_veto_count() == 0; ++i) {
+        h.host().tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+
+    BOOST_CHECK_GE(h.host().merge_veto_count(), 1u);
+    BOOST_CHECK_GE(h.host().merge_veto_count("grumpy"), 1u);
+    // Attributed, not lumped in with the unnamed default.
+    BOOST_CHECK_EQUAL(h.host().merge_veto_count("unattributed"), 0u);
+    // A veto is not a merge.
+    BOOST_CHECK_EQUAL(h.host().applied_merge_count(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(an_abstaining_policy_is_not_counted_as_a_veto,
+                     *boost::unit_test::timeout(120)) {
+    // The distinction the tri-state exists for, at the host boundary: an
+    // abstention leaves the merge unproposed exactly as a veto does, and only
+    // one of them is a policy actively holding the cluster back.
+    arbiter_host h{[](config_type& cfg) {
+        cfg.evaluate_merge = [](const stats_type&, const stats_type&) {
+            return kythira::merge_decision::abstain();
+        };
+        cfg.policy_interval = std::chrono::milliseconds{10};
+    }};
+    BOOST_REQUIRE(h.await_leader());
+    h.seed();
+    BOOST_REQUIRE(h.settle(h.host().split_shard(k_group, {"delta"},
+                                                std::chrono::milliseconds{4000})) == nullptr);
+
+    for (int i = 0; i < 60; ++i) {
+        h.host().tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    BOOST_CHECK_EQUAL(h.host().merge_veto_count(), 0u);
+    BOOST_CHECK_EQUAL(h.host().applied_merge_count(), 0u);
+}
+
+// ── latency statistics reach the policy (Requirement 10) ─────────────────────
+
+BOOST_AUTO_TEST_CASE(read_latency_is_sampled_at_the_routing_layer,
+                     *boost::unit_test::timeout(120)) {
+    // Sampled in `multi_raft::read_state`, not in `node<Types>::read_state`:
+    // the node sees neither the shard-map lookup nor the epoch validation the
+    // client actually paid for.
+    arbiter_host h;
+    BOOST_REQUIRE(h.await_leader());
+    h.seed();
+
+    for (int i = 0; i < 5; ++i) {
+        auto f = h.host().read_state("alpha", std::chrono::milliseconds{2000});
+        BOOST_CHECK(h.settle(std::move(f)) == nullptr);
+    }
+
+    auto stats = h.host().stats_for(k_group);
+    BOOST_REQUIRE(stats.has_value());
+    // Non-zero, which is the property the millisecond-truncation fix restores:
+    // these reads are all comfortably sub-millisecond.
+    BOOST_CHECK_GT(stats->_p99_read_latency.count(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(apply_latency_is_populated, *boost::unit_test::timeout(120)) {
+    // `_p99_apply_latency` was an unpopulated field from the first draft
+    // onwards, because nothing measured it.
+    arbiter_host h;
+    BOOST_REQUIRE(h.await_leader());
+    h.seed();
+    BOOST_REQUIRE(h.settle(h.host().split_shard(k_group, {"delta"},
+                                                std::chrono::milliseconds{4000})) == nullptr);
+    for (int i = 0; i < 20; ++i) {
+        h.host().tick();
+    }
+
+    auto stats = h.host().stats_for(k_group);
+    BOOST_REQUIRE(stats.has_value());
+    BOOST_CHECK_GT(stats->_p99_apply_latency.count(), 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

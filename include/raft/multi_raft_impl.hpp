@@ -154,7 +154,7 @@ auto multi_raft<Types, Key, GroupId>::create_group(
         }
     }
 
-    auto state = std::make_shared<group_state>();
+    auto state = std::make_shared<group_state>(_cfg.latency_window_count);
     state->_group_id = group;
     state->_descriptor = descriptor;
     state->_stripe = std::hash<GroupId>{}(group) % _stripe_count;
@@ -626,6 +626,11 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
     {
         const auto t0 = clock::now();
         run_phase(ready, [](group_state& g) {
+            // Apply latency is sampled per GROUP, around that group's share of
+            // the phase — not around the phase as a whole. Nothing measured it
+            // before, which is why `_p99_apply_latency` has been an unpopulated
+            // field since the first draft.
+            const auto group_start = clock::now();
             std::vector<std::function<void()>> work;
             {
                 std::lock_guard lock(g._deferred_mutex);
@@ -634,6 +639,8 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
             for (auto& w : work) {
                 w();
             }
+            g._apply_latency.record(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - group_start));
         });
         report._apply_duration = clock::now() - t0;
     }
@@ -673,6 +680,17 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
                               std::chrono::duration_cast<std::chrono::milliseconds>(now - frozen_at)
                                   .count())}});
                 }
+            }
+
+            // Rotate the latency windows here, on the policy tick, so that the
+            // percentile a policy reads covers the last
+            // `latency_window_count * policy_interval` and nothing older. A
+            // lifetime percentile never decays, which would make any
+            // latency-derived policy permanently sticky once a shard has had
+            // one bad minute.
+            for (const auto& g : ready) {
+                g->_read_latency.rotate();
+                g->_apply_latency.rotate();
             }
 
             evaluate_policy(ready);
@@ -724,6 +742,7 @@ auto multi_raft<Types, Key, GroupId>::evaluate_policy(const std::vector<group_pt
                 split_options options{};
                 options._channel = signal_channel::policy;
                 options._reason = decision.reason();
+                options._policy = decision.policy();
                 // A load split ALWAYS scatters: children whose leaders both
                 // land on the machine that was already hot have accomplished
                 // exactly nothing (Requirement 8.6).
@@ -754,12 +773,67 @@ auto multi_raft<Types, Key, GroupId>::evaluate_policy(const std::vector<group_pt
                 continue;
             }
             const auto decision = _cfg.evaluate_merge(*stats, *sibling_stats);
+            if (decision.vetoed()) {
+                // Counted, not merely skipped. A veto and an abstention both
+                // leave the merge unproposed, and only one of them is a policy
+                // actively holding the cluster back — which is the difference
+                // an operator needs when merges have stopped happening.
+                note_merge_veto(g->_group_id, decision.policy(), decision.reason());
+                continue;
+            }
             if (decision.should_merge()) {
+                merge_options options{};
+                options._channel = signal_channel::policy;
+                options._reason = decision.reason();
+                options._policy = decision.policy();
+                _cfg.metrics.set_metric_name("kythira.multiraft.merge.proposed");
+                _cfg.metrics.add_dimension("group", detail::describe_value(g->_group_id));
+                _cfg.metrics.add_dimension("reason", to_string(decision.reason()));
+                _cfg.metrics.add_dimension("channel", to_string(signal_channel::policy));
+                _cfg.metrics.add_dimension("policy", policy_label(decision.policy()));
+                _cfg.metrics.add_count(1);
+                _cfg.metrics.emit();
                 std::ignore =
                     merge_shards(sibling->_group_id, g->_group_id, std::chrono::seconds{30});
             }
         }
     }
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::note_merge_veto(const GroupId& group, const char* policy,
+                                                      merge_reason reason) -> void {
+    const auto label = policy_label(policy);
+    {
+        std::lock_guard lock(_rejection_mutex);
+        ++_merge_vetoes[label];
+    }
+    _cfg.logger.info("merge_vetoed", {{"group", detail::describe_value(group)},
+                                      {"policy", label},
+                                      {"reason", to_string(reason)}});
+    _cfg.metrics.set_metric_name("kythira.multiraft.merge.vetoed");
+    _cfg.metrics.add_dimension("group", detail::describe_value(group));
+    _cfg.metrics.add_dimension("policy", label);
+    _cfg.metrics.add_count(1);
+    _cfg.metrics.emit();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::merge_veto_count(const std::string& policy) const
+    -> std::uint64_t {
+    std::lock_guard lock(_rejection_mutex);
+    auto it = _merge_vetoes.find(policy);
+    return it == _merge_vetoes.end() ? 0 : it->second;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::merge_veto_count() const -> std::uint64_t {
+    std::lock_guard lock(_rejection_mutex);
+    std::uint64_t total = 0;
+    for (const auto& [_, n] : _merge_vetoes) {
+        total += n;
+    }
+    return total;
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -1041,6 +1115,9 @@ auto multi_raft<Types, Key, GroupId>::stats_for(const GroupId& group) const
     stats._time_since_last_split = since(g->_last_split_ns.load(std::memory_order_relaxed));
     stats._time_since_last_merge = since(g->_last_merge_ns.load(std::memory_order_relaxed));
     stats._leader_since = since(g->_leader_since_ns.load(std::memory_order_relaxed));
+
+    stats._p99_read_latency = g->_read_latency.p99();
+    stats._p99_apply_latency = g->_apply_latency.p99();
 
     stats._voter_count = g->_descriptor._voters.size();
     stats._learner_count = g->_descriptor._learners.size();
@@ -1372,8 +1449,32 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
 
     std::sort(chosen.begin(), chosen.end());
     chosen.erase(std::unique(chosen.begin(), chosen.end()), chosen.end());
+
+    // `batch_split_limit` is a HOST gate, not only a knob of the default
+    // policy's own config (Requirement 7.8). A composition unions its members'
+    // split keys, so the proposal that actually reaches Raft can exceed a limit
+    // every member respected individually — each of them behaving correctly.
+    //
+    // It truncates rather than refusing: the shard genuinely does need
+    // splitting, and fewer children is a worse answer than what was asked for
+    // but a far better one than no split at all. Truncation is counted and
+    // logged because it overrides a decision a policy actually made.
     if (chosen.size() > _cfg.batch_split_limit) {
+        const auto proposed = chosen.size();
         chosen.resize(_cfg.batch_split_limit);
+        note_rejection(group, arbiter_gate::split_keys_truncated, options._channel, "split");
+        _cfg.logger.warning("Split key list truncated to batch_split_limit",
+                            {{"group", detail::describe_value(group)},
+                             {"proposed_keys", std::to_string(proposed)},
+                             {"kept_keys", std::to_string(chosen.size())},
+                             {"policy", policy_label(options._policy)},
+                             {"channel", to_string(options._channel)}});
+        _cfg.metrics.set_metric_name("kythira.multiraft.split.truncated");
+        _cfg.metrics.add_dimension("group", detail::describe_value(group));
+        _cfg.metrics.add_dimension("proposed_keys", std::to_string(proposed));
+        _cfg.metrics.add_dimension("kept_keys", std::to_string(chosen.size()));
+        _cfg.metrics.add_count(1);
+        _cfg.metrics.emit();
     }
 
     if (chosen.empty()) {
@@ -1460,7 +1561,18 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     _cfg.logger.info("Proposing split", {{"group", detail::describe_value(group)},
                                          {"children", std::to_string(child_count)},
                                          {"parent_version", std::to_string(parent._epoch._version)},
-                                         {"child_version", std::to_string(child_epoch._version)}});
+                                         {"child_version", std::to_string(child_epoch._version)},
+                                         {"reason", to_string(options._reason)},
+                                         {"channel", to_string(options._channel)},
+                                         {"policy", policy_label(options._policy)}});
+
+    _cfg.metrics.set_metric_name("kythira.multiraft.split.proposed");
+    _cfg.metrics.add_dimension("group", detail::describe_value(group));
+    _cfg.metrics.add_dimension("reason", to_string(options._reason));
+    _cfg.metrics.add_dimension("channel", to_string(options._channel));
+    _cfg.metrics.add_dimension("policy", policy_label(options._policy));
+    _cfg.metrics.add_count(1);
+    _cfg.metrics.emit();
 
     auto future = g->_node->propose_admin_entry(entry_type::split, std::move(payload), timeout);
 
@@ -2438,7 +2550,34 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
         // works for ANY state machine — including one with no sizing hooks.
         if (is_read) {
             local->_reads.fetch_add(1, std::memory_order_relaxed);
-            return local->_node->read_state(timeout);
+            // Latency is sampled HERE, not in `node<Types>::read_state`, for
+            // three reasons in order of weight (design §6.1.4): the node cannot
+            // see the shard-map lookup or the epoch validation the client
+            // actually paid for; the node cannot attribute a read rejected
+            // before it ran; and `node<Types>` is closed to changes beyond the
+            // admin-entry hook and the group-id field.
+            //
+            // The clock starts at the top of the retry loop, so a read that
+            // resolved twice reports what the caller waited, not what the last
+            // attempt took.
+            const auto started = std::chrono::steady_clock::now();
+            auto g = local;
+            return local->_node->read_state(timeout).thenTry([g, started, timeout](auto&& result) {
+                // A completed read AND a timed-out read are both samples;
+                // the timeout is clamped at its deadline. A percentile over
+                // the requests that survived reports the health of the
+                // survivors. Rejections before execution are excluded, and
+                // they never reach here — `not_leader` and epoch mismatch
+                // are refused above, before this continuation exists.
+                auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started);
+                if (result.hasException()) {
+                    elapsed = std::min(
+                        elapsed, std::chrono::duration_cast<std::chrono::nanoseconds>(timeout));
+                }
+                g->_read_latency.record(elapsed);
+                return std::forward<decltype(result)>(result).value();
+            });
         }
         local->_writes.fetch_add(1, std::memory_order_relaxed);
         return local->_node->submit_command(*command, timeout);

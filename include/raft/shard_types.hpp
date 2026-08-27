@@ -454,10 +454,19 @@ key_codec_adapter(E, D) -> key_codec_adapter<std::invoke_result_t<D, std::vector
 
 /// @brief Why a split was proposed. Carried into logs and metrics as a dimension.
 enum class split_reason : std::uint8_t {
-    size = 0,              ///< Approximate state size crossed the split threshold.
-    key_count = 1,         ///< Approximate key count crossed the split threshold.
-    read_load = 2,         ///< Load-based split (design §6.3), read side.
-    write_load = 3,        ///< Load-based split (design §6.3), write side.
+    size = 0,        ///< Approximate state size crossed the split threshold.
+    key_count = 1,   ///< Approximate key count crossed the split threshold.
+    read_load = 2,   ///< Load-based split (design §6.3), read side.
+    write_load = 3,  ///< Load-based split (design §6.3), write side.
+    /// @brief Backpressure: a latency percentile, not a size or a rate.
+    ///
+    /// Exists so a policy that *does* act on latency can attribute its
+    /// decision. The shipped threshold policy never produces it, and design
+    /// §6.1.4 explains why: under whole-blob reads, read latency scales with
+    /// shard size, so making it a default trigger would duplicate the size
+    /// trigger it appears to complement — firing on big shards rather than
+    /// busy ones.
+    latency = 7,
     admin = 4,             ///< An explicit operator command.
     placement_driver = 5,  ///< An advisory operator from the placement driver.
     pre_split = 6,         ///< A bulk-load pre-split over an empty shard.
@@ -469,6 +478,8 @@ inline auto operator<<(std::ostream& os, split_reason r) -> std::ostream& {
             return os << "size";
         case split_reason::key_count:
             return os << "key_count";
+        case split_reason::latency:
+            return os << "latency";
         case split_reason::read_load:
             return os << "read_load";
         case split_reason::write_load:
@@ -507,6 +518,20 @@ inline auto operator<<(std::ostream& os, merge_reason r) -> std::ostream& {
     }
 }
 
+/// @brief `to_string` for `split_reason`, for metric dimensions and logs.
+[[nodiscard]] inline auto to_string(split_reason r) -> std::string {
+    std::ostringstream os;
+    os << r;
+    return os.str();
+}
+
+/// @brief `to_string` for `merge_reason`.
+[[nodiscard]] inline auto to_string(merge_reason r) -> std::string {
+    std::ostringstream os;
+    os << r;
+    return os.str();
+}
+
 /// @brief A policy's answer to "should this shard split, and where".
 ///
 /// An empty `_at_keys` with `_split == true` means "yes, but you choose" — the
@@ -517,9 +542,25 @@ template<shard_key Key> struct split_decision {
     std::vector<Key> _at_keys{};
     split_reason _reason{split_reason::size};
 
+    /// @brief Who decided, for the `policy` metric dimension (design §6.7).
+    ///
+    /// `reason` alone stops identifying the decider the moment two policies
+    /// compose: both members of a composition can return `size`, and an
+    /// operator looking at `split.proposed{reason=size}` learns nothing about
+    /// which one to retune.
+    ///
+    /// A borrowed `const char*` rather than a `std::string`: this struct is
+    /// returned from a call on every policy tick for every shard, and a policy
+    /// name is a compile-time constant in every implementation anyone would
+    /// write. **Must point at storage that outlives the decision** — a string
+    /// literal or a static. `nullptr` means "unattributed", which is the right
+    /// answer for a single configured policy that never named itself.
+    const char* _policy{nullptr};
+
     [[nodiscard]] auto should_split() const -> bool { return _split; }
     [[nodiscard]] auto at_keys() const -> const std::vector<Key>& { return _at_keys; }
     [[nodiscard]] auto reason() const -> split_reason { return _reason; }
+    [[nodiscard]] auto policy() const -> const char* { return _policy; }
 };
 
 /// @brief Which neighbour a shard merges into.
@@ -538,15 +579,94 @@ inline auto operator<<(std::ostream& os, merge_direction d) -> std::ostream& {
                                                           : "into_right_sibling");
 }
 
+/// @brief A policy's answer about a merge: for, against, or not its business.
+///
+/// Tri-state, and the third state is the whole point. It looks like
+/// over-engineering until policies compose (design §6.1.3): under the
+/// composite's **unanimity** rule a merge proceeds only if some member says
+/// `propose` and none says `veto`, so a two-state `bool` would make "I do not
+/// reason about merges" indistinguishable from "I object to this merge" — and
+/// those two answers have opposite effects. A load-only policy written against
+/// a `bool` would silently veto every merge in the cluster while looking
+/// perfectly correct in isolation.
+///
+/// `abstain` is the default so that a policy which never thinks about merges
+/// behaves exactly as it did when this field was a `bool`.
+enum class merge_verdict : std::uint8_t {
+    propose = 0,  ///< This shard should merge, in `_direction`.
+    abstain = 1,  ///< No opinion. Neither supports nor blocks a merge.
+    veto = 2,     ///< This shard must NOT merge, whatever anyone else says.
+};
+
+inline auto operator<<(std::ostream& os, merge_verdict v) -> std::ostream& {
+    switch (v) {
+        case merge_verdict::propose:
+            return os << "propose";
+        case merge_verdict::abstain:
+            return os << "abstain";
+        case merge_verdict::veto:
+            return os << "veto";
+        default:
+            return os << "unknown";
+    }
+}
+
+[[nodiscard]] inline auto to_string(merge_verdict v) -> const char* {
+    switch (v) {
+        case merge_verdict::propose:
+            return "propose";
+        case merge_verdict::abstain:
+            return "abstain";
+        case merge_verdict::veto:
+            return "veto";
+        default:
+            return "unknown";
+    }
+}
+
 /// @brief A policy's answer to "should this shard merge into a neighbour".
 struct merge_decision {
-    bool _merge{false};
+    merge_verdict _verdict{merge_verdict::abstain};
     merge_direction _direction{merge_direction::into_left_sibling};
     merge_reason _reason{merge_reason::size};
 
-    [[nodiscard]] auto should_merge() const -> bool { return _merge; }
+    /// @brief Who decided. See `split_decision::_policy` for the lifetime rule.
+    ///
+    /// It matters most on a veto: under the composite's unanimity rule a single
+    /// member can hold every merge in the cluster hostage, and the first
+    /// question an operator asks is *which one*.
+    const char* _policy{nullptr};
+
+    [[nodiscard]] auto verdict() const -> merge_verdict { return _verdict; }
+    /// @brief Whether this decision, on its own, asks for a merge.
+    ///
+    /// Kept as a named predicate rather than leaving callers to compare against
+    /// the enumerator, because `!should_merge()` must never be read as "vetoed"
+    /// — an abstention satisfies it too, and conflating the two is exactly the
+    /// bug the tri-state exists to prevent.
+    [[nodiscard]] auto should_merge() const -> bool { return _verdict == merge_verdict::propose; }
+    [[nodiscard]] auto vetoed() const -> bool { return _verdict == merge_verdict::veto; }
+    [[nodiscard]] auto abstained() const -> bool { return _verdict == merge_verdict::abstain; }
     [[nodiscard]] auto direction() const -> merge_direction { return _direction; }
     [[nodiscard]] auto reason() const -> merge_reason { return _reason; }
+    [[nodiscard]] auto policy() const -> const char* { return _policy; }
+
+    /// @brief The conventional "yes, merge in this direction" answer.
+    [[nodiscard]] static auto propose(merge_direction direction, merge_reason reason,
+                                      const char* policy = nullptr) -> merge_decision {
+        return merge_decision{._verdict = merge_verdict::propose,
+                              ._direction = direction,
+                              ._reason = reason,
+                              ._policy = policy};
+    }
+    [[nodiscard]] static auto abstain() -> merge_decision { return merge_decision{}; }
+    [[nodiscard]] static auto veto(merge_reason reason, const char* policy = nullptr)
+        -> merge_decision {
+        return merge_decision{._verdict = merge_verdict::veto,
+                              ._direction = merge_direction::into_left_sibling,
+                              ._reason = reason,
+                              ._policy = policy};
+    }
 };
 
 /// @brief One candidate split key surfaced by the load-based sampler (design §6.3).
@@ -602,6 +722,12 @@ template<raft_group_id GroupId, shard_key Key, typename NodeId = std::uint64_t,
          typename LogIndex = std::uint64_t>
 requires node_id<NodeId> && log_index<LogIndex>
 struct shard_stats {
+    using group_id_type = GroupId;
+    /// Exposed so a policy generic over its statistics type — the composite,
+    /// above all — can name the key type without being told it separately.
+    using key_type = Key;
+    using node_id_type = NodeId;
+
     shard_descriptor<GroupId, Key, NodeId> _descriptor{};
 
     // ── size, from the splittable_state_machine extension (design §6.4) ──────
@@ -618,13 +744,32 @@ struct shard_stats {
     std::size_t _log_size_bytes{0};
     LogIndex _last_applied_index{0};
     double _applied_entries_per_sec{0.0};
-    std::chrono::nanoseconds _p99_apply_latency{};
 
     // ── load, measured at the routing layer ──────────────────────────────────
     double _read_qps{0.0};
     double _write_qps{0.0};
     double _read_bytes_per_sec{0.0};
     double _write_bytes_per_sec{0.0};
+
+    // ── latency (design §6.1.4) ──────────────────────────────────────────────
+    //
+    // Percentiles over a bounded, recent window — **never** over the lifetime
+    // of the shard. Both come from the same `latency_digest`, with the same
+    // window and the same estimator, because two latency percentiles that could
+    // drift apart in meaning are worse than one.
+    std::chrono::nanoseconds _p99_apply_latency{};
+
+    /// @brief p99 of the time a client's read actually took, measured at the
+    ///        routing layer so the sample includes shard-map lookup and epoch
+    ///        validation.
+    ///
+    /// **Not a trigger of the default policy.** A read returns the whole
+    /// state-machine blob, so read latency scales with shard size and would
+    /// largely duplicate the size trigger it appears to complement — firing on
+    /// big shards rather than busy ones. It is here as an input a custom or
+    /// composite policy may treat as backpressure evidence, and as an
+    /// operator-facing diagnostic.
+    std::chrono::nanoseconds _p99_read_latency{};
 
     // ── history: the anti-oscillation inputs ─────────────────────────────────
     std::chrono::milliseconds _time_since_last_split{};
