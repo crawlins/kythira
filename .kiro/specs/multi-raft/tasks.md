@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phases 1-9 complete (tasks 1-26)
+## Status: In progress — Phases 1-10 complete (tasks 1-29, 35, 36)
 
 **Last Updated**: August 26, 2026
 
@@ -476,7 +476,7 @@ Phases 6–8, after the mechanics it drives.
     refuses policy but accepts `split_shard`.
   - _Requirements: 6.9, 7.6, 12.1, 12.2, 12.3, 12.4, 12.5, 12.6, 17.1–17.7_
 
-- [ ] 26. Signal metrics and structured logs
+- [x] 26. Signal metrics and structured logs
   - The metric set from design §6.7, with `reason`, `gate` and `policy` as
     dimensions; `merge.vetoed{group, policy}` and
     `split.truncated{group, proposed_keys, kept_keys}` included, since under a
@@ -491,7 +491,7 @@ Phases 6–8, after the mechanics it drives.
     listener fires on role and membership transitions.
   - _Requirements: 6.9, 17.7, 19.1, 19.2, 19.3, 19.4_
 
-- [ ] 35. `composite_split_merge_policy`
+- [x] 35. `composite_split_merge_policy`
   - `include/raft/split_merge_policy.hpp`: a variadic composite holding
     `std::tuple<Ps...>` that itself satisfies `split_merge_policy`, per design
     §6.1.3. The config slot stays singular (Task 9); this is how several
@@ -523,7 +523,7 @@ Phases 6–8, after the mechanics it drives.
     than silence; an empty composition proposes nothing and logs once.
   - _Requirements: 8.1–8.10, 6.8, 6.10, 6.11, 7.8_
 
-- [ ] 36. `latency_digest` and the two latency percentiles
+- [x] 36. `latency_digest` and the two latency percentiles
   - `include/raft/latency_digest.hpp`: fixed-bucket logarithmic histogram —
     bounded memory, no allocation on the record path, O(1) record, mergeable,
     bucket walk to read — behind a ring of sub-windows spanning a configured
@@ -560,7 +560,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 10: Placement Driver (Tasks 27–29)
 
-- [ ] 27. `shard_placement_driver` concept and `no_op` default
+- [x] 27. `shard_placement_driver` concept and `no_op` default
   - Concept per design §7; `shard_report` and `node_report` mirroring TiKV's
     region and store heartbeats, reusing the existing `placement_group_id` from
     `quorum_management.hpp` for labels.
@@ -571,7 +571,7 @@ Phases 6–8, after the mechanics it drives.
     three-shard cluster runs end-to-end against it with splits disabled.
   - _Requirements: 16.1, 16.2, 16.3, 16.7_
 
-- [ ] 28. Heartbeats and advisory operators
+- [x] 28. Heartbeats and advisory operators
   - Batched shard heartbeats — one call per interval carrying every local
     shard's report, not one call per shard.
   - `shard_operation` variant (`add_replica`, `remove_replica`,
@@ -587,7 +587,7 @@ Phases 6–8, after the mechanics it drives.
     is accepted once the shard returns to `stable`.
   - _Requirements: 16.4, 16.5, 16.6, 16.8_
 
-- [ ] 29. Leader transfer and scatter
+- [x] 29. Leader transfer and scatter
   - Raft leadership transfer (TimeoutNow) on `node<Types>`, needed by the PD's
     `transfer_leader` operator and by load-split scatter.
   - `scatter` operator implementation: request leader transfers so that the
@@ -598,6 +598,16 @@ Phases 6–8, after the mechanics it drives.
     election timeout without an intervening term bump on a third node; after a
     load split with `_scatter_children`, the two children's leaders are on
     different nodes.
+  - **As implemented**, TimeoutNow is an *optional* transport extension in the
+    established shape of PreVote (`network_client_with_timeout_now` /
+    `network_server_with_timeout_now`, checked with `if constexpr`). It is
+    implemented for `simulator_network`, the group-scoped transport views and
+    the test fabric; the wire-format transports (protobuf, ion, gRPC, TCP, TLS,
+    CoAP) have **not** opted in, so `transfer_leader` and `scatter` fail with
+    `leader_transfer_unsupported_exception` on those bundles and the placement
+    driver skips the operator with reason `unsupported`. Closing that gap is
+    mechanical but touches every serializer; design §12 open question 1 already
+    flags leader transfer as arguably its own spec.
   - _Requirements: 16.4, 9.6_
 
 ---

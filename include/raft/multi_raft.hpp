@@ -37,6 +37,7 @@
 #include <raft/raft.hpp>
 #include <raft/shard_exceptions.hpp>
 #include <raft/shard_map.hpp>
+#include <raft/latency_digest.hpp>
 #include <raft/shard_placement_driver.hpp>
 #include <raft/shard_types.hpp>
 #include <raft/striped_executor.hpp>
@@ -216,6 +217,15 @@ enum class arbiter_gate : std::uint8_t {
     pd_unavailable = 8,      ///< The shard-id authority could not be reached.
     not_leader = 9,          ///< This replica does not lead the shard.
     preempted = 10,          ///< A higher-precedence channel holds the shard.
+    /// @brief The proposal named more keys than `batch_split_limit` allows.
+    ///
+    /// The only gate that **truncates rather than refuses**. A composition
+    /// (design §6.1.3) unions its members' split keys, so it can exceed a limit
+    /// every member respected individually — and the right answer there is
+    /// fewer children, not no split. It is still counted and logged, because
+    /// truncation overrides a decision a policy actually made, and a silent
+    /// override is the kind of thing that is discovered during an incident.
+    split_keys_truncated = 11,
 };
 
 inline auto to_string(arbiter_gate g) -> std::string {
@@ -242,6 +252,8 @@ inline auto to_string(arbiter_gate g) -> std::string {
             return "not_leader";
         case arbiter_gate::preempted:
             return "preempted_by";
+        case arbiter_gate::split_keys_truncated:
+            return "split_keys_truncated";
         default:
             return "unknown";
     }
@@ -278,6 +290,13 @@ struct split_options {
 
     signal_channel _channel{signal_channel::admin};
     split_reason _reason{split_reason::admin};
+
+    /// @brief Which policy decided, for the `policy` metric dimension.
+    ///
+    /// `reason` alone stops identifying the decider once policies compose:
+    /// two members can both return `size`. Borrowed pointer with the same
+    /// lifetime rule as `split_decision::_policy` — static storage.
+    const char* _policy{nullptr};
 };
 
 /// @brief Operator control over one merge (design §6.2).
@@ -294,6 +313,9 @@ struct merge_options {
 
     signal_channel _channel{signal_channel::admin};
     merge_reason _reason{merge_reason::admin};
+
+    /// @brief Which policy decided. See `split_options::_policy`.
+    const char* _policy{nullptr};
 };
 
 /// @brief What the arbiter decided, and why.
@@ -382,6 +404,15 @@ struct multi_raft_config {
     /// How often the policy phase runs. Policy evaluation is far coarser than
     /// the tick and running it every tick would dominate the loop.
     std::chrono::milliseconds policy_interval{std::chrono::seconds{10}};
+
+    /// @brief Sub-windows in each group's latency digest (design §6.1.4).
+    ///
+    /// The digests rotate on the policy tick, so the percentiles a policy reads
+    /// cover the last `latency_window_count * policy_interval` and nothing
+    /// older. Higher is smoother and slower to react; lower is twitchier and
+    /// decays faster. One degenerates to "everything since the last policy
+    /// tick", which is legitimate but coarse.
+    std::size_t latency_window_count{latency_digest::k_default_windows};
 
     /// One barrier per tick instead of one per ready group; see the type's docs.
     std::optional<tick_batch_controller> batch_controller{};
@@ -814,6 +845,15 @@ public:
     /// @brief How many operations the arbiter has refused, by gate.
     [[nodiscard]] auto rejection_count(arbiter_gate gate) const -> std::uint64_t;
 
+    /// @brief How many merges a policy has vetoed, and by which policy.
+    ///
+    /// Separately counted from the other refusals because under the composite's
+    /// unanimity rule a single member can hold every merge in the cluster
+    /// hostage, and the first question an operator asks is *which one*. An
+    /// empty key is the unattributed case.
+    [[nodiscard]] auto merge_veto_count(const std::string& policy) const -> std::uint64_t;
+    [[nodiscard]] auto merge_veto_count() const -> std::uint64_t;
+
     /// @brief How many operations are in flight across every local shard.
     [[nodiscard]] auto operations_in_flight() const -> std::size_t;
 
@@ -1082,6 +1122,11 @@ private:
     /// registry — the node is torn down only after the stripe drains, and the
     /// last reference goes with it.
     struct group_state {
+        /// @param latency_windows Sub-windows in each latency digest's ring;
+        ///        see `multi_raft_config::latency_window_count`.
+        explicit group_state(std::size_t latency_windows = latency_digest::k_default_windows)
+            : _read_latency(latency_windows), _apply_latency(latency_windows) {}
+
         GroupId _group_id{};
         std::size_t _stripe{0};
         std::unique_ptr<group_node_type> _node;
@@ -1098,6 +1143,18 @@ private:
         /// Load counters, read by the policy channel from Phase 9 onward.
         std::atomic<std::uint64_t> _reads{0};
         std::atomic<std::uint64_t> _writes{0};
+
+        /// @brief Latency percentiles over a bounded recent window (design
+        ///        §6.1.4), rotated on the policy tick.
+        ///
+        /// Two digests of the same type and window, so `_p99_read_latency` and
+        /// `_p99_apply_latency` cannot come to mean different things.
+        ///
+        /// By value: `latency_digest` owns atomics and is neither copyable nor
+        /// movable, and `group_state` is built once with `make_shared` and only
+        /// ever handed around by that pointer, so it never needs to be either.
+        latency_digest _read_latency;
+        latency_digest _apply_latency;
 
         /// @brief The arbiter's per-shard state (design §6.6).
         ///
@@ -1233,7 +1290,18 @@ private:
     auto release(group_state& g) -> void;
     auto note_rejection(const GroupId& group, arbiter_gate gate, signal_channel channel,
                         const char* operation) -> void;
+
+    /// @brief The `policy` metric dimension, with a name for "nobody said".
+    ///
+    /// A single configured policy that never named itself is not anonymous by
+    /// accident — it is the ordinary case — so it gets a value rather than a
+    /// missing dimension, which would make the two situations
+    /// indistinguishable in a query.
+    [[nodiscard]] static auto policy_label(const char* policy) -> std::string {
+        return policy == nullptr ? std::string{"unattributed"} : std::string{policy};
+    }
     auto publish_report(group_state& g) -> void;
+    auto note_merge_veto(const GroupId& group, const char* policy, merge_reason reason) -> void;
 
     /// @brief Channel (a): ask the policy about every local leader, once per
     /// `policy_interval`.
@@ -1321,6 +1389,7 @@ private:
     std::atomic<std::uint64_t> _scatter_cursor{0};
     mutable std::mutex _rejection_mutex;
     std::unordered_map<std::uint8_t, std::uint64_t> _rejections;
+    std::unordered_map<std::string, std::uint64_t> _merge_vetoes;
     std::function<void(const group_report<GroupId, node_id_type>&)> _report_listener;
     std::atomic<std::uint64_t> _lazy_replicas{0};
     std::atomic<std::uint64_t> _descriptor_lookups{0};
