@@ -250,7 +250,7 @@ public:
             return std::make_exception_ptr(std::runtime_error("never resolved"));
         }
         try {
-            std::ignore = f.get();
+            std::ignore = std::move(f).get();
             return nullptr;
         } catch (...) {
             return std::current_exception();
