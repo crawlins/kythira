@@ -723,6 +723,19 @@ add_raft_completion_test(shard_exceptions_unit_test shard_exceptions_unit_test.c
 # JSON and CBOR ship in every configuration and must be tested in every
 # configuration, so gating all of it on protobuf or ionc would quietly stop
 # testing the always-present half.
+# Leadership transfer's wire encoding (Ongaro's dissertation §3.10). Its own
+# suite because TimeoutNow is the one RPC whose absence from a transport is a
+# supported configuration, so nothing else in the build would fail if a field
+# were silently dropped.
+add_executable(timeout_now_wire_property_test timeout_now_wire_property_test.cpp)
+target_link_libraries(timeout_now_wire_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(timeout_now_wire_property_test PRIVATE cxx_std_23)
+add_test(NAME timeout_now_wire_property_test COMMAND timeout_now_wire_property_test)
+
 add_executable(shard_group_id_wire_property_test shard_group_id_wire_property_test.cpp)
 target_link_libraries(shard_group_id_wire_property_test PRIVATE
     network_simulator

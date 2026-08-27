@@ -168,6 +168,35 @@ public:
         });
     }
 
+    // Serialize TimeoutNow Request (leadership transfer, dissertation §3.10)
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const timeout_now_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
+        return encode(base_estimate, [&](hWRITER w) {
+            write_annotation(w, "timeout_now_request");
+            start_struct(w);
+            write_field_id(w, "group_id", req.group_id());
+            write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
+            write_field_id(w, "leader_id", req.leader_id());
+            write_field_int(w, "last_log_index", static_cast<std::int64_t>(req.last_log_index()));
+            finish_struct(w);
+        });
+    }
+
+    // Serialize TimeoutNow Response
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const timeout_now_response<TermId, GroupId>& resp) const -> Data {
+        return encode(base_estimate, [&](hWRITER w) {
+            write_annotation(w, "timeout_now_response");
+            start_struct(w);
+            write_field_id(w, "group_id", resp.group_id());
+            write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
+            write_field_bool(w, "success", resp.success());
+            finish_struct(w);
+        });
+    }
+
     // Serialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
@@ -441,6 +470,66 @@ public:
             throw serialization_exception("Missing required field in request_pre_vote_request");
         }
         return req;
+    }
+
+    // Deserialize TimeoutNow Request
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto deserialize_timeout_now_request(const Data& data) const
+        -> timeout_now_request<NodeId, TermId, LogIndex, GroupId> {
+        timeout_now_request<NodeId, TermId, LogIndex, GroupId> req{};
+        bool have_term = false, have_leader = false, have_lli = false;
+        decode(data, "timeout_now_request", [&](hREADER r) {
+            for_each_field(r, [&](const std::string& key, ION_TYPE t) {
+                if (key == "term") {
+                    req._term = read_int<TermId>(r, t);
+                    have_term = true;
+                } else if (key == "leader_id") {
+                    req._leader_id = read_id<NodeId>(r, t);
+                    have_leader = true;
+                } else if (key == "last_log_index") {
+                    req._last_log_index = read_int<LogIndex>(r, t);
+                    have_lli = true;
+                } else if (key == "group_id") {
+                    req._group_id = read_id<GroupId>(r, t);
+                } else {
+                    throw serialization_exception("Unexpected field in timeout_now_request: " +
+                                                  key);
+                }
+            });
+        });
+        if (!have_term || !have_leader || !have_lli) {
+            throw serialization_exception("Missing required field in timeout_now_request");
+        }
+        return req;
+    }
+
+    // Deserialize TimeoutNow Response
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto deserialize_timeout_now_response(const Data& data) const
+        -> timeout_now_response<TermId, GroupId> {
+        timeout_now_response<TermId, GroupId> resp{};
+        bool have_term = false, have_success = false;
+        decode(data, "timeout_now_response", [&](hREADER r) {
+            for_each_field(r, [&](const std::string& key, ION_TYPE t) {
+                if (key == "term") {
+                    resp._term = read_int<TermId>(r, t);
+                    have_term = true;
+                } else if (key == "success") {
+                    resp._success = read_bool(r, t);
+                    have_success = true;
+                } else if (key == "group_id") {
+                    resp._group_id = read_id<GroupId>(r, t);
+                } else {
+                    throw serialization_exception("Unexpected field in timeout_now_response: " +
+                                                  key);
+                }
+            });
+        });
+        if (!have_term || !have_success) {
+            throw serialization_exception("Missing required field in timeout_now_response");
+        }
+        return resp;
     }
 
     // Deserialize RequestPreVote Response
@@ -817,6 +906,10 @@ public:
             return deserialize_request_pre_vote_request(data);
         } else if constexpr (std::same_as<T, request_pre_vote_response<>>) {
             return deserialize_request_pre_vote_response(data);
+        } else if constexpr (std::same_as<T, timeout_now_request<>>) {
+            return deserialize_timeout_now_request(data);
+        } else if constexpr (std::same_as<T, timeout_now_response<>>) {
+            return deserialize_timeout_now_response(data);
         } else if constexpr (std::same_as<T, append_entries_request<>>) {
             return deserialize_append_entries_request(data);
         } else if constexpr (std::same_as<T, append_entries_response<>>) {

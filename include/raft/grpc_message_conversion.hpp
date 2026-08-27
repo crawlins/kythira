@@ -214,6 +214,37 @@ inline auto from_proto(const raft::v1::RequestPreVoteResponse& proto)
                                        ._group_id = proto.group_id()};
 }
 
+// ── TimeoutNow (leadership transfer, Ongaro's dissertation §3.10) ────────────
+
+inline auto to_proto(const timeout_now_request<>& req) -> raft::v1::TimeoutNowRequest {
+    raft::v1::TimeoutNowRequest proto;
+    proto.set_term(req.term());
+    proto.set_leader_id(req.leader_id());
+    proto.set_last_log_index(req.last_log_index());
+    proto.set_group_id(req.group_id());
+    return proto;
+}
+
+inline auto from_proto(const raft::v1::TimeoutNowRequest& proto) -> timeout_now_request<> {
+    return timeout_now_request<>{._term = proto.term(),
+                                 ._leader_id = proto.leader_id(),
+                                 ._last_log_index = proto.last_log_index(),
+                                 ._group_id = proto.group_id()};
+}
+
+inline auto to_proto(const timeout_now_response<>& resp) -> raft::v1::TimeoutNowResponse {
+    raft::v1::TimeoutNowResponse proto;
+    proto.set_term(resp.term());
+    proto.set_success(resp.success());
+    proto.set_group_id(resp.group_id());
+    return proto;
+}
+
+inline auto from_proto(const raft::v1::TimeoutNowResponse& proto) -> timeout_now_response<> {
+    return timeout_now_response<>{
+        ._term = proto.term(), ._success = proto.success(), ._group_id = proto.group_id()};
+}
+
 // ── AppendEntries ───────────────────────────────────────────────────────────
 
 inline auto to_proto(const append_entries_request<>& req) -> raft::v1::AppendEntriesRequest {

@@ -104,6 +104,29 @@ public:
         return encode(message_tag::request_pre_vote_response, msg);
     }
 
+    // Serialize TimeoutNow Request (leadership transfer, dissertation §3.10)
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const timeout_now_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
+        raft_pb::TimeoutNowRequest msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
+        msg.set_term(static_cast<std::uint64_t>(req.term()));
+        *msg.mutable_leader_id() = to_node_id_value<NodeId>(req.leader_id());
+        msg.set_last_log_index(static_cast<std::uint64_t>(req.last_log_index()));
+        return encode(message_tag::timeout_now_request, msg);
+    }
+
+    // Serialize TimeoutNow Response
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto serialize(const timeout_now_response<TermId, GroupId>& resp) const -> Data {
+        raft_pb::TimeoutNowResponse msg;
+        *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
+        msg.set_term(static_cast<std::uint64_t>(resp.term()));
+        msg.set_success(resp.success());
+        return encode(message_tag::timeout_now_response, msg);
+    }
+
     // Serialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
@@ -303,6 +326,34 @@ public:
         return resp;
     }
 
+    // Deserialize TimeoutNow Request
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto deserialize_timeout_now_request(const Data& data) const
+        -> timeout_now_request<NodeId, TermId, LogIndex, GroupId> {
+        auto msg = decode<raft_pb::TimeoutNowRequest>(message_tag::timeout_now_request, data);
+
+        timeout_now_request<NodeId, TermId, LogIndex, GroupId> req;
+        req._group_id = from_group_id_value<GroupId>(msg.group_id());
+        req._term = static_cast<TermId>(msg.term());
+        req._leader_id = from_node_id_value<NodeId>(msg.leader_id());
+        req._last_log_index = static_cast<LogIndex>(msg.last_log_index());
+        return req;
+    }
+
+    // Deserialize TimeoutNow Response
+    template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+    [[nodiscard]] auto deserialize_timeout_now_response(const Data& data) const
+        -> timeout_now_response<TermId, GroupId> {
+        auto msg = decode<raft_pb::TimeoutNowResponse>(message_tag::timeout_now_response, data);
+
+        timeout_now_response<TermId, GroupId> resp;
+        resp._group_id = from_group_id_value<GroupId>(msg.group_id());
+        resp._term = static_cast<TermId>(msg.term());
+        resp._success = msg.success();
+        return resp;
+    }
+
     // Deserialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
@@ -480,6 +531,10 @@ public:
             return deserialize_request_pre_vote_request(data);
         } else if constexpr (std::same_as<T, request_pre_vote_response<>>) {
             return deserialize_request_pre_vote_response(data);
+        } else if constexpr (std::same_as<T, timeout_now_request<>>) {
+            return deserialize_timeout_now_request(data);
+        } else if constexpr (std::same_as<T, timeout_now_response<>>) {
+            return deserialize_timeout_now_response(data);
         } else if constexpr (std::same_as<T, append_entries_request<>>) {
             return deserialize_append_entries_request(data);
         } else if constexpr (std::same_as<T, append_entries_response<>>) {
@@ -540,6 +595,11 @@ private:
         cluster_leave_response = 11,
         fetch_log_entries_request = 12,
         fetch_log_entries_response = 13,
+        // Appended, never inserted: the tag byte is on the wire, so renumbering
+        // an existing message would make a peer running an older binary decode
+        // one message type as another.
+        timeout_now_request = 14,
+        timeout_now_response = 15,
     };
 
     // ── Tag-prepend / tag-check codec (Requirement 5) ───────────────────────
