@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phases 1-11 complete (tasks 1-30, 35, 36)
+## Status: Complete — all 36 tasks
 
 **Last Updated**: August 26, 2026
 
@@ -634,7 +634,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 12: Verification (Tasks 31–34)
 
-- [ ] 31. Invariant property tests
+- [x] 31. Invariant property tests
   - Randomised workload of splits, merges, membership changes, and client
     commands over the simulator network, asserting after every operation:
     I1 tiling (`check_tiling()` on every node), I2 no loss/duplication against
@@ -644,7 +644,7 @@ Phases 6–8, after the mechanics it drives.
   - Verify: the property tests above, seeded reproducibly.
   - _Requirements: 20.1, 20.2, 20.3, 5.6 (round-trip law from 9.7)_
 
-- [ ] 32. Crash-consistency tests
+- [x] 32. Crash-consistency tests
   - New `fiu_do_on` fault points: `raft/multiraft/split/before_children`,
     `.../between_children`, `.../after_children_before_parent`,
     `.../after_publish`, `raft/multiraft/merge/after_prepare`,
@@ -655,7 +655,7 @@ Phases 6–8, after the mechanics it drives.
     state and no lost child / no double ownership.
   - _Requirements: 20.4, 13.6_
 
-- [ ] 33. Oscillation test
+- [x] 33. Oscillation test
   - Drive `threshold_split_merge_policy` for 10 000 simulated ticks with shard
     sizes parked between the merge and split thresholds; assert total split and
     merge counts stay under a small bound.
@@ -670,7 +670,7 @@ Phases 6–8, after the mechanics it drives.
   - Verify: all three runs above.
   - _Requirements: 20.5, 20.8, 7.5, 7.6, 8.6_
 
-- [ ] 34. Scale test
+- [x] 34. Scale test
   - 1000 groups across three simulated nodes; assert `tick()` duration tracks
     *ready* group count rather than total, and that hibernating count converges
     to near 1000 under an idle workload.

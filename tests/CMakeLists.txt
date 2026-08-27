@@ -747,6 +747,29 @@ add_raft_completion_test(multi_raft_merge_integration_test
                          multi_raft_merge_integration_test.cpp)
 add_raft_completion_test(split_merge_policy_unit_test split_merge_policy_unit_test.cpp)
 add_raft_completion_test(multi_raft_arbiter_unit_test multi_raft_arbiter_unit_test.cpp)
+add_raft_completion_test(multi_raft_invariant_property_test
+                         multi_raft_invariant_property_test.cpp)
+# Task 34 of .kiro/specs/multi-raft/: 1000 groups across three simulated nodes.
+# Slow by construction, so it carries a `scale` label and is excluded from the
+# default run with `ctest -LE scale` — a slow test that runs on every commit
+# gets ignored, and an ignored test is worse than none.
+add_raft_completion_test(multi_raft_scale_test multi_raft_scale_test.cpp)
+set_tests_properties(multi_raft_scale_test PROPERTIES LABELS "scale;multi-raft" TIMEOUT 1800)
+
+# Task 32 of .kiro/specs/multi-raft/: crash-and-recover at each split/merge
+# fault point. Needs libfiu's CONTROL API (fiu_enable/fiu_disable) as well as
+# the FIU_ENABLE define that arms the fiu_do_on() points inside the headers, so
+# it is wired explicitly rather than through add_raft_completion_test(). Without
+# libfiu the fault points compile away and the test would assert on operations
+# that never fail, so it is only registered when FIU is present.
+if(FIU_FOUND)
+    add_raft_completion_test(multi_raft_crash_consistency_test
+                             multi_raft_crash_consistency_test.cpp)
+    target_compile_definitions(multi_raft_crash_consistency_test PRIVATE FIU_ENABLE)
+    target_link_libraries(multi_raft_crash_consistency_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(multi_raft_crash_consistency_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+add_raft_completion_test(multi_raft_oscillation_test multi_raft_oscillation_test.cpp)
 add_raft_completion_test(load_split_sampler_unit_test load_split_sampler_unit_test.cpp)
 add_raft_completion_test(latency_digest_unit_test latency_digest_unit_test.cpp)
 add_raft_completion_test(composite_policy_unit_test composite_policy_unit_test.cpp)

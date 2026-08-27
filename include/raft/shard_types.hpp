@@ -166,6 +166,26 @@ template<shard_key Key> struct shard_range {
         return true;
     }
 
+    /// @brief Whether `k` is a legal place to CUT this range.
+    ///
+    /// Stricter than `contains()`, by exactly one key: the start bound itself.
+    /// A range is `[start, end)`, so cutting at `start` produces a left child
+    /// `[start, start)` — an empty, degenerate shard that owns nothing, cannot
+    /// be routed to, and whose row overlaps its right sibling's in the routing
+    /// map.
+    ///
+    /// This is not a hypothetical. A state machine asked to suggest split keys
+    /// naturally returns keys it holds, and the smallest key it holds is very
+    /// often the shard's own lower bound — so `contains()` accepts it and the
+    /// split silently produces an empty child that then evicts its sibling's
+    /// routing row. The invariant property test found exactly that.
+    [[nodiscard]] auto is_interior(const Key& k) const -> bool {
+        if (!contains(k)) {
+            return false;
+        }
+        return !_start.has_value() || *_start < k;
+    }
+
     /// @brief Whether this range's end bound is exactly `other`'s start bound.
     ///
     /// Two unbounded sides are never adjacent: `(-inf, +inf)` is not adjacent
