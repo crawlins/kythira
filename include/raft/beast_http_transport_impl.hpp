@@ -393,7 +393,8 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
 // ---------------------------------------------------------------------------
 
 inline plain_beast_connection::plain_beast_connection(beast::tcp_stream stream)
-    : _stream(std::move(stream)), _executor(_stream.get_executor()) {}
+    : _stream(std::move(stream)),
+      _executor(std::make_shared<asio_strand_executor>(_stream.get_executor())) {}
 
 inline auto plain_beast_connection::is_open() const -> bool {
     return _stream.socket().is_open();
@@ -407,7 +408,9 @@ inline auto plain_beast_connection::set_timeout(std::chrono::milliseconds timeou
 inline auto plain_beast_connection::connect(const net::ip::tcp::endpoint& ep,
                                             const std::string& /*host*/)
     -> kythira::future_default<kythira::unit> {
-    return async_connect_kf(_stream, ep, &_executor);
+    // Keeps this connection alive until the connect completes; see send().
+    return async_connect_kf(_stream, ep, _executor.get())
+        .thenValue([self = shared_from_this()](kythira::unit u) { return u; });
 }
 
 inline auto plain_beast_connection::send(beast_http::request<beast_http::string_body> request)
@@ -431,11 +434,18 @@ inline auto plain_beast_connection::send(beast_http::request<beast_http::string_
     // already finished (that completion is what invokes this callback in
     // the first place); `buffer`/`response` are different because *this*
     // callback is what kicks off the still-pending read that needs them.
-    return async_write_kf(_stream, *req, &_executor)
-        .thenValue([this, req, buffer, response](kythira::unit) {
-            return async_read_kf(_stream, *buffer, *response, &_executor);
+    // Every link of this chain keeps the connection itself alive: Beast's
+    // composed operations hold `_stream` by reference, so a connection
+    // destroyed while a write or read is still pending is a use-after-free
+    // that surfaces as `pure virtual method called` when the queued handler
+    // reaches the partly-destroyed object.
+    return async_write_kf(_stream, *req, _executor.get())
+        .thenValue([self = shared_from_this(), this, req, buffer, response](kythira::unit) {
+            return async_read_kf(_stream, *buffer, *response, _executor.get());
         })
-        .thenValue([buffer, response](kythira::unit) { return std::move(*response); });
+        .thenValue([self = shared_from_this(), buffer, response](kythira::unit) {
+            return std::move(*response);
+        });
 }
 
 inline auto plain_beast_connection::close() -> void {
@@ -445,7 +455,10 @@ inline auto plain_beast_connection::close() -> void {
 }
 
 inline tls_beast_connection::tls_beast_connection(beast::ssl_stream<beast::tcp_stream> stream)
-    : _stream(std::move(stream)), _executor(beast::get_lowest_layer(_stream).get_executor()) {}
+    : _stream(std::move(stream)),
+      _executor(
+          std::make_shared<asio_strand_executor>(beast::get_lowest_layer(_stream).get_executor())) {
+}
 
 inline auto tls_beast_connection::is_open() const -> bool {
     return beast::get_lowest_layer(_stream).socket().is_open();
@@ -463,9 +476,11 @@ inline auto tls_beast_connection::connect(const net::ip::tcp::endpoint& ep, cons
             std::make_exception_ptr(kythira::ssl_configuration_error(
                 std::format("Failed to set SNI host name: {}", host))));
     }
-    return async_connect_kf(beast::get_lowest_layer(_stream), ep, &_executor)
-        .thenValue(
-            [this](kythira::unit) { return async_client_handshake_kf(_stream, &_executor); });
+    // Keeps this connection alive across connect and handshake; see send().
+    return async_connect_kf(beast::get_lowest_layer(_stream), ep, _executor.get())
+        .thenValue([self = shared_from_this(), this](kythira::unit) {
+            return async_client_handshake_kf(_stream, _executor.get());
+        });
 }
 
 inline auto tls_beast_connection::send(beast_http::request<beast_http::string_body> request)
@@ -480,11 +495,18 @@ inline auto tls_beast_connection::send(beast_http::request<beast_http::string_bo
     // recaptured in the second thenValue, not just the first, because of
     // how Folly's future-flattening releases a future-returning callback's
     // captures as soon as it synchronously returns.
-    return async_write_kf(_stream, *req, &_executor)
-        .thenValue([this, req, buffer, response](kythira::unit) {
-            return async_read_kf(_stream, *buffer, *response, &_executor);
+    // Every link of this chain keeps the connection itself alive: Beast's
+    // composed operations hold `_stream` by reference, so a connection
+    // destroyed while a write or read is still pending is a use-after-free
+    // that surfaces as `pure virtual method called` when the queued handler
+    // reaches the partly-destroyed object.
+    return async_write_kf(_stream, *req, _executor.get())
+        .thenValue([self = shared_from_this(), this, req, buffer, response](kythira::unit) {
+            return async_read_kf(_stream, *buffer, *response, _executor.get());
         })
-        .thenValue([buffer, response](kythira::unit) { return std::move(*response); });
+        .thenValue([self = shared_from_this(), buffer, response](kythira::unit) {
+            return std::move(*response);
+        });
 }
 
 inline auto tls_beast_connection::close() -> void {
@@ -531,11 +553,13 @@ boost_beast_client<Types>::~boost_beast_client() {
     // side.
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        for (auto& [id, conn] : _connections) {
-            conn.connection->close();
-        }
-        for (auto& conn : _retired_connections) {
-            conn->close();
+        // Through the weak registry rather than the idle pool: a connection
+        // currently leased by an in-flight RPC is in no map at all, and it is
+        // precisely that RPC the drain below is waiting for.
+        for (auto& weak : _all_connections) {
+            if (auto conn = weak.lock()) {
+                conn->close();
+            }
         }
     }
 
@@ -603,16 +627,13 @@ auto boost_beast_client<Types>::reload_tls_material() -> void {
 
     std::lock_guard<std::mutex> lock(_mutex);
     _ssl_ctx.emplace(std::move(new_ctx));
-    // Retired (not erased): a concurrent in-flight RPC may still hold a
-    // reference to one of these connections obtained from
-    // get_or_create_connection() before this call acquired the lock --
-    // destroying it out from under that call would be a use-after-free
-    // (Property 7, matching cpp_httplib_client::reload_tls_material's own
-    // "retired clients kept alive" comment).
-    for (auto& [node_id, conn] : _connections) {
-        _retired_connections.push_back(std::move(conn.connection));
-    }
-    _connections.clear();
+    // Bumping the generation is what keeps a connection built under the old
+    // context from being pooled again when its in-flight RPC finishes;
+    // dropping the idle ones here handles everything not currently leased.
+    // No "retired" side list is needed any more: a leased connection is kept
+    // alive by its lease's own shared_ptr (Property 7).
+    ++_tls_generation;
+    _idle_connections.clear();
 }
 
 template<typename Types>
@@ -650,41 +671,9 @@ auto boost_beast_client<Types>::disable_auto_reload() -> void {
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::get_or_create_connection(std::uint64_t target)
-    -> pooled_connection& {
-    std::lock_guard<std::mutex> lock(_mutex);
-
-    auto it = _connections.find(target);
-    if (it != _connections.end()) {
-        // Requirement 9.2: an idle-beyond-timeout connection is closed
-        // rather than reused, checked lazily on the next attempted use
-        // (matching Property 5/the http-transport precedent this mirrors --
-        // no background sweep thread) -- falls through to the
-        // fresh-connection path below exactly like a broken pooled
-        // connection would (Requirement 9.3).
-        auto idle_for = std::chrono::steady_clock::now() - it->second.last_used;
-        if (idle_for > _config.keep_alive_timeout) {
-            // Retired (not erased): a concurrent in-flight RPC to this same
-            // target may have obtained this connection from an earlier
-            // get_or_create_connection() call before this call acquired
-            // _mutex, and may still hold the raw beast_connection* captured
-            // in send_rpc() -- destroying it out from under that call would
-            // be a use-after-free (Property 7, matching
-            // reload_tls_material()'s retirement of _connections above).
-            // Not closed either, for the same reason: close() from this
-            // (foreign) thread would race the in-flight op's own use of the
-            // stream instead of just letting it fail/complete naturally.
-            _retired_connections.push_back(std::move(it->second.connection));
-            _connections.erase(it);
-        } else {
-            auto metric = _metrics;
-            metric.set_metric_name("beast_http.client.connection.reused");
-            metric.add_dimension("target_node_id", std::to_string(target));
-            metric.add_one();
-            metric.emit();
-            it->second.last_used = std::chrono::steady_clock::now();
-            return it->second;
-        }
+auto boost_beast_client<Types>::resolve_target(std::uint64_t target) -> const resolved_target& {
+    if (auto cached = _resolved_targets.find(target); cached != _resolved_targets.end()) {
+        return cached->second;
     }
 
     auto url_it = _node_id_to_url.find(target);
@@ -703,53 +692,45 @@ auto boost_beast_client<Types>::get_or_create_connection(std::uint64_t target)
                   colon + 1, (slash == std::string::npos ? authority.size() : slash) - (colon + 1))
             : (is_https ? "443" : "80");
 
-    // A one-time, synchronous DNS resolution on the calling thread when a
-    // new pooled connection is created (not on every RPC -- the connection
-    // is reused afterward per Requirement 9). Not spiked, not required by
-    // requirements.md (a gap discovered during implementation): fully async
-    // resolution would need a fourth async_*_kf-style primitive for
-    // marginal benefit, since this only runs once per node, not per RPC.
+    // Synchronous DNS resolution on the calling thread, once per target rather
+    // than once per connection. Not spiked, not required by requirements.md (a
+    // gap discovered during implementation): fully async resolution would need
+    // a fourth async_*_kf-style primitive for marginal benefit.
     net::ip::tcp::resolver resolver(_ioc);
     auto results = resolver.resolve(host, port_str);
     if (results.empty()) {
         throw std::runtime_error(std::format("Failed to resolve {}:{}", host, port_str));
     }
-    net::ip::tcp::endpoint endpoint = *results.begin();
 
-    std::unique_ptr<beast_detail::beast_connection> connection;
+    auto [it, ok] =
+        _resolved_targets.emplace(target, resolved_target{*results.begin(), std::move(host)});
+    return it->second;
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_client<Types>::make_connection(std::uint64_t target) -> pooled_connection {
+    const auto& where = resolve_target(target);
+    const bool is_https = _node_id_to_url.at(target).starts_with("https://");
+
+    std::shared_ptr<beast_detail::beast_connection> connection;
     if (is_https) {
         if (!_ssl_ctx.has_value()) {
             throw kythira::ssl_configuration_error(
                 std::format("Node {} uses https:// but no TLS material is configured", target));
         }
-        connection = std::make_unique<beast_detail::tls_beast_connection>(
+        connection = std::make_shared<beast_detail::tls_beast_connection>(
             beast::ssl_stream<beast::tcp_stream>(net::make_strand(_ioc), *_ssl_ctx));
     } else {
-        connection = std::make_unique<beast_detail::plain_beast_connection>(
+        connection = std::make_shared<beast_detail::plain_beast_connection>(
             beast::tcp_stream(net::make_strand(_ioc)));
     }
 
-    // Requirement 9.2/9.4: connection_pool_size is an upper bound on live
-    // pooled connections, enforced by evicting the least-recently-used one
-    // (by `last_used`) before adding a new one that would exceed it -- not
-    // a background idle-timeout sweep, since eviction only ever needs to
-    // happen at the one point a new connection is about to be created
-    // anyway.
-    if (_connections.size() >= _config.connection_pool_size && !_connections.empty()) {
-        auto lru_it = std::min_element(_connections.begin(), _connections.end(),
-                                       [](const auto& lhs, const auto& rhs) {
-                                           return lhs.second.last_used < rhs.second.last_used;
-                                       });
-        // Retired (not erased/closed): see the idle-timeout eviction above --
-        // a concurrent in-flight RPC to this (different) target may still
-        // hold a raw beast_connection* into the entry being evicted here.
-        _retired_connections.push_back(std::move(lru_it->second.connection));
-        _connections.erase(lru_it);
-    }
-
-    auto [inserted_it, ok] = _connections.emplace(
-        target,
-        pooled_connection{std::move(connection), endpoint, host, std::chrono::steady_clock::now()});
+    // Registered weakly so the destructor can force-close it even while it is
+    // leased out, and pruned here so the registry cannot grow without bound on
+    // a long-lived client that churns connections.
+    std::erase_if(_all_connections, [](const auto& weak) { return weak.expired(); });
+    _all_connections.push_back(connection);
 
     auto metric = _metrics;
     metric.set_metric_name("beast_http.client.connection.created");
@@ -757,30 +738,89 @@ auto boost_beast_client<Types>::get_or_create_connection(std::uint64_t target)
     metric.add_one();
     metric.emit();
 
-    metric = _metrics;
-    metric.set_metric_name("beast_http.client.connection.pool_size");
-    metric.add_dimension("target_node_id", std::to_string(target));
-    metric.add_value(static_cast<double>(_connections.size()));
-    metric.emit();
-
-    return inserted_it->second;
+    return pooled_connection{std::move(connection), where.endpoint, where.host_header,
+                             std::chrono::steady_clock::now(), _tls_generation};
 }
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::remove_connection(std::uint64_t target) -> void {
+auto boost_beast_client<Types>::acquire_connection(std::uint64_t target) -> pooled_connection {
     std::lock_guard<std::mutex> lock(_mutex);
-    auto it = _connections.find(target);
-    if (it != _connections.end()) {
-        // Retired (not erased/closed): called from send_rpc()'s thenError
-        // handler once this call's own use of the connection has failed,
-        // but a *different*, concurrent in-flight RPC to the same target
-        // may still be using the same pooled_connection's raw
-        // beast_connection* -- see the eviction paths above in
-        // get_or_create_connection() for the identical hazard.
-        _retired_connections.push_back(std::move(it->second.connection));
-        _connections.erase(it);
+
+    auto it = _idle_connections.find(target);
+    if (it != _idle_connections.end()) {
+        auto& idle = it->second;
+        while (!idle.empty()) {
+            auto conn = std::move(idle.back());
+            idle.pop_back();
+
+            // Requirement 9.2: an idle-beyond-timeout connection is dropped
+            // rather than reused, checked lazily on the next attempted use
+            // (matching Property 5/the http-transport precedent this mirrors
+            // -- no background sweep thread). Dropping is now safe outright:
+            // nothing else can be holding this connection, because it was
+            // idle, and an in-flight RPC would have leased it.
+            const auto idle_for = std::chrono::steady_clock::now() - conn.last_used;
+            if (idle_for > _config.keep_alive_timeout || !conn.connection->is_open()) {
+                continue;
+            }
+
+            auto metric = _metrics;
+            metric.set_metric_name("beast_http.client.connection.reused");
+            metric.add_dimension("target_node_id", std::to_string(target));
+            metric.add_one();
+            metric.emit();
+            conn.last_used = std::chrono::steady_clock::now();
+            return conn;
+        }
     }
+
+    return make_connection(target);
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_client<Types>::release_connection(std::uint64_t target, pooled_connection conn,
+                                                   bool reusable) -> void {
+    if (!conn.connection) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    // Property 5: a failed exchange's connection is torn down rather than
+    // left pooled, so the next RPC to this target establishes a fresh one
+    // instead of retrying a broken one. Scoped to THIS connection -- the
+    // predecessor of this code removed the target's single shared connection,
+    // which tore it out from under every other RPC then using it.
+    //
+    // A connection built before a TLS reload is dropped for the same reason it
+    // was never pooled again under the old scheme: it is still bound to the
+    // superseded context.
+    if (!reusable || conn.tls_generation != _tls_generation) {
+        conn.connection->close();
+        return;
+    }
+
+    // `connection_pool_size` bounds the idle connections retained PER TARGET.
+    // It previously bounded the number of distinct targets, which is not what
+    // the name says and evicted an unrelated node's connection whenever the
+    // eleventh peer was first contacted. Over the cap, the connection is closed
+    // rather than pooled; correctness never depended on pooling it.
+    auto& idle = _idle_connections[target];
+    if (idle.size() >= _config.connection_pool_size) {
+        conn.connection->close();
+        return;
+    }
+
+    conn.last_used = std::chrono::steady_clock::now();
+    idle.push_back(std::move(conn));
+
+    auto metric = _metrics;
+    metric.set_metric_name("beast_http.client.connection.pool_size");
+    metric.add_dimension("target_node_id", std::to_string(target));
+    metric.add_value(static_cast<double>(idle.size()));
+    metric.emit();
 }
 
 template<typename Types>
@@ -801,15 +841,19 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
     }
 
     try {
-        auto& conn = get_or_create_connection(target);
+        // Checked out exclusively for this RPC and returned when the last
+        // continuation below drops the lease. Nothing here holds a reference
+        // into the pool, and no other RPC can be driving this stream.
         // Held across the whole thenValue/thenError chain below (whichever
         // branch actually runs drops the last reference), so the destructor
         // can wait until this RPC's own connect/handshake/send/read has
-        // truly finished before it lets _connections/_ssl_ctx destruct.
+        // truly finished before it lets the pool/_ssl_ctx destruct.
         auto in_flight = std::make_shared<in_flight_guard>(this);
-        conn.connection->set_timeout(timeout);  // Property 4: bounds the
-                                                // whole chain below, not
-                                                // each step individually.
+        auto lease =
+            std::make_shared<connection_lease>(this, target, acquire_connection(target), in_flight);
+        lease->connection()->set_timeout(timeout);  // Property 4: bounds the
+                                                    // whole chain below, not
+                                                    // each step individually.
 
         // Same negotiation as cpp_httplib_client, expressed through Beast's
         // header API: cached type if the registry still supports it, else the
@@ -827,7 +871,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
 
         beast_http::request<beast_http::string_body> http_req{beast_http::verb::post,
                                                               std::string(endpoint), 11};
-        http_req.set(beast_http::field::host, conn.host_header);
+        http_req.set(beast_http::field::host, lease->host_header());
         http_req.set(beast_http::field::content_type, content_type);
         // Full Accept list on every request, so a stale cache entry can only
         // cost a re-choice and never a failed exchange.
@@ -848,7 +892,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         metric.add_one();
         metric.emit();
 
-        beast_detail::beast_connection* connection = conn.connection.get();
+        beast_detail::beast_connection* connection = lease->connection();
         auto already_open = connection->is_open();
 
         // A shared_ptr (not a `mutable` lambda moving `http_req` directly)
@@ -858,8 +902,10 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         // requires operator() to be usable on a const object.
         auto req_ptr =
             std::make_shared<beast_http::request<beast_http::string_body>>(std::move(http_req));
-        auto proceed = [connection, req_ptr](kythira::unit) {
-            return connection->send(std::move(*req_ptr));
+        // `lease` captured, not just the raw pointer, so the connection cannot
+        // be returned to the pool (or closed) while this send is outstanding.
+        auto proceed = [lease, req_ptr](kythira::unit) {
+            return lease->connection()->send(std::move(*req_ptr));
         };
 
         auto response_future =
@@ -867,13 +913,19 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
             if (already_open) {
                 return beast_ready_unit_future().thenValue(std::move(proceed));
             }
-            return connection->connect(conn.endpoint, conn.host_header)
+            return connection->connect(lease->endpoint(), lease->host_header())
                 .thenValue(std::move(proceed));
         }();
 
         return std::move(response_future)
-            .thenValue([this, target, rpc_type, start_time, content_type,
-                        in_flight](beast_http::response<beast_http::string_body> resp) -> Response {
+            .thenValue([this, target, rpc_type, start_time, content_type, in_flight,
+                        lease](beast_http::response<beast_http::string_body> resp) -> Response {
+                // The exchange completed: a full response was framed and read,
+                // so this connection is in a known-good state and may go back
+                // to the pool. Marked before any throw below, since a 4xx/5xx
+                // is a valid HTTP exchange -- the connection is fine even when
+                // the RPC is not.
+                lease->mark_reusable();
                 auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - start_time);
                 auto status = static_cast<unsigned>(resp.result_int());
@@ -961,16 +1013,18 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                 }
                 throw std::runtime_error(std::format("Unexpected HTTP status code: {}", status));
             })
-            .thenError([this, target, in_flight](std::exception_ptr e) -> Response {
+            .thenError([this, target, in_flight, lease](std::exception_ptr e) -> Response {
                 auto error_metric = _metrics;
                 error_metric.set_metric_name("beast_http.client.error");
                 error_metric.add_dimension("target_node_id", std::to_string(target));
                 error_metric.add_one();
                 error_metric.emit();
-                // Property 5: a failed connection is torn down rather than
-                // left pooled, so the next RPC to this target transparently
-                // establishes a fresh one instead of retrying a broken one.
-                remove_connection(target);
+                // Property 5: a failed connection is torn down rather than left
+                // pooled, so the next RPC to this target establishes a fresh
+                // one instead of retrying a broken one. Nothing to call: the
+                // lease was never marked reusable on this path, so dropping it
+                // closes the connection -- and only THIS connection, unlike the
+                // per-target teardown this replaced.
                 std::rethrow_exception(e);
             })
             // The 415 retry sits *outside* the teardown above rather than
