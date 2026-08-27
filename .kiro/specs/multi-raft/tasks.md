@@ -600,14 +600,23 @@ Phases 6–8, after the mechanics it drives.
     different nodes.
   - **As implemented**, TimeoutNow is an *optional* transport extension in the
     established shape of PreVote (`network_client_with_timeout_now` /
-    `network_server_with_timeout_now`, checked with `if constexpr`). It is
-    implemented for `simulator_network`, the group-scoped transport views and
-    the test fabric; the wire-format transports (protobuf, ion, gRPC, TCP, TLS,
-    CoAP) have **not** opted in, so `transfer_leader` and `scatter` fail with
-    `leader_transfer_unsupported_exception` on those bundles and the placement
-    driver skips the operator with reason `unsupported`. Closing that gap is
-    mechanical but touches every serializer; design §12 open question 1 already
-    flags leader transfer as arguably its own spec.
+    `network_server_with_timeout_now`, checked with `if constexpr`), so a
+    transport that has not opted in still compiles and `transfer_leadership()`
+    fails at run time with `leader_transfer_unsupported_exception` rather than
+    failing to build.
+  - Opted in: `simulator_network`, the group-scoped transport views, the test
+    fabric, `tcp_rpc`, `tls_tcp_rpc`, and gRPC (sharing
+    `RaftElectionExtensionService` with PreVote — both are decisions about who
+    becomes leader, and the server registers the service if either handler is
+    configured). Encodings: JSON, CBOR, Ion and protobuf, with the protobuf
+    message tag **appended** (14/15) rather than inserted, since the tag byte is
+    on the wire and renumbering would make an older peer decode one message type
+    as another.
+  - Not opted in: CoAP, whose transport is shaped around a fixed resource set
+    and whose deployments (constrained devices) are not where a placement driver
+    rebalances leadership. `transfer_leader` and `scatter` are reported
+    `unsupported` there and skipped, which is what the advisory-operator
+    contract is for.
   - _Requirements: 16.4, 9.6_
 
 ---

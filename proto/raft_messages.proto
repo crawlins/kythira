@@ -110,6 +110,22 @@ message RequestPreVoteResponse {
   GroupIdValue group_id = 3;
 }
 
+// TimeoutNow leadership transfer (Ongaro's dissertation §3.10).
+message TimeoutNowRequest {
+  uint64 term = 1;
+  NodeIdValue leader_id = 2;
+  uint64 last_log_index = 3;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 4;
+}
+
+message TimeoutNowResponse {
+  uint64 term = 1;
+  bool success = 2;
+  // Multi-Raft group selector; absent (UNSET) means the single group.
+  GroupIdValue group_id = 3;
+}
+
 message AppendEntriesRequest {
   uint64 term = 1;
   NodeIdValue leader_id = 2;

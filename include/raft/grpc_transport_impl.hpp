@@ -239,6 +239,29 @@ public:
             });
     }
 
+    // ── network_client_with_timeout_now (dissertation §3.10) ──────────────────
+    //
+    // Shares `RaftElectionExtensionService` with PreVote: both are decisions
+    // about who becomes leader, and a service per RPC would multiply
+    // registrations without buying any independence — the server registers the
+    // service if EITHER handler is configured, and gRPC core answers the other
+    // method with UNIMPLEMENTED on its own.
+
+    auto send_timeout_now(std::uint64_t target, const timeout_now_request<>& request,
+                          std::chrono::milliseconds timeout)
+        -> future_template<timeout_now_response<>> {
+        auto channel = get_or_create_channel(target);
+        auto stub = std::shared_ptr<raft::v1::RaftElectionExtensionService::Stub>(
+            raft::v1::RaftElectionExtensionService::NewStub(channel));
+        return call_unary<raft::v1::TimeoutNowRequest, raft::v1::TimeoutNowResponse,
+                          timeout_now_response<>>(
+            "timeout_now", target, to_proto(request), stub, timeout,
+            [stub](grpc::ClientContext* ctx, const raft::v1::TimeoutNowRequest* req,
+                   raft::v1::TimeoutNowResponse* resp, std::function<void(grpc::Status)> cb) {
+                stub->async()->TimeoutNow(ctx, req, resp, std::move(cb));
+            });
+    }
+
     // ── network_client_with_cluster_join / _cluster_leave (Requirement 15) ────
     // Addressed by contact-address string, not node ID (the joining/leaving
     // node is not yet in the address book) — routed via the address-keyed
@@ -592,6 +615,12 @@ public:
         _request_pre_vote_handler = std::move(handler);
     }
 
+    auto register_timeout_now_handler(
+        std::function<timeout_now_response<>(const timeout_now_request<>&)> handler) -> void {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _timeout_now_handler = std::move(handler);
+    }
+
     auto register_cluster_join_handler(
         std::function<cluster_join_response<>(const cluster_join_request<>&)> handler) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -646,7 +675,7 @@ public:
         // Always register the base RaftService; register each optional service
         // only if a handler was configured (Requirement 6.3 / Property 5).
         builder.RegisterService(static_cast<raft::v1::RaftService::CallbackService*>(this));
-        if (_request_pre_vote_handler) {
+        if (_request_pre_vote_handler || _timeout_now_handler) {
             builder.RegisterService(
                 static_cast<raft::v1::RaftElectionExtensionService::CallbackService*>(this));
         }
@@ -729,6 +758,13 @@ public:
                                              raft::v1::RequestPreVoteResponse* response) override {
         return handle_unary<request_pre_vote_request<>, request_pre_vote_response<>>(
             "request_pre_vote", context, request, response, get_handler(_request_pre_vote_handler));
+    }
+
+    grpc::ServerUnaryReactor* TimeoutNow(grpc::CallbackServerContext* context,
+                                         const raft::v1::TimeoutNowRequest* request,
+                                         raft::v1::TimeoutNowResponse* response) override {
+        return handle_unary<timeout_now_request<>, timeout_now_response<>>(
+            "timeout_now", context, request, response, get_handler(_timeout_now_handler));
     }
 
     grpc::ServerUnaryReactor* ClusterJoin(grpc::CallbackServerContext* context,
@@ -894,6 +930,7 @@ private:
         _install_snapshot_handler;
     std::function<request_pre_vote_response<>(const request_pre_vote_request<>&)>
         _request_pre_vote_handler;
+    std::function<timeout_now_response<>(const timeout_now_request<>&)> _timeout_now_handler;
     std::function<cluster_join_response<>(const cluster_join_request<>&)> _cluster_join_handler;
     std::function<cluster_leave_response<>(const cluster_leave_request<>&)> _cluster_leave_handler;
     std::function<fetch_log_entries_response<>(const fetch_log_entries_request<>&)>
@@ -930,6 +967,12 @@ static_assert(kythira::network_server<grpc_server<grpc_kythira_transport_types>>
               "grpc_server must satisfy network_server");
 static_assert(kythira::network_server_with_pre_vote<grpc_server<grpc_kythira_transport_types>>,
               "grpc_server must satisfy network_server_with_pre_vote");
+
+// The optional leadership-transfer extension (Ongaro's dissertation §3.10).
+static_assert(kythira::network_client_with_timeout_now<grpc_client<grpc_kythira_transport_types>>,
+              "grpc_client must satisfy network_client_with_timeout_now");
+static_assert(kythira::network_server_with_timeout_now<grpc_server<grpc_kythira_transport_types>>,
+              "grpc_server must satisfy network_server_with_timeout_now");
 static_assert(kythira::network_server_with_cluster_join<grpc_server<grpc_kythira_transport_types>>,
               "grpc_server must satisfy network_server_with_cluster_join");
 static_assert(kythira::network_server_with_cluster_leave<grpc_server<grpc_kythira_transport_types>>,
