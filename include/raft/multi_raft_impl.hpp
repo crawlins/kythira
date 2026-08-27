@@ -680,6 +680,14 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
         report._policy_duration = clock::now() - t0;
     }
 
+    // ── PHASE 5: heartbeat ───────────────────────────────────────────────────
+    //
+    // After policy, deliberately. A shard that this tick's policy just put into
+    // `splitting` should be reported as splitting rather than as stable — the
+    // driver can then decline to compute an operator that would only be
+    // skipped.
+    maybe_heartbeat();
+
     evaluate_hibernation(ready);
     return report;
 }
@@ -1460,12 +1468,36 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     // commits would otherwise wedge the shard, so the release is chained onto
     // the future's failure path too.
     auto self = this;
-    return std::move(future).thenTry([self, g](auto&& result) {
-        if (result.hasException()) {
-            self->release(*g);
+    const bool scatter_children = options._scatter_children;
+    const auto child_ids = [&] {
+        std::vector<GroupId> ids;
+        ids.reserve(children.size());
+        for (const auto& c : children) {
+            ids.push_back(c._group_id);
         }
-        return std::forward<decltype(result)>(result).value();
-    });
+        return ids;
+    }();
+    return std::move(future).thenTry(
+        [self, g, scatter_children, child_ids, timeout](auto&& result) {
+            if (result.hasException()) {
+                self->release(*g);
+            } else if (scatter_children) {
+                // Scatter is what a load split is *for*: children whose leaders
+                // both land on the machine that was already hot have accomplished
+                // nothing. Only the children this host actually leads are moved —
+                // which, straight after apply, is the derived child, the one whose
+                // leadership is concentrated by construction rather than by an
+                // election. The non-derived children hold ordinary elections, and
+                // an election is not concentrated to begin with.
+                for (const auto& id : child_ids) {
+                    auto child = self->find_group(id);
+                    if (child && child->_node && child->_node->is_leader()) {
+                        self->scatter(id, timeout);
+                    }
+                }
+            }
+            return std::forward<decltype(result)>(result).value();
+        });
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -1626,6 +1658,15 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
                       {"children", std::to_string(cmd._children.size())},
                       {"at_index", std::to_string(at_index)},
                       {"new_version", std::to_string(cmd._children.front()._epoch._version)}});
+
+    // Told now rather than waited for on the next heartbeat: a split changes
+    // the routing table for the whole cluster, and up to a heartbeat interval
+    // of clients holding a descriptor for a range that no longer exists is a
+    // cost with no benefit. Every replica applies, but only the leader reports
+    // — N copies of the same fact would tell the driver nothing extra.
+    if (_cfg.report_split && parent._node && parent._node->is_leader()) {
+        _cfg.report_split(cmd._children[derived_index], cmd._children);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2044,6 +2085,13 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
     });
 
     target._last_merge_ns.store(now_ns(), std::memory_order_relaxed);
+    if (_cfg.report_merge && target._node && target._node->is_leader()) {
+        // The command's own copy of the source descriptor, not a lookup: by
+        // this point the local source replica has been torn down, and the
+        // descriptor the merge was computed against is the one the driver needs
+        // in order to retire its routing row.
+        _cfg.report_merge(cmd._source, target._descriptor);
+    }
     release(target);
     {
         std::lock_guard lock(target._merge_mutex);
@@ -2462,6 +2510,338 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::set_unknown_group_handler(
     std::function<unknown_group_action(const GroupId&)> handler) -> void {
     _demux.set_unknown_group_handler(std::move(handler));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Placement driver, channel (d) (Requirement 14, design §7)
+// ─────────────────────────────────────────────────────────────────────────────
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::build_shard_reports() const
+    -> std::vector<shard_report_type> {
+    std::vector<shard_report_type> out;
+    for (const auto& g : all_groups()) {
+        if (!g->_node || !g->_node->is_leader()) {
+            continue;
+        }
+        shard_report_type r;
+        r._descriptor = g->_descriptor;
+        r._leader = _cfg.node_id;
+        r._term = static_cast<std::uint64_t>(g->_node->get_current_term());
+        r._operation = g->_operation.load(std::memory_order_relaxed);
+
+        if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+            g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
+                r._approximate_size_bytes = sm.approximate_size_bytes();
+                r._approximate_key_count = sm.approximate_key_count();
+            });
+            r._size_available = true;
+        }
+
+        r._read_qps = static_cast<double>(g->_reads.load(std::memory_order_relaxed));
+        r._write_qps = static_cast<double>(g->_writes.load(std::memory_order_relaxed));
+
+        // "Down" is the leader's own belief, formed from match indices, and it
+        // is the only belief anyone holds: no other replica tracks per-peer
+        // progress. A driver that waited for certainty would never act.
+        for (const auto& voter : g->_descriptor._voters) {
+            if (voter == _cfg.node_id) {
+                continue;
+            }
+            if (!g->_node->match_index_of(voter).has_value()) {
+                r._down_replicas.push_back(voter);
+            }
+        }
+        r._down_replica_count = r._down_replicas.size();
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::build_node_report() const -> node_report_type {
+    node_report_type r;
+    r._node_id = _cfg.node_id;
+    r._labels = _cfg.node_labels;
+
+    if (_cfg.capacity_probe) {
+        const auto [capacity, available] = _cfg.capacity_probe();
+        r._capacity_bytes = capacity;
+        r._available_bytes = available;
+        r._used_bytes = capacity >= available ? capacity - available : 0;
+    }
+    r._overloaded = _cfg.overload_probe ? _cfg.overload_probe() : false;
+
+    std::uint64_t reads = 0;
+    std::uint64_t writes = 0;
+    for (const auto& g : all_groups()) {
+        ++r._shard_count;
+        if (g->_node && g->_node->is_leader()) {
+            ++r._leader_count;
+        }
+        reads += g->_reads.load(std::memory_order_relaxed);
+        writes += g->_writes.load(std::memory_order_relaxed);
+    }
+    r._read_qps = static_cast<double>(reads);
+    r._write_qps = static_cast<double>(writes);
+    return r;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::note_skipped_operator(const shard_operation_type& op,
+                                                            skipped_operator_reason reason)
+    -> operator_outcome {
+    _operators_skipped.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard lock(_skip_mutex);
+        ++_operator_skips[static_cast<std::uint8_t>(reason)];
+    }
+    _cfg.logger.info("skipped_operator", {{"group", detail::describe_value(op.group_id())},
+                                          {"operation_id", std::to_string(op.operation_id())},
+                                          {"operator", op.name()},
+                                          {"reason", to_string(reason)}});
+    _cfg.metrics.set_metric_name("shard.operator.skipped");
+    _cfg.metrics.add_dimension("group", detail::describe_value(op.group_id()));
+    _cfg.metrics.add_dimension("operator", op.name());
+    _cfg.metrics.add_dimension("reason", to_string(reason));
+    _cfg.metrics.add_count(1);
+    _cfg.metrics.emit();
+    return operator_outcome{
+        ._operation_id = op.operation_id(), ._accepted = false, ._reason = reason};
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::apply_operator(const shard_operation_type& op)
+    -> operator_outcome {
+    auto g = find_group(op.group_id());
+    if (!g || !g->_node) {
+        return note_skipped_operator(op, skipped_operator_reason::unknown_shard);
+    }
+
+    // Requirement 14.6, and the check that makes an advisory operator safe
+    // rather than merely tolerable: the driver reasoned about a range that may
+    // no longer exist. Comparing epochs turns a wrong action into a discarded
+    // message.
+    if (op.epoch() != g->_descriptor._epoch) {
+        return note_skipped_operator(op, skipped_operator_reason::stale_epoch);
+    }
+    if (!g->_node->is_leader()) {
+        return note_skipped_operator(op, skipped_operator_reason::not_leader);
+    }
+    // A frozen shard, or the global kill switch, silences the *automatic*
+    // channels, and the placement driver is one of them. An operator who froze
+    // a shard did so to stop exactly this.
+    if (!_automatic_enabled.load() || g->_frozen.load(std::memory_order_relaxed)) {
+        return note_skipped_operator(op, skipped_operator_reason::driver_disabled);
+    }
+
+    const auto accept = [&] {
+        _operators_accepted.fetch_add(1, std::memory_order_relaxed);
+        _cfg.logger.info("accepted_operator", {{"group", detail::describe_value(op.group_id())},
+                                               {"operation_id", std::to_string(op.operation_id())},
+                                               {"operator", op.name()}});
+        _cfg.metrics.set_metric_name("shard.operator.accepted");
+        _cfg.metrics.add_dimension("group", detail::describe_value(op.group_id()));
+        _cfg.metrics.add_dimension("operator", op.name());
+        _cfg.metrics.add_count(1);
+        _cfg.metrics.emit();
+        return operator_outcome{._operation_id = op.operation_id(), ._accepted = true};
+    };
+
+    // Any of these may fail asynchronously. That is not a reason to report the
+    // operator as skipped: skipped means "this host declined to try", and a
+    // membership change that is refused three entries later is a different
+    // event with its own reporting. Conflating them would tell an operator that
+    // the driver's view was stale when in fact the cluster refused.
+    const auto timeout = _cfg.config.rpc_timeout();
+
+    return std::visit(
+        [&]<typename Op>(const Op& concrete) -> operator_outcome {
+            if constexpr (std::same_as<Op, add_replica_operator<node_id_type>>) {
+                if (g->_descriptor.has_replica(concrete._node)) {
+                    return note_skipped_operator(op, skipped_operator_reason::precondition);
+                }
+                if (concrete._as_learner) {
+                    g->_node->add_learner(concrete._node);
+                } else {
+                    g->_node->add_server(concrete._node);
+                }
+                return accept();
+            } else if constexpr (std::same_as<Op, remove_replica_operator<node_id_type>>) {
+                if (!g->_descriptor.has_replica(concrete._node)) {
+                    return note_skipped_operator(op, skipped_operator_reason::precondition);
+                }
+                g->_node->remove_server(concrete._node);
+                return accept();
+            } else if constexpr (std::same_as<Op, transfer_leader_operator<node_id_type>>) {
+                // Naming this host, or a node that is not a voter, is a
+                // precondition failure the host can see for itself — unlike a
+                // transfer that is accepted and then loses its election, which
+                // is an ordinary asynchronous outcome and not a skip.
+                if (!g->_descriptor.has_voter(concrete._to) || concrete._to == _cfg.node_id) {
+                    return note_skipped_operator(op, skipped_operator_reason::precondition);
+                }
+                if constexpr (!network_client_with_timeout_now<
+                                  typename group_types::network_client_type>) {
+                    return note_skipped_operator(op, skipped_operator_reason::unsupported);
+                } else {
+                    g->_node->transfer_leadership(concrete._to, timeout);
+                    return accept();
+                }
+            } else if constexpr (std::same_as<Op, split_operator<Key>>) {
+                split_options options{};
+                options._channel = signal_channel::placement_driver;
+                options._reason = split_reason::placement_driver;
+                auto would = would_admit(op.group_id(), signal_channel::placement_driver);
+                if (!would) {
+                    return note_skipped_operator(op, skipped_operator_reason::shard_busy);
+                }
+                split_shard(op.group_id(), concrete._at_keys, options, timeout);
+                return accept();
+            } else if constexpr (std::same_as<Op, merge_operator<GroupId>>) {
+                auto would = would_admit(op.group_id(), signal_channel::placement_driver);
+                if (!would) {
+                    return note_skipped_operator(op, skipped_operator_reason::shard_busy);
+                }
+                merge_shards(op.group_id(), concrete._into, timeout);
+                return accept();
+            } else {
+                if constexpr (!network_client_with_timeout_now<
+                                  typename group_types::network_client_type>) {
+                    return note_skipped_operator(op, skipped_operator_reason::unsupported);
+                } else {
+                    scatter(op.group_id(), timeout);
+                    return accept();
+                }
+            }
+        },
+        op.kind());
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::heartbeat() -> std::size_t {
+    _heartbeats.fetch_add(1, std::memory_order_relaxed);
+
+    if (_cfg.report_node_heartbeat) {
+        _cfg.report_node_heartbeat(build_node_report());
+    }
+    if (!_cfg.report_shard_heartbeat) {
+        return 0;
+    }
+
+    // Built once and sent once, however many shards this host leads. That is
+    // the whole point of the batch: a control plane whose load grows with shard
+    // count fails at exactly the scale sharding was adopted to reach.
+    auto reports = build_shard_reports();
+    auto operators = _cfg.report_shard_heartbeat(reports);
+    _operators_received.fetch_add(operators.size(), std::memory_order_relaxed);
+
+    for (const auto& op : operators) {
+        apply_operator(op);
+    }
+    return operators.size();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::maybe_heartbeat() -> void {
+    if (_cfg.heartbeat_interval <= std::chrono::milliseconds::zero()) {
+        // Disabled from the tick. `heartbeat()` remains available to a caller
+        // driving it on its own thread, which is what a driver with a slow
+        // round trip should do rather than blocking the tick.
+        return;
+    }
+    if (!_cfg.report_shard_heartbeat && !_cfg.report_node_heartbeat) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (_last_heartbeat.time_since_epoch().count() != 0 &&
+        now - _last_heartbeat < _cfg.heartbeat_interval) {
+        return;
+    }
+    _last_heartbeat = now;
+    heartbeat();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::transfer_leadership(const GroupId& group,
+                                                          const node_id_type& to,
+                                                          std::chrono::milliseconds timeout)
+    -> future_type {
+    auto g = find_group(group);
+    if (!g || !g->_node) {
+        return failed_future(
+            std::make_exception_ptr(unknown_shard_exception<GroupId>{group, "no local replica"}));
+    }
+    note_activity(*g);
+    return g->_node->transfer_leadership(to, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::scatter(const GroupId& group,
+                                              std::chrono::milliseconds timeout) -> future_type {
+    auto g = find_group(group);
+    if (!g || !g->_node) {
+        return failed_future(
+            std::make_exception_ptr(unknown_shard_exception<GroupId>{group, "no local replica"}));
+    }
+    if (!g->_node->is_leader()) {
+        // Nothing to scatter: leadership is already somewhere else, which is
+        // the outcome scatter exists to produce.
+        return failed_future(std::make_exception_ptr(
+            shard_not_leader_exception<GroupId, node_id_type>{group, g->_node->known_leader()}));
+    }
+
+    std::vector<node_id_type> candidates;
+    for (const auto& v : g->_descriptor._voters) {
+        if (v != _cfg.node_id) {
+            candidates.push_back(v);
+        }
+    }
+    if (candidates.empty()) {
+        return failed_future(std::make_exception_ptr(
+            shard_busy_exception<GroupId>{group, "no other voter to scatter leadership to"}));
+    }
+    // Sorted so the choice does not depend on the order membership happened to
+    // be recorded in, then round-robin so two consecutive scatters on this host
+    // land on different machines. Both halves matter: without the sort the
+    // "round robin" would follow an arbitrary order, and without the cursor
+    // every child of one split would pick the same target.
+    std::sort(candidates.begin(), candidates.end());
+    const auto index = _scatter_cursor.fetch_add(1, std::memory_order_relaxed) % candidates.size();
+    const auto target = candidates[index];
+
+    _cfg.logger.info("scatter", {{"group", detail::describe_value(group)},
+                                 {"target", detail::describe_value(target)},
+                                 {"candidates", std::to_string(candidates.size())}});
+    return g->_node->transfer_leadership(target, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::heartbeat_count() const -> std::uint64_t {
+    return _heartbeats.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::received_operator_count() const -> std::uint64_t {
+    return _operators_received.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::accepted_operator_count() const -> std::uint64_t {
+    return _operators_accepted.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::skipped_operator_count() const -> std::uint64_t {
+    return _operators_skipped.load(std::memory_order_relaxed);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::skipped_operator_count(skipped_operator_reason reason) const
+    -> std::uint64_t {
+    std::lock_guard lock(_skip_mutex);
+    auto it = _operator_skips.find(static_cast<std::uint8_t>(reason));
+    return it == _operator_skips.end() ? 0 : it->second;
 }
 
 }  // namespace kythira

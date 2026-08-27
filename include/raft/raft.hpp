@@ -155,6 +155,13 @@ public:
     using request_pre_vote_request_type =
         request_pre_vote_request<node_id_type, term_id_type, log_index_type>;
     using request_pre_vote_response_type = request_pre_vote_response<term_id_type>;
+    // Optional (dissertation §3.10, `network_client_with_timeout_now`): a
+    // direct concrete type for the same reason as PreVote's above — a Types
+    // bundle that predates leadership transfer must not be required to define
+    // it.
+    using timeout_now_request_type =
+        timeout_now_request<node_id_type, term_id_type, log_index_type>;
+    using timeout_now_response_type = timeout_now_response<term_id_type>;
     using append_entries_request_type = typename Types::append_entries_request_type;
     using append_entries_response_type = typename Types::append_entries_response_type;
     using install_snapshot_request_type = typename Types::install_snapshot_request_type;
@@ -490,6 +497,56 @@ public:
     /// `(min_index, prepare_index]` rather than the source's whole log.
     [[nodiscard]] auto match_index_of(const node_id_type& node) const
         -> std::optional<log_index_type>;
+
+    /// @brief The index of the last entry in this replica's log.
+    ///
+    /// Public counterpart of the internal `get_last_log_index()`, taken under
+    /// the node's lock. Leadership transfer needs it on both sides: the leader
+    /// to decide whether a target has caught up, the target to check that it
+    /// really has before spending a term on an election it would lose.
+    [[nodiscard]] auto last_log_index() const -> log_index_type;
+    /// @}
+
+    /// @name Leadership transfer (Ongaro's dissertation §3.10)
+    /// @{
+
+    /// @brief Hand leadership to `target` without waiting for an election
+    ///        timeout.
+    ///
+    /// The cheapest rebalance the system has: no data moves, and the target
+    /// already holds the log. The multi-Raft placement driver's
+    /// `transfer_leader` operator and the load-split `scatter` are both built
+    /// on it.
+    ///
+    /// The sequence is the dissertation's. This leader stops accepting new
+    /// client commands — otherwise the target can never finish catching up,
+    /// because the thing it is catching up to keeps moving — brings the target
+    /// to its own last log index, then sends TimeoutNow, which is permission to
+    /// campaign immediately. The target's election is ordinary from there: it
+    /// wins on the strength of an up-to-date log, and this node learns it lost
+    /// through the usual term bump.
+    ///
+    /// The future resolves when the target has **accepted** TimeoutNow, not
+    /// when it has won. The election is asynchronous and its outcome is not
+    /// reportable here; what matters is that a rejected or failed transfer
+    /// leaves the cluster exactly where it started, so the operation is safe to
+    /// retry and safe to abandon.
+    ///
+    /// @throws (via the future)
+    ///   `leader_transfer_unsupported_exception` the transport has no TimeoutNow
+    ///   `leader_transfer_exception`             not the leader, target is not a
+    ///                                           voter, target is this node,
+    ///                                           another transfer is in flight,
+    ///                                           or the deadline elapsed before
+    ///                                           the target caught up
+    auto transfer_leadership(node_id_type target, std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief Whether a leadership transfer is in flight, and to whom.
+    [[nodiscard]] auto leadership_transfer_target() const -> std::optional<node_id_type>;
+
+    /// @brief Handle an inbound TimeoutNow. Registered by transports that
+    ///        implement the extension.
+    auto handle_timeout_now(const timeout_now_request_type& request) -> timeout_now_response_type;
     /// @}
 
     /// @name Configuration helpers
@@ -742,6 +799,23 @@ private:
     // ever resets it back to nullopt.
     std::optional<std::chrono::steady_clock::time_point> _last_leader_contact;
 
+    // ========================================================================
+    // Leadership transfer (dissertation §3.10)
+    // ========================================================================
+    //
+    // Guarded by _mutex, like every other piece of leader state. All three move
+    // together and are cleared together: a transfer that has a target but no
+    // promise would strand its caller forever, and one with a promise but no
+    // target would never be driven.
+    std::optional<node_id_type> _transfer_target;
+    std::chrono::steady_clock::time_point _transfer_deadline{};
+    std::shared_ptr<promise_type> _transfer_promise;
+    // Set once TimeoutNow has actually gone out, so a slow response does not
+    // produce a second one on the next tick. A duplicate is harmless to
+    // correctness — the target simply campaigns again — but it costs the
+    // cluster a term each time, which is exactly what transfer exists to avoid.
+    bool _timeout_now_sent{false};
+
     // Random number generator for election timeout randomization
     std::mt19937 _rng;
 
@@ -904,6 +978,17 @@ private:
     // become_candidate()+start_election() behavior, unchanged, for any
     // Types bundle whose transport doesn't implement PreVote.
     auto start_pre_vote() -> void;
+    // Drives an in-flight leadership transfer one step: abort on deadline or on
+    // losing leadership, send TimeoutNow once the target has caught up,
+    // otherwise nudge replication toward it. Called from transfer_leadership()
+    // itself and from every check_heartbeat_timeout(), because the tick is the
+    // only clock this library has.
+    auto drive_leader_transfer() -> void;
+    // Clears the transfer state and settles the caller's future. Must be called
+    // with _mutex held; the promise is settled after the lock is released by
+    // the returned closure, because a continuation attached to that future may
+    // re-enter the node.
+    auto finish_leader_transfer(std::exception_ptr error) -> std::function<void()>;
     auto become_leader() -> void;
 
     // Log operations
@@ -1506,6 +1591,28 @@ auto node<Types>::submit_command(const std::vector<std::byte>& command,
         return future;
     }
 
+    // Ongaro §3.10: a leader transferring leadership stops accepting new client
+    // commands. Not politeness — necessity. The transfer waits for the target's
+    // match index to reach this leader's last log index, and every command
+    // accepted here moves that target further away. Without the block, a
+    // steadily-written shard can never transfer at all.
+    if (_transfer_target.has_value()) {
+        _logger.debug("Rejected command submission: leadership transfer in flight",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"target", node_id_to_string(*_transfer_target)}});
+        _metrics.set_metric_name("command_rejected");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("reason", "leadership_transfer");
+        _metrics.add_one();
+        _metrics.emit();
+
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::make_exception_ptr(kythira::leader_transfer_exception(
+            "leadership transfer in flight; retry against the new leader")));
+        return future;
+    }
+
     auto submission_start = std::chrono::steady_clock::now();
 
     _logger.info("Received client command", {{"node_id", node_id_to_string(_node_id)},
@@ -1717,6 +1824,293 @@ auto node<Types>::match_index_of(const node_id_type& node) const -> std::optiona
     }
     auto it = _match_index.find(node);
     return it == _match_index.end() ? std::nullopt : std::optional{it->second};
+}
+
+template<raft_types Types> auto node<Types>::last_log_index() const -> log_index_type {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return get_last_log_index();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Leadership transfer (Ongaro's dissertation §3.10)
+// ─────────────────────────────────────────────────────────────────────────────
+
+template<raft_types Types>
+auto node<Types>::transfer_leadership(node_id_type target, std::chrono::milliseconds timeout)
+    -> future_type {
+    auto fail = [](const std::string& why) {
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::make_exception_ptr(kythira::leader_transfer_exception(why)));
+        return future;
+    };
+
+    if constexpr (!network_client_with_timeout_now<network_client_type>) {
+        // Refused at run time rather than at compile time: a Types bundle
+        // without TimeoutNow is a legitimate configuration, and every other
+        // multi-Raft feature works on it. Only the placement driver's
+        // `transfer_leader` operator and `scatter` are unavailable, and both
+        // are advisory and already know how to be skipped.
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::make_exception_ptr(kythira::leader_transfer_unsupported_exception(
+            "transport does not implement TimeoutNow; see network_client_with_timeout_now")));
+        return future;
+    } else {
+        std::unique_lock<std::mutex> lock(_mutex);
+
+        if (_state != kythira::server_state::leader) {
+            return fail("not the leader");
+        }
+        if (target == _node_id) {
+            return fail("target is this node; it is already the leader");
+        }
+        if (!_membership.is_node_in_configuration(target, _configuration)) {
+            return fail("target is not in the cluster configuration");
+        }
+        // A learner cannot win an election, so telling one to campaign would
+        // burn a term and change nothing. Requirement 2.1 of
+        // `.kiro/specs/non-voting-nodes/` is the same rule from the other side.
+        const auto& learners = _configuration.learners();
+        if (std::find(learners.begin(), learners.end(), target) != learners.end()) {
+            return fail("target is a learner and can never win an election");
+        }
+        if (_transfer_target.has_value()) {
+            return fail("a leadership transfer to " + node_id_to_string(*_transfer_target) +
+                        " is already in flight");
+        }
+
+        _transfer_target = target;
+        _transfer_deadline = std::chrono::steady_clock::now() + timeout;
+        _transfer_promise = std::make_shared<promise_type>();
+        _timeout_now_sent = false;
+        auto future = _transfer_promise->getFuture();
+
+        _logger.info("Leadership transfer requested",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"target", node_id_to_string(target)},
+                      {"term", std::to_string(_current_term)},
+                      {"timeout_ms", std::to_string(timeout.count())}});
+        _metrics.set_metric_name("leader_transfer_requested");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("target", node_id_to_string(target));
+        _metrics.add_count(1);
+        _metrics.emit();
+
+        lock.unlock();
+        drive_leader_transfer();
+        return future;
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::leadership_transfer_target() const -> std::optional<node_id_type> {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _transfer_target;
+}
+
+template<raft_types Types>
+auto node<Types>::finish_leader_transfer(std::exception_ptr error) -> std::function<void()> {
+    auto promise = std::move(_transfer_promise);
+    _transfer_promise.reset();
+    _transfer_target.reset();
+    _timeout_now_sent = false;
+    if (!promise) {
+        return [] {};
+    }
+    // Settled by the caller after it drops _mutex. A continuation attached to
+    // this future may call straight back into the node — the multi-Raft scatter
+    // does exactly that, transferring the next child from the completion of the
+    // last — and settling under the lock would deadlock on the first one.
+    return [promise, error] {
+        if (error) {
+            promise->setException(error);
+        } else {
+            promise->setValue(std::vector<std::byte>{});
+        }
+    };
+}
+
+template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
+    if constexpr (!network_client_with_timeout_now<network_client_type>) {
+        return;
+    } else {
+        std::unique_lock<std::mutex> lock(_mutex);
+        if (!_transfer_target.has_value()) {
+            return;
+        }
+
+        const auto target = *_transfer_target;
+
+        if (_state != kythira::server_state::leader) {
+            // Either the transfer succeeded and the target deposed us, or we
+            // lost leadership for an unrelated reason. Both settle the same
+            // way: this node is no longer the leader, which is what the caller
+            // asked for, so it is not an error.
+            _logger.info(
+                "Leadership transfer ended: no longer leader",
+                {{"node_id", node_id_to_string(_node_id)}, {"target", node_id_to_string(target)}});
+            auto settle = finish_leader_transfer(nullptr);
+            lock.unlock();
+            settle();
+            return;
+        }
+
+        if (std::chrono::steady_clock::now() >= _transfer_deadline) {
+            _logger.warning("Leadership transfer timed out; resuming as leader",
+                            {{"node_id", node_id_to_string(_node_id)},
+                             {"target", node_id_to_string(target)},
+                             {"timeout_now_sent", _timeout_now_sent ? "true" : "false"}});
+            _metrics.set_metric_name("leader_transfer_timed_out");
+            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+            _metrics.add_dimension("target", node_id_to_string(target));
+            _metrics.add_count(1);
+            _metrics.emit();
+            auto settle = finish_leader_transfer(std::make_exception_ptr(
+                kythira::leader_transfer_exception("leadership transfer deadline elapsed")));
+            lock.unlock();
+            settle();
+            return;
+        }
+
+        if (_timeout_now_sent) {
+            // Already invited; nothing to do but wait for the election or the
+            // deadline. Sending a second invitation would cost another term.
+            return;
+        }
+
+        const auto my_last = get_last_log_index();
+        auto it = _match_index.find(target);
+        const auto matched = it == _match_index.end() ? log_index_type{0} : it->second;
+
+        if (matched < my_last) {
+            // Not caught up yet. Push, and come back on the next tick. This is
+            // why the leader stops accepting commands for the duration: without
+            // that, `my_last` moves every time a client writes and the target
+            // never arrives.
+            _logger.debug("Leadership transfer waiting for target to catch up",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"target", node_id_to_string(target)},
+                           {"match_index", std::to_string(matched)},
+                           {"last_log_index", std::to_string(my_last)}});
+            lock.unlock();
+            send_append_entries_to(target);
+            return;
+        }
+
+        timeout_now_request_type request{_current_term, _node_id, my_last};
+        _timeout_now_sent = true;
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            _transfer_deadline - std::chrono::steady_clock::now());
+        lock.unlock();
+
+        _logger.info("Sending TimeoutNow",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"target", node_id_to_string(target)},
+                      {"last_log_index", std::to_string(request.last_log_index())}});
+
+        _network_client.send_timeout_now(target, request, remaining)
+            .thenTry([this, target, stop_flag = _stop_flag, scope = _async_scope](auto&& result) {
+                // The ticket is what makes this guard load-bearing rather than
+                // advisory: while it is held, stop()'s drain cannot return, so
+                // `this` cannot be destroyed underneath the body below.
+                const auto drain_ticket = scope->enter();
+                if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                std::unique_lock<std::mutex> inner(_mutex);
+                if (!_transfer_target.has_value() || *_transfer_target != target) {
+                    return;
+                }
+                std::exception_ptr error;
+                if (result.hasException()) {
+                    error = std::make_exception_ptr(
+                        kythira::leader_transfer_exception("TimeoutNow RPC failed"));
+                } else if (!result.value().success()) {
+                    error = std::make_exception_ptr(kythira::leader_transfer_exception(
+                        "target refused TimeoutNow; it is not caught up or is in a later term"));
+                }
+                if (error) {
+                    // The target refused, so it will not campaign. Release the
+                    // command block immediately rather than sitting out the
+                    // rest of the deadline: a leader that refuses writes for
+                    // thirty seconds because one RPC failed is a worse outage
+                    // than the imbalance the transfer was meant to fix.
+                    auto settle = finish_leader_transfer(error);
+                    inner.unlock();
+                    settle();
+                    return;
+                }
+                _logger.info("TimeoutNow accepted; target is campaigning",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"target", node_id_to_string(target)}});
+                auto settle = finish_leader_transfer(nullptr);
+                inner.unlock();
+                settle();
+            });
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::handle_timeout_now(const timeout_now_request_type& request)
+    -> timeout_now_response_type {
+    std::unique_lock<std::mutex> lock(_mutex);
+
+    _logger.debug("Received TimeoutNow RPC",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"from_leader", node_id_to_string(request.leader_id())},
+                   {"request_term", std::to_string(request.term())},
+                   {"current_term", std::to_string(_current_term)}});
+
+    // A TimeoutNow from a term we have already left is from a leader that has
+    // been deposed. Obeying it would hand the cluster back to a decision made
+    // in a term that no longer exists.
+    if (request.term() < _current_term) {
+        return timeout_now_response_type{_current_term, false};
+    }
+    if (is_learner()) {
+        return timeout_now_response_type{_current_term, false};
+    }
+    if (request.term() > _current_term) {
+        // Through become_follower() rather than by hand: it also stops the
+        // quorum loop if this node was the leader, and a TimeoutNow from a
+        // higher term means exactly that this node has been superseded.
+        become_follower(request.term());
+    }
+
+    // The leader's `match_index` is a belief formed from acknowledgements, and
+    // it can be ahead of what this replica actually holds — a truncated log
+    // after a crash, for instance. Campaigning short would lose an election
+    // this node was told it would win, costing the cluster a term for nothing.
+    if (get_last_log_index() < request.last_log_index()) {
+        _logger.warning("Refusing TimeoutNow: log is behind what the leader believes",
+                        {{"node_id", node_id_to_string(_node_id)},
+                         {"last_log_index", std::to_string(get_last_log_index())},
+                         {"leader_believes", std::to_string(request.last_log_index())}});
+        return timeout_now_response_type{_current_term, false};
+    }
+
+    _logger.info("Accepting TimeoutNow; campaigning immediately",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"from_leader", node_id_to_string(request.leader_id())},
+                  {"term", std::to_string(_current_term)}});
+    _metrics.set_metric_name("timeout_now_accepted");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_count(1);
+    _metrics.emit();
+
+    // Deliberately NOT through start_pre_vote(), even on a transport that
+    // supports it. Pre-vote asks the other followers whether they would elect
+    // us, and they have all heard from the current leader within the last
+    // election timeout, so every one of them would say no. The whole point of
+    // TimeoutNow is that the leader has already decided; a pre-vote round here
+    // would turn a granted transfer into a guaranteed refusal.
+    become_candidate();
+    const auto term = _current_term;
+    lock.unlock();
+    start_election();
+
+    return timeout_now_response_type{term, true};
 }
 
 template<raft_types Types>
@@ -2403,6 +2797,19 @@ auto node<Types>::stop() -> void {
 
     // Cancel all pending client operations
     _commit_waiter.cancel_all_operations("Node shutdown");
+
+    // A leadership transfer is driven by the tick, and after this there are no
+    // more ticks. Settling it here is what keeps `stop()` from leaving a caller
+    // blocked on a future nothing will ever complete.
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+        if (_transfer_target.has_value()) {
+            auto settle = finish_leader_transfer(std::make_exception_ptr(
+                kythira::leader_transfer_exception("node stopped during leadership transfer")));
+            lock.unlock();
+            settle();
+        }
+    }
 
     // Stop the network server
     _network_server.stop();
@@ -3205,6 +3612,13 @@ auto node<Types>::check_heartbeat_timeout() -> void {
     if (should_assess) {
         run_quorum_assessment();
     }
+
+    // The tick is the only clock this library has, so an in-flight leadership
+    // transfer is driven from here: it is the callback every leader's timer
+    // loop already runs, and it runs at the heartbeat interval, which is an
+    // order of magnitude finer than the election timeout the transfer has to
+    // finish inside.
+    drive_leader_transfer();
 }
 
 // Placeholder implementations for private methods
@@ -3316,6 +3730,15 @@ auto node<Types>::register_rpc_handlers() -> void {
         _network_server.register_request_pre_vote_handler(
             [this](const request_pre_vote_request_type& request) -> request_pre_vote_response_type {
                 return this->handle_request_pre_vote(request);
+            });
+    }
+
+    // Register TimeoutNow handler if the network server supports it
+    // (leadership transfer, Ongaro's dissertation §3.10)
+    if constexpr (network_server_with_timeout_now<network_server_type>) {
+        _network_server.register_timeout_now_handler(
+            [this](const timeout_now_request_type& request) -> timeout_now_response_type {
+                return this->handle_timeout_now(request);
             });
     }
 

@@ -170,6 +170,49 @@ public:
             });
     }
 
+    // Send TimeoutNow RPC — satisfies kythira::network_client_with_timeout_now
+    // (include/raft/network.hpp). Leadership transfer, dissertation §3.10.
+    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& req,
+                          std::chrono::milliseconds timeout)
+        -> kythira::future_default<kythira::timeout_now_response<>> {
+        fiu_do_on("raft/network/send_timeout_now",
+                  return kythira::future_factory_default::makeExceptionalFuture<
+                      kythira::timeout_now_response<>>(std::make_exception_ptr(
+                      kythira::network_exception("chaos: send_timeout_now"))););
+        auto data = _serializer.serialize(req);
+        std::vector<std::byte> payload(data.begin(), data.end());
+
+        address_type target_addr;
+        if constexpr (std::is_same_v<address_type, std::string>) {
+            target_addr = std::to_string(target);
+        } else {
+            target_addr = static_cast<address_type>(target);
+        }
+
+        typename NetworkTypes::message_type msg(_node->address(),
+                                                0,  // Source port (connectionless)
+                                                target_addr, _rpc_port, std::move(payload));
+
+        return _node->send(std::move(msg), timeout)
+            .thenValue([this, timeout](bool success) {
+                if (!success) {
+                    throw kythira::network_exception("Failed to send TimeoutNow RPC");
+                }
+                return _node->receive(timeout);
+            })
+            .thenValue([this](typename NetworkTypes::message_type response_msg)
+                           -> kythira::timeout_now_response<> {
+                auto response_payload = response_msg.payload();
+                Data response_data;
+                if constexpr (requires { response_data.resize(0); }) {
+                    response_data.resize(response_payload.size());
+                    std::copy(response_payload.begin(), response_payload.end(),
+                              response_data.begin());
+                }
+                return _serializer.template deserialize_timeout_now_response<>(response_data);
+            });
+    }
+
     // Send AppendEntries RPC - returns Future<append_entries_response<>>
     auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& req,
                              std::chrono::milliseconds timeout)
@@ -404,6 +447,7 @@ public:
           _server_thread(std::move(other._server_thread)),
           _request_vote_handler(std::move(other._request_vote_handler)),
           _pre_vote_handler(std::move(other._pre_vote_handler)),
+          _timeout_now_handler(std::move(other._timeout_now_handler)),
           _append_entries_handler(std::move(other._append_entries_handler)),
           _install_snapshot_handler(std::move(other._install_snapshot_handler)),
           _cluster_join_handler(std::move(other._cluster_join_handler)),
@@ -423,6 +467,7 @@ public:
             _server_thread = std::move(other._server_thread);
             _request_vote_handler = std::move(other._request_vote_handler);
             _pre_vote_handler = std::move(other._pre_vote_handler);
+            _timeout_now_handler = std::move(other._timeout_now_handler);
             _append_entries_handler = std::move(other._append_entries_handler);
             _install_snapshot_handler = std::move(other._install_snapshot_handler);
             _cluster_join_handler = std::move(other._cluster_join_handler);
@@ -454,6 +499,15 @@ public:
                                                handler) -> void {
         std::unique_lock lock(_mutex);
         _pre_vote_handler = std::move(handler);
+    }
+
+    // Register TimeoutNow handler — satisfies
+    // kythira::network_server_with_timeout_now (include/raft/network.hpp).
+    auto register_timeout_now_handler(
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+            handler) -> void {
+        std::unique_lock lock(_mutex);
+        _timeout_now_handler = std::move(handler);
     }
 
     // Register AppendEntries handler
@@ -544,6 +598,8 @@ private:
         _request_vote_handler;
     std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
         _pre_vote_handler;
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        _timeout_now_handler;
     std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
@@ -622,6 +678,23 @@ private:
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
                 // Not a RequestPreVote request
+            }
+
+            // Try TimeoutNow. Ahead of AppendEntries because its payload is a
+            // strict subset of several others' — the type tag is what actually
+            // discriminates, but the try-in-order dispatch below only works if
+            // the narrower shapes are attempted first.
+            try {
+                auto request = _serializer.template deserialize_timeout_now_request<>(request_data);
+
+                std::shared_lock lock(_mutex);
+                if (_timeout_now_handler) {
+                    auto response = _timeout_now_handler(request);
+                    send_response(msg.source_address(), response);
+                }
+                return;
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
+                // Not a TimeoutNow request
             }
 
             // Try AppendEntries
@@ -754,6 +827,16 @@ static_assert(kythira::network_server_with_pre_vote<simulator_network_server<
                   TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
                   std::vector<std::byte>>>,
               "simulator_network_server must satisfy network_server_with_pre_vote");
+
+// Verify the optional leadership-transfer extension (include/raft/network.hpp)
+static_assert(kythira::network_client_with_timeout_now<simulator_network_client<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_client must satisfy network_client_with_timeout_now");
+static_assert(kythira::network_server_with_timeout_now<simulator_network_server<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_server must satisfy network_server_with_timeout_now");
 
 // Verify the optional bootstrap-extension concepts
 static_assert(kythira::network_client_with_cluster_join<simulator_network_client<

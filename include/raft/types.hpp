@@ -277,6 +277,40 @@ concept request_pre_vote_response_type = requires(const T& resp) {
     { resp.vote_granted() } -> std::convertible_to<bool>;
 };
 
+/// @brief Concept for a TimeoutNow RPC request message.
+///
+/// Raft leadership transfer, Ongaro's dissertation §3.10. The RPC is optional
+/// (see `network_client_with_timeout_now` in `network.hpp`) and carries almost
+/// nothing, because almost nothing needs deciding at the receiver: the leader
+/// has already established, from its own `match_index`, that the target's log
+/// is current. What the target needs is permission to campaign *now* rather
+/// than after an election timeout, and the term it was given that permission
+/// in — so that a TimeoutNow from a deposed leader is ignored rather than
+/// obeyed.
+template<typename T, typename NodeId, typename TermId, typename LogIndex>
+concept timeout_now_request_type = requires(const T& req) {
+    requires node_id<NodeId>;
+    requires term_id<TermId>;
+    requires log_index<LogIndex>;
+    { req.term() } -> std::same_as<TermId>;
+    { req.leader_id() } -> std::same_as<NodeId>;
+    { req.last_log_index() } -> std::same_as<LogIndex>;
+};
+
+/// @brief Concept for a TimeoutNow RPC response message.
+///
+/// `success()` reports only whether the target *began* campaigning. It cannot
+/// report whether the target won, and it deliberately does not try: the
+/// election is asynchronous and its outcome reaches the old leader as an
+/// ordinary term bump. A transfer that is accepted but lost leaves the cluster
+/// exactly where it started, which is why the operation is safe to retry.
+template<typename T, typename TermId>
+concept timeout_now_response_type = requires(const T& resp) {
+    requires term_id<TermId>;
+    { resp.term() } -> std::same_as<TermId>;
+    { resp.success() } -> std::convertible_to<bool>;
+};
+
 /// @brief Concept for an AppendEntries RPC request message.
 template<typename T, typename NodeId, typename TermId, typename LogIndex, typename LogEntry>
 concept append_entries_request_type = requires(const T& req) {
@@ -475,6 +509,46 @@ struct request_pre_vote_response {
 
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto vote_granted() const -> bool { return _vote_granted; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
+};
+
+/// @brief Default TimeoutNow request (leadership transfer, dissertation §3.10).
+/// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
+requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
+struct timeout_now_request {
+    TermId _term;
+    NodeId _leader_id;
+    /// The leader's last log index at the moment it sent this. The target
+    /// re-checks it against its own log: the leader's `match_index` is a belief
+    /// formed from acknowledgements, and a target that campaigns with a shorter
+    /// log than it was believed to have would lose the election it was told to
+    /// win, costing the cluster a term for nothing.
+    LogIndex _last_log_index;
+
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto leader_id() const -> NodeId { return _leader_id; }
+    [[nodiscard]] auto last_log_index() const -> LogIndex { return _last_log_index; }
+    [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
+};
+
+/// @brief Default TimeoutNow response.
+/// @tparam TermId Term number type; defaults to `uint64_t`.
+template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
+requires term_id<TermId>
+struct timeout_now_response {
+    TermId _term;
+    bool _success;
+
+    GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
+
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto success() const -> bool { return _success; }
     [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 

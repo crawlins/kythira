@@ -154,4 +154,36 @@ concept network_server_with_log_fetch =
         { server.register_fetch_log_entries_handler(handler) } -> std::same_as<void>;
     };
 
+// ============================================================================
+// Optional leadership-transfer extension (Ongaro's dissertation §3.10) — NOT
+// required by the base network concepts, so a transport that has not
+// implemented TimeoutNow keeps working and `node<Types>::transfer_leadership()`
+// fails with `leader_transfer_unsupported_exception` on that bundle rather than
+// failing to compile.
+//
+// The multi-Raft placement driver's `transfer_leader` operator and the
+// load-split `scatter` both need this. It is the cheapest rebalance in the
+// system — no data moves, and the target already holds the log — which is why
+// it is worth a wire message of its own rather than being approximated by
+// stopping the leader and letting an election happen.
+// ============================================================================
+
+// Satisfied by a network_client that can send TimeoutNow RPCs.
+template<typename C>
+concept network_client_with_timeout_now =
+    requires(C client, std::uint64_t target, const kythira::timeout_now_request<>& req,
+             std::chrono::milliseconds timeout) {
+        {
+            client.send_timeout_now(target, req, timeout)
+        } -> kythira::future<kythira::timeout_now_response<>>;
+    };
+
+// Satisfied by a network_server that can register a TimeoutNow handler.
+template<typename S>
+concept network_server_with_timeout_now = requires(
+    S server,
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler) {
+    { server.register_timeout_now_handler(handler) } -> std::same_as<void>;
+};
+
 }  // namespace kythira
