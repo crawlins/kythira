@@ -205,6 +205,67 @@ public:
         }
     }
 
+    /// @brief Resolve a future while keeping the cluster ticking underneath it.
+    ///
+    /// **Never call `.get()` on a transfer's future without this.** A
+    /// transfer's deadline is enforced by `drive_leader_transfer()`, which runs
+    /// from `check_heartbeat_timeout()`, which runs from `tick()` — the tick is
+    /// the only clock this library has. A blocking `.get()` with nobody ticking
+    /// therefore waits for a deadline that can never fire, and waits forever.
+    ///
+    /// That is not hypothetical: every case in this file did exactly that, and
+    /// it passed under folly only because the transfer happened to complete
+    /// inside the preceding `tick_until` budget. Under the stdexec backend it
+    /// does not, and seven of nine cases hung until the suite's alarm killed
+    /// them.
+    ///
+    /// Returns `nullptr` on success, the exception on failure, and a
+    /// `runtime_error` if the budget elapses — so an unresolved future fails
+    /// the case with a message instead of hanging it.
+    template<typename Future>
+    auto settle(Future&& f, std::chrono::milliseconds budget = std::chrono::milliseconds{15000})
+        -> std::exception_ptr {
+        const auto deadline = std::chrono::steady_clock::now() + budget;
+        while (!f.wait(std::chrono::milliseconds{2}) &&
+               std::chrono::steady_clock::now() < deadline) {
+            tick();
+        }
+        if (!f.wait(std::chrono::milliseconds{100})) {
+            return std::make_exception_ptr(
+                std::runtime_error("future never resolved while the cluster was ticking"));
+        }
+        try {
+            std::ignore = std::forward<Future>(f).get();
+            return nullptr;
+        } catch (...) {
+            return std::current_exception();
+        }
+    }
+
+    /// @brief Tick until `group` has a leader, and return it.
+    ///
+    /// Leadership is not stable between two statements. Every `leader_of()` is
+    /// a *sample*, and the pattern this replaces — assert a leader exists, then
+    /// dereference a second, independent `leader_of()` on the next line — reads
+    /// two different samples and acts on the later one. Under a slow backend
+    /// the second can be `nullopt` (dereferencing it is undefined, and showed
+    /// up as `std::out_of_range: map::at` from the id it then produced) or a
+    /// different node (so the case transfers from a node that is no longer the
+    /// leader).
+    auto require_leader(group_id_type group,
+                        std::chrono::milliseconds budget = std::chrono::milliseconds{5000})
+        -> std::uint64_t {
+        std::optional<std::uint64_t> id;
+        tick_until(
+            [&] {
+                id = leader_of(group);
+                return id.has_value();
+            },
+            budget);
+        BOOST_REQUIRE_MESSAGE(id.has_value(), "no leader was elected for group " << group);
+        return *id;
+    }
+
     template<typename Predicate>
     auto tick_until(Predicate predicate,
                     std::chrono::milliseconds budget = std::chrono::milliseconds{5000}) -> bool {
@@ -246,6 +307,38 @@ private:
     bool _running{false};
 };
 
+/// @brief The message carried by an exception_ptr, for assertion output.
+auto describe(const std::exception_ptr& e) -> std::string {
+    if (!e) {
+        return "(none)";
+    }
+    try {
+        std::rethrow_exception(e);
+    } catch (const std::exception& ex) {
+        return ex.what();
+    } catch (...) {
+        return "(non-std exception)";
+    }
+    return "(none)";
+}
+
+/// @brief Whether `e` is a `T`. Used with `transfer_cluster::settle`, which
+/// returns the exception rather than rethrowing it, so a case can assert the
+/// type without a blocking `.get()` anywhere near it.
+template<typename T> auto is_a(const std::exception_ptr& e) -> bool {
+    if (!e) {
+        return false;
+    }
+    try {
+        std::rethrow_exception(e);
+    } catch (const T&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
 }  // namespace
 
 BOOST_AUTO_TEST_SUITE(leader_transfer)
@@ -257,8 +350,7 @@ BOOST_AUTO_TEST_CASE(leadership_moves_to_the_named_target, *boost::unit_test::ti
     cluster.create_group(k_group);
     cluster.start();
 
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
-    const auto from = *cluster.leader_of(k_group);
+    auto from = cluster.require_leader(k_group);
 
     // Pick a target that is not the current leader, and remember the term on
     // the *third* node — the one taking no part in the transfer.
@@ -281,14 +373,32 @@ BOOST_AUTO_TEST_CASE(leadership_moves_to_the_named_target, *boost::unit_test::ti
     // (group, target, timeout) — not (target, group). Both are `std::uint64_t`,
     // so getting this backwards compiles and then fails only when the group id
     // happens not to collide with a node id.
-    auto future =
-        cluster.host(from).transfer_leadership(k_group, to, std::chrono::milliseconds{3000});
+    // Re-checked immediately before the call, and retried if leadership moved
+    // in between. `transfer_leadership` refuses on a non-leader, and that
+    // refusal is correct — the race is the test's, not the product's.
+    std::exception_ptr outcome;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        auto* leader_node = cluster.host(from).group_node(k_group);
+        if (leader_node == nullptr || !leader_node->is_leader()) {
+            from = cluster.require_leader(k_group);
+            continue;
+        }
+        outcome = cluster.settle(
+            cluster.host(from).transfer_leadership(k_group, to, std::chrono::milliseconds{3000}));
+        if (!is_a<leader_transfer_exception>(outcome)) {
+            break;
+        }
+        if (describe(outcome).find("not the leader") == std::string::npos) {
+            break;
+        }
+        from = cluster.require_leader(k_group);
+    }
 
     const bool moved =
         cluster.tick_until([&] { return cluster.leader_of(k_group) == std::optional{to}; },
                            std::chrono::milliseconds{8000});
     BOOST_CHECK_MESSAGE(moved, "leadership did not reach the named target");
-    BOOST_CHECK_NO_THROW(std::move(future).get());
+    BOOST_CHECK_MESSAGE(outcome == nullptr, "transfer reported failure: " << describe(outcome));
 
     // The named target, not "somebody else". A general election would satisfy
     // "the old leader stepped down" and fail this.
@@ -311,8 +421,7 @@ BOOST_AUTO_TEST_CASE(the_old_leader_refuses_commands_while_transferring,
     cluster.create_group(k_group);
     cluster.start();
 
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
-    const auto from = *cluster.leader_of(k_group);
+    const auto from = cluster.require_leader(k_group);
     std::uint64_t to = 0;
     for (auto id : cluster.nodes()) {
         if (id != from) {
@@ -331,17 +440,14 @@ BOOST_AUTO_TEST_CASE(the_old_leader_refuses_commands_while_transferring,
     for (char c : std::string{"SET a b"}) {
         command.push_back(static_cast<std::byte>(c));
     }
-    BOOST_CHECK_THROW(
-        std::move(node->submit_command(command, std::chrono::milliseconds{500})).get(),
-        leader_transfer_exception);
+    BOOST_CHECK(is_a<leader_transfer_exception>(
+        cluster.settle(node->submit_command(command, std::chrono::milliseconds{500}))));
 
     cluster.tick_until([&] { return cluster.leader_of(k_group) == std::optional{to}; },
                        std::chrono::milliseconds{8000});
-    try {
-        std::move(transfer).get();
-    } catch (...) {  // NOLINT(bugprone-empty-catch)
-        // The transfer's own outcome is the previous test's subject.
-    }
+    // The transfer's own outcome is the previous test's subject; what matters
+    // here is that it settles rather than stranding the case.
+    std::ignore = cluster.settle(std::move(transfer));
     cluster.stop();
 }
 
@@ -351,9 +457,8 @@ BOOST_AUTO_TEST_CASE(a_follower_cannot_transfer_leadership, *boost::unit_test::t
     transfer_cluster cluster{{1, 2, 3}};
     cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto leader = *cluster.leader_of(k_group);
+    const auto leader = cluster.require_leader(k_group);
     std::uint64_t follower = 0;
     for (auto id : cluster.nodes()) {
         if (id != leader) {
@@ -364,9 +469,8 @@ BOOST_AUTO_TEST_CASE(a_follower_cannot_transfer_leadership, *boost::unit_test::t
 
     auto* n = cluster.host(follower).group_node(k_group);
     BOOST_REQUIRE(n != nullptr);
-    BOOST_CHECK_THROW(
-        std::move(n->transfer_leadership(leader, std::chrono::milliseconds{500})).get(),
-        leader_transfer_exception);
+    BOOST_CHECK(is_a<leader_transfer_exception>(
+        cluster.settle(n->transfer_leadership(leader, std::chrono::milliseconds{500}))));
 
     // Unchanged: a refused transfer is a no-op, which is what makes it safe for
     // an advisory operator to attempt.
@@ -378,13 +482,11 @@ BOOST_AUTO_TEST_CASE(a_leader_cannot_transfer_to_itself, *boost::unit_test::time
     transfer_cluster cluster{{1, 2, 3}};
     cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto leader = *cluster.leader_of(k_group);
+    const auto leader = cluster.require_leader(k_group);
     auto* n = cluster.host(leader).group_node(k_group);
-    BOOST_CHECK_THROW(
-        std::move(n->transfer_leadership(leader, std::chrono::milliseconds{500})).get(),
-        leader_transfer_exception);
+    BOOST_CHECK(is_a<leader_transfer_exception>(
+        cluster.settle(n->transfer_leadership(leader, std::chrono::milliseconds{500}))));
     // The refusal must not have left the leader blocking its own commands.
     BOOST_CHECK(!n->leadership_transfer_target().has_value());
     cluster.stop();
@@ -395,12 +497,11 @@ BOOST_AUTO_TEST_CASE(a_target_outside_the_configuration_is_refused,
     transfer_cluster cluster{{1, 2, 3}};
     cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto leader = *cluster.leader_of(k_group);
+    const auto leader = cluster.require_leader(k_group);
     auto* n = cluster.host(leader).group_node(k_group);
-    BOOST_CHECK_THROW(std::move(n->transfer_leadership(99, std::chrono::milliseconds{500})).get(),
-                      leader_transfer_exception);
+    BOOST_CHECK(is_a<leader_transfer_exception>(
+        cluster.settle(n->transfer_leadership(99, std::chrono::milliseconds{500}))));
     BOOST_CHECK(!n->leadership_transfer_target().has_value());
     cluster.stop();
 }
@@ -413,9 +514,8 @@ BOOST_AUTO_TEST_CASE(a_transfer_to_an_unreachable_target_times_out_and_the_leade
     transfer_cluster cluster{{1, 2, 3}};
     cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto leader = *cluster.leader_of(k_group);
+    const auto leader = cluster.require_leader(k_group);
     std::uint64_t target = 0;
     for (auto id : cluster.nodes()) {
         if (id != leader) {
@@ -439,7 +539,7 @@ BOOST_AUTO_TEST_CASE(a_transfer_to_an_unreachable_target_times_out_and_the_leade
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
     BOOST_CHECK_MESSAGE(failed, "the transfer never gave up on an unreachable target");
-    BOOST_CHECK_THROW(std::move(pending).get(), leader_transfer_exception);
+    BOOST_CHECK(is_a<leader_transfer_exception>(cluster.settle(std::move(pending))));
 
     // Commands are accepted again.
     BOOST_CHECK(!n->leadership_transfer_target().has_value());
@@ -454,9 +554,8 @@ BOOST_AUTO_TEST_CASE(scatter_hands_leadership_to_another_voter, *boost::unit_tes
     transfer_cluster cluster{{1, 2, 3}};
     cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto from = *cluster.leader_of(k_group);
+    const auto from = cluster.require_leader(k_group);
     auto future = cluster.host(from).scatter(k_group, std::chrono::milliseconds{3000});
 
     const bool moved = cluster.tick_until(
@@ -466,12 +565,9 @@ BOOST_AUTO_TEST_CASE(scatter_hands_leadership_to_another_voter, *boost::unit_tes
         },
         std::chrono::milliseconds{8000});
     BOOST_CHECK_MESSAGE(moved, "scatter left leadership where it was");
-    try {
-        std::move(future).get();
-    } catch (...) {  // NOLINT(bugprone-empty-catch)
-        // A scatter whose transfer lost the race is still a scatter that tried;
-        // the assertion above is the property.
-    }
+    // A scatter whose transfer lost the race is still a scatter that tried; the
+    // assertion above is the property.
+    std::ignore = cluster.settle(std::move(future));
     cluster.stop();
 }
 
@@ -493,8 +589,19 @@ BOOST_AUTO_TEST_CASE(a_single_voter_group_cannot_scatter, *boost::unit_test::tim
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
 
-    BOOST_CHECK_THROW(std::move(host.scatter(k_group, std::chrono::milliseconds{500})).get(),
-                      kythira::shard_exception);
+    // Ticked while waiting, like every other future in this file. This one
+    // does resolve immediately — there is no other voter, so `scatter` refuses
+    // before it reaches the transport — but a bare `.get()` here would be the
+    // single exception to the rule the rest of the file follows, and the next
+    // person to change `scatter` would inherit a hang rather than a failure.
+    auto scattered = host.scatter(k_group, std::chrono::milliseconds{500});
+    const auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!scattered.wait(std::chrono::milliseconds{2}) &&
+           std::chrono::steady_clock::now() < settle_deadline) {
+        host.tick();
+    }
+    BOOST_REQUIRE(scattered.wait(std::chrono::milliseconds{100}));
+    BOOST_CHECK_THROW(std::ignore = std::move(scattered).get(), kythira::shard_exception);
     host.stop();
 }
 
@@ -509,14 +616,21 @@ BOOST_AUTO_TEST_CASE(consecutive_scatters_on_one_host_pick_different_targets,
     cluster.create_group(2);
     cluster.start();
 
+    // Sampled together, in one shot: two separate `leader_of` calls could
+    // straddle an election and compare a leader to a stale reading of the other
+    // group's.
+    std::optional<std::uint64_t> first;
+    std::optional<std::uint64_t> second;
     BOOST_REQUIRE(cluster.tick_until([&] {
-        return cluster.leader_of(k_group).has_value() && cluster.leader_of(2).has_value();
+        first = cluster.leader_of(k_group);
+        second = cluster.leader_of(2);
+        return first.has_value() && second.has_value();
     }));
 
     // Both groups must be led by the same host for the question to mean
     // anything; if they are not, the property already holds.
-    const auto a = *cluster.leader_of(k_group);
-    const auto b = *cluster.leader_of(2);
+    const auto a = *first;
+    const auto b = *second;
     if (a != b) {
         cluster.stop();
         return;
@@ -533,14 +647,8 @@ BOOST_AUTO_TEST_CASE(consecutive_scatters_on_one_host_pick_different_targets,
         },
         std::chrono::milliseconds{10000});
 
-    try {
-        std::move(f1).get();
-    } catch (...) {  // NOLINT(bugprone-empty-catch)
-    }
-    try {
-        std::move(f2).get();
-    } catch (...) {  // NOLINT(bugprone-empty-catch)
-    }
+    std::ignore = cluster.settle(std::move(f1));
+    std::ignore = cluster.settle(std::move(f2));
 
     auto l1 = cluster.leader_of(k_group);
     auto l2 = cluster.leader_of(2);

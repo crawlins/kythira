@@ -807,6 +807,10 @@ private:
     // together and are cleared together: a transfer that has a target but no
     // promise would strand its caller forever, and one with a promise but no
     // target would never be driven.
+    // Set by handle_timeout_now(), consumed by the next check_election_timeout().
+    // The campaign deliberately does NOT run inside the RPC handler; see
+    // handle_timeout_now() for why.
+    bool _timeout_now_pending{false};
     std::optional<node_id_type> _transfer_target;
     std::chrono::steady_clock::time_point _transfer_deadline{};
     std::shared_ptr<promise_type> _transfer_promise;
@@ -1942,35 +1946,11 @@ template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
 
         const auto target = *_transfer_target;
 
-        if (_state != kythira::server_state::leader) {
-            // Losing leadership settles the transfer either way, but NOT with
-            // the same verdict, and the distinction is the invitation.
-            //
-            // If TimeoutNow has gone out, the most likely explanation for this
-            // node no longer leading is that the target took the invitation and
-            // won — which is exactly what was asked for.
-            //
-            // If it has NOT gone out, this node lost leadership for reasons
-            // that have nothing to do with the transfer: nobody was invited,
-            // the named target has no more claim to the term than anyone else,
-            // and reporting success would tell the caller a placement decision
-            // was carried out when it was not.
-            const bool invited = _timeout_now_sent;
-            _logger.info("Leadership transfer ended: no longer leader",
-                         {{"node_id", node_id_to_string(_node_id)},
-                          {"target", node_id_to_string(target)},
-                          {"timeout_now_sent", invited ? "true" : "false"}});
-            auto settle = finish_leader_transfer(
-                invited ? nullptr
-                        : std::make_exception_ptr(kythira::leader_transfer_exception(
-                              "lost leadership before the target could be invited")));
-            lock.unlock();
-            settle();
-            return;
-        }
-
+        // The deadline is checked FIRST, and before the leadership check,
+        // because it is one of only two things that actually know whether the
+        // transfer succeeded. The other is the TimeoutNow response.
         if (std::chrono::steady_clock::now() >= _transfer_deadline) {
-            _logger.warning("Leadership transfer timed out; resuming as leader",
+            _logger.warning("Leadership transfer timed out",
                             {{"node_id", node_id_to_string(_node_id)},
                              {"target", node_id_to_string(target)},
                              {"timeout_now_sent", _timeout_now_sent ? "true" : "false"}});
@@ -1983,6 +1963,32 @@ template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
                 kythira::leader_transfer_exception("leadership transfer deadline elapsed")));
             lock.unlock();
             settle();
+            return;
+        }
+
+        if (_state != kythira::server_state::leader) {
+            // No longer the leader, so there is nothing left to DRIVE: a
+            // non-leader can neither send TimeoutNow nor push replication. The
+            // transfer is deliberately NOT settled here.
+            //
+            // Inferring the verdict from leadership state is unsound in both
+            // directions, and both races are real rather than theoretical:
+            //
+            //  * Reporting SUCCESS is wrong when the target is unreachable and
+            //    leadership was lost for an unrelated reason — nobody won, and
+            //    a placement driver told "done" stops trying while the hotspot
+            //    stays.
+            //  * Reporting FAILURE is wrong on the ordinary successful path,
+            //    where the target accepts, wins, and deposes this node *before*
+            //    its TimeoutNow response arrives back here. That ordering is
+            //    not an edge case; it is the common one.
+            //
+            // So the verdict comes only from the two things that know it: the
+            // TimeoutNow response, or the caller's deadline above. Until one of
+            // them lands the transfer stays pending, bounded by that deadline.
+            _logger.debug(
+                "Leadership transfer: no longer leader, awaiting the outcome",
+                {{"node_id", node_id_to_string(_node_id)}, {"target", node_id_to_string(target)}});
             return;
         }
 
@@ -2070,7 +2076,14 @@ template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
                 auto settle = finish_leader_transfer(nullptr);
                 inner.unlock();
                 settle();
-            });
+            })
+            // detach() rather than a bare discard - see advertise_progress()'s
+            // call for why. This is the TimeoutNow response chain, and it is the
+            // only thing that reports a transfer SUCCEEDED: without detach(),
+            // stdexec_backend never runs it, so an accepted invitation is never
+            // observed and every successful handover is reported to the caller as
+            // "deadline elapsed" — which is exactly how this was found.
+            .detach();
     }
 }
 
@@ -2122,16 +2135,36 @@ auto node<Types>::handle_timeout_now(const timeout_now_request_type& request)
     _metrics.add_count(1);
     _metrics.emit();
 
-    // Deliberately NOT through start_pre_vote(), even on a transport that
-    // supports it. Pre-vote asks the other followers whether they would elect
-    // us, and they have all heard from the current leader within the last
-    // election timeout, so every one of them would say no. The whole point of
-    // TimeoutNow is that the leader has already decided; a pre-vote round here
-    // would turn a granted transfer into a guaranteed refusal.
-    become_candidate();
+    // The campaign is DEFERRED to the next tick rather than run here, and that
+    // is a correctness requirement, not tidiness.
+    //
+    // This function runs inside an RPC handler, on whichever thread the
+    // transport dispatches on. Campaigning here would run a whole election —
+    // including the outbound RequestVote round — before this response is
+    // returned, so the *old leader* would not learn that its invitation was
+    // accepted until after the new election finished. On a transport with a
+    // bounded handler pool it is worse than slow: the election's own RPCs need
+    // the very threads the handlers are sitting on.
+    //
+    // That is not hypothetical. It is what made `leadership_moves_to_the_named_target`
+    // fail under the stdexec backend: leadership moved correctly, the TimeoutNow
+    // response arrived after the transfer's deadline, and the transfer reported
+    // "deadline elapsed" for a handover that had already succeeded.
+    //
+    // Every other election in this file starts from the tick thread
+    // (`check_election_timeout`). This one now does too — one tick later, which
+    // is far inside the election timeout it is bypassing.
+    //
+    // Note also what the deferred campaign must NOT do: go through
+    // `start_pre_vote()`, even on a transport that supports it. Every other
+    // follower has heard from the current leader within the last election
+    // timeout and would refuse a pre-vote, so a pre-vote round would turn a
+    // granted transfer into a guaranteed refusal. `check_election_timeout`
+    // honours that by calling become_candidate()+start_election() directly for
+    // this path.
+    _timeout_now_pending = true;
     const auto term = _current_term;
     lock.unlock();
-    start_election();
 
     return timeout_now_response_type{term, true};
 }
@@ -3538,6 +3571,22 @@ auto node<Types>::check_election_timeout() -> void {
     // Learners never start an election, regardless of elapsed time since the last
     // heartbeat (.kiro/specs/non-voting-nodes/requirements.md, Requirement 2.1).
     if (is_learner()) {
+        return;
+    }
+
+    // A TimeoutNow accepted since the last tick campaigns NOW, without waiting
+    // for the election timeout and without a pre-vote round — the leader has
+    // already decided, and every other follower would refuse a pre-vote because
+    // it has heard from that leader recently. `handle_timeout_now()` explains
+    // why the campaign is deferred to here rather than run in the handler.
+    if (_timeout_now_pending) {
+        _timeout_now_pending = false;
+        _logger.info(
+            "Campaigning on a granted TimeoutNow",
+            {{"node_id", node_id_to_string(_node_id)}, {"term", std::to_string(_current_term)}});
+        become_candidate();
+        lock.unlock();
+        start_election();
         return;
     }
 
