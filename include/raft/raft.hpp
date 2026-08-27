@@ -1943,14 +1943,27 @@ template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
         const auto target = *_transfer_target;
 
         if (_state != kythira::server_state::leader) {
-            // Either the transfer succeeded and the target deposed us, or we
-            // lost leadership for an unrelated reason. Both settle the same
-            // way: this node is no longer the leader, which is what the caller
-            // asked for, so it is not an error.
-            _logger.info(
-                "Leadership transfer ended: no longer leader",
-                {{"node_id", node_id_to_string(_node_id)}, {"target", node_id_to_string(target)}});
-            auto settle = finish_leader_transfer(nullptr);
+            // Losing leadership settles the transfer either way, but NOT with
+            // the same verdict, and the distinction is the invitation.
+            //
+            // If TimeoutNow has gone out, the most likely explanation for this
+            // node no longer leading is that the target took the invitation and
+            // won — which is exactly what was asked for.
+            //
+            // If it has NOT gone out, this node lost leadership for reasons
+            // that have nothing to do with the transfer: nobody was invited,
+            // the named target has no more claim to the term than anyone else,
+            // and reporting success would tell the caller a placement decision
+            // was carried out when it was not.
+            const bool invited = _timeout_now_sent;
+            _logger.info("Leadership transfer ended: no longer leader",
+                         {{"node_id", node_id_to_string(_node_id)},
+                          {"target", node_id_to_string(target)},
+                          {"timeout_now_sent", invited ? "true" : "false"}});
+            auto settle = finish_leader_transfer(
+                invited ? nullptr
+                        : std::make_exception_ptr(kythira::leader_transfer_exception(
+                              "lost leadership before the target could be invited")));
             lock.unlock();
             settle();
             return;
@@ -2031,14 +2044,24 @@ template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
                         "target refused TimeoutNow; it is not caught up or is in a later term"));
                 }
                 if (error) {
-                    // The target refused, so it will not campaign. Release the
-                    // command block immediately rather than sitting out the
-                    // rest of the deadline: a leader that refuses writes for
-                    // thirty seconds because one RPC failed is a worse outage
-                    // than the imbalance the transfer was meant to fix.
-                    auto settle = finish_leader_transfer(error);
-                    inner.unlock();
-                    settle();
+                    // A refusal is TRANSIENT by construction. The target says
+                    // no when it is momentarily in a later term (its own
+                    // election timer fired) or when its log is briefly behind
+                    // what this leader believed — both of which resolve within
+                    // an election timeout. Ending the transfer on the first
+                    // refusal turns an ordinary race into a failed operation,
+                    // and under load that race is not rare.
+                    //
+                    // So the invitation is retried on the next tick rather than
+                    // abandoned. Retrying is cheap: a REFUSED TimeoutNow costs
+                    // nothing, because only an ACCEPTED one starts an election.
+                    // The deadline the caller supplied is the budget, and
+                    // `drive_leader_transfer` gives up when it elapses — which
+                    // is also when the command block is released.
+                    _timeout_now_sent = false;
+                    _logger.debug("TimeoutNow refused; will retry within the deadline",
+                                  {{"node_id", node_id_to_string(_node_id)},
+                                   {"target", node_id_to_string(target)}});
                     return;
                 }
                 _logger.info("TimeoutNow accepted; target is campaigning",
@@ -3558,6 +3581,16 @@ auto node<Types>::check_election_timeout() -> void {
 template<raft_types Types>
 
 auto node<Types>::check_heartbeat_timeout() -> void {
+    // FIRST, and above the leader-only early return further down. The tick is
+    // the only clock this library has, so an in-flight leadership transfer is
+    // driven from here — and it must be driven whatever this node's current
+    // state is. Two of the three things `drive_leader_transfer()` does are
+    // precisely for a node that is NO LONGER the leader: settling the caller's
+    // future when the target won, and giving up when the deadline elapsed.
+    // Behind the leader check, a transfer whose leader stepped down would never
+    // settle and its caller would wait forever.
+    drive_leader_transfer();
+
     bool should_heartbeat = false;
 
     {
@@ -3620,13 +3653,6 @@ auto node<Types>::check_heartbeat_timeout() -> void {
     if (should_assess) {
         run_quorum_assessment();
     }
-
-    // The tick is the only clock this library has, so an in-flight leadership
-    // transfer is driven from here: it is the callback every leader's timer
-    // loop already runs, and it runs at the heartbeat interval, which is an
-    // order of magnitude finer than the election timeout the transfer has to
-    // finish inside.
-    drive_leader_transfer();
 }
 
 // Placeholder implementations for private methods

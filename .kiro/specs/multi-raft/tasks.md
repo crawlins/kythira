@@ -1,6 +1,6 @@
 # Implementation Plan — Multi-Raft
 
-## Status: In progress — Phases 1-10 complete (tasks 1-29, 35, 36)
+## Status: In progress — Phases 1-11 complete (tasks 1-30, 35, 36)
 
 **Last Updated**: August 26, 2026
 
@@ -614,7 +614,7 @@ Phases 6–8, after the mechanics it drives.
 
 ## Phase 11: Load-Based Split (Task 30)
 
-- [ ] 30. Load-split sampler
+- [x] 30. Load-split sampler
   - `include/raft/load_split_sampler.hpp` implementing TiKV RFC 0045 per design
     §6.3: threshold entry, up to `_load_split_sample_keys` candidates by
     probability sampling, `_load_split_duration` of left/right access counting,

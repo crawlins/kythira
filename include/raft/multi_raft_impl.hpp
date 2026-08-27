@@ -154,7 +154,7 @@ auto multi_raft<Types, Key, GroupId>::create_group(
         }
     }
 
-    auto state = std::make_shared<group_state>(_cfg.latency_window_count);
+    auto state = std::make_shared<group_state>(_cfg.latency_window_count, _cfg.load_split);
     state->_group_id = group;
     state->_descriptor = descriptor;
     state->_stripe = std::hash<GroupId>{}(group) % _stripe_count;
@@ -682,6 +682,14 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
                 }
             }
 
+            // Derive load RATES before anything reads them. `_reads` and
+            // `_writes` are cumulative, and the policy tick is the only place
+            // with two observations and the interval between them — so it is
+            // the only place a per-second figure can be computed at all.
+            for (const auto& g : ready) {
+                update_load_rates(*g, now);
+            }
+
             // Rotate the latency windows here, on the policy tick, so that the
             // percentile a policy reads covers the last
             // `latency_window_count * policy_interval` and nothing older. A
@@ -708,6 +716,69 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
 
     evaluate_hibernation(ready);
     return report;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::update_load_rates(group_state& g,
+                                                        std::chrono::steady_clock::time_point now)
+    -> void {
+    const auto reads = g._reads.load(std::memory_order_relaxed);
+    const auto writes = g._writes.load(std::memory_order_relaxed);
+    const auto read_bytes = g._read_bytes.load(std::memory_order_relaxed);
+    const auto write_bytes = g._write_bytes.load(std::memory_order_relaxed);
+
+    if (g._rate_sampled_at.time_since_epoch().count() == 0) {
+        // First observation: a rate needs an interval, and there is not one
+        // yet. Reporting the cumulative count here would be a figure with the
+        // wrong units, which is worse than reporting zero.
+        g._rate_sampled_at = now;
+        g._prev_reads = reads;
+        g._prev_writes = writes;
+        g._prev_read_bytes = read_bytes;
+        g._prev_write_bytes = write_bytes;
+        return;
+    }
+
+    const auto seconds =
+        std::chrono::duration_cast<std::chrono::duration<double>>(now - g._rate_sampled_at).count();
+    if (seconds <= 0.0) {
+        return;
+    }
+
+    const auto rate = [seconds](std::uint64_t current, std::uint64_t previous) {
+        // Counters only ever advance, but a shard whose replica was destroyed
+        // and re-created starts again from zero, and a negative "rate" would
+        // read as a shard going quiet rather than as a shard that restarted.
+        return current >= previous ? static_cast<double>(current - previous) / seconds : 0.0;
+    };
+
+    g._read_qps.store(rate(reads, g._prev_reads), std::memory_order_relaxed);
+    g._write_qps.store(rate(writes, g._prev_writes), std::memory_order_relaxed);
+    g._read_bytes_per_sec.store(rate(read_bytes, g._prev_read_bytes), std::memory_order_relaxed);
+    g._write_bytes_per_sec.store(rate(write_bytes, g._prev_write_bytes), std::memory_order_relaxed);
+
+    g._rate_sampled_at = now;
+    g._prev_reads = reads;
+    g._prev_writes = writes;
+    g._prev_read_bytes = read_bytes;
+    g._prev_write_bytes = write_bytes;
+
+    // Channel (c′) advances on the same tick, off the rates just computed.
+    if (_cfg.load_split._enabled) {
+        std::vector<hot_key_sample<Key>> samples;
+        {
+            std::lock_guard lock(g._sampler_mutex);
+            samples = g._load_sampler.evaluate(
+                g._read_qps.load(std::memory_order_relaxed),
+                g._write_qps.load(std::memory_order_relaxed),
+                g._read_bytes_per_sec.load(std::memory_order_relaxed),
+                g._write_bytes_per_sec.load(std::memory_order_relaxed), now);
+            // Published unconditionally, empty included: a stale hot key left
+            // in place would keep proposing a split at a boundary the sampler
+            // has since stopped believing in.
+            g._hot_keys = samples;
+        }
+    }
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -816,6 +887,30 @@ auto multi_raft<Types, Key, GroupId>::note_merge_veto(const GroupId& group, cons
     _cfg.metrics.add_dimension("policy", label);
     _cfg.metrics.add_count(1);
     _cfg.metrics.emit();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::load_sampler_state_of(const GroupId& group) const
+    -> std::optional<load_sampler_state> {
+    auto g = find_group(group);
+    if (!g) {
+        return std::nullopt;
+    }
+    std::lock_guard lock(g->_sampler_mutex);
+    return g->_load_sampler.state();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::load_sampler_counters(const GroupId& group) const
+    -> std::optional<std::array<std::uint64_t, 4>> {
+    auto g = find_group(group);
+    if (!g) {
+        return std::nullopt;
+    }
+    std::lock_guard lock(g->_sampler_mutex);
+    return std::array<std::uint64_t, 4>{
+        g->_load_sampler.windows_started(), g->_load_sampler.abandoned_spike_count(),
+        g->_load_sampler.single_hot_key_count(), g->_load_sampler.proposal_count()};
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -1103,8 +1198,14 @@ auto multi_raft<Types, Key, GroupId>::stats_for(const GroupId& group) const
     // Load is measured HERE, at the routing layer, which is what makes
     // load-based split work for any state machine — including one with no
     // sizing hooks at all.
-    stats._read_qps = static_cast<double>(g->_reads.load(std::memory_order_relaxed));
-    stats._write_qps = static_cast<double>(g->_writes.load(std::memory_order_relaxed));
+    stats._read_qps = g->_read_qps.load(std::memory_order_relaxed);
+    stats._write_qps = g->_write_qps.load(std::memory_order_relaxed);
+    stats._read_bytes_per_sec = g->_read_bytes_per_sec.load(std::memory_order_relaxed);
+    stats._write_bytes_per_sec = g->_write_bytes_per_sec.load(std::memory_order_relaxed);
+    {
+        std::lock_guard lock(g->_sampler_mutex);
+        stats._hot_key_samples = g->_hot_keys;
+    }
 
     const auto now = now_ns();
     const auto since = [now](std::int64_t stamp) {
@@ -2548,6 +2649,15 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
         //
         // Load is counted here, at the routing layer, so that load-based split
         // works for ANY state machine — including one with no sizing hooks.
+        // Channel (c′). The `_enabled` test is a load from an immutable config
+        // member and is what Requirement 9.7's "one predictable branch when
+        // off" buys: with sampling off the host never takes the lock, and the
+        // sampler never runs.
+        if (_cfg.load_split._enabled && key.has_value()) {
+            std::lock_guard lock(local->_sampler_mutex);
+            local->_load_sampler.observe(*key);
+        }
+
         if (is_read) {
             local->_reads.fetch_add(1, std::memory_order_relaxed);
             // Latency is sampled HERE, not in `node<Types>::read_state`, for
@@ -2576,10 +2686,13 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
                         elapsed, std::chrono::duration_cast<std::chrono::nanoseconds>(timeout));
                 }
                 g->_read_latency.record(elapsed);
-                return std::forward<decltype(result)>(result).value();
+                auto value = std::forward<decltype(result)>(result).value();
+                g->_read_bytes.fetch_add(value.size(), std::memory_order_relaxed);
+                return value;
             });
         }
         local->_writes.fetch_add(1, std::memory_order_relaxed);
+        local->_write_bytes.fetch_add(command->size(), std::memory_order_relaxed);
         return local->_node->submit_command(*command, timeout);
     }
 

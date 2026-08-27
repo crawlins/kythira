@@ -151,6 +151,11 @@ auto make_config(message_fabric& fabric, std::uint64_t node_id) -> config_type {
 
 using kythira::leader_transfer_exception;
 
+/// The one group every case in this file drives. Named rather than spelled `1`
+/// at each call site, because `group_id_type` and `node_id_type` are the same
+/// underlying type and a transposed argument pair would otherwise compile.
+constexpr group_id_type k_group = 1;
+
 /// @brief Three hosts, one group, driven together.
 ///
 /// A group per host rather than a node per group: leadership transfer is a
@@ -249,11 +254,11 @@ BOOST_AUTO_TEST_SUITE(leader_transfer)
 
 BOOST_AUTO_TEST_CASE(leadership_moves_to_the_named_target, *boost::unit_test::timeout(120)) {
     transfer_cluster cluster{{1, 2, 3}};
-    cluster.create_group(1);
+    cluster.create_group(k_group);
     cluster.start();
 
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(1).has_value(); }));
-    const auto from = *cluster.leader_of(1);
+    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
+    const auto from = *cluster.leader_of(k_group);
 
     // Pick a target that is not the current leader, and remember the term on
     // the *third* node — the one taking no part in the transfer.
@@ -271,22 +276,27 @@ BOOST_AUTO_TEST_CASE(leadership_moves_to_the_named_target, *boost::unit_test::ti
     }
     BOOST_REQUIRE_NE(to, 0U);
     BOOST_REQUIRE_NE(bystander, 0U);
-    const auto bystander_term_before = cluster.term_of(bystander, 1);
+    const auto bystander_term_before = cluster.term_of(bystander, k_group);
 
-    auto future = cluster.host(from).transfer_leadership(to, 1, std::chrono::milliseconds{3000});
+    // (group, target, timeout) — not (target, group). Both are `std::uint64_t`,
+    // so getting this backwards compiles and then fails only when the group id
+    // happens not to collide with a node id.
+    auto future =
+        cluster.host(from).transfer_leadership(k_group, to, std::chrono::milliseconds{3000});
 
-    const bool moved = cluster.tick_until([&] { return cluster.leader_of(1) == std::optional{to}; },
-                                          std::chrono::milliseconds{8000});
+    const bool moved =
+        cluster.tick_until([&] { return cluster.leader_of(k_group) == std::optional{to}; },
+                           std::chrono::milliseconds{8000});
     BOOST_CHECK_MESSAGE(moved, "leadership did not reach the named target");
     BOOST_CHECK_NO_THROW(std::move(future).get());
 
     // The named target, not "somebody else". A general election would satisfy
     // "the old leader stepped down" and fail this.
-    BOOST_CHECK(cluster.leader_of(1) == std::optional{to});
+    BOOST_CHECK(cluster.leader_of(k_group) == std::optional{to});
 
     // And the bystander's term moved by exactly the one election the transfer
     // caused — not by the extra rounds a timeout-driven fallback would cost.
-    BOOST_CHECK_LE(cluster.term_of(bystander, 1), bystander_term_before + 1);
+    BOOST_CHECK_LE(cluster.term_of(bystander, k_group), bystander_term_before + 1);
 
     cluster.stop();
 }
@@ -298,11 +308,11 @@ BOOST_AUTO_TEST_CASE(the_old_leader_refuses_commands_while_transferring,
     // accepted in the meantime moves that target further away. Without the
     // block, a steadily-written shard could never transfer at all.
     transfer_cluster cluster{{1, 2, 3}};
-    cluster.create_group(1);
+    cluster.create_group(k_group);
     cluster.start();
 
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(1).has_value(); }));
-    const auto from = *cluster.leader_of(1);
+    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
+    const auto from = *cluster.leader_of(k_group);
     std::uint64_t to = 0;
     for (auto id : cluster.nodes()) {
         if (id != from) {
@@ -311,7 +321,7 @@ BOOST_AUTO_TEST_CASE(the_old_leader_refuses_commands_while_transferring,
         }
     }
 
-    auto* node = cluster.host(from).group_node(1);
+    auto* node = cluster.host(from).group_node(k_group);
     BOOST_REQUIRE(node != nullptr);
 
     auto transfer = node->transfer_leadership(to, std::chrono::milliseconds{3000});
@@ -325,7 +335,7 @@ BOOST_AUTO_TEST_CASE(the_old_leader_refuses_commands_while_transferring,
         std::move(node->submit_command(command, std::chrono::milliseconds{500})).get(),
         leader_transfer_exception);
 
-    cluster.tick_until([&] { return cluster.leader_of(1) == std::optional{to}; },
+    cluster.tick_until([&] { return cluster.leader_of(k_group) == std::optional{to}; },
                        std::chrono::milliseconds{8000});
     try {
         std::move(transfer).get();
@@ -339,11 +349,11 @@ BOOST_AUTO_TEST_CASE(the_old_leader_refuses_commands_while_transferring,
 
 BOOST_AUTO_TEST_CASE(a_follower_cannot_transfer_leadership, *boost::unit_test::timeout(120)) {
     transfer_cluster cluster{{1, 2, 3}};
-    cluster.create_group(1);
+    cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(1).has_value(); }));
+    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto leader = *cluster.leader_of(1);
+    const auto leader = *cluster.leader_of(k_group);
     std::uint64_t follower = 0;
     for (auto id : cluster.nodes()) {
         if (id != leader) {
@@ -352,7 +362,7 @@ BOOST_AUTO_TEST_CASE(a_follower_cannot_transfer_leadership, *boost::unit_test::t
         }
     }
 
-    auto* n = cluster.host(follower).group_node(1);
+    auto* n = cluster.host(follower).group_node(k_group);
     BOOST_REQUIRE(n != nullptr);
     BOOST_CHECK_THROW(
         std::move(n->transfer_leadership(leader, std::chrono::milliseconds{500})).get(),
@@ -360,18 +370,18 @@ BOOST_AUTO_TEST_CASE(a_follower_cannot_transfer_leadership, *boost::unit_test::t
 
     // Unchanged: a refused transfer is a no-op, which is what makes it safe for
     // an advisory operator to attempt.
-    BOOST_CHECK(cluster.leader_of(1) == std::optional{leader});
+    BOOST_CHECK(cluster.leader_of(k_group) == std::optional{leader});
     cluster.stop();
 }
 
 BOOST_AUTO_TEST_CASE(a_leader_cannot_transfer_to_itself, *boost::unit_test::timeout(120)) {
     transfer_cluster cluster{{1, 2, 3}};
-    cluster.create_group(1);
+    cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(1).has_value(); }));
+    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto leader = *cluster.leader_of(1);
-    auto* n = cluster.host(leader).group_node(1);
+    const auto leader = *cluster.leader_of(k_group);
+    auto* n = cluster.host(leader).group_node(k_group);
     BOOST_CHECK_THROW(
         std::move(n->transfer_leadership(leader, std::chrono::milliseconds{500})).get(),
         leader_transfer_exception);
@@ -383,12 +393,12 @@ BOOST_AUTO_TEST_CASE(a_leader_cannot_transfer_to_itself, *boost::unit_test::time
 BOOST_AUTO_TEST_CASE(a_target_outside_the_configuration_is_refused,
                      *boost::unit_test::timeout(120)) {
     transfer_cluster cluster{{1, 2, 3}};
-    cluster.create_group(1);
+    cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(1).has_value(); }));
+    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto leader = *cluster.leader_of(1);
-    auto* n = cluster.host(leader).group_node(1);
+    const auto leader = *cluster.leader_of(k_group);
+    auto* n = cluster.host(leader).group_node(k_group);
     BOOST_CHECK_THROW(std::move(n->transfer_leadership(99, std::chrono::milliseconds{500})).get(),
                       leader_transfer_exception);
     BOOST_CHECK(!n->leadership_transfer_target().has_value());
@@ -401,11 +411,11 @@ BOOST_AUTO_TEST_CASE(a_transfer_to_an_unreachable_target_times_out_and_the_leade
     // failed transfer would be a self-inflicted outage far worse than the
     // imbalance the transfer was meant to fix.
     transfer_cluster cluster{{1, 2, 3}};
-    cluster.create_group(1);
+    cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(1).has_value(); }));
+    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto leader = *cluster.leader_of(1);
+    const auto leader = *cluster.leader_of(k_group);
     std::uint64_t target = 0;
     for (auto id : cluster.nodes()) {
         if (id != leader) {
@@ -415,7 +425,7 @@ BOOST_AUTO_TEST_CASE(a_transfer_to_an_unreachable_target_times_out_and_the_leade
     }
     cluster.fabric().kill(target);
 
-    auto* n = cluster.host(leader).group_node(1);
+    auto* n = cluster.host(leader).group_node(k_group);
     auto transfer = n->transfer_leadership(target, std::chrono::milliseconds{300});
 
     bool failed = false;
@@ -442,16 +452,16 @@ BOOST_AUTO_TEST_CASE(a_transfer_to_an_unreachable_target_times_out_and_the_leade
 
 BOOST_AUTO_TEST_CASE(scatter_hands_leadership_to_another_voter, *boost::unit_test::timeout(120)) {
     transfer_cluster cluster{{1, 2, 3}};
-    cluster.create_group(1);
+    cluster.create_group(k_group);
     cluster.start();
-    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(1).has_value(); }));
+    BOOST_REQUIRE(cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); }));
 
-    const auto from = *cluster.leader_of(1);
-    auto future = cluster.host(from).scatter(1, std::chrono::milliseconds{3000});
+    const auto from = *cluster.leader_of(k_group);
+    auto future = cluster.host(from).scatter(k_group, std::chrono::milliseconds{3000});
 
     const bool moved = cluster.tick_until(
         [&] {
-            auto now = cluster.leader_of(1);
+            auto now = cluster.leader_of(k_group);
             return now.has_value() && *now != from;
         },
         std::chrono::milliseconds{8000});
@@ -470,20 +480,20 @@ BOOST_AUTO_TEST_CASE(a_single_voter_group_cannot_scatter, *boost::unit_test::tim
     // that leaves a driver believing the hotspot was addressed.
     message_fabric fabric{2};
     host_type host{make_config(fabric, 1)};
-    host.create_group(1, {1});
+    host.create_group(k_group, {1});
     host.start();
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{3000};
     while (std::chrono::steady_clock::now() < deadline) {
         host.tick();
-        auto* n = host.group_node(1);
+        auto* n = host.group_node(k_group);
         if (n != nullptr && n->is_leader()) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
 
-    BOOST_CHECK_THROW(std::move(host.scatter(1, std::chrono::milliseconds{500})).get(),
+    BOOST_CHECK_THROW(std::move(host.scatter(k_group, std::chrono::milliseconds{500})).get(),
                       kythira::shard_exception);
     host.stop();
 }
@@ -495,28 +505,29 @@ BOOST_AUTO_TEST_CASE(consecutive_scatters_on_one_host_pick_different_targets,
     // to whichever voter sorts first, which concentrates the hotspot instead of
     // spreading it.
     transfer_cluster cluster{{1, 2, 3}};
-    cluster.create_group(1);
+    cluster.create_group(k_group);
     cluster.create_group(2);
     cluster.start();
 
-    BOOST_REQUIRE(cluster.tick_until(
-        [&] { return cluster.leader_of(1).has_value() && cluster.leader_of(2).has_value(); }));
+    BOOST_REQUIRE(cluster.tick_until([&] {
+        return cluster.leader_of(k_group).has_value() && cluster.leader_of(2).has_value();
+    }));
 
     // Both groups must be led by the same host for the question to mean
     // anything; if they are not, the property already holds.
-    const auto a = *cluster.leader_of(1);
+    const auto a = *cluster.leader_of(k_group);
     const auto b = *cluster.leader_of(2);
     if (a != b) {
         cluster.stop();
         return;
     }
 
-    auto f1 = cluster.host(a).scatter(1, std::chrono::milliseconds{3000});
+    auto f1 = cluster.host(a).scatter(k_group, std::chrono::milliseconds{3000});
     auto f2 = cluster.host(a).scatter(2, std::chrono::milliseconds{3000});
 
     cluster.tick_until(
         [&] {
-            auto l1 = cluster.leader_of(1);
+            auto l1 = cluster.leader_of(k_group);
             auto l2 = cluster.leader_of(2);
             return l1.has_value() && l2.has_value() && *l1 != a && *l2 != a;
         },
@@ -531,7 +542,7 @@ BOOST_AUTO_TEST_CASE(consecutive_scatters_on_one_host_pick_different_targets,
     } catch (...) {  // NOLINT(bugprone-empty-catch)
     }
 
-    auto l1 = cluster.leader_of(1);
+    auto l1 = cluster.leader_of(k_group);
     auto l2 = cluster.leader_of(2);
     if (l1.has_value() && l2.has_value() && *l1 != a && *l2 != a) {
         // Both moved off the original host; the cursor asked for two different
