@@ -29,6 +29,8 @@
 /// `scale` label: it is slow by construction, and a slow test that runs on
 /// every commit gets deleted or ignored.
 
+#include "test_timeout_scale.hpp"
+
 #define BOOST_TEST_MODULE multi_raft_scale_test
 #include <boost/test/unit_test.hpp>
 
@@ -163,6 +165,19 @@ using descriptor_type = shard_descriptor<group_id_type, key_type, std::uint64_t>
 /// against, and it is where a thread-per-group implementation has long since
 /// failed.
 constexpr std::size_t k_groups = 1000;
+
+/// @brief How long a case waits for an idle population to settle into
+/// hibernation.
+///
+/// Scaled by `KYTHIRA_TEST_TIMEOUT_SCALE` for the same reason the Boost and
+/// CTest budgets are. The full-suite backend jobs set that to 4 because g++-13
+/// runs this tree markedly slower, and until this constant honoured it, the
+/// only budget in the case that mattered was the one no scale factor reached:
+/// CTest's timeout was 4x more generous while the poll below still gave up
+/// after twenty seconds. That is how this test failed three times running on
+/// the boost leg at three *different* assertions while `main`'s own run at the
+/// same commit was green.
+constexpr auto k_hibernation_budget = std::chrono::seconds{20 * KYTHIRA_TEST_TIMEOUT_SCALE};
 
 /// Three hosts, each holding a replica of every group — the shape a real
 /// deployment has, and the one that makes the transport carry a thousand
@@ -354,7 +369,7 @@ BOOST_AUTO_TEST_CASE(an_idle_population_hibernates_almost_completely,
     c.tick_for(std::chrono::milliseconds{4000});
 
     auto report = c.tick();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+    const auto deadline = std::chrono::steady_clock::now() + k_hibernation_budget;
     while (report._hibernating_count < k_groups * 9 / 10 &&
            std::chrono::steady_clock::now() < deadline) {
         report = c.tick();
@@ -394,7 +409,7 @@ BOOST_AUTO_TEST_CASE(tick_cost_tracks_ready_groups_rather_than_total_groups,
         "the active sample only had " << active_report._ready_count << " ready groups");
 
     // Now let them all go quiet.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+    const auto deadline = std::chrono::steady_clock::now() + k_hibernation_budget;
     kythira::tick_report idle_report;
     do {
         idle_report = c.tick();
@@ -422,17 +437,30 @@ BOOST_AUTO_TEST_CASE(a_request_wakes_only_the_shard_it_is_addressed_to,
     scale_cluster c{kythira::hibernation_mode::on};
     c.tick_for(std::chrono::milliseconds{4000});
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+    // Two conditions, not one. The population threshold is what the assertion
+    // below is stated against; `is_hibernating(k_woken_group)` is what makes
+    // `wake()` meaningful, because `wake()` returns false for a group that was
+    // not asleep. Waiting only for "90% hibernating" and then waking one
+    // *specific* group leaves a one-in-ten chance that the group picked is in
+    // the other tenth -- which is not a load problem, it is the case asserting
+    // something it never established. Observed as
+    // `critical check c.host(0).wake(500) has failed` on a loaded runner.
+    constexpr group_id_type k_woken_group = 500;
+    const auto deadline = std::chrono::steady_clock::now() + k_hibernation_budget;
     kythira::tick_report report;
     do {
         report = c.tick();
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
-    } while (report._hibernating_count < k_groups * 9 / 10 &&
+    } while ((report._hibernating_count < k_groups * 9 / 10 ||
+              !c.host(0).is_hibernating(k_woken_group)) &&
              std::chrono::steady_clock::now() < deadline);
     BOOST_REQUIRE_GE(report._hibernating_count, k_groups * 9 / 10);
+    BOOST_REQUIRE_MESSAGE(
+        c.host(0).is_hibernating(k_woken_group),
+        "group " << k_woken_group << " never hibernated, so waking it proves nothing");
 
     const auto hibernating_before = report._hibernating_count;
-    BOOST_REQUIRE(c.host(0).wake(500));
+    BOOST_REQUIRE(c.host(0).wake(k_woken_group));
 
     const auto after = c.tick();
     BOOST_CHECK_MESSAGE(
