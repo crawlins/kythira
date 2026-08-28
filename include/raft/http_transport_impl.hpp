@@ -5,6 +5,7 @@
 
 #include <raft/http_transport.hpp>
 #include <raft/coap_utils.hpp>
+#include <raft/future_default.hpp>
 #include <httplib.h>
 #include <format>
 #include <stdexcept>
@@ -711,7 +712,17 @@ auto make_future_with_exception(const Exception& e) ->
         return folly::makeFuture<Response>(e);
     } else
 #endif
-    {
+        if constexpr (std::is_same_v<typename Types::template future_template<Response>,
+                                     kythira::future_default<Response>>) {
+        // Every backend's own factory. `boost_backend::Future` and
+        // `stdexec_backend::Future` have no constructor taking an
+        // `exception_ptr` at all -- they are built from a `boost::future` and a
+        // sender respectively -- so the direct construction below does not
+        // compile against either. The three factories all expose
+        // `makeExceptionalFuture`, which is the portable way in.
+        return kythira::future_factory_default::makeExceptionalFuture<Response>(
+            std::make_exception_ptr(e));
+    } else {
         // For SimpleFuture or std::future
         return typename Types::template future_template<Response>(std::make_exception_ptr(e));
     }
@@ -727,7 +738,10 @@ auto make_future_with_value(Response&& value) ->
         return folly::makeFuture<Response>(std::forward<Response>(value));
     } else
 #endif
-    {
+        if constexpr (std::is_same_v<typename Types::template future_template<Response>,
+                                     kythira::future_default<Response>>) {
+        return kythira::future_factory_default::makeFuture<Response>(std::forward<Response>(value));
+    } else {
         // For SimpleFuture or std::future
         return typename Types::template future_template<Response>(std::forward<Response>(value));
     }
