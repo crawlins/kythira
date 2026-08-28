@@ -22,25 +22,34 @@ published figure, and Requirements 5, 6 and 9 are mostly about that. So the
 result type carries its own provenance, and the statistics type refuses to
 report a percentile it does not have the samples for.
 
-### Status of the spike
+### Status of the substrate
 
-This design is written after a working spike of the Tier B substrate, which is
-**not on `main`** — it lands in its own follow-up CR, and every box in
-`tasks.md` stays unchecked until it does. The spike is
-`tests/multi_raft_transport_harness.hpp`, `tests/multi_raft_kv_workload.hpp` and
-`tests/multi_raft_http_benchmark_test.cpp`, and **its Beast smoke case passes**:
-three hosts, four shards, elections, committed PUTs and read-backs, all over
-real loopback sockets with JSON on the wire — the first time anything in this
-tree has driven `multi_raft` through a socket. It also surfaced one defect the
-task list below carries as its first open item: on a plain run the process
-aborts with **`corrupted double-linked list`** *after* the test module has
-finished — after "No errors detected" has already been printed — i.e. somewhere
-in teardown. It did **not** reproduce under `gdb -batch -ex run`, which exited
-normally, so it is either intermittent or sensitive to the allocator's
-arrangement; that is a fact about the reproduction, not evidence about the
-cause, and the task says so. This design is written against what the
-spike established rather than against a guess — which is the point of having
-spiked before writing it — and the defect is a task, not an unknown.
+This design was written after a working spike of the Tier B substrate. That
+spike has since landed: `tests/multi_raft_kv_workload.hpp`,
+`tests/multi_raft_transport_harness.hpp` and
+`tests/multi_raft_http_benchmark_test.cpp` are in the tree, and the boxes
+`tasks.md` checks are checked against it rather than against this prose.
+
+The smoke cases pass on all three transports: three hosts, four shards,
+elections, committed PUTs and read-backs over real loopback sockets — the first
+time anything in this tree has driven `multi_raft` through a socket.
+
+Two defects came out of it, in the order that matters.
+
+**The concurrency crash was real and is fixed.** `boost_beast_client`
+segfaulted under concurrent RPCs to a single target; multi-Raft is the first
+workload in this tree to issue them, since four groups on four executor stripes
+replicate to the same two peers at once. Fixed by `fix(beast): check
+connections out exclusively per RPC`, with the isolated reproduction living
+beside the transport in `tests/beast_client_test.cpp`.
+
+**The teardown abort — `corrupted double-linked list` after the test module had
+already printed "No errors detected" — has not been observed since that fix.**
+It shared the lifetime problem's shape: a Beast connection outliving the
+executor its callbacks were scheduled on. Task 5 keeps the measured rate rather
+than a claim, because the abort never reproduced under `gdb -batch -ex run`
+either, and a defect that hides from a debugger is not one to declare closed on
+a single clean run.
 
 ## Architecture
 
@@ -120,6 +129,42 @@ who wants a number anyway and is honestly named. `operation_tally` counts
 failures by cause (`_not_leader`, `_epoch_mismatch`, `_merging`, `_timeout`,
 `_transport`, `_other`) and keeps `_offered` distinct from `_completed`, so a
 success rate is visible rather than folded into throughput (Requirement 4.4–4.5).
+
+**Statistics across runs.** `repeated_result` holds every repetition of one cell
+and is the only thing that yields a headline. `headline_ops_per_second()`
+returns `std::optional` and is empty below `k_required_repetitions` (5) —
+Requirement 6.2's "never report a single run as a result", enforced the same way
+the percentile guard is. The headline is the **median run**, not an averaged
+rate: `median_run()` names an actual window, so the p50/p95/p99 printed beside
+the headline came from the window that produced it, and an averaged p95 that
+belongs to no window that ever happened cannot be quoted by accident.
+`spread()` is `max(max − median, median − min) / median` — the ± half-width
+Requirement 6.3 is written in, rather than a full-width ratio, which would flag
+a pair that sits inside the band. `verdict()` collapses the two guards into
+`stable` / `unstable` / `inconclusive`, and `comparable()` is what a comparison
+table is supposed to consult.
+
+A repetition is a **whole** measurement, cluster construction and election
+included. That is more expensive than re-running the workload against one
+long-lived cluster, and it is the point: the ±21% Beast/JSON/128 B spread that
+made Requirement 6.2 necessary appeared *between* freshly-elected clusters, so a
+repetition that reused one would measure a narrower thing than the number gets
+quoted as.
+
+**Machine provenance.** `machine_description` / `describe_machine()` record
+Requirement 6.4's fields — CPU model and logical count, memory, kernel,
+filesystem *and device* for a named directory, compiler, build type and flags,
+sanitizer, future backend — plus the one-minute load average and a
+`_quiet_at_start` flag for Requirement 6.5. Build type and flags come from the
+build (`KYTHIRA_BENCH_BUILD_TYPE` / `KYTHIRA_BENCH_CXX_FLAGS`) rather than from
+`NDEBUG` and `__OPTIMIZE__`, which are proxies that a hand-edited flag list can
+make wrong. Every field that cannot be read stays `"not stated"`, following the
+comparison register's own rule: recorded, never inferred. The description is
+captured by a **global fixture** rather than a first test case, because
+`--run_test` can deselect a case and a number whose provenance was deselected
+along with it is exactly what 6.4 exists to prevent — and because one
+description per process is what makes Requirement 6.6's "same machine, same
+session" hold structurally rather than by convention.
 
 **`benchmark_result`.** One row, carrying transport, serializer media type,
 scenario, cluster shape, value size, concurrency, ops/sec, p50/p95/optional p99,
@@ -340,6 +385,7 @@ machine, a ratio is a statement about the implementation:
 | Payload axis | `write_throughput_by_value_size` |
 | Concurrency axis / H7 | `write_throughput_by_concurrency` (to add) |
 | Read taxonomy (Requirement 2) | `read_taxonomy` (to add) |
+| Statistical method (Requirement 6) | `repeated_result` around every throughput row; `machine_description` from a global fixture |
 | Portability | compiles and runs under folly, boost and stdexec |
 
 Registered as `multi_raft_http_benchmark_test` with labels
