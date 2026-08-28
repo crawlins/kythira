@@ -94,10 +94,103 @@ and the answer is currently no for every one of them.
     evidence about the debugger, not about the bug — establish a rate outside
     one, before and after any fix. `ptrace_scope=1` here means running the
     target *under* gdb, never attaching
-  - Because gdb suppresses it, the next step is a **sanitizer**, not another
-    backtrace attempt: ASan first (an invalid-permissions access is what it is
-    built to name), then TSan for the lifetime ordering
-  - Reproduce under ASan and under TSan before declaring it fixed
+  - **ASan named it on the second run**, exactly as
+    `doc/`-recorded practice for this repo predicts (prefer ASan to gdb for a
+    timing-dependent crash here). `build-asan` configured with
+    `-DKYTHIRA_SANITIZER=address -DCMAKE_BUILD_TYPE=RelWithDebInfo`, run with
+    `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libasan.so.8.0.0
+    ASAN_OPTIONS=detect_leaks=0`
+
+    ```
+    SEGV on unknown address 0x03e8003d5b31 — WRITE
+      #1 folly::AtomicNotificationQueue<Function<void()>>::push
+      #3 folly::EventBase::runInEventBaseThread          EventBase.cpp:926
+      #4 proxygen_client<…>::send_rpc_folly_fast_path    proxygen_http_transport_impl.hpp:1127
+      #7 proxygen_client<…>::send_rpc                    proxygen_http_transport_impl.hpp:1280
+      #8 transport_client_handle<…>::send_append_entries multi_raft_transport_harness.hpp:123
+     #10 node<…>::…                                      raft.hpp:5656
+     #11 error_handler<…>::execute_with_retry_impl       error_handler.hpp:715
+     #12   …the delayed-retry continuation                error_handler.hpp:704
+    ```
+
+  - **What sets it off** is `error_handler`'s delayed retry. It fires on a
+    *process-wide* timer (folly's Timekeeper — nothing ties it to any owner's
+    lifetime) after a 700–900 ms exponential backoff, and the storm of
+    `proxygen: session unavailable for new transaction` immediately before the
+    fault is the same teardown in progress: every failing send arms another
+    retry. Frame #12 is *past* `error_handler.hpp:696`'s `scope->enter()` /
+    `stop_flag` guard, so the owner had not been marked stopped yet
+  - **The obvious reading of that stack is wrong, and the experiment that
+    disproved it is worth not repeating.** "The retry outlives the
+    `proxygen_client`" was the first hypothesis. Holding the client by
+    `weak_ptr` in `transport_client_handle` and draining the retry storm before
+    destroying clients was implemented and measured: the fault **survived
+    unchanged**, and the new stack shows the `lock()` *succeeding* — frame #8
+    moved into the guarded path. **The client is alive when the fault happens.**
+    That change was reverted rather than kept: it costs a `weak_ptr::lock()` on
+    every RPC in a suite whose whole purpose is measuring RPC throughput, and it
+    fixes nothing
+  - **So the dangling thing is inside `proxygen_client`, on a live client.**
+    ASan reports "SEGV on unknown address", not heap-use-after-free — an
+    *unmapped* pointer, not a freed-and-quarantined heap object. A destroyed
+    `folly::EventBase` would have been reported as the latter, since ASan tracks
+    it. An unmapped value is what you read out of memory that is no longer the
+    object you think it is
+  - **A second hypothesis was tested and is also wrong.** "`get_or_create_slot()`
+    returns `pooled_connection&` and the caller reads `slot.event_base` after
+    `_mutex` is released" is the shape `6741ba9` fixed in Beast, and it is
+    genuinely there in `proxygen_http_transport_impl.hpp:1102-1111` (and 894-903
+    on the generic path). It was fixed — the accessor changed to copy
+    `event_base`, `session` and `connect` out by value under the lock — and
+    measured: **6 faults in 12 ASan runs, an unchanged rate, with an identical
+    stack**. Reverted, for the same reason the first attempt was: an unverified
+    change to production code that fixes nothing is worse than the knowledge
+    that it does not
+  - **What the evidence actually points at.** The faulting address is
+    *unmapped*, not freed-and-quarantined heap — which is what a **stack- or
+    TLS-resident** object looks like after its thread is gone, and is why ASan
+    cannot label it. folly's `IOThreadPoolExecutor::threadRun` takes its
+    `EventBase` from the thread-local `EventBaseManager`
+    (`IOThreadPoolExecutor.cpp:219`) and clears it at thread exit
+    (`eventBaseManager_->clearEventBase()`), so the `EventBase` dies with its IO
+    thread. `proxygen_client` caches that raw `EventBase*` in
+    `pooled_connection` for the whole connection lifetime — deliberately, per
+    Requirement 21.3, since an `HTTPUpstreamSession` is permanently pinned to
+    the `EventBase` it was created on — and holds **no keep-alive on it**. Once
+    `IOThreadPoolExecutor::join()` has run, that pointer addresses an unmapped
+    thread-local. Both failed hypotheses are consistent with this: the client
+    being alive does not help, and copying the pointer out under a lock copies a
+    pointer that is already dead
+  - **The candidate fix, and the reason it was not just applied.** Hold
+    `folly::Executor::KeepAlive<folly::EventBase>` in `pooled_connection` and in
+    whatever the RPC captures, instead of a bare `EventBase*` — folly's own
+    answer to this, and the same lesson as the Beast fix's
+    `keepAliveAcquire`/`keepAliveRelease` work. The risk that needs designing
+    for first: a KeepAlive held by an in-flight retry **delays
+    `IOThreadPoolExecutor::join()`**, and `error_handler` re-arms on failure
+    with a growing backoff, so a naive version can turn a use-after-free into a
+    teardown that blocks for seconds. Ordering already helps — every fixture
+    clears its clients (releasing the pooled KeepAlives) before joining the pool
+    — but this belongs in a designed transport CR, not a patch at the end of an
+    investigation
+  - **TSan reproduces it too, at 3 runs in 8** — and it takes a moment to see
+    that, because TSan reports this one as
+    `ThreadSanitizer:DEADLYSIGNAL` / `ERROR: ThreadSanitizer: SEGV on unknown
+    address`, not as the `WARNING: ThreadSanitizer: data race` a grep for TSan
+    findings would look for. The faulting address is from the same narrow family
+    ASan reported (`0x03e8003d5b31`, `0x03e8003d6251`, `0x03e8003d6ab0`), so it
+    is the same defect. Rates so far: **gdb 0/20, TSan 3/8, ASan 2/3, plain
+    build 1/10**. Only the debugger hides it
+  - Those TSan runs also named an unrelated **real** race in
+    `console_logger::format_timestamp` — `std::localtime`'s shared `std::tm`,
+    and glibc's `tzset_internal` freeing timezone state under it — which is
+    fixed separately. With that fixed, TSan reports **no data race at all** on
+    this suite, which is what makes the remaining SEGV easy to see
+  - Next: the KeepAlive change above, as its own transport CR — Requirement 14
+    keeps this spec out of production code, the way the Beast fix landed
+    separately. Verify with **ASan** (6/12 before the change is the baseline to
+    beat) and re-measure the plain-build rate; do not use gdb, which has never
+    once reproduced it
   - _Requirements: 15.5_
 
 - [x] 6. Prove the other two transports end to end
