@@ -98,7 +98,7 @@ unambiguous at a glance.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| _(none)_ | | |
+| `redis-compatible-kv` | 0/14 | Requirements, design and tasks written August 28, 2026; zero implementation commits. A minimal RESP server over `multi_raft` scoped to exactly the command closure sccache's `redis` backend puts on the wire (read from sccache, OpenDAL and redis-rs 1.2, not from the Redis manual). Motivated by the gap ccache cannot fill: ccache has no rustc backend, so this tree's Rust build (the `lakers` port's `cargo build`) is uncached. Adopting sccache in this repository's own build is deliberately *not* part of that spec. |
 
 `oci-cloud-provider` came **off** this table on August 12, 2026 — the fifth
 spec caught by the drift pattern this table documents below, and the most
