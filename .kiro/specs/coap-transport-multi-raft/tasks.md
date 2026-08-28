@@ -287,9 +287,16 @@ its own review.
   - Reuse the existing `KYTHIRA_COAP_SEND_PROBE` breakdown, which already
     separates lock acquisition, address resolution, session acquisition, PDU
     construction and `coap_send`. Do not add a second instrumentation scheme.
-  - Record the results in a document under `doc/` in the manner of
-    `doc/coap-flake-investigation.md`, **including the hypotheses the data
-    refutes** — that file exists because this investigation had been attempted
+  - Run it as the **CoAP row of the shared matrix** in
+    `.kiro/specs/multi-raft-performance/` (Requirement 17a there), not as a
+    second harness: same key/value payload, same group-count sweep, same
+    measurement-only rule, so the CoAP answer can be set beside the cpp-httplib
+    and Beast ones instead of standing alone. Sequence it after this
+    specification's transport tasks — the row consumes `multi_raft` over CoAP
+    and cannot precede it.
+  - Record the results in that matrix's own report
+    (`doc/multi_raft_performance_comparison.md`), **including the hypotheses the
+    data refutes** — that file exists because this investigation had been attempted
     several times from analysis alone, and each attempt produced a plausible
     diagnosis the data later contradicted.
   - Make **no** change to the client's locking, I/O thread, or context
