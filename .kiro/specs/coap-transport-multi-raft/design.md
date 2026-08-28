@@ -354,14 +354,32 @@ per-group parallelism ends at that lock. A previous investigation measured
 starved it — a starvation since fixed in the I/O loop, but the shape of the
 failure is the one this workload pushes on.
 
-This specification therefore **measures and stops**. The benchmark drives N
-groups over one client for N in {1, 8, 64}, reusing the
-`KYTHIRA_COAP_SEND_PROBE` breakdown that already separates lock acquisition
-from resolution, session acquisition, PDU construction and `coap_send`. The
-results go in a document under `doc/` in the manner of
-`doc/coap-flake-investigation.md` — including the hypotheses the data refutes,
-because that file exists precisely because this investigation had been
-attempted several times from analysis alone.
+This specification therefore **measures and stops**. The measurement is the
+**CoAP row of the shared benchmark matrix** in
+`.kiro/specs/multi-raft-performance/` rather than a harness of its own: that
+matrix drives the same key/value payload over every transport this project
+ships, already sweeps group count across {1, 8, 64, 256, 1000}, and already
+forbids changing a transport in order to measure it.
+
+Reconciling the two was worth doing rather than letting both stand. A shared
+client that serializes many groups into one queue is not a CoAP peculiarity —
+cpp-httplib serializes concurrent RPCs behind one `httplib::Client` per target,
+and Beast did the same behind one pooled connection until that was found to
+crash under exactly this load. Asking the question once, in one place, is what
+makes the three answers comparable instead of three unrelated numbers; asking it
+twice would have produced two harnesses whose numbers could not be set beside
+each other.
+
+What stays CoAP-specific is the instrumentation and the discipline: the row
+consumes the existing `KYTHIRA_COAP_SEND_PROBE` breakdown — lock acquisition,
+resolution, session acquisition, PDU construction, `coap_send` — rather than
+adding a second scheme, and the report carries the hypotheses the data refutes,
+because `doc/coap-flake-investigation.md` exists precisely because this
+investigation had been attempted several times from analysis alone.
+
+Ordering: the transport work in this document comes first, the row second. The
+row is a consumer of `multi_raft` running over CoAP at all, never a blocker on
+it.
 
 The reason for the discipline: every candidate remedy — a context per stripe,
 a different I/O thread model, a lock-free send queue — is a change to the

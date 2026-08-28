@@ -265,13 +265,32 @@ a structural change here changes single-group behaviour too.
 1. A benchmark SHALL drive N groups over one shared CoAP client for N in at
    least {1, 8, 64} and report, per group, the send-path latency distribution
    and the time spent waiting on the client's `_mutex`.
+1a. This SHALL be satisfied as the **CoAP row of the shared benchmark matrix**
+   in `.kiro/specs/multi-raft-performance/` (its Requirement 17a), not by a
+   second harness. That matrix already sweeps group count over {1, 8, 64, 256,
+   1000}, already runs the same key/value payload over every transport this
+   project ships, and already forbids changing a transport to measure it. The
+   question this requirement asks — what does a shared client serialize, and
+   what does it cost — is the same question cpp-httplib's single
+   `httplib::Client` per target and Beast's former single pooled connection
+   pose; asking it once, in one place, is what makes the answers comparable
+   across transports instead of three unrelated numbers.
+1b. WHERE the shared matrix cannot yet run a CoAP row, because `multi_raft` has
+   no CoAP binding until this specification's earlier tasks land, the ordering
+   SHALL be: this specification's transport work first, the row second. The row
+   is a consumer of that work, never a blocker on it.
 2. The benchmark SHALL reuse the existing `KYTHIRA_COAP_SEND_PROBE` breakdown,
    which already separates lock acquisition, address resolution, session
    acquisition, PDU construction and `coap_send`, rather than adding a second
-   instrumentation scheme.
+   instrumentation scheme. The shared matrix requires exactly this
+   (Requirement 17a.4 there): consume a transport's own instrumentation where
+   it exists, and never instrument a transport that has none.
 3. The results SHALL be recorded in a document under `doc/`, in the manner of
    `doc/coap-flake-investigation.md`, including the measurements that refute
-   any hypothesis considered.
+   any hypothesis considered. WHERE the shared matrix's own report
+   (`doc/multi_raft_performance_comparison.md`) carries the CoAP row, that
+   document SHALL be the record and SHALL carry the refuted hypotheses with it,
+   rather than a second document restating a subset of the same run.
 4. No change to the client's locking, I/O thread, or context structure SHALL
    be made under this specification until 7.1–7.3 are complete. The serialised
    `_mutex` is required by libcoap's C API, which is not safe to call
