@@ -769,6 +769,58 @@ add_raft_completion_test(multi_raft_invariant_property_test
 add_raft_completion_test(multi_raft_scale_test multi_raft_scale_test.cpp)
 set_tests_properties(multi_raft_scale_test PROPERTIES LABELS "scale;multi-raft" TIMEOUT 1800)
 
+# Tier B of .kiro/specs/multi-raft-performance/: `multi_raft` carrying the
+# key/value payload over a REAL transport and a REAL RPC serializer. Every other
+# multi-Raft suite runs on the in-process fabric, which removes the two costs an
+# external implementation's published number always includes — serialization and
+# the wire — so this is the first configuration in the tree whose numbers could
+# ever be compared to one.
+#
+# Gated per transport rather than on all of them at once (unlike
+# three_way_http_transport_equivalence_test, which genuinely needs all three in
+# one binary): the matrix is meant to shrink gracefully. cpp-httplib is
+# unconditional, Beast and Proxygen light up their own rows, and the test
+# announces every row it did NOT run rather than printing a shorter table that
+# reads as a complete one.
+#
+# Boost::beast is header-only but the transports call OpenSSL directly, and
+# clang+libstdc++ needs libatomic explicitly — both mirroring add_beast_test()
+# and add_proxygen_test(), which this target cannot use because it is gated on
+# neither flag.
+add_raft_completion_test(multi_raft_http_benchmark_test multi_raft_http_benchmark_test.cpp)
+set_tests_properties(multi_raft_http_benchmark_test PROPERTIES
+    LABELS "performance;benchmark;multi-raft;http"
+    TIMEOUT 3600
+)
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
+    target_compile_definitions(multi_raft_http_benchmark_test PRIVATE KYTHIRA_BENCH_HAS_BEAST)
+    target_link_libraries(multi_raft_http_benchmark_test PRIVATE Boost::beast)
+else()
+    message(STATUS "multi_raft_http_benchmark_test: beast rows skipped "
+                   "(requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+endif()
+if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+    target_compile_definitions(multi_raft_http_benchmark_test PRIVATE KYTHIRA_BENCH_HAS_PROXYGEN)
+    target_link_libraries(multi_raft_http_benchmark_test PRIVATE
+        proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
+else()
+    message(STATUS "multi_raft_http_benchmark_test: proxygen rows skipped "
+                   "(requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+endif()
+if(PROTOBUF_SERIALIZER_FOUND)
+    target_compile_definitions(multi_raft_http_benchmark_test PRIVATE KYTHIRA_BENCH_HAS_PROTOBUF)
+    target_link_libraries(multi_raft_http_benchmark_test PRIVATE raft_protobuf_serializer)
+else()
+    message(STATUS "multi_raft_http_benchmark_test: protobuf row skipped "
+                   "(requires PROTOBUF_SERIALIZER_FOUND)")
+endif()
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(multi_raft_http_benchmark_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_link_libraries(multi_raft_http_benchmark_test PRIVATE atomic)
+endif()
+
 # Task 32 of .kiro/specs/multi-raft/: crash-and-recover at each split/merge
 # fault point. Needs libfiu's CONTROL API (fiu_enable/fiu_disable) as well as
 # the FIU_ENABLE define that arms the fiu_do_on() points inside the headers, so
