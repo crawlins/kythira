@@ -21,10 +21,27 @@
 ///
 /// ### On the statistics
 ///
-/// `latency_sample_set` reports p50/p95/p99 only when it has enough samples to
-/// mean anything, and says so otherwise. A "p99" computed from eight samples is
-/// the slowest of eight samples; this project has been bitten by exactly that
-/// label before, and the guard here is what keeps it from recurring.
+/// Two layers, and both of them refuse to report a number they do not have the
+/// evidence for.
+///
+/// *Within* a run, `latency_sample_set` reports p99/p999 only when it has
+/// enough samples to mean anything, and says so otherwise. A "p99" computed
+/// from eight samples is the slowest of eight samples; this project has been
+/// bitten by exactly that label before, and the guard here is what keeps it
+/// from recurring.
+///
+/// *Across* runs, `repeated_result` is the only thing that yields a headline,
+/// and it yields `std::nullopt` below `k_required_repetitions` — Requirement
+/// 6.2's "never report a single run as a result", enforced by the type rather
+/// than by discipline. The first numbers this benchmark produced made the case
+/// for it: the same Beast/JSON/128 B cell measured 863.8, 981.2 and 625.4
+/// ops/sec in one session, a ±21% spread around a headline that any one of the
+/// three would have been quoted as.
+///
+/// `machine_description` records what the numbers were taken on (Requirement
+/// 6.4) and whether the machine was quiet at the time (6.5). It is captured
+/// once, before the first case runs, because by the second case the load
+/// average is measuring this suite.
 
 #include <raft/shard_types.hpp>
 
@@ -32,12 +49,23 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <limits>
 #include <optional>
 #include <random>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
+
+#if defined(__linux__)
+#include <sys/statfs.h>
+#include <sys/utsname.h>
+#include <unistd.h>
+#endif
 
 namespace kythira::testing {
 
@@ -240,7 +268,7 @@ private:
 /// @brief Latency samples, and percentiles that refuse to lie about themselves.
 ///
 /// `p99()` returns `std::nullopt` below 1,000 samples and `p999()` below 10,000
-/// — the thresholds `.kiro/specs/multi-raft-performance/` Requirement 5.2 sets.
+/// — the thresholds `.kiro/specs/multi-raft-performance/` Requirement 5.3 sets.
 /// A caller that wants a number regardless can have `quantile()`, which is
 /// honestly named.
 class latency_sample_set {
@@ -347,5 +375,392 @@ struct benchmark_result {
     operation_tally _tally{};
     std::chrono::nanoseconds _duration{0};
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Run-level statistics: what makes a row quotable
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The minimum number of whole-measurement repetitions behind a headline
+/// number (Requirement 6.2). Below this a `repeated_result` has no headline at
+/// all rather than a weakly-supported one.
+inline constexpr std::size_t k_required_repetitions = 5;
+
+/// @brief The run-to-run spread above which a row is unstable and must not
+/// enter a comparison table (Requirement 6.3).
+inline constexpr double k_unstable_spread = 0.10;
+
+/// @brief What a repeated measurement is allowed to be used for.
+///
+/// `inconclusive` is deliberately *not* "try again and it becomes a result".
+/// Requirement 6.7 makes an inconclusive measurement permanently inconclusive:
+/// what a re-run produces is a new measurement with its own verdict, not a
+/// promotion of this one.
+enum class result_verdict : std::uint8_t {
+    /// At least `k_required_repetitions` runs, spread within ±`k_unstable_spread`.
+    stable,
+    /// Enough runs, but the machine (or the system) moved more than the axis
+    /// under test would. Reportable as an observation; not comparable.
+    unstable,
+    /// Too few runs to say anything.
+    inconclusive,
+};
+
+[[nodiscard]] inline auto to_string(result_verdict v) -> std::string_view {
+    switch (v) {
+        case result_verdict::stable:
+            return "stable";
+        case result_verdict::unstable:
+            return "UNSTABLE";
+        case result_verdict::inconclusive:
+            return "INCONCLUSIVE";
+    }
+    return "unknown";
+}
+
+/// @brief One cell of the matrix, measured `k_required_repetitions` times.
+///
+/// The headline is the **median** of the repetitions' ops/sec, and it is the
+/// rate of an actual run rather than an average of runs — `median_run()` is that
+/// same run, so the latency distribution quoted beside the headline came from
+/// the window that produced it. An averaged p95 belongs to no window that ever
+/// happened.
+///
+/// Repetitions are whole measurements, cluster construction and election
+/// included, because that is where the variance this guard exists for lives:
+/// the three Beast/JSON/128 B numbers that motivated Requirement 6.2 differed
+/// by ±21% and each came from its own freshly-elected cluster. Re-running the
+/// workload against one long-lived cluster would have hidden exactly the effect
+/// being measured.
+struct repeated_result {
+    /// Every repetition, in the order it ran.
+    std::vector<benchmark_result> _runs;
+    /// Operations issued and discarded before each measured window (6.1).
+    std::size_t _warmup_operations{0};
+    /// Operations offered in each measured window (6.1).
+    std::size_t _measured_operations{0};
+
+    auto record(benchmark_result run) -> void { _runs.push_back(std::move(run)); }
+
+    [[nodiscard]] auto runs() const -> std::size_t { return _runs.size(); }
+
+    /// @brief Indices into `_runs`, ordered by ops/sec.
+    [[nodiscard]] auto order() const -> std::vector<std::size_t> {
+        std::vector<std::size_t> index(_runs.size());
+        for (std::size_t i = 0; i < index.size(); ++i) {
+            index[i] = i;
+        }
+        std::sort(index.begin(), index.end(), [this](std::size_t a, std::size_t b) {
+            return _runs[a]._ops_per_second < _runs[b]._ops_per_second;
+        });
+        return index;
+    }
+
+    /// @brief The run whose rate is the median.
+    ///
+    /// For an even number of repetitions this is the lower of the two middle
+    /// runs, not their mean: the point of naming a run is that its percentiles
+    /// and its tally belong to the same window as its rate.
+    [[nodiscard]] auto median_run() const -> const benchmark_result& {
+        const auto index = order();
+        return _runs[index[(index.size() - 1) / 2]];
+    }
+
+    /// @brief The headline rate, or `std::nullopt` when too few repetitions
+    /// stand behind it. Requirement 6.2, enforced by the return type.
+    [[nodiscard]] auto headline_ops_per_second() const -> std::optional<double> {
+        if (_runs.size() < k_required_repetitions) {
+            return std::nullopt;
+        }
+        return median_run()._ops_per_second;
+    }
+
+    [[nodiscard]] auto min_ops_per_second() const -> double {
+        return _runs.empty() ? 0.0 : _runs[order().front()]._ops_per_second;
+    }
+
+    [[nodiscard]] auto max_ops_per_second() const -> double {
+        return _runs.empty() ? 0.0 : _runs[order().back()]._ops_per_second;
+    }
+
+    /// @brief The half-width of the spread as a fraction of the median — the
+    /// "±" Requirement 6.3 is written in.
+    ///
+    /// `max(max - median, median - min) / median` rather than
+    /// `(max - min) / median`, because a ±10% band around the median is what the
+    /// requirement says and a full-width ratio would flag a run pair that sits
+    /// inside it.
+    [[nodiscard]] auto spread() const -> double {
+        if (_runs.size() < 2) {
+            return 0.0;
+        }
+        const auto median = median_run()._ops_per_second;
+        if (median <= 0.0) {
+            return std::numeric_limits<double>::infinity();
+        }
+        return std::max(max_ops_per_second() - median, median - min_ops_per_second()) / median;
+    }
+
+    [[nodiscard]] auto verdict() const -> result_verdict {
+        if (_runs.size() < k_required_repetitions) {
+            return result_verdict::inconclusive;
+        }
+        return spread() <= k_unstable_spread ? result_verdict::stable : result_verdict::unstable;
+    }
+
+    /// @brief Whether this row may appear in a comparison table (6.3, 6.7).
+    [[nodiscard]] auto comparable() const -> bool { return verdict() == result_verdict::stable; }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Machine provenance
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Where a number was taken, in the fields Requirement 6.4 lists.
+///
+/// Every field defaults to `"not stated"` and stays that way when it cannot be
+/// read, following the comparison register's own rule (Requirement 9): a field
+/// the source does not state is recorded as not stated, never inferred.
+struct machine_description {
+    std::string _cpu_model{"not stated"};
+    std::size_t _logical_cpus{0};
+    std::uint64_t _memory_bytes{0};
+    std::string _kernel{"not stated"};
+
+    /// The directory the filesystem fields describe — where a durable tier would
+    /// put its log. Tier B is memory-backed, so this is provenance for the
+    /// configuration rather than a cost in this row; it is what makes a later
+    /// Tier D row on the same machine comparable to this one.
+    std::string _described_path{"."};
+    std::string _filesystem{"not stated"};
+    std::string _device{"not stated"};
+    std::string _device_kind{"not stated"};
+
+    std::string _compiler{"not stated"};
+    std::string _build_type{"not stated"};
+    std::string _cxx_flags{"not stated"};
+    std::string _sanitizer{"none"};
+    std::string _future_backend{"not stated"};
+
+    /// One-minute load average sampled *before* the first measured window.
+    double _load_average_1m{-1.0};
+    /// Whether the machine looked otherwise-idle at that moment (6.5).
+    bool _quiet_at_start{false};
+};
+
+/// @brief The absolute load average below which the machine is called quiet.
+///
+/// Absolute rather than a fraction of the core count on purpose: Requirement 6.5
+/// asks for an *otherwise-idle* machine, not an unsaturated one. Half a runnable
+/// process is already enough to move a latency tail.
+inline constexpr double k_quiet_load_average = 0.5;
+
+namespace detail {
+
+/// @brief The first value in `/proc/<file>` whose line starts with `prefix`.
+[[nodiscard]] inline auto proc_field(const char* path, std::string_view prefix) -> std::string {
+    std::ifstream in(path);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        const auto colon = line.find(':');
+        if (colon == std::string::npos) {
+            continue;
+        }
+        auto value = line.substr(colon + 1);
+        const auto first = value.find_first_not_of(" \t");
+        const auto last = value.find_last_not_of(" \t\r");
+        return first == std::string::npos ? std::string{} : value.substr(first, last - first + 1);
+    }
+    return {};
+}
+
+#if defined(__linux__)
+/// @brief `statfs`'s `f_type` as a name. Only the filesystems this project has
+/// actually been measured on are named; anything else is reported as its raw
+/// magic rather than guessed at.
+[[nodiscard]] inline auto filesystem_name(std::uint64_t magic) -> std::string {
+    switch (magic) {
+        case 0xEF53:
+            return "ext2/3/4";
+        case 0x9123683EU:
+            return "btrfs";
+        case 0x58465342U:
+            return "xfs";
+        case 0x01021994U:
+            return "tmpfs";
+        case 0x794C7630U:
+            return "overlayfs";
+        case 0x2FC12FC1U:
+            return "zfs";
+        case 0x6969U:
+            return "nfs";
+        case 0x65735546U:
+            return "fuse";
+        default: {
+            std::ostringstream out;
+            out << "magic 0x" << std::hex << magic;
+            return out.str();
+        }
+    }
+}
+
+/// @brief The mount source and rotational flag backing `path`.
+///
+/// Read from `/proc/self/mountinfo` by longest matching mount point, which is
+/// the only way to get the *device* rather than the filesystem type — and the
+/// device is what decides whether a later durable tier's fsync numbers mean
+/// anything.
+inline auto describe_device(const std::string& path, machine_description& out) -> void {
+    std::ifstream in("/proc/self/mountinfo");
+    std::string line;
+    std::size_t best = 0;
+    while (std::getline(in, line)) {
+        // 36 35 98:0 /mnt1 /mnt2 rw,noatime - ext4 /dev/sda1 rw,errors=continue
+        std::istringstream fields(line);
+        std::string id;
+        std::string parent;
+        std::string dev_no;
+        std::string root;
+        std::string mount_point;
+        if (!(fields >> id >> parent >> dev_no >> root >> mount_point)) {
+            continue;
+        }
+        // A prefix match alone would let `/mnt` claim a path under `/mnt2`;
+        // the boundary check is what makes "longest mount point wins" correct.
+        const bool covers = path.rfind(mount_point, 0) == 0 &&
+                            (mount_point == "/" || path.size() == mount_point.size() ||
+                             path[mount_point.size()] == '/');
+        if (!covers || mount_point.size() < best) {
+            continue;
+        }
+        std::string token;
+        std::string source;
+        bool after_separator = false;
+        std::string fs_type;
+        while (fields >> token) {
+            if (token == "-") {
+                after_separator = true;
+                continue;
+            }
+            if (after_separator) {
+                if (fs_type.empty()) {
+                    fs_type = token;
+                } else {
+                    source = token;
+                    break;
+                }
+            }
+        }
+        if (source.empty()) {
+            continue;
+        }
+        best = mount_point.size();
+        out._device = source;
+        // A partition has no `queue/` of its own -- the request queue belongs to
+        // the whole disk -- so the parent is tried second. `..` through the
+        // sysfs symlink lands on the disk directory. A device-mapper or virtual
+        // device may have neither, and then the kind stays not stated rather
+        // than being guessed at.
+        out._device_kind = "not stated";
+        for (const auto* suffix : {"/queue/rotational", "/../queue/rotational"}) {
+            std::ifstream rotational("/sys/dev/block/" + dev_no + suffix);
+            std::string flag;
+            if (rotational && std::getline(rotational, flag)) {
+                out._device_kind = flag == "0" ? "non-rotational" : "rotational";
+                break;
+            }
+        }
+    }
+}
+#endif
+
+}  // namespace detail
+
+/// @brief Describe the machine this process is running on.
+///
+/// `log_path` is the directory whose filesystem and device are reported — the
+/// place a durable tier would write its log.
+[[nodiscard]] inline auto describe_machine(const std::string& log_path = ".")
+    -> machine_description {
+    machine_description m;
+    m._described_path = log_path;
+    m._logical_cpus = std::thread::hardware_concurrency();
+
+#if defined(__linux__)
+    // Resolved before anything reads it: `/proc/self/mountinfo` states absolute
+    // mount points, and a relative path matches none of them.
+    if (char* resolved = ::realpath(log_path.c_str(), nullptr); resolved != nullptr) {
+        m._described_path = resolved;
+        std::free(resolved);
+    }
+    if (auto model = detail::proc_field("/proc/cpuinfo", "model name"); !model.empty()) {
+        m._cpu_model = model;
+    }
+    if (auto total = detail::proc_field("/proc/meminfo", "MemTotal"); !total.empty()) {
+        // MemTotal is stated in kB.
+        m._memory_bytes = static_cast<std::uint64_t>(std::strtoull(total.c_str(), nullptr, 10)) *
+                          std::uint64_t{1024};
+    }
+    utsname u{};
+    if (::uname(&u) == 0) {
+        m._kernel = std::string{u.sysname} + " " + u.release + " " + u.machine;
+    }
+    struct statfs fs{};
+    if (::statfs(m._described_path.c_str(), &fs) == 0) {
+        m._filesystem = detail::filesystem_name(static_cast<std::uint64_t>(fs.f_type));
+    }
+    detail::describe_device(m._described_path, m);
+    double load[3] = {0.0, 0.0, 0.0};
+    if (::getloadavg(load, 3) == 3) {
+        m._load_average_1m = load[0];
+        m._quiet_at_start = load[0] <= k_quiet_load_average;
+    }
+#endif
+
+#if defined(__clang__)
+    m._compiler = std::string{"clang "} + __clang_version__;
+#elif defined(__GNUC__)
+    m._compiler = std::string{"g++ "} + __VERSION__;
+#endif
+
+    // Supplied by the build so the row states the configuration it was actually
+    // compiled with rather than what a macro can be talked into implying. A tree
+    // that does not set them says so.
+#if defined(KYTHIRA_BENCH_BUILD_TYPE)
+    m._build_type = KYTHIRA_BENCH_BUILD_TYPE;
+#endif
+#if defined(KYTHIRA_BENCH_CXX_FLAGS)
+    m._cxx_flags = KYTHIRA_BENCH_CXX_FLAGS;
+#endif
+
+    // A sanitized build's throughput is not this system's throughput. Reported
+    // rather than refused: the suite is still worth running under TSan for what
+    // it finds, and the label is what stops the number being quoted.
+#if defined(__SANITIZE_THREAD__)
+    m._sanitizer = "thread";
+#elif defined(__SANITIZE_ADDRESS__)
+    m._sanitizer = "address";
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+    m._sanitizer = "thread";
+#elif __has_feature(address_sanitizer)
+    m._sanitizer = "address";
+#elif __has_feature(memory_sanitizer)
+    m._sanitizer = "memory";
+#endif
+#endif
+
+#if defined(KYTHIRA_FUTURE_BACKEND_STDEXEC)
+    m._future_backend = "stdexec";
+#elif defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+    m._future_backend = "boost";
+#else
+    m._future_backend = "folly";
+#endif
+
+    return m;
+}
 
 }  // namespace kythira::testing

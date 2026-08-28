@@ -790,8 +790,18 @@ set_tests_properties(multi_raft_scale_test PROPERTIES LABELS "scale;multi-raft" 
 add_raft_completion_test(multi_raft_http_benchmark_test multi_raft_http_benchmark_test.cpp)
 set_tests_properties(multi_raft_http_benchmark_test PROPERTIES
     LABELS "performance;benchmark;multi-raft;http"
-    TIMEOUT 3600
+    TIMEOUT 10800
 )
+# Requirement 6.4 asks the result to state the build type and flags. Neither is
+# recoverable from a predefined macro -- `NDEBUG` and `__OPTIMIZE__` are proxies
+# that a hand-edited flag list can make wrong -- so the build states them.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" _bench_config)
+target_compile_definitions(multi_raft_http_benchmark_test PRIVATE
+    KYTHIRA_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+    KYTHIRA_BENCH_CXX_FLAGS="${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_bench_config}}"
+)
+unset(_bench_config)
+
 if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
     target_compile_definitions(multi_raft_http_benchmark_test PRIVATE KYTHIRA_BENCH_HAS_BEAST)
     target_link_libraries(multi_raft_http_benchmark_test PRIVATE Boost::beast)
