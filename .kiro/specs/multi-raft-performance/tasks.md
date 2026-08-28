@@ -186,11 +186,79 @@ and the answer is currently no for every one of them.
     and glibc's `tzset_internal` freeing timezone state under it — which is
     fixed separately. With that fixed, TSan reports **no data race at all** on
     this suite, which is what makes the remaining SEGV easy to see
-  - Next: the KeepAlive change above, as its own transport CR — Requirement 14
-    keeps this spec out of production code, the way the Beast fix landed
-    separately. Verify with **ASan** (6/12 before the change is the baseline to
-    beat) and re-measure the plain-build rate; do not use gdb, which has never
-    once reproduced it
+  - **The KeepAlive was built, in both scopings, and both regress. Do not
+    build it a third time until the storm below is gone.** Holding
+    `folly::Executor::KeepAlive<folly::EventBase>` in `pooled_connection`
+    instead of the bare pointer compiles and is the right *shape*; it also
+    turns the fault into a teardown that never finishes, which is the trap the
+    previous handoff predicted and is now measured rather than feared:
+
+    | Scoping | Result |
+    |---|---|
+    | KeepAlive `.copy()` captured into each RPC's closure and its terminal continuation | run killed at the 600s cap; the test body finished (`8/8 operations committed`) and the process then spun on CPU for ~9 minutes producing no output |
+    | KeepAlive held only by the pooled slot, released when the client is destroyed, no per-RPC copy | **4 runs, 4 hangs**, each killed at 300s. The slowest of the twelve baseline runs was 158s |
+
+    The second scoping was the attempt to dodge the trap: a token whose
+    lifetime is the *client's* is released by `_clients.clear()` whether or not
+    every chain it started ever settled, so it cannot be held hostage by an
+    unsettled retry. It hangs anyway, and — the part that matters — it hangs
+    **inside the test body**, before a single operation commits, not in
+    teardown. Something about holding the loop open changes steady-state
+    behaviour, not just shutdown. Both were reverted; the tree carries neither
+  - **The baseline that "6/12" came from was mis-classified, and the corrected
+    reading is worse.** Re-reading the same twelve ASan logs by outcome rather
+    than by "did ASan print anything": **6 ASan faults, 3 ASan-clean test
+    failures, 3 passes**. The six non-faulting runs were not six clean runs.
+    `a_kv_cluster_commits_over_proxygen` passes **1 run in 4** under ASan
+    before any change is made, which is the instrument every task-5 measurement
+    has been read off
+  - **The storm is not teardown noise — it is the defect, and it is present in
+    a passing three-second run on an idle machine.**
+    `proxygen_detail::connect_if_needed` reuses `*session_slot` when
+    `existing->isReusable()`, and `send_on_session[_folly]` then calls
+    `session->newTransaction()`, which returns `nullptr` and fails the RPC with
+    `proxygen: session unavailable for new transaction`. Between those two
+    steps sits a `.via(evb)` hop, and behind them sits one pooled
+    `HTTPUpstreamSession` per target over **plaintext HTTP/1.1**
+    (`loopback_url()` is `http://`), whose
+    `getMaxConcurrentOutgoingStreams()` is 1. A multi-Raft leader replicates
+    four groups to the same peer concurrently, so several RPCs pass the
+    `isReusable()` check together and all but one are refused. `error_handler`
+    then re-arms each refusal with exponential backoff — which is where the
+    storm, and the retry that owns the faulting frame, both come from
+  - **The control says it is Proxygen's, not the harness's.** Three
+    repetitions of each smoke case, `build-default`, idle machine, counting
+    `session unavailable` / `connection unavailable` in the log:
+
+    | Transport | run 1 | run 2 | run 3 |
+    |---|---:|---:|---:|
+    | Beast | 0 | 0 | 0 |
+    | cpp-httplib | 0 | 0 | 0 |
+    | **Proxygen** | **176** | **97** | **27** |
+
+    against roughly 900–1100 `Sending AppendEntries` per run. Retries recover
+    most of them on a fast machine (~93% of sends are still received), which is
+    why this has been invisible: it costs latency and log volume, not
+    correctness. Under ASan the overlap widens until only **20–33%** of
+    AppendEntries are ever received — 25452 sent / 5335 received in one
+    *passing* baseline run — and that is the regime the teardown fault lives in
+  - **This is the same class of defect `6741ba9` fixed in Beast** (`fix(beast):
+    check connections out exclusively per RPC`) and it was never fixed in
+    Proxygen. Beast's zero column above is that fix
+  - **What the next CR should do**, and why it comes before any KeepAlive
+    verdict: give `pooled_connection` a small pool of sessions per target with
+    exclusive checkout, all pinned to the same `EventBase` so Requirement 21.3
+    still holds, bounded by `connection_pool_size` the way Beast's is, with a
+    waiter queue rather than an immediate failure when the pool is empty.
+    Checkout and release happen on the pinned `EventBase`, so the pool needs no
+    mutex; `session_liveness_tracker` has to remove a dying session from the
+    pool rather than null a single slot. Until that lands, the
+    KeepAlive cannot be evaluated: its measured failure mode is a teardown that
+    outlives a retry storm, and the storm is the thing being removed
+  - Verify with **ASan**, and against the corrected baseline (6 faults / 3 test
+    failures / 3 passes in 12), never with gdb, which has never once reproduced
+    it. Count hangs separately from faults: no baseline run exceeded 158s, so a
+    run past 300s is a new failure mode and not a slow one
   - _Requirements: 15.5_
 
 - [x] 6. Prove the other two transports end to end
