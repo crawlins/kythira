@@ -275,6 +275,9 @@ LLVM_COV_OUT=$(DEBUGINFOD_URLS="" "$LLVM_COV" report \
     --ignore-filename-regex='.*/tests/azure_key_vault_ca_provider_real_test.*' \
     --ignore-filename-regex='.*/tests/azure_real_test_support.*' \
     --ignore-filename-regex='.*/tests/future_backend_benchmark_test.*' \
+    --ignore-filename-regex='.*/tests/multi_raft_http_benchmark_test.*' \
+    --ignore-filename-regex='.*/tests/multi_raft_kv_workload.*' \
+    --ignore-filename-regex='.*/tests/multi_raft_transport_harness.*' \
     --ignore-filename-regex='.*/examples/.*' \
     2>&1)
 

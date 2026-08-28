@@ -742,6 +742,9 @@ jobs:
             --ignore-filename-regex='.*/tests/ca_cluster_node_rpc_tls_real_ec2_test.*'
             --ignore-filename-regex='.*/tests/aws_real_ec2_test_support.*'
             --ignore-filename-regex='.*/tests/future_backend_benchmark_test.*'
+            --ignore-filename-regex='.*/tests/multi_raft_http_benchmark_test.*'
+            --ignore-filename-regex='.*/tests/multi_raft_kv_workload.*'
+            --ignore-filename-regex='.*/tests/multi_raft_transport_harness.*'
             --ignore-filename-regex='.*/examples/.*'
           )
 
