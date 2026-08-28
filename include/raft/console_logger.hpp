@@ -12,6 +12,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <ctime>
 
 namespace kythira {
 
@@ -159,16 +160,43 @@ private:
         return std::cout;
     }
 
-    // Format current timestamp for log messages
+    // Format current timestamp for log messages.
+    //
+    // `std::localtime` is not thread-safe and this class claims to be: it
+    // returns a pointer to one process-wide `std::tm`, so two threads logging
+    // at the same instant overwrite each other's result while `put_time` is
+    // still reading it. Worse, glibc's `localtime` re-runs `tzset` on every
+    // call, and `tzset_internal` *frees* the previous timezone state -- so the
+    // race is a free against a read, not merely a garbled timestamp.
+    //
+    // ThreadSanitizer names it at this line (`free` in `tzset_internal`,
+    // reached from here) under any workload that logs from several threads at
+    // once. No suite the TSan CI job runs did, until the multi-Raft benchmark
+    // put three hosts and their driver threads in one process.
+    //
+    // `localtime_r` fills a caller-owned `std::tm` and, per POSIX, does not
+    // call `tzset` itself -- so the one-time call below is what makes the
+    // timezone lookup correct, and doing it once behind a function-local static
+    // is what keeps its global writes off every log line. `gmtime_r` is already
+    // used this way in five other headers here.
     [[nodiscard]] auto format_timestamp() const -> std::string {
+        static const bool timezone_ready = [] {
+            ::tzset();
+            return true;
+        }();
+        (void)timezone_ready;
+
         auto now = std::chrono::system_clock::now();
         auto time_t_now = std::chrono::system_clock::to_time_t(now);
         auto ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
+        std::tm local{};
+        ::localtime_r(&time_t_now, &local);
+
         std::ostringstream oss;
-        oss << std::put_time(std::localtime(&time_t_now), "%Y-%m-%d %H:%M:%S") << '.'
-            << std::setfill('0') << std::setw(3) << ms.count();
+        oss << std::put_time(&local, "%Y-%m-%d %H:%M:%S") << '.' << std::setfill('0')
+            << std::setw(3) << ms.count();
         return oss.str();
     }
 };
