@@ -190,6 +190,37 @@ elseif(NOT KYTHIRA_SANITIZER STREQUAL "")
                         "got \"${KYTHIRA_SANITIZER}\"")
 endif()
 
+# vcpkg installs two copies of every static library -- a debug one built
+# without NDEBUG and a release one built with it -- and CMake chooses between
+# them per *imported configuration*. `RelWithDebInfo` and `MinSizeRel` have no
+# imported configuration of their own, so with no mapping CMake falls back to
+# whichever configuration an imported target happens to list first: DEBUG,
+# because `<pkg>-targets-debug.cmake` sorts ahead of `-release.cmake` in the
+# glob its `-config.cmake` uses. Our own translation units, meanwhile, get
+# `-DNDEBUG` under both of those build types, from CMake's own
+# `CMAKE_CXX_FLAGS_<CONFIG>` defaults.
+#
+# For folly and proxygen that is not a cosmetic difference. NDEBUG changes
+# their class layouts: `sizeof(proxygen::HTTPSessionBase)` is 1624 with it and
+# 1632 without, measured with this project's own include paths and defines. A
+# RelWithDebInfo build therefore reads every field of a session the library
+# itself constructed at an eight-byte-shifted offset, silently -- an ODR
+# violation the linker cannot see, since both halves declare the same class.
+#
+# It is not hypothetical. `-DKYTHIRA_SANITIZER=address
+# -DCMAKE_BUILD_TYPE=RelWithDebInfo` produced a build in which *every* Proxygen
+# client transaction was refused: a freshly connected upstream session read back
+# `getMaxConcurrentOutgoingStreams() == 0` and `getNumStreams() == 2839225156`
+# where the same code in a Release build read 1 and 0. That cost three
+# investigation sessions of `.kiro/specs/multi-raft-performance/` task 5, which
+# attributed the resulting refusal storm to the transport.
+#
+# Same class of defect as the `__ARM_NEON` layout mismatch documented at the top
+# of this file, different trigger. The trailing "" lets an imported target that
+# publishes only a configuration-less location still resolve.
+set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release "")
+set(CMAKE_MAP_IMPORTED_CONFIG_MINSIZEREL Release "")
+
 # Find dependencies
 # Boost is a hard-required core dependency, outside Kconfig's control
 # entirely -- it is not modeled as a CONFIG symbol and always runs
