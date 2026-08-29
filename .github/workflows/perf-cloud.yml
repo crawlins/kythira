@@ -1,0 +1,181 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+name: Cloud Performance
+
+# Runs the multi-Raft HTTP benchmark on a real cloud instance, so that a gap
+# against a published number measured on modern hardware is a gap in this
+# implementation rather than a gap in the maintainer's CPU
+# (.kiro/specs/multi-raft-performance/ Requirement 18).
+#
+# THIS IS A SEPARATE FILE ON PURPOSE, and Requirement 18.1 is emphatic about
+# it: real-cloud-tests.yml sits at EXACTLY 25 workflow_dispatch inputs, which
+# is GitHub's hard cap, and exceeding it silently invalidates the entire file
+# — no error, no failing check, the workflow simply stops existing. That
+# happened once already (PR #257) and ci.yml now carries a guard job asserting
+# the limit. Adding a performance input to that file would have cost the whole
+# real-cloud suite. This file has its own budget; it currently uses 5.
+#
+# Dispatch-only with no schedule (Requirement 18.2), behind the same layered
+# opt-in the real-cloud workflow uses, so a run that costs money is always a
+# decision someone made. Costs are pre-registered in
+# doc/multi_raft_performance_cloud_cost_estimate.md (Requirement 18.11).
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_perf_cloud:
+        description: "Master switch (overrides PERF_CLOUD_ENABLED for this run only)"
+        type: boolean
+        required: false
+      aws_enabled:
+        description: "AWS (overrides PERF_CLOUD_AWS_ENABLED for this run only)"
+        type: boolean
+        required: false
+      instance_type:
+        description: "Non-burstable instance type. t* is refused on the instance, not here."
+        type: string
+        required: false
+        default: "c5.2xlarge"
+      measured_phase_ceiling_minutes:
+        description: "Hard ceiling on the measured phase (Requirement 18.11)"
+        type: string
+        required: false
+        default: "45"
+      benchmark_filter:
+        description: "Boost.Test --run_test filter for the measured phase"
+        type: string
+        required: false
+        default: "multi_raft_http_benchmark/write_throughput_by_rpc_serializer"
+
+permissions:
+  contents: read
+
+jobs:
+  aws-shape-1:
+    name: AWS Shape 1 (one instance, Tier B)
+    runs-on: ubuntu-24.04
+    environment: real-cloud-tests
+    # Bounds the whole job, including a runner that wedges before or after the
+    # benchmark's own `timeout`. The second of the three independent ceilings
+    # the cost estimate describes; the third is the audit at the end, which is
+    # the only one that proves billing stopped rather than that work stopped.
+    timeout-minutes: 90
+    permissions:
+      id-token: write
+      contents: read
+    # Layered opt-in, same shape as real-cloud-tests.yml: a per-run input wins
+    # if given, otherwise the repository variable decides, otherwise off.
+    if: |
+      (github.event.inputs.run_perf_cloud == 'true'
+        || (github.event.inputs.run_perf_cloud == null && vars.PERF_CLOUD_ENABLED == 'true'))
+      && (github.event.inputs.aws_enabled == 'true'
+        || (github.event.inputs.aws_enabled == null && vars.PERF_CLOUD_AWS_ENABLED == 'true'))
+
+    env:
+      AWS_REGION: ${{ vars.AWS_PERF_CLOUD_REGION || 'us-east-1' }}
+      INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'c5.2xlarge' }}
+      CEILING_MINUTES: ${{ github.event.inputs.measured_phase_ceiling_minutes || '45' }}
+      BENCH_FILTER: ${{ github.event.inputs.benchmark_filter || 'multi_raft_http_benchmark/write_throughput_by_rpc_serializer' }}
+      TAG_KEY: kythira-perf-run
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A single run-scoped tag value is the contract the teardown and the
+      # audit both key off. Generated once, here, so that a re-run of the job
+      # cannot collide with an earlier run's resources and so the audit can
+      # never accidentally match somebody else's instances.
+      - name: Mint a run tag
+        id: tag
+        run: echo "value=perf-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
+      # Requirement 18.5 is enforced on the instance by capture-provenance.sh,
+      # which is the authority. This is a second, earlier check purely so a
+      # typo costs zero cents instead of one boot: refusing before RunInstances
+      # is cheaper than refusing after it.
+      - name: Refuse burstable instance types before provisioning
+        run: |
+          case "$INSTANCE_TYPE" in
+            t1.*|t2.*|t3.*|t3a.*|t4g.*)
+              echo "::error::'$INSTANCE_TYPE' is burstable. A benchmark that exhausts CPU credits measures the credit balance, not the machine (Requirement 18.5)." >&2
+              exit 1 ;;
+          esac
+          echo "Instance type $INSTANCE_TYPE is not burstable."
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-perf-cloud
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The provider-stated half of Requirement 18.4's provenance: network
+      # performance is a control-plane fact and is not visible from inside the
+      # guest, so it is read here, where the credentials are, and handed to the
+      # instance. The instance itself needs no AWS permissions at all.
+      - name: Read provider-stated instance facts
+        id: stated
+        run: |
+          net=$(aws ec2 describe-instance-types --region "$AWS_REGION" \
+                  --instance-types "$INSTANCE_TYPE" \
+                  --query 'InstanceTypes[0].NetworkInfo.NetworkPerformance' --output text)
+          echo "network=$net" >> "$GITHUB_OUTPUT"
+          echo "Stated network performance for $INSTANCE_TYPE: $net"
+
+      # NOTE: provisioning, artifact transfer and the measured phase are task
+      # 16 and are deliberately NOT in this commit. This file lands first, with
+      # the guard rails (tagging, ceilings, unconditional teardown and the
+      # audit) already wired and exercised, so that the change which first
+      # spends money is a small one against a harness that has already run.
+      # See .kiro/specs/multi-raft-performance/tasks.md task 16.
+      - name: Measured phase (task 16 — not yet implemented)
+        run: |
+          echo "::notice::perf-cloud.yml's guard rails are in place; the provisioning and"
+          echo "::notice::measured phase land with task 16. Nothing was provisioned, so the"
+          echo "::notice::teardown and audit below are exercised against an empty run tag."
+          echo "Run tag would be: ${{ steps.tag.outputs.value }}"
+          echo "Ceiling would be: ${CEILING_MINUTES} minutes"
+          echo "Filter would be:  ${BENCH_FILTER}"
+          echo "Stated network:   ${{ steps.stated.outputs.network }}"
+
+      # Unconditional (Requirement 18.10). Runs on failure, on cancellation,
+      # and on the success path alike -- the run most likely to have leaked is
+      # the one that failed, which is exactly when a non-`always()` step is
+      # skipped.
+      - name: Tear down everything tagged for this run
+        if: always()
+        run: |
+          ids=$(aws ec2 describe-instances --region "$AWS_REGION" \
+                  --filters "Name=tag:${TAG_KEY},Values=${{ steps.tag.outputs.value }}" \
+                            "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+                  --query 'Reservations[].Instances[].InstanceId' --output text)
+          if [ -n "$ids" ]; then
+            echo "Terminating: $ids"
+            aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $ids >/dev/null
+            aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $ids || true
+          else
+            echo "Nothing tagged ${{ steps.tag.outputs.value }} to terminate."
+          fi
+
+      # The claim that matters, and the reason it is a separate step from the
+      # teardown above: "the teardown ran" and "nothing is left running" are
+      # different claims, and every cloud provider in this project has leaked
+      # something on its first live run. Fails the job on any survivor.
+      - name: Post-run leak audit
+        if: always()
+        run: |
+          bash scripts/perf-cloud/audit-aws-leaks.sh \
+            "${{ steps.tag.outputs.value }}" "$AWS_REGION"
+
+      - name: Upload result artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-cloud-${{ github.run_id }}
+          path: |
+            provenance.json
+            *.csv
+            *.json
+          if-no-files-found: ignore
+          retention-days: 30

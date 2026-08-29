@@ -750,7 +750,7 @@ and the answer is currently no for every one of them.
 
 ## Real-cloud measurement
 
-- [ ] 14. A new workflow file, not new inputs
+- [x] 14. A new workflow file, not new inputs
   - `.github/workflows/perf-cloud.yml`, explicitly dispatched, no default
     schedule, layered opt-in
   - **Do not add a `workflow_dispatch` input to `real-cloud-tests.yml`** — it is
@@ -758,14 +758,56 @@ and the answer is currently no for every one of them.
     whole file. Confirm `ci.yml`'s guard job still passes after the new file
     lands
   - Short-lived OIDC credentials only, reusing `scripts/ci-cloud-credentials/`
+  - **Done, and `real-cloud-tests.yml` was not touched at all.** The new file
+    carries 5 inputs against its own budget; `real-cloud-tests.yml` still reads
+    exactly 25. `ci.yml`'s `workflow-input-limits` guard was run locally against
+    the new tree and passes — `coap-flake-measure` 8, `perf-cloud` 5,
+    `prune-actions-caches` 1, `real-cloud-tests` 25
+  - **The opt-in is the same two-layer shape** `real-cloud-tests.yml` uses: a
+    per-run `workflow_dispatch` input wins when given, otherwise the repository
+    variable (`PERF_CLOUD_ENABLED` / `PERF_CLOUD_AWS_ENABLED`) decides, otherwise
+    the job does not run. No schedule, so a run that costs money is always a
+    decision somebody made
+  - **Credentials are the existing OIDC role, and it already suffices.**
+    `vars.AWS_CI_ROLE_ARN` (`kythira-ci-real-cloud-tests`) was inspected rather
+    than assumed: its inline policy carries 123 `ec2:` actions including
+    `RunInstances`, `TerminateInstances`, `DescribeInstances`,
+    `DescribeInstanceTypes`, `DescribeImages` and `CreateTags`. **Task 16 needs
+    no new IAM work**, and no long-lived key is introduced
   - _Requirements: 18.1, 18.2, 18.3_
 
-- [ ] 15. Machine provenance capture
+- [x] 15. Machine provenance capture
   - A script the job runs on the instance that records provider, region, AZ,
     instance type, vCPU count and CPU model as the guest reports it, memory,
     stated network performance, storage class and IOPS, image, kernel and tenancy
     into the result JSON
   - Fail the run if the instance type is burstable
+  - **`scripts/perf-cloud/capture-provenance.sh`, and the fields split into two
+    kinds for a reason.** *Guest-observed* — vCPU, CPU model, memory, kernel,
+    arch — come from `nproc`, `/proc/cpuinfo` and `uname` on the instance,
+    because Requirement 18.4 asks for the CPU "as the guest reports it" and what
+    the hypervisor advertises is a different claim from what the guest is
+    scheduled on. *Provider-stated* — network performance, storage class, IOPS —
+    are control-plane facts invisible from inside the guest, so the workflow
+    reads them with `describe-instance-types` where the credentials already are
+    and passes them in. **The instance itself needs no cloud permissions**,
+    which is worth more than the tidiness: an instance with an instance profile
+    is an instance that can be used to do something else
+  - **Unavailable fields are emitted as `null`, never omitted and never
+    guessed** — a row whose provenance silently lost a field is worse than one
+    that says it does not know, because only the second is visible in the
+    artifact. Tenancy in particular is *not* defaulted to `shared`: assuming the
+    common case is exactly how a dedicated-tenancy run gets mislabelled
+  - **The burstable refusal is tested in both directions**, which matters
+    because it is a guard that should never fire in normal use and so would
+    otherwise never be exercised: `t3.large`, `t4g.medium`, `Standard_B2s` and
+    `e2-micro` all exit 1 with the reason; `c5.2xlarge`, `c7g.2xlarge` and
+    `m5.2xlarge` all exit 0 and land the type in the JSON. It is a hard failure
+    rather than a flag on the row, because a row that should never be published
+    is cheaper to prevent than to explain
+  - Run on the development machine it exists to escape, it reports
+    `Intel(R) Core(TM) i5-6300U @ 2.40GHz`, 4 vCPU — which is Requirement 18's
+    user story stated as data
   - _Requirements: 18.4, 18.5, 6.4_
 
 - [ ] 16. Shape 1 — one AWS instance, Tier B
@@ -776,12 +818,72 @@ and the answer is currently no for every one of them.
     hardware confound
   - _Requirements: 18.6, 18.7, 18.13_
 
-- [ ] 17. Cost and safety controls
+- [x] 17. Cost and safety controls
   - Pre-registered cost estimate per run, in the spec's own doc
   - Hard wall-clock ceiling on the measured phase
   - Unconditional teardown that runs even when the measurement fails
   - Post-run leak audit that **fails the job** if anything provisioned still
     exists — instances, volumes, addresses, security groups, placement groups
+  - **Done before task 16, deliberately.** The controls that bound a spend land
+    before the thing that spends; the reverse order is how a first live run
+    becomes the one that leaks
+  - **`doc/multi_raft_performance_cloud_cost_estimate.md` carries real rates,
+    not estimates of rates.** Six candidate non-burstable types read from the
+    AWS Pricing API on August 29, 2026 — `c6g.2xlarge` $0.2720/hr through
+    `m7i.2xlarge` $0.4032/hr. Shape 1 at the 54-minute ceiling is **$0.31** on
+    `c5.2xlarge`; the *expected* run is ~20 minutes, so **$0.11–$0.13**. Shape 2
+    (three instances) is $0.93. **8 vCPU is chosen to match the local machine's
+    core count rather than to exceed it** — the point of 18.7 is to remove the
+    hardware confound, and a 16-vCPU cloud row against a 4-core local one
+    replaces it with a bigger one
+  - **Three independent ceilings**, because the interesting failure is the one
+    where the first two do not run: `timeout` around the benchmark, the job's
+    own `timeout-minutes`, and the unconditional teardown plus audit. Only the
+    third proves *billing* stopped rather than that *work* stopped
+  - **The audit is `scripts/perf-cloud/audit-aws-leaks.sh` and it was tested
+    against real AWS in both directions.** Clean tag: six resource classes
+    queried, exit 0. Then a free security group was created carrying the run
+    tag, and the audit found it, printed it, and **exited 1**; the group was
+    deleted and the re-audit came back clean. A leak detector whose failure path
+    has never fired is a leak detector nobody has tested
+  - Everything keys off one run-scoped tag (`kythira-perf-run=perf-<run>-<attempt>`)
+    rather than a list of resource names kept in sync with the provisioning
+    code, and the workflow tags **at creation time** in
+    `--tag-specifications` rather than in a later `CreateTags` that a crash
+    could skip — an untagged resource is invisible to this audit
+  - **One gap, stated rather than hidden**: if the GitHub runner dies between
+    `RunInstances` and teardown, nothing on the AWS side stops the instance, and
+    the leak is caught by the *next* run's audit. Closing it wants an
+    instance-side scheduled `shutdown -h`; the exposure is bounded by the
+    workflow being dispatch-only
+  - **Testing the failure path found two defects that a working audit would
+    have hidden, and both are the same shape: a leak auditor that cannot see
+    reports "clean".**
+    1. Every query was written `2>/dev/null`, so an `AccessDenied` produced
+       empty output, which counted as zero survivors, which printed `clean` and
+       exited 0. **The script would have reported success precisely when it had
+       lost the ability to detect anything.** Failed queries are now counted
+       separately and fail the job on their own, saying UNKNOWN rather than
+       clean.
+    2. The first fix did not work either. Under `set -e`, `out=$(cmd)` takes
+       the command's exit status, so a failing describe aborted the script
+       before any of the new handling ran — measured as exit **254** with no
+       diagnosis. `out=$("$@" 2>&1) || rc=$?` makes it a tested command, which
+       `set -e` leaves alone
+  - **The CI role is missing four of the actions this needs, and that was found
+    by reading the policy rather than by a failed run.**
+    `kythira-ci-real-cloud-tests` has `ec2:DescribeVolumes` and
+    `DescribeSecurityGroups` but **not** `DescribeAddresses`,
+    `DescribePlacementGroups` or `DescribeKeyPairs`, and has singular
+    `ssm:GetParameter` but not `GetParameters`. Three of the audit's six queries
+    would have failed in CI — and before fix (1) above, failed *silently as
+    clean*. `scripts/ci-cloud-credentials/aws/policies/perf-cloud.json` adds
+    them as a new bundle; **the role must be re-provisioned with that bundle
+    before task 16 runs**
+  - All three audit paths are verified against real AWS: clean → exit 0; a
+    tagged (free) security group → found, printed, exit 1, then deleted and
+    re-audited clean; a credential that cannot query → 6 UNKNOWN reports and
+    exit 1
   - _Requirements: 18.10, 18.11_
 
 - [ ] 18. Shape 1 on Graviton
