@@ -359,6 +359,55 @@ struct operation_tally {
     }
 };
 
+/// @brief What a window of replication traffic cost, as plain subtractable
+///        numbers.
+///
+/// Separate from `rpc_counters` — which is atomic and lives as long as the
+/// cluster — so that a caller takes two snapshots and subtracts them. That is
+/// what confines a figure to the *measured* window: the warm-up, the election
+/// and the teardown all move the atomics, and none of them belong in
+/// "RPCs per committed entry".
+struct rpc_snapshot {
+    std::uint64_t _append_entries{0};
+    /// AppendEntries carrying no entries: heartbeats, and the probe that walks
+    /// a follower back to its match index. Counted apart because they are a
+    /// function of the *heartbeat interval*, not of the offered load, and
+    /// folding them into a batching figure would make a quiet cluster look
+    /// like it batches badly.
+    std::uint64_t _append_entries_empty{0};
+    std::uint64_t _entries{0};
+    std::uint64_t _request_vote{0};
+    std::uint64_t _install_snapshot{0};
+
+    [[nodiscard]] auto total_rpcs() const -> std::uint64_t {
+        return _append_entries + _request_vote + _install_snapshot;
+    }
+
+    /// @brief AppendEntries that actually carried log entries.
+    [[nodiscard]] auto carrying() const -> std::uint64_t {
+        return _append_entries - std::min(_append_entries, _append_entries_empty);
+    }
+
+    /// @brief Entries per entry-bearing AppendEntries — the batching factor
+    ///        Hypothesis H1 is about. Empty for a window in which no
+    ///        AppendEntries carried anything, because 0/0 is not "no batching".
+    [[nodiscard]] auto entries_per_append_entries() const -> std::optional<double> {
+        return carrying() == 0
+                   ? std::nullopt
+                   : std::optional{static_cast<double>(_entries) / static_cast<double>(carrying())};
+    }
+
+    friend auto operator-(const rpc_snapshot& a, const rpc_snapshot& b) -> rpc_snapshot {
+        return rpc_snapshot{
+            ._append_entries = a._append_entries - b._append_entries,
+            ._append_entries_empty = a._append_entries_empty - b._append_entries_empty,
+            ._entries = a._entries - b._entries,
+            ._request_vote = a._request_vote - b._request_vote,
+            ._install_snapshot = a._install_snapshot - b._install_snapshot,
+        };
+    }
+};
+
 /// @brief One row of the comparison table.
 struct benchmark_result {
     std::string _transport;
@@ -380,6 +429,20 @@ struct benchmark_result {
     std::optional<std::chrono::nanoseconds> _p99{};
     operation_tally _tally{};
     std::chrono::nanoseconds _duration{0};
+    /// Replication traffic issued *during the measured window only* — the
+    /// difference of two `kv_cluster::rpc_counts()` snapshots taken either side
+    /// of it. Zero on a row whose cluster was not counting.
+    rpc_snapshot _rpc{};
+
+    /// @brief RPCs per committed entry (Hypothesis H2).
+    ///
+    /// Empty when nothing committed, because a ratio over zero commits is not
+    /// a cost — it is a failed run, which `_tally` already says.
+    [[nodiscard]] auto rpcs_per_committed_entry() const -> std::optional<double> {
+        return _tally._completed == 0 ? std::nullopt
+                                      : std::optional{static_cast<double>(_rpc.total_rpcs()) /
+                                                      static_cast<double>(_tally._completed)};
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

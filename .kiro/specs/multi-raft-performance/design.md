@@ -122,6 +122,29 @@ at these key counts the table costs more than the draws. Uniform spreads load
 across shards; Zipfian concentrates it, which is the only way the matrix reaches
 H7's per-group lock.
 
+**Replication accounting.** `rpc_counters` — five relaxed atomics — is held by
+`kv_cluster` and pointed at by every `transport_client_handle` the cluster hands
+its hosts, so the three mandatory RPCs are counted on the way out. That location
+is deliberate on two counts. It is the one point on the send path that all three
+HTTP transports share, so a batching figure is comparable across the transport
+axis by construction rather than by argument; and no counter is inserted into
+production code for a benchmark's benefit (Requirement 8.1). `_rpc` is declared
+**before** `_transport` and `_hosts` in `kv_cluster`, so it is destroyed after
+them — a handle inside a host outliving the counters it writes through is the
+same hazard, and the same fix, as the Beast client's `io_context` keeper.
+
+`rpc_snapshot` is the plain subtractable form: `run_put_workload` takes one
+before the clock starts and one after the workers join, and the row carries the
+difference. That is what confines a ratio to the measured window — the warm-up,
+the election and the teardown all move the atomics and none of them belong in
+"RPCs per committed entry". Empty AppendEntries are counted apart from
+entry-bearing ones, because heartbeats are a function of the heartbeat interval
+rather than of offered load, and folding them in would make a quiet cluster look
+as though it batched badly. Both ratios — `entries_per_append_entries()` (H1)
+and `rpcs_per_committed_entry()` (H2) — are `std::optional` and empty over a
+zero denominator, since 0/0 entries per AppendEntries is "nothing replicated",
+which is a different statement from "no batching".
+
 **Statistics.** `latency_sample_set` returns `p99()` as `std::optional`, empty
 below 1,000 samples, and `p999()` empty below 10,000 — Requirement 5.3, enforced
 by the type rather than by discipline. `quantile()` is available for a caller
@@ -383,7 +406,8 @@ machine, a ratio is a statement about the implementation:
 | Transport axis | `write_throughput_by_transport` |
 | RPC-provider axis | `write_throughput_by_rpc_serializer` |
 | Payload axis | `write_throughput_by_value_size` |
-| Concurrency axis / H7 | `write_throughput_by_concurrency` (to add) |
+| Concurrency axis / H1, H2, H7 | `write_throughput_by_concurrency` — in-flight 1/8/64 in **both** key distributions, because the uniform arm's curve is the cluster's and H7 is a claim about one group's mutex |
+| Key-distribution axis | `write_throughput_by_key_distribution` — uniform against Zipfian at 16 in flight, the configuration every other row in the suite shares, which is what lets the Zipfian number be quoted against those tables |
 | Read taxonomy (Requirement 2) | `read_taxonomy` (to add) |
 | Statistical method (Requirement 6) | `repeated_result` around every throughput row; `machine_description` from a global fixture |
 | Portability | compiles and runs under folly, boost and stdexec |

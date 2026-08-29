@@ -190,9 +190,22 @@ for a finding:
   replication round (`raft.hpp:1573,1765`). Implementations that accumulate
   proposals over a window amortize the persist barrier and the RPC across
   hundreds of entries.
+  **REFUTED as stated (task 8).** True at one operation in flight — 1.03 entries
+  per AppendEntries — and false above it: 25.9–29.5 at 64 in flight with uniform
+  keys, 47.0–48.7 with Zipfian. Batching happens; nothing configures it. The
+  AppendEntries *rate* names the mechanism — flat at 4659–5499/sec while offered
+  load rises sixteen-fold, then falling at 64 — so the replication round is
+  tick-driven rather than proposal-driven and entries accumulate between rounds.
+  That is incidental coalescing, and it buys no throughput: batching rises
+  thirty-fold over a range in which throughput falls.
 - **H2 — Replication rounds are not deduplicated.** N concurrent submissions
   to one group issue N `replicate_to_followers()` calls whose AppendEntries
   payloads overlap. Measured as **RPCs per committed entry**.
+  **REFUTED (task 8).** RPCs per committed entry sits between 3.74 and 6.64
+  across a 64-fold range of concurrency, in both key distributions and in two
+  independent runs. If N submissions produced N rounds it would track N; it does
+  not move with N at all. The same tick-driven round that refutes H1 is why —
+  concurrent submissions land in one round rather than one each.
 - **H3 — The wire encoding is JSON by default.** `json_rpc_serializer` is the
   serializer every multi-Raft test uses; the gRPC-vs-HTTP measurement already
   in `doc/http_transport_performance_comparison.md` found **19–24×** on a
@@ -212,6 +225,14 @@ for a finding:
   operations on one `std::mutex`. Across groups this is fine — it is why
   multi-Raft scales at all — but within a hot group it caps single-shard
   throughput.
+  **CONFIRMED (task 8), and the cap is lower than the wording suggests.**
+  Requirement 8.7 asks for the concurrency at which single-group throughput
+  stops rising; in the hot-group (Zipfian) arm it never rises, falling
+  monotonically from one operation in flight — 1460.5 → 1403.9 → 1221.1 → 513.1
+  ops/sec. The four-group uniform arm gains 19% between 1 and 16 in flight and
+  then halves at 64. At one in flight the hot group is *faster* than the spread
+  cluster (1460.5 against 1162.1) and the ordering inverts by 64 (513.1 against
+  727.4); that inversion is the lock becoming visible.
 
 A hypothesis that measurement **refutes** must be recorded as refuted, with
 the number that refuted it. That record is worth as much as the confirmations.

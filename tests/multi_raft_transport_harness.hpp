@@ -80,10 +80,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -95,12 +97,49 @@
 namespace kythira::testing {
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Replication-RPC accounting
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Replication RPCs counted at the one place every transport shares.
+///
+/// Counted in `transport_client_handle` rather than inside a transport or
+/// inside `raft_node`, for two reasons. It is the only point on the send path
+/// that all three HTTP transports pass through, so a figure taken here is
+/// comparable across the transport axis by construction; and the production
+/// code stays free of instrumentation inserted for a benchmark, which
+/// Requirement 8.1 asks for in as many words.
+///
+/// Relaxed ordering throughout: these are counters read once at each end of a
+/// window that is already fenced by thread joins, not a synchronisation
+/// mechanism.
+struct rpc_counters {
+    std::atomic<std::uint64_t> _append_entries{0};
+    std::atomic<std::uint64_t> _append_entries_empty{0};
+    std::atomic<std::uint64_t> _entries{0};
+    std::atomic<std::uint64_t> _request_vote{0};
+    std::atomic<std::uint64_t> _install_snapshot{0};
+
+    [[nodiscard]] auto snapshot() const -> rpc_snapshot {
+        return rpc_snapshot{
+            ._append_entries = _append_entries.load(std::memory_order_relaxed),
+            ._append_entries_empty = _append_entries_empty.load(std::memory_order_relaxed),
+            ._entries = _entries.load(std::memory_order_relaxed),
+            ._request_vote = _request_vote.load(std::memory_order_relaxed),
+            ._install_snapshot = _install_snapshot.load(std::memory_order_relaxed),
+        };
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Movable handles over non-movable transports
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief A movable `network_client` view of a transport the caller owns.
 ///
-/// Every method forwards verbatim. The optional RPCs carry a `requires` clause
+/// Every method forwards; the three mandatory RPCs also tick `rpc_counters`
+/// when the constructor was given one, which is how the benchmark gets
+/// entries-per-AppendEntries and RPCs-per-committed-entry without a counter in
+/// production code. The optional RPCs carry a `requires` clause
 /// on `Client` so that this handle satisfies exactly the extension concepts its
 /// underlying transport does — no more (which would produce a link error at
 /// best) and no fewer (which would silently disable leadership transfer on a
@@ -109,23 +148,42 @@ template<typename Client> class transport_client_handle {
 public:
     using client_type = Client;
 
-    explicit transport_client_handle(Client& client) noexcept : _client(&client) {}
+    explicit transport_client_handle(Client& client, rpc_counters* counters = nullptr) noexcept
+        : _client(&client), _counters(counters) {}
 
     // ── the three every transport has ────────────────────────────────────────
 
     auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
                            std::chrono::milliseconds timeout) {
+        if (_counters != nullptr) {
+            _counters->_request_vote.fetch_add(1, std::memory_order_relaxed);
+        }
         return _client->send_request_vote(target, request, timeout);
     }
 
     auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& request,
                              std::chrono::milliseconds timeout) {
+        if (_counters != nullptr) {
+            // Counted on the way out, before the transport can fail it. An RPC
+            // the leader issued is a cost it paid whether or not a response
+            // came back, and "RPCs per committed entry" is a cost ratio.
+            _counters->_append_entries.fetch_add(1, std::memory_order_relaxed);
+            const auto entries = request.entries().size();
+            if (entries == 0) {
+                _counters->_append_entries_empty.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                _counters->_entries.fetch_add(entries, std::memory_order_relaxed);
+            }
+        }
         return _client->send_append_entries(target, request, timeout);
     }
 
     auto send_install_snapshot(std::uint64_t target,
                                const kythira::install_snapshot_request<>& request,
                                std::chrono::milliseconds timeout) {
+        if (_counters != nullptr) {
+            _counters->_install_snapshot.fetch_add(1, std::memory_order_relaxed);
+        }
         return _client->send_install_snapshot(target, request, timeout);
     }
 
@@ -158,6 +216,9 @@ public:
 
 private:
     Client* _client;
+    /// Null when nobody is counting — every non-benchmark construction site,
+    /// which is why the parameter is defaulted rather than required.
+    rpc_counters* _counters{nullptr};
 };
 
 /// @brief A movable `network_server` view of a transport the caller owns.
@@ -693,6 +754,14 @@ public:
         return false;
     }
 
+    /// @brief Replication RPCs issued by every node in this cluster so far.
+    ///
+    /// Cumulative from construction; subtract two snapshots to get a window.
+    /// The count is cluster-wide rather than leader-only on purpose — a
+    /// follower that starts campaigning is a cost the window paid, and a
+    /// leader-only count would hide it.
+    [[nodiscard]] auto rpc_counts() const -> rpc_snapshot { return _rpc.snapshot(); }
+
     /// @brief Sum of every group's current term, as a cheap "did anything
     /// re-elect" probe across a measured window.
     [[nodiscard]] auto term_sum() -> std::uint64_t {
@@ -820,7 +889,8 @@ private:
         config_type cfg{
             .node_id = id,
             .network_client =
-                transport_client_handle<typename Transport::client_type>{_transport.client(id)},
+                transport_client_handle<typename Transport::client_type>{_transport.client(id),
+                                                                         &_rpc},
             .network_server =
                 transport_server_handle<typename Transport::server_type>{_transport.server(id)},
             .store_factory =
@@ -851,6 +921,12 @@ private:
     }
 
     kv_cluster_options _options;
+    /// Declared before `_transport` and `_hosts`, so it is destroyed after
+    /// them: every handle inside a host holds a pointer to it, and a tick
+    /// still in flight during `shutdown()` would otherwise write through a
+    /// dangling one. Same reasoning, and the same hazard, as the `io_context`
+    /// keeper in the Beast client.
+    rpc_counters _rpc;
     Transport _transport;
     std::vector<std::unique_ptr<host_type>> _hosts;
     std::vector<std::thread> _drivers;
@@ -890,6 +966,9 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
     const auto per_worker_ops = std::max<std::size_t>(
         1, workload._operations / std::max<std::size_t>(1, workload._in_flight));
 
+    // Taken before the clock and read after the join, so the window the RPC
+    // ratios describe is exactly the window the throughput describes.
+    const auto rpc_before = cluster.rpc_counts();
     const auto started = std::chrono::steady_clock::now();
     {
         std::vector<std::thread> workers;
@@ -915,6 +994,7 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
         }
     }
     const auto elapsed = std::chrono::steady_clock::now() - started;
+    const auto rpc_after = cluster.rpc_counts();
 
     latency_sample_set all;
     operation_tally tally;
@@ -943,6 +1023,7 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
     result._in_flight = workload._in_flight;
     result._duration = elapsed;
     result._tally = tally;
+    result._rpc = rpc_after - rpc_before;
     result._p50 = all.p50();
     result._p95 = all.p95();
     result._p99 = all.p99();
