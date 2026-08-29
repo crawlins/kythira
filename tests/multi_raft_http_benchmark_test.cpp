@@ -70,6 +70,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "multi_raft_transport_harness.hpp"
+#include "test_timeout_scale.hpp"
 
 #include <raft/cbor_serializer.hpp>
 #include <raft/json_serializer.hpp>
@@ -151,7 +152,21 @@ auto standard_cluster_options() -> kv_cluster_options {
     return options;
 }
 
-constexpr auto k_election_budget = std::chrono::milliseconds{30000};
+/// @brief How long a repetition waits for every shard to elect.
+///
+/// Scaled, not hard-coded, for the reason `test_timeout_scale.hpp` exists and
+/// `multi_raft_scale_test` was fixed for: a fixed millisecond budget is being
+/// applied to a build whose speed is not fixed. Unscaled, this was the binding
+/// constraint on a sanitizer build -- 30 seconds is ample in Release and not
+/// enough under ASan to elect four shards over a real socket at all, so the
+/// case failed on its own deadline while measuring nothing.
+const auto k_election_budget = kythira::testing::scaled_deadline(30000);
+
+/// @brief The per-operation deadline every row hands to `run_command`. Scaled
+/// for the same reason, and by the same factor, as the election budget: an
+/// operation that times out is counted as a failure rather than as a slow
+/// build.
+const auto k_operation_timeout = kythira::testing::scaled_deadline(20000);
 
 auto us(std::chrono::nanoseconds d) -> double {
     return std::chrono::duration<double, std::micro>(d).count();
@@ -268,14 +283,13 @@ template<typename Transport> auto smoke_test() -> void {
         const auto key = kv_key(n);
         const auto value = kv_value(n, 64);
 
-        auto put_latency =
-            cluster.run_command(key, kv_put(key, value), std::chrono::milliseconds{20000}, tally);
+        auto put_latency = cluster.run_command(key, kv_put(key, value), k_operation_timeout, tally);
         BOOST_REQUIRE_MESSAGE(put_latency.has_value(),
                               Transport::name() << ": PUT of '" << key << "' did not commit");
 
         std::vector<std::byte> read_back;
-        auto get_latency = cluster.run_command(key, kv_get(key), std::chrono::milliseconds{20000},
-                                               tally, &read_back);
+        auto get_latency =
+            cluster.run_command(key, kv_get(key), k_operation_timeout, tally, &read_back);
         BOOST_REQUIRE_MESSAGE(get_latency.has_value(),
                               Transport::name() << ": GET of '" << key << "' did not commit");
 
@@ -326,7 +340,7 @@ auto one_measurement(std::size_t operations, std::size_t in_flight, std::size_t 
     workload._value_bytes = value_bytes;
     workload._key_count = cluster.options()._key_count;
     workload._distribution = key_distribution::uniform;
-    workload._op_timeout = std::chrono::milliseconds{20000};
+    workload._op_timeout = k_operation_timeout;
     workload._scenario = "put";
 
     // Warm-up: elections have settled but connections, allocators and the
@@ -407,25 +421,29 @@ BOOST_AUTO_TEST_SUITE(multi_raft_http_benchmark)
 
 // ── correctness first ────────────────────────────────────────────────────────
 
-BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_cpp_httplib, *boost::unit_test::timeout(600)) {
+BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_cpp_httplib,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(600))) {
     smoke_test<cpp_httplib_transport<json>>();
 }
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
-BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_beast, *boost::unit_test::timeout(600)) {
+BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_beast,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(600))) {
     smoke_test<kythira::testing::beast_http_transport<json>>();
 }
 #endif
 
 #if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
-BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_proxygen, *boost::unit_test::timeout(600)) {
+BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_proxygen,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(600))) {
     smoke_test<kythira::testing::proxygen_http_transport<json>>();
 }
 #endif
 
 // ── the transport axis ───────────────────────────────────────────────────────
 
-BOOST_AUTO_TEST_CASE(write_throughput_by_transport, *boost::unit_test::timeout(5400)) {
+BOOST_AUTO_TEST_CASE(write_throughput_by_transport,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
     BOOST_TEST_MESSAGE("write throughput, 128B values, JSON on the wire:");
 
     // cpp-httplib: 24 operations at four in flight. At ~83ms per round trip
@@ -452,7 +470,8 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_transport, *boost::unit_test::timeout(5
 
 // ── the RPC-provider axis ────────────────────────────────────────────────────
 
-BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer, *boost::unit_test::timeout(5400)) {
+BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
     BOOST_TEST_MESSAGE("write throughput by wire serializer, 128B values:");
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
@@ -477,7 +496,8 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer, *boost::unit_test::time
 
 // ── the payload axis ─────────────────────────────────────────────────────────
 
-BOOST_AUTO_TEST_CASE(write_throughput_by_value_size, *boost::unit_test::timeout(5400)) {
+BOOST_AUTO_TEST_CASE(write_throughput_by_value_size,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
     BOOST_TEST_MESSAGE("write throughput by value size, JSON on the wire:");
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
