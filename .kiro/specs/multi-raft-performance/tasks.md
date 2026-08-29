@@ -670,13 +670,134 @@ and the answer is currently no for every one of them.
     one-minute load is genuinely below 0.5
   - _Requirements: 8.4, 17.3, 17.4, 17.5_
 
-- [ ] 8. The concurrency and distribution axes
+- [x] 8. The concurrency and distribution axes
   - `write_throughput_by_concurrency`: in-flight 1, 8, 64 — the sweep that
     answers whether single-group throughput stops rising (H7)
   - Uniform vs. Zipfian at fixed concurrency, which is the only configuration in
     the matrix that concentrates load on one group
   - Report **entries per AppendEntries** and **RPCs per committed entry** as a
     function of concurrency (H1, H2)
+  - **The concurrency sweep runs in both distributions, and that is what makes
+    it answer 8.7 rather than something adjacent.** Requirement 8.7 asks for
+    *single-group* throughput against concurrency. The uniform arm cannot supply
+    it: uniform keys over a four-shard tiling spread the load across four
+    `node<Types>` instances, so its curve is the cluster's, while H7 is a claim
+    about one group's mutex. The Zipfian arm at theta 0.99 puts nearly every key
+    in the lowest shard and is as close to a single-group curve as this fixture
+    reaches without changing the cluster shape every other row shares.
+    `write_throughput_by_key_distribution` then repeats the pair at 16 in
+    flight — the configuration the transport, serializer and value-size rows all
+    use — so the Zipfian number can be quoted against those tables and not only
+    against itself
+  - **The instrumentation is in the harness, not in production code.**
+    `rpc_counters` (five relaxed atomics) hangs off `kv_cluster` and every
+    `transport_client_handle` the cluster hands its hosts points at it, so the
+    three mandatory RPCs are counted on the way out. That is the one point on
+    the send path all three HTTP transports share, which makes the figures
+    comparable across the transport axis by construction. `run_put_workload`
+    takes an `rpc_snapshot` before the clock starts and one after the workers
+    join and carries the difference on the row, which is what confines a ratio
+    to the measured window — the warm-up, the election and the teardown all move
+    the atomics and none of them belong in "RPCs per committed entry". Empty
+    AppendEntries are counted apart from entry-bearing ones, because heartbeats
+    are a function of the heartbeat interval rather than of offered load
+  - **Two runs, eight rows each, 40 repetitions per run, `build-default`.** Both
+    runs: **zero elections in any measured window** (40/40 `term sum … (steady)`)
+    and **zero failed operations of any kind** — no `not_leader`, no `timeout`,
+    no `other`. That is the cleanest data this suite has produced, and it means
+    every number below describes steady-state replication rather than recovery.
+    Run 2 was taken at a one-minute load of 4.06 against run 1's 2.04, which is
+    why its throughput column is uniformly lower and why having both matters:
+
+    | arm | in flight | run 1 ops/sec | run 2 ops/sec | H1 entries/AE run 1 | run 2 | H2 RPCs/commit run 1 | run 2 |
+    |---|---:|---:|---:|---:|---:|---:|---:|
+    | uniform | 1 | 1162.1 | 930.0 | 1.03 | 1.04 | 4.08 | 4.16 |
+    | uniform | 8 | 1229.4 | 1184.3 | 2.57 | 2.61 | 3.79 | 3.89 |
+    | uniform | 16 | 1379.2 | 1136.5 | 4.77 | 4.71 | 3.74 | 3.95 |
+    | uniform | 64 | 727.4 | 596.6 | 29.51 | 25.85 | 4.29 | 4.66 |
+    | zipfian | 1 | 1460.5 | 1216.2 | 1.08 | 1.10 | 3.77 | 4.04 |
+    | zipfian | 8 | 1403.9 | 1145.0 | 6.60 | 6.56 | 3.83 | 3.87 |
+    | zipfian | 16 | 1221.1 | 804.3 | 11.48 | 11.43 | 3.93 | 4.41 |
+    | zipfian | 64 | 513.1 | 373.7 | 48.73 | 46.95 | 5.28 | 6.64 |
+
+  - **H2 is REFUTED, and the number that refutes it is the flat column.** H2
+    predicted that N concurrent submissions to one group issue N
+    `replicate_to_followers()` calls, so RPCs per committed entry should rise
+    with N. Across a 64-fold range of concurrency, in both distributions and in
+    both runs, it sits between 3.74 and 6.64 — it does not scale with N at all.
+    The residual rise at 64 in flight (4.29→4.66 uniform, 5.28→6.64 Zipfian) is
+    real but is a few tens of percent against a 64-fold change in the
+    independent variable
+  - **H1 is REFUTED as stated, and what replaces it is more specific than a
+    tick.** At one operation in flight H1 is exactly right — 1.03 entries per
+    AppendEntries, one client call, one log entry, one replication round. But
+    the factor rises to 25.9–29.5 (uniform) and 47.0–48.7 (Zipfian) at 64 in
+    flight. Batching exists; nothing in the tree configures it. **The
+    AppendEntries *rate* is what identifies the mechanism:**
+
+    | arm | in flight | window | AppendEntries | AppendEntries/sec |
+    |---|---:|---:|---:|---:|
+    | uniform | 1 | 0.344 s | 1632 | 4741 |
+    | uniform | 8 | 0.325 s | 1516 | 4659 |
+    | uniform | 16 | 0.429 s | 2216 | 5163 |
+    | uniform | 64 | 2.200 s | 6869 | 3123 |
+    | zipfian | 1 | 0.274 s | 1506 | 5499 |
+    | zipfian | 8 | 0.285 s | 1534 | 5384 |
+    | zipfian | 16 | 0.485 s | 2324 | 4794 |
+    | zipfian | 64 | 3.118 s | 8446 | 2709 |
+
+    From 1 to 16 in flight the offered load rises sixteen-fold and the
+    AppendEntries rate does not move (4659–5499/sec); at 64 it *falls*. A
+    replication round driven by proposals would track the proposals. One driven
+    by the tick would not — and 4 groups x 2 followers at the 2 ms tick is
+    4000 rounds/sec, which brackets the measured rate from below. So entries
+    accumulate between tick-driven rounds and the batching factor is arrival
+    rate times inter-round interval. That is **incidental coalescing**, which is
+    precisely the distinction Requirement 8.5 exists to draw, and it is why the
+    thirty-fold rise in batching buys no throughput
+  - **H7 is CONFIRMED, and the answer to "the concurrency at which it stops
+    rising" is "it never rises".** In the hot-group arm throughput falls
+    monotonically from a single in-flight operation: 1460.5 → 1403.9 → 1221.1 →
+    513.1 in run 1, and 1216.2 → 1145.0 → 804.3 → 373.7 in run 2. The uniform
+    arm, which has four groups to spread across, gains 19% between 1 and 16 in
+    flight and then collapses to roughly half at 64. Sixteen-fold concurrency
+    buys under 20%
+  - **An unasked-for finding: at one in flight the hot group BEATS the spread
+    cluster.** 1460.5 against 1162.1 in run 1, 1216.2 against 930.0 in run 2 —
+    both directions confirmed on rows that are `stable` in at least one run. With
+    no concurrency to exploit, concentrating on one group wins; the ordering
+    inverts by 64 in flight (513.1 against 727.4), and that inversion is the
+    per-group lock becoming visible. The gap between the two arms at a given
+    concurrency is what per-group serialization costs, measured rather than
+    asserted
+  - **The ratios are an order of magnitude more stable than the rate, and that
+    is why these verdicts stand on a machine where no throughput row may be
+    quoted.** Run 2's per-repetition spreads, five repetitions per row:
+
+    | row | throughput spread | entries/AE spread | RPCs/commit spread |
+    |---|---:|---:|---:|
+    | uniform, 1 | 10.1% | **1.0%** | 2.1% |
+    | uniform, 8 | 4.9% | **2.9%** | 3.7% |
+    | uniform, 16 | 3.1% | **1.0%** | 2.3% |
+    | uniform, 64 | 9.5% | **2.9%** | 8.4% |
+    | zipfian, 1 | 3.9% | **0.9%** | 2.7% |
+    | zipfian, 8 | 4.0% | **0.5%** | 3.2% |
+    | zipfian, 16 | 20.0% | **1.0%** | 4.2% |
+    | zipfian, 64 | 5.6% | **4.8%** | 9.6% |
+
+    The Zipfian 16 row is the case that makes the point: its throughput spread is
+    20.0% and `repeated_result` correctly refuses to let it into a comparison
+    table, while its batching factor spans 11.33 to 11.57. A ratio counts events;
+    a rate divides by wall-clock time, and wall-clock time is what a loaded
+    machine perturbs. The per-repetition line prints both ratios for exactly this
+    reason — a reader who only saw the median run could not tell a stable ratio
+    from a lucky one
+  - **Every throughput number above still carries "machine was not quiet at
+    start"** (load 2.04 and 4.06), so the standing rule holds: no headline here
+    is quotable until it is re-taken on a genuinely quiet host. The hypothesis
+    verdicts are a different kind of claim — they rest on a ratio that replicated
+    to within 1% across two runs whose throughput differed by up to 34%, and on
+    monotonicity, neither of which a load average reverses
   - _Requirements: 5.1, 7.6, 8.5, 8.7_
 
 - [ ] 9. The read taxonomy

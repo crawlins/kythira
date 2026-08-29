@@ -233,7 +233,55 @@ auto report(std::size_t repetition, const benchmark_result& row) -> void {
     out << " | offered=" << row._tally._offered << " completed=" << row._tally._completed
         << " not_leader=" << row._tally._not_leader << " timeout=" << row._tally._timeout
         << " other=" << row._tally._other;
+    // The two replication ratios per repetition, not only for the median run.
+    // A row whose throughput is UNSTABLE can still carry a ratio that repeats,
+    // and the only way a reader can tell the two apart is to see all five.
+    out << std::setprecision(2) << " | ent/AE=";
+    if (const auto batching = row._rpc.entries_per_append_entries()) {
+        out << *batching;
+    } else {
+        out << "n/a";
+    }
+    out << " RPC/commit=";
+    if (const auto cost = row.rpcs_per_committed_entry()) {
+        out << *cost;
+    } else {
+        out << "n/a";
+    }
     BOOST_TEST_MESSAGE(out.str());
+}
+
+/// @brief The replication cost of one measured window, in the two ratios
+///        Hypotheses H1 and H2 are stated in.
+///
+/// Printed for the *median run* rather than summed across repetitions: the
+/// headline names a real run (Requirement 6.2), and a batching factor averaged
+/// over five clusters would not describe the run the headline came from.
+///
+/// Both ratios are `std::optional` at source and print `n/a` with the reason
+/// rather than a zero — 0/0 entries per AppendEntries is "nothing replicated",
+/// which is a different statement from "no batching".
+auto replication_cost(const benchmark_result& row) -> std::string {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2);
+    out << "replication (median run): " << row._rpc._append_entries << " AppendEntries ("
+        << row._rpc._append_entries_empty << " empty) carrying " << row._rpc._entries
+        << " entries, " << row._rpc._request_vote << " RequestVote, " << row._rpc._install_snapshot
+        << " InstallSnapshot";
+    out << "\n      H1 entries/AppendEntries: ";
+    if (const auto batching = row._rpc.entries_per_append_entries()) {
+        out << *batching << " (over the " << row._rpc.carrying() << " that carried anything)";
+    } else {
+        out << "n/a — no AppendEntries carried an entry";
+    }
+    out << "\n      H2 RPCs/committed entry:  ";
+    if (const auto cost = row.rpcs_per_committed_entry()) {
+        out << *cost << " (" << row._rpc.total_rpcs() << " RPCs / " << row._tally._completed
+            << " commits)";
+    } else {
+        out << "n/a — nothing committed";
+    }
+    return out.str();
 }
 
 /// One row, printed in the shape the comparison document wants: a headline that
@@ -271,6 +319,7 @@ auto report(const repeated_result& row) -> void {
     out << "\n      counts:   " << row._warmup_operations
         << " warm-up operations discarded per run, " << row._measured_operations
         << " offered per measured run (Requirement 6.1)";
+    out << "\n      " << replication_cost(median);
     BOOST_TEST_MESSAGE(out.str());
 }
 
@@ -338,7 +387,8 @@ auto warmup_operations(std::size_t operations, std::size_t in_flight) -> std::si
 /// is the tail — which is why `latency_sample_set` refuses to print a p99 it
 /// does not have the samples for rather than printing a flattering one.
 template<typename Transport>
-auto one_measurement(std::size_t operations, std::size_t in_flight, std::size_t value_bytes)
+auto one_measurement(std::size_t operations, std::size_t in_flight, std::size_t value_bytes,
+                     key_distribution distribution = key_distribution::uniform)
     -> benchmark_result {
     kv_cluster<Transport> cluster{standard_cluster_options()};
     BOOST_REQUIRE_MESSAGE(cluster.await_all_leaders(k_election_budget),
@@ -351,9 +401,12 @@ auto one_measurement(std::size_t operations, std::size_t in_flight, std::size_t 
     workload._operations = operations;
     workload._value_bytes = value_bytes;
     workload._key_count = cluster.options()._key_count;
-    workload._distribution = key_distribution::uniform;
+    workload._distribution = distribution;
     workload._op_timeout = k_operation_timeout;
-    workload._scenario = "put";
+    // The scenario carries the distribution, because the two arms of the
+    // distribution sweep are otherwise identical in every printed field and a
+    // reader would have no way to tell the rows apart.
+    workload._scenario = distribution == key_distribution::zipfian ? "put/zipfian" : "put/uniform";
 
     // Warm-up: elections have settled but connections, allocators and the
     // serializer's own buffers have not. Discarded.
@@ -403,13 +456,14 @@ auto one_measurement(std::size_t operations, std::size_t in_flight, std::size_t 
 /// reused one would have measured a narrower thing than the number is quoted as.
 template<typename Transport>
 auto throughput_row(std::size_t operations, std::size_t in_flight, std::size_t value_bytes,
-                    double floor_ops_per_second) -> repeated_result {
+                    double floor_ops_per_second,
+                    key_distribution distribution = key_distribution::uniform) -> repeated_result {
     repeated_result row;
     row._warmup_operations = warmup_operations(operations, in_flight);
     row._measured_operations = operations;
 
     for (std::size_t repetition = 0; repetition < k_required_repetitions; ++repetition) {
-        auto run = one_measurement<Transport>(operations, in_flight, value_bytes);
+        auto run = one_measurement<Transport>(operations, in_flight, value_bytes, distribution);
         report(repetition, run);
         row.record(std::move(run));
     }
@@ -544,6 +598,89 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_value_size,
     }
 #else
     BOOST_TEST_MESSAGE("  value-size sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
+#endif
+}
+
+// ── the concurrency axis ─────────────────────────────────────────────────────
+
+/// @brief How many operations a concurrency row offers.
+///
+/// Not a constant, and that is the whole point of the helper.
+/// `run_put_workload` splits the budget across the workers, so a fixed budget
+/// at 64 in flight leaves each worker six operations and a measured window that
+/// is mostly thread start-up and join. Twenty-five operations per worker keeps
+/// every row's window in the same order of magnitude as the rest of the suite's
+/// rows; the floor of 400 keeps the single-threaded row, which is the slowest,
+/// from being the shortest as well.
+///
+/// Rows with different budgets stay comparable because the reported quantity is
+/// a rate — the same reason `write_throughput_by_transport` gives cpp-httplib a
+/// smaller budget than Beast.
+auto concurrency_budget(std::size_t in_flight) -> std::size_t {
+    return std::max<std::size_t>(400, 25 * in_flight);
+}
+
+/// @brief Throughput against in-flight concurrency, in both key distributions.
+///
+/// Two arms, because Requirement 8.7 asks for **single-group** throughput as a
+/// function of concurrency and the uniform arm does not provide it: uniform
+/// keys over a four-shard tiling spread the load across four `node<Types>`
+/// instances, so its curve is the cluster's, and H7 is a claim about one
+/// group's mutex. The Zipfian arm at theta 0.99 puts almost every key in the
+/// lowest shard, which is as close to a single-group curve as this fixture
+/// gets without changing the cluster shape every other row shares.
+///
+/// Read together the two arms say more than either alone: the gap between them
+/// at a given concurrency is what per-group serialization costs, measured
+/// rather than asserted.
+BOOST_AUTO_TEST_CASE(write_throughput_by_concurrency,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
+    BOOST_TEST_MESSAGE(
+        "write throughput by client concurrency, 128B values, JSON on the wire "
+        "(H7: the concurrency at which single-group throughput stops rising; "
+        "H1/H2: batching and RPC cost as a function of it):");
+
+#if defined(KYTHIRA_BENCH_HAS_BEAST)
+    for (auto distribution : {key_distribution::uniform, key_distribution::zipfian}) {
+        for (std::size_t in_flight : {std::size_t{1}, std::size_t{8}, std::size_t{64}}) {
+            // The floor is per-row rather than shared. One in-flight operation
+            // is one round trip at a time by definition, and the Zipfian arm is
+            // expected to be the slower of the two — holding either to the
+            // sixteen-way uniform row's floor would fail it for being what it
+            // is, which is the opposite of what a sanity floor is for.
+            const double floor = in_flight == 1 ? 1.0 : 3.0;
+            std::ignore = throughput_row<kythira::testing::beast_http_transport<json>>(
+                concurrency_budget(in_flight), in_flight, 128, floor, distribution);
+        }
+    }
+#else
+    BOOST_TEST_MESSAGE("  concurrency sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
+#endif
+}
+
+// ── the key-distribution axis ────────────────────────────────────────────────
+
+/// @brief Uniform against Zipfian at the concurrency every other row uses.
+///
+/// The concurrency case above already runs both distributions, so this row is
+/// not the only place the comparison appears. It exists because its uniform arm
+/// is bit-for-bit the configuration of the transport, serializer and value-size
+/// rows — 600 operations, 16 in flight, 128 B, JSON — which is what lets the
+/// Zipfian number be quoted against those tables rather than only against
+/// itself. The arms run back to back in one process on one cluster shape, so
+/// the control is contemporaneous with the treatment.
+BOOST_AUTO_TEST_CASE(write_throughput_by_key_distribution,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
+    BOOST_TEST_MESSAGE(
+        "write throughput by key distribution, 128B values, 16 in flight, JSON on the wire:");
+
+#if defined(KYTHIRA_BENCH_HAS_BEAST)
+    std::ignore = throughput_row<kythira::testing::beast_http_transport<json>>(
+        600, 16, 128, 5.0, key_distribution::uniform);
+    std::ignore = throughput_row<kythira::testing::beast_http_transport<json>>(
+        600, 16, 128, 2.0, key_distribution::zipfian);
+#else
+    BOOST_TEST_MESSAGE("  distribution sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
 #endif
 }
 
