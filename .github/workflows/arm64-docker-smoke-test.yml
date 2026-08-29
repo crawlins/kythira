@@ -38,6 +38,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           # autoconf/autoconf-archive/automake/libtool: see ci.yml's own
           # "Install system dependencies" step for why (vcpkg's gperf port,
           # a host-tool dependency of proxygen -- now an unconditional

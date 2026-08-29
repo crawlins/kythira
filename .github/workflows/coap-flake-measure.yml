@@ -125,6 +125,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
                  clang-18 g++-13 cmake ninja-build libfiu-dev ccache \

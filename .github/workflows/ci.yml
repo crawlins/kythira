@@ -91,6 +91,10 @@ jobs:
       # retrying against the same failed one.
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           # autoconf/autoconf-archive/automake/libtool: not a direct
           # dependency of this project's own code -- required by vcpkg's
           # gperf port (vcpkg_make_configure/vcpkg_run_autoreconf), itself a
@@ -378,6 +382,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
@@ -525,6 +533,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           # autoconf/autoconf-archive/automake/libtool: see the identical
           # addition in build-and-test's own "Install system dependencies"
           # step above for why (vcpkg's gperf port, a host-tool dependency
@@ -884,6 +896,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
@@ -1168,6 +1184,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
@@ -1442,6 +1462,10 @@ jobs:
       # a timeout is no defence at all.
       - name: Install Packer and shellcheck
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 120 bash -c 'curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -' \
                && timeout 120 sudo apt-add-repository -y "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
@@ -1543,6 +1567,10 @@ jobs:
       # failure — the generate step never ran.
       - name: Install Doxygen
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 300 sudo apt-get update -q \
                && timeout 600 sudo apt-get install -y --no-install-recommends doxygen; then

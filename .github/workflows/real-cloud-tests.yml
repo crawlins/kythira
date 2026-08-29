@@ -269,6 +269,10 @@ jobs:
       # apt's own per-package retry window covers.
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           # autoconf/autoconf-archive/automake/libtool: see ci.yml's own
           # "Install system dependencies" step for why (vcpkg's gperf port,
           # a host-tool dependency of proxygen -- now an unconditional
@@ -574,6 +578,10 @@ jobs:
       # well past what apt's own per-package retry window covers.
       - name: Install Packer
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 120 curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add - \
                  && timeout 300 sudo apt-add-repository "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
@@ -743,6 +751,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
@@ -995,6 +1007,10 @@ jobs:
       # ── System dependencies (identical to the aws job) ────────────────────
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
@@ -1236,6 +1252,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
@@ -1718,6 +1738,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
           for attempt in 1 2 3; do
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
