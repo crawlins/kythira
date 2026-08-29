@@ -364,6 +364,20 @@ auto one_measurement(std::size_t operations, std::size_t in_flight, std::size_t 
 
     BOOST_CHECK_MESSAGE(row._tally._completed > 0, Transport::name()
                                                        << ": no operation completed at all");
+
+    // The swept axis is the *wire* serializer; the node-internal one (log
+    // entries, snapshots) is held at JSON so rows differing only in `_serializer`
+    // differ only in what crossed the socket. `kv_host_types` pins it by type
+    // alias, but a pin nothing reads is a pin that can be moved without anyone
+    // noticing — so every repetition of every row checks the media type the
+    // node bundle reports for itself (Requirement 8.4).
+    BOOST_CHECK_MESSAGE(row._node_serializer == "application/json",
+                        Transport::name()
+                            << " / " << row._serializer
+                            << ": node-internal serializer drifted off JSON, it reports '"
+                            << row._node_serializer
+                            << "' — this row is not comparable with the "
+                               "others on the serializer axis");
     return row;
 }
 

@@ -906,12 +906,17 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
     all.sort();
 
     typename Transport::transport_bundle::serializer_type serializer{};
+    typename kv_cluster<Transport>::types::serializer_type node_serializer{};
 
     benchmark_result result;
     result._transport = std::string{Transport::name()};
     // The media type is the serializer's own name for itself, so a row can
     // never disagree with what actually went on the wire.
     result._serializer = serializer.media_type();
+    // Same principle applied to the serializer that is *not* being swept: read
+    // it off the node-internal bundle the cluster was actually built from, so a
+    // row that silently changed it would say so rather than be assumed not to.
+    result._node_serializer = node_serializer.media_type();
     result._scenario = workload._scenario;
     result._nodes = cluster.options()._nodes;
     result._groups = cluster.options()._groups;

@@ -363,6 +363,12 @@ struct operation_tally {
 struct benchmark_result {
     std::string _transport;
     std::string _serializer;
+    /// The *node-internal* serializer's own media type — log entries and
+    /// snapshots, not the wire. The axis this suite sweeps is `_serializer`;
+    /// this one is held fixed so the rows stay comparable, and it is carried
+    /// on the row rather than assumed so that "held fixed" is something a
+    /// caller can check instead of something the type aliases merely imply.
+    std::string _node_serializer;
     std::string _scenario;
     std::size_t _nodes{0};
     std::size_t _groups{0};
