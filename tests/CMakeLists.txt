@@ -824,6 +824,19 @@ else()
     message(STATUS "multi_raft_http_benchmark_test: protobuf row skipped "
                    "(requires PROTOBUF_SERIALIZER_FOUND)")
 endif()
+# Ion's own gate, and unlike protobuf's it is off in every checked-in defconfig:
+# ion-c comes from the opt-in `ion` vcpkg feature, so configs/ci_full_defconfig
+# deliberately leaves CONFIG_ION_SERIALIZER unset and this row compiles out on
+# every CI leg. Measuring it needs a build configured with that symbol selected
+# against a vcpkg tree installed with the `ion` feature. See
+# .kiro/specs/multi-raft-performance/ task 7.
+if(TARGET raft_ion_serializer)
+    target_compile_definitions(multi_raft_http_benchmark_test PRIVATE KYTHIRA_BENCH_HAS_ION)
+    target_link_libraries(multi_raft_http_benchmark_test PRIVATE raft_ion_serializer)
+else()
+    message(STATUS "multi_raft_http_benchmark_test: ion row skipped "
+                   "(requires CONFIG_ION_SERIALIZER and ion-c)")
+endif()
 if(TARGET OpenSSL::SSL)
     target_link_libraries(multi_raft_http_benchmark_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
