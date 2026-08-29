@@ -215,28 +215,134 @@ struct http_response {
     std::string accept_post;
 };
 
-/// @brief Collapses concurrent connect attempts for one pooled connection
-///     (Requirement 9: *one* pooled connection per target node).
+/// @brief One session's slot: the pointer `session_liveness_tracker` nulls
+///     when that session dies, and the unit the pool hands around.
 ///
-/// Without this, `connect_if_needed` checked only whether the slot held a
-/// session, with no record that a connect was already underway -- so N
-/// concurrent RPCs to a cold target each saw a null slot and each started
-/// their own connect, producing N sessions where the pool is documented to
-/// hold one. They then clobbered each other in the slot, and every orphan
-/// still carried a `session_liveness_tracker` aimed at that same slot, so an
-/// orphan's `onDestroy` would null a slot holding a *live* session and the
-/// next caller would connect on top of a session still in use. Tearing
-/// sessions down mid-use is what broke Proxygen's own internal invariants
-/// (`HTTP2PriorityQueue activeCount_ > 0`, `ObserverContainer !iterating_`).
+/// One per *session* rather than per target, which is what lets a dying
+/// session null its own slot and never a live one -- the property
+/// `session_liveness_tracker`'s compare-exchange was added to guarantee when
+/// there was only one slot for the whole target.
 ///
-/// Needs no lock of its own: every task for a given target runs on that
-/// target's own pinned `EventBase` (see `pooled_connection`), so the
-/// check-and-set below is already serialized. It is *only* ever touched from
-/// that thread.
-struct connect_state {
-    bool connecting{false};
-    std::vector<kythira::promise_default<proxygen::HTTPUpstreamSession*>> waiters;
+/// `opened` is carried purely so a refusal can say how old the session it was
+/// refused on is. That number is the difference between "the pool is reusing
+/// sessions the peer tore down long ago" and "the peer is tearing sessions
+/// down as fast as they are opened", and nothing else in proxygen's public
+/// surface answers it: `getLatestIdleTime()` DCHECKs before the first
+/// transaction, and `getNumTxnServed()` counts transactions, not time.
+struct pooled_session {
+    std::atomic<proxygen::HTTPUpstreamSession*> session;
+    std::chrono::steady_clock::time_point opened{std::chrono::steady_clock::now()};
+
+    explicit pooled_session(proxygen::HTTPUpstreamSession* initial) : session(initial) {}
 };
+
+using session_slot = std::shared_ptr<pooled_session>;
+
+struct session_pool;
+
+/// @brief One exclusive checkout of a pooled session, returned to the pool
+///     when the last copy of the lease is destroyed.
+///
+/// Exclusivity is the whole point, and it is not a style preference. A
+/// plaintext `HTTPUpstreamSession` speaks HTTP/1.1, whose
+/// `getMaxConcurrentOutgoingStreams()` is 1, so a session already carrying a
+/// transaction answers `newTransaction()` with `nullptr`. Handing one session
+/// to every concurrent RPC for a target -- which is what a single
+/// `session_slot` per target did -- means a multi-Raft leader replicating N
+/// groups to the same peer gets one transaction and N-1 immediate failures,
+/// each of which `error_handler` then re-arms with exponential backoff. That
+/// storm is measured in `.kiro/specs/multi-raft-performance/` task 5: 0
+/// occurrences for Beast and cpp-httplib against 27-176 per three-second
+/// Proxygen smoke run, and 67-80% of AppendEntries never reaching a peer once
+/// a sanitizer widens the overlap.
+///
+/// `isReusable()` is not a substitute for checkout. It answers "has this
+/// session no open transactions", and between the check and the
+/// `newTransaction()` sits a `.via(evb)` hop, so several RPCs pass it
+/// together and all but one are still refused.
+class session_checkout {
+public:
+    session_checkout(std::shared_ptr<session_pool> pool, folly::EventBase* evb, session_slot slot);
+    ~session_checkout();
+
+    session_checkout(const session_checkout&) = delete;
+    auto operator=(const session_checkout&) -> session_checkout& = delete;
+    session_checkout(session_checkout&&) = delete;
+    auto operator=(session_checkout&&) -> session_checkout& = delete;
+
+    /// @brief The checked-out session, or `nullptr` if it died between
+    ///     checkout and use (its tracker nulls the slot from this same
+    ///     `EventBase`, so this is a plain load, not a race).
+    [[nodiscard]] auto session() const -> proxygen::HTTPUpstreamSession*;
+
+    /// @brief How long ago this session was opened. Diagnostic only: it is
+    ///     what a refusal reports, so a log line distinguishes a stale pooled
+    ///     session from one the peer tore down within milliseconds of the
+    ///     handshake.
+    [[nodiscard]] auto session_age() const -> std::chrono::milliseconds;
+
+private:
+    std::shared_ptr<session_pool> _pool;
+    folly::EventBase* _evb;
+    session_slot _slot;
+};
+
+/// @brief A lease is shared rather than unique because it travels through a
+///     future chain whose continuations are copyable closures under every
+///     backend this transport compiles for.
+using session_lease = std::shared_ptr<session_checkout>;
+
+/// @brief Requirement 9: the pooled sessions for one target node, plus the
+///     parameters needed to open another.
+///
+/// Needs no lock of its own, for the reason the single slot it replaces did
+/// not: every task for a given target runs on that target's own pinned
+/// `EventBase` (see `pooled_connection`), so every read and write below is
+/// already serialized. It is *only* ever touched from that thread.
+///
+/// `established` counts idle **plus** checked-out **plus** in-flight connects,
+/// which is what makes `capacity` (Requirement 9.4's
+/// `connection_pool_size`, "an upper bound on simultaneously-open sessions")
+/// an actual bound rather than a bound on idle ones. It also subsumes what
+/// `connect_state` used to do: N concurrent RPCs to a cold target cannot each
+/// start their own connect, because the first one to arrive has already
+/// incremented `established` past the others' headroom check.
+struct session_pool {
+    std::vector<session_slot> idle;
+    std::size_t established{0};
+    std::size_t capacity{1};
+    /// RPCs waiting for a session because `established == capacity`. Served in
+    /// arrival order by `release_session`, which is the whole difference
+    /// between this design and the one it replaces: a request that arrives
+    /// while every session is busy waits for one instead of being failed and
+    /// re-armed with a backoff.
+    std::vector<kythira::promise_default<session_lease>> waiters;
+
+    /// How to open another session for this target. Refreshed on every
+    /// acquire, so a `reload_tls_material()` between two RPCs is picked up by
+    /// the connect a later release starts on a waiter's behalf.
+    folly::SocketAddress addr;
+    std::shared_ptr<folly::SSLContext> ssl_ctx;
+    bool use_ssl{false};
+    std::chrono::milliseconds connection_timeout{5000};
+};
+
+/// @brief Check a session out of @p pool, opening one if there is headroom
+///     and queueing behind the others if there is not.
+///
+/// Must be called on @p evb, the pool's pinned `EventBase` -- every caller
+/// already arranges that, because that is also the only thread allowed to
+/// touch a session.
+inline auto acquire_session(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
+                            const folly::SocketAddress& addr,
+                            std::shared_ptr<folly::SSLContext> ssl_ctx, bool use_ssl,
+                            std::chrono::milliseconds connection_timeout)
+    -> kythira::future_default<session_lease>;
+
+/// @brief Return @p slot to @p pool, handing it straight to the longest-waiting
+///     RPC if there is one. Must be called on @p evb.
+inline auto release_session(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
+                            const session_slot& slot) -> void;
 
 /// @brief Bridges `proxygen::HTTPConnector::Callback` into a
 ///     `kythira::promise_default<proxygen::HTTPUpstreamSession*>`
@@ -252,11 +358,12 @@ struct connect_state {
 ///     decide when its job is over).
 ///
 /// Owns the pool bookkeeping for the connect it represents -- recording the
-/// session into `slot`, attaching the `session_liveness_tracker`, and
-/// releasing `connect`'s waiters -- rather than leaving that to a future
-/// continuation. `HTTPConnector` invokes `connectSuccess`/`connectError` on
-/// the pinned `EventBase`, whereas a continuation is not guaranteed to run
-/// there at all: under `KYTHIRA_DEFAULT_FUTURE_BACKEND=boost` a promise-backed
+/// session into its own fresh `session_slot`, attaching the
+/// `session_liveness_tracker`, and handing back a lease -- rather than leaving
+/// that to a future continuation. `HTTPConnector` invokes
+/// `connectSuccess`/`connectError` on the pinned `EventBase`, whereas a
+/// continuation is not guaranteed to run there at all: under
+/// `KYTHIRA_DEFAULT_FUTURE_BACKEND=boost` a promise-backed
 /// `boost::future::then()` has policy `launch::none` and dispatches through
 /// `future_async_continuation_shared_state`, which runs the continuation on a
 /// **freshly spawned detached thread**. Doing this work here is what keeps it
@@ -264,9 +371,8 @@ struct connect_state {
 class connect_bridge : public proxygen::HTTPConnector::Callback {
 public:
     connect_bridge(folly::EventBase* evb, std::chrono::milliseconds txn_timeout,
-                   std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> slot,
-                   std::shared_ptr<connect_state> connect,
-                   kythira::promise_default<proxygen::HTTPUpstreamSession*> promise);
+                   std::shared_ptr<session_pool> pool,
+                   kythira::promise_default<session_lease> promise);
 
     [[nodiscard]] auto connector() -> proxygen::HTTPConnector& { return _connector; }
 
@@ -274,11 +380,11 @@ public:
     auto connectError(const folly::AsyncSocketException& ex) -> void override;
 
 private:
+    folly::EventBase* _evb;
     proxygen::WheelTimerInstance _wheel_timer;
     proxygen::HTTPConnector _connector;
-    std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> _slot;
-    std::shared_ptr<connect_state> _connect;
-    kythira::promise_default<proxygen::HTTPUpstreamSession*> _promise;
+    std::shared_ptr<session_pool> _pool;
+    kythira::promise_default<session_lease> _promise;
 };
 
 /// @brief Bridges `proxygen::HTTPTransaction::Handler` into a
@@ -292,7 +398,14 @@ private:
 ///     will be invalid after this function completes").
 class transaction_bridge : public proxygen::HTTPTransaction::Handler {
 public:
-    explicit transaction_bridge(kythira::promise_default<http_response> promise);
+    /// @param lease The session's checkout, held until `detachTransaction()`
+    ///        deletes this bridge. That -- not the response future settling --
+    ///        is when the session may be handed to another RPC: proxygen's
+    ///        stream is still attached when `onEOM` fires, so a session
+    ///        released there comes back reporting no room for a transaction
+    ///        and is discarded, turning a pooled connection into a connection
+    ///        per request.
+    transaction_bridge(kythira::promise_default<http_response> promise, session_lease lease);
 
     auto setTransaction(proxygen::HTTPTransaction* txn) noexcept -> void override;
     auto detachTransaction() noexcept -> void override;
@@ -310,6 +423,7 @@ private:
     auto fulfill_exception(std::exception_ptr ex) -> void;
 
     kythira::promise_default<http_response> _promise;
+    session_lease _lease;
     proxygen::HTTPTransaction* _txn{nullptr};
     http_response _response;
     bool _fulfilled{false};
@@ -321,7 +435,9 @@ private:
 ///     bridge path and vice versa.
 class folly_transaction_bridge : public proxygen::HTTPTransaction::Handler {
 public:
-    explicit folly_transaction_bridge(folly::Promise<http_response> promise);
+    /// @param lease Held to `detachTransaction()`, for the reason
+    ///        `transaction_bridge`'s own constructor documents.
+    folly_transaction_bridge(folly::Promise<http_response> promise, session_lease lease);
 
     auto setTransaction(proxygen::HTTPTransaction* txn) noexcept -> void override;
     auto detachTransaction() noexcept -> void override;
@@ -339,6 +455,7 @@ private:
     auto fulfill_exception(folly::exception_wrapper ex) -> void;
 
     folly::Promise<http_response> _promise;
+    session_lease _lease;
     proxygen::HTTPTransaction* _txn{nullptr};
     http_response _response;
     bool _fulfilled{false};
@@ -353,17 +470,19 @@ private:
 ///     notification before the session itself is gone.
 ///
 /// Clears the slot only if it still holds *this* tracker's own session, hence
-/// the `_session` member: more than one session can end up pointing a tracker
-/// at the same slot, and an unconditional clear lets a dying one evict a live
-/// one. See `connect_state` below.
+/// the `_session` member. With `session_slot` now allocated per session by
+/// `connect_bridge` there is exactly one tracker per slot, so the guard should
+/// never fire -- it stays because the failure it prevents (a dying session
+/// nulling a slot holding a live one, after which the pool hands that slot out
+/// as usable) is silent, and the check costs a compare-exchange on a path that
+/// runs once per session death.
 class session_liveness_tracker : public proxygen::HTTPSessionBase::InfoCallback {
 public:
-    session_liveness_tracker(std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> slot,
-                             proxygen::HTTPUpstreamSession* session);
+    session_liveness_tracker(session_slot slot, proxygen::HTTPUpstreamSession* session);
     auto onDestroy(const proxygen::HTTPSessionBase& session) -> void override;
 
 private:
-    std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> _slot;
+    session_slot _slot;
     proxygen::HTTPUpstreamSession* _session;
 };
 
@@ -374,20 +493,19 @@ private:
 ///     operation against `session`, on either the generic or fast path, is
 ///     issued via `event_base->runInEventBaseThread(...)`, never any other
 ///     thread, so Property 6's no-interleaving guarantee holds structurally
-///     regardless of which path a given RPC takes. `session` is a
-///     `shared_ptr<atomic<...>>` (not a plain member) so
-///     `session_liveness_tracker` can safely outlive/update it independent
-///     of this pool entry's own lifetime (the entry could be erased by a
-///     concurrent `reload_tls_material()` while `onDestroy` is still
-///     in-flight on `event_base`'s thread).
+///     regardless of which path a given RPC takes. `sessions` is a
+///     `shared_ptr` (not a plain member) so a `session_liveness_tracker`, an
+///     in-flight connect, or an outstanding lease can safely outlive this
+///     pool entry (the entry could be erased by a concurrent
+///     `reload_tls_material()` while any of them is still in flight on
+///     `event_base`'s thread).
 struct pooled_connection {
     folly::EventBase* event_base{nullptr};
-    std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> session =
-        std::make_shared<std::atomic<proxygen::HTTPUpstreamSession*>>(nullptr);
-    /// Shared with the in-flight `connect_if_needed` chain for the same
-    /// reason `session` is a `shared_ptr`: this pool entry can be evicted
-    /// while that chain is still running on `event_base`'s thread.
-    std::shared_ptr<connect_state> connect = std::make_shared<connect_state>();
+    /// Shared with every in-flight acquire/release for the same reason the
+    /// single session slot it replaces was: this pool entry can be evicted
+    /// (LRU, or `reload_tls_material()`) while a chain that named it is still
+    /// running on `event_base`'s thread.
+    std::shared_ptr<session_pool> sessions = std::make_shared<session_pool>();
     std::chrono::steady_clock::time_point last_used;
 };
 

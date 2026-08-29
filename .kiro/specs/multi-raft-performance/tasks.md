@@ -259,6 +259,118 @@ and the answer is currently no for every one of them.
     failures / 3 passes in 12), never with gdb, which has never once reproduced
     it. Count hangs separately from faults: no baseline run exceeded 158s, so a
     run past 300s is a new failure mode and not a slow one
+  - **A session pool is written and measured, and it is not finished.**
+    `pooled_connection` now holds a `session_pool` — sessions checked out
+    exclusively for one transaction, `established` counting idle plus
+    checked-out plus connecting against `connection_pool_size`, and a waiter
+    queue where the old code returned an immediate failure. On
+    `fix/proxygen-session-pool`, **not merged**. What it does on a Release
+    build is exactly what the diagnosis predicted:
+
+    | | run 1 | run 2 | run 3 |
+    |---|---:|---:|---:|
+    | `session unavailable`, before | 176 | 97 | 27 |
+    | `session unavailable`, after | **0** | **0** | **0** |
+
+    and the transport-axis row moved with it: Proxygen / JSON / 128 B / 16 in
+    flight went from **355.1 ops/sec at ±23.8%** to **1455.7 ops/sec at
+    ±16.0%**, from below Beast's row to slightly above it. Still UNSTABLE, so
+    still not quotable — what changed is the size of the number, not its
+    verdict. All six Proxygen-touching suites pass
+  - **Everything below this line that was measured under AddressSanitizer was
+    measured on a mis-linked binary, and every ASan conclusion in it is
+    withdrawn.** `build-asan` is `CMAKE_BUILD_TYPE=RelWithDebInfo`, which has no
+    imported configuration of its own, so CMake fell back to the first one
+    vcpkg's imported targets list — `DEBUG` — and linked
+    `vcpkg_installed/x64-linux/debug/lib/libproxygen.a` and `libfolly.a`, built
+    without `NDEBUG`, into translation units compiled *with* `-DNDEBUG`. `NDEBUG`
+    changes those libraries' class layouts: `sizeof(proxygen::HTTPSessionBase)`
+    is 1624 with it and 1632 without, measured with this project's own include
+    paths and defines. Every field of a session the library constructed was
+    therefore read eight bytes off. Fixed by
+    `CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO` in `CMakeLists.txt`
+  - **The instrumentation the entry below asked for is what found it**, and it
+    took the one rebuild it was budgeted. `newTransaction()` collapses every
+    refusal to `nullptr`; proxygen's own `newTransactionWithError()` returns a
+    reason string. Logged with the session's own counters at the moment
+    `proxygen::HTTPConnector` handed the session over — before this pool had
+    touched it — a freshly connected upstream session read:
+
+    | build | `getNumOutgoingStreams()` | `getMaxConcurrentOutgoingStreams()` | `getNumStreams()` |
+    |---|---:|---:|---:|
+    | Release | 0 | 1 | 0 |
+    | ASan (mis-linked) | 1 | 0 | 2839225156 |
+
+    `supportsMoreTransactions()` is `out < max`, so it was false before the
+    session had ever been used and *every* transaction was refused. Three
+    diagnostics were decisive and cost nothing: the reason string was
+    unanimously the stream limit and never `draining_`, all 7612 refusals across
+    two runs named 7612 *distinct* sessions, and `getNumStreams()` returned a
+    value that is fixed within a run and different between runs — deterministic
+    garbage, not heap corruption
+  - **The corrected numbers, twelve ASan runs each, and they settle both
+    questions.** With the link fixed and nothing else changed:
+
+    | | passes | sanitizer reports | `session unavailable` per run | wall clock |
+    |---|---:|---:|---:|---:|
+    | `main`, no pool | 12/12 | 0 | 38–379 | 2–25 s |
+    | this branch, with the pool | **12/12** | **0** | **0** | **3–4 s** |
+
+    against a documented pre-change baseline of 3 passes in 12 at 241 s. So the
+    ASan memory faults were the build defect, and the refusal storm was not:
+    it is real on a correctly linked sanitizer build too, at 38–379 per run, and
+    the pool removes it there exactly as it does on Release. The 25-second tail
+    on three of `main`'s twelve runs goes with it
+  - **The two hypotheses ruled out below were both ruled out for the wrong
+    reason, and stay closed anyway.** `k_election_budget` was genuinely
+    unscalable — doctrine 54's defect, fixed on its own in #283 regardless of
+    any of this. `capacity = 2` genuinely changed nothing. Neither experiment
+    was wrong; both were run against a binary that could not have elected at
+    any budget or any capacity
+  - **It is not the budget, and that was worth ruling out.** The benchmark's
+    `k_election_budget` was a hard-coded 30 s that no `KYTHIRA_TEST_TIMEOUT_SCALE`
+    reached — doctrine 54's defect exactly, and fixed here regardless. With the
+    ASan build reconfigured at scale 8 the case gets **241 seconds** and still
+    elects nothing, accumulating 3823 refusals and **zero** connect errors
+  - **Nor is it the connection count, and that experiment has been run.**
+    Forced `capacity = 2`, rebuilt, three runs: **3754 / 3818 / 3807 refusals
+    and no election**, against 3823 at capacity 10. Identical. Reverted — the
+    count is not the mechanism, and the knob's default is not the fix
+  - Both builds are `KYTHIRA_DEFAULT_FUTURE_BACKEND=folly`, so the sanitizer and
+    the Release build run the *same* (fast) path
+  - `proxygen_server_config::max_concurrent_connections` was checked and
+    exonerated: the field is declared and its doc comment describes an
+    accept-time counter, but **nothing in the impl reads it**. Checked again
+    since, and it is wider than that entry recorded: neither
+    `beast_http_transport_impl.hpp` nor `http_transport_impl.hpp` reads its own
+    copy either, so the field is inert in all three HTTP transports and the
+    Proxygen doc comment's "the same precedent Beast used" describes enforcement
+    that does not exist anywhere. Separate defect, not this task's
+  - _Requirements: 15.5_
+
+- [ ] 5a. **A second teardown fault, on the Beast arm, at 4096-byte values**
+  - Found by the first full-sweep run on an idle machine.
+    `write_throughput_by_value_size` — a **Beast-only** case — aborts with
+    `memory access violation at address: 0x…: no mapping at fault address`,
+    checkpointed at `multi_raft_http_benchmark_test.cpp:318`, which is the
+    `kv_cluster` constructor of a *later* repetition. So it faults while
+    standing the next cluster up, after the previous one has been torn down:
+    the same shape, and the same "no mapping" signature, as the Proxygen fault
+    task 5 was opened for
+  - **It is not the session pool's, and the control says so rather than the
+    argument.** Three runs on this branch: 3 faults. Three runs with
+    `include/raft/proxygen_http_*.hpp` checked out from `main` and the case
+    rebuilt: **2 faults in 3**. The case never instantiates `proxygen_client`
+    in the first place; the control is what turns that from a claim into a
+    measurement
+  - Which also means the previous handoff's "the Beast `corrupted double-linked
+    list` has not recurred since `6741ba9`" needs re-reading: it has not
+    recurred *in the rows that were being run*. The 4096-byte row was never one
+    of them, because no full sweep had completed
+  - Not obviously the same fault `6741ba9` fixed — that one was a connection
+    outliving the executor its callbacks were scheduled on, and this one faults
+    building a fresh cluster. Establish the rate under ASan first, the way task
+    5's was, before choosing between them
   - _Requirements: 15.5_
 
 - [x] 6. Prove the other two transports end to end

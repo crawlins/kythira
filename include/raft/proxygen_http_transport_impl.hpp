@@ -22,6 +22,7 @@
 #include <openssl/asn1.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <exception>
 #include <format>
 #include <fstream>
@@ -264,45 +265,93 @@ auto proxygen_status_reason(unsigned status_code) -> std::string {
 
 namespace proxygen_detail {
 
-inline connect_bridge::connect_bridge(
-    folly::EventBase* evb, std::chrono::milliseconds txn_timeout,
-    std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> slot,
-    std::shared_ptr<connect_state> connect,
-    kythira::promise_default<proxygen::HTTPUpstreamSession*> promise)
-    : _wheel_timer(txn_timeout, evb),
+/// @brief Everything a session will say about its own capacity, sampled at one
+///     instant.
+///
+/// Sampled into a struct rather than formatted eagerly because the sample is
+/// taken on every send and formatted only on the refusals, which are rare on a
+/// healthy build. It is taken *before* `newTransactionWithError()`, because
+/// proxygen refuses on `supportsMoreTransactions()` -- computed from exactly
+/// these fields -- so what the caller needs is the state the refusal was
+/// decided from.
+///
+/// Worth the ten accessors: a refusal reporting `out=0, max=1` is proxygen and
+/// this translation unit disagreeing about one live object, which is a build
+/// defect, while `out=1, max=1` is a genuinely busy HTTP/1.1 session, which is
+/// a pool defect. Reading `nullptr` back from `newTransaction()` cannot tell
+/// those apart, and for three investigation sessions of
+/// `.kiro/specs/multi-raft-performance/` task 5 nobody could.
+struct session_probe {
+    std::uint32_t out{};
+    std::uint32_t max{};
+    std::uint32_t in{};
+    std::uint32_t streams{};
+    std::uint32_t hist_max_out{};
+    std::uint64_t served{};
+    bool reusable{};
+    bool replay_safe{};
+    bool draining{};
+    bool closing{};
+
+    static auto capture(proxygen::HTTPUpstreamSession* session) -> session_probe {
+        return session_probe{session->getNumOutgoingStreams(),
+                             session->getMaxConcurrentOutgoingStreams(),
+                             session->getNumIncomingStreams(),
+                             session->getNumStreams(),
+                             session->getHistoricalMaxOutgoingStreams(),
+                             session->getNumTxnServed(),
+                             session->isReusable(),
+                             session->isReplaySafe(),
+                             session->isDraining(),
+                             session->isClosing()};
+    }
+
+    [[nodiscard]] auto str() const -> std::string {
+        return std::format(
+            "out={}, max={}, in={}, streams={}, hist-max-out={}, txns-served={}, reusable={}, "
+            "replay-safe={}, draining={}, closing={}",
+            out, max, in, streams, hist_max_out, served, reusable, replay_safe, draining, closing);
+    }
+};
+
+inline connect_bridge::connect_bridge(folly::EventBase* evb, std::chrono::milliseconds txn_timeout,
+                                      std::shared_ptr<session_pool> pool,
+                                      kythira::promise_default<session_lease> promise)
+    : _evb(evb),
+      _wheel_timer(txn_timeout, evb),
       _connector(this, _wheel_timer),
-      _slot(std::move(slot)),
-      _connect(std::move(connect)),
+      _pool(std::move(pool)),
       _promise(std::move(promise)) {}
 
 inline auto connect_bridge::connectSuccess(proxygen::HTTPUpstreamSession* session) -> void {
     // Runs on the pinned EventBase (HTTPConnector's contract), which is the
-    // only thread allowed to touch the slot, the session, or *_connect. Every
-    // one of those must therefore be finished *before* the promise is settled:
+    // only thread allowed to touch a slot, a session, or the pool. Every one
+    // of those must therefore be finished *before* the promise is settled:
     // settling can transfer control straight into a continuation on an
     // unrelated thread (see connect_bridge's own header comment).
-    _slot->store(session, std::memory_order_release);
-    session->setInfoCallback(new session_liveness_tracker(_slot, session));
-    _connect->connecting = false;
-    auto waiters = std::move(_connect->waiters);
-    _connect->waiters.clear();
+    //
+    // The slot is fresh, and belongs to this session alone. `established` was
+    // already incremented on this bridge's behalf by whoever started the
+    // connect, so nothing is counted here.
+    auto slot = std::make_shared<pooled_session>(session);
+    session->setInfoCallback(new session_liveness_tracker(slot, session));
+    auto lease = std::make_shared<session_checkout>(_pool, _evb, std::move(slot));
     auto promise = std::move(_promise);
     delete this;
-    for (auto& waiter : waiters) {
-        waiter.setValue(session);
-    }
-    promise.setValue(session);
+    promise.setValue(std::move(lease));
 }
 
 inline auto connect_bridge::connectError(const folly::AsyncSocketException& ex) -> void {
-    // Same ordering discipline as connectSuccess. Clearing `connecting` and
-    // draining `waiters` on *both* outcomes is load-bearing: a failed connect
-    // that left the flag set would wedge the pool entry as permanently
-    // "connecting", and every later RPC to that node would queue a waiter
-    // behind a connect that will never complete.
-    _connect->connecting = false;
-    auto waiters = std::move(_connect->waiters);
-    _connect->waiters.clear();
+    // The headroom this connect was holding goes back, and every RPC queued
+    // behind it is failed with the same error rather than left waiting for a
+    // session that is not coming. Failing them is not a regression on the old
+    // behaviour: a peer that will not accept a connection fails every RPC to
+    // it either way, and `error_handler` is what decides when to try again.
+    // Leaving them queued, by contrast, would wedge them until their own
+    // request timeout, one at a time.
+    --_pool->established;
+    auto waiters = std::move(_pool->waiters);
+    _pool->waiters.clear();
     auto promise = std::move(_promise);
     auto error = std::make_exception_ptr(ex);
     delete this;
@@ -312,8 +361,156 @@ inline auto connect_bridge::connectError(const folly::AsyncSocketException& ex) 
     promise.setException(error);
 }
 
-inline transaction_bridge::transaction_bridge(kythira::promise_default<http_response> promise)
-    : _promise(std::move(promise)) {}
+// --- the session pool (Requirement 9) --------------------------------------
+
+inline session_checkout::session_checkout(std::shared_ptr<session_pool> pool, folly::EventBase* evb,
+                                          session_slot slot)
+    : _pool(std::move(pool)), _evb(evb), _slot(std::move(slot)) {}
+
+inline auto session_checkout::session() const -> proxygen::HTTPUpstreamSession* {
+    return _slot->session.load(std::memory_order_acquire);
+}
+
+inline auto session_checkout::session_age() const -> std::chrono::milliseconds {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                 _slot->opened);
+}
+
+inline session_checkout::~session_checkout() {
+    // The release has to happen on the pool's pinned EventBase, and this
+    // destructor runs wherever the last copy of the lease happened to die --
+    // which, on the generic bridge under the boost backend, is a freshly
+    // spawned detached thread. `runImmediatelyOrRunInEventBaseThread` keeps
+    // the common case (a continuation already on the EventBase) free of a
+    // queue hop while making the uncommon one correct.
+    auto pool = std::move(_pool);
+    auto slot = std::move(_slot);
+    auto* evb = _evb;
+    evb->runImmediatelyOrRunInEventBaseThread(
+        [pool = std::move(pool), evb, slot = std::move(slot)]() mutable {
+            release_session(pool, evb, slot);
+        });
+}
+
+/// @brief Start one connect for @p pool, fulfilling @p promise with a lease on
+///     the session it produces. The caller must already have taken the
+///     headroom for it (`++established`).
+inline auto start_connect(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
+                          kythira::promise_default<session_lease> promise) -> void {
+    auto* bridge = new connect_bridge(evb, pool->connection_timeout, pool, std::move(promise));
+    if (pool->use_ssl) {
+        bridge->connector().connectSSL(evb, pool->addr, pool->ssl_ctx, nullptr,
+                                       pool->connection_timeout);
+    } else {
+        bridge->connector().connect(evb, pool->addr, pool->connection_timeout);
+    }
+}
+
+/// @brief Check out the first idle session that can take a transaction right
+///     now, discarding the ones that cannot. Null when the pool has none.
+///
+/// Requirement 9.1/9.3: reuse a pooled session when it is still usable, drop it
+/// silently when it is not rather than surfacing the staleness to the caller.
+/// `supportsMoreTransactions()` alongside `isReusable()` is the checkout.
+///
+/// Validation lives here and not at release, for a timing reason worth stating:
+/// a session is released from `detachTransaction()`, and whether proxygen has
+/// finished unwinding the stream by the time that fires is its business, not
+/// this pool's. Judging at release turned every reuse into a discard and every
+/// RPC into a fresh TCP handshake -- measured, under ASan, as elections that
+/// could no longer finish inside a 30-second budget. Judging at acquire asks
+/// the only question that matters -- can this session carry the request I am
+/// holding -- at the moment it is actually asked.
+inline auto take_idle_session(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb)
+    -> session_lease {
+    while (!pool->idle.empty()) {
+        auto slot = std::move(pool->idle.back());
+        pool->idle.pop_back();
+        auto* existing = slot->session.load(std::memory_order_acquire);
+        if (existing != nullptr && existing->isReusable() && existing->supportsMoreTransactions()) {
+            return std::make_shared<session_checkout>(pool, evb, std::move(slot));
+        }
+        --pool->established;
+    }
+    return nullptr;
+}
+
+/// @brief Hand sessions -- or fresh connects -- to whoever is queued, oldest
+///     first, for as long as either is available.
+inline auto serve_session_waiters(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb)
+    -> void {
+    while (!pool->waiters.empty()) {
+        auto lease = take_idle_session(pool, evb);
+        if (lease == nullptr && pool->established >= pool->capacity) {
+            return;
+        }
+        // Dequeued before it is settled: settling can transfer control
+        // straight into a continuation that acquires again, and that
+        // continuation must not find this waiter still queued.
+        auto waiter = std::move(pool->waiters.front());
+        pool->waiters.erase(pool->waiters.begin());
+        if (lease != nullptr) {
+            waiter.setValue(std::move(lease));
+        } else {
+            ++pool->established;
+            start_connect(pool, evb, std::move(waiter));
+        }
+    }
+}
+
+inline auto acquire_session(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
+                            const folly::SocketAddress& addr,
+                            std::shared_ptr<folly::SSLContext> ssl_ctx, bool use_ssl,
+                            std::chrono::milliseconds connection_timeout)
+    -> kythira::future_default<session_lease> {
+    // Refreshed every time so a `reload_tls_material()` between two RPCs is
+    // what a later connect uses, including one started on a waiter's behalf
+    // from `serve_session_waiters`, which has no caller to take them from.
+    pool->addr = addr;
+    pool->ssl_ctx = std::move(ssl_ctx);
+    pool->use_ssl = use_ssl;
+    pool->connection_timeout = connection_timeout;
+
+    kythira::promise_default<session_lease> promise;
+    auto future = promise.getFuture();
+    if (auto lease = take_idle_session(pool, evb)) {
+        promise.setValue(std::move(lease));
+        return future;
+    }
+    if (pool->established < pool->capacity) {
+        ++pool->established;
+        start_connect(pool, evb, std::move(promise));
+        return future;
+    }
+    // Every session is checked out. Wait for one instead of failing: this is
+    // the line the whole change exists for -- see `session_checkout`.
+    pool->waiters.push_back(std::move(promise));
+    return future;
+}
+
+inline auto release_session(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
+                            const session_slot& slot) -> void {
+    if (slot->session.load(std::memory_order_acquire) == nullptr) {
+        // The session died under this checkout and its tracker has already
+        // nulled the slot. The headroom it was holding goes back.
+        --pool->established;
+    } else {
+        pool->idle.push_back(slot);
+    }
+    if (pool->waiters.empty()) {
+        return;
+    }
+    // A queue hop rather than a direct call, and only when someone is waiting.
+    // This runs from `detachTransaction()`, where the session just released may
+    // not yet report room for another transaction; by the time this task runs
+    // proxygen has finished with it, so `take_idle_session` gets a truthful
+    // answer instead of discarding a live connection.
+    evb->runInEventBaseThread([pool, evb] { serve_session_waiters(pool, evb); });
+}
+
+inline transaction_bridge::transaction_bridge(kythira::promise_default<http_response> promise,
+                                              session_lease lease)
+    : _promise(std::move(promise)), _lease(std::move(lease)) {}
 
 inline auto transaction_bridge::setTransaction(proxygen::HTTPTransaction* txn) noexcept -> void {
     _txn = txn;
@@ -403,8 +600,9 @@ inline auto transaction_bridge::fulfill_exception(std::exception_ptr ex) -> void
 
 // --- folly_transaction_bridge (Requirement 16.2's fast-path handler) -------
 
-inline folly_transaction_bridge::folly_transaction_bridge(folly::Promise<http_response> promise)
-    : _promise(std::move(promise)) {}
+inline folly_transaction_bridge::folly_transaction_bridge(folly::Promise<http_response> promise,
+                                                          session_lease lease)
+    : _promise(std::move(promise)), _lease(std::move(lease)) {}
 
 inline auto folly_transaction_bridge::setTransaction(proxygen::HTTPTransaction* txn) noexcept
     -> void {
@@ -464,50 +662,84 @@ inline auto folly_transaction_bridge::fulfill_exception(folly::exception_wrapper
 
 // --- session_liveness_tracker (Requirement 9.3) ----------------------------
 
-inline session_liveness_tracker::session_liveness_tracker(
-    std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> slot,
-    proxygen::HTTPUpstreamSession* session)
+inline session_liveness_tracker::session_liveness_tracker(session_slot slot,
+                                                          proxygen::HTTPUpstreamSession* session)
     : _slot(std::move(slot)), _session(session) {}
 
 inline auto session_liveness_tracker::onDestroy(const proxygen::HTTPSessionBase&) -> void {
     // Compare-exchange, not an unconditional store: clear the pool's view of
-    // the connection only if it is still *this* session. connect_state now
-    // collapses concurrent connects, so a second session for one slot should
-    // no longer arise -- but an unconditional store made that failure mode
-    // silently fatal (a dying session evicting a live one, after which the
-    // next caller connects on top of a session still in use), and this is the
-    // cheap structural guarantee that it cannot recur. Nothing takes the
-    // failure branch in normal operation.
+    // this connection only if it is still *this* session. Each session now
+    // gets its own slot, so a second session for one slot should not arise at
+    // all -- but an unconditional store made that failure mode silently fatal
+    // (a dying session evicting a live one, after which the pool hands that
+    // slot out as usable), and this is the cheap structural guarantee that it
+    // cannot recur. Nothing takes the failure branch in normal operation.
     auto* expected = _session;
-    _slot->compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel,
-                                   std::memory_order_acquire);
+    _slot->session.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel,
+                                           std::memory_order_acquire);
     delete this;
 }
 
 // --- send_on_session (generic bridge) / send_on_session_folly (fast path) -
+
+/// @brief Why proxygen refused a transaction on a session this pool validated
+///     moments earlier, in a form that reaches the error log.
+///
+/// `newTransaction()` collapses every refusal to `nullptr`, which is what kept
+/// this storm unreadable across three investigation sessions.
+/// `take_idle_session` checks `isReusable() && supportsMoreTransactions()`
+/// immediately before the call, so a refusal here is by construction something
+/// neither predicate covers -- and a bare `nullptr` cannot say which.
+/// `newTransactionWithError()` is the identical call with proxygen's own reason
+/// string attached.
+///
+/// Folded into the exception message rather than emitted as its own log line
+/// on purpose: `error_handler` already logs this exception once per refusal, so
+/// the storm that is already being counted becomes self-describing without a
+/// second stream of output to correlate it against.
+inline auto describe_transaction_refusal(const std::string& reason, const session_probe& state,
+                                         std::chrono::milliseconds age) -> std::string {
+    return std::format("proxygen: session unavailable for new transaction ({}): {}, age={}ms",
+                       reason, state.str(), age.count());
+}
 
 /// @brief Issues one POST on `session` (which must already be established,
 ///     and this must already be running on `session`'s own pinned
 ///     `EventBase` -- callers arrange that via `runInEventBaseThread`, this
 ///     function itself never hops threads) and fulfills the returned
 ///     future once the response is fully read or an error occurs.
-inline auto send_on_session(proxygen::HTTPUpstreamSession* session, const std::string& path,
-                            const std::string& body, const std::string& host,
-                            const std::string& user_agent, std::chrono::milliseconds timeout,
-                            const std::string& content_type, const std::string& accept)
-    -> kythira::future_default<http_response> {
+inline auto send_on_session(session_lease lease, const std::string& path, const std::string& body,
+                            const std::string& host, const std::string& user_agent,
+                            std::chrono::milliseconds timeout, const std::string& content_type,
+                            const std::string& accept) -> kythira::future_default<http_response> {
+    auto* session = lease->session();
+    if (session == nullptr) {
+        kythira::promise_default<http_response> closed_promise;
+        auto closed_future = closed_promise.getFuture();
+        closed_promise.setException(std::make_exception_ptr(
+            std::runtime_error("proxygen: pooled session closed before its request was sent")));
+        return closed_future;
+    }
     kythira::promise_default<http_response> promise;
     auto future = promise.getFuture();
-    auto* bridge = new transaction_bridge(std::move(promise));
-    auto* txn = session->newTransaction(bridge);
-    if (txn == nullptr) {
+    const auto age = lease->session_age();
+    const auto state = session_probe::capture(session);
+    auto* bridge = new transaction_bridge(std::move(promise), std::move(lease));
+    auto result = session->newTransactionWithError(bridge);
+    if (result.hasError()) {
+        // Described before the bridge is deleted: deleting it drops the last
+        // reference to the lease, which returns the session to the pool, and
+        // reading a session's counters after releasing it is reading state that
+        // is no longer this request's to read.
+        auto description = describe_transaction_refusal(result.error(), state, age);
         delete bridge;  // never attached to a transaction -- nothing else owns it
         kythira::promise_default<http_response> failed_promise;
         auto failed_future = failed_promise.getFuture();
-        failed_promise.setException(std::make_exception_ptr(
-            std::runtime_error("proxygen: session unavailable for new transaction")));
+        failed_promise.setException(
+            std::make_exception_ptr(std::runtime_error(std::move(description))));
         return failed_future;
     }
+    auto* txn = result.value();
     txn->setIdleTimeout(timeout);
     proxygen::HTTPMessage msg;
     msg.setMethod(proxygen::HTTPMethod::POST);
@@ -529,23 +761,33 @@ inline auto send_on_session(proxygen::HTTPUpstreamSession* session, const std::s
     return future;
 }
 
-inline auto send_on_session_folly(proxygen::HTTPUpstreamSession* session, const std::string& path,
+inline auto send_on_session_folly(session_lease lease, const std::string& path,
                                   const std::string& body, const std::string& host,
                                   const std::string& user_agent, std::chrono::milliseconds timeout,
                                   const std::string& content_type, const std::string& accept)
     -> folly::Future<http_response> {
+    auto* session = lease->session();
+    if (session == nullptr) {
+        return folly::makeFuture<http_response>(folly::exception_wrapper(
+            std::runtime_error("proxygen: pooled session closed before its request was sent")));
+    }
     folly::Promise<http_response> promise;
     auto future = promise.getFuture();
-    auto* bridge = new folly_transaction_bridge(std::move(promise));
-    auto* txn = session->newTransaction(bridge);
-    if (txn == nullptr) {
+    const auto age = lease->session_age();
+    const auto state = session_probe::capture(session);
+    auto* bridge = new folly_transaction_bridge(std::move(promise), std::move(lease));
+    auto result = session->newTransactionWithError(bridge);
+    if (result.hasError()) {
+        // See send_on_session: described while the lease is still held.
+        auto description = describe_transaction_refusal(result.error(), state, age);
         delete bridge;
         folly::Promise<http_response> failed_promise;
         auto failed_future = failed_promise.getFuture();
-        failed_promise.setException(folly::exception_wrapper(
-            std::runtime_error("proxygen: session unavailable for new transaction")));
+        failed_promise.setException(
+            folly::exception_wrapper(std::runtime_error(std::move(description))));
         return failed_future;
     }
+    auto* txn = result.value();
     txn->setIdleTimeout(timeout);
     proxygen::HTTPMessage msg;
     msg.setMethod(proxygen::HTTPMethod::POST);
@@ -565,57 +807,6 @@ inline auto send_on_session_folly(proxygen::HTTPUpstreamSession* session, const 
     txn->sendBody(folly::IOBuf::copyBuffer(body));
     txn->sendEOM();
     return future;
-}
-
-/// @brief Requirement 9.1/9.3: reuse `*session_slot` when it is non-null and
-///     still `isReusable()`; otherwise establish a fresh session via
-///     `HTTPConnector` and record it into `*session_slot` (plus wire up
-///     `session_liveness_tracker` for the *next* staleness detection) once
-///     connected. Callers must already be running on `evb`'s own thread
-///     (every read/write of `*session_slot` that matters for the decision
-///     happens here, on that thread, structurally avoiding the cross-thread
-///     session-liveness race a plain mutex-guarded pointer would have --
-///     `spike-notes.md` Finding 4).
-inline auto connect_if_needed(
-    std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> session_slot,
-    std::shared_ptr<connect_state> connect, folly::EventBase* evb, const folly::SocketAddress& addr,
-    std::shared_ptr<folly::SSLContext> ssl_ctx, bool use_ssl,
-    std::chrono::milliseconds connection_timeout)
-    -> kythira::future_default<proxygen::HTTPUpstreamSession*> {
-    auto* existing = session_slot->load(std::memory_order_acquire);
-    if (existing != nullptr && existing->isReusable()) {
-        kythira::promise_default<proxygen::HTTPUpstreamSession*> ready_promise;
-        auto ready_future = ready_promise.getFuture();
-        ready_promise.setValue(existing);
-        return ready_future;
-    }
-    // Requirement 9: one pooled connection per target node. A connect for this
-    // slot is already in flight, so wait for that one rather than starting a
-    // second -- see connect_state's own comment for what starting a second one
-    // used to cost. Safe without a lock because this runs on the connection's
-    // pinned EventBase, the only thread that ever touches `*connect`.
-    if (connect->connecting) {
-        kythira::promise_default<proxygen::HTTPUpstreamSession*> waiter_promise;
-        auto waiter_future = waiter_promise.getFuture();
-        connect->waiters.push_back(std::move(waiter_promise));
-        return waiter_future;
-    }
-    connect->connecting = true;
-    kythira::promise_default<proxygen::HTTPUpstreamSession*> connect_promise;
-    auto connect_future = connect_promise.getFuture();
-    // No continuation here on purpose. Recording the session, attaching its
-    // liveness tracker, and releasing the waiters all have to happen on `evb`,
-    // and a future continuation is not guaranteed to run there -- so
-    // connect_bridge does that work from connectSuccess/connectError, which
-    // Proxygen does call on `evb`. This function just hands back the future.
-    auto* bridge = new connect_bridge(evb, connection_timeout, session_slot, connect,
-                                      std::move(connect_promise));
-    if (use_ssl) {
-        bridge->connector().connectSSL(evb, addr, ssl_ctx, nullptr, connection_timeout);
-    } else {
-        bridge->connector().connect(evb, addr, connection_timeout);
-    }
-    return connect_future;
 }
 
 }  // namespace proxygen_detail
@@ -750,10 +941,12 @@ auto proxygen_client<Types>::get_or_create_slot(std::uint64_t target)
         it->second.last_used = std::chrono::steady_clock::now();
         return it->second;
     }
-    // Requirement 9.4: connection_pool_size is an upper bound on
-    // simultaneously-tracked target nodes -- evict the LRU entry (by
-    // last_used) before adding a new one that would exceed it, matching
-    // Beast's own precedent.
+    // A bound on simultaneously-tracked target *nodes*, kept as it was: evict
+    // the LRU entry (by last_used) before adding one that would exceed it,
+    // matching Beast's own precedent. Note this is a second, coarser use of
+    // the same knob -- Requirement 9.4's own words are "an upper bound on
+    // simultaneously-open sessions", which is what the per-target capacity
+    // below now enforces.
     if (_connections.size() >= _config.connection_pool_size && !_connections.empty()) {
         auto lru_it = std::min_element(_connections.begin(), _connections.end(),
                                        [](const auto& lhs, const auto& rhs) {
@@ -762,6 +955,12 @@ auto proxygen_client<Types>::get_or_create_slot(std::uint64_t target)
         _connections.erase(lru_it);
     }
     proxygen_detail::pooled_connection slot;
+    // Requirement 9.4 proper: an upper bound on how many sessions to this one
+    // target may be open at once, which is the reading
+    // `cpp_httplib_client_config`/`boost_beast_client_config` use. Before the
+    // pool there was nothing for it to bound -- there was exactly one session
+    // per target whatever it said.
+    slot.sessions->capacity = std::max<std::size_t>(1, _config.connection_pool_size);
     // Requirement 21.3: one EventBase pinned for this node's whole
     // connection lifetime, not round-robin per call -- required for
     // correctness, not just style, since HTTPUpstreamSession itself is
@@ -901,8 +1100,7 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
         auto serialized = _registry.encode_with(content_type, request);
         std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
         auto* evb = slot.event_base;
-        auto session_slot = slot.session;
-        auto connect_slot = slot.connect;
+        auto sessions = slot.sessions;
         auto ssl_ctx = _ssl_ctx;
         auto user_agent = _config.user_agent;
         auto connection_timeout = _config.connection_timeout;
@@ -917,10 +1115,9 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
         metric.add_one();
         metric.emit();
 
-        evb->runInEventBaseThread([this, evb, session_slot, connect_slot, addr, ssl_ctx, is_https,
-                                   connection_timeout, host, body = std::move(body),
-                                   endpoint = std::string(endpoint), timeout, target, rpc_type,
-                                   start_time, content_type, accept,
+        evb->runInEventBaseThread([this, evb, sessions, addr, ssl_ctx, is_https, connection_timeout,
+                                   host, body = std::move(body), endpoint = std::string(endpoint),
+                                   timeout, target, rpc_type, start_time, content_type, accept,
                                    promise = std::move(promise)]() mutable {
             // The response-transform step below returns Response or
             // throws (Beast's own send_rpc pattern exactly) rather
@@ -932,11 +1129,11 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
             // exactly once, regardless of which upstream step
             // produced the value or the exception.
             auto chain =
-                proxygen_detail::connect_if_needed(session_slot, connect_slot, evb, addr, ssl_ctx,
-                                                   is_https, connection_timeout)
+                proxygen_detail::acquire_session(sessions, evb, addr, ssl_ctx, is_https,
+                                                 connection_timeout)
                     .thenValue([evb, host, body = std::move(body), endpoint,
                                 user_agent = _config.user_agent, timeout, content_type,
-                                accept](proxygen::HTTPUpstreamSession* session) mutable {
+                                accept](proxygen_detail::session_lease lease) mutable {
                         // Requirement 16.3 / Property 6: hop back onto the
                         // connection's pinned EventBase before touching the
                         // session. This continuation is *not* already on it --
@@ -954,10 +1151,16 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                         // doc comment states it relies on.
                         kythira::promise_default<proxygen_detail::http_response> hop_promise;
                         auto hop_future = hop_promise.getFuture();
-                        evb->runInEventBaseThread([session, endpoint, body = std::move(body), host,
-                                                   user_agent, timeout, content_type, accept,
+                        // The lease rides into the hop and from there into
+                        // the transaction bridge, so the session stays checked
+                        // out for exactly as long as the transaction it is
+                        // carrying -- not until this closure returns, which is
+                        // long before the response arrives.
+                        evb->runInEventBaseThread([lease = std::move(lease), endpoint,
+                                                   body = std::move(body), host, user_agent,
+                                                   timeout, content_type, accept,
                                                    hop_promise = std::move(hop_promise)]() mutable {
-                            proxygen_detail::send_on_session(session, endpoint, body, host,
+                            proxygen_detail::send_on_session(std::move(lease), endpoint, body, host,
                                                              user_agent, timeout, content_type,
                                                              accept)
                                 .thenTry([hop_promise = std::move(hop_promise)](
@@ -1109,8 +1312,7 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
         auto serialized = _registry.encode_with(content_type, request);
         std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
         auto* evb = slot.event_base;
-        auto session_slot = slot.session;
-        auto connect_slot = slot.connect;
+        auto sessions = slot.sessions;
         auto ssl_ctx = _ssl_ctx;
         auto connection_timeout = _config.connection_timeout;
         auto start_time = std::chrono::steady_clock::now();
@@ -1124,10 +1326,9 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
         metric.add_one();
         metric.emit();
 
-        evb->runInEventBaseThread([this, evb, session_slot, connect_slot, addr, ssl_ctx, is_https,
-                                   connection_timeout, host, body = std::move(body),
-                                   endpoint = std::string(endpoint), timeout, target, rpc_type,
-                                   start_time, content_type, accept,
+        evb->runInEventBaseThread([this, evb, sessions, addr, ssl_ctx, is_https, connection_timeout,
+                                   host, body = std::move(body), endpoint = std::string(endpoint),
+                                   timeout, target, rpc_type, start_time, content_type, accept,
                                    promise = std::move(promise)]() mutable {
             // Requirement 16.3: continuations scheduled via .via(evb) --
             // the connection's own pinned EventBase -- so this chain
@@ -1140,16 +1341,21 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
             // trailing .thenTry() is the one place `promise` is
             // captured/settled.
             auto chain =
-                proxygen_detail::connect_if_needed(session_slot, connect_slot, evb, addr, ssl_ctx,
-                                                   is_https, connection_timeout)
+                proxygen_detail::acquire_session(sessions, evb, addr, ssl_ctx, is_https,
+                                                 connection_timeout)
                     .get_folly_future()
                     .via(evb)
-                    .thenValue([evb, host, body = std::move(body), endpoint,
+                    .thenValue([host, body = std::move(body), endpoint,
                                 user_agent = _config.user_agent, timeout, content_type,
-                                accept](proxygen::HTTPUpstreamSession* session) {
-                        return proxygen_detail::send_on_session_folly(session, endpoint, body, host,
-                                                                      user_agent, timeout,
-                                                                      content_type, accept);
+                                accept](proxygen_detail::session_lease lease) {
+                        // The lease goes *into* the send, where the transaction
+                        // bridge holds it until proxygen detaches the
+                        // transaction. Releasing it when this response future
+                        // settles is too early -- see `transaction_bridge`'s
+                        // own constructor.
+                        return proxygen_detail::send_on_session_folly(
+                            std::move(lease), endpoint, body, host, user_agent, timeout,
+                            content_type, accept);
                     })
                     .via(evb)
                     .thenValue([this, target, rpc_type, start_time,
