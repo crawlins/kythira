@@ -392,9 +392,11 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
 // beast_connection implementations
 // ---------------------------------------------------------------------------
 
-inline plain_beast_connection::plain_beast_connection(beast::tcp_stream stream)
-    : _stream(std::move(stream)),
-      _executor(std::make_shared<asio_strand_executor>(_stream.get_executor())) {}
+inline plain_beast_connection::plain_beast_connection(beast::tcp_stream stream,
+                                                      std::shared_ptr<void> context_keeper)
+    : _context_keeper(std::move(context_keeper)),
+      _stream(std::move(stream)),
+      _executor(std::make_shared<asio_strand_executor>(_stream.get_executor(), _context_keeper)) {}
 
 inline auto plain_beast_connection::is_open() const -> bool {
     return _stream.socket().is_open();
@@ -454,11 +456,12 @@ inline auto plain_beast_connection::close() -> void {
     _stream.close();
 }
 
-inline tls_beast_connection::tls_beast_connection(beast::ssl_stream<beast::tcp_stream> stream)
-    : _stream(std::move(stream)),
-      _executor(
-          std::make_shared<asio_strand_executor>(beast::get_lowest_layer(_stream).get_executor())) {
-}
+inline tls_beast_connection::tls_beast_connection(beast::ssl_stream<beast::tcp_stream> stream,
+                                                  std::shared_ptr<void> context_keeper)
+    : _context_keeper(std::move(context_keeper)),
+      _stream(std::move(stream)),
+      _executor(std::make_shared<asio_strand_executor>(
+          beast::get_lowest_layer(_stream).get_executor(), _context_keeper)) {}
 
 inline auto tls_beast_connection::is_open() const -> bool {
     return beast::get_lowest_layer(_stream).socket().is_open();
@@ -525,8 +528,9 @@ template<typename Types>
 requires kythira::future_default_transport_types<Types>
 boost_beast_client<Types>::boost_beast_client(
     net::io_context& ioc, std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
-    boost_beast_client_config config, metrics_type metrics)
-    : _ioc(ioc),
+    boost_beast_client_config config, metrics_type metrics, std::shared_ptr<void> context_keeper)
+    : _context_keeper(std::move(context_keeper)),
+      _ioc(ioc),
       _node_id_to_url(std::move(node_id_to_url_map)),
       _config(std::move(config)),
       _metrics(std::move(metrics)) {
@@ -720,10 +724,11 @@ auto boost_beast_client<Types>::make_connection(std::uint64_t target) -> pooled_
                 std::format("Node {} uses https:// but no TLS material is configured", target));
         }
         connection = std::make_shared<beast_detail::tls_beast_connection>(
-            beast::ssl_stream<beast::tcp_stream>(net::make_strand(_ioc), *_ssl_ctx));
+            beast::ssl_stream<beast::tcp_stream>(net::make_strand(_ioc), *_ssl_ctx),
+            _context_keeper);
     } else {
         connection = std::make_shared<beast_detail::plain_beast_connection>(
-            beast::tcp_stream(net::make_strand(_ioc)));
+            beast::tcp_stream(net::make_strand(_ioc)), _context_keeper);
     }
 
     // Registered weakly so the destructor can force-close it even while it is

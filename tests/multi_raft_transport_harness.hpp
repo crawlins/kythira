@@ -370,21 +370,31 @@ public:
     static auto capabilities() -> transport_capabilities { return transport_capabilities{}; }
 
     explicit beast_http_transport(const std::vector<std::uint64_t>& nodes)
-        : _work(boost::asio::make_work_guard(_ioc)) {
+        : _work(boost::asio::make_work_guard(*_ioc)) {
         const auto threads = std::max(2U, std::thread::hardware_concurrency() / 2);
         for (unsigned i = 0; i < threads; ++i) {
-            _io_threads.emplace_back([this] { _ioc.run(); });
+            _io_threads.emplace_back([this] { _ioc->run(); });
         }
         for (auto id : nodes) {
             _urls.emplace(id, loopback_url(reserve_port()));
         }
         for (auto id : nodes) {
-            _servers.emplace(id, std::make_unique<server_type>(_ioc, "127.0.0.1", port_of(id),
+            _servers.emplace(id, std::make_unique<server_type>(*_ioc, "127.0.0.1", port_of(id),
                                                                kythira::boost_beast_server_config{},
                                                                noop_metrics{}));
+            // `_ioc` is passed as the client's context keeper, not just
+            // dereferenced into it. This fixture is destroyed at the end of
+            // every repetition while `error_handler`'s delayed retries are
+            // still armed on Folly's process-wide Timekeeper, and those chains
+            // hold `KeepAlive`s on the Beast connections' strand executors. A
+            // by-value `io_context` here died first and the last executor's
+            // destructor then read the service registry it had taken with it
+            // -- `.kiro/specs/multi-raft-performance/` task 5a. The server
+            // needs no keeper: `server_session` holds its executor by value,
+            // so `keepAliveAcquire()` returns false and it never self-pins.
             _clients.emplace(
-                id, std::make_unique<client_type>(_ioc, _urls, kythira::boost_beast_client_config{},
-                                                  noop_metrics{}));
+                id, std::make_unique<client_type>(
+                        *_ioc, _urls, kythira::boost_beast_client_config{}, noop_metrics{}, _ioc));
         }
     }
 
@@ -405,13 +415,20 @@ public:
         _clients.clear();
         _servers.clear();
         _work.reset();
-        _ioc.stop();
+        _ioc->stop();
         for (auto& t : _io_threads) {
             if (t.joinable()) {
                 t.join();
             }
         }
         _io_threads.clear();
+        // `_ioc` itself is deliberately *not* reset here. Dropping this
+        // fixture's reference is all shutdown owes; the `io_context` is
+        // destroyed by whichever reference goes last, which may be a Folly
+        // chain releasing a strand executor on another thread long after this
+        // returns. Every io thread has been joined by then, so nothing is
+        // inside `run()` when that happens, which is all `~io_context`
+        // requires.
     }
 
 private:
@@ -420,7 +437,9 @@ private:
         return static_cast<std::uint16_t>(std::stoi(url.substr(url.rfind(':') + 1)));
     }
 
-    boost::asio::io_context _ioc;
+    // `shared_ptr` rather than a value member: see the constructor. Declared
+    // first so it is destroyed last of this fixture's own members.
+    std::shared_ptr<boost::asio::io_context> _ioc{std::make_shared<boost::asio::io_context>()};
     boost::asio::executor_work_guard<boost::asio::io_context::executor_type> _work;
     std::vector<std::thread> _io_threads;
     std::atomic<bool> _stopped{false};

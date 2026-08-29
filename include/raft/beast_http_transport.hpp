@@ -369,12 +369,22 @@ private:
 
 class asio_strand_executor {
 public:
-    explicit asio_strand_executor(net::any_io_executor ex)
-        : _handle(asio_strand_scheduler(std::move(ex))) {}
+    /// @param context_keeper  see the Folly specialisation below for what this
+    ///     is for. Accepted on every backend so that callers need not be
+    ///     backend-conditional; only the Folly one can actually outlive its
+    ///     owner, but holding the keeper here too costs one `shared_ptr` and
+    ///     keeps the ownership rule the same on all three.
+    explicit asio_strand_executor(net::any_io_executor ex,
+                                  std::shared_ptr<void> context_keeper = {})
+        : _context_keeper(std::move(context_keeper)),
+          _handle(asio_strand_scheduler(std::move(ex))) {}
 
     auto handle() -> kythira::stdexec_backend::scheduler_handle& { return _handle; }
 
 private:
+    // Declared before `_handle`, which owns the Asio executor -- see the Folly
+    // specialisation's `_context_keeper` for why the order matters.
+    std::shared_ptr<void> _context_keeper;
     kythira::stdexec_backend::scheduler_handle _handle;
 };
 
@@ -388,7 +398,11 @@ private:
 /// this executor to drain it.
 class asio_strand_executor {
 public:
-    explicit asio_strand_executor(net::any_io_executor ex) : _ex(std::move(ex)) {}
+    /// @param context_keeper  see the Folly specialisation below -- accepted on
+    ///     every backend so callers need not be backend-conditional.
+    explicit asio_strand_executor(net::any_io_executor ex,
+                                  std::shared_ptr<void> context_keeper = {})
+        : _context_keeper(std::move(context_keeper)), _ex(std::move(ex)) {}
 
     auto handle() -> asio_strand_executor& { return *this; }
 
@@ -403,6 +417,8 @@ public:
     auto try_executing_one() -> bool { return false; }
 
 private:
+    // Declared before `_ex` -- see the Folly specialisation's `_context_keeper`.
+    std::shared_ptr<void> _context_keeper;
     net::any_io_executor _ex;
     std::atomic<bool> _closed{false};
 };
@@ -430,7 +446,15 @@ private:
 class asio_strand_executor final : public folly::Executor,
                                    public std::enable_shared_from_this<asio_strand_executor> {
 public:
-    explicit asio_strand_executor(net::any_io_executor ex) : _ex(std::move(ex)) {}
+    /// @param ex   the stream's Asio executor, copied.
+    /// @param context_keeper  an optional owner of the `io_context` `ex` came
+    ///     from, held for exactly as long as `_ex` is. Empty by default, which
+    ///     is the historical behaviour and correct wherever the caller can
+    ///     guarantee its `io_context` outlives every chain — see the class
+    ///     comment above for why that guarantee is not free.
+    explicit asio_strand_executor(net::any_io_executor ex,
+                                  std::shared_ptr<void> context_keeper = {})
+        : _context_keeper(std::move(context_keeper)), _ex(std::move(ex)) {}
 
     auto add(folly::Func func) -> void override { net::post(_ex, std::move(func)); }
 
@@ -474,6 +498,15 @@ public:
     }
 
 private:
+    // Declared *before* `_ex`, and that ordering is the whole point: members
+    // are destroyed in reverse declaration order, so this is released last.
+    // `~any_io_executor` drops the last reference to Asio's `strand_impl`,
+    // whose destructor's first statement locks `service_->mutex_` on the
+    // `strand_executor_service` owned by the `io_context`'s service registry.
+    // Destroy the `io_context` first and that is a read of freed memory --
+    // measured as `heap-use-after-free` under ASan, six runs in six, in
+    // `.kiro/specs/multi-raft-performance/` task 5a.
+    std::shared_ptr<void> _context_keeper;
     net::any_io_executor _ex;
     std::mutex _keep_alive_mutex;
     std::size_t _keep_alive_count{0};
@@ -521,7 +554,11 @@ public:
 /// @brief `beast_connection` over a plain `beast::tcp_stream`.
 class plain_beast_connection final : public beast_connection {
 public:
-    explicit plain_beast_connection(beast::tcp_stream stream);
+    /// @param context_keeper  forwarded to `asio_strand_executor` and held
+    ///     here too, since `_stream`'s own executor references the same
+    ///     `io_context`. See that class's `_context_keeper` for why.
+    explicit plain_beast_connection(beast::tcp_stream stream,
+                                    std::shared_ptr<void> context_keeper = {});
 
     [[nodiscard]] auto is_open() const -> bool override;
     auto set_timeout(std::chrono::milliseconds timeout) -> void override;
@@ -532,6 +569,9 @@ public:
     auto close() -> void override;
 
 private:
+    // Declared first so it is destroyed last: _stream holds an executor into
+    // the same io_context that _executor does.
+    std::shared_ptr<void> _context_keeper;
     beast::tcp_stream _stream;
     // Declared after _stream (member init order follows declaration order,
     // not initializer-list order) so the constructor can build this from
@@ -552,7 +592,9 @@ private:
 /// @brief `beast_connection` over `beast::ssl_stream<beast::tcp_stream>`.
 class tls_beast_connection final : public beast_connection {
 public:
-    explicit tls_beast_connection(beast::ssl_stream<beast::tcp_stream> stream);
+    /// @param context_keeper  see `plain_beast_connection`'s -- same reason.
+    explicit tls_beast_connection(beast::ssl_stream<beast::tcp_stream> stream,
+                                  std::shared_ptr<void> context_keeper = {});
 
     [[nodiscard]] auto is_open() const -> bool override;
     auto set_timeout(std::chrono::milliseconds timeout) -> void override;
@@ -563,6 +605,8 @@ public:
     auto close() -> void override;
 
 private:
+    // See plain_beast_connection::_context_keeper above -- same reason.
+    std::shared_ptr<void> _context_keeper;
     beast::ssl_stream<beast::tcp_stream> _stream;
     // See plain_beast_connection::_executor above -- same reason.
     std::shared_ptr<asio_strand_executor> _executor;
@@ -612,9 +656,18 @@ public:
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
 
+    /// @param context_keeper  optional owner of `ioc`, propagated to every
+    ///     connection this client makes and to the Folly executor each one
+    ///     wraps around its Asio strand. Defaulted empty, so every existing
+    ///     caller is unaffected; pass one when `ioc`'s lifetime is *not*
+    ///     guaranteed to exceed that of the Folly future chains this client's
+    ///     RPCs start -- `error_handler`'s delayed retries in particular
+    ///     outlive the RPC that armed them, and can outlive the whole client.
+    ///     See `beast_detail::asio_strand_executor::_context_keeper`.
     boost_beast_client(net::io_context& ioc,
                        std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
-                       boost_beast_client_config config, metrics_type metrics);
+                       boost_beast_client_config config, metrics_type metrics,
+                       std::shared_ptr<void> context_keeper = {});
     ~boost_beast_client();
 
     boost_beast_client(const boost_beast_client&) = delete;
@@ -755,6 +808,11 @@ private:
         bool _reusable{false};
     };
 
+    // Empty unless a caller opted in, in which case it owns the `io_context`
+    // that `_ioc` refers to. Declared first so it is destroyed last, and
+    // handed to every connection this client makes -- see the constructor's
+    // `context_keeper` parameter.
+    std::shared_ptr<void> _context_keeper;
     net::io_context& _ioc;
     serializer_type _serializer;
     /// Negotiation goes through the registry; `_serializer` stays because the
