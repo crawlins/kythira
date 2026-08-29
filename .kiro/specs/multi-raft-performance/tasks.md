@@ -576,7 +576,7 @@ and the answer is currently no for every one of them.
     records for a bare ping-pong, unchanged under a real workload
   - _Requirements: 17.14, 17.9_
 
-- [ ] 7. Complete the RPC-provider axis
+- [x] 7. Complete the RPC-provider axis
   - CBOR and protobuf rows over Beast; Ion behind its own gate
   - Confirm each row's label comes from the serializer's own `media_type()`
   - Assert the node-internal serializer stayed at JSON across every row
@@ -613,7 +613,39 @@ and the answer is currently no for every one of them.
     them as "the axis now produces stable rows", not as the answer: the ordering
     (CBOR and protobuf within 1% of each other and ~15% above JSON) is the shape
     to confirm, not to publish
-  - **Ion is what is left**, and it needs its own gate the way protobuf has one
+  - **Ion's row is in, behind `KYTHIRA_BENCH_HAS_ION`, and it has been
+    measured.** Its gate is `if(TARGET raft_ion_serializer)`, the same shape as
+    protobuf's — but its *off* case is not the same situation and the code says
+    so rather than printing the same message. ion-c is installed in this
+    environment; what is unset is `CONFIG_ION_SERIALIZER`, which **every
+    checked-in defconfig deliberately leaves out** (`configs/ci_full_defconfig`
+    explains why: ion-c comes from the opt-in `ion` vcpkg feature). So this row
+    compiles out on every CI leg and in `build-default`, and measuring it needs
+    a build configured with that symbol selected — which is what was done here,
+    rather than shipping a row that had never been compiled
+  - **Ion is the slowest wire serializer on this axis, and the label proves the
+    label mechanism.** One run, five repetitions each, 600 operations at 16 in
+    flight over 128 B values, on an Ion-enabled Release build:
+
+    | wire serializer | headline | spread | verdict |
+    |---|---:|---:|---|
+    | `application/json` | 1416.0 ops/sec | 20.2% | UNSTABLE |
+    | `application/cbor` | 1533.1 ops/sec | 4.1% | stable |
+    | `application/x-protobuf` | 1557.5 ops/sec | 3.2% | stable |
+    | `application/x-amzn-ion` | 1089.1 ops/sec | 13.9% | UNSTABLE |
+
+    **`application/x-amzn-ion` is the strongest evidence in this spec that row
+    labels come from the serializer and not from a hand-written string.** Ion is
+    the one serializer here whose `media_type()` depends on instance state —
+    binary and text are different media types off the same class — and the row
+    printed the binary one because that is what the default-constructed
+    serializer on the wire actually was. Nothing in the benchmark names Ion's
+    media type anywhere
+  - Note the JSON row came back at 20.2% here against 8.3% on the earlier run
+    an hour before, on the same machine and the same binary path. Nothing about
+    JSON changed; the machine did. That is the spread doing its job, and it is
+    why none of these numbers may be quoted until they are taken on a host whose
+    one-minute load is genuinely below 0.5
   - _Requirements: 8.4, 17.3, 17.4, 17.5_
 
 - [ ] 8. The concurrency and distribution axes

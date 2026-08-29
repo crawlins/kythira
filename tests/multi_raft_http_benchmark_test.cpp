@@ -79,6 +79,10 @@
 #include <raft/protobuf_serializer.hpp>
 #endif
 
+#if defined(KYTHIRA_BENCH_HAS_ION)
+#include <raft/ion_serializer.hpp>
+#endif
+
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 #endif
@@ -128,6 +132,14 @@ using kythira::testing::workload_options;
 
 using json = kythira::json_serializer;
 using cbor = kythira::cbor_serializer;
+#if defined(KYTHIRA_BENCH_HAS_ION)
+// Ion's `media_type()` is the one in this suite that depends on instance state
+// -- binary and text are different media types off the same class -- so the row
+// is deliberately left to the default-constructed encoding (binary) rather than
+// naming a media type here. `run_put_workload` reads the label off the
+// serializer, so the row says which one actually went on the wire.
+using ion = kythira::ion_serializer;
+#endif
 
 /// The cluster shape every row shares. Comparability requires that the only
 /// thing differing between rows is the axis under test, so these are constants
@@ -497,6 +509,16 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer,
             600, 16, 128, 5.0);
 #else
     BOOST_TEST_MESSAGE("  protobuf row: NOT RUN (KYTHIRA_BENCH_HAS_PROTOBUF undefined)");
+#endif
+#if defined(KYTHIRA_BENCH_HAS_ION)
+    std::ignore = throughput_row<kythira::testing::beast_http_transport<ion>>(600, 16, 128, 5.0);
+#else
+    // Not the same "absent dependency" as protobuf's: ion-c is installed here,
+    // but CONFIG_ION_SERIALIZER is unset in every checked-in defconfig, so this
+    // row needs a build configured for it rather than a different vcpkg tree.
+    BOOST_TEST_MESSAGE(
+        "  ion row: NOT RUN (KYTHIRA_BENCH_HAS_ION undefined -- needs "
+        "CONFIG_ION_SERIALIZER)");
 #endif
 #else
     // Without Beast the serializer axis would have to ride on cpp-httplib,
