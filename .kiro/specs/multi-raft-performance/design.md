@@ -145,6 +145,19 @@ and `rpcs_per_committed_entry()` (H2) — are `std::optional` and empty over a
 zero denominator, since 0/0 entries per AppendEntries is "nothing replicated",
 which is a different statement from "no batching".
 
+**Reads.** `read_kind` has three values and no fourth meaning "a read", which
+is how Requirement 2.1's ban on aggregating them is enforced rather than
+remembered; `consistency_of()` returns the guarantee in the words a comparison
+has to match on. `run_read_workload` takes the kind as a parameter because
+everything but the one call is identical, and the separation that matters is
+per-*row*, not per-driver. The local read goes through
+`node::with_state_machine`, which takes the node's own `_mutex` — so a read that
+skips consensus does not skip per-group serialization, and H7's lock is on its
+path too. Read rows need a populated store, so `preload_keys` writes
+`kv_key(i * stride)` and `workload_options::_key_stride` makes the sampler draw
+the same indices; the caller asserts every key committed, because a read row
+over a partly-loaded store measures a miss path while claiming not to.
+
 **Statistics.** `latency_sample_set` returns `p99()` as `std::optional`, empty
 below 1,000 samples, and `p999()` empty below 10,000 — Requirement 5.3, enforced
 by the type rather than by discipline. `quantile()` is available for a caller
@@ -408,7 +421,8 @@ machine, a ratio is a statement about the implementation:
 | Payload axis | `write_throughput_by_value_size` |
 | Concurrency axis / H1, H2, H7 | `write_throughput_by_concurrency` — in-flight 1/8/64 in **both** key distributions, because the uniform arm's curve is the cluster's and H7 is a claim about one group's mutex |
 | Key-distribution axis | `write_throughput_by_key_distribution` — uniform against Zipfian at 16 in flight, the configuration every other row in the suite shares, which is what lets the Zipfian number be quoted against those tables |
-| Read taxonomy (Requirement 2) | `read_taxonomy` (to add) |
+| Read taxonomy (Requirement 2) | `read_taxonomy` — the three kinds, each row carrying its `read_kind` and the consistency it actually provides |
+| `read_state` against shard size / H5 | `read_state_by_shard_size` — stride 1, so the preloaded keys are contiguous and land in one shard, which is the configuration H5 is about |
 | Statistical method (Requirement 6) | `repeated_result` around every throughput row; `machine_description` from a global fixture |
 | Portability | compiles and runs under folly, boost and stdexec |
 

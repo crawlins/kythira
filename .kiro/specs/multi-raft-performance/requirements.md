@@ -218,6 +218,19 @@ for a finding:
 - **H5 — Reads transfer whole state.** `read_state` returns the serialized
   store (`raft.hpp:2455`), so read cost scales with shard size while a
   competitor's point read does not.
+  **CONFIRMED (task 9), and the curve is linear to three figures.** Bytes
+  returned per stored key is 146.08 / 146.01 / 146.00 at shard sizes of 100 /
+  1000 / 5000 keys — a fifty-fold range. Throughput falls 2448.8 → 597.2 ops/sec
+  over the same range while bytes/sec *rises* 34.1 → 415.7 MiB/sec, which is
+  Requirement 2.4's reason for demanding both units. A separately-configured
+  taxonomy row (four shards, stride 100) independently returned 146.03
+  bytes/key.
+  What did *not* follow from H5 is the comparison it invites: at a 250-key shard
+  `read_state` is **1.7x faster in ops/sec and lower in p50** than this system's
+  own linearizable point read, because `GET` is submitted as a proposal and pays
+  a log entry and a replication round while `read_state` pays only a heartbeat
+  quorum. The whole-store read is expensive against a *competitor's* point read,
+  not against ours.
 - **H6 — The tick sets a floor.** Anything that waits for a heartbeat waits
   for the caller's next `tick()`. At a 10 ms cadence that is a 10 ms floor on
   those paths regardless of how fast consensus is.

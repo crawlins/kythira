@@ -113,6 +113,7 @@ BOOST_GLOBAL_FIXTURE(folly_init_fixture);
 namespace {
 
 using kythira::testing::benchmark_result;
+using kythira::testing::consistency_of;
 using kythira::testing::cpp_httplib_transport;
 using kythira::testing::describe_machine;
 using kythira::testing::k_required_repetitions;
@@ -125,8 +126,11 @@ using kythira::testing::kv_put;
 using kythira::testing::kv_value;
 using kythira::testing::machine_description;
 using kythira::testing::operation_tally;
+using kythira::testing::preload_keys;
+using kythira::testing::read_kind;
 using kythira::testing::repeated_result;
 using kythira::testing::run_put_workload;
+using kythira::testing::run_read_workload;
 using kythira::testing::to_string;
 using kythira::testing::workload_options;
 
@@ -319,6 +323,17 @@ auto report(const repeated_result& row) -> void {
     out << "\n      counts:   " << row._warmup_operations
         << " warm-up operations discarded per run, " << row._measured_operations
         << " offered per measured run (Requirement 6.1)";
+    if (median._read_kind.has_value()) {
+        out << "\n      read kind: " << to_string(*median._read_kind)
+            << "\n      consistency: " << consistency_of(*median._read_kind)
+            << "\n      bytes:    " << median._bytes_returned << " returned in the median run, "
+            << median.bytes_per_second() / (1024.0 * 1024.0) << " MiB/sec";
+        if (const auto per_op = median.bytes_per_operation()) {
+            out << ", " << *per_op << " bytes/operation";
+        } else {
+            out << ", bytes/operation n/a — nothing completed";
+        }
+    }
     out << "\n      " << replication_cost(median);
     BOOST_TEST_MESSAGE(out.str());
 }
@@ -681,6 +696,157 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_key_distribution,
         600, 16, 128, 2.0, key_distribution::zipfian);
 #else
     BOOST_TEST_MESSAGE("  distribution sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
+#endif
+}
+
+// ── the read taxonomy ────────────────────────────────────────────────────────
+
+/// @brief One read repetition: a fresh cluster, a preloaded store, one measured
+///        window of one read kind.
+///
+/// The preload is inside the repetition, not shared across the five, because a
+/// repetition is a whole measurement (doctrine 43) and a store loaded once and
+/// read five times would measure a progressively warmer cache against a
+/// progressively less representative cluster.
+///
+/// `preloaded` is asserted rather than assumed. A read row over a store that is
+/// nine-tenths loaded measures something other than what it claims, and the
+/// only way to know is to count what committed.
+template<typename Transport>
+auto one_read_measurement(read_kind kind, std::uint64_t distinct_keys, std::uint64_t stride,
+                          std::size_t value_bytes, std::size_t operations, std::size_t in_flight)
+    -> benchmark_result {
+    kv_cluster<Transport> cluster{standard_cluster_options()};
+    BOOST_REQUIRE_MESSAGE(cluster.await_all_leaders(k_election_budget),
+                          Transport::name() << ": no leader on every shard within budget");
+
+    operation_tally preload_tally;
+    const auto preloaded = preload_keys(cluster, distinct_keys, stride, value_bytes,
+                                        k_operation_timeout, preload_tally);
+    BOOST_REQUIRE_MESSAGE(preloaded == distinct_keys,
+                          Transport::name()
+                              << ": preloaded only " << preloaded << " of " << distinct_keys
+                              << " keys; this row would measure a miss path");
+
+    workload_options workload;
+    workload._in_flight = in_flight;
+    workload._operations = operations;
+    workload._value_bytes = value_bytes;
+    workload._key_count = distinct_keys;
+    workload._key_stride = stride;
+    workload._distribution = key_distribution::uniform;
+    workload._op_timeout = k_operation_timeout;
+    workload._scenario = std::string{to_string(kind)};
+
+    workload_options warmup = workload;
+    warmup._operations = warmup_operations(operations, in_flight);
+    std::ignore = run_read_workload(cluster, warmup, kind);
+
+    auto row = run_read_workload(cluster, workload, kind);
+
+    BOOST_CHECK_MESSAGE(row._tally._completed > 0, Transport::name()
+                                                       << " / " << to_string(kind)
+                                                       << ": no read completed at all");
+    return row;
+}
+
+/// @brief `k_required_repetitions` read measurements, reported as one row.
+template<typename Transport>
+auto read_row(read_kind kind, std::uint64_t distinct_keys, std::uint64_t stride,
+              std::size_t value_bytes, std::size_t operations, std::size_t in_flight)
+    -> repeated_result {
+    repeated_result row;
+    row._warmup_operations = warmup_operations(operations, in_flight);
+    row._measured_operations = operations;
+    for (std::size_t repetition = 0; repetition < k_required_repetitions; ++repetition) {
+        auto run = one_read_measurement<Transport>(kind, distinct_keys, stride, value_bytes,
+                                                   operations, in_flight);
+        report(repetition, run);
+        row.record(std::move(run));
+    }
+    report(row);
+    return row;
+}
+
+/// @brief How many operations a read row of each kind offers.
+///
+/// Per-kind for the same reason `write_throughput_by_transport` gives
+/// cpp-httplib a smaller budget than Beast: throughput is a rate, so unequal
+/// budgets stay comparable, and an equal budget does not. A local read costs
+/// about a microsecond, so 400 of them complete in roughly a millisecond — a
+/// window in which starting and joining eight threads is most of what is being
+/// timed. Measured that way the local row came back at 44% spread, which said
+/// nothing about the system and everything about the budget.
+auto read_budget(read_kind kind) -> std::size_t {
+    switch (kind) {
+        case read_kind::local_stale:
+            // ~1 us per read, so this is roughly half a second of work.
+            return 200000;
+        case read_kind::read_state:
+        case read_kind::log_get:
+            return 400;
+    }
+    return 400;
+}
+
+/// @brief The three read kinds, measured separately and never aggregated.
+///
+/// No sanity floor here, and that is deliberate: the three kinds differ by
+/// orders of magnitude by construction — a local read touches one map, a `GET`
+/// costs a log entry and a replication round, and `read_state` serializes the
+/// whole store — so a floor low enough for the slowest would say nothing about
+/// the fastest. What the row asserts instead is that reads *completed*, and
+/// what it reports is the kind, the consistency and the bytes, which is what
+/// Requirement 2.2 asks a read result to state.
+BOOST_AUTO_TEST_CASE(read_taxonomy,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
+    BOOST_TEST_MESSAGE(
+        "read taxonomy, 1000 preloaded 128B keys spread over all four shards, 8 in flight "
+        "(Requirement 2.1: three kinds, reported separately):");
+
+#if defined(KYTHIRA_BENCH_HAS_BEAST)
+    // 1000 keys at stride 100 covers the 100000-key space evenly, so every
+    // shard holds 250 of them and a uniform sampler hits all four.
+    for (auto kind : {read_kind::read_state, read_kind::log_get, read_kind::local_stale}) {
+        std::ignore = read_row<kythira::testing::beast_http_transport<json>>(kind, 1000, 100, 128,
+                                                                             read_budget(kind), 8);
+    }
+#else
+    BOOST_TEST_MESSAGE("  read taxonomy: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
+#endif
+}
+
+/// @brief `read_state` against shard size — H5's curve rather than H5's point.
+///
+/// Stride 1, so the preloaded keys are contiguous and land in **one** shard.
+/// That is the configuration H5 is about: `read_state` returns the whole
+/// serialized store for the shard it is asked about, so its cost should track
+/// that shard's size and not the cluster's.
+///
+/// Requirement 2.4 wants ops/sec **and** bytes/sec, and this is the sweep that
+/// shows why: if H5 holds, ops/sec falls as the shard grows while bytes/sec
+/// stays roughly flat — the machine doing the same work per second and less of
+/// it per operation. A row reported only in ops/sec would look like a
+/// regression instead of a transfer.
+BOOST_AUTO_TEST_CASE(read_state_by_shard_size,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
+    BOOST_TEST_MESSAGE(
+        "read_state against shard size, 128B values, 8 in flight, one shard "
+        "(H5: read cost scales with shard size):");
+
+#if defined(KYTHIRA_BENCH_HAS_BEAST)
+    for (std::uint64_t keys : {std::uint64_t{100}, std::uint64_t{1000}, std::uint64_t{5000}}) {
+        // Fewer operations at the larger shards: each one serializes and
+        // transfers the entire store, so a fixed budget would make the 5000-key
+        // row dominate the case's wall-clock without telling us anything the
+        // rate does not.
+        const std::size_t operations = keys >= 5000 ? 80 : 200;
+        std::ignore = read_row<kythira::testing::beast_http_transport<json>>(
+            read_kind::read_state, keys, 1, 128, operations, 8);
+    }
+#else
+    BOOST_TEST_MESSAGE(
+        "  read_state shard-size curve: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
 #endif
 }
 

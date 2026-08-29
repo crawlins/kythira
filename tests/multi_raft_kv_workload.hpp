@@ -265,6 +265,58 @@ private:
 // Statistics
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The read taxonomy
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The three reads this system can perform, which cost different things
+///        and guarantee different things.
+///
+/// Requirement 2.1 forbids aggregating them, and the enum is how that is
+/// enforced rather than remembered: a row carries one of these, and there is no
+/// value meaning "a read".
+enum class read_kind : std::uint8_t {
+    /// `multi_raft::read_state` — confirms leadership by heartbeat quorum and
+    /// returns the **entire serialized store** for the shard. Not a point read.
+    read_state,
+    /// A `GET` submitted as a proposal. Costs a log entry and a replication
+    /// round, returns one value.
+    log_get,
+    /// `test_key_value_state_machine::get_value` against a replica's state
+    /// machine. No consensus, no quorum, and explicitly not linearizable.
+    local_stale,
+};
+
+[[nodiscard]] inline auto to_string(read_kind kind) -> std::string_view {
+    switch (kind) {
+        case read_kind::read_state:
+            return "read_state (whole-store)";
+        case read_kind::log_get:
+            return "GET through the log";
+        case read_kind::local_stale:
+            return "local stale read";
+    }
+    return "unknown";
+}
+
+/// @brief The consistency each read kind actually provides, in the words a
+///        comparison table has to match on (Requirement 2.2, 2.3).
+///
+/// Spelled out rather than abbreviated because the whole point of Requirement
+/// 2.3 is that a reader comparing against somebody else's read number can see
+/// immediately whether the guarantees line up.
+[[nodiscard]] inline auto consistency_of(read_kind kind) -> std::string_view {
+    switch (kind) {
+        case read_kind::read_state:
+            return "linearizable (leadership confirmed by heartbeat quorum)";
+        case read_kind::log_get:
+            return "linearizable (ordered through the log)";
+        case read_kind::local_stale:
+            return "NOT LINEARIZABLE (local replica, may be arbitrarily stale)";
+    }
+    return "unknown";
+}
+
 /// @brief Latency samples, and percentiles that refuse to lie about themselves.
 ///
 /// `p99()` returns `std::nullopt` below 1,000 samples and `p999()` below 10,000
@@ -433,6 +485,28 @@ struct benchmark_result {
     /// difference of two `kv_cluster::rpc_counts()` snapshots taken either side
     /// of it. Zero on a row whose cluster was not counting.
     rpc_snapshot _rpc{};
+
+    /// Bytes returned to the caller across the whole measured window. Zero for
+    /// a write row; the point of carrying it is Requirement 2.4, which asks for
+    /// `read_state` in bytes/sec **as well as** ops/sec, because at a large
+    /// shard the second is the number that describes the machine's work.
+    std::uint64_t _bytes_returned{0};
+    /// Empty on a write row. Present on a read row even when the kind is
+    /// obvious, so that no reported read can omit its kind (Requirement 2.1).
+    std::optional<read_kind> _read_kind{};
+
+    /// @brief Bytes returned per second over the measured window.
+    [[nodiscard]] auto bytes_per_second() const -> double {
+        const auto seconds = std::chrono::duration<double>(_duration).count();
+        return seconds > 0.0 ? static_cast<double>(_bytes_returned) / seconds : 0.0;
+    }
+
+    /// @brief Mean bytes handed back per completed operation (Requirement 2.2).
+    [[nodiscard]] auto bytes_per_operation() const -> std::optional<double> {
+        return _tally._completed == 0 ? std::nullopt
+                                      : std::optional{static_cast<double>(_bytes_returned) /
+                                                      static_cast<double>(_tally._completed)};
+    }
 
     /// @brief RPCs per committed entry (Hypothesis H2).
     ///
