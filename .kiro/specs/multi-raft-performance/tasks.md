@@ -68,7 +68,7 @@ and the answer is currently no for every one of them.
     failure; `run_read_state`; `term_sum()`; `run_put_workload`
   - _Requirements: 4.1, 4.3, 7.8, 15.1, 15.3, 15.4, 17.11_
 
-- [ ] 5. **Fix the teardown fault — measured, and it is Proxygen's, not Beast's**
+- [x] 5. **Fix the teardown fault — measured, and it is Proxygen's, not Beast's**
   - **The rate is measured, not assumed.** Ten consecutive runs of all three
     smoke cases outside a debugger: **9 clean, 1 fault**. The failing run
     printed `proxygen: 8/8 operations committed over a real socket` and then
@@ -346,6 +346,44 @@ and the answer is currently no for every one of them.
     copy either, so the field is inert in all three HTTP transports and the
     Proxygen doc comment's "the same precedent Beast used" describes enforcement
     that does not exist anywhere. Separate defect, not this task's
+  - **Closed on a paired 60-run Release control, run back to back on one idle
+    machine.** Everything above was argued from Release runs measured sessions
+    apart, or from ASan runs on a binary that turned out to be mis-linked. This
+    is the same case (`a_kv_cluster_commits_over_proxygen`), the same binary
+    except for `include/raft/proxygen_http_*.hpp`, 60 runs each arm, with
+    `main`'s headers rebuilt into `build-default` for the control:
+
+    | arm | runs | `session unavailable` | runs with a storm | memory faults | mean | max |
+    |---|---:|---:|---:|---:|---:|---:|
+    | `main`, no pool | 60 | 10216 (170/run) | **60/60** | **0** | 7.0 s | 25.4 s |
+    | this branch, pooled | 60 | **0** | **0/60** | **0** | 3.0 s | 3.7 s |
+
+    Three things follow, and the third is the one that changes the task.
+    **The storm is exactly as diagnosed** — every single control run has it, at
+    the 170/run the earlier three-run sample predicted, and the pool removes all
+    of it. **The 25-second tail is the storm's**, not a scheduling artefact: it
+    is present in the control and absent from the pooled arm, whose *max* is
+    nearer the control's *mean* than its max. And **the teardown fault this task
+    is named for did not occur in either arm**
+  - **So the fault is not "fixed" here; it is no longer reproducible.** The
+    documented Release rate was 1 in 10. Zero in 60 puts the 95% upper bound at
+    3/60 = 5% (rule of three), so a 10% rate is excluded — on `main`, with no
+    pool, on the build type that was never mis-linked. Together with the
+    withdrawal of every ASan figure above, **no correctly-built configuration
+    currently reproduces the Proxygen teardown fault at all.** This box is
+    ticked for the storm — measured, diagnosed, fixed, and controlled against —
+    and explicitly not as a claim that a SEGV was chased down
+  - **The leading hypothesis for where that 1-in-10 went is task 5a, and it is
+    cheap to state.** The three smoke cases run in one process in declaration
+    order: cpp-httplib, **Beast**, then Proxygen. Task 5a's fault is a Beast
+    `asio_strand_executor` outliving its `io_context`, and it fires during a
+    *later* fixture's startup, on a Folly thread, with Boost.Test attributing it
+    to whichever case is current. That is precisely the shape task 5 was opened
+    for — "after the Proxygen case's work was done, in its teardown" — and it
+    would explain why three sessions spent inside `proxygen_client` found
+    nothing: the object already destroyed was Beast's. **A hypothesis, not a
+    finding.** It is testable by comparing the Proxygen smoke case run alone
+    against the whole-suite rate, and 5a's fix will test it for free
   - _Requirements: 15.5_
 
 - [ ] 5a. **A second teardown fault, on the Beast arm, at 4096-byte values**
@@ -371,6 +409,113 @@ and the answer is currently no for every one of them.
     outliving the executor its callbacks were scheduled on, and this one faults
     building a fresh cluster. Establish the rate under ASan first, the way task
     5's was, before choosing between them
+  - **Root cause found, and ASan names it exactly on the corrected build.**
+    `build-asan` with `CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO` in place (its
+    `link.txt` now names no `debug/lib/libproxygen.a`) reports, on **6 runs out
+    of 6, mean 10 s to fault**, one signature every time:
+
+    ```
+    ERROR: AddressSanitizer: heap-use-after-free  READ of size 8  thread T18
+      #0  asio::detail::strand_executor_service::strand_impl::~strand_impl()
+                                        strand_executor_service.ipp:89
+      #11 kythira::beast_detail::asio_strand_executor::~asio_strand_executor()
+                                        beast_http_transport.hpp:430
+      #21 kythira::beast_detail::asio_strand_executor::keepAliveRelease()
+                                        beast_http_transport.hpp:474
+      #22 folly::futures::detail::CoreBase::~CoreBase()          Core.cpp:437
+      #47 error_handler<…>::execute_with_retry_impl  (node<…beast…>::send_append_entries_to)
+      #59 folly::Future<folly::Unit>::delayed(…)               Future-inl.h:455
+
+    freed by thread T0 here:
+      #10 asio::detail::service_registry::destroy_services()
+      #12 asio::execution_context::~execution_context()
+      #13 asio::io_context::~io_context()
+      #14 testing::beast_http_transport<…>::~beast_http_transport()
+                                        multi_raft_transport_harness.hpp:391
+      #15 testing::kv_cluster<…>::~kv_cluster()  multi_raft_transport_harness.hpp:612
+      #16 one_measurement<…>            multi_raft_http_benchmark_test.cpp:369
+    ```
+
+    Read it as one sentence: **the main thread destroys the fixture's
+    `io_context` at the end of a repetition, and a Folly future core on another
+    thread then releases the last keep-alive on a Beast
+    `asio_strand_executor`, whose `any_io_executor` member is the final owner of
+    an Asio `strand_impl` — and `~strand_impl` dereferences
+    `service_->mutex_`, which the `io_context` took with it.**
+    `strand_executor_service.ipp:89` is that dereference, and it is the first
+    line of the destructor, so there is no way to reach it safely
+  - **The class's own doc comment states the precondition that is being
+    violated.** `asio_strand_executor` (`beast_http_transport.hpp:411-427`)
+    explains that it self-pins through Folly's `KeepAlive` protocol precisely so
+    that "the object that owns it can be destroyed first", and justifies that
+    with: "`_ex` is a copy of the stream's Asio executor and stays valid as long
+    as the caller's `io_context` does, **which this transport already
+    requires**." The two halves contradict each other. Opting into outliving
+    your owner while requiring your owner's `io_context` to outlive *you* is
+    safe only if something enforces the second, and nothing does — the harness
+    fixture's `shutdown()` drains the Asio side correctly (`_clients.clear()`,
+    `_work.reset()`, `_ioc.stop()`, join) and knows nothing about the Folly
+    chains still holding keep-alives
+  - **What holds the chain open is `error_handler`'s delayed retry** — frame #59
+    is `folly::Future<Unit>::delayed`, on the process-wide Timekeeper, exactly
+    the mechanism task 5's investigation named. It is the same *setter* as task
+    5's stack and a completely different *victim*: there the argument was about
+    `proxygen_client`'s pooled `EventBase*`, here it is Beast's strand. That is
+    why "one fault mechanism on two fixtures is at least as likely as two",
+    written when this task was opened, was the right instinct
+  - **It is `main`'s, not this branch's, by construction and not by argument.**
+    `git diff origin/main...HEAD` touches `proxygen_http_transport{,_impl}.hpp`,
+    `CMakeLists.txt`, the spec and the benchmark's own `.cpp` — no Beast code at
+    all — and `write_throughput_by_value_size` never instantiates a
+    `proxygen_client`. The earlier "3 faults on this branch, 2 in 3 on main"
+    control agreed; this supersedes it by making the control unnecessary
+  - **It is not the 4096-byte row, and that matters for the title.** On Release
+    the fault lands where it was first seen: the 4096 B row, entering repetition
+    2, after 62 s. Under ASan it lands in the **16-byte** row, entering
+    repetition 2, after 10 s. The value size is not a term in the mechanism — it
+    only sets how much wall clock passes before a fixture is torn down with a
+    retry still armed, and 4096 B is simply the slowest row (40.6 ops/sec
+    against 1024 B's 847, a 20x cliff worth its own look). **Any row can fault;
+    the sweep just reaches 4096 B last.** Retitle when this closes
+  - **There is now a 10-second, 6-out-of-6 instrument**, which changes what a
+    fix has to clear. Every earlier lifetime attempt in this spec was judged
+    against a 1-in-10 or 1-in-4 rate needing a dozen runs per arm; this one can
+    be falsified in a minute. Use it, and count hangs separately from faults as
+    task 5 had to
+  - **Two candidate fixes, and neither is applied, deliberately.** This spec has
+    twice recorded that an unverified lifetime change that fixes nothing is
+    worse than the knowledge that it does not, and both candidates are ownership
+    changes rather than patches:
+    1. **Make the `io_context` outlive its executors.** The honest reading of
+       the doc comment: hand `asio_strand_executor` a `shared_ptr<void>` keeper
+       owning the `io_context`, plumbed from whoever constructs it. **Sized, and
+       it is smaller than it sounds — four additive defaulted parameters on the
+       client path only.** `asio_strand_executor` is constructed in exactly two
+       places, `beast_http_transport_impl.hpp:397` and `:460`, the plain and TLS
+       connection constructors, each from its own `_stream.get_executor()`;
+       those two connections are created in exactly one place,
+       `boost_beast_client<Types>::make_connection` (`:722`, `:725`), from
+       `net::make_strand(_ioc)`. So a `std::shared_ptr<void> context_keeper = {}`
+       defaulted onto `asio_strand_executor`, both connection constructors and
+       `boost_beast_client`'s constructor leaves all fourteen existing
+       `boost_beast_client`/`boost_beast_server` construction sites compiling
+       untouched, and only the harness fixture — which owns the `io_context` and
+       is the thing destroying it too early — passes one.
+       **`boost_beast_server` needs nothing at all**: `server_session` holds its
+       executor *by value*, so `keepAliveAcquire()` returns `false` there, it
+       never self-pins, and it cannot outlive anything. That asymmetry is
+       already documented in `keepAliveAcquire()`'s own comment, and it is what
+       makes the fix client-only
+    2. **Detach the executor before the `io_context` dies** — clear `_ex` so a
+       surviving executor holds no Asio state, and drop work posted afterwards.
+       Narrower, and there is precedent in the same file (the non-Folly
+       `asio_strand_executor` already has `close()`/`closed()`). The hazard is
+       that a `beast_connection` is also destroyed on ordinary pool eviction,
+       mid-run, where dropping a continuation would silently strand a live RPC —
+       so a detach must be driven by "the `io_context` is going away", which is
+       knowledge the connection does not have today
+    Direction 1 is the one to design; direction 2 is what to reach for if 1's
+    constructor change proves too wide for this spec
   - _Requirements: 15.5_
 
 - [x] 6. Prove the other two transports end to end
@@ -392,6 +537,40 @@ and the answer is currently no for every one of them.
   - CBOR and protobuf rows over Beast; Ion behind its own gate
   - Confirm each row's label comes from the serializer's own `media_type()`
   - Assert the node-internal serializer stayed at JSON across every row
+  - **Three of the four are done; only Ion is outstanding.** The CBOR and
+    protobuf rows are in `write_throughput_by_rpc_serializer`, the second behind
+    `KYTHIRA_BENCH_HAS_PROTOBUF` with a `BOOST_TEST_MESSAGE` saying so when the
+    gate is off rather than a silently missing row
+  - **Row labels already come from the serializer, and now so does the
+    assertion.** `run_put_workload` sets `_serializer` from
+    `Transport::transport_bundle::serializer_type{}.media_type()`, so a row
+    cannot disagree with the wire. The node-internal serializer was pinned only
+    by the `kv_host_types::serializer_type` alias — a pin nothing read, and so a
+    pin that could be moved silently. It is now carried on `benchmark_result` as
+    `_node_serializer`, read off `kv_cluster<Transport>::types` (the bundle the
+    cluster was actually built from, not a re-derivation of it), and checked
+    against `application/json` in `one_measurement` — every repetition of every
+    row in every sweep, not just the serializer axis
+  - **The three existing rows came back stable, which is new for this suite.**
+    Run with the assertion above in place, `build-default`, five repetitions
+    each, 600 operations at 16 in flight over 128 B values:
+
+    | wire serializer | headline | min | max | spread | verdict |
+    |---|---:|---:|---:|---:|---|
+    | `application/json` | 1310.0 ops/sec | 1201.4 | 1417.6 | 8.3% | stable |
+    | `application/cbor` | 1512.5 ops/sec | 1404.3 | 1573.4 | 7.2% | stable |
+    | `application/x-protobuf` | 1525.3 ops/sec | 1444.7 | 1590.8 | 5.3% | stable |
+
+    All three clear the ±10% bar, so `repeated_result` calls them comparable and
+    does not print the "MUST NOT ENTER A COMPARISON TABLE" banner — the first
+    rows in this suite to manage it. **They still carry "machine was not quiet at
+    start"**, which is the provenance flag, not the stability verdict, and this
+    spec's standing rule is that a number is re-measured on a host whose
+    one-minute load is genuinely below 0.5 before it is quoted anywhere. Read
+    them as "the axis now produces stable rows", not as the answer: the ordering
+    (CBOR and protobuf within 1% of each other and ~15% above JSON) is the shape
+    to confirm, not to publish
+  - **Ion is what is left**, and it needs its own gate the way protobuf has one
   - _Requirements: 8.4, 17.3, 17.4, 17.5_
 
 - [ ] 8. The concurrency and distribution axes
