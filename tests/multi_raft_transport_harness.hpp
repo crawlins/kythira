@@ -851,6 +851,47 @@ public:
         return std::nullopt;
     }
 
+    /// @brief The local, non-consensus read: a replica's state machine, queried
+    ///        directly.
+    ///
+    /// **Deliberately prefers a replica that is NOT the leader.** A "stale read"
+    /// served by the leader would be stale only in theory; served by a follower
+    /// it is stale in the way a deployment would actually experience, and the
+    /// row is only honest about being non-linearizable if it can be.
+    ///
+    /// Note what this still pays: `with_state_machine` takes the node's own
+    /// `_mutex` — the very lock H7 is about. A read that skips consensus
+    /// entirely does not skip the per-group serialization, and that is a
+    /// finding, not an implementation detail of the harness.
+    auto run_local_read(const key_type& key, operation_tally& tally, std::size_t& bytes_returned)
+        -> std::optional<std::chrono::nanoseconds> {
+        const auto started = std::chrono::steady_clock::now();
+        ++tally._offered;
+
+        auto* replica = follower_for_key(key);
+        if (replica == nullptr) {
+            // No replica holds this shard at all — a routing failure, not a
+            // stale answer. Counted apart from a miss.
+            ++tally._not_leader;
+            return std::nullopt;
+        }
+
+        try {
+            auto value =
+                replica->with_state_machine([&key](auto& sm) { return sm.get_value(key); });
+            // A miss is a completed read. The store is preloaded before the
+            // measured window, so a miss here means the follower has not
+            // applied that entry yet — which is exactly the staleness this row
+            // exists to expose, and counting it as a failure would hide it.
+            bytes_returned += value.has_value() ? value->size() : 0;
+            ++tally._completed;
+            return std::chrono::steady_clock::now() - started;
+        } catch (const std::exception&) {
+            ++tally._other;
+        }
+        return std::nullopt;
+    }
+
     /// @brief Every host's routing table tiles the key space.
     [[nodiscard]] auto tiling_problem() -> std::optional<std::string> {
         for (std::size_t i = 0; i < _hosts.size(); ++i) {
@@ -874,6 +915,33 @@ private:
             }
         }
         return nullptr;
+    }
+
+    /// @brief A replica of `key`'s shard that is not currently its leader, or
+    ///        the leader if this cluster somehow has no other replica.
+    ///
+    /// The fallback is not a nicety: a row that silently measured nothing
+    /// because every candidate was the leader would be worse than one that
+    /// measured a leader-local read and can be seen to have done so in the
+    /// tally.
+    [[nodiscard]] auto follower_for_key(const key_type& key) ->
+        typename host_type::group_node_type* {
+        typename host_type::group_node_type* leader_node = nullptr;
+        for (auto& h : _hosts) {
+            auto desc = h->resolve(key);
+            if (!desc.has_value()) {
+                continue;
+            }
+            auto* n = h->group_node(desc->_group_id);
+            if (n == nullptr) {
+                continue;
+            }
+            if (!n->is_leader()) {
+                return n;
+            }
+            leader_node = n;
+        }
+        return leader_node;
     }
 
     static auto node_ids(std::size_t count) -> std::vector<std::uint64_t> {
@@ -944,11 +1012,57 @@ struct workload_options {
     std::size_t _operations{400};
     std::size_t _value_bytes{128};
     std::uint64_t _key_count{100000};
+    /// Multiplies every sampled key index. Exists so a read row can be run
+    /// against a *preloaded* store: the preloader writes `kv_key(i * stride)`
+    /// for `i` in `[0, _key_count)` and the sampler draws the same `i`, so
+    /// every read hits. At stride 1 the keys are contiguous and therefore all
+    /// in one shard — which is what the shard-size curve wants — and at
+    /// `100000 / _key_count` they are spread evenly over the whole space, which
+    /// is what the taxonomy rows want. Default 1 leaves every write row
+    /// unchanged.
+    std::uint64_t _key_stride{1};
     key_distribution _distribution{key_distribution::uniform};
     double _zipf_theta{0.99};
     std::chrono::milliseconds _op_timeout{3000};
     std::string _scenario{"put"};
 };
+
+/// @brief Assemble the parts of a `benchmark_result` that do not depend on
+///        whether the window was reads or writes.
+///
+/// Shared rather than duplicated because the labels are the part a reader
+/// trusts — `_serializer` read off the serializer's own `media_type()`, and
+/// `_node_serializer` off the bundle the cluster was actually built from — and
+/// two copies of that logic is two chances for a read row to describe itself
+/// differently from a write row taken on the same cluster.
+template<typename Transport>
+auto fill_result(const kv_cluster<Transport>& cluster, const workload_options& workload,
+                 latency_sample_set& samples, const operation_tally& tally,
+                 std::chrono::nanoseconds elapsed, const rpc_snapshot& rpc) -> benchmark_result {
+    samples.sort();
+
+    typename Transport::transport_bundle::serializer_type serializer{};
+    typename kv_cluster<Transport>::types::serializer_type node_serializer{};
+
+    benchmark_result result;
+    result._transport = std::string{Transport::name()};
+    result._serializer = serializer.media_type();
+    result._node_serializer = node_serializer.media_type();
+    result._scenario = workload._scenario;
+    result._nodes = cluster.options()._nodes;
+    result._groups = cluster.options()._groups;
+    result._value_bytes = workload._value_bytes;
+    result._in_flight = workload._in_flight;
+    result._duration = elapsed;
+    result._tally = tally;
+    result._rpc = rpc;
+    result._p50 = samples.p50();
+    result._p95 = samples.p95();
+    result._p99 = samples.p99();
+    const auto seconds = std::chrono::duration<double>(elapsed).count();
+    result._ops_per_second = seconds > 0.0 ? static_cast<double>(tally._completed) / seconds : 0.0;
+    return result;
+}
 
 /// @brief Run `_operations` PUTs spread over `_in_flight` client threads.
 ///
@@ -979,7 +1093,7 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
                                     workload._zipf_theta, 0x5eed0000ULL + w);
                 per_worker[w].reserve(per_worker_ops);
                 for (std::size_t i = 0; i < per_worker_ops; ++i) {
-                    const auto n = sampler.next();
+                    const auto n = sampler.next() * workload._key_stride;
                     const auto key = kv_key(n);
                     const auto command = kv_put(key, kv_value(n + i, workload._value_bytes));
                     if (auto latency =
@@ -1002,33 +1116,109 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
         all.merge(per_worker[w]);
         tally.merge(tallies[w]);
     }
-    all.sort();
+    return fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before);
+}
 
-    typename Transport::transport_bundle::serializer_type serializer{};
-    typename kv_cluster<Transport>::types::serializer_type node_serializer{};
+/// @brief Write `count` keys so a read row has something to read.
+///
+/// Single-threaded and sequential: this is setup, not a measurement, and a
+/// concurrent preloader would only add a way for it to half-fail. Returns how
+/// many actually committed, which the caller checks — a read row over a store
+/// that is 90% loaded is measuring a different thing from the one it claims,
+/// and the only way to know is to count.
+///
+/// Keys are `kv_key(i * stride)` for `i` in `[0, count)`, matching what
+/// `workload_options::_key_stride` makes the sampler draw.
+template<typename Transport>
+auto preload_keys(kv_cluster<Transport>& cluster, std::uint64_t count, std::uint64_t stride,
+                  std::size_t value_bytes, std::chrono::milliseconds timeout,
+                  operation_tally& tally) -> std::uint64_t {
+    std::uint64_t committed = 0;
+    for (std::uint64_t i = 0; i < count; ++i) {
+        const auto n = i * stride;
+        const auto key = kv_key(n);
+        if (cluster.run_command(key, kv_put(key, kv_value(n, value_bytes)), timeout, tally)) {
+            ++committed;
+        }
+    }
+    return committed;
+}
 
-    benchmark_result result;
-    result._transport = std::string{Transport::name()};
-    // The media type is the serializer's own name for itself, so a row can
-    // never disagree with what actually went on the wire.
-    result._serializer = serializer.media_type();
-    // Same principle applied to the serializer that is *not* being swept: read
-    // it off the node-internal bundle the cluster was actually built from, so a
-    // row that silently changed it would say so rather than be assumed not to.
-    result._node_serializer = node_serializer.media_type();
-    result._scenario = workload._scenario;
-    result._nodes = cluster.options()._nodes;
-    result._groups = cluster.options()._groups;
-    result._value_bytes = workload._value_bytes;
-    result._in_flight = workload._in_flight;
-    result._duration = elapsed;
-    result._tally = tally;
-    result._rpc = rpc_after - rpc_before;
-    result._p50 = all.p50();
-    result._p95 = all.p95();
-    result._p99 = all.p99();
-    const auto seconds = std::chrono::duration<double>(elapsed).count();
-    result._ops_per_second = seconds > 0.0 ? static_cast<double>(tally._completed) / seconds : 0.0;
+/// @brief Run `_operations` reads of one kind, spread over `_in_flight` client
+///        threads.
+///
+/// The kind is a parameter rather than three functions because everything
+/// except the one call differs in nothing — and Requirement 2.1's rule that the
+/// kinds are never aggregated is enforced by each *row* carrying its kind, not
+/// by keeping the drivers apart.
+///
+/// **The store must already hold the keys.** A read workload against an empty
+/// store measures a miss path: `read_state` returns an empty store, `GET`
+/// returns nothing, and the local read finds nothing. Callers preload, and the
+/// bytes-per-operation figure on the row is what shows whether they did.
+template<typename Transport>
+auto run_read_workload(kv_cluster<Transport>& cluster, const workload_options& workload,
+                       read_kind kind) -> benchmark_result {
+    std::vector<latency_sample_set> per_worker(workload._in_flight);
+    std::vector<operation_tally> tallies(workload._in_flight);
+    std::vector<std::size_t> bytes(workload._in_flight, 0);
+    const auto per_worker_ops = std::max<std::size_t>(
+        1, workload._operations / std::max<std::size_t>(1, workload._in_flight));
+
+    const auto rpc_before = cluster.rpc_counts();
+    const auto started = std::chrono::steady_clock::now();
+    {
+        std::vector<std::thread> workers;
+        workers.reserve(workload._in_flight);
+        for (std::size_t w = 0; w < workload._in_flight; ++w) {
+            workers.emplace_back([&, w] {
+                key_sampler sampler(workload._distribution, workload._key_count,
+                                    workload._zipf_theta, 0x5eed0000ULL + w);
+                per_worker[w].reserve(per_worker_ops);
+                for (std::size_t i = 0; i < per_worker_ops; ++i) {
+                    const auto key = kv_key(sampler.next() * workload._key_stride);
+                    std::optional<std::chrono::nanoseconds> latency;
+                    switch (kind) {
+                        case read_kind::read_state:
+                            latency = cluster.run_read_state(key, workload._op_timeout, tallies[w],
+                                                             bytes[w]);
+                            break;
+                        case read_kind::log_get: {
+                            std::vector<std::byte> out;
+                            latency = cluster.run_command(key, kv_get(key), workload._op_timeout,
+                                                          tallies[w], &out);
+                            bytes[w] += out.size();
+                            break;
+                        }
+                        case read_kind::local_stale:
+                            latency = cluster.run_local_read(key, tallies[w], bytes[w]);
+                            break;
+                    }
+                    if (latency) {
+                        per_worker[w].record(*latency);
+                    }
+                }
+            });
+        }
+        for (auto& t : workers) {
+            t.join();
+        }
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    const auto rpc_after = cluster.rpc_counts();
+
+    latency_sample_set all;
+    operation_tally tally;
+    std::uint64_t total_bytes = 0;
+    for (std::size_t w = 0; w < workload._in_flight; ++w) {
+        all.merge(per_worker[w]);
+        tally.merge(tallies[w]);
+        total_bytes += bytes[w];
+    }
+
+    auto result = fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before);
+    result._bytes_returned = total_bytes;
+    result._read_kind = kind;
     return result;
 }
 

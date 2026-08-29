@@ -800,12 +800,95 @@ and the answer is currently no for every one of them.
     monotonicity, neither of which a load average reverses
   - _Requirements: 5.1, 7.6, 8.5, 8.7_
 
-- [ ] 9. The read taxonomy
+- [x] 9. The read taxonomy
   - Three separately-reported read kinds: `read_state` (quorum-confirmed
     whole-store), `GET` through the log (linearizable point read), local stale
     read
   - `read_state` reported in ops/sec **and** bytes/sec, and as a curve against
     shard size, which confirms or refutes H5
+  - **The kinds cannot be aggregated, structurally.** `read_kind` is an enum
+    with no value meaning "a read", `benchmark_result::_read_kind` is an
+    `optional<read_kind>` that a read row always carries, and every row prints
+    its kind *and* the consistency it actually provides, in the words a
+    comparison has to match on (Requirement 2.2). The local row's line reads
+    `NOT LINEARIZABLE (local replica, may be arbitrarily stale)`
+  - **The local read prefers a replica that is not the leader.** A stale read
+    served by the leader is stale only in theory. `follower_for_key` returns a
+    non-leader replica when one exists and falls back to the leader when none
+    does — a fallback rather than a skip, because a row that silently measured
+    nothing would be worse than one that measured a leader-local read and can be
+    seen in the tally to have done so
+  - **Reads run against a preloaded store, and the preload is asserted.**
+    `preload_keys` writes `kv_key(i * stride)` and `workload_options::_key_stride`
+    makes the sampler draw the same indices, so every read hits. The repetition
+    `BOOST_REQUIRE`s that every key committed: a read row over a
+    nine-tenths-loaded store measures a miss path while claiming not to, and
+    counting is the only way to know. The preload sits inside the repetition
+    rather than being shared across the five, because a repetition is a whole
+    measurement (doctrine 43)
+  - **The three kinds, 1000 preloaded 128 B keys at stride 100 so all four
+    shards hold 250 each, 8 in flight, five repetitions:**
+
+    | kind | consistency | ops/sec | spread | p50 | bytes/op | MiB/sec | RPCs/read |
+    |---|---|---:|---:|---:|---:|---:|---:|
+    | `read_state` | linearizable (heartbeat quorum) | 2260.2 | 52.1% UNSTABLE | 3268.5 us | 36508 | 78.7 | 3.03 |
+    | `GET` through the log | linearizable (ordered through the log) | 1298.2 | 4.9% stable | 5939.8 us | 128 | 0.2 | 3.69 |
+    | local stale | **NOT LINEARIZABLE** | 870369.6 | 46.2% UNSTABLE | **0.8 us** | 128 | 106.2 | **0.00** |
+
+  - **The measured price of linearizability is a factor of 7400 in latency.**
+    The local read's p50 is 0.8 us against the linearizable point read's
+    5939.8 us. In throughput it is 670-fold. Neither number is a surprise in
+    direction and both are worth having in the register, because "reads are
+    cheap if you will accept staleness" is the kind of claim that otherwise gets
+    made without a number
+  - **The local read's RPC count is the structural proof of its own label.**
+    332 RPCs across 200,000 reads — 0.0017 per read, and those are the
+    background heartbeats, not the reads. "No consensus" is not merely asserted
+    in a doc comment; the counter from task 8 shows it
+  - **The point read is the expensive one, and that was not expected.**
+    `read_state` returns the entire 36 KB store and is **1.7x faster in ops/sec
+    and lower in p50** than a `GET` that returns one 128-byte value (2260.2
+    against 1298.2; 3268.5 us against 5939.8 us). The reason is in the RPC
+    column: `GET` is submitted as a proposal, so it costs a log entry and a
+    replication round, while `read_state` needs only a heartbeat quorum to
+    confirm leadership. At a 250-key shard, reading everything is cheaper than
+    reading one thing
+  - **H5 CONFIRMED, and the curve is dead linear.** Stride 1, so the preloaded
+    keys are contiguous and land in one shard — the configuration H5 is about.
+    All three rows `stable`:
+
+    | keys in shard | ops/sec | spread | bytes/op | **bytes/key** | MiB/sec | p50 |
+    |---:|---:|---:|---:|---:|---:|---:|
+    | 100 | 2448.8 | 6.7% | 14608 | **146.08** | 34.1 | 3010.6 us |
+    | 1000 | 1670.8 | 2.5% | 146008 | **146.01** | 232.7 | 4557.5 us |
+    | 5000 | 597.2 | 5.8% | 730008 | **146.00** | 415.7 | 12590.2 us |
+
+    Bytes returned per stored key is 146.08, 146.01, 146.00 across a fifty-fold
+    range of shard size. `read_state` transfers the whole store and its cost
+    tracks the store exactly, which is what H5 claims
+  - **An independent cross-check falls out of the two cases being configured
+    differently.** The taxonomy row used stride 100 and 1000 keys spread over
+    four shards, so each shard held 250; it returned 36508 bytes per operation,
+    or **146.03 bytes/key**. The shard-size curve used stride 1 and one shard.
+    Two cases with different key layouts, different shard counts and different
+    budgets agree on bytes-per-key to within 0.05%. That is not a result about
+    Raft; it is evidence that the bytes accounting measures what it says
+  - **Requirement 2.4's "both ops/sec and bytes/sec" is not bookkeeping, and
+    this curve is why.** Read in ops/sec the sweep is 2448.8 → 597.2, a
+    four-fold *fall* that looks like a regression. Read in bytes/sec it is
+    34.1 → 415.7 MiB/sec, a twelve-fold *rise*. Both are true: the machine does
+    steadily more total work per second as the shard grows, and steadily less of
+    it per operation. A row reported in one unit only would mislead in whichever
+    direction that unit ran
+  - **The local read's budget is per-kind, and the first attempt got it wrong.**
+    At 400 operations the local row completed in about a millisecond, so
+    starting and joining eight threads was most of what was timed; it came back
+    at 44.4% spread, which said nothing about the system. `read_budget` now
+    gives it 200,000 — about a quarter-second of work — and that also makes it
+    **the first row in this suite with enough samples for a p99 at all**
+    (Requirement 5.3's 1,000-sample threshold): p50 0.8 us, p95 4.3 us,
+    p99 9.7 us. Its *rate* is still UNSTABLE at 46.2% and must not be quoted;
+    its latency distribution is the best-supported one here
   - _Requirements: 2.1–2.5_
 
 - [x] 10. Statistical method
