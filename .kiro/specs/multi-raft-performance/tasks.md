@@ -386,7 +386,7 @@ and the answer is currently no for every one of them.
     against the whole-suite rate, and 5a's fix will test it for free
   - _Requirements: 15.5_
 
-- [ ] 5a. **A second teardown fault, on the Beast arm, at 4096-byte values**
+- [x] 5a. **A second teardown fault, on the Beast arm — not at 4096-byte values**
   - Found by the first full-sweep run on an idle machine.
     `write_throughput_by_value_size` — a **Beast-only** case — aborts with
     `memory access violation at address: 0x…: no mapping at fault address`,
@@ -516,6 +516,49 @@ and the answer is currently no for every one of them.
        knowledge the connection does not have today
     Direction 1 is the one to design; direction 2 is what to reach for if 1's
     constructor change proves too wide for this spec
+  - **Direction 1 is built and measured, and it clears the reproducer.** A
+    `std::shared_ptr<void> context_keeper`, defaulted empty, now threads through
+    `asio_strand_executor`, both `beast_connection` subclasses and
+    `boost_beast_client`; the benchmark's Beast fixture holds its `io_context`
+    by `shared_ptr` and passes it as that keeper. **Member declaration order is
+    the load-bearing part of the change** — the keeper is declared *before*
+    `_ex` in the executor and before `_stream` in each connection, because
+    members are destroyed in reverse declaration order and the whole point is
+    that the `io_context` is released *after* the Asio strand that needs its
+    service registry. `shutdown()` no longer owns the `io_context`'s
+    destruction: it stops it and joins every io thread, then drops the
+    fixture's reference, and whichever reference goes last destroys it — safely,
+    because nothing is inside `run()` by then, which is all `~io_context`
+    requires.
+
+    | | runs | time to fault | `heap-use-after-free` | ASan reports | repetitions completed |
+    |---|---:|---|---:|---:|---:|
+    | before | 6 | mean 10 s, max 14 s | **6/6** | 6 | 6 (one per run) |
+    | after | 6 | none within a 180 s cap | **0** | **0** | **77** |
+
+    The post-fix protocol is a hard 180-second cap rather than a run to
+    completion: the fault used to arrive after *exactly one* repetition inside
+    fourteen seconds, so twelve times its mean with zero reports is the
+    falsifying test, and `reps` is recorded so that a clean run cannot be a run
+    that did no work. Seventy-seven repetitions replaced six.
+  - **On Release the sweep now finishes, which it had never done.** The case
+    that opened this task ran end to end for the first time, all four value
+    sizes, five repetitions each, exit 0 — and produced the payload axis's first
+    real numbers: 16 B 1462.1 ops/sec (spread 7.4%), 128 B 1417.2 (3.8%),
+    1024 B 809.5 (5.2%), **4096 B 56.3 (43.7%, UNSTABLE)**. The 1024→4096 cliff
+    is a factor of fourteen and the only unstable row of the four; it wants its
+    own look under task 8 or 11, and it is not a teardown question
+  - **Regression surface checked, not assumed.** All six Beast suites
+    (`beast_client_test`, `beast_server_test`, `beast_integration_test`,
+    `beast_ssl_test`, `beast_negotiation_retry_test`,
+    `beast_cross_transport_equivalence_test`) pass, as do all three benchmark
+    smoke cases. Every existing `boost_beast_client`/`boost_beast_server`
+    construction site compiles untouched, because the parameter is defaulted —
+    and `boost_beast_server` was given nothing at all, since `server_session`
+    holds its executor **by value** (`beast_http_transport_impl.hpp:1356`), so
+    `keepAliveAcquire()` returns `false`, it never self-pins, and it cannot
+    outlive anything. That asymmetry was verified in the tree, not inferred
+    from the comment that describes it
   - _Requirements: 15.5_
 
 - [x] 6. Prove the other two transports end to end
