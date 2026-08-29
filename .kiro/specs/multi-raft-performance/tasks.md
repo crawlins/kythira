@@ -382,8 +382,30 @@ and the answer is currently no for every one of them.
     for — "after the Proxygen case's work was done, in its teardown" — and it
     would explain why three sessions spent inside `proxygen_client` found
     nothing: the object already destroyed was Beast's. **A hypothesis, not a
-    finding.** It is testable by comparing the Proxygen smoke case run alone
-    against the whole-suite rate, and 5a's fix will test it for free
+    finding**
+  - **The hypothesis was tested and is neither confirmed nor refuted, because
+    the control reproduces nothing either.** Thirty runs of all three smoke
+    cases in one process — the exact shape the original "9 clean, 1 fault in
+    10" was measured in — on a `build-default` carrying `main`'s Beast headers,
+    and thirty more on the same build with 5a's fix in:
+
+    | arm | runs | faults | smoke cases committed | mean |
+    |---|---:|---:|---:|---:|
+    | pre-fix Beast | 30 | **0** | 90/90 | 11.5 s |
+    | post-fix Beast | 30 | **0** | 90/90 | 11.5 s |
+
+    So the 1-in-10 is not currently reachable in this configuration at all, and
+    an experiment whose control is silent decides nothing. Note what it does
+    *not* say: the mechanism **is** available in the smoke suite — Beast's case
+    tears its cluster down immediately before Proxygen's builds one, which is
+    exactly 5a's shape — but only **once** per run against the value-size
+    sweep's nineteen, so a per-teardown rate that saturates the sweep would
+    still be sparse here. 0 in 30 puts the 95% upper bound near 9.5%, which is
+    only just under the documented rate
+  - **Leave the hypothesis open and stop spending runs on this shape.** Settling
+    it needs a case that tears a Beast cluster down many times and *then* builds
+    a Proxygen one — not more repetitions of a configuration in which neither
+    arm faults
   - _Requirements: 15.5_
 
 - [x] 5a. **A second teardown fault, on the Beast arm — not at 4096-byte values**
