@@ -14,7 +14,7 @@ name: Cloud Performance
 # — no error, no failing check, the workflow simply stops existing. That
 # happened once already (PR #257) and ci.yml now carries a guard job asserting
 # the limit. Adding a performance input to that file would have cost the whole
-# real-cloud suite. This file has its own budget; it currently uses 5.
+# real-cloud suite. This file has its own budget; it currently uses 7.
 #
 # Dispatch-only with no schedule (Requirement 18.2), behind the same layered
 # opt-in the real-cloud workflow uses, so a run that costs money is always a
@@ -33,10 +33,9 @@ on:
         type: boolean
         required: false
       instance_type:
-        description: "Non-burstable instance type. t* is refused on the instance, not here."
+        description: "Non-burstable instance type. Blank picks c5.2xlarge on x64, c7g.2xlarge on arm64."
         type: string
         required: false
-        default: "c5.2xlarge"
       measured_phase_ceiling_minutes:
         description: "Hard ceiling on the measured phase (Requirement 18.11)"
         type: string
@@ -47,6 +46,17 @@ on:
         type: string
         required: false
         default: "multi_raft_http_benchmark/write_throughput_by_rpc_serializer"
+      architecture:
+        description: "x64 or arm64. Selects the runner that BUILDS the binary as well as the instance family."
+        type: choice
+        required: false
+        options: ["x64", "arm64"]
+        default: "x64"
+      repetitions:
+        description: "Measured-phase repetitions on the one instance (Requirement 6, doctrine 94)"
+        type: string
+        required: false
+        default: "2"
 
 permissions:
   contents: read
@@ -54,13 +64,24 @@ permissions:
 jobs:
   aws-shape-1:
     name: AWS Shape 1 (one instance, Tier B)
-    runs-on: ubuntu-24.04
+    # The runner architecture is the BINARY's architecture, and it has to
+    # match the instance family: run-aws-shape-1.sh refuses a mismatch
+    # rather than discovering it as "cannot execute binary file" five
+    # minutes into a boot. Requirement 18.12's Graviton row is this input
+    # set to arm64 and nothing else.
+    runs-on: ${{ github.event.inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     environment: real-cloud-tests
     # Bounds the whole job, including a runner that wedges before or after the
     # benchmark's own `timeout`. The second of the three independent ceilings
     # the cost estimate describes; the third is the audit at the end, which is
     # the only one that proves billing stopped rather than that work stopped.
-    timeout-minutes: 90
+    #
+    # 150, not 90: the job now BUILDS the benchmark before it provisions
+    # anything, and a cold vcpkg build on a GitHub runner is ~55 minutes on
+    # its own (ci.yml says so in its own comment). 90 would have left a
+    # cold-cache run failing in the build step having spent nothing, which
+    # is a safe failure but a useless one.
+    timeout-minutes: 150
     permissions:
       id-token: write
       contents: read
@@ -74,9 +95,17 @@ jobs:
 
     env:
       AWS_REGION: ${{ vars.AWS_PERF_CLOUD_REGION || 'us-east-1' }}
-      INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'c5.2xlarge' }}
+      # The default follows the architecture rather than being one constant:
+      # c5.2xlarge does not exist on Graviton, and a job whose only arm64
+      # input is `architecture` would otherwise fail at RunInstances. Both
+      # defaults are 8 vCPU, which is the point of Requirement 18.7 —
+      # matching the development machine's core count rather than exceeding
+      # it, so the delta is the hardware and not the size.
+      INSTANCE_TYPE: ${{ github.event.inputs.instance_type || (github.event.inputs.architecture == 'arm64' && 'c7g.2xlarge' || 'c5.2xlarge') }}
       CEILING_MINUTES: ${{ github.event.inputs.measured_phase_ceiling_minutes || '45' }}
       BENCH_FILTER: ${{ github.event.inputs.benchmark_filter || 'multi_raft_http_benchmark/write_throughput_by_rpc_serializer' }}
+      REPETITIONS: ${{ github.event.inputs.repetitions || '2' }}
+      ARCH_LABEL: ${{ github.event.inputs.architecture || 'x64' }}
       TAG_KEY: kythira-perf-run
 
     steps:
@@ -110,39 +139,142 @@ jobs:
           role-session-name: kythira-perf-cloud
           aws-region: ${{ env.AWS_REGION }}
 
-      # The provider-stated half of Requirement 18.4's provenance: network
-      # performance is a control-plane fact and is not visible from inside the
-      # guest, so it is read here, where the credentials are, and handed to the
-      # instance. The instance itself needs no AWS permissions at all.
-      - name: Read provider-stated instance facts
-        id: stated
+      # ── Build the binary this run will ship ──────────────────────────────
+      # Built here rather than on the instance, and that is the experiment
+      # rather than a convenience. Requirement 18.7 wants the local-vs-cloud
+      # delta to BE the hardware confound; rebuilding on the instance would
+      # fold a different compiler and a different vcpkg resolution into it
+      # with no way to separate them afterwards. It is also the only version
+      # that fits Requirement 18.11's ceiling — a from-source build of this
+      # dependency set is hours, not minutes.
+      #
+      # The cache keys are ci.yml's, deliberately character-for-character:
+      # this job is a reader of the caches the main matrix fills, so a
+      # perf-cloud run on a branch CI has already built is a warm build.
+      # Diverging the keys would make every run of this workflow cold.
+      - name: Install system dependencies
         run: |
-          net=$(aws ec2 describe-instance-types --region "$AWS_REGION" \
-                  --instance-types "$INSTANCE_TYPE" \
-                  --query 'InstanceTypes[0].NetworkInfo.NetworkPerformance' --output text)
-          echo "network=$net" >> "$GITHUB_OUTPUT"
-          echo "Stated network performance for $INSTANCE_TYPE: $net"
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 g++-13 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
 
-      # NOTE: provisioning, artifact transfer and the measured phase are task
-      # 16 and are deliberately NOT in this commit. This file lands first, with
-      # the guard rails (tagging, ceilings, unconditional teardown and the
-      # audit) already wired and exercised, so that the change which first
-      # spends money is a small one against a harness that has already run.
-      # See .kiro/specs/multi-raft-performance/tasks.md task 16.
-      - name: Measured phase (task 16 — not yet implemented)
+      - name: Install Python tools
         run: |
-          echo "::notice::perf-cloud.yml's guard rails are in place; the provisioning and"
-          echo "::notice::measured phase land with task 16. Nothing was provisioned, so the"
-          echo "::notice::teardown and audit below are exercised against an empty run tag."
-          echo "Run tag would be: ${{ steps.tag.outputs.value }}"
-          echo "Ceiling would be: ${CEILING_MINUTES} minutes"
-          echo "Filter would be:  ${BENCH_FILTER}"
-          echo "Stated network:   ${{ steps.stated.outputs.network }}"
+          pip3 install --user -r scripts/kconfig/requirements.txt
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            echo "value=arm64-linux" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Export Actions cache credentials for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ runner.arch }}-g++-13-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ runner.arch }}-g++-13-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-${{ runner.arch }}-g++-13-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
+      # Release and the folly future backend, because those are what the
+      # local rows in .kiro/specs/multi-raft-performance/tasks.md were taken
+      # under. A cloud row built in a different configuration would answer a
+      # different question from the one Requirement 18.7 asks.
+      - name: Configure (Release)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+
+      # One target, not the whole tree. The tree is ~420 test binaries and
+      # this job needs exactly one of them.
+      - name: Build the benchmark binary
+        run: cmake --build build --target multi_raft_http_benchmark_test -j$(nproc)
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ runner.arch }}-g++-13-${{ github.ref_name }}-${{ github.run_id }}
+
+      # ── Provision, measure, retrieve, tear down ──────────────────────────
+      # One script, and the same one an operator runs by hand from a
+      # workstation. A provisioning sequence that only ever runs inside a
+      # workflow is one whose failure modes are only ever discovered inside
+      # a workflow — which is a bad property for the step that spends money.
+      #
+      # The script's own EXIT trap does the teardown and the audit, so those
+      # happen even if this step is cancelled. The two `always()` steps
+      # below are the belt to its braces: they cover the case where the
+      # runner kills this step hard enough that the trap never runs.
+      - name: Provision, measure and tear down
+        id: measure
+        run: |
+          bash scripts/perf-cloud/run-aws-shape-1.sh \
+            --binary build/tests/multi_raft_http_benchmark_test \
+            --instance-type "$INSTANCE_TYPE" \
+            --region "$AWS_REGION" \
+            --run-tag "${{ steps.tag.outputs.value }}" \
+            --repeat "$REPETITIONS" \
+            --ceiling-minutes "$CEILING_MINUTES" \
+            --filter "$BENCH_FILTER" \
+            --out-dir perf-cloud-results
 
       # Unconditional (Requirement 18.10). Runs on failure, on cancellation,
-      # and on the success path alike -- the run most likely to have leaked is
-      # the one that failed, which is exactly when a non-`always()` step is
-      # skipped.
+      # and on the success path alike -- the run most likely to have leaked
+      # is the one that failed, which is exactly when a non-`always()` step
+      # is skipped. Redundant with the script's own trap on every path where
+      # the trap runs, and the only teardown on the paths where it does not.
       - name: Tear down everything tagged for this run
         if: always()
         run: |
@@ -157,6 +289,22 @@ jobs:
           else
             echo "Nothing tagged ${{ steps.tag.outputs.value }} to terminate."
           fi
+          # The ephemeral access path, which the script creates and the
+          # instance holds. Ordered after the terminate-wait above:
+          # DeleteSecurityGroup fails with DependencyViolation while any ENI
+          # still references the group.
+          for sg in $(aws ec2 describe-security-groups --region "$AWS_REGION" \
+                        --filters "Name=tag:${TAG_KEY},Values=${{ steps.tag.outputs.value }}" \
+                        --query 'SecurityGroups[].GroupId' --output text); do
+            echo "Deleting security group $sg"
+            aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$sg" || true
+          done
+          for kp in $(aws ec2 describe-key-pairs --region "$AWS_REGION" \
+                        --filters "Name=tag:${TAG_KEY},Values=${{ steps.tag.outputs.value }}" \
+                        --query 'KeyPairs[].KeyName' --output text); do
+            echo "Deleting key pair $kp"
+            aws ec2 delete-key-pair --region "$AWS_REGION" --key-name "$kp" || true
+          done
 
       # The claim that matters, and the reason it is a separate step from the
       # teardown above: "the teardown ran" and "nothing is left running" are
@@ -172,10 +320,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: perf-cloud-${{ github.run_id }}
+          name: perf-cloud-${{ env.ARCH_LABEL }}-${{ github.run_id }}
           path: |
-            provenance.json
-            *.csv
-            *.json
+            perf-cloud-results/**
           if-no-files-found: ignore
           retention-days: 30
