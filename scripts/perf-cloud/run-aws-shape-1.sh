@@ -406,6 +406,35 @@ scp "${SSH_OPTS[@]}" -q "${REPO_ROOT}/scripts/perf-cloud/capture-provenance.sh" 
     "ubuntu@${PUBLIC_IP}:/tmp/"
 ssh "${SSH_OPTS[@]}" "ubuntu@${PUBLIC_IP}" "chmod +x /tmp/capture-provenance.sh"
 
+# BEFORE the binary, and before any build. Provenance depends on the instance
+# and on nothing else, and its burstable refusal is a hard failure — so running
+# it first makes a refusal cost seconds. The first live Graviton run learned
+# this the expensive way: it failed here, on a script bug, after fifty-five
+# minutes of on-instance build.
+echo "[step] Capture provenance (Requirement 18.4)"
+# Every one of these is KYTHIRA_PERF_STATED_*, and the prefix is not
+# decoration: capture-provenance.sh reads exactly these names and emits
+# null for anything it does not find. The first live run passed three of
+# them as KYTHIRA_PERF_TENANCY / _STATED_STORAGE / _STATED_IOPS and got
+# three nulls in the artifact — which is the design working (18.4's "null,
+# never guessed" made the mismatch visible) and is also why they are
+# listed here against the script's own variable list rather than from
+# memory.
+#
+# _PLACEMENT is the placement GROUP, not the availability zone — the zone
+# is already a separate field that IMDS fills in. Shape 1 uses no
+# placement group, so it is deliberately empty and lands as null;
+# Requirement 18.8's Shape 2 is where it becomes a real value.
+PLACEMENT_GROUP=""
+ssh "${SSH_OPTS[@]}" "ubuntu@${PUBLIC_IP}" \
+    "KYTHIRA_PERF_STATED_NETWORK='${STATED_NETWORK}' \
+     KYTHIRA_PERF_STATED_STORAGE_CLASS='${STATED_STORAGE}' \
+     KYTHIRA_PERF_STATED_STORAGE_IOPS='${STATED_IOPS}' \
+     KYTHIRA_PERF_STATED_TENANCY='${TENANCY}' \
+     KYTHIRA_PERF_STATED_PLACEMENT='${PLACEMENT_GROUP}' \
+     KYTHIRA_PERF_STATED_INSTANCE_TYPE='${INSTANCE_TYPE}' \
+     /tmp/capture-provenance.sh /tmp/provenance.json"
+
 BIN_NAME="multi_raft_http_benchmark_test"
 if [[ -n "${BINARY}" ]]; then
     echo "[step] Ship the binary"
@@ -483,33 +512,6 @@ else
     BINARY_ORIGIN="built on the instance from ${BUILD_REF}"
     echo "  built ${BIN_NAME} (${BINARY_BYTES} bytes)"
 fi
-
-echo "[step] Capture provenance (Requirement 18.4)"
-# Runs before the measured phase, and its burstable refusal is a hard
-# failure: a row that should never be published is cheaper to prevent
-# than to explain.
-# Every one of these is KYTHIRA_PERF_STATED_*, and the prefix is not
-# decoration: capture-provenance.sh reads exactly these names and emits
-# null for anything it does not find. The first live run passed three of
-# them as KYTHIRA_PERF_TENANCY / _STATED_STORAGE / _STATED_IOPS and got
-# three nulls in the artifact — which is the design working (18.4's "null,
-# never guessed" made the mismatch visible) and is also why they are
-# listed here against the script's own variable list rather than from
-# memory.
-#
-# _PLACEMENT is the placement GROUP, not the availability zone — the zone
-# is already a separate field that IMDS fills in. Shape 1 uses no
-# placement group, so it is deliberately empty and lands as null;
-# Requirement 18.8's Shape 2 is where it becomes a real value.
-PLACEMENT_GROUP=""
-ssh "${SSH_OPTS[@]}" "ubuntu@${PUBLIC_IP}" \
-    "KYTHIRA_PERF_STATED_NETWORK='${STATED_NETWORK}' \
-     KYTHIRA_PERF_STATED_STORAGE_CLASS='${STATED_STORAGE}' \
-     KYTHIRA_PERF_STATED_STORAGE_IOPS='${STATED_IOPS}' \
-     KYTHIRA_PERF_STATED_TENANCY='${TENANCY}' \
-     KYTHIRA_PERF_STATED_PLACEMENT='${PLACEMENT_GROUP}' \
-     KYTHIRA_PERF_STATED_INSTANCE_TYPE='${INSTANCE_TYPE}' \
-     /tmp/capture-provenance.sh /tmp/provenance.json"
 
 mkdir -p "${OUT_DIR}"
 scp "${SSH_OPTS[@]}" -q "ubuntu@${PUBLIC_IP}:/tmp/provenance.json" "${OUT_DIR}/" || true

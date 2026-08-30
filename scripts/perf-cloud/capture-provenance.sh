@@ -74,11 +74,36 @@ fi
 # guest is told it is running on -- on a shared-tenancy instance that is the
 # only CPU identity available, and it is what Requirement 18.4 asks to record.
 vcpu="$(nproc 2>/dev/null || echo '')"
+# `|| true` on the whole assignment, and it is not decoration. This script runs
+# under `set -euo pipefail`, and with `pipefail` a pipeline takes the rightmost
+# NON-ZERO status -- so a grep that matches nothing kills the script even though
+# `sed` at the end of the pipe succeeded. **aarch64 /proc/cpuinfo has no "model
+# name" line at all**; it carries "CPU implementer" and "CPU part" instead. So
+# the first live Graviton run died here, after a fifty-five minute build, with
+# no message: the failing command was a grep whose whole purpose was to be
+# allowed to fail.
+#
+# That is also why the lscpu fallback below could not rescue it. A fallback that
+# only runs if the line above *returned* never runs at all.
 cpu_model="$(LC_ALL=C /usr/bin/grep -m1 '^model name' /proc/cpuinfo 2>/dev/null \
-             | cut -d: -f2- | sed -e 's/^ *//' -e 's/ *$//')"
-[ -n "$cpu_model" ] || cpu_model="$(LC_ALL=C /usr/bin/grep -m1 '^Model name' <(lscpu 2>/dev/null) 2>/dev/null \
-             | cut -d: -f2- | sed -e 's/^ *//' || true)"
-mem_kb="$(LC_ALL=C /usr/bin/grep -m1 '^MemTotal:' /proc/meminfo 2>/dev/null | awk '{print $2}')"
+             | cut -d: -f2- | sed -e 's/^ *//' -e 's/ *$//' || true)"
+# aarch64's identity comes from lscpu, which reports "Model name: Neoverse-V1"
+# where /proc/cpuinfo reports nothing a human would recognise.
+[ -n "$cpu_model" ] || cpu_model="$(lscpu 2>/dev/null \
+             | LC_ALL=C /usr/bin/grep -m1 '^Model name' \
+             | cut -d: -f2- | sed -e 's/^ *//' -e 's/ *$//' || true)"
+# Last resort on a guest whose lscpu is absent too: name the part rather than
+# emit null, since aarch64 always carries these two.
+if [ -z "$cpu_model" ]; then
+    _impl="$(LC_ALL=C /usr/bin/grep -m1 '^CPU implementer' /proc/cpuinfo 2>/dev/null \
+             | cut -d: -f2- | tr -d ' ' || true)"
+    _part="$(LC_ALL=C /usr/bin/grep -m1 '^CPU part' /proc/cpuinfo 2>/dev/null \
+             | cut -d: -f2- | tr -d ' ' || true)"
+    if [ -n "$_impl" ] && [ -n "$_part" ]; then
+        cpu_model="aarch64 implementer ${_impl} part ${_part}"
+    fi
+fi
+mem_kb="$(LC_ALL=C /usr/bin/grep -m1 '^MemTotal:' /proc/meminfo 2>/dev/null | awk '{print $2}' || true)"
 kernel="$(uname -r 2>/dev/null || echo '')"
 arch="$(uname -m 2>/dev/null || echo '')"
 
