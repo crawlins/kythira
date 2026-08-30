@@ -237,6 +237,37 @@ for a finding:
   in `doc/http_transport_performance_comparison.md` found **19–24×** on a
   1 MiB payload for exactly this reason (byte arrays JSON-encoded). Small KV
   values should show a much smaller but non-zero effect.
+  **CONFIRMED (task 11b), and at the top of the specified value range the effect
+  is not small.** JSON against CBOR on the same transport, tier and value sizes,
+  two runs of five repetitions:
+
+  | value | JSON amplification | CBOR | CBOR/JSON | JSON ops/sec | CBOR | CBOR/JSON |
+  |---:|---:|---:|---:|---:|---:|---:|
+  | 1 KiB | 11.07 / 11.07 | 9.63 / 9.39 | **0.87 / 0.85** | 655.9 / 631.9 | 906.1 / 938.4 | 1.38 / 1.49 |
+  | 2 KiB | 16.20 / 15.92 | 11.27 / 11.32 | **0.70 / 0.71** | 345.7 / 355.8 | 628.4 / 636.6 | 1.82 / 1.79 |
+  | 4 KiB | 60.73 / 35.87 | 18.18 / 20.63 | **0.30 / 0.58** | 57.6 / 101.1 | 304.9 / 256.2 | 5.29 / 2.53 |
+
+  At 128 B the serializer axis found the encodings close, which is the "much
+  smaller effect" this hypothesis predicted. At 4 KiB — still inside Requirement
+  1.4's specified range — CBOR is **2.5x to 5.3x faster**, and the reason is not
+  encode/decode CPU.
+  **The retransmission knee is a function of the ENCODED size (task 11b).**
+  `json_rpc_serializer` base64-expands a byte array by 4/3 and quotes it;
+  `cbor_serializer` writes byte strings natively. CBOR's amplification curve has
+  **no knee** — 9.4–9.6 → 11.3 → 18.2–20.6, a smooth 2.0–2.2x over a fourfold
+  value range — where JSON's rises 3.2–5.5x with the last doubling alone
+  accounting for 2.3–3.8x. The CBOR/JSON amplification ratio falls monotonically
+  with size in both runs, replicating to 1.5% at 1 KiB and 2 KiB. The 4 KiB row
+  is unstable in both arms and its *magnitude* is not claimed; its direction is
+  unambiguous.
+  **The mechanism looks like a feedback rather than a threshold.** CBOR's
+  per-stream round interval is only 1.3–1.4x shorter than JSON's at 4 KiB while
+  its amplification is 1.7–3.3x lower — a small change in the driving term
+  producing a large change in the accumulated one, which is what a loop between
+  round duration and re-send volume looks like. The loop itself is **not
+  isolated**: this comparison cannot separate "encoded size" from anything else
+  that differs between the two serializers, so it is evidence for the size
+  hypothesis rather than proof of it.
   **The 1024→4096 B throughput cliff is explained, and the explanation refutes
   task 11's pacing hypothesis (task 11a).** That hypothesis predicted a longer
   round *trip* at a flat round *count*. Over a 256-fold value range the
