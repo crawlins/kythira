@@ -1130,4 +1130,183 @@ BOOST_AUTO_TEST_CASE(cost_attribution_by_tier,
 #endif
 }
 
+// ── the CI regression tier ───────────────────────────────────────────────────
+
+/// @brief The bounds the CI-registered row asserts, each with the reasoning
+///        Requirement 12.5 asks to be recorded beside the constant.
+///
+/// Every one of these is either a **ratio** or a floor chosen to be
+/// hardware-independent, which is Requirement 12.1's rule and
+/// `multi_raft_scale_test`'s before it: a wall-clock threshold is a statement
+/// about the machine, and a ratio is a statement about the implementation. A
+/// CI runner's speed varies by more than any regression this suite could
+/// detect, so a throughput bound tight enough to catch one would fail on load
+/// instead.
+namespace regression_bounds {
+
+/// Every operation offered must complete. Tier A has no socket to lose, no
+/// disk to block on, and automatic split/merge is off, so there is no
+/// legitimate source of a failed operation — `not_leader` after the election
+/// budget, a timeout, or an epoch mismatch each mean something structural
+/// broke. A rate rather than a count, so the budget can change without
+/// touching the bound.
+inline constexpr double k_min_completion_rate = 1.0;
+
+/// Entries per entry-bearing AppendEntries cannot be below one by
+/// construction: the denominator counts only calls that carried something. A
+/// value under one therefore means the counters disagree with each other, not
+/// that batching got worse — which is why this is an *exactness* check on the
+/// instrument rather than a performance bound.
+inline constexpr double k_min_entries_per_append_entries = 1.0;
+
+/// RPCs per committed entry, bracketing every configuration this suite has
+/// ever measured with room on both sides. Observed: 2.2 (20 ms tick, 16 in
+/// flight) to 11.0 (300 ops/sec open loop) across tasks 8, 11 and 12, and
+/// 2.65-3.20 on this exact Tier A row across three future backends. The floor
+/// is below one AppendEntries per follower, which a three-node group cannot
+/// commit without; the ceiling is five times the highest ever seen. What it
+/// catches is a replication round that stopped coalescing entirely, or one
+/// that started retrying without bound — both structural, neither
+/// machine-dependent.
+inline constexpr double k_min_rpcs_per_commit = 1.5;
+inline constexpr double k_max_rpcs_per_commit = 60.0;
+
+/// A "did anything happen at all" floor, and deliberately not a performance
+/// bound. Tier A over the in-process fabric measured 1568-2168 ops/sec on this
+/// row across three future backends on a machine that was not quiet; 20 is two
+/// orders of magnitude below the slowest of those. It catches a cluster that
+/// elected and then committed almost nothing — a deadlock, a lost executor, a
+/// tick that stopped — and nothing else. Requirement 12.1 permits it as a
+/// sanity floor precisely because no plausible runner fails it.
+inline constexpr double k_min_ops_per_second = 20.0;
+
+/// The row's own size. Small on purpose: Requirement 12.4 asks the CI variant
+/// to complete within a stated budget, and this one is **under 30 seconds** in
+/// Release on four cores (measured 15.2 s for a comparable Tier A row),
+/// dominated by five elections rather than by the workload. The operation count
+/// only has to be large enough that the replication ratios have samples behind
+/// them.
+inline constexpr std::size_t k_operations = 200;
+inline constexpr std::size_t k_in_flight = 8;
+
+}  // namespace regression_bounds
+
+/// @brief Assert a lower bound, in the words Requirement 12.6 asks for: the
+///        metric, the floor, the measured value, and the tier.
+///
+/// A free function rather than a bare `BOOST_CHECK` at each site because 12.6
+/// is a property of *every* failure message here, and four hand-written
+/// messages are four chances for one of them to omit the tier — which is the
+/// field that tells a reader whether the bound was even chosen for the
+/// configuration that failed it.
+auto check_at_least(std::string_view metric, double measured, double floor, deployment_tier tier)
+    -> void {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3) << "REGRESSION: " << metric << " measured "
+        << measured << ", floor " << floor << ", at " << to_string(tier);
+    BOOST_CHECK_MESSAGE(measured >= floor, out.str());
+}
+
+/// @brief The same, for a metric bounded on both sides.
+auto check_within(std::string_view metric, double measured, double low, double high,
+                  deployment_tier tier) -> void {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3) << "REGRESSION: " << metric << " measured "
+        << measured << ", band [" << low << ", " << high << "], at " << to_string(tier);
+    BOOST_CHECK_MESSAGE(measured >= low && measured <= high, out.str());
+}
+
+/// @brief The subset CI runs — Requirement 12.
+///
+/// ### Why this case exists when the rest of the suite is registered already
+///
+/// It is registered *twice*: once as part of `multi_raft_http_benchmark_test`,
+/// which carries the `performance;benchmark` labels and is therefore excluded
+/// from every CI invocation (`ci.yml` filters
+/// `^(slow|performance|verbose|benchmark|docker)$`), and once as
+/// `multi_raft_regression_tier`, which runs this case alone under labels CI does
+/// not exclude. Before this, nothing in this suite ran in CI at all — the full
+/// matrix is three hours and correctly excluded, and "correctly excluded" had
+/// quietly become "never checked".
+///
+/// ### Tier A, and why
+///
+/// Requirement 12.4 expects it: a CI runner's socket and disk behaviour is not
+/// a stable measurement substrate, and every quantity asserted below is a
+/// property of the consensus implementation rather than of the wire. Tier B
+/// would add a loopback socket whose latency on a shared runner varies by more
+/// than any regression these bounds could detect.
+///
+/// ### What it asserts, and what it refuses to
+///
+/// Ratios and one absurdly low floor (Requirement 12.1). **No comparison to any
+/// external implementation appears here or can** (12.2) — there is no external
+/// number in this translation unit, and Tier A is the tier Requirement 3.1
+/// labels never comparable to one.
+///
+/// The per-repetition ratios are checked on **every** run rather than on the
+/// median, because a structural regression that appears in one repetition of
+/// five is still a structural regression; it is the *throughput* that gets the
+/// median treatment, for the reason `repeated_result` exists.
+///
+/// An election inside a measured window is **reported and not asserted**. On a
+/// loaded CI runner an election is a fact about the runner, and failing on it
+/// would make this the flaky test the whole design is written to avoid.
+BOOST_AUTO_TEST_CASE(ci_regression_tier,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(600))) {
+    using namespace regression_bounds;
+    constexpr auto tier = deployment_tier::a_fabric;
+
+    BOOST_TEST_MESSAGE("CI regression tier (Requirement 12): Tier A, "
+                       << k_operations << " operations, " << k_in_flight
+                       << " in flight, ratios and one floor:");
+
+    auto row = kythira::testing::throughput_row<fabric_transport>(
+        {._operations = k_operations, ._in_flight = k_in_flight}, suite_observer());
+    report(row);
+
+    BOOST_REQUIRE_MESSAGE(row.runs() == k_required_repetitions, "REGRESSION: repetitions measured "
+                                                                    << row.runs() << ", floor "
+                                                                    << k_required_repetitions
+                                                                    << ", at " << to_string(tier));
+
+    // Ratios, per repetition. A regression that appears once in five is still
+    // a regression.
+    for (std::size_t i = 0; i < row._runs.size(); ++i) {
+        const auto& run = row._runs[i];
+        const std::string where = " (run " + std::to_string(i + 1) + ")";
+
+        const auto completion = run._tally._offered == 0
+                                    ? 0.0
+                                    : static_cast<double>(run._tally._completed) /
+                                          static_cast<double>(run._tally._offered);
+        check_at_least("completion rate" + where, completion, k_min_completion_rate, tier);
+
+        if (const auto batching = run._rpc.entries_per_append_entries()) {
+            check_at_least("entries per AppendEntries" + where, *batching,
+                           k_min_entries_per_append_entries, tier);
+        } else {
+            BOOST_CHECK_MESSAGE(false,
+                                "REGRESSION: entries per AppendEntries" + where +
+                                        " has no value — no AppendEntries carried an entry, at "
+                                    << to_string(tier));
+        }
+
+        if (const auto cost = run.rpcs_per_committed_entry()) {
+            check_within("RPCs per committed entry" + where, *cost, k_min_rpcs_per_commit,
+                         k_max_rpcs_per_commit, tier);
+        } else {
+            BOOST_CHECK_MESSAGE(false, "REGRESSION: RPCs per committed entry" + where +
+                                               " has no value — nothing committed, at "
+                                           << to_string(tier));
+        }
+    }
+
+    // The one wall-clock bound, on the median run, and low enough that no
+    // plausible runner fails it.
+    if (const auto headline = row.headline_ops_per_second()) {
+        check_at_least("throughput", *headline, k_min_ops_per_second, tier);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -537,15 +537,59 @@ whichever of the two is the fairer basis.
   to put in them. Publishing a comparison from Tier B alone would violate
   Requirement 3.3, which forbids a like-for-like claim below Tier C.
 
+## The CI regression tier
+
+Requirement 12.4 asks the design to state the tier the CI subset runs at and its
+runtime budget. Both are settled by measurement rather than by preference.
+
+**Tier A, and a budget of 15.4 seconds** — five repetitions of 200 operations at
+eight in flight over the in-process fabric, measured in Release on four cores,
+dominated by five elections rather than by the workload. It is registered as
+`multi_raft_regression_tier`, a second CTest entry over the *same binary* with a
+`--run_test` filter, so it costs no extra compilation.
+
+The reason it is a second entry rather than a label change on the existing one:
+`multi_raft_http_benchmark_test` carries `performance;benchmark`, `ci.yml`
+filters `^(slow|performance|verbose|benchmark|docker)$` on every ctest
+invocation, and the full three-hour matrix is correctly excluded by that. The
+consequence had been that **nothing in this suite ran in CI at all** —
+"correctly excluded" is one configuration change away from "never checked", and
+this is the entry that closes the gap.
+
+Tier A rather than Tier B, resolving what was previously an open question here:
+a shared runner's socket behaviour varies by more than any regression these
+bounds could detect, and every quantity asserted is a property of the consensus
+implementation rather than of the wire. The socket rows are the interesting
+ones and they stay in the developer-run matrix, where a wide spread is
+information rather than a failed build.
+
+**What it asserts** is ratios — completion rate, entries per AppendEntries, RPCs
+per committed entry — checked on *every* repetition rather than on the median,
+because a structural regression that appears once in five is still one. Plus a
+single throughput floor of 20 ops/sec, two orders of magnitude below the 1568 –
+2237 ops/sec this row has actually measured across three future backends, which
+catches a cluster that elected and then committed almost nothing and catches
+nothing else. Each constant carries its reasoning beside it (12.5) and every
+failure message names the metric, the bound, the measured value and the tier
+(12.6).
+
+**What it cannot assert** is any relationship to an external number (12.2).
+There is none in that translation unit, and Tier A is the tier Requirement 3.1
+labels never comparable to one.
+
+An election inside a measured window is reported and **not** asserted: on a
+loaded runner an election is a fact about the runner, and failing on it would
+make this the flaky test the rest of the design is written to avoid.
+
 ## Open decisions
 
 1. Should the value-size sweep extend past 4 KiB, into the regime where gRPC's
    measured 19–24× advantage over the HTTP transports on a 1 MiB payload starts
    to matter? It would need a gRPC row, which needs a gRPC multi-Raft binding.
 2. Does the report binary belong in `examples/` (following
-   `future_backend_benchmark_report`) or in `cmd/`? `examples/` matches
-   precedent; `cmd/` is where a Tier C host process would have to live anyway.
-3. Should the CI-registered subset drop to Tier A (the fabric) for stability, per
-   Requirement 12.4's expectation, leaving Tier B to a developer-run invocation?
-   The socket rows are the interesting ones, and they are also the ones a shared
-   runner will perturb.
+   `future_backend_benchmark_report`) or in `cmd/`? **Settled: neither.** It is
+   `tests/multi_raft_performance_report.cpp`, beside the harness it measures
+   through — which is the rule `future_backend_benchmark_report` actually
+   follows, its own harness being in `examples/` too. A copy in `examples/`
+   would need `tests/` on its include path and a duplicate of the five
+   conditional transport-wiring blocks.

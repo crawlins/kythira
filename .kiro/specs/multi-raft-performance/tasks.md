@@ -1259,8 +1259,46 @@ and the answer is currently no for every one of them.
     `README.md`, since a relative one fails the `docs` CI job
   - _Requirements: 9.6–9.8, 11.2–11.4, 16.1–16.5_
 
-- [ ] 24. CI regression tier
-  - Sanity floors and within-run ratios only, never a comparison assertion
-  - State the tier the CI subset runs at and its runtime budget
-  - Failure messages naming metric, floor, measured value and tier
+- [x] 24. CI regression tier
+  - **The gap this closes is that nothing in this suite ran in CI at all.**
+    `multi_raft_http_benchmark_test` carries `performance;benchmark`, `ci.yml`
+    filters `^(slow|performance|verbose|benchmark|docker)$` on every ctest
+    invocation, and the three-hour matrix is correctly excluded by that. Correct,
+    and one configuration change away from "never checked"
+  - `multi_raft_regression_tier` is a **second CTest entry over the same
+    binary** with a `--run_test` filter, under labels CI does not exclude
+    (`multi-raft;regression`). No extra compilation, and verified by
+    `ctest -N -LE '^(slow|performance|verbose|benchmark|docker)$'` selecting it
+    while the full matrix and the report smoke stay excluded (12.3)
+  - **Tier A, 15.4 seconds** measured in Release on four cores, dominated by five
+    elections rather than by the workload — the tier and the budget Requirement
+    12.4 asks the design to state, and the design now states them. Tier A
+    resolves what had been an open question there: a shared runner's socket
+    behaviour varies by more than any regression these bounds could detect
+  - **Ratios first (12.1)**, checked on *every* repetition rather than on the
+    median, because a structural regression that appears once in five is still
+    one: completion rate (1.0 — Tier A has no socket to lose and no disk to
+    block on, so a failed operation is structural), entries per AppendEntries
+    (≥ 1.0, which is an exactness check on the instrument rather than a
+    performance bound, since the denominator counts only calls that carried
+    something), and RPCs per committed entry in `[1.5, 60.0]` — bracketing every
+    value tasks 8, 11 and 12 ever measured (2.2 to 11.0) with a floor below one
+    AppendEntries per follower and a ceiling five times the highest seen
+  - One wall-clock bound, on the median run, at **20 ops/sec** — two orders of
+    magnitude below the 1568–2237 this row measured across three future
+    backends. It catches a cluster that elected and then committed almost
+    nothing, and catches nothing else
+  - Every constant carries its reasoning beside it in a `regression_bounds`
+    namespace (12.5), and `check_at_least` / `check_within` exist so that naming
+    the metric, the bound, the measured value and the tier is a property of
+    every message rather than of whoever wrote it (12.6)
+  - **No external comparison can appear (12.2)**: there is no external number in
+    that translation unit, and Tier A is the tier Requirement 3.1 labels never
+    comparable to one
+  - An election inside a measured window is **reported and not asserted**. On a
+    loaded runner an election is a fact about the runner, and failing on it would
+    make this the flaky test the whole design is written to avoid
+  - `ci.yml` needs no change: `scripts/check-test-run.sh` derives its expected
+    count from `ctest -N` under the same filter, so one more test raises both
+    sides together, and `--floor 400` is a lower bound
   - _Requirements: 12.1–12.6_

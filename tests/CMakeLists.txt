@@ -860,6 +860,37 @@ set_tests_properties(multi_raft_http_benchmark_test PROPERTIES
 )
 kythira_wire_multi_raft_bench(multi_raft_http_benchmark_test)
 
+# .kiro/specs/multi-raft-performance/ Requirement 12: the CI regression tier.
+#
+# The entry above carries `performance;benchmark`, and `ci.yml` filters
+# `^(slow|performance|verbose|benchmark|docker)$` on every ctest invocation --
+# correctly, because the full matrix is three hours. The consequence was that
+# **nothing in this suite ran in CI at all**, and "correctly excluded" had
+# quietly become "never checked".
+#
+# This second entry runs one case of the same binary -- no extra compilation --
+# under labels CI does not exclude. Tier A, five repetitions of 200 operations,
+# **15.4 seconds** measured in Release on four cores, which is the budget
+# Requirement 12.4 asks to be stated. It asserts ratios and one absurdly low
+# sanity floor (12.1) and cannot assert a comparison to anything external
+# (12.2): there is no external number in that translation unit, and Tier A is
+# the tier Requirement 3.1 labels never comparable to one.
+#
+# The Boost.Test filter names the suite ONCE -- `suite/case`, not `suite/suite/case`,
+# which exits 200 and looks like a test failure.
+#
+# TIMEOUT 1800 matches `multi_raft_scale_test` rather than the 15 s runtime: the
+# instrumented legs (coverage, TSan) run the same binary far slower, and a
+# per-test timeout tighter than ci.yml's own 1800 ceiling for those jobs would
+# turn a slow instrumented run into a failure.
+add_test(NAME multi_raft_regression_tier
+    COMMAND multi_raft_http_benchmark_test
+            --run_test=multi_raft_http_benchmark/ci_regression_tier)
+set_tests_properties(multi_raft_regression_tier PROPERTIES
+    LABELS "multi-raft;regression"
+    TIMEOUT 1800
+)
+
 # .kiro/specs/multi-raft-performance/ Requirement 11: the report generator.
 # Not a Boost.Test binary -- it has its own `main`, takes a subset selector on
 # the command line (11.6) and writes the timestamped CSV/JSON pair to
