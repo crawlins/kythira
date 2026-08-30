@@ -569,7 +569,8 @@ and the answer is currently no for every one of them.
     real numbers: 16 B 1462.1 ops/sec (spread 7.4%), 128 B 1417.2 (3.8%),
     1024 B 809.5 (5.2%), **4096 B 56.3 (43.7%, UNSTABLE)**. The 1024→4096 cliff
     is a factor of fourteen and the only unstable row of the four; it wants its
-    own look under task 8 or 11, and it is not a teardown question
+    own look under task 8 or 11, and it is not a teardown question.
+    **The cliff is explained now — see the value-size cross-row read below.**
   - **Regression surface checked, not assumed.** All six Beast suites
     (`beast_client_test`, `beast_server_test`, `beast_integration_test`,
     `beast_ssl_test`, `beast_negotiation_retry_test`,
@@ -1080,6 +1081,51 @@ and the answer is currently no for every one of them.
     `makeFuture`, which all three backends expose. Nothing had instantiated
     `cpp_httplib_client` under a non-folly backend before this suite
   - _Requirements: 13.1–13.5, 17.2_
+
+- [x] 11a. The 1024→4096 B cliff, explained
+  - Left open by task 6 and carried in every handoff since. Closed with the
+    instrument task 11 built: `report_value_size_sweep` reads the axis across
+    rows in round interval, entry-bearing rounds per commit, batch size and
+    **write amplification** — entry-sends per commit against the
+    once-per-follower floor a commit cannot avoid
+  - Two runs of the five-point sweep (2048 B added to bracket the step), five
+    repetitions per row. `ent/AE` and `round interval` replicate to 2%; the
+    4096 B row is the known-unstable one and its amplification varies 2x
+    run-to-run, so the *direction* is what is claimed and not the magnitude:
+
+    | value | ops/sec | AE/commit | round interval | ent/AE | amplification |
+    |---:|---:|---:|---:|---:|---:|
+    | 16 B | 1289 / 1324 | 3.75 / 3.62 | 1.64 / 1.66 ms | 4.89 / 4.84 | **9.2x / 8.8x** |
+    | 128 B | 1203 / 1204 | 3.89 / 3.79 | 1.69 / 1.74 ms | 4.73 / 4.68 | **9.2x / 8.9x** |
+    | 1024 B | 727 / 760 | 4.87 / 4.58 | 2.22 / 2.26 ms | 4.41 / 4.47 | **10.7x / 10.2x** |
+    | 2048 B | 392 / 414 | 6.97 / 6.38 | 2.84 / 2.93 ms | 4.30 / 4.40 | **15.0x / 14.0x** |
+    | 4096 B | 61 / 52 | 30.96 / 35.69 | 4.03 / 4.09 ms | 4.03 / 4.28 | **62x / 76x** |
+
+  - **Task 11's hypothesis is REFUTED.** It predicted the cliff would appear as
+    a longer round *trip* at a flat round *count* — response-driven pacing
+    inflating the interval and nothing else. The interval does rise, but only
+    2.5x over a 256-fold value range and smoothly; entry-bearing rounds per
+    commit rise **8.3x and 9.9x**. The round count is the larger factor, not the
+    smaller one
+  - **The batch size is invariant to value size**: 4.03–4.89 entries per
+    AppendEntries across a 256-fold range and four runs. Read with task 11 (flat
+    across a twentyfold tick change) and task 8 (tracks in-flight per group),
+    the batch is set by proposals outstanding per group and by **nothing else**
+  - **Unasked-for, and the more useful half: write amplification is ~9x per
+    follower even at 16 B.** Every committed entry crosses the wire nine times
+    to each follower before it commits, against a floor of once. That is H2's
+    redundancy claim — refuted by task 8 on RPC *counts* — surfacing in entry
+    *sends*, where the same window is retransmitted round after round
+  - The amplification is flat to 1 KiB (8.8–10.7), rises to 14–15 at 2 KiB, and
+    explodes to 62–76 at 4 KiB. One doubling of value size costs a 4.4–5.4x rise
+    in retransmission, which no other doubling on the axis does
+  - **Not measured, and named as the next instrument**: why. The leader re-sends
+    its whole outstanding window each round, so wire bytes per round are
+    `batch x value` — about 16 KB of values at 4 KiB before JSON's expansion of
+    a byte array. Whether the nonlinearity is a socket-buffer threshold, the
+    encoder, or the commit path is a question for a byte counter on the send
+    path, and this suite has none by design (Requirement 8.2)
+  - _Requirements: 1.4, 8.5_
 
 ## Real-cloud measurement
 
