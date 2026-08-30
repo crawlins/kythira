@@ -193,6 +193,22 @@ inline auto csv_optional_ns(const std::optional<std::chrono::nanoseconds>& v) ->
 
 }  // namespace detail
 
+/// @brief Durability barriers per second per host, for the artifact.
+///
+/// Requirement 3.4 asks a durable row for this and for entries per fsync;
+/// Requirement 11.5 asks the artifact to carry every field Requirement 3
+/// requires, so both belong here and not only in the suite's printed table.
+/// Zero on a memory row and on a `file/buffered` one — and those two zeroes
+/// mean different things, which is why `durability` is carried beside them.
+inline auto fsyncs_per_second_per_host(const benchmark_result& m) -> double {
+    const auto seconds = std::chrono::duration<double>(m._duration).count();
+    if (seconds <= 0.0 || m._nodes == 0) {
+        return 0.0;
+    }
+    return static_cast<double>(m._durability_counts._barriers) / seconds /
+           static_cast<double>(m._nodes);
+}
+
 /// @brief The CSV header, kept beside the writer so the two cannot drift.
 ///
 /// One line per **row**, describing its median run, because a CSV is what a
@@ -201,7 +217,9 @@ inline auto csv_optional_ns(const std::optional<std::chrono::nanoseconds>& v) ->
 inline constexpr std::string_view k_csv_header =
     "axis,scenario,tier,tier_comparable_externally,transport,wire_serializer,"
     "node_serializer,routing,load_mode,offered_rate_per_second,nodes,groups,value_bytes,"
-    "in_flight,tick_interval_ms,read_kind,read_consistency,repetitions,warmup_operations,"
+    "in_flight,tick_interval_ms,durability,durability_barriers,"
+    "durability_empty_batches,durability_entries,fsyncs_per_second_per_host,"
+    "entries_per_fsync,read_kind,read_consistency,repetitions,warmup_operations,"
     "measured_operations,headline_ops_per_second,min_ops_per_second,max_ops_per_second,"
     "spread_fraction,p50_spread_fraction,governing_spread_fraction,governing_spread_is,"
     "verdict,comparable,p50_ns,p95_ns,p99_ns,"
@@ -225,7 +243,10 @@ inline auto write_csv_row(std::ostream& out, const report_row& row,
         << csv_field(m._node_serializer) << ',' << csv_field(to_string(m._routing)) << ','
         << csv_field(to_string(m._load)) << ',' << m._offered_rate_per_second << ',' << m._nodes
         << ',' << m._groups << ',' << m._value_bytes << ',' << m._in_flight << ','
-        << m._tick_interval.count() << ','
+        << m._tick_interval.count() << ',' << csv_field(to_string(m._durability)) << ','
+        << m._durability_counts._barriers << ',' << m._durability_counts._empty_batches << ','
+        << m._durability_counts._entries << ',' << fsyncs_per_second_per_host(m) << ','
+        << m._durability_counts.entries_per_barrier() << ','
         << csv_field(m._read_kind.has_value() ? to_string(*m._read_kind)
                                               : std::string_view{"write"})
         << ','
@@ -362,6 +383,14 @@ inline auto write_json_row(std::ostream& out, const report_row& row, std::string
         << indent << "  \"value_bytes\": " << m._value_bytes << ",\n"
         << indent << "  \"in_flight\": " << m._in_flight << ",\n"
         << indent << "  \"tick_interval_ms\": " << m._tick_interval.count() << ",\n"
+        << indent << "  \"durability\": \"" << json_escape(to_string(m._durability)) << "\",\n"
+        << indent << "  \"durability_barriers\": " << m._durability_counts._barriers << ",\n"
+        << indent << "  \"durability_empty_batches\": " << m._durability_counts._empty_batches
+        << ",\n"
+        << indent << "  \"durability_entries\": " << m._durability_counts._entries << ",\n"
+        << indent << "  \"fsyncs_per_second_per_host\": " << fsyncs_per_second_per_host(m) << ",\n"
+        << indent << "  \"entries_per_fsync\": " << m._durability_counts.entries_per_barrier()
+        << ",\n"
         << indent << "  \"read_kind\": "
         << (m._read_kind.has_value()
                 ? "\"" + std::string{json_escape(to_string(*m._read_kind))} + "\""
