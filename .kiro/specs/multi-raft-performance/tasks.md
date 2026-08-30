@@ -1423,17 +1423,86 @@ and the answer is currently no for every one of them.
     report fsyncs/sec and entries per fsync, and the volume class and IOPS
   - This is the first configuration in the whole spec that could carry a
     like-for-like comparison against a published *durable* number
+  - **NOT DELIVERED, and the reason is recorded here rather than left for the
+    reader to infer from an absent row (Requirement 3.7).** Two things are
+    missing and only one of them was known. The known one: Tier D is defined by
+    Requirement 3.1 as *Tier C plus* file persistence, and Tier C needs a host
+    process per node — the `cmd/` binary that is Appendix B's third open
+    question and task 20's first line. The harness's
+    `persistence_engine_type` is also a fixed
+    `memory_persistence_engine` in `tests/multi_raft_transport_harness.hpp`,
+    which is a smaller change but a real one
+  - **The unknown one, found by reading `multi_raft.hpp` for this task: the
+    per-group batching fallback that `tick_batch_controller`'s doc comment
+    described DOES NOT EXIST.** That comment said `tick()` "falls back to
+    per-group batching through `batched_persistence_engine`", collapsing each
+    group's appends into one barrier per ready group. Nothing in `include/` or
+    `src/` calls `begin_batch()` at all except `group_scoped_persistence`'s
+    conditional forwarder, and nothing calls *that* — the only driver is the
+    caller-supplied `tick_batch_controller`. **Without a controller there is no
+    batching whatsoever** — and for `file_persistence_engine` that is not
+    merely slower, it is **not durable**. `append_log_entry` outside a batch
+    calls `append_to_log_file`, which flushes the `ofstream` and stops;
+    `sync_log_and_directory()`, the only fsync on the log path, is reached from
+    `commit_batch()` and from nowhere else. A multi-group host with a
+    file-backed log and no controller therefore writes to the page cache and
+    issues no barrier at all — which is exactly the `buffered` mode Requirement
+    3.5 insists be labelled "not durable" wherever it appears. The comment is
+    corrected in this commit to say what the code does; building the fallback
+    is a production behaviour change and is deliberately not made from a
+    performance spec
+  - **What that means for whoever picks this up.** A Tier D row needs the
+    harness to supply its own `tick_batch_controller` fanning out across the
+    per-group engines it created — which is N barriers wearing one name, and
+    the row has to say so rather than claiming one barrier per tick. The
+    fsyncs-per-second and entries-per-fsync figures Requirement 3.4 demands can
+    then come from a harness-side wrapper engine that delegates to
+    `file_persistence_engine` and counts, which keeps the counter out of
+    production code exactly as Requirement 8.2 asks
   - _Requirements: 3.4, 3.5, 18.7_
 
 - [ ] 20. Shape 2 — Tier E, one host per instance
   - A host binary in `cmd/`, N instances, service discovery between them
   - Measure and report inter-node RTT and bandwidth **before** the measured
     window, plus the placement
+  - **NOT DELIVERED (Requirement 3.7).** Its first line is the blocker for
+    tasks 19 and 20 both, and for Tier C as well: there is no process in this
+    tree that hosts `multi_raft` and accepts client traffic. `cmd/chaos_node`
+    is the nearest precedent and is not a substitute — it hosts a single-group
+    node for fault-injection scenarios, not a sharded multi-Raft host with a
+    client-facing entry point. Appendix B's second and third open questions
+    (where the load driver runs, and whether the host belongs in `cmd/`) are
+    both still open and both have to be answered before this task is even
+    specifiable
+  - **`scripts/perf-cloud/run-aws-shape-1.sh` was written with this in mind and
+    does not reach it.** It provisions one instance; Shape 2 needs N, a
+    placement group, service discovery between them, and an RTT/bandwidth
+    measurement *before* the measured window. The run-scoped tag, the
+    unconditional teardown and the leak audit all generalise; nothing else does
   - _Requirements: 3.1 (Tier E), 18.8_
 
 - [ ] 21. A second provider
   - GCP, following the Workload Identity Federation path already live and the
     audit pattern its own live run established
+  - **NOT DELIVERED, and it is blocked on credentials rather than on code
+    (Requirement 3.7).** The federation path is genuinely live: the repository
+    already carries `GCP_CI_WORKLOAD_IDENTITY_PROVIDER` and
+    `GCP_CI_SERVICE_ACCOUNT`, so a CI job needs no new trust relationship. What
+    it needs is Compute Engine permissions on that service account, and
+    granting them is an IAM write that requires an authenticated gcloud
+    session. The local one has expired — `gcloud projects list` returns
+    "Reauthentication failed. cannot prompt during non-interactive execution" —
+    and re-authenticating is an interactive browser flow
+  - **So the next session should start here, because it is cheap once
+    unblocked**: `gcloud auth login`, then a GCP analogue of
+    `scripts/ci-cloud-credentials/aws/policies/perf-cloud.json` granting
+    `compute.instances.{create,delete,get,list}`, `compute.disks.*`,
+    `compute.firewalls.*` and image lookup, then a `gcp-shape-1` job in
+    `perf-cloud.yml` alongside the AWS one. The measurement side is already
+    provider-agnostic: `capture-provenance.sh` takes its provider-stated fields
+    from the caller and refuses burstable types across all three providers'
+    naming conventions, and `audit-aws-leaks.sh` is the pattern a
+    `audit-gcp-leaks.sh` follows rather than the code it would reuse
   - _Requirements: 18.12_
 
 ## The comparison itself
