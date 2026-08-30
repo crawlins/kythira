@@ -754,7 +754,15 @@ and the answer is currently no for every one of them.
     accumulate between tick-driven rounds and the batching factor is arrival
     rate times inter-round interval. That is **incidental coalescing**, which is
     precisely the distinction Requirement 8.5 exists to draw, and it is why the
-    thirty-fold rise in batching buys no throughput
+    thirty-fold rise in batching buys no throughput.
+    **CORRECTED by task 11: the round is not tick-driven.** The bracket above is
+    a coincidence of one cadence. Sweeping the tick 1 → 20 ms leaves the
+    per-stream inter-round interval at 1.89–2.26 ms, so at a 20 ms tick a stream
+    issues about nine rounds per tick. The refutation of H1 stands and so does
+    "incidental coalescing"; what does not is the mechanism named for it. What
+    the batch size actually tracks is proposals outstanding **per group** — 1.03
+    / 2.57 / 4.77 / 29.5 at 1 / 8 / 16 / 64 in flight over four shards, and 6.60
+    / 11.48 / 48.73 in the single-group arm. See task 11 and H6
   - **H7 is CONFIRMED, and the answer to "the concurrency at which it stops
     rising" is "it never rises".** In the hot-group arm throughput falls
     monotonically from a single in-flight operation: 1460.5 → 1403.9 → 1221.1 →
@@ -917,15 +925,59 @@ and the answer is currently no for every one of them.
     runs, so a retelling cannot promote one (6.7)
   - _Requirements: 6.1–6.7_
 
-- [ ] 11. Cost attribution
-  - Tier A rows (the existing fabric) beside Tier B rows, so the transport and
-    serializer components come from the tier delta rather than from
-    instrumentation inserted into production paths
-  - Routing cost from `submit_command(key,…)` against `submit_command(group,
-    epoch,…)`
-  - Tick-cadence sweep for H6
-  - Decomposition published with a stated residual
-  - _Requirements: 8.1–8.3, 8.6, 8.8_
+- [x] 11. Cost attribution
+  - **Tier A exists now.** `fabric_transport` is a fixture with the same shape
+    as the three HTTP ones — `transport_bundle`, `client_type` / `server_type`,
+    `name()`, `tier()`, `capabilities()`, `client(id)` / `server(id)`,
+    `drain()` / `shutdown()` — over `tests/multi_raft_test_fabric.hpp`, so
+    `kv_cluster` instantiates on it with no special case and any row in the
+    suite can be taken at either tier. Its `transport_bundle` reports
+    `none (no wire)` as its serializer rather than leaving the column blank,
+    which would read as "not recorded"
+  - **Every row now carries its tier** (`deployment_tier` on `benchmark_result`,
+    read off the fixture) and prints Requirement 3.3's warning at the point of
+    the number rather than once in a preamble a quoted row leaves behind (3.1,
+    3.3). `drain()` is new API on every fixture and is load-bearing: `stop()`
+    makes a transport refuse *new* requests and does not wait for handlers
+    already running, and a fabric worker holds a handler that captured a host
+    `kv_cluster::shutdown()` is about to free
+  - **Routing** is `routing_mode` — `by_key` (the production path every other
+    row uses), `attributed_key` and `attributed_group`. Three values rather than
+    two because the two attributed arms must differ *only* in which
+    `submit_command` overload runs: `by_key`'s leader discovery resolves the key
+    on every host, which costs more shard-map lookups than the one inside
+    `submit_command`, and differencing against it would have reported routing
+    several times too large
+  - **Tick-cadence sweep** at 1 / 2 / 5 / 20 ms, reported as every percentile
+    against the cadence plus RPCs per commit and the per-stream inter-round
+    interval (8.6)
+  - **Decomposition published with a stated residual**, built entirely from tier
+    and addressing deltas with no counter added to any production path (8.2).
+    The residual is `(routing at Tier A) − (routing at Tier B)`, and it is named
+    as that rather than as slack
+  - **What it found.** Three runs, five repetitions per row.
+    - **H6 refuted, in the opposite direction**: every percentile *falls* as the
+      clock slows (p50 22.1 → 9.8 ms over 1 → 20 ms) and throughput rises
+      2.3–3.1x. No floor appears at any cadence
+    - **H2 confirmed on the tick axis** after task 8 refuted it on the
+      concurrency axis: RPCs per committed entry 5.41 → 2.23 and 6.05 → 2.24,
+      monotone, agreeing to 2.6%, toward a floor of ~2
+    - **Task 8's "the round is tick-driven" is wrong.** The per-stream
+      inter-round interval is 2.17 / 2.02 / 2.15 / 2.26 ms at tick periods of
+      1 / 2 / 5 / 20 ms — flat to 12% across a twentyfold change
+    - **Routing is not where the time goes.** At one operation in flight the two
+      overloads differ by 72.9 and 37.9 µs against bands of 262.5 and 299.4 µs
+      (21.9 ± 265.5 and 39.3 ± 212.8 in two earlier runs). Not resolved in any
+      run, and the bound is the result: under ~300 µs, at most 39% of one
+      committed operation. Reported as a bound rather than as the point
+      estimate, which the next run contradicts
+    - **Transport and wire serialization is 57–58% of one operation** at 16 in
+      flight — 9395 µs of 16376 and 9786 of 16764 — and the consensus core is
+      41–42%. Those two are resolved against their inputs' spread; routing and
+      the residual are not
+  - Requirement 8.8's citations are printed with the decomposition, each with
+    the way its conditions differ from this suite's
+  - _Requirements: 3.1, 3.3, 8.1–8.3, 8.6, 8.8_
 
 - [ ] 12. Report artifacts
   - Timestamped CSV and JSON into `test_results/`, self-describing per
