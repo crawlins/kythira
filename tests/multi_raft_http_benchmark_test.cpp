@@ -470,16 +470,151 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer,
 
 // ── the payload axis ─────────────────────────────────────────────────────────
 
+/// @brief The value-size sweep read across rows, in the quantities that
+///        distinguish "the payload got bigger" from "the round got slower" from
+///        "the same entry went out more times".
+///
+/// The sweep itself has been in this suite since task 6 and produced a finding
+/// nobody could explain: throughput falls **fourteen-fold** between 1 KiB and
+/// 4 KiB, where the payload grows four-fold, and the 4 KiB row was the only
+/// unstable one of the four. A four-fold payload buying a fourteen-fold
+/// throughput loss is not "bigger messages cost more".
+///
+/// Task 11 supplied the hypothesis this print was built to test — that the round
+/// is paced by the response, so a larger value inflates the round *trip* rather
+/// than the round *count*. The columns below refute it: at 4 KiB the round
+/// interval rises 2.3x and the entry-bearing rounds per commit rise 4.4x, and
+/// the product is the whole cliff.
+///
+/// ### What each column is, and what it is not
+///
+/// `AE/commit` counts **entry-bearing** AppendEntries only, not heartbeats.
+/// That separation is the first thing this print had to get right: a commit
+/// that takes six times longer accumulates six times the background heartbeats,
+/// which would look like a replication regression and be nothing but a
+/// consequence of the slowness. On the row that motivated this, empty
+/// AppendEntries were 292 of 6828 — 4.3%, and not the explanation.
+///
+/// `entry-sends/commit` is `entries / commits`, where `entries` counts an entry
+/// once **per send**, so an entry going to two followers counts twice. Its floor
+/// is therefore `nodes - 1`: two, for the three-node cluster every row here
+/// uses. `amplification` is the ratio to that floor — how many times the average
+/// entry crossed the wire beyond the once-per-follower a commit requires.
+///
+/// `payload/round` is `value_bytes x entries / AppendEntries`: the entry bytes
+/// one AppendEntries carried. It is a **lower bound on wire bytes**, not the
+/// wire bytes — it counts the value and not the key, the command framing, the
+/// log-entry envelope, JSON's expansion, or HTTP headers. Stating what it
+/// excludes is cheaper than a byte counter on the send path that Requirement 8.2
+/// would not want anyway.
+///
+/// ### One column is an identity, and says so
+///
+/// `ops/sec` is `1000 x streams / (round interval x AE/commit-including-empty)`
+/// by construction, so the two ratios multiplying out to the throughput ratio is
+/// arithmetic rather than evidence. What the decomposition buys is
+/// **attribution** — which of the two factors moved, and by how much — and that
+/// is not arithmetic.
+auto report_value_size_sweep(const std::vector<repeated_result>& rows) -> void {
+    if (rows.empty()) {
+        return;
+    }
+    const auto& base = rows.front().median_run();
+    const auto ratio = [](double value, double reference) -> std::string {
+        std::ostringstream r;
+        r << std::fixed << std::setprecision(2);
+        if (reference <= 0.0) {
+            r << "n/a";
+        } else {
+            r << (value / reference) << "x";
+        }
+        return r.str();
+    };
+    const auto streams = [](const benchmark_result& r) -> std::size_t {
+        return r._groups * (r._nodes > 0 ? r._nodes - 1 : 0);
+    };
+    const auto inter_round_ms = [&streams](const benchmark_result& r) -> double {
+        const auto seconds = std::chrono::duration<double>(r._duration).count();
+        const auto s = static_cast<double>(streams(r));
+        if (seconds <= 0.0 || s <= 0.0 || r._rpc._append_entries == 0) {
+            return 0.0;
+        }
+        return 1000.0 * seconds * s / static_cast<double>(r._rpc._append_entries);
+    };
+    /// Entry-bearing rounds per committed entry — heartbeats excluded.
+    const auto carrying_per_commit = [](const benchmark_result& r) -> double {
+        return r._tally._completed == 0 ? 0.0
+                                        : static_cast<double>(r._rpc.carrying()) /
+                                              static_cast<double>(r._tally._completed);
+    };
+    const auto sends_per_commit = [](const benchmark_result& r) -> double {
+        return r._tally._completed == 0 ? 0.0
+                                        : static_cast<double>(r._rpc._entries) /
+                                              static_cast<double>(r._tally._completed);
+    };
+    /// Sends beyond the once-per-follower a commit cannot avoid.
+    const auto amplification = [&sends_per_commit](const benchmark_result& r) -> double {
+        const auto floor = static_cast<double>(r._nodes > 1 ? r._nodes - 1 : 1);
+        return sends_per_commit(r) / floor;
+    };
+    const auto payload_per_round = [](const benchmark_result& r) -> double {
+        return r._rpc._append_entries == 0
+                   ? 0.0
+                   : static_cast<double>(r._value_bytes) * static_cast<double>(r._rpc._entries) /
+                         static_cast<double>(r._rpc._append_entries);
+    };
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2);
+    out << "the value-size sweep read across rows — every figure is the median run's, and "
+           "the ratio is against the "
+        << base._value_bytes << " B row:"
+        << "\n      value      ops/sec        AE/commit      round interval    ent/AE   "
+           "entry-sends/commit   amplification   payload/round";
+    for (const auto& row : rows) {
+        const auto& m = row.median_run();
+        out << "\n      " << std::setw(5) << m._value_bytes << "B  " << std::setw(8)
+            << std::setprecision(1) << m._ops_per_second << " ("
+            << ratio(m._ops_per_second, base._ops_per_second) << ")  " << std::setprecision(2)
+            << std::setw(6) << carrying_per_commit(m) << " ("
+            << ratio(carrying_per_commit(m), carrying_per_commit(base)) << ")  " << std::setw(6)
+            << inter_round_ms(m) << " ms (" << ratio(inter_round_ms(m), inter_round_ms(base))
+            << ")  " << std::setw(5) << m._rpc.entries_per_append_entries().value_or(0.0) << "  "
+            << std::setw(8) << sends_per_commit(m) << "  " << std::setw(8) << amplification(m)
+            << "x over the " << (m._nodes > 1 ? m._nodes - 1 : 1) << "-per-follower floor  "
+            << std::setw(9) << payload_per_round(m) << " B";
+        if (!row.comparable()) {
+            out << "  [" << to_string(row.verdict()) << "]";
+        }
+    }
+    out << "\n      AE/commit counts ENTRY-BEARING rounds only. A commit that takes six times "
+           "longer accumulates six times the heartbeats, which would read as a replication "
+           "regression and be nothing but a consequence of the slowness."
+        << "\n      Task 11's hypothesis — a larger value inflates the round TRIP, not the round "
+           "COUNT — is refuted by any row whose AE/commit is not flat."
+        << "\n      `payload/round` counts entry VALUES only: not keys, command framing, the "
+           "log-entry envelope, JSON's expansion, or HTTP headers. A lower bound on wire bytes, "
+           "here to show which way the per-round payload moves rather than how large it is.";
+    BOOST_TEST_MESSAGE(out.str());
+}
+
 BOOST_AUTO_TEST_CASE(write_throughput_by_value_size,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
     BOOST_TEST_MESSAGE("write throughput by value size, JSON on the wire:");
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
-    for (std::size_t bytes :
-         {std::size_t{16}, std::size_t{128}, std::size_t{1024}, std::size_t{4096}}) {
-        std::ignore = measure<kythira::testing::beast_http_transport<json>>(
-            {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0});
+    std::vector<repeated_result> rows;
+    // Requirement 1.4 names 16 B, 128 B, 1 KiB and 4 KiB as the minimum. 2 KiB
+    // is here for a reason the first four rows produced: write amplification is
+    // flat at 8.8-10.9 entry-sends per follower from 16 B through 1 KiB and then
+    // jumps to 37-38 at 4 KiB, so *something* changes between those two points
+    // and the sweep as specified brackets it only to within a factor of four.
+    for (std::size_t bytes : {std::size_t{16}, std::size_t{128}, std::size_t{1024},
+                              std::size_t{2048}, std::size_t{4096}}) {
+        rows.push_back(measure<kythira::testing::beast_http_transport<json>>(
+            {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
     }
+    report_value_size_sweep(rows);
 #else
     BOOST_TEST_MESSAGE("  value-size sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
 #endif

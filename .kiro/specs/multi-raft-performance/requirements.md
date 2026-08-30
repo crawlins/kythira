@@ -205,6 +205,11 @@ for a finding:
   proposals outstanding *per group*: 1.03 at one in flight, 2.57 at eight, 4.77
   at sixteen and 29.5 at sixty-four over four shards, and 6.60 / 11.48 / 48.73
   in the single-group Zipfian arm at eight / sixteen / sixty-four. See H6.
+  **And invariant to value size (task 11a):** 4.03–4.89 entries per
+  AppendEntries across a 256-fold range of payload, 16 B to 4 KiB, in two runs
+  of five repetitions. Flat against the tick, flat against the payload, tracking
+  only in-flight per group — the batch is set by proposals outstanding and by
+  nothing else.
 - **H2 — Replication rounds are not deduplicated.** N concurrent submissions
   to one group issue N `replicate_to_followers()` calls whose AppendEntries
   payloads overlap. Measured as **RPCs per committed entry**.
@@ -220,11 +225,31 @@ for a finding:
   agreeing to within 2.6% at every cadence, toward a floor of about 2 — one
   AppendEntries per follower. The
   rounds a fast tick adds carry entries that are already in flight.
+  **And confirmed a second time on the value-size axis, in entry sends rather
+  than RPC counts (task 11a).** Counting how many times each committed entry
+  actually crosses the wire — `entries / commits`, against the once-per-follower
+  floor a commit cannot avoid — gives **9.2x and 8.8x at 16 B** in two runs,
+  10.2–10.7x at 1 KiB, 14.0–15.0x at 2 KiB and **62x–76x at 4 KiB**. The
+  redundancy H2 predicted is real and large at *every* payload size; what task 8
+  showed is only that offered load is not what produces it.
 - **H3 — The wire encoding is JSON by default.** `json_rpc_serializer` is the
   serializer every multi-Raft test uses; the gRPC-vs-HTTP measurement already
   in `doc/http_transport_performance_comparison.md` found **19–24×** on a
   1 MiB payload for exactly this reason (byte arrays JSON-encoded). Small KV
   values should show a much smaller but non-zero effect.
+  **The 1024→4096 B throughput cliff is explained, and the explanation refutes
+  task 11's pacing hypothesis (task 11a).** That hypothesis predicted a longer
+  round *trip* at a flat round *count*. Over a 256-fold value range the
+  per-stream round interval rises only 2.5x and smoothly (1.65 → 4.06 ms,
+  replicating to 2%), while entry-bearing rounds per committed entry rise
+  **8.3x and 9.9x** in two runs. The round count is the larger factor, not the
+  smaller one. Write amplification is flat to 1 KiB, 14–15x at 2 KiB and 62–76x
+  at 4 KiB: one doubling of value size costs a 4.4–5.4x rise in retransmission,
+  which no other doubling on the axis does. *Why* that doubling is special is
+  **not measured** — the leader re-sends its whole outstanding window each round,
+  so wire bytes per round are `batch x value`, but whether the nonlinearity is a
+  socket threshold, the encoder or the commit path needs a byte counter on the
+  send path this suite deliberately does not have (Requirement 8.2).
 - **H4 — The log is JSON lines and lives entirely in memory.**
   `file_persistence` keeps `_log` as a `std::map` *and* appends a JSON line per
   entry (`file_persistence.hpp:103`). Both the encode cost and the memory
