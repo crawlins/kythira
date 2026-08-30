@@ -41,12 +41,16 @@
 ///
 /// Implement a fixture with the shape of `cpp_httplib_transport` below:
 /// a `transport_bundle` alias, `client_type` / `server_type`, `name()`,
-/// a `capabilities()` descriptor, and `server(id)` / `client(id)` accessors.
+/// a `tier()` naming which of Requirement 3.1's tiers it realises, a
+/// `capabilities()` descriptor, `server(id)` / `client(id)` accessors, and
+/// `drain()` / `shutdown()` — `drain()` returning only once no request handler
+/// is still running, `shutdown()` releasing the fixture's own threads.
 /// Nothing else in the harness or in the tests changes. A CoAP fixture would
 /// differ only in owning a libcoap context instead of an `io_context` and in
 /// reporting `_timeout_now = false`.
 
 #include "multi_raft_kv_workload.hpp"
+#include "multi_raft_test_fabric.hpp"
 
 #include <raft/console_logger.hpp>
 #include <raft/executor_default.hpp>
@@ -320,6 +324,124 @@ template<typename Serializer> struct harness_transport_types {
     using executor_type = kythira::executor_default;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tier A: no wire at all
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The wire encoding of a tier that has no wire.
+///
+/// Exists so that `fill_result` can read a serializer label off every transport
+/// fixture without a special case, and so that a Tier A row says "none (no
+/// wire)" in the column every other row fills with a media type. A blank there
+/// would read as "not recorded", which is a different claim.
+struct no_wire_serializer {
+    [[nodiscard]] auto media_type() const -> std::string { return "none (no wire)"; }
+};
+
+/// @brief The bundle `fabric_transport` reports itself through.
+///
+/// Deliberately not `harness_transport_types<no_wire_serializer>`: the fabric
+/// hands typed messages straight to the target's handler, so there is no
+/// registry, no metrics sink and no executor on its send path to describe. A
+/// bundle listing components this tier does not have would invite the reader to
+/// subtract costs that were never paid.
+struct fabric_transport_types {
+    using serializer_type = no_wire_serializer;
+};
+
+/// @brief How many threads carry messages across the fabric.
+///
+/// Eight, matching `multi_raft_static_cluster_integration_test` — the fabric's
+/// other user — so a Tier A number taken here behaves like the Tier A that
+/// suite already exercises. It is **not** matched to the io-thread count of the
+/// HTTP fixtures, and cannot usefully be: a fabric worker runs the whole target
+/// handler while a Beast io thread runs a socket read. The thread budgets
+/// therefore differ between the tiers, and that difference is one of the things
+/// the A→B delta contains — which is why the decomposition states a residual
+/// instead of claiming the delta is the wire alone.
+inline constexpr std::size_t k_fabric_workers = 8;
+
+/// @brief Tier A: every host in one process over the in-process message fabric.
+///
+/// The same fixture shape as the HTTP transports — `transport_bundle`,
+/// `client_type` / `server_type`, `name()`, `tier()`, `capabilities()`, and
+/// `client(id)` / `server(id)` — so `kv_cluster` is instantiated over it with
+/// no special case and every row in this suite can be taken at either tier.
+///
+/// This is the tier Requirement 3.1 describes as isolating host and consensus
+/// cost with no wire and no disk, and labels **never comparable to an external
+/// number**. It is here for exactly one purpose: the A→B delta is where the
+/// transport and serialization components of Requirement 8.1's decomposition
+/// come from, without a single counter inserted into a production path
+/// (Requirement 8.2).
+class fabric_transport {
+public:
+    using transport_bundle = fabric_transport_types;
+    using client_type = fabric_client;
+    using server_type = fabric_server;
+
+    static auto name() -> std::string_view { return "in-process fabric"; }
+    static auto tier() -> deployment_tier { return deployment_tier::a_fabric; }
+    /// The fabric carries every RPC the group transport defines, and delivers
+    /// concurrent requests to one peer on separate workers.
+    static auto capabilities() -> transport_capabilities {
+        return transport_capabilities{._pre_vote = true,
+                                      ._log_fetch = true,
+                                      ._timeout_now = true,
+                                      ._concurrent_per_peer = true};
+    }
+
+    explicit fabric_transport(const std::vector<std::uint64_t>& nodes) : _fabric(k_fabric_workers) {
+        for (auto id : nodes) {
+            _servers.emplace(id, std::make_unique<server_type>(_fabric, id));
+            _clients.emplace(id, std::make_unique<client_type>(_fabric, id));
+        }
+    }
+
+    ~fabric_transport() { shutdown(); }
+
+    fabric_transport(const fabric_transport&) = delete;
+    auto operator=(const fabric_transport&) -> fabric_transport& = delete;
+
+    [[nodiscard]] auto server(std::uint64_t id) -> server_type& { return *_servers.at(id); }
+    [[nodiscard]] auto client(std::uint64_t id) -> client_type& { return *_clients.at(id); }
+
+    /// @brief Join the fabric's workers, so no handler is still running.
+    ///
+    /// `message_fabric::shutdown()` drains the queue rather than discarding it,
+    /// and every endpoint has already been stopped by the time this is called,
+    /// so what drains is a queue of messages that all fail fast with "no
+    /// handler on target". What it buys is the guarantee the hosts need: when
+    /// this returns, no worker is inside a handler that captured one.
+    auto drain() -> void { _fabric.shutdown(); }
+
+    /// @brief Release the client and server objects. Called after `drain()`.
+    ///
+    /// There is nothing left to join by this point — `drain()` did that — and
+    /// dropping these is safe even if it did not: `message_fabric` holds its
+    /// endpoint table **by value**, so a worker mid-delivery is using the
+    /// fabric's copy of the handlers and never touches a `fabric_server`. What
+    /// it is not safe to drop early is the *hosts* those handlers close over,
+    /// which is `drain()`'s whole reason for existing.
+    auto shutdown() -> void {
+        if (_stopped.exchange(true)) {
+            return;
+        }
+        _clients.clear();
+        _servers.clear();
+    }
+
+private:
+    message_fabric _fabric;
+    std::atomic<bool> _stopped{false};
+    std::unordered_map<std::uint64_t, std::unique_ptr<server_type>> _servers;
+    std::unordered_map<std::uint64_t, std::unique_ptr<client_type>> _clients;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tier B: a real transport over loopback
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// @brief Ask the kernel for a free TCP port, then give it straight back.
 ///
 /// The alternative — binding port 0 inside the server and reading the chosen
@@ -370,6 +492,7 @@ public:
     using server_type = kythira::cpp_httplib_server<transport_bundle>;
 
     static auto name() -> std::string_view { return "cpp-httplib"; }
+    static auto tier() -> deployment_tier { return deployment_tier::b_loopback; }
     static auto capabilities() -> transport_capabilities {
         return transport_capabilities{._concurrent_per_peer = false};
     }
@@ -388,6 +511,10 @@ public:
 
     [[nodiscard]] auto server(std::uint64_t id) -> server_type& { return *_servers.at(id); }
     [[nodiscard]] auto client(std::uint64_t id) -> client_type& { return *_clients.at(id); }
+
+    /// @brief Nothing to wait for: this fixture's request handling happens on
+    /// threads its own `shutdown()` joins, after the hosts are gone.
+    auto drain() -> void {}
 
     /// @brief Released after every host has been stopped. Nothing to do here;
     /// the servers own their own threads.
@@ -428,6 +555,7 @@ public:
     using server_type = kythira::boost_beast_server<transport_bundle>;
 
     static auto name() -> std::string_view { return "beast"; }
+    static auto tier() -> deployment_tier { return deployment_tier::b_loopback; }
     static auto capabilities() -> transport_capabilities { return transport_capabilities{}; }
 
     explicit beast_http_transport(const std::vector<std::uint64_t>& nodes)
@@ -466,6 +594,10 @@ public:
 
     [[nodiscard]] auto server(std::uint64_t id) -> server_type& { return *_servers.at(id); }
     [[nodiscard]] auto client(std::uint64_t id) -> client_type& { return *_clients.at(id); }
+
+    /// @brief Nothing to wait for: this fixture's request handling happens on
+    /// threads its own `shutdown()` joins, after the hosts are gone.
+    auto drain() -> void {}
 
     /// @brief Stop the io threads. Called after every host is stopped, never
     /// before: a running host still has RPCs on these threads.
@@ -519,6 +651,7 @@ public:
     using server_type = kythira::proxygen_server<transport_bundle>;
 
     static auto name() -> std::string_view { return "proxygen"; }
+    static auto tier() -> deployment_tier { return deployment_tier::b_loopback; }
     static auto capabilities() -> transport_capabilities { return transport_capabilities{}; }
 
     explicit proxygen_http_transport(const std::vector<std::uint64_t>& nodes)
@@ -544,6 +677,10 @@ public:
 
     [[nodiscard]] auto server(std::uint64_t id) -> server_type& { return *_servers.at(id); }
     [[nodiscard]] auto client(std::uint64_t id) -> client_type& { return *_clients.at(id); }
+
+    /// @brief Nothing to wait for: this fixture's request handling happens on
+    /// threads its own `shutdown()` joins, after the hosts are gone.
+    auto drain() -> void {}
 
     auto shutdown() -> void {
         if (_stopped.exchange(true)) {
@@ -667,14 +804,14 @@ public:
     explicit kv_cluster(kv_cluster_options options)
         : _options(options), _transport(node_ids(options._nodes)) {
         const auto voters = node_ids(_options._nodes);
-        const auto ranges = kv_shard_ranges(_options._groups, _options._key_count);
+        _ranges = kv_shard_ranges(_options._groups, _options._key_count);
 
         for (std::uint64_t id = 1; id <= _options._nodes; ++id) {
             _hosts.push_back(std::make_unique<host_type>(make_config(id)));
             for (std::size_t g = 0; g < _options._groups; ++g) {
                 descriptor_type d;
                 d._group_id = static_cast<group_id_type>(g + 1);
-                d._range = ranges[g];
+                d._range = _ranges[g];
                 d._epoch = kythira::shard_epoch{._version = 1, ._conf_version = 1};
                 d._voters = voters;
                 _hosts.back()->create_group(d);
@@ -714,6 +851,14 @@ public:
         for (auto& h : _hosts) {
             h->stop();
         }
+        // Between stopping the hosts and destroying them, and never anywhere
+        // else. `stop()` makes a transport refuse *new* requests; it does not
+        // wait for the ones already inside a handler, and those handlers hold
+        // references into the hosts about to be freed. The HTTP fixtures own
+        // threads that are joined in their own `shutdown()` below and have
+        // nothing to do here; the fabric hands a copied-out handler to a worker
+        // and runs it outside its lock, so it does.
+        _transport.drain();
         _hosts.clear();
         _transport.shutdown();
     }
@@ -806,6 +951,96 @@ public:
             if (result != nullptr) {
                 *result = std::move(value);
             }
+            ++tally._completed;
+            return std::chrono::steady_clock::now() - started;
+        } catch (const kythira::shard_not_leader_exception<group_id_type, std::uint64_t>&) {
+            ++tally._not_leader;
+        } catch (const kythira::shard_epoch_mismatch_exception<group_id_type, key_type,
+                                                               std::uint64_t>&) {
+            ++tally._epoch_mismatch;
+        } catch (const kythira::shard_merging_exception<group_id_type>&) {
+            ++tally._merging;
+        } catch (const std::exception&) {
+            ++tally._other;
+        }
+        return std::nullopt;
+    }
+
+    /// @brief What a client that already holds a descriptor would name: the
+    ///        group id and the epoch it computed its request against.
+    ///
+    /// Sampled from a host's own shard map, one entry per group, indexed by
+    /// `group - 1`. Callers take it **once**, before a measured window, which is
+    /// what a real client's descriptor cache is: automatic split and merge are
+    /// off for every row in this suite (`make_config`), so no epoch moves under
+    /// a window and a cache taken at the start is still valid at the end. If one
+    /// ever did move, every operation in the treatment arm would fail with an
+    /// epoch mismatch and `operation_tally::_epoch_mismatch` would say so — the
+    /// staleness is visible rather than silent.
+    [[nodiscard]] auto descriptor_cache() -> std::vector<addressed_shard> {
+        std::vector<addressed_shard> cache;
+        cache.reserve(_options._groups);
+        const auto map = _hosts.front()->shard_map_snapshot();
+        for (std::size_t g = 1; g <= _options._groups; ++g) {
+            const auto id = static_cast<group_id_type>(g);
+            const auto desc = map.find(id);
+            cache.push_back(addressed_shard{
+                ._group = id, ._epoch = desc.has_value() ? desc->_epoch : kythira::shard_epoch{}});
+        }
+        return cache;
+    }
+
+    /// @brief The group whose range contains `key`, found in the harness's own
+    ///        copy of the tiling.
+    ///
+    /// Deliberately **not** `multi_raft::resolve`: that is the routing lookup
+    /// Requirement 8.3 asks this suite to price, and paying it here would put it
+    /// back into both arms of the comparison. A scan of `_groups` ranges is
+    /// identical in the two arms, so whatever it costs cancels out of the delta
+    /// instead of contaminating it.
+    [[nodiscard]] auto group_of_key(const key_type& key) const -> std::optional<group_id_type> {
+        for (std::size_t i = 0; i < _ranges.size(); ++i) {
+            if (_ranges[i].contains(key)) {
+                return static_cast<group_id_type>(i + 1);
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// @brief Run `command` against the leader of `target._group`, addressed
+    ///        either by key or by group id — the two arms of Requirement 8.3.
+    ///
+    /// The leader is found the same way in both arms, from the group id the
+    /// caller already holds, so the only thing that differs between them is
+    /// which `submit_command` overload runs. That is what makes the difference
+    /// in latency attributable to the routing lookup rather than to this
+    /// harness.
+    ///
+    /// `run_command` above is left alone and still used by every other row: it
+    /// is the production path (Requirement 1.7), and this one is the relaxation
+    /// Requirement 1.7 permits only here.
+    auto run_attributed_command(const addressed_shard& target, const key_type& key,
+                                const std::vector<std::byte>& command, routing_mode routing,
+                                std::chrono::milliseconds timeout, operation_tally& tally)
+        -> std::optional<std::chrono::nanoseconds> {
+        const auto started = std::chrono::steady_clock::now();
+        ++tally._offered;
+
+        auto* leader = leader_of(target._group);
+        if (leader == nullptr) {
+            ++tally._not_leader;
+            return std::nullopt;
+        }
+
+        try {
+            auto f = routing == routing_mode::attributed_group
+                         ? leader->submit_command(target._group, target._epoch, command, timeout)
+                         : leader->submit_command(key, command, timeout);
+            if (!f.wait(timeout)) {
+                ++tally._timeout;
+                return std::nullopt;
+            }
+            std::ignore = std::move(f).get();
             ++tally._completed;
             return std::chrono::steady_clock::now() - started;
         } catch (const kythira::shard_not_leader_exception<group_id_type, std::uint64_t>&) {
@@ -989,6 +1224,10 @@ private:
     }
 
     kv_cluster_options _options;
+    /// The tiling the hosts were built from, kept so that `group_of_key` can
+    /// answer without consulting a `multi_raft` shard map — which is the very
+    /// lookup the routing-cost scenario exists to price.
+    std::vector<kythira::shard_range<key_type>> _ranges;
     /// Declared before `_transport` and `_hosts`, so it is destroyed after
     /// them: every handle inside a host holds a pointer to it, and a tick
     /// still in flight during `shutdown()` would otherwise write through a
@@ -1024,6 +1263,9 @@ struct workload_options {
     key_distribution _distribution{key_distribution::uniform};
     double _zipf_theta{0.99};
     std::chrono::milliseconds _op_timeout{3000};
+    /// How the command is addressed. Defaults to the production path, so a row
+    /// that does not mention routing gets the routing every other row got.
+    routing_mode _routing{routing_mode::by_key};
     std::string _scenario{"put"};
 };
 
@@ -1053,6 +1295,9 @@ auto fill_result(const kv_cluster<Transport>& cluster, const workload_options& w
     result._groups = cluster.options()._groups;
     result._value_bytes = workload._value_bytes;
     result._in_flight = workload._in_flight;
+    result._tier = Transport::tier();
+    result._routing = workload._routing;
+    result._tick_interval = cluster.options()._tick_interval;
     result._duration = elapsed;
     result._tally = tally;
     result._rpc = rpc;
@@ -1080,6 +1325,13 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
     const auto per_worker_ops = std::max<std::size_t>(
         1, workload._operations / std::max<std::size_t>(1, workload._in_flight));
 
+    // The client's descriptor cache, taken once before the window rather than
+    // per operation: that is what a cache is, and paying for it inside the
+    // window would price the thing the attributed arms exist to remove. Empty
+    // and unused on the production path.
+    const auto cache = workload._routing == routing_mode::by_key ? std::vector<addressed_shard>{}
+                                                                 : cluster.descriptor_cache();
+
     // Taken before the clock and read after the join, so the window the RPC
     // ratios describe is exactly the window the throughput describes.
     const auto rpc_before = cluster.rpc_counts();
@@ -1096,8 +1348,22 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
                     const auto n = sampler.next() * workload._key_stride;
                     const auto key = kv_key(n);
                     const auto command = kv_put(key, kv_value(n + i, workload._value_bytes));
-                    if (auto latency =
-                            cluster.run_command(key, command, workload._op_timeout, tallies[w])) {
+                    std::optional<std::chrono::nanoseconds> latency;
+                    if (workload._routing == routing_mode::by_key) {
+                        latency =
+                            cluster.run_command(key, command, workload._op_timeout, tallies[w]);
+                    } else if (const auto group = cluster.group_of_key(key)) {
+                        latency = cluster.run_attributed_command(cache.at(*group - 1), key, command,
+                                                                 workload._routing,
+                                                                 workload._op_timeout, tallies[w]);
+                    } else {
+                        // No range holds this key. A tiling failure, not a
+                        // slow operation, and counted where a reader will see
+                        // it rather than dropped.
+                        ++tallies[w]._offered;
+                        ++tallies[w]._not_leader;
+                    }
+                    if (latency) {
                         per_worker[w].record(*latency);
                     }
                 }

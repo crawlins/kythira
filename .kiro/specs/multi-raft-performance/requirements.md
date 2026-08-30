@@ -198,14 +198,28 @@ for a finding:
   tick-driven rather than proposal-driven and entries accumulate between rounds.
   That is incidental coalescing, and it buys no throughput: batching rises
   thirty-fold over a range in which throughput falls.
+  **Task 11 corrects the mechanism, not the refutation.** The refutation stands
+  — batching is real and nothing configures it. "Tick-driven" does not: a
+  twentyfold change in the tick period leaves the per-stream inter-round
+  interval at 2.0–2.3 ms. What the batch size does track is the number of
+  proposals outstanding *per group*: 1.03 at one in flight, 2.57 at eight, 4.77
+  at sixteen and 29.5 at sixty-four over four shards, and 6.60 / 11.48 / 48.73
+  in the single-group Zipfian arm at eight / sixteen / sixty-four. See H6.
 - **H2 — Replication rounds are not deduplicated.** N concurrent submissions
   to one group issue N `replicate_to_followers()` calls whose AppendEntries
   payloads overlap. Measured as **RPCs per committed entry**.
   **REFUTED (task 8).** RPCs per committed entry sits between 3.74 and 6.64
   across a 64-fold range of concurrency, in both key distributions and in two
   independent runs. If N submissions produced N rounds it would track N; it does
-  not move with N at all. The same tick-driven round that refutes H1 is why —
-  concurrent submissions land in one round rather than one each.
+  not move with N at all. Concurrent submissions land in one round rather than
+  one each.
+  **Refuted on the concurrency axis and CONFIRMED on the tick axis (task 11).**
+  The redundancy H2 predicted is real; offered load is simply not what produces
+  it. Holding concurrency at sixteen and sweeping the tick 1 → 20 ms moves RPCs
+  per committed entry 5.41 → 2.23 and 6.05 → 2.24 in two runs, monotone and
+  agreeing to within 2.6% at every cadence, toward a floor of about 2 — one
+  AppendEntries per follower. The
+  rounds a fast tick adds carry entries that are already in flight.
 - **H3 — The wire encoding is JSON by default.** `json_rpc_serializer` is the
   serializer every multi-Raft test uses; the gRPC-vs-HTTP measurement already
   in `doc/http_transport_performance_comparison.md` found **19–24×** on a
@@ -234,6 +248,44 @@ for a finding:
 - **H6 — The tick sets a floor.** Anything that waits for a heartbeat waits
   for the caller's next `tick()`. At a 10 ms cadence that is a 10 ms floor on
   those paths regardless of how fast consensus is.
+  **REFUTED (task 11), and refuted in the opposite direction.** Sweeping the
+  host tick 1 → 2 → 5 → 20 ms at 16 in flight, every reported percentile *falls*
+  as the clock slows and throughput rises. Two runs, five repetitions per row,
+  with three earlier runs of the same sweep agreeing:
+
+  | tick | ops/sec r1 | r2 | p50 r1 | r2 | p95 r1 | r2 | RPC/commit r1 | r2 | round interval r1 | r2 |
+  |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+  | 1 ms | 683.0 | 698.5 | 22.1 ms | 22.2 ms | 31.3 ms | 28.7 ms | 5.41 | 6.05 | 2.17 ms | 1.89 ms |
+  | 2 ms | 954.6 | 995.6 | 16.1 ms | 15.6 ms | 21.1 ms | 20.4 ms | 4.16 | 3.99 | 2.02 ms | 2.01 ms |
+  | 5 ms | 1304.2 | 1379.8 | 11.9 ms | 11.4 ms | 16.3 ms | 15.2 ms | 2.85 | 2.86 | 2.15 ms | 2.02 ms |
+  | 20 ms | 1586.8 | 1631.2 | 9.8 ms | 9.4 ms | 13.8 ms | 13.5 ms | 2.23 | 2.24 | 2.26 ms | 2.19 ms |
+
+  **No percentile shows a floor at any cadence.** The p50 at a 20 ms tick is
+  9.4–9.8 ms, half the tick period; p95 is 13.5–13.8 ms, still below it. The
+  paths H6 is about — those that wait for a heartbeat — are not the paths this
+  workload runs, and a write is not one of them.
+
+  What the cadence moves instead is **replication traffic**. RPCs per committed
+  entry falls monotonically 5.41 → 2.23 and 6.05 → 2.24, replicating to within
+  2.6% at every cadence, toward a floor near 2 — one AppendEntries per follower.
+  A faster tick does not batch less; it **re-sends**. Entries per AppendEntries
+  is flat at 4.7–5.4 across the whole twentyfold range, so the batch size does
+  not move at all.
+
+  **The mechanism task 8 named for H1 is wrong, and this sweep is what shows
+  it.** Task 8 concluded the replication round is tick-driven, from an
+  AppendEntries rate that stayed flat while offered load rose sixteen-fold. The
+  `round interval` column is the wall-clock gap between AppendEntries on one of
+  the eight replication streams (four groups × two followers): **1.89–2.26 ms at
+  tick periods spanning 1 to 20 ms**, flat to 12% across a twentyfold change in
+  the clock. At a 20 ms tick a stream issues about nine rounds per tick. The
+  round is paced by neither the tick nor the proposal. About 2 ms is the
+  loopback RPC round trip on this host, so **response-driven pacing** — the
+  leader issuing the next round when the previous one's response lands — is the
+  hypothesis that fits both axes. It is a hypothesis, not a finding: nothing
+  here measured the leader's send path directly. What the tick demonstrably
+  controls is how many *redundant* rounds ride on top of that pacing, and
+  removing them is worth 2.3x throughput.
 - **H7 — Per-group locking is coarse.** `node<Types>` serializes its own
   operations on one `std::mutex`. Across groups this is fine — it is why
   multi-Raft scales at all — but within a hot group it caps single-shard

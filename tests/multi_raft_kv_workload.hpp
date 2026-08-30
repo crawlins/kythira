@@ -266,6 +266,103 @@ private:
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Deployment tier, and the two ways a command can be addressed
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Which of Requirement 3.1's tiers produced a row.
+///
+/// Carried on the result rather than inferred from the transport's name,
+/// because Requirement 3.1 asks for exactly one label per result and
+/// Requirement 3.3 forbids publishing a like-for-like comparison from anything
+/// below Tier C. A reader who has to derive the tier from a transport name is a
+/// reader who can get it wrong.
+enum class deployment_tier : std::uint8_t {
+    /// In-process hosts over the message fabric, memory persistence. No wire,
+    /// no encoding, no disk. **Never comparable to an external number.**
+    a_fabric,
+    /// In-process hosts, a real transport over loopback, memory persistence.
+    b_loopback,
+};
+
+[[nodiscard]] inline auto to_string(deployment_tier tier) -> std::string_view {
+    switch (tier) {
+        case deployment_tier::a_fabric:
+            return "Tier A (in-process fabric, memory persistence)";
+        case deployment_tier::b_loopback:
+            return "Tier B (real transport over loopback, memory persistence)";
+    }
+    return "unknown";
+}
+
+/// @brief Whether a comparison drawn from this tier may be published as
+///        like-for-like (Requirement 3.3).
+///
+/// Constant `false` today because this suite reaches Tier B at most. It is a
+/// function rather than a literal so that the rule lives beside the tier it
+/// governs, and so Tier C's arrival is one line here instead of a search.
+[[nodiscard]] inline auto publishable_as_like_for_like(deployment_tier) -> bool {
+    return false;
+}
+
+/// @brief How a command reaches its shard — the axis Requirement 8.3 isolates.
+///
+/// Three values rather than two, because the routing scenario needs a control
+/// arm that differs from the treatment arm **only** in which `submit_command`
+/// overload it calls.
+///
+/// The harness's own leader discovery is the reason. `by_key` finds the leader
+/// by resolving the key on every host, which costs one shard-map lookup per
+/// host — more than the single lookup inside `submit_command` that this
+/// scenario is trying to price. Measuring `by_key` against `attributed_group`
+/// would therefore attribute four lookups to routing and report a figure
+/// several times too large. Both attributed arms find the leader from a group
+/// id the client already holds, so that cost is identical in the two and
+/// cancels out of the delta.
+///
+/// The price of that control is that `attributed_key` is **not** the path the
+/// rest of the suite measures, which is why the routing scenario prints its own
+/// baseline instead of differencing against another row's headline.
+enum class routing_mode : std::uint8_t {
+    /// The production path (Requirement 1.7), and what every row outside the
+    /// routing scenario uses: the leader is found by resolving the key, then
+    /// `multi_raft::submit_command(key, command, timeout)` resolves it again.
+    by_key,
+    /// The routing scenario's **control** arm: the leader is found from a
+    /// cached group id, then `submit_command(key, command, timeout)` performs
+    /// the shard-map lookup by key.
+    attributed_key,
+    /// The routing scenario's **treatment** arm: the same cached group id finds
+    /// the leader, then `submit_command(group, expected_epoch, command,
+    /// timeout)` looks the shard up by group id and validates the caller's
+    /// epoch. This is the one place Requirement 1.7's routing rule is
+    /// deliberately relaxed, and Requirement 8.3 is why.
+    attributed_group,
+};
+
+[[nodiscard]] inline auto to_string(routing_mode mode) -> std::string_view {
+    switch (mode) {
+        case routing_mode::by_key:
+            return "submit_command(key, ...), leader resolved by key";
+        case routing_mode::attributed_key:
+            return "submit_command(key, ...), leader from a cached group id";
+        case routing_mode::attributed_group:
+            return "submit_command(group, epoch, ...), leader from a cached group id";
+    }
+    return "unknown";
+}
+
+/// @brief A descriptor a client already holds: the group, and the epoch the
+///        request was computed against.
+///
+/// The unit `submit_command(group, expected_epoch, ...)` is addressed in, and
+/// therefore the unit a client's descriptor cache is made of. Sampled once
+/// before a measured window; see `kv_cluster::descriptor_cache`.
+struct addressed_shard {
+    std::uint64_t _group{};
+    kythira::shard_epoch _epoch{};
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The read taxonomy
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -462,6 +559,13 @@ struct rpc_snapshot {
 
 /// @brief One row of the comparison table.
 struct benchmark_result {
+    /// Which of Requirement 3.1's tiers this row was taken at. Not defaulted
+    /// to Tier B and left to drift: `fill_result` reads it off the transport
+    /// fixture, so a new fixture cannot be added without deciding.
+    deployment_tier _tier{deployment_tier::b_loopback};
+    /// How the command was addressed. `by_key` everywhere except the
+    /// routing-cost scenario Requirement 8.3 defines.
+    routing_mode _routing{routing_mode::by_key};
     std::string _transport;
     std::string _serializer;
     /// The *node-internal* serializer's own media type — log entries and
@@ -475,6 +579,12 @@ struct benchmark_result {
     std::size_t _groups{0};
     std::size_t _value_bytes{0};
     std::size_t _in_flight{0};
+    /// The host driver's tick period. This library has no timer thread, so the
+    /// tick is its only clock and anything waiting on a heartbeat waits for the
+    /// caller's next `tick()` — Hypothesis H6. Carried on every row, not only
+    /// the row that sweeps it, because a latency figure taken at an unstated
+    /// cadence cannot be compared with one taken at another.
+    std::chrono::milliseconds _tick_interval{0};
     double _ops_per_second{0.0};
     std::chrono::nanoseconds _p50{0};
     std::chrono::nanoseconds _p95{0};
@@ -652,6 +762,44 @@ struct repeated_result {
 
     /// @brief Whether this row may appear in a comparison table (6.3, 6.7).
     [[nodiscard]] auto comparable() const -> bool { return verdict() == result_verdict::stable; }
+
+    /// @brief The p50 this row is quoted at — the median run's, not the median
+    ///        of the runs' p50s.
+    ///
+    /// Consistent with `headline_ops_per_second`: the quoted latency belongs to
+    /// the window that produced the quoted rate, rather than to no window at
+    /// all.
+    [[nodiscard]] auto median_p50() const -> std::chrono::nanoseconds {
+        return _runs.empty() ? std::chrono::nanoseconds{0} : median_run()._p50;
+    }
+
+    /// @brief How far the repetitions' p50 ranged around the quoted one, as a
+    ///        fraction of it.
+    ///
+    /// A cost decomposition is built by subtracting one row's p50 from
+    /// another's, and a difference is only a measurement if it is larger than
+    /// the spread of the things differenced. `spread()` answers that question
+    /// for throughput; this answers it for the quantity the decomposition
+    /// actually uses. The two are not interchangeable — task 8 measured a row
+    /// whose throughput spread 20% while its replication ratio spread 1%.
+    [[nodiscard]] auto p50_spread() const -> double {
+        if (_runs.size() < 2) {
+            return 0.0;
+        }
+        const auto quoted = median_p50();
+        if (quoted <= std::chrono::nanoseconds{0}) {
+            return std::numeric_limits<double>::infinity();
+        }
+        auto low = _runs.front()._p50;
+        auto high = _runs.front()._p50;
+        for (const auto& run : _runs) {
+            low = std::min(low, run._p50);
+            high = std::max(high, run._p50);
+        }
+        const auto half = std::max(high - quoted, quoted - low);
+        return std::chrono::duration<double>(half).count() /
+               std::chrono::duration<double>(quoted).count();
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

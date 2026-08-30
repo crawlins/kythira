@@ -89,6 +89,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
@@ -115,7 +116,9 @@ namespace {
 using kythira::testing::benchmark_result;
 using kythira::testing::consistency_of;
 using kythira::testing::cpp_httplib_transport;
+using kythira::testing::deployment_tier;
 using kythira::testing::describe_machine;
+using kythira::testing::fabric_transport;
 using kythira::testing::k_required_repetitions;
 using kythira::testing::key_distribution;
 using kythira::testing::kv_cluster;
@@ -127,8 +130,10 @@ using kythira::testing::kv_value;
 using kythira::testing::machine_description;
 using kythira::testing::operation_tally;
 using kythira::testing::preload_keys;
+using kythira::testing::publishable_as_like_for_like;
 using kythira::testing::read_kind;
 using kythira::testing::repeated_result;
+using kythira::testing::routing_mode;
 using kythira::testing::run_put_workload;
 using kythira::testing::run_read_workload;
 using kythira::testing::to_string;
@@ -298,7 +303,16 @@ auto report(const repeated_result& row) -> void {
     out << "  " << median._transport << " / " << median._serializer << " / " << median._scenario
         << ": nodes=" << median._nodes << " groups=" << median._groups
         << " value=" << median._value_bytes << "B in_flight=" << median._in_flight
-        << "\n      headline: ";
+        << " tick=" << median._tick_interval.count()
+        << "ms"
+        // Requirement 3.1: exactly one tier per result, and 3.3: say so at the
+        // point of the number rather than once in a preamble a quoted row
+        // leaves behind.
+        << "\n      tier:     " << to_string(median._tier)
+        << (publishable_as_like_for_like(median._tier)
+                ? ""
+                : " — NOT a like-for-like comparison with any external number (Requirement 3.3)")
+        << "\n      routing:  " << to_string(median._routing) << "\n      headline: ";
     if (const auto headline = row.headline_ops_per_second()) {
         out << *headline << " ops/sec (median of " << row.runs() << " runs)";
     } else {
@@ -403,9 +417,11 @@ auto warmup_operations(std::size_t operations, std::size_t in_flight) -> std::si
 /// does not have the samples for rather than printing a flattering one.
 template<typename Transport>
 auto one_measurement(std::size_t operations, std::size_t in_flight, std::size_t value_bytes,
-                     key_distribution distribution = key_distribution::uniform)
+                     key_distribution distribution = key_distribution::uniform,
+                     routing_mode routing = routing_mode::by_key,
+                     kv_cluster_options cluster_options = standard_cluster_options())
     -> benchmark_result {
-    kv_cluster<Transport> cluster{standard_cluster_options()};
+    kv_cluster<Transport> cluster{cluster_options};
     BOOST_REQUIRE_MESSAGE(cluster.await_all_leaders(k_election_budget),
                           Transport::name() << ": no leader on every shard within budget");
 
@@ -418,6 +434,7 @@ auto one_measurement(std::size_t operations, std::size_t in_flight, std::size_t 
     workload._key_count = cluster.options()._key_count;
     workload._distribution = distribution;
     workload._op_timeout = k_operation_timeout;
+    workload._routing = routing;
     // The scenario carries the distribution, because the two arms of the
     // distribution sweep are otherwise identical in every printed field and a
     // reader would have no way to tell the rows apart.
@@ -472,13 +489,17 @@ auto one_measurement(std::size_t operations, std::size_t in_flight, std::size_t 
 template<typename Transport>
 auto throughput_row(std::size_t operations, std::size_t in_flight, std::size_t value_bytes,
                     double floor_ops_per_second,
-                    key_distribution distribution = key_distribution::uniform) -> repeated_result {
+                    key_distribution distribution = key_distribution::uniform,
+                    routing_mode routing = routing_mode::by_key,
+                    kv_cluster_options cluster_options = standard_cluster_options())
+    -> repeated_result {
     repeated_result row;
     row._warmup_operations = warmup_operations(operations, in_flight);
     row._measured_operations = operations;
 
     for (std::size_t repetition = 0; repetition < k_required_repetitions; ++repetition) {
-        auto run = one_measurement<Transport>(operations, in_flight, value_bytes, distribution);
+        auto run = one_measurement<Transport>(operations, in_flight, value_bytes, distribution,
+                                              routing, cluster_options);
         report(repetition, run);
         row.record(std::move(run));
     }
@@ -847,6 +868,464 @@ BOOST_AUTO_TEST_CASE(read_state_by_shard_size,
 #else
     BOOST_TEST_MESSAGE(
         "  read_state shard-size curve: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
+#endif
+}
+
+// ── the tick cadence axis ────────────────────────────────────────────────────
+
+/// @brief The tick sweep read the way Requirement 8.6 asks for it: each
+///        percentile against the cadence, and each one's movement relative to
+///        the fastest tick measured.
+///
+/// The per-row report already prints every one of these numbers. What it cannot
+/// do is answer 8.6's actual question — *which* percentiles move with the
+/// cadence and which do not — because that is a statement about the rows
+/// together. A percentile that scales with the tick is on a path that waits for
+/// one; a percentile that does not is on a path that does not, and H6 is the
+/// claim that the first set is non-empty.
+///
+/// The ratio column is against the fastest cadence in the sweep rather than
+/// against the tick period, so a reader can compare it with the tick's own
+/// ratio directly: a path gated purely by the clock would move 20x between a
+/// 1 ms and a 20 ms tick.
+///
+/// `p99` is `std::optional` and is printed as `n/a` when the row did not have
+/// the samples for one, rather than as a number that would be the slowest of a
+/// few hundred.
+auto report_tick_sweep(const std::vector<repeated_result>& rows) -> void {
+    if (rows.empty()) {
+        return;
+    }
+    const auto& base = rows.front().median_run();
+    const auto ratio = [](double value, double reference) -> std::string {
+        std::ostringstream r;
+        r << std::fixed << std::setprecision(2);
+        if (reference <= 0.0) {
+            r << "n/a";
+        } else {
+            r << (value / reference) << "x";
+        }
+        return r.str();
+    };
+
+    // One leader replicates to `nodes - 1` followers for each of `groups`
+    // shards, so this many AppendEntries streams are live at once. Dividing by
+    // it turns a cluster-wide count into the quantity the mechanism is about:
+    // how often ONE stream issues a round.
+    const auto streams = [](const benchmark_result& r) -> std::size_t {
+        return r._groups * (r._nodes > 0 ? r._nodes - 1 : 0);
+    };
+    const auto inter_round_ms = [&streams](const benchmark_result& r) -> double {
+        const auto seconds = std::chrono::duration<double>(r._duration).count();
+        const auto s = static_cast<double>(streams(r));
+        if (seconds <= 0.0 || s <= 0.0 || r._rpc._append_entries == 0) {
+            return 0.0;
+        }
+        return 1000.0 * seconds * s / static_cast<double>(r._rpc._append_entries);
+    };
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1);
+    out << "H6, the tick sweep read across rows (Requirement 8.6) — every figure is the "
+           "median run's, and the ratio is against the "
+        << base._tick_interval.count() << " ms row:"
+        << "\n      tick    ops/sec        p50            p95            p99"
+           "         AE/commit  round interval";
+    for (const auto& row : rows) {
+        const auto& median = row.median_run();
+        out << "\n      " << std::setw(4) << median._tick_interval.count() << "ms " << std::setw(8)
+            << median._ops_per_second << " (" << ratio(median._ops_per_second, base._ops_per_second)
+            << ")  " << std::setw(8) << us(median._p50) << "us ("
+            << ratio(us(median._p50), us(base._p50)) << ")  " << std::setw(8) << us(median._p95)
+            << "us (" << ratio(us(median._p95), us(base._p95)) << ")  ";
+        if (median._p99.has_value() && base._p99.has_value()) {
+            out << std::setw(8) << us(*median._p99) << "us ("
+                << ratio(us(*median._p99), us(*base._p99)) << ")";
+        } else {
+            out << "     n/a       ";
+        }
+        out << std::setprecision(2) << "  " << std::setw(6);
+        if (const auto per_commit = median.rpcs_per_committed_entry()) {
+            out << *per_commit;
+        } else {
+            out << "n/a";
+        }
+        out << "     " << std::setw(6) << inter_round_ms(median) << " ms" << std::setprecision(1);
+        if (!row.comparable()) {
+            out << "  [" << to_string(row.verdict()) << "]";
+        }
+    }
+    out << "\n      A percentile whose ratio tracks the tick ratio is gated by the clock; one "
+           "that stays near 1.00x is not."
+        << "\n      `round interval` is the wall-clock gap between AppendEntries on ONE of the "
+        << streams(base)
+        << " replication streams (groups x followers). If the round were driven by the tick it "
+           "would equal the tick; if it were driven by the proposal it would fall as throughput "
+           "rises. Read it beside `AE/commit`, which is Hypothesis H2's ratio: task 8 moved "
+           "concurrency 64-fold and could not move it, so whatever moves it here is not offered "
+           "load.";
+    BOOST_TEST_MESSAGE(out.str());
+}
+
+/// @brief Throughput and every reported percentile against the host driver's
+///        tick period — Hypothesis H6.
+///
+/// `multi_raft` has no timer thread. The tick is the only clock this library
+/// has, so anything that waits for a heartbeat waits for the caller's next
+/// `tick()`, and H6 says that sets a floor on those paths regardless of how
+/// fast consensus is. Requirement 8.6 asks the measurement to show **which
+/// percentiles move with the cadence and which do not**, which is why this row
+/// prints the whole distribution rather than a headline.
+///
+/// Task 8's finding makes a sharper prediction than H6 as written. The
+/// replication round turned out to be tick-driven rather than proposal-driven:
+/// the AppendEntries rate was flat at 4,659–5,499/sec while offered load rose
+/// sixteen-fold, and entries accumulated between rounds. If that is right then
+/// the batching factor here is arrival rate × inter-round interval, so
+/// **entries per AppendEntries should rise roughly in proportion to the tick
+/// period while the AppendEntries rate falls in inverse proportion** — and
+/// `rpc_counters` already reports both, per repetition. A tick sweep that moved
+/// the latency percentiles but left those two alone would refute the mechanism,
+/// not just the hypothesis.
+///
+/// Everything else is held at the shape the transport, serializer and
+/// value-size rows share — Beast, JSON, 128 B, 16 in flight — so a cadence row
+/// can be quoted against those tables. The election window is *not* rescaled
+/// with the tick: it is 2000–4000 ms at every cadence, which at 20 ms is still
+/// a hundred ticks, so a slower clock costs elections nothing here and the
+/// sweep is not secretly a sweep of election behaviour.
+BOOST_AUTO_TEST_CASE(write_throughput_by_tick_cadence,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
+    BOOST_TEST_MESSAGE(
+        "write throughput and latency by host tick cadence, 128B values, 16 in flight, "
+        "JSON on the wire (H6: the tick sets a floor):");
+
+#if defined(KYTHIRA_BENCH_HAS_BEAST)
+    std::vector<repeated_result> rows;
+    for (auto tick : {std::chrono::milliseconds{1}, std::chrono::milliseconds{2},
+                      std::chrono::milliseconds{5}, std::chrono::milliseconds{20}}) {
+        auto options = standard_cluster_options();
+        options._tick_interval = tick;
+        BOOST_TEST_MESSAGE("  tick = " << tick.count() << " ms:");
+        // No floor above 1.0. The whole point of the sweep is that a slower
+        // clock is expected to cost throughput, and a floor set from the fast
+        // arm would fail the slow one for being what it is.
+        rows.push_back(throughput_row<kythira::testing::beast_http_transport<json>>(
+            600, 16, 128, 1.0, key_distribution::uniform, routing_mode::by_key, options));
+    }
+    report_tick_sweep(rows);
+#else
+    BOOST_TEST_MESSAGE("  tick cadence sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
+#endif
+}
+
+// ── cost attribution ─────────────────────────────────────────────────────────
+
+/// @brief One component of the decomposition, with the band its inputs' spread
+///        puts around it.
+///
+/// A component is a difference of two measured p50s, and a difference is only a
+/// measurement when it is larger than the spread of the things differenced.
+/// `_band` is that spread propagated through the subtraction; `resolved()` is
+/// the question a reader would otherwise have to ask by hand.
+struct cost_component {
+    std::string _name;
+    double _microseconds{0.0};
+    double _band{0.0};
+    std::string _note;
+
+    [[nodiscard]] auto resolved() const -> bool { return std::abs(_microseconds) > _band; }
+};
+
+auto quoted_p50_us(const repeated_result& row) -> double {
+    return us(row.median_p50());
+}
+
+/// @brief The half-width, in microseconds, that a row's repetitions put around
+///        the p50 it is quoted at.
+auto p50_band_us(const repeated_result& row) -> double {
+    return quoted_p50_us(row) * row.p50_spread();
+}
+
+/// @brief Requirement 8.1's decomposition of one committed operation, built
+///        entirely from tier and addressing deltas, with a stated residual.
+///
+/// ### What is subtracted from what
+///
+/// Four cells, identical in every respect but two: the tier (A, the in-process
+/// fabric; B, Beast over loopback) and the addressing (`submit_command(key,…)`
+/// against `submit_command(group, epoch,…)`).
+///
+/// - **routing** = B(key) − B(group). The two arms differ only in which
+///   overload runs — the harness finds the leader the same way in both — so the
+///   difference is the shard-map lookup by key against the lookup by group id
+///   plus the epoch check. Requirement 8.3.
+/// - **transport + wire serialization** = B(key) − A(key). Tier A has no socket
+///   and no wire encoding; Tier B has both. Requirement 8.2 asks for exactly
+///   this — the component derived from a tier delta rather than from a counter
+///   inserted into a production path. The two cannot be split further here:
+///   there is no tier with an encoder and no socket, and inventing one would
+///   mean instrumenting the code, which is what 8.2 forbids. What the encoding's
+///   own share looks like is measured on the serializer axis instead
+///   (`write_throughput_by_rpc_serializer`, Requirement 8.4).
+/// - **durability barrier** = 0, exactly, and stated rather than omitted: every
+///   tier here uses `memory_persistence_engine`, so no operation waits on a
+///   disk. A component that is zero because of the configuration is a fact
+///   about the number; a component silently missing is a hole.
+/// - **consensus core, host and client** = A(group). Everything left inside
+///   Tier A once routing is addressed away: log append and encode, the
+///   replication round over the fabric, follower apply, commit-waiter
+///   fulfilment, future settlement, and this harness's own per-operation cost.
+///   Requirement 8.1 lists those separately and they are **not** separated
+///   here, because separating them needs timestamps inside `raft.hpp` and
+///   `multi_raft_impl.hpp` — production instrumentation, which 8.2 rules out.
+///   Named as one term rather than presented as several.
+///
+/// ### The residual is not a rounding error
+///
+/// residual = total − routing − (transport + serialization) − barrier − core,
+/// which reduces to **(routing at Tier A) − (routing at Tier B)**. It is the
+/// interaction term: whether the routing lookup costs the same over a socket as
+/// it does over the fabric. A decomposition into independently-measured
+/// components has one whether or not it is printed, and Requirement 8.1 asks
+/// for it to be stated.
+///
+/// ### Cited rather than re-derived (Requirement 8.8)
+///
+/// The transport component's own prior measurement is
+/// `doc/http_transport_performance_comparison.md`: on this same host, Beast at
+/// 3,527 ops/sec and 219.4 µs p50 against cpp-httplib's 12 and 83,156.0 µs, on
+/// a bare RPC ping-pong of 200 warm-up plus 2,000 measured iterations, July 28,
+/// 2026. **Its conditions differ from this suite's** in the way that matters:
+/// it measures one client against one server with no consensus behind it, so it
+/// prices a round trip, not a replicated commit. The serializer component's is
+/// `doc/protobuf_serializer_performance_comparison.md`: JSON at 2.275 µs to
+/// serialize a one-entry, 16-byte-command AppendEntries against protobuf's
+/// 0.526 µs, and 1.949 against 0.612 to parse it — encode/decode in isolation,
+/// no transport at all. Future-settlement overhead is
+/// `doc/future_backend_performance_comparison.md`, measured on bare promise and
+/// continuation chains rather than on this workload. None of the three is
+/// subtracted from anything below; they are the independent evidence that the
+/// components which came out of the tier deltas are the right order of
+/// magnitude.
+auto report_decomposition(const repeated_result& tier_b_key, const repeated_result& tier_b_group,
+                          const repeated_result& tier_a_key, const repeated_result& tier_a_group)
+    -> void {
+    const auto b_key = quoted_p50_us(tier_b_key);
+    const auto b_group = quoted_p50_us(tier_b_group);
+    const auto a_key = quoted_p50_us(tier_a_key);
+    const auto a_group = quoted_p50_us(tier_a_group);
+
+    std::vector<cost_component> components;
+    components.push_back(
+        cost_component{._name = "routing (shard-map lookup, epoch validation)",
+                       ._microseconds = b_key - b_group,
+                       ._band = p50_band_us(tier_b_key) + p50_band_us(tier_b_group),
+                       ._note = "Tier B by key minus Tier B by group+epoch"});
+    components.push_back(cost_component{._name = "transport + wire serialization",
+                                        ._microseconds = b_key - a_key,
+                                        ._band = p50_band_us(tier_b_key) + p50_band_us(tier_a_key),
+                                        ._note = "Tier B minus Tier A, both addressed by key"});
+    components.push_back(cost_component{
+        ._name = "durability barrier",
+        ._microseconds = 0.0,
+        ._band = 0.0,
+        ._note = "exactly zero: memory_persistence_engine at every tier here, nothing fsyncs"});
+    components.push_back(
+        cost_component{._name = "consensus core, host and client (not decomposed further)",
+                       ._microseconds = a_group,
+                       ._band = p50_band_us(tier_a_group),
+                       ._note = "log append and encode, replication round, follower apply, "
+                                "commit-waiter fulfilment, future settlement, harness"});
+
+    double attributed = 0.0;
+    for (const auto& c : components) {
+        attributed += c._microseconds;
+    }
+    const auto residual = b_key - attributed;
+    const auto residual_band = p50_band_us(tier_a_key) + p50_band_us(tier_a_group) +
+                               p50_band_us(tier_b_key) + p50_band_us(tier_b_group);
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1);
+    out << "cost decomposition of one committed operation (Requirement 8.1), "
+           "128B value, 16 in flight, uniform keys"
+        << "\n      total (Tier B, beast/JSON, addressed by key): " << b_key << " us p50";
+    for (const auto& c : components) {
+        const auto share = b_key > 0.0 ? 100.0 * c._microseconds / b_key : 0.0;
+        out << "\n        " << std::setw(58) << std::left << c._name << std::right << std::setw(9)
+            << c._microseconds << " us  " << std::setw(6) << share << "%"
+            << "  +/- " << c._band << " us";
+        out << "\n          (" << c._note << ")";
+        if (!c.resolved() && c._band > 0.0) {
+            // A component the machine cannot resolve is still a result: what it
+            // is not is a *value*. Reported as the bound it actually
+            // establishes rather than as the point estimate, which on these
+            // spreads would be a number the next run contradicts.
+            out << "\n          NOT RESOLVED — below its inputs' combined spread. This row "
+                   "establishes an upper bound of "
+                << c._band << " us (" << (b_key > 0.0 ? 100.0 * c._band / b_key : 0.0)
+                << "% of the operation), not a value.";
+        }
+    }
+    out << "\n        " << std::setw(58) << std::left
+        << "residual (routing at Tier A minus routing at Tier B)" << std::right << std::setw(9)
+        << residual << " us  " << std::setw(6) << (b_key > 0.0 ? 100.0 * residual / b_key : 0.0)
+        << "%"
+        << "  +/- " << residual_band << " us";
+    if (std::abs(residual) <= residual_band) {
+        out << "\n          (within the combined spread of the four rows — the components account "
+               "for the total to the precision this machine supports)";
+    } else {
+        out << "\n          (larger than the combined spread of the four rows — routing does NOT "
+               "cost the same at the two tiers, and that difference is a finding, not slack)";
+    }
+    out << "\n      inputs, each the p50 of its own median run:"
+        << "\n        Tier B by key   " << b_key << " us (+/-" << 100.0 * tier_b_key.p50_spread()
+        << "%)   Tier B by group " << b_group << " us (+/-" << 100.0 * tier_b_group.p50_spread()
+        << "%)"
+        << "\n        Tier A by key   " << a_key << " us (+/-" << 100.0 * tier_a_key.p50_spread()
+        << "%)   Tier A by group " << a_group << " us (+/-" << 100.0 * tier_a_group.p50_spread()
+        << "%)"
+        << "\n      Tier A is NEVER comparable to an external number (Requirement 3.1); it is "
+           "here only as the subtrahend.";
+    BOOST_TEST_MESSAGE(out.str());
+}
+
+/// @brief Requirement 8.3's comparison, taken where it can say the most: one
+///        operation in flight.
+///
+/// The decomposition below runs at sixteen in flight because that is the shape
+/// every other table in this suite shares. It is the wrong place to price
+/// routing. At sixteen in flight a p50 is the latency of an operation that
+/// queued behind fifteen others, so it inherits the whole run's throughput
+/// noise — the four rows' p50 spreads were 27%, 20%, 10% and 4%, and a
+/// sub-millisecond component differenced out of two 16 ms numbers with a 27%
+/// spread cannot survive. At one in flight a p50 is one operation, start to
+/// finish, and the spread is the spread of *an operation* rather than of a
+/// queue.
+///
+/// The two arms differ in nothing but the overload called: same cluster shape,
+/// same value size, same distribution, same leader discovery from a cached
+/// group id. What the difference prices is `_shard_map.lookup(key)` against
+/// `_shard_map.find(group)` plus the caller's epoch check — everything else in
+/// `route_and_run` (the local-replica lookup, the partitioner's cross-shard
+/// admission check, the merge-freeze check, `note_activity`, the leadership
+/// check) runs identically in both.
+auto report_routing_bound(const repeated_result& by_key, const repeated_result& by_group) -> void {
+    const auto key_us = quoted_p50_us(by_key);
+    const auto group_us = quoted_p50_us(by_group);
+    const auto delta = key_us - group_us;
+    const auto band = p50_band_us(by_key) + p50_band_us(by_group);
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1);
+    out << "routing cost (Requirement 8.3), one operation in flight — the concurrency at "
+           "which a p50 is one operation:"
+        // The "+/-" is the p50's own spread and the verdict is the throughput
+        // row's, and they are labelled apart because they disagree: a row can
+        // be UNSTABLE on ops/sec while its p50 repeats, and the arithmetic
+        // below uses the p50.
+        << "\n      submit_command(key, ...)          " << key_us << " us p50 (p50 +/-"
+        << (100.0 * by_key.p50_spread()) << "%; throughput verdict " << to_string(by_key.verdict())
+        << ")"
+        << "\n      submit_command(group, epoch, ...) " << group_us << " us p50 (p50 +/-"
+        << (100.0 * by_group.p50_spread()) << "%; throughput verdict "
+        << to_string(by_group.verdict()) << ")"
+        << "\n      difference                        " << delta << " us  +/- " << band << " us";
+    if (std::abs(delta) > band) {
+        out << "\n      RESOLVED: routing by key costs " << delta << " us more than routing by "
+            << "group and epoch, " << (key_us > 0.0 ? 100.0 * delta / key_us : 0.0)
+            << "% of one operation.";
+    } else {
+        out << "\n      NOT RESOLVED, and the bound is the result: the routing lookup is under "
+            << band << " us, at most " << (key_us > 0.0 ? 100.0 * band / key_us : 0.0)
+            << "% of one committed operation. Requirement 8.1 asks where an operation's cost "
+               "goes; this says where it does not.";
+    }
+    BOOST_TEST_MESSAGE(out.str());
+}
+
+/// @brief The four cells the decomposition is built from, and the decomposition.
+///
+/// Run back to back in one process on one machine, which is what makes the
+/// subtraction legitimate at all (Requirement 6.6): a component computed by
+/// differencing two numbers taken in different sessions would be measuring the
+/// sessions.
+///
+/// The Tier A arms are the reason this case exists. Every other row in this
+/// suite is Tier B, where transport and serialization are inseparable from
+/// everything else; Tier A removes both and nothing else, so the difference has
+/// an address. Requirement 8.2 asks for the component to come from that delta
+/// rather than from instrumentation, and no counter is added to production code
+/// anywhere in this task.
+BOOST_AUTO_TEST_CASE(cost_attribution_by_tier,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
+    BOOST_TEST_MESSAGE(
+        "cost attribution: Tier A beside Tier B, addressed by key and by group+epoch "
+        "(Requirements 8.1, 8.2, 8.3):");
+
+#if defined(KYTHIRA_BENCH_HAS_BEAST)
+    // 600 operations, 16 in flight, 128 B, uniform — bit for bit the shape the
+    // transport, serializer and value-size rows use, so the total this
+    // decomposition is taken against is a number those tables already carry.
+    constexpr std::size_t k_operations = 600;
+    constexpr std::size_t k_in_flight = 16;
+    constexpr std::size_t k_value_bytes = 128;
+
+    BOOST_TEST_MESSAGE("  Tier B (beast/JSON over loopback), addressed by key:");
+    auto b_key = throughput_row<kythira::testing::beast_http_transport<json>>(
+        k_operations, k_in_flight, k_value_bytes, 1.0, key_distribution::uniform,
+        routing_mode::attributed_key);
+    BOOST_TEST_MESSAGE("  Tier B (beast/JSON over loopback), addressed by group and epoch:");
+    auto b_group = throughput_row<kythira::testing::beast_http_transport<json>>(
+        k_operations, k_in_flight, k_value_bytes, 1.0, key_distribution::uniform,
+        routing_mode::attributed_group);
+    BOOST_TEST_MESSAGE("  Tier A (in-process fabric), addressed by key:");
+    auto a_key =
+        throughput_row<fabric_transport>(k_operations, k_in_flight, k_value_bytes, 1.0,
+                                         key_distribution::uniform, routing_mode::attributed_key);
+    BOOST_TEST_MESSAGE("  Tier A (in-process fabric), addressed by group and epoch:");
+    auto a_group =
+        throughput_row<fabric_transport>(k_operations, k_in_flight, k_value_bytes, 1.0,
+                                         key_distribution::uniform, routing_mode::attributed_group);
+
+    // An epoch mismatch here would mean the descriptor cache went stale under a
+    // window, which cannot happen with automatic split and merge off — and if
+    // it ever did, every operation in the treatment arms would have failed and
+    // the "routing" component would be the cost of an exception. Checked rather
+    // than assumed, because the decomposition is worthless if it is not.
+    for (const auto* row : {&b_group, &a_group}) {
+        BOOST_CHECK_MESSAGE(row->median_run()._tally._epoch_mismatch == 0,
+                            "group-addressed arm saw "
+                                << row->median_run()._tally._epoch_mismatch
+                                << " epoch mismatches; the cached descriptor went stale and this "
+                                   "arm measured the failure path");
+    }
+
+    report_decomposition(b_key, b_group, a_key, a_group);
+
+    // Requirement 8.3's own comparison, at one in flight rather than sixteen.
+    // Two more rows rather than reusing the pair above, because the pair above
+    // is at the concurrency the decomposition needs and this is at the
+    // concurrency the routing question needs — and one measurement cannot be
+    // both.
+    BOOST_TEST_MESSAGE("  Tier B (beast/JSON over loopback), 1 in flight, addressed by key:");
+    auto routing_key = throughput_row<kythira::testing::beast_http_transport<json>>(
+        k_operations, 1, k_value_bytes, 1.0, key_distribution::uniform,
+        routing_mode::attributed_key);
+    BOOST_TEST_MESSAGE(
+        "  Tier B (beast/JSON over loopback), 1 in flight, addressed by group and epoch:");
+    auto routing_group = throughput_row<kythira::testing::beast_http_transport<json>>(
+        k_operations, 1, k_value_bytes, 1.0, key_distribution::uniform,
+        routing_mode::attributed_group);
+    BOOST_CHECK_MESSAGE(routing_group.median_run()._tally._epoch_mismatch == 0,
+                        "the one-in-flight group-addressed arm saw "
+                            << routing_group.median_run()._tally._epoch_mismatch
+                            << " epoch mismatches; its cached descriptor went stale");
+    report_routing_bound(routing_key, routing_group);
+#else
+    BOOST_TEST_MESSAGE("  cost attribution: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
 #endif
 }
 
