@@ -979,12 +979,70 @@ and the answer is currently no for every one of them.
     the way its conditions differ from this suite's
   - _Requirements: 3.1, 3.3, 8.1–8.3, 8.6, 8.8_
 
-- [ ] 12. Report artifacts
-  - Timestamped CSV and JSON into `test_results/`, self-describing per
-    Requirement 11.5
-  - A report binary supporting subset selection by tier, scenario or axis, and
-    open-loop load with coordinated-omission correction
-  - _Requirements: 4.2, 11.1, 11.5, 11.6_
+- [x] 12. Report artifacts
+  - **`tests/multi_raft_benchmark_rows.hpp` came first, and is the point.**
+    Requirement 12 wants a CI-registered regression subset and Requirement 11.6
+    wants a report generator that runs a subset of the matrix. Those are two
+    programs with different budgets and different failure behaviour; they must
+    not be two *measurements*. The cluster shape, the budgets, the warm-up rule,
+    the structural checks and the repetition loop now live in one header, and
+    what differs between the consumers is a `row_observer` — three callbacks
+    (`_message`, `_require`, `_check`) that the suite backs with Boost.Test and
+    the report binary with `std::cout` and a thrown exception. Without it the
+    artifact would describe rows CI never ran
+  - `write_row_spec` / `read_row_spec` replace a seven-parameter list of which
+    two were `std::size_t`. A designated initialiser cannot be transposed, and
+    adding an axis no longer touches every call site
+  - **`tests/multi_raft_performance_report.cpp`** — its own `main`, a catalog of
+    35 rows as data, `--list`, and `--axis` / `--scenario` / `--tier`
+    case-insensitive substring selectors (11.6). A row whose precondition fails
+    is **abandoned and recorded as not measured**, and the matrix continues; a
+    run in which every row was abandoned exits non-zero. `--budget-scale` and
+    `--out-dir` exist so the CTest entry is the same program on the same
+    catalog, not a second one
+  - The catalog carries the two rows a CI-registered test cannot: Requirement
+    4.3's **512 in flight**, and the open-loop arm, whose rate has to be chosen
+    for the machine
+  - **`tests/multi_raft_report_artifacts.hpp`** writes the timestamped CSV and
+    JSON pair to `test_results/` (11.1), self-describing per 11.5: tier and what
+    that tier forbids, both serializers, cluster shape, load mode **and its
+    controlling parameter**, routing, tick cadence, spread, verdict, per-cause
+    tally, replication counters, the machine, and **every repetition**, not only
+    the median. Two rules the writers hold: an absent value is `null` in JSON
+    and an **empty cell** in CSV, never `0` — a p99 the row lacked samples for is
+    not zero, and `headline_ops_per_second` must stay absent below
+    `k_required_repetitions` on disk as it is in memory; and the verdict travels
+    with the number, because a CSV read by a script that never saw the printed
+    output is exactly where Requirement 6.3's gate gets lost
+  - **Open loop (4.1, 4.2)** offers a fixed rate on a schedule computed before
+    the window and measures each operation **from its intended start time**.
+    `_mean_schedule_lag` is on every row: a bounded worker pool cannot serve a
+    true open loop, and when it falls behind the offered rate silently becomes
+    the closed-loop rate — the lag is what makes that visible instead
+  - **The first run of it found a defect in the statistics.** In open loop the
+    rate is an *input*, so the throughput spread is ~0.0% whatever the system
+    did, and `verdict()` would have stamped `stable` on every open-loop row ever
+    taken — including one whose repetitions ranged from a 682 us p50 to an
+    84,704 us p50. `governing_spread()` now switches on the load mode, the
+    verdict is computed from it, and both spreads are printed and written with
+    the governing one named
+  - **An unasked-for corroboration of task 11.** At 300 ops/sec offered, entries
+    per AppendEntries is **1.00** and RPCs per committed entry is **10.1–11.0**,
+    against 4.7 and ~4.0 at sixteen in flight closed-loop. Both follow from
+    task 11's mechanism: the batch tracks proposals outstanding per group (at
+    300/sec with a 0.7 ms latency there is a fifth of one), and the rounds per
+    commit rise because the tick keeps firing regardless
+  - `tests/CMakeLists.txt`'s five conditional wiring blocks are now
+    `kythira_wire_multi_raft_bench(<target>)`, called for both binaries. A
+    target built with a different set of `KYTHIRA_BENCH_HAS_*` defines than the
+    other would silently measure a smaller matrix
+  - The CTest entry is `--axis smoke`, one Tier A row of 40 operations, 15
+    seconds. It checks *this program* — argument parsing, catalog, observer,
+    artifact writers — and is not a measurement
+  - **Not in this task**: `doc/multi_raft_performance_comparison.md` (11.2–11.4)
+    needs Requirement 9's comparison register in full, which is the external
+    comparison work
+  - _Requirements: 4.1–4.3, 11.1, 11.5, 11.6_
 
 - [ ] 13. Portability
   - Build and run under folly, boost and stdexec; `std::move(f).get()` everywhere;
