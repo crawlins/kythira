@@ -1586,6 +1586,18 @@ jobs:
       - name: Generate documentation
         run: doxygen Doxyfile
 
+      # The external comparison register of
+      # .kiro/specs/multi-raft-performance/ Requirement 9 exists twice by
+      # design: as machine-readable data, and rendered in full into
+      # doc/multi_raft_performance_comparison.md because Requirement 11.4
+      # asks for it in full rather than as a summary. Two copies of the same
+      # content is a drift hazard, so this asserts they agree -- and it also
+      # runs the register's own validation, which is what enforces "a field
+      # the source does not state is recorded as not stated, never inferred"
+      # (9.2) and the minimum comparison set (9.4). Costs about a second.
+      - name: Check the external comparison register renders current
+        run: ./scripts/render-external-register.py --check
+
       - name: Setup GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v4
