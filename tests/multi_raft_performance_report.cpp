@@ -65,6 +65,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -338,6 +339,36 @@ auto build_catalog(const selection& sel) -> catalog {
         add_write("tick-cadence", "beast/json/128B/16/tick" + std::to_string(tick.count()) + "ms",
                   deployment_tier::b_loopback, tag.operator()<beast_json>(),
                   write_row_spec{._cluster = cluster});
+    }
+
+    // Requirements 3.4 and 3.5's durability arms. The same three the suite's
+    // `write_throughput_by_durability` runs, defined here from the same
+    // `write_row_spec` so the artifact describes what the suite checks — the
+    // standing rule that the measurement lives in multi_raft_benchmark_rows.hpp
+    // and has two consumers, applied to a new axis rather than exempted from it.
+    //
+    // `file_buffered` is in the catalog on purpose even though it is not a
+    // configuration anyone should deploy. It is the control that makes the
+    // barrier's cost separable from the log format's, and it is the row whose
+    // zero barriers against a full entry count show that a file-backed log
+    // without a controller never fsyncs (Requirement 3.5).
+    for (auto mode : {kythira::testing::durability_mode::memory,
+                      kythira::testing::durability_mode::file_buffered,
+                      kythira::testing::durability_mode::file_barrier}) {
+        auto cluster = standard_cluster_options();
+        cluster._durability = mode;
+        // The operator points this at a provisioned volume for a cloud row;
+        // empty means a temporary directory the cluster owns and removes.
+        if (const char* dir = std::getenv("KYTHIRA_BENCH_DATA_DIR"); dir != nullptr) {
+            cluster._data_dir = dir;
+        }
+        const std::string name = mode == kythira::testing::durability_mode::memory ? "memory"
+                                 : mode == kythira::testing::durability_mode::file_buffered
+                                     ? "file-buffered"
+                                     : "file-barrier";
+        add_write("durability", "beast/json/128B/16/" + name, deployment_tier::b_loopback,
+                  tag.operator()<beast_json>(),
+                  write_row_spec{._operations = 400, ._cluster = cluster});
     }
 
     // Requirement 8.1–8.3's four cells.
