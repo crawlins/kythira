@@ -585,6 +585,66 @@ struct rpc_snapshot {
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Durability
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Which persistence engine every group's store is built from.
+///
+/// Requirement 3.4 asks for a tier in which the durability barrier is real,
+/// and Requirement 3.5 asks that a file-backed log which does not fsync be
+/// labelled **not durable** wherever it appears. Both of those are choices
+/// this enum makes explicit rather than leaving to a default.
+enum class durability_mode : std::uint8_t {
+    /// `memory_persistence_engine`. Nothing reaches a disk; the decomposition
+    /// prints the durability barrier as exactly 0.0 us, and it is exactly zero.
+    memory = 0,
+    /// `file_persistence_engine` with NO batch controller. The log file is
+    /// written and the stream flushed; `sync_log_and_directory()` is never
+    /// reached, because it is called only from `commit_batch()`. This mode
+    /// exists to be measured against `barrier`, and every row that uses it
+    /// must be labelled **not durable** (Requirement 3.5).
+    file_buffered = 1,
+    /// `file_persistence_engine` with a controller supplied by this harness
+    /// that opens a batch across every group before the persist phase and
+    /// commits it after. One fsync per group per tick, which — as
+    /// `tick_batch_controller`'s own documentation says — is N barriers
+    /// wearing one name, not one barrier for N groups.
+    file_barrier = 2,
+};
+
+[[nodiscard]] inline auto to_string(durability_mode m) -> std::string_view {
+    switch (m) {
+        case durability_mode::memory:
+            return "memory";
+        case durability_mode::file_buffered:
+            return "file/buffered (NOT DURABLE)";
+        case durability_mode::file_barrier:
+            return "file/barrier";
+    }
+    return "unknown";
+}
+
+struct durability_snapshot {
+    std::uint64_t _barriers{0};
+    std::uint64_t _empty_batches{0};
+    std::uint64_t _entries{0};
+
+    [[nodiscard]] auto entries_per_barrier() const -> double {
+        return _barriers == 0 ? 0.0
+                              : static_cast<double>(_entries) / static_cast<double>(_barriers);
+    }
+};
+
+[[nodiscard]] inline auto operator-(const durability_snapshot& a, const durability_snapshot& b)
+    -> durability_snapshot {
+    return durability_snapshot{
+        ._barriers = a._barriers - b._barriers,
+        ._empty_batches = a._empty_batches - b._empty_batches,
+        ._entries = a._entries - b._entries,
+    };
+}
+
 /// @brief One row of the comparison table.
 struct benchmark_result {
     /// Which of Requirement 3.1's tiers this row was taken at. Not defaulted
@@ -639,6 +699,17 @@ struct benchmark_result {
     /// difference of two `kv_cluster::rpc_counts()` snapshots taken either side
     /// of it. Zero on a row whose cluster was not counting.
     rpc_snapshot _rpc{};
+    /// Which persistence engine every group's store was built from, and
+    /// whether a barrier was ever issued. Requirement 3.5: a file-backed log
+    /// that never fsyncs is **not durable**, and a row that does not carry the
+    /// mode cannot say which it was.
+    durability_mode _durability{durability_mode::memory};
+    /// Durability barriers and log appends *during the measured window only*,
+    /// differenced the same way `_rpc` is. Requirement 3.4 asks a durable row
+    /// for fsyncs per second per host and entries per fsync; both come from
+    /// here and from `_duration`. All zero on a memory row, where there is no
+    /// barrier to count.
+    durability_snapshot _durability_counts{};
 
     /// Bytes returned to the caller across the whole measured window. Zero for
     /// a write row; the point of carrying it is Requirement 2.4, which asks for

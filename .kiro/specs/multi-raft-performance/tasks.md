@@ -1451,14 +1451,50 @@ and the answer is currently no for every one of them.
     corrected in this commit to say what the code does; building the fallback
     is a production behaviour change and is deliberately not made from a
     performance spec
-  - **What that means for whoever picks this up.** A Tier D row needs the
-    harness to supply its own `tick_batch_controller` fanning out across the
-    per-group engines it created — which is N barriers wearing one name, and
-    the row has to say so rather than claiming one barrier per tick. The
-    fsyncs-per-second and entries-per-fsync figures Requirement 3.4 demands can
-    then come from a harness-side wrapper engine that delegates to
-    `file_persistence_engine` and counts, which keeps the counter out of
-    production code exactly as Requirement 8.2 asks
+  - **The harness half IS built and measured; the tier half is not.**
+    `durability_mode` (three values), `benchmark_persistence_engine` (a handle
+    over either engine, with the counters on the outside of it), a per-host
+    `tick_batch_controller` fanning out across that host's stores, and
+    `write_throughput_by_durability` with the two numbers Requirement 3.4 asks
+    for. Two runs of five repetitions each, `build-default`, this machine:
+
+    | mode | ops/sec r1 | r2 | p50 r1 | r2 | fsync/sec/host | entries/fsync | barriers | empty batches | entries |
+    |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+    | memory | 1137.2 | 1163.5 | 13564 us | 13214 us | 0.00 | 0.00 | 0 | 0 | 1200 |
+    | file/buffered (NOT DURABLE) | 821.1 | 839.0 | 18569 us | 18366 us | 0.00 | 0.00 | 0 | 0 | 1200 |
+    | file/barrier | 706.3 | 714.0 | 21647 us | 21493 us | 74.8 / 84.5 | 9.45 / 8.45 | 127 / 142 | 1070 / 833 | 1200 |
+
+  - **`file/buffered` issues ZERO barriers against 1200 appended entries, on
+    both runs, and that is the measurement of the finding above.** The claim
+    that `tick()` has no batching fallback was made by grepping for
+    `begin_batch()` call sites; this is the same claim as a number, and the
+    case asserts it (`BOOST_CHECK` on `_barriers == 0`) so that a future change
+    giving `tick()` a fallback fails here rather than silently relabelling an
+    arm as durable
+  - **The split of the cost is the useful part.** The JSON-line append alone —
+    `file/buffered` against `memory`, no fsync anywhere in either — costs
+    **28% of throughput** (0.72x on both runs) and 39% more p50. The barrier on
+    top of that costs a further **15%** (0.85x). H4 predicted both the encode
+    cost and the memory growth would be measurable; the encode cost now is,
+    and the memory growth still is not
+  - **The prediction written into the case before the run was wrong, and the
+    reason is the column that was added to catch exactly this.** It predicted
+    ~2000 fsyncs per second per host, from four groups at a 2 ms tick. The
+    measurement is **75–85**, twenty-five times lower, because a batch that
+    closes with nothing buffered issues no fsync at all — 833–1070 of the
+    batches were empty. `entries/fsync` of 8.5–9.5 is the same fact from the
+    other side: entries accumulate between flushes, so a group flushes about
+    once every twelve ticks rather than every tick. Folding the empty batches
+    into the barrier count would have reported a system fsyncing 25x more often
+    and 25x more cheaply than it does
+  - **What is still missing is the TIER, and it is not a small remainder.**
+    Requirement 3.1 defines Tier D as *Tier C plus* file persistence, and every
+    row above is Tier B with three hosts in one process. The case says so in
+    its own doc comment and the row is labelled Tier B. A cloud run against a
+    provisioned volume is also not done — `kv_cluster_options::_data_dir` and
+    the `KYTHIRA_BENCH_DATA_DIR` environment override exist for it and have
+    never been exercised, so the volume class and IOPS Requirement 3.4 asks for
+    are still unreported
   - _Requirements: 3.4, 3.5, 18.7_
 
 - [ ] 20. Shape 2 — Tier E, one host per instance
