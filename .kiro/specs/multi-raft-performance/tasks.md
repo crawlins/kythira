@@ -1044,10 +1044,33 @@ and the answer is currently no for every one of them.
     comparison work
   - _Requirements: 4.1–4.3, 11.1, 11.5, 11.6_
 
-- [ ] 13. Portability
+- [x] 13. Portability
   - Build and run under folly, boost and stdexec; `std::move(f).get()` everywhere;
     `.detach()` on any fire-and-forget continuation
-  - **The build half is done, and it took a production fix.**
+  - **The run half is done now (13.1).** `multi_raft_performance_report` was
+    built and **run** under all three backends on one machine back to back, and
+    each run reports its own backend in the machine block (13.5): folly 2168.2,
+    boost 1568.2 and stdexec 2034.1 ops/sec on the Tier A smoke row. Those three
+    numbers are **not** a backend comparison — one row of forty operations at
+    12–20% spread on a machine that was not quiet — and are recorded only as
+    evidence that the matrix runs, which is what 13.1 asks for
+  - **The graceful shrink is checked and it needed a fix (13.3, 13.4).** The
+    report binary's catalog omitted an unavailable row *silently*, which is
+    exactly the failure 13.4 names: a shorter, entirely plausible table. Every
+    `#else` in `build_catalog` now records the row and the reason, and the list
+    is printed on every invocation — including when it is empty, saying so,
+    because "nothing was dropped" and "this program does not track drops" look
+    identical otherwise. It is in the JSON artifact too, as `dropped_rows`, since
+    a consumer reading the file has no other way to tell a build that measured
+    everything from one that measured what it could. Verified on the checked-in
+    default configuration, which has no ion-c: the Ion row is named with
+    `KYTHIRA_BENCH_HAS_ION undefined (requires CONFIG_ION_SERIALIZER and the
+    ion-c vcpkg feature)`
+  - The absent-Beast case drops nine whole axes rather than one row — Beast is
+    the transport every non-transport axis holds fixed — and is named per axis,
+    because a run that printed one Tier A row and nothing else would read as a
+    complete matrix
+  - **The build half was done earlier, and it took a production fix.**
     `include/raft/http_transport_impl.hpp`'s `make_future_with_exception` /
     `make_future_with_value` constructed the future directly from an
     `exception_ptr` or a value, which only folly's `Future` and the simulator's
@@ -1056,10 +1079,6 @@ and the answer is currently no for every one of them.
     through `future_factory_default::makeExceptionalFuture` /
     `makeFuture`, which all three backends expose. Nothing had instantiated
     `cpp_httplib_client` under a non-folly backend before this suite
-  - Still open: actually *running* the matrix under boost and stdexec, and the
-    graceful-shrink check below
-  - Confirm the matrix shrinks gracefully with each optional dependency absent,
-    and that every dropped row is named in the output
   - _Requirements: 13.1–13.5, 17.2_
 
 ## Real-cloud measurement

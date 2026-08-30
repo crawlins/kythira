@@ -79,6 +79,7 @@ namespace {
 
 using kythira::testing::deployment_tier;
 using kythira::testing::describe_machine;
+using kythira::testing::dropped_row;
 using kythira::testing::fabric_transport;
 using kythira::testing::k_required_repetitions;
 using kythira::testing::key_distribution;
@@ -154,6 +155,12 @@ auto tier_letter(deployment_tier tier) -> std::string_view {
     return "?";
 }
 
+/// @brief The catalog, and everything this build could not put in it.
+struct catalog {
+    std::vector<catalog_entry> _entries;
+    std::vector<dropped_row> _dropped;
+};
+
 /// @brief What the command line asked for.
 struct selection {
     std::vector<std::string> _axes;
@@ -211,33 +218,41 @@ auto scaled(std::size_t operations, std::size_t in_flight, double scale) -> std:
 /// CI-registered test cannot carry: an open-loop arm, whose rate has to be
 /// chosen for the machine, and the 512-in-flight point of Requirement 4.3,
 /// which is minutes of wall clock on this host.
-auto build_catalog(const selection& sel) -> std::vector<catalog_entry> {
-    std::vector<catalog_entry> catalog;
+auto build_catalog(const selection& sel) -> catalog {
+    catalog out;
     const auto scale = sel._budget_scale;
+
+    // Every `#else` below records what it could not build and why, so that
+    // `--list` and every run print the same list the compiler decided.
+    const auto drop = [&out](std::string axis, std::string scenario, std::string reason) {
+        out._dropped.push_back(dropped_row{._axis = std::move(axis),
+                                           ._scenario = std::move(scenario),
+                                           ._reason = std::move(reason)});
+    };
 
     const auto add_write = [&](std::string axis, std::string scenario, deployment_tier tier,
                                auto transport_tag, write_row_spec spec) {
         using transport_type = typename decltype(transport_tag)::type;
         spec._operations = scaled(spec._operations, spec._in_flight, scale);
-        catalog.push_back(catalog_entry{._axis = std::move(axis),
-                                        ._scenario = std::move(scenario),
-                                        ._tier = tier,
-                                        ._run = [spec](const row_observer& observer) {
-                                            return kythira::testing::throughput_row<transport_type>(
-                                                spec, observer);
-                                        }});
+        out._entries.push_back(catalog_entry{
+            ._axis = std::move(axis),
+            ._scenario = std::move(scenario),
+            ._tier = tier,
+            ._run = [spec](const row_observer& observer) {
+                return kythira::testing::throughput_row<transport_type>(spec, observer);
+            }});
     };
     const auto add_read = [&](std::string axis, std::string scenario, auto transport_tag,
                               read_row_spec spec) {
         using transport_type = typename decltype(transport_tag)::type;
         spec._operations = scaled(spec._operations, spec._in_flight, scale);
-        catalog.push_back(catalog_entry{._axis = std::move(axis),
-                                        ._scenario = std::move(scenario),
-                                        ._tier = deployment_tier::b_loopback,
-                                        ._run = [spec](const row_observer& observer) {
-                                            return kythira::testing::read_row<transport_type>(
-                                                spec, observer);
-                                        }});
+        out._entries.push_back(catalog_entry{._axis = std::move(axis),
+                                             ._scenario = std::move(scenario),
+                                             ._tier = deployment_tier::b_loopback,
+                                             ._run = [spec](const row_observer& observer) {
+                                                 return kythira::testing::read_row<transport_type>(
+                                                     spec, observer);
+                                             }});
     };
 
     // A tag type, because a lambda cannot take a template parameter and a
@@ -265,6 +280,9 @@ auto build_catalog(const selection& sel) -> std::vector<catalog_entry> {
 #if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
     add_write("transport", "proxygen/json/128B/16", deployment_tier::b_loopback,
               tag.operator()<kythira::testing::proxygen_http_transport<json>>(), write_row_spec{});
+#else
+    drop("transport", "proxygen/json/128B/16",
+         "KYTHIRA_BENCH_HAS_PROXYGEN undefined (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)");
 #endif
 
     add_write("serializer", "beast/cbor/128B/16", deployment_tier::b_loopback,
@@ -274,11 +292,18 @@ auto build_catalog(const selection& sel) -> std::vector<catalog_entry> {
         "serializer", "beast/protobuf/128B/16", deployment_tier::b_loopback,
         tag.operator()<kythira::testing::beast_http_transport<kythira::protobuf_serializer>>(),
         write_row_spec{});
+#else
+    drop("serializer", "beast/protobuf/128B/16",
+         "KYTHIRA_BENCH_HAS_PROTOBUF undefined (requires PROTOBUF_SERIALIZER_FOUND)");
 #endif
 #if defined(KYTHIRA_BENCH_HAS_ION)
     add_write("serializer", "beast/ion/128B/16", deployment_tier::b_loopback,
               tag.operator()<kythira::testing::beast_http_transport<kythira::ion_serializer>>(),
               write_row_spec{});
+#else
+    drop("serializer", "beast/ion/128B/16",
+         "KYTHIRA_BENCH_HAS_ION undefined (requires CONFIG_ION_SERIALIZER and the ion-c vcpkg "
+         "feature)");
 #endif
 
     // Requirement 1.4's four value sizes.
@@ -357,9 +382,20 @@ auto build_catalog(const selection& sel) -> std::vector<catalog_entry> {
                                ._stride = 1,
                                ._operations = keys >= 5000 ? std::size_t{80} : std::size_t{200}});
     }
+#else
+    // Beast is the transport every non-transport axis holds fixed, so without
+    // it there is no axis left but `smoke` — and a run that printed one Tier A
+    // row and nothing else would read as a complete matrix. Named, one entry
+    // per axis, with the reason.
+    for (const auto* axis : {"transport", "serializer", "value-size", "concurrency", "tick-cadence",
+                             "cost-attribution", "open-loop", "read-taxonomy", "shard-size"}) {
+        drop(axis, "every row",
+             "KYTHIRA_BENCH_HAS_BEAST undefined (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT); "
+             "Beast is the transport every other axis holds fixed");
+    }
 #endif  // KYTHIRA_BENCH_HAS_BEAST
 
-    return catalog;
+    return out;
 }
 
 auto print_usage(std::ostream& out, const char* program) -> void {
@@ -427,6 +463,26 @@ auto report_machine(const machine_description& m) -> void {
                                     : "OTHER LOAD WAS PRESENT AT START; these numbers are not "
                                       "publication-grade (Requirement 6.5)")
               << "\n";
+}
+
+/// @brief Name every row this build cannot run, with the reason (Requirement
+///        13.4).
+///
+/// Printed even when the list is empty, and *saying so*, because "no rows were
+/// dropped" and "the program does not track dropped rows" look identical
+/// otherwise, and only one of them means the matrix is complete.
+auto report_dropped(const std::vector<dropped_row>& dropped) -> void {
+    if (dropped.empty()) {
+        std::cout << "optional dependencies: none missing — the catalog below is the whole "
+                     "matrix this build defines (Requirement 13.4)\n";
+        return;
+    }
+    std::cout << "rows this build CANNOT run (" << dropped.size()
+              << "), named rather than omitted (Requirement 13.4):\n";
+    for (const auto& d : dropped) {
+        std::cout << "  " << std::left << std::setw(18) << d._axis << "  " << d._scenario << "\n"
+                  << "      " << d._reason << "\n";
+    }
 }
 
 auto report_row_summary(const report_row& row) -> void {
@@ -499,10 +555,15 @@ auto main(int argc, char** argv) -> int {
 
     const auto catalog = build_catalog(sel);
 
+    // Requirement 13.4, printed before anything else and on every invocation,
+    // not only `--list`: what this build could not measure is part of what a
+    // reader needs in order to know the matrix is smaller than it looks.
+    report_dropped(catalog._dropped);
+
     if (sel._list) {
-        std::cout << "catalog (" << catalog.size() << " rows, " << k_required_repetitions
+        std::cout << "catalog (" << catalog._entries.size() << " rows, " << k_required_repetitions
                   << " repetitions each):\n";
-        for (const auto& entry : catalog) {
+        for (const auto& entry : catalog._entries) {
             std::cout << "  tier " << tier_letter(entry._tier) << "  " << std::left << std::setw(18)
                       << entry._axis << "  " << entry._scenario << "\n";
         }
@@ -518,7 +579,7 @@ auto main(int argc, char** argv) -> int {
     std::vector<report_row> rows;
     std::size_t abandoned = 0;
     const auto observer = console_observer();
-    for (const auto& entry : catalog) {
+    for (const auto& entry : catalog._entries) {
         if (!matches(sel._axes, entry._axis) || !matches(sel._scenarios, entry._scenario) ||
             !matches(sel._tiers, tier_letter(entry._tier))) {
             continue;
@@ -550,7 +611,7 @@ auto main(int argc, char** argv) -> int {
     const auto csv_path = sel._out_dir / ("multi_raft_performance_" + timestamp + ".csv");
     const auto json_path = sel._out_dir / ("multi_raft_performance_" + timestamp + ".json");
     write_csv(csv_path, rows, machine);
-    write_json(json_path, rows, machine, timestamp);
+    write_json(json_path, rows, machine, timestamp, catalog._dropped);
 
     std::cout << "\n"
               << rows.size() << " row(s) measured, " << abandoned << " abandoned\n"

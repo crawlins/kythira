@@ -69,6 +69,20 @@ struct report_row {
     repeated_result _result;
 };
 
+/// @brief A row this build cannot run, and why.
+///
+/// Requirement 13.4: a tier or scenario that is unavailable has to be **named
+/// with its reason**, because a silently smaller matrix reads as a completed
+/// one. It is in the artifact and not only on the console for the same reason
+/// the verdict is: a consumer reading the file a year from now has no other way
+/// to tell a build that measured everything from one that measured what it
+/// could.
+struct dropped_row {
+    std::string _axis;
+    std::string _scenario;
+    std::string _reason;
+};
+
 /// @brief `YYYYmmdd_HHMMSS` in local time, matching the existing
 ///        `test_results/*_<timestamp>.*` filenames exactly.
 [[nodiscard]] inline auto make_timestamp() -> std::string {
@@ -395,7 +409,8 @@ inline auto write_json_row(std::ostream& out, const report_row& row, std::string
 /// machine is a property of the *run*, and repeating it on every row would
 /// invite a consumer to concatenate two runs' rows and lose the distinction.
 inline auto write_json(const std::filesystem::path& path, const std::vector<report_row>& rows,
-                       const machine_description& machine, std::string_view timestamp) -> void {
+                       const machine_description& machine, std::string_view timestamp,
+                       const std::vector<dropped_row>& dropped = {}) -> void {
     std::ofstream out(path);
     out << std::fixed << std::setprecision(6);
     out << "{\n"
@@ -419,7 +434,13 @@ inline auto write_json(const std::filesystem::path& path, const std::vector<repo
         first = false;
         write_json_row(out, row, "    ");
     }
-    out << "\n  ]\n}\n";
+    out << "\n  ],\n  \"dropped_rows\": [\n";
+    for (std::size_t i = 0; i < dropped.size(); ++i) {
+        out << "    {\"axis\": \"" << json_escape(dropped[i]._axis) << "\", \"scenario\": \""
+            << json_escape(dropped[i]._scenario) << "\", \"reason\": \""
+            << json_escape(dropped[i]._reason) << "\"}" << (i + 1 == dropped.size() ? "\n" : ",\n");
+    }
+    out << "  ]\n}\n";
 }
 
 }  // namespace kythira::testing
