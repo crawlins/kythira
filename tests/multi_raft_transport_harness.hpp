@@ -1266,6 +1266,12 @@ struct workload_options {
     /// How the command is addressed. Defaults to the production path, so a row
     /// that does not mention routing gets the routing every other row got.
     routing_mode _routing{routing_mode::by_key};
+    /// Closed loop by default, so every row written before Requirement 4.2 was
+    /// implemented keeps the shape it was measured in.
+    load_mode _load{load_mode::closed_loop};
+    /// Operations per second the open-loop schedule asks for, across all
+    /// workers. Ignored in closed loop.
+    double _offered_rate_per_second{0.0};
     std::string _scenario{"put"};
 };
 
@@ -1297,6 +1303,9 @@ auto fill_result(const kv_cluster<Transport>& cluster, const workload_options& w
     result._in_flight = workload._in_flight;
     result._tier = Transport::tier();
     result._routing = workload._routing;
+    result._load = workload._load;
+    result._offered_rate_per_second =
+        workload._load == load_mode::open_loop ? workload._offered_rate_per_second : 0.0;
     result._tick_interval = cluster.options()._tick_interval;
     result._duration = elapsed;
     result._tally = tally;
@@ -1309,21 +1318,51 @@ auto fill_result(const kv_cluster<Transport>& cluster, const workload_options& w
     return result;
 }
 
-/// @brief Run `_operations` PUTs spread over `_in_flight` client threads.
+/// @brief Run `_operations` PUTs spread over `_in_flight` client threads, in
+///        whichever of Requirement 4.1's two modes `_load` names.
 ///
-/// Closed-loop: each worker holds exactly one operation outstanding, so
-/// `_in_flight` is literally the concurrency. Open-loop — a fixed offered rate
-/// with coordinated-omission correction — is the other mode
-/// `.kiro/specs/multi-raft-performance/` Requirement 4 calls for, and belongs
-/// with the report binary rather than here, where a CI-registered test would
-/// have to pick a rate the runner can sustain.
+/// **Closed loop** is the default and what every CI-registered row uses: each
+/// worker holds exactly one operation outstanding, so `_in_flight` is literally
+/// the concurrency and the offered rate is an outcome rather than an input.
+///
+/// **Open loop** offers `_offered_rate_per_second` on a fixed schedule
+/// computed before the window starts, and measures each operation's latency
+/// **from its intended start time rather than from dispatch** (Requirement
+/// 4.2). That is the coordinated-omission correction, and it is the whole
+/// reason the mode exists: a closed loop cannot produce a queue, because a
+/// slow system simply receives less work, so its tail latency describes a load
+/// nobody offered.
+///
+/// The schedule is round-robin across the workers — worker `w`'s `i`-th
+/// operation is due at `start + (i * in_flight + w) / rate` — so the workers
+/// interleave into one arrival process rather than each running its own.
+///
+/// **What this mode is not.** A true open loop needs unbounded concurrency,
+/// and this one is served by `_in_flight` threads. When the system cannot keep
+/// up, the due times recede into the past and operations issue back to back;
+/// the offered rate then silently becomes the closed-loop rate. That failure is
+/// **visible rather than silent**: `_mean_schedule_lag` is how far behind its
+/// due time the average operation began, so a row whose lag is a large fraction
+/// of its latency was not measured at the rate it asked for, and the row says
+/// so instead of quietly reporting a lower rate as a result.
 template<typename Transport>
 auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& workload)
     -> benchmark_result {
     std::vector<latency_sample_set> per_worker(workload._in_flight);
     std::vector<operation_tally> tallies(workload._in_flight);
+    std::vector<std::chrono::nanoseconds> lag(workload._in_flight, std::chrono::nanoseconds{0});
     const auto per_worker_ops = std::max<std::size_t>(
         1, workload._operations / std::max<std::size_t>(1, workload._in_flight));
+
+    // The interval between consecutive arrivals across the whole schedule, not
+    // per worker. Zero — and therefore no waiting at all — in closed loop, and
+    // also when an open-loop row is handed a non-positive rate, which is a
+    // caller error that would otherwise divide by zero.
+    const auto arrival_interval =
+        workload._load == load_mode::open_loop && workload._offered_rate_per_second > 0.0
+            ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::duration<double>(1.0 / workload._offered_rate_per_second))
+            : std::chrono::nanoseconds{0};
 
     // The client's descriptor cache, taken once before the window rather than
     // per operation: that is what a cache is, and paying for it inside the
@@ -1345,6 +1384,25 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
                                     workload._zipf_theta, 0x5eed0000ULL + w);
                 per_worker[w].reserve(per_worker_ops);
                 for (std::size_t i = 0; i < per_worker_ops; ++i) {
+                    // Open loop: this operation was due at a time fixed before
+                    // the window began. Waiting for it is what makes the
+                    // arrival process independent of the system's speed, and
+                    // measuring from it rather than from now is what corrects
+                    // for coordinated omission.
+                    std::chrono::steady_clock::time_point due = started;
+                    if (arrival_interval > std::chrono::nanoseconds{0}) {
+                        due = started + arrival_interval * (i * workload._in_flight + w);
+                        const auto now = std::chrono::steady_clock::now();
+                        if (now < due) {
+                            std::this_thread::sleep_until(due);
+                        } else {
+                            // Behind schedule. Issue immediately and record by
+                            // how much, so the row can say it was not measured
+                            // at the rate it asked for.
+                            lag[w] += now - due;
+                        }
+                    }
+
                     const auto n = sampler.next() * workload._key_stride;
                     const auto key = kv_key(n);
                     const auto command = kv_put(key, kv_value(n + i, workload._value_bytes));
@@ -1364,7 +1422,15 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
                         ++tallies[w]._not_leader;
                     }
                     if (latency) {
-                        per_worker[w].record(*latency);
+                        // Requirement 4.2: from the intended start, not from
+                        // dispatch. `run_command` timed from its own entry, so
+                        // the queueing delay this operation suffered while its
+                        // worker was busy with the previous one is added back
+                        // here. In closed loop `due` is the window start and
+                        // this branch is not taken.
+                        per_worker[w].record(arrival_interval > std::chrono::nanoseconds{0}
+                                                 ? std::chrono::steady_clock::now() - due
+                                                 : *latency);
                     }
                 }
             });
@@ -1378,11 +1444,17 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
 
     latency_sample_set all;
     operation_tally tally;
+    std::chrono::nanoseconds total_lag{0};
     for (std::size_t w = 0; w < workload._in_flight; ++w) {
         all.merge(per_worker[w]);
         tally.merge(tallies[w]);
+        total_lag += lag[w];
     }
-    return fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before);
+    auto result = fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before);
+    result._mean_schedule_lag = tally._completed == 0
+                                    ? std::chrono::nanoseconds{0}
+                                    : total_lag / static_cast<std::int64_t>(tally._completed);
+    return result;
 }
 
 /// @brief Write `count` keys so a read row has something to read.

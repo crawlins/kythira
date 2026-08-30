@@ -351,6 +351,34 @@ enum class routing_mode : std::uint8_t {
     return "unknown";
 }
 
+/// @brief How load is offered — Requirement 4.1's two modes, reported with the
+///        parameter that controls each.
+///
+/// The distinction is not a tuning knob, it is which question is being asked.
+/// A closed loop measures what the system does when the client waits for it; an
+/// open loop measures what it does when the client does not, which is the only
+/// mode in which a queue can form and therefore the only one whose tail latency
+/// describes a deployment.
+enum class load_mode : std::uint8_t {
+    /// Each worker holds exactly one operation outstanding, so `_in_flight` is
+    /// literally the concurrency and the offered rate is whatever the system
+    /// can absorb.
+    closed_loop,
+    /// Operations are issued on a fixed schedule at `_offered_rate_per_second`,
+    /// and latency is measured from each one's **intended** start time.
+    open_loop,
+};
+
+[[nodiscard]] inline auto to_string(load_mode mode) -> std::string_view {
+    switch (mode) {
+        case load_mode::closed_loop:
+            return "closed loop (fixed in-flight cap)";
+        case load_mode::open_loop:
+            return "open loop (fixed offered rate, coordinated-omission corrected)";
+    }
+    return "unknown";
+}
+
 /// @brief A descriptor a client already holds: the group, and the epoch the
 ///        request was computed against.
 ///
@@ -566,6 +594,22 @@ struct benchmark_result {
     /// How the command was addressed. `by_key` everywhere except the
     /// routing-cost scenario Requirement 8.3 defines.
     routing_mode _routing{routing_mode::by_key};
+    /// Which of Requirement 4.1's two modes offered the load, and the parameter
+    /// that controlled it. Both are on the row because 4.1 asks for the mode to
+    /// be *reported with* its parameter — an open-loop row without its rate, or
+    /// a closed-loop row without its in-flight cap, is a latency number with no
+    /// stated offered load.
+    load_mode _load{load_mode::closed_loop};
+    /// Operations per second the schedule asked for. Zero on a closed-loop row,
+    /// where the offered rate is an outcome rather than an input.
+    double _offered_rate_per_second{0.0};
+    /// How far behind its intended start the *last* operation of the window
+    /// began, summed across workers and divided by the completions. Zero in
+    /// closed loop. This is the coordinated-omission correction made visible:
+    /// a system keeping up has a lag near zero, and a saturated one does not,
+    /// and the difference is exactly what a latency measured from dispatch
+    /// would have thrown away.
+    std::chrono::nanoseconds _mean_schedule_lag{0};
     std::string _transport;
     std::string _serializer;
     /// The *node-internal* serializer's own media type — log entries and
@@ -696,23 +740,34 @@ struct repeated_result {
 
     [[nodiscard]] auto runs() const -> std::size_t { return _runs.size(); }
 
-    /// @brief Indices into `_runs`, ordered by ops/sec.
+    /// @brief Indices into `_runs`, ordered by the quantity this row is judged
+    ///        on — throughput in closed loop, **p50 in open loop**.
+    ///
+    /// The mode matters here for the same reason it matters to
+    /// `governing_spread()`. In open loop every repetition achieves the
+    /// scheduled rate to four decimal places, so ordering by throughput is
+    /// ordering by noise and the "median run" is an arbitrary one of the five.
+    /// The latency quoted beside a headline has to come from the median of
+    /// something that actually varied.
     [[nodiscard]] auto order() const -> std::vector<std::size_t> {
         std::vector<std::size_t> index(_runs.size());
         for (std::size_t i = 0; i < index.size(); ++i) {
             index[i] = i;
         }
-        std::sort(index.begin(), index.end(), [this](std::size_t a, std::size_t b) {
-            return _runs[a]._ops_per_second < _runs[b]._ops_per_second;
+        const bool by_latency = !_runs.empty() && _runs.front()._load == load_mode::open_loop;
+        std::sort(index.begin(), index.end(), [this, by_latency](std::size_t a, std::size_t b) {
+            return by_latency ? _runs[a]._p50 < _runs[b]._p50
+                              : _runs[a]._ops_per_second < _runs[b]._ops_per_second;
         });
         return index;
     }
 
-    /// @brief The run whose rate is the median.
+    /// @brief The median run — by rate in closed loop, by p50 in open loop.
     ///
     /// For an even number of repetitions this is the lower of the two middle
     /// runs, not their mean: the point of naming a run is that its percentiles
-    /// and its tally belong to the same window as its rate.
+    /// and its tally belong to the same window as its rate. See `order()` for
+    /// why the ordering key depends on the load mode.
     [[nodiscard]] auto median_run() const -> const benchmark_result& {
         const auto index = order();
         return _runs[index[(index.size() - 1) / 2]];
@@ -727,12 +782,31 @@ struct repeated_result {
         return median_run()._ops_per_second;
     }
 
+    /// @brief The slowest and fastest repetitions by rate.
+    ///
+    /// Computed directly rather than through `order()`, which sorts by p50 in
+    /// open loop: the extremes of ops/sec have to be the extremes of ops/sec in
+    /// both modes, or `spread()` stops describing what it says it does.
     [[nodiscard]] auto min_ops_per_second() const -> double {
-        return _runs.empty() ? 0.0 : _runs[order().front()]._ops_per_second;
+        if (_runs.empty()) {
+            return 0.0;
+        }
+        return std::min_element(_runs.begin(), _runs.end(),
+                                [](const benchmark_result& a, const benchmark_result& b) {
+                                    return a._ops_per_second < b._ops_per_second;
+                                })
+            ->_ops_per_second;
     }
 
     [[nodiscard]] auto max_ops_per_second() const -> double {
-        return _runs.empty() ? 0.0 : _runs[order().back()]._ops_per_second;
+        if (_runs.empty()) {
+            return 0.0;
+        }
+        return std::max_element(_runs.begin(), _runs.end(),
+                                [](const benchmark_result& a, const benchmark_result& b) {
+                                    return a._ops_per_second < b._ops_per_second;
+                                })
+            ->_ops_per_second;
     }
 
     /// @brief The half-width of the spread as a fraction of the median — the
@@ -753,11 +827,35 @@ struct repeated_result {
         return std::max(max_ops_per_second() - median, median - min_ops_per_second()) / median;
     }
 
+    /// @brief The spread that decides whether this row may be compared —
+    ///        which is not the same quantity in the two load modes.
+    ///
+    /// In **closed loop** the offered rate is an outcome, so throughput's
+    /// run-to-run spread is exactly the question Requirement 6.3 asks.
+    ///
+    /// In **open loop** the rate is an *input*: the schedule pins it, and a row
+    /// that held its schedule reports a throughput spread of essentially zero
+    /// no matter what the system did. Judging such a row on throughput would
+    /// stamp `stable` on every open-loop measurement ever taken — including one
+    /// whose repetitions ranged from a 682 us p50 to an 84,704 us p50, which is
+    /// a real pair of numbers from the first open-loop run this suite took. In
+    /// that mode the variance moves into latency, so latency is what the
+    /// verdict has to be computed from.
+    [[nodiscard]] auto governing_spread() const -> double {
+        if (_runs.empty()) {
+            return 0.0;
+        }
+        return median_run()._load == load_mode::open_loop ? p50_spread() : spread();
+    }
+
+    /// @brief What this row may be used for (6.3, 6.7), judged on
+    ///        `governing_spread()`.
     [[nodiscard]] auto verdict() const -> result_verdict {
         if (_runs.size() < k_required_repetitions) {
             return result_verdict::inconclusive;
         }
-        return spread() <= k_unstable_spread ? result_verdict::stable : result_verdict::unstable;
+        return governing_spread() <= k_unstable_spread ? result_verdict::stable
+                                                       : result_verdict::unstable;
     }
 
     /// @brief Whether this row may appear in a comparison table (6.3, 6.7).

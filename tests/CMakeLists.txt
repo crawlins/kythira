@@ -787,62 +787,110 @@ set_tests_properties(multi_raft_scale_test PROPERTIES LABELS "scale;multi-raft" 
 # clang+libstdc++ needs libatomic explicitly — both mirroring add_beast_test()
 # and add_proxygen_test(), which this target cannot use because it is gated on
 # neither flag.
+# The transport, serializer and provenance wiring the multi-Raft performance
+# suite needs. A function rather than a block, because
+# `.kiro/specs/multi-raft-performance/` has two consumers of the same
+# measurement -- the CTest-registered regression subset (Requirement 12) and the
+# report generator (Requirement 11) -- and they share
+# `tests/multi_raft_benchmark_rows.hpp`. A target built with a different set of
+# KYTHIRA_BENCH_HAS_* defines than the other would silently measure a smaller
+# matrix, and the artifact would then describe rows CI never ran. Wiring both
+# from one function is what makes that impossible rather than merely unlikely.
+#
+# Each `else()` names the target so the skip messages stay attributable once
+# there is more than one caller.
+function(kythira_wire_multi_raft_bench target)
+    # Requirement 6.4 asks the result to state the build type and flags. Neither
+    # is recoverable from a predefined macro -- `NDEBUG` and `__OPTIMIZE__` are
+    # proxies that a hand-edited flag list can make wrong -- so the build states
+    # them.
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _bench_config)
+    target_compile_definitions(${target} PRIVATE
+        KYTHIRA_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+        KYTHIRA_BENCH_CXX_FLAGS="${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_bench_config}}"
+    )
+
+    if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
+        target_compile_definitions(${target} PRIVATE KYTHIRA_BENCH_HAS_BEAST)
+        target_link_libraries(${target} PRIVATE Boost::beast)
+    else()
+        message(STATUS "${target}: beast rows skipped "
+                       "(requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+    endif()
+    if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+        target_compile_definitions(${target} PRIVATE KYTHIRA_BENCH_HAS_PROXYGEN)
+        target_link_libraries(${target} PRIVATE
+            proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
+    else()
+        message(STATUS "${target}: proxygen rows skipped "
+                       "(requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+    endif()
+    if(PROTOBUF_SERIALIZER_FOUND)
+        target_compile_definitions(${target} PRIVATE KYTHIRA_BENCH_HAS_PROTOBUF)
+        target_link_libraries(${target} PRIVATE raft_protobuf_serializer)
+    else()
+        message(STATUS "${target}: protobuf row skipped "
+                       "(requires PROTOBUF_SERIALIZER_FOUND)")
+    endif()
+    # Ion's own gate, and unlike protobuf's it is off in every checked-in
+    # defconfig: ion-c comes from the opt-in `ion` vcpkg feature, so
+    # configs/ci_full_defconfig deliberately leaves CONFIG_ION_SERIALIZER unset
+    # and this row compiles out on every CI leg. Measuring it needs a build
+    # configured with that symbol selected against a vcpkg tree installed with
+    # the `ion` feature. See .kiro/specs/multi-raft-performance/ task 7.
+    if(TARGET raft_ion_serializer)
+        target_compile_definitions(${target} PRIVATE KYTHIRA_BENCH_HAS_ION)
+        target_link_libraries(${target} PRIVATE raft_ion_serializer)
+    else()
+        message(STATUS "${target}: ion row skipped "
+                       "(requires CONFIG_ION_SERIALIZER and ion-c)")
+    endif()
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(${target} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_link_libraries(${target} PRIVATE atomic)
+    endif()
+endfunction()
+
 add_raft_completion_test(multi_raft_http_benchmark_test multi_raft_http_benchmark_test.cpp)
 set_tests_properties(multi_raft_http_benchmark_test PROPERTIES
     LABELS "performance;benchmark;multi-raft;http"
     TIMEOUT 10800
 )
-# Requirement 6.4 asks the result to state the build type and flags. Neither is
-# recoverable from a predefined macro -- `NDEBUG` and `__OPTIMIZE__` are proxies
-# that a hand-edited flag list can make wrong -- so the build states them.
-string(TOUPPER "${CMAKE_BUILD_TYPE}" _bench_config)
-target_compile_definitions(multi_raft_http_benchmark_test PRIVATE
-    KYTHIRA_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
-    KYTHIRA_BENCH_CXX_FLAGS="${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_bench_config}}"
-)
-unset(_bench_config)
+kythira_wire_multi_raft_bench(multi_raft_http_benchmark_test)
 
-if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
-    target_compile_definitions(multi_raft_http_benchmark_test PRIVATE KYTHIRA_BENCH_HAS_BEAST)
-    target_link_libraries(multi_raft_http_benchmark_test PRIVATE Boost::beast)
-else()
-    message(STATUS "multi_raft_http_benchmark_test: beast rows skipped "
-                   "(requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
-endif()
-if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
-    target_compile_definitions(multi_raft_http_benchmark_test PRIVATE KYTHIRA_BENCH_HAS_PROXYGEN)
-    target_link_libraries(multi_raft_http_benchmark_test PRIVATE
-        proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
-else()
-    message(STATUS "multi_raft_http_benchmark_test: proxygen rows skipped "
-                   "(requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
-endif()
-if(PROTOBUF_SERIALIZER_FOUND)
-    target_compile_definitions(multi_raft_http_benchmark_test PRIVATE KYTHIRA_BENCH_HAS_PROTOBUF)
-    target_link_libraries(multi_raft_http_benchmark_test PRIVATE raft_protobuf_serializer)
-else()
-    message(STATUS "multi_raft_http_benchmark_test: protobuf row skipped "
-                   "(requires PROTOBUF_SERIALIZER_FOUND)")
-endif()
-# Ion's own gate, and unlike protobuf's it is off in every checked-in defconfig:
-# ion-c comes from the opt-in `ion` vcpkg feature, so configs/ci_full_defconfig
-# deliberately leaves CONFIG_ION_SERIALIZER unset and this row compiles out on
-# every CI leg. Measuring it needs a build configured with that symbol selected
-# against a vcpkg tree installed with the `ion` feature. See
-# .kiro/specs/multi-raft-performance/ task 7.
-if(TARGET raft_ion_serializer)
-    target_compile_definitions(multi_raft_http_benchmark_test PRIVATE KYTHIRA_BENCH_HAS_ION)
-    target_link_libraries(multi_raft_http_benchmark_test PRIVATE raft_ion_serializer)
-else()
-    message(STATUS "multi_raft_http_benchmark_test: ion row skipped "
-                   "(requires CONFIG_ION_SERIALIZER and ion-c)")
-endif()
-if(TARGET OpenSSL::SSL)
-    target_link_libraries(multi_raft_http_benchmark_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-endif()
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_link_libraries(multi_raft_http_benchmark_test PRIVATE atomic)
-endif()
+# .kiro/specs/multi-raft-performance/ Requirement 11: the report generator.
+# Not a Boost.Test binary -- it has its own `main`, takes a subset selector on
+# the command line (11.6) and writes the timestamped CSV/JSON pair to
+# `test_results/` (11.1) -- so it is built directly rather than through
+# add_raft_completion_test, and linked against the same libraries that helper
+# gives the suite.
+# It links `kythira_test_pch` like every other target here, not a narrower set:
+# that is exactly the dependency closure the suite gets (network_simulator,
+# Folly, Boost.JSON, Boost.Context), and giving the report binary a different
+# one is how the two consumers of the shared harness start behaving
+# differently. Boost.Test comes along with it and defines no `main` unless a TU
+# asks for one, which this does not.
+add_executable(multi_raft_performance_report multi_raft_performance_report.cpp)
+target_link_libraries(multi_raft_performance_report PRIVATE kythira_test_pch)
+target_precompile_headers(multi_raft_performance_report REUSE_FROM kythira_test_pch)
+kythira_wire_multi_raft_bench(multi_raft_performance_report)
+
+# A smoke entry, NOT a measurement. `--axis smoke` is one Tier A row of 40
+# operations, which exercises everything about this program that can break
+# without a developer noticing -- argument parsing, the catalog, the observer,
+# the artifact writers -- in about a minute. A report-quality invocation elects
+# a fresh cluster five times per row over real sockets and is launched by hand.
+# `--out-dir` keeps its artifacts out of the repository's own `test_results/`,
+# which is for runs somebody meant to keep.
+add_test(NAME multi_raft_performance_report_smoke
+    COMMAND multi_raft_performance_report --axis smoke --budget-scale 1.0
+            --out-dir "${CMAKE_BINARY_DIR}/tests/report_smoke")
+set_tests_properties(multi_raft_performance_report_smoke PROPERTIES
+    LABELS "performance;benchmark;multi-raft;report"
+    TIMEOUT 600
+)
 
 # Task 32 of .kiro/specs/multi-raft/: crash-and-recover at each split/merge
 # fault point. Needs libfiu's CONTROL API (fiu_enable/fiu_disable) as well as
