@@ -1438,19 +1438,93 @@ and the answer is currently no for every one of them.
 
 ## The comparison itself
 
-- [ ] 22. Build the external comparison register
+- [x] 22. Build the external comparison register
   - One record per external number with every field of Appendix A; anything the
     source does not state recorded as **not stated**, never inferred
   - TiKV, Dragonboat, braft, etcd at minimum; database-level systems classified
     as such
+  - **`doc/data/multi_raft_external_comparison_register.json`, 14 records over
+    the four required implementations**, every one carrying all fifteen Appendix
+    A fields. Machine-readable rather than prose because Requirement 11.4 wants
+    the register reproduced *in full* inside the comparison document, which
+    means the same content exists twice and can drift
+  - **`scripts/render-external-register.py` owns the rendered block**, between
+    two markers in `doc/multi_raft_performance_comparison.md`, and `--check`
+    fails when it is stale. Wired into `ci.yml`'s `docs` job — about a second,
+    against a class of defect (a register edited without the document being
+    regenerated) that no reviewer would catch
+  - **The validation is the reason it is a program and not a table.** It refuses
+    a record with a missing Appendix A field, a record with an *empty* field —
+    blank and "not stated" render identically and mean opposite things, which is
+    exactly the inference Requirement 9.2 forbids — a `kind` outside
+    library/database, a duplicate id, and any register that has lost one of
+    Requirement 9.4's four named systems. Tested in both directions
+  - **braft is in the register with no number, and that record is the point.**
+    Its benchmark document states hardware (12 cores, Xeon E5-2620 v2 at 2.10
+    GHz, LENOVO SAS 300G at ~800 IOPS random write, 10 GbE without multiqueue),
+    3 replicas, 100 client threads and sync enabled — and publishes its QPS and
+    latency **only as PNG charts**. Requirement 9.3 forbids a number that cannot
+    be sourced to a retrievable document, and a chart read by eye is not one. So
+    the C++ multi-group peer 9.4 asks for is present as a configuration record
+    and a stated absence
+  - **etcd is the richest source and TiKV the thinnest.** etcd's page states
+    hardware, cluster size, key and value size, connection and client counts,
+    and both consistency levels, so its seven records carry "not stated" only
+    for durability and batching. TiKV's states 40 vCPU and 3 nodes and then
+    leaves payload size, client concurrency, replication factor, group count,
+    durability and batching all unstated — six of fifteen fields — which is
+    itself the finding about how comparable that number is
+  - **Dragonboat's headline needs two documents to be a record at all.** The
+    README carries the numbers; `docs/test.md` carries the hardware, the 48-shard
+    topology and "fsync is strictly honored". Neither alone satisfies 9.1, and
+    the register cites both on every Dragonboat record
   - _Requirements: 9.1–9.5_
 
-- [ ] 23. `doc/multi_raft_performance_comparison.md`
+- [x] 23. `doc/multi_raft_performance_comparison.md`
   - Like-for-like and indicative tables kept separate; no bare multiplier
     anywhere; H1–H7 each with a verdict and the number behind it; every metric
     with no possible like-for-like comparison saying so explicitly
   - Absolute `https://github.com/crawlins/kythira/blob/main/doc/…` link from
     `README.md`, since a relative one fails the `docs` CI job
+  - **The like-for-like table is EMPTY, and that is the document's headline.**
+    Requirement 3.3 forbids a like-for-like claim from any tier below C; every
+    row this spec has ever produced is Tier A or Tier B; every external number
+    in the register was taken on a multi-machine cluster with a real disk under
+    it. There is no pair of numbers a like-for-like table could truthfully hold.
+    Requirement 9.8 is then discharged **metric by metric** — seven metrics,
+    each with why no like-for-like comparison is possible and what it would
+    take — rather than once in a preamble
+  - **Requirement 3.7 is discharged in a tier table, not in a footnote.** Tiers
+    C, D and E are all recorded as not delivered, all for the same reason: they
+    need a host process in `cmd/`, which is Appendix B's third open question and
+    was not built. Tier D additionally needs `file_persistence` plus
+    `tick_batch_controller` wired into a harness whose `persistence_engine_type`
+    is currently a fixed `memory_persistence_engine`
+  - **No bare multiplier appears anywhere, including in the summary** (9.6).
+    Every gap in the indicative table is stated with its tier, its comparison
+    class and its mismatched axes, and two rows state that no comparison is
+    drawn at all rather than drawing a weak one — braft (no retrievable number)
+    and p99 write latency (ours is *absent*, not large, because a 400–600
+    operation window has too few samples)
+  - **The etcd write comparison is the one worth reading and the reason is a
+    negative.** About an eighth of etcd's rate at roughly a sixtieth of the
+    client concurrency, and the decomposition says there is no eightfold of
+    overhead to find — transport is 9% of an operation and routing is under 13%.
+    So the gap is attributed to configuration rather than to efficiency, and
+    the document says which measurement would settle it
+  - **The Dragonboat comparison is three orders of magnitude and is reported
+    anyway, with a sentence saying it is not evidence.** 66 cores against 8, 48
+    groups against 4, NVMe-backed fsync against memory persistence, and a client
+    concurrency the source does not state. Requirement 9.4 names Dragonboat as
+    the closest peer *in kind*; leaving it out would be the more misleading
+    choice, and leaving it in without that sentence would be worse
+  - **H4 is recorded as UNTESTED with its reason**, which is the only honest
+    verdict: `file_persistence` is not wired into this harness, that is Tier D,
+    and nothing measured here should be read as evidence about it
+  - **Requirement 16.5's "what this could not answer" is six items long**, and
+    16.4's follow-on list is ordered by measured cost with the `cmd/` host
+    binary first, because it unblocks every tier that could ever carry a
+    like-for-like claim
   - _Requirements: 9.6–9.8, 11.2–11.4, 16.1–16.5_
 
 - [x] 24. CI regression tier

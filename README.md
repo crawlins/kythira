@@ -1400,6 +1400,13 @@ See [`doc/future_backend_performance_comparison.md`](https://github.com/crawlins
 for the full scenario catalog, methodology, known structural asymmetries,
 and reference numbers.
 
+For the multi-Raft replication path measured against published external
+numbers — with the deployment tier of every row, the verdict on each of the
+seven structural hypotheses, and the external comparison register in full —
+see [`doc/multi_raft_performance_comparison.md`](https://github.com/crawlins/kythira/blob/main/doc/multi_raft_performance_comparison.md).
+It reports that no like-for-like external comparison is possible yet, and
+why.
+
 ---
 
 ## Code Coverage
