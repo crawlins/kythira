@@ -87,6 +87,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -515,7 +516,8 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer,
 /// arithmetic rather than evidence. What the decomposition buys is
 /// **attribution** — which of the two factors moved, and by how much — and that
 /// is not arithmetic.
-auto report_value_size_sweep(const std::vector<repeated_result>& rows) -> void {
+auto report_value_size_sweep(const std::vector<repeated_result>& rows,
+                             std::string_view what = "the value-size sweep") -> void {
     if (rows.empty()) {
         return;
     }
@@ -566,7 +568,8 @@ auto report_value_size_sweep(const std::vector<repeated_result>& rows) -> void {
 
     std::ostringstream out;
     out << std::fixed << std::setprecision(2);
-    out << "the value-size sweep read across rows — every figure is the median run's, and "
+    out << what
+        << " read across rows — every figure is the median run's, and "
            "the ratio is against the "
         << base._value_bytes << " B row:"
         << "\n      value      ops/sec        AE/commit      round interval    ent/AE   "
@@ -614,9 +617,130 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_value_size,
         rows.push_back(measure<kythira::testing::beast_http_transport<json>>(
             {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
     }
-    report_value_size_sweep(rows);
+    report_value_size_sweep(rows, "the value-size sweep (JSON on the wire)");
 #else
     BOOST_TEST_MESSAGE("  value-size sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
+#endif
+}
+
+/// @brief The two encodings' amplification set side by side, at each value size.
+///
+/// One table rather than asking a reader to difference the two above. The
+/// column that answers the question is `CBOR/JSON amplification`: at or near
+/// 1.00x the knee is not about encoded size, and materially below 1.00x it is.
+///
+/// The throughput ratio is printed beside it and is **not** the answer to the
+/// same question — CBOR encodes and decodes faster than JSON at every size
+/// `doc/protobuf_serializer_performance_comparison.md` measured, so it would be
+/// expected to win on throughput even if the knee were entirely about something
+/// else. Amplification is a count of sends and does not care how fast each one
+/// was.
+auto report_encoding_comparison(const std::vector<repeated_result>& json_rows,
+                                const std::vector<repeated_result>& cbor_rows) -> void {
+    if (json_rows.size() != cbor_rows.size() || json_rows.empty()) {
+        return;
+    }
+    const auto amplification = [](const benchmark_result& r) -> double {
+        if (r._tally._completed == 0) {
+            return 0.0;
+        }
+        const auto floor = static_cast<double>(r._nodes > 1 ? r._nodes - 1 : 1);
+        return static_cast<double>(r._rpc._entries) / static_cast<double>(r._tally._completed) /
+               floor;
+    };
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2);
+    out << "does the retransmission knee move with the ENCODED size? JSON against CBOR:"
+        << "\n      value     JSON ampl   CBOR ampl   CBOR/JSON   JSON ops/sec   CBOR ops/sec   "
+           "CBOR/JSON";
+    for (std::size_t i = 0; i < json_rows.size(); ++i) {
+        const auto& j = json_rows[i].median_run();
+        const auto& c = cbor_rows[i].median_run();
+        const auto ja = amplification(j);
+        const auto ca = amplification(c);
+        out << "\n      " << std::setw(5) << j._value_bytes << "B   " << std::setw(8) << ja
+            << "x   " << std::setw(8) << ca << "x   " << std::setw(8) << (ja > 0.0 ? ca / ja : 0.0)
+            << "x   " << std::setw(11) << std::setprecision(1) << j._ops_per_second << "   "
+            << std::setw(11) << c._ops_per_second << "   " << std::setw(8) << std::setprecision(2)
+            << (j._ops_per_second > 0.0 ? c._ops_per_second / j._ops_per_second : 0.0) << "x";
+        if (!json_rows[i].comparable() || !cbor_rows[i].comparable()) {
+            out << "  [one or both UNSTABLE]";
+        }
+    }
+    out << "\n      `CBOR/JSON amplification` at or near 1.00x says the knee is NOT about "
+           "encoded size; materially below 1.00x says it is."
+        << "\n      The throughput ratio does not answer the same question: CBOR encodes and "
+           "decodes faster than JSON at every size the serializer comparison measured, so it "
+           "would win on throughput even if the knee were about something else entirely."
+        << "\n      This case cannot separate `encoded size` from anything else that differs "
+           "between the two serializers, so a CBOR improvement is evidence for the size "
+           "hypothesis rather than proof of it.";
+    BOOST_TEST_MESSAGE(out.str());
+}
+
+// ── the encoding's share of the amplification knee ───────────────────────────
+
+/// @brief Is the 2 KiB → 4 KiB retransmission knee a function of the *encoded*
+///        size? JSON against CBOR, on the same value sizes.
+///
+/// Task 11a left exactly one thing open. Write amplification is flat from 16 B
+/// to 1 KiB (8.8–10.7 entry-sends per follower per commit), 14–15 at 2 KiB and
+/// 62–76 at 4 KiB: one doubling costs a 4.4–5.4x rise in retransmission that no
+/// other doubling on the axis does. *Why that doubling* was not measured, and
+/// the obvious instrument — a byte counter on the send path — is exactly what
+/// Requirement 8.2 keeps out of production code.
+///
+/// This case asks the question without one, by changing the encoded size while
+/// holding the value size fixed. `json_rpc_serializer` base64-expands a byte
+/// array by 4/3 and then quotes it, so a 4 KiB value is roughly 5.5 KiB on the
+/// wire before framing; `cbor_serializer` writes byte strings natively, so the
+/// same value is roughly 4 KiB. `doc/protobuf_serializer_performance_comparison.md`
+/// measured the same effect from the other side: a 256-byte command is 527
+/// bytes of JSON against 282 of protobuf.
+///
+/// **The prediction, stated before the run.** If the knee is a threshold in
+/// *encoded* bytes, CBOR's smaller payload should push it out — the CBOR 4 KiB
+/// row should behave like JSON's does somewhere below 4 KiB, and its
+/// amplification should be materially lower. If the knee is in the *value* size
+/// — a per-entry cost, a copy, an allocator — the two encodings should knee at
+/// the same place and CBOR should buy little.
+///
+/// Either answer is worth having, and neither needs a counter in production
+/// code. What this case cannot do is separate "encoded size" from "anything else
+/// that differs between the two serializers", so a CBOR improvement is evidence
+/// for the size hypothesis rather than proof of it — Requirement 8.4's own
+/// caveat, applied here.
+///
+/// Three value sizes rather than five: 1 KiB is below the knee in both arms and
+/// anchors them, and 2 KiB and 4 KiB are the doubling in question.
+BOOST_AUTO_TEST_CASE(write_amplification_by_encoding,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
+    BOOST_TEST_MESSAGE(
+        "write amplification by wire encoding, 16 in flight (does the 2 KiB -> 4 KiB "
+        "retransmission knee move with the ENCODED size?):");
+
+#if defined(KYTHIRA_BENCH_HAS_BEAST)
+    constexpr std::array<std::size_t, 3> k_sizes{1024, 2048, 4096};
+
+    std::vector<repeated_result> json_rows;
+    for (auto bytes : k_sizes) {
+        json_rows.push_back(measure<kythira::testing::beast_http_transport<json>>(
+            {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
+    }
+    report_value_size_sweep(json_rows, "JSON on the wire");
+
+    std::vector<repeated_result> cbor_rows;
+    for (auto bytes : k_sizes) {
+        cbor_rows.push_back(measure<kythira::testing::beast_http_transport<cbor>>(
+            {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
+    }
+    report_value_size_sweep(cbor_rows, "CBOR on the wire");
+
+    report_encoding_comparison(json_rows, cbor_rows);
+#else
+    BOOST_TEST_MESSAGE(
+        "  encoding/amplification cross: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
 #endif
 }
 

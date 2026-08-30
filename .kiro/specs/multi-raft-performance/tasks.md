@@ -1119,13 +1119,48 @@ and the answer is currently no for every one of them.
   - The amplification is flat to 1 KiB (8.8–10.7), rises to 14–15 at 2 KiB, and
     explodes to 62–76 at 4 KiB. One doubling of value size costs a 4.4–5.4x rise
     in retransmission, which no other doubling on the axis does
-  - **Not measured, and named as the next instrument**: why. The leader re-sends
-    its whole outstanding window each round, so wire bytes per round are
-    `batch x value` — about 16 KB of values at 4 KiB before JSON's expansion of
-    a byte array. Whether the nonlinearity is a socket-buffer threshold, the
-    encoder, or the commit path is a question for a byte counter on the send
-    path, and this suite has none by design (Requirement 8.2)
+  - **Not measured here, and answered by task 11b below**: why that doubling. The
+    obvious instrument is a byte counter on the send path, and Requirement 8.2
+    keeps one out of production code — so 11b asks the question by changing the
+    *encoded* size while holding the value size fixed instead
   - _Requirements: 1.4, 8.5_
+
+- [x] 11b. The knee is a function of the ENCODED size
+  - The question 11a left open, asked without the counter 8.2 forbids: run the
+    same value sizes under JSON and under CBOR. `json_rpc_serializer`
+    base64-expands a byte array by 4/3 and quotes it; `cbor_serializer` writes
+    byte strings natively, so a 4 KiB value is ~5.5 KiB on the JSON wire and
+    ~4 KiB on the CBOR wire before framing
+  - **The prediction was stated in the case's own doc comment before the run**:
+    if the knee is a threshold in encoded bytes, CBOR should push it out; if it
+    is in the value size — a per-entry cost, a copy, an allocator — both arms
+    should knee in the same place
+  - Two runs of five repetitions, 1 KiB / 2 KiB / 4 KiB:
+
+    | value | JSON ampl | CBOR ampl | CBOR/JSON | JSON ops/sec | CBOR ops/sec | CBOR/JSON |
+    |---:|---:|---:|---:|---:|---:|---:|
+    | 1 KiB | 11.07 / 11.07 | 9.63 / 9.39 | **0.87 / 0.85** | 655.9 / 631.9 | 906.1 / 938.4 | 1.38 / 1.49 |
+    | 2 KiB | 16.20 / 15.92 | 11.27 / 11.32 | **0.70 / 0.71** | 345.7 / 355.8 | 628.4 / 636.6 | 1.82 / 1.79 |
+    | 4 KiB | 60.73 / 35.87 | 18.18 / 20.63 | **0.30 / 0.58** | 57.6 / 101.1 | 304.9 / 256.2 | 5.29 / 2.53 |
+
+  - **CBOR's amplification curve has no knee**: 9.4–9.6 → 11.3 → 18.2–20.6, a
+    smooth 2.0–2.2x over a fourfold value range, where JSON's rises 3.2–5.5x with
+    the last doubling alone accounting for 2.3–3.8x. The CBOR/JSON ratio falls
+    monotonically in both runs and replicates to **1.5%** at 1 KiB and 2 KiB
+  - The 4 KiB row is unstable in both arms — JSON's amplification varies 1.7x
+    between runs — so its **direction is claimed and its magnitude is not**
+  - **H3 is confirmed with a curve, and at the top of Requirement 1.4's own
+    range the effect is not small.** At 128 B the serializer axis found the
+    encodings close, which is what H3 predicted; at 4 KiB CBOR is **2.5x to 5.3x
+    faster**, and the reason is not encode/decode CPU — it is that it retransmits
+    less
+  - **The mechanism looks like a feedback, not a threshold.** CBOR's round
+    interval is only 1.3–1.4x shorter at 4 KiB while its amplification is
+    1.7–3.3x lower: a small change in the driving term producing a large change
+    in the accumulated one. **The loop is not isolated** — this comparison cannot
+    separate "encoded size" from anything else that differs between the two
+    serializers, and the case says so in as many words
+  - _Requirements: 1.4, 8.4, 8.5, 17.2_
 
 ## Real-cloud measurement
 
