@@ -1224,12 +1224,125 @@ and the answer is currently no for every one of them.
     user story stated as data
   - _Requirements: 18.4, 18.5, 6.4_
 
-- [ ] 16. Shape 1 — one AWS instance, Tier B
+- [x] 16. Shape 1 — one AWS instance, Tier B
   - Provision one non-burstable instance, build or fetch the benchmark binary,
     run the same scenarios with the same configuration as the local rows, pull
     the artifacts back, tear down
   - Publish the local-vs-cloud delta as its own finding: that number *is* the
     hardware confound
+  - **Run, on real hardware, twice, and torn down clean both times.** One
+    `c5.2xlarge` in `us-east-1a` — Xeon Platinum 8124M at 3.00 GHz, 8 vCPU,
+    15,502 MiB, kernel 7.0.0-1011-aws, gp3 root at 3000 IOPS, shared tenancy.
+    Two repetitions of a five-case sweep on the one instance, 6.3 minutes each.
+    The post-run audit came back clean on all six resource classes both times,
+    and the instance's total billed life was about sixteen minutes — **$0.09**
+    against the pre-registered $0.11–$0.13 expectation in
+    `doc/multi_raft_performance_cloud_cost_estimate.md`
+  - **The binary is SHIPPED, not rebuilt, and that is the experiment rather
+    than a shortcut.** Requirement 18.7 wants the local-vs-cloud delta to *be*
+    the hardware confound. Rebuilding on the instance would fold a different
+    compiler, a different vcpkg resolution and a different feature set into that
+    delta with no way afterwards to say which of them moved the number.
+    `multi_raft_http_benchmark_test` links only libstdc++, libm, libgcc_s and
+    libc, so the same Release ELF that produced the local table runs unmodified
+    on an Ubuntu 24.04 AMI and the delta is hardware and nothing else. It is
+    also the only version that fits Requirement 18.11's ceiling: a from-source
+    build of this dependency set is hours
+  - **The single largest result is that the 4 KiB cliff is a property of the
+    development machine and not of this implementation.** Two sessions of work
+    (tasks 11a and 11b) characterised a collapse to a twentieth of the 16 B
+    throughput at 4 KiB, with entry-bearing rounds per commit rising 8.3–9.9x.
+    On eight modern cores the same sweep, same binary, same configuration:
+
+    | value | local ops/sec | cloud r1 | r2 | local ratio | cloud ratio | local AE/commit | cloud AE/commit |
+    |---:|---:|---:|---:|---:|---:|---:|---:|
+    | 16 B | 1289 / 1324 | 3636.3 | 3643.0 | 1.00x | 1.00x | 3.75 / 3.62 | 2.77 / 2.78 |
+    | 128 B | 1203 / 1204 | 3477.4 | 3515.8 | 0.93x | 0.96x | 3.89 / 3.79 | 2.82 / 2.81 |
+    | 1024 B | 727 / 760 | 2801.8 | 2782.8 | 0.56x | 0.77x | 4.87 / 4.58 | 2.99 / 2.96 |
+    | 2048 B | 392 / 414 | 2124.7 | 2110.1 | 0.30x | 0.58x | 6.97 / 6.38 | 3.26 / 3.28 |
+    | 4096 B | 61 / 52 | 1280.5 | 1218.5 | **0.047x** | **0.35x** | 30.96 / 35.69 | 3.73 / 3.93 |
+
+    A twentyfold collapse becomes a smooth threefold decline. Both measurements
+    are correct; only one of them is about the code. **This is exactly the
+    confound Requirement 18.7 exists to remove, and it removed a conclusion**
+  - **What survives the machine change, and therefore is structural.** Entries
+    per AppendEntries is 4.44–4.83 across the whole 256-fold value range on the
+    cloud instance against 4.03–4.89 locally — the batch is invariant to payload
+    on both machines at essentially the same value. And write amplification does
+    not vanish: every committed entry still crosses the wire **6.6 to 8.7 times
+    per commit** on the fast machine against a floor of two. The blow-up to
+    62–76x is local; the baseline redundancy of ~6.6x is not
+  - **Every row came back `stable`, which has never happened before in this
+    suite.** Spreads of 0.8–3.9% across five repetitions, on both runs, on every
+    row of five cases. Every throughput row ever taken on the development
+    machine carries `UNSTABLE` or `machine was not quiet at start`. Doctrine 90
+    said a ratio is measurable where a rate is not; this says where a rate
+    becomes measurable
+  - **H6 replicates in direction and not in magnitude**, which is the kind of
+    result only a second machine can produce. A slower tick still makes
+    everything faster and no percentile shows a floor at any cadence — the p50
+    at a 20 ms tick is 3.75 ms, under a fifth of the tick period — but the
+    effect is 1.40x on eight cores against 2.3x on four. RPCs per committed
+    entry converges to 2.10 (cloud) and 2.23 (local), both approaching the floor
+    of two: **the asymptote is structural and the approach to it is hardware**
+  - **The strongest new evidence for response-driven pacing.** The per-stream
+    inter-round interval is 0.75–0.91 ms on the cloud instance against
+    1.89–2.26 ms locally, in each case flat to about 20% across a twentyfold
+    tick sweep. It moved when the machine's RPC round trip moved and did not
+    move when the clock moved. Still a hypothesis — nothing has instrumented the
+    leader's send path — but with two points of support instead of one
+  - **Task 11b's conclusion holds on the machine it was taken on and does not
+    generalise, and this task says so rather than leaving it.** The CBOR/JSON
+    amplification ratio is 0.30–0.87 locally and **0.92–0.99** on the cloud
+    instance. The case prints its own decision rule beside the table — *at or
+    near 1.00x says the knee is NOT about encoded size* — and on eight cores
+    the rule says "not encoded size". Both readings are right: there is no knee
+    on the cloud instance for the encoding to remove. Encoded size governs the
+    *severity* of a knee that is itself a CPU-starvation effect
+  - **The routing bound tightened sevenfold and is still a bound.** Under
+    38.2–39.2 µs at one operation in flight, at most 11.9–13.3% of one committed
+    operation, against 212.8–299.4 µs locally. Six runs across two machines now
+    put the two `submit_command` overloads within a few microseconds of each
+    other against bands an order of magnitude wider. Doctrine 107 stands
+  - **Do NOT read the decomposition's share shift as "transport got cheap".**
+    Transport plus wire serialization falls from 57–58% of an operation locally
+    to 8.9–9.9% on the cloud instance, but at 16 in flight a p50 is dominated by
+    queueing behind fifteen other operations, so the "consensus core" residual
+    is largely `concurrency ÷ throughput`. What is real is that transport fell
+    21x between the machines while the total fell 3.6x
+  - **`scripts/perf-cloud/run-aws-shape-1.sh` is the deliverable, and it is a
+    script rather than workflow steps on purpose.** A provisioning sequence that
+    only ever runs inside a workflow is one whose failure modes are only ever
+    discovered inside a workflow, which is a bad property for the step that
+    spends money. `perf-cloud.yml` now builds the binary on a GitHub runner and
+    calls the same script an operator calls by hand
+  - **Four safety nets, not three, and the fourth closes the gap task 17 stated
+    as open.** Task 17's three ceilings all live on the *controlling* machine,
+    so none of them fires if that machine dies. The instance now boots with a
+    cloud-init `shutdown -h +N` and
+    `instance-initiated-shutdown-behavior=terminate` — terminate rather than
+    stop, because a stopped instance still bills its volume. Sizing it was a
+    live hazard caught before it cost anything: `ceiling + 25` covers one
+    repetition, not every repetition and certainly not an on-instance build, and
+    a dead-man switch that fires mid-build destroys the work and looks like a
+    network failure
+  - **The perf-cloud IAM bundle was insufficient and the gap was found by trying
+    to use it, not by reading it.** `policies/perf-cloud.json` had
+    `RunInstances` and the describes but no `CreateKeyPair`, `CreateSecurityGroup`
+    or `AuthorizeSecurityGroupIngress` — that is, no way for the controlling
+    machine to reach the instance it just launched at all, and no way to get an
+    artifact back. Added as `PerfCloudEphemeralAccessPath`, plus
+    `GetConsoleOutput` so a boot that never answers can be diagnosed rather than
+    guessed at. Both the CI OIDC role and the developer identity were
+    re-provisioned from the same bundle file
+  - **The provenance script's variable names are a contract, and the first live
+    run got three of them wrong.** `capture-provenance.sh` reads
+    `KYTHIRA_PERF_STATED_TENANCY`, `_STORAGE_CLASS` and `_STORAGE_IOPS`; the
+    caller passed `KYTHIRA_PERF_TENANCY`, `_STATED_STORAGE` and `_STATED_IOPS`.
+    Three fields came back `null`. **That is the design working** — Requirement
+    18.4's "null, never omitted and never guessed" is what made the mismatch
+    visible in the artifact instead of invisible in a plausible default — and it
+    is why the call site now lists them against the script's own variable list
   - _Requirements: 18.6, 18.7, 18.13_
 
 - [x] 17. Cost and safety controls
