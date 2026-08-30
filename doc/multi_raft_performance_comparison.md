@@ -79,6 +79,22 @@ harness, whose `persistence_engine_type` is currently a fixed
 `memory_persistence_engine` in `tests/multi_raft_transport_harness.hpp`. Neither
 is blocked on anything measured here; both are work that was not done.
 
+**One thing reading for Tier D did turn up, and it belongs in front of anyone
+sizing a durable deployment.** `tick_batch_controller`'s documentation used to
+say that without a controller, `tick()` falls back to per-group batching and
+pays one durability barrier per ready group. It does not: nothing in `include/`
+or `src/` calls `begin_batch()` except a conditional forwarder that nothing
+calls either, so the caller-supplied controller is the only thing in this
+codebase that opens a batch. **Without a controller there is no batching at
+all** — and for `file_persistence_engine` that is not merely slower, it is not
+durable: `append_log_entry` outside a batch flushes the `ofstream` and stops,
+and `sync_log_and_directory()` is reached only from `commit_batch()`. A
+multi-group host with a file-backed log and no controller writes to the page
+cache and issues no barrier at all, which is precisely the `buffered` mode
+Requirement 3.5 insists be labelled "not durable" wherever it appears. The
+comment is corrected; the fallback is not built, because that is a production
+behaviour change and this is a measurement spec.
+
 The consequence is stated once, plainly, and then assumed throughout: **the
 like-for-like table below is empty, and it is empty for a structural reason
 rather than because nothing was measured.**
@@ -419,14 +435,22 @@ implemented here.
 2. **`file_persistence` plus `tick_batch_controller` in the benchmark harness,
    against a real volume.** Tier D, and with it the first durable number this
    project could compare to anyone's. Requires reporting fsyncs/sec per host and
-   entries per fsync.
-3. **Instrument the leader's send path.** Settles response-driven pacing and
+   entries per fsync — and, because of the finding above, a harness-supplied
+   controller that fans out across the per-group engines, plus a row that says
+   plainly that this is N barriers wearing one name rather than one barrier per
+   tick.
+3. **Decide whether `tick()` should batch without a controller.** Separate from
+   the above and larger than it: today a multi-group host with a file-backed log
+   and no controller fsyncs once per appended entry. Whether that is the
+   intended contract or an omission is a design question this measurement work
+   is not entitled to answer.
+4. **Instrument the leader's send path.** Settles response-driven pacing and
    would say whether the 6.6x write amplification is a design property or an
    accident. Requirement 8.2 keeps a byte counter out of production code, so
    this needs a design decision before it needs a measurement.
-4. **Sweep client concurrency past 64, at Tier C.** The etcd comparison is
+5. **Sweep client concurrency past 64, at Tier C.** The etcd comparison is
    dominated by a concurrency mismatch that is cheap to remove.
-5. **A larger measured window, for p99.** The cheapest item here and the one
+6. **A larger measured window, for p99.** The cheapest item here and the one
    that removes the most `n/a` cells.
 
 ## Out of scope

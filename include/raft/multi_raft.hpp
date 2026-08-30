@@ -127,14 +127,38 @@ enum class hibernation_mode : std::uint8_t {
 /// @brief One durability barrier spanning every ready group's persist phase.
 ///
 /// Supplied by a caller whose engine spans groups (one store with a
-/// group-prefixed key space, say). Without it, `tick()` falls back to
-/// per-group batching through `batched_persistence_engine`, which still
-/// collapses each group's N appends into one barrier but pays one barrier per
-/// ready group rather than one per tick.
+/// group-prefixed key space, say), and it is the ONLY thing in this codebase
+/// that opens a batch. Nothing else calls `begin_batch()` — not `tick()`, not
+/// `node`, not `group_scoped_persistence`, whose conditional forwarders exist
+/// so that a controller can reach through them. Without a controller there is
+/// no batching at all.
 ///
-/// This is the honest shape of the constraint: a single barrier for N groups
-/// requires a store that spans N groups, and no wrapper can manufacture one
-/// from N independent engines.
+/// For `file_persistence_engine` that is not merely slower, it is **not
+/// durable**: `append_log_entry` outside a batch calls `append_to_log_file`,
+/// which flushes the `ofstream` and stops. `sync_log_and_directory()` — the
+/// only fsync on the log path — is called from `commit_batch()` and from
+/// nowhere else. So a multi-group host with a file-backed log and no
+/// controller writes its log to the page cache and never issues a barrier at
+/// all, which is the `buffered` mode Requirement 3.5 of
+/// .kiro/specs/multi-raft-performance/ insists be labelled "not durable"
+/// wherever it appears.
+///
+/// Those two paragraphs replace an earlier one which said `tick()` "falls back
+/// to per-group batching through `batched_persistence_engine`", collapsing
+/// each group's appends into one barrier per ready group. No such fallback is
+/// implemented; the claim was found to be false while
+/// .kiro/specs/multi-raft-performance/ task 19 was reading this file for a
+/// durable benchmark tier. It was the most reassuring possible way to be
+/// wrong — it named a real concept, in a real header, describing behaviour a
+/// reader would have had to go looking for `begin_batch()` call sites to
+/// disprove. Building the fallback is a behaviour change and is deliberately
+/// not made here.
+///
+/// The constraint the original comment was reaching for is still real and
+/// still worth stating: a single barrier for N groups requires a store that
+/// spans N groups, and no wrapper can manufacture one from N independent
+/// engines. A caller holding N independent engines can supply a controller
+/// that fans out across them, but that is N barriers wearing one name.
 struct tick_batch_controller {
     std::function<void()> _begin;
     std::function<void()> _commit;
