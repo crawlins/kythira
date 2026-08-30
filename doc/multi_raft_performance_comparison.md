@@ -273,6 +273,12 @@ barrier on top of it is a further **15%**. Anyone deciding whether durability
 is affordable here should note that more than half the cost is the log format
 rather than the disk.
 
+**The report generator reproduces these numbers independently.** Its
+`--axis durability` rows come from the same shared header through a different
+program, and returned 142 barriers, 8.45 entries per fsync and 82.75 fsyncs per
+second per host against the suite's 127/142, 9.45/8.45 and 74.8/84.5. That
+agreement is the property the shared measurement header exists to have.
+
 **`entries/fsync` of 8.5–9.5, not 1, is why the fsync rate is bearable.** Four
 groups at a 2 ms tick would be 2000 barriers per second per host if every tick
 flushed; the measurement is 75–85, because 833–1070 of the batches closed with
