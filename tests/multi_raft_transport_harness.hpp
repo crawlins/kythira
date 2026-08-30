@@ -54,6 +54,7 @@
 
 #include <raft/console_logger.hpp>
 #include <raft/executor_default.hpp>
+#include <raft/file_persistence.hpp>
 #include <raft/future_default.hpp>
 #include <raft/group_transport.hpp>
 #include <raft/http_transport.hpp>
@@ -88,6 +89,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -706,6 +709,188 @@ private:
 #endif  // KYTHIRA_BENCH_HAS_PROXYGEN
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Durability
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief What a durable row has to report, counted outside production code.
+///
+/// Requirement 3.4 names two numbers — fsyncs per second per host, and entries
+/// per fsync — and Requirement 8.2 keeps the counter that produces them out of
+/// `include/`. This lives on the harness side of `benchmark_persistence_engine`
+/// for exactly that reason: the wrapper counts what it forwards.
+struct durability_counters {
+    /// `commit_batch()` calls that actually flushed. A batch that closed with
+    /// nothing buffered issues no barrier, and counting it would divide the
+    /// entry count by a number that includes ticks where nothing happened.
+    std::atomic<std::uint64_t> _barriers{0};
+    /// Batches that closed empty. Reported separately for the same reason
+    /// empty AppendEntries are: a quiet tick is not a cheap fsync.
+    std::atomic<std::uint64_t> _empty_batches{0};
+    /// Log entries handed to `append_log_entry`, batched or not.
+    std::atomic<std::uint64_t> _entries{0};
+};
+
+/// @brief One group's store, either memory- or file-backed, with the barrier
+/// and entry counters on the outside of it.
+///
+/// A handle rather than a value. `store_factory` returns by value and
+/// `multi_raft` moves the result into the group's `node`, so a caller that
+/// wants to open a batch across every group later has no way to reach the
+/// engines it created — unless the thing it returned was a handle to shared
+/// state, which is what this is. `file_persistence_engine` is also move-
+/// constructible but not move-assignable and holds a mutex, so it wants to
+/// live behind a pointer regardless.
+///
+/// It exists at all because `kv_host_types::persistence_engine_type` is one
+/// type. Making it a template parameter would thread a second parameter
+/// through `kv_cluster`, every fixture and every row definition, to express a
+/// choice that is a runtime option everywhere else in this harness.
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t>
+class benchmark_persistence_engine {
+public:
+    using memory_engine_type = kythira::memory_persistence_engine<NodeId, TermId, LogIndex>;
+    using file_engine_type = kythira::file_persistence_engine<NodeId, TermId, LogIndex>;
+    using log_entry_t = typename memory_engine_type::log_entry_t;
+    using snapshot_t = typename memory_engine_type::snapshot_t;
+
+    /// Memory-backed, and the default so that every existing row keeps the
+    /// engine it was measured with.
+    ///
+    /// `counters` is optional here for the same reason it is not on the file
+    /// constructor: a memory row has no barrier to count, but it does append
+    /// the same entries, and a durability table whose control row reads zero
+    /// entries looks like a row that did no work rather than a row that did
+    /// the same work without a disk.
+    explicit benchmark_persistence_engine(durability_counters* counters = nullptr)
+        : _state(std::make_shared<state>()) {
+        _state->_memory.emplace();
+        _state->_counters = counters;
+    }
+
+    /// File-backed at `dir`. `counters` may be null; a row that does not
+    /// report durability does not have to supply one.
+    benchmark_persistence_engine(std::filesystem::path dir, durability_counters* counters)
+        : _state(std::make_shared<state>()) {
+        _state->_file = std::make_unique<file_engine_type>(std::move(dir));
+        _state->_counters = counters;
+    }
+
+    [[nodiscard]] auto file_backed() const -> bool { return _state->_file != nullptr; }
+
+    // ── persistence_engine (include/raft/persistence.hpp) ────────────────────
+
+    auto save_current_term(TermId term) -> void {
+        dispatch([&](auto& e) { e.save_current_term(term); });
+    }
+    auto load_current_term() -> TermId {
+        return dispatch([&](auto& e) { return e.load_current_term(); });
+    }
+    auto save_voted_for(NodeId node) -> void {
+        dispatch([&](auto& e) { e.save_voted_for(node); });
+    }
+    auto load_voted_for() -> std::optional<NodeId> {
+        return dispatch([&](auto& e) { return e.load_voted_for(); });
+    }
+
+    auto append_log_entry(const log_entry_t& entry) -> void {
+        if (_state->_counters != nullptr) {
+            _state->_counters->_entries.fetch_add(1, std::memory_order_relaxed);
+        }
+        _state->_in_batch.fetch_add(1, std::memory_order_relaxed);
+        dispatch([&](auto& e) { e.append_log_entry(entry); });
+    }
+    auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
+        return dispatch([&](auto& e) { return e.get_log_entry(index); });
+    }
+    auto get_log_entries(LogIndex start, LogIndex end) -> std::vector<log_entry_t> {
+        return dispatch([&](auto& e) { return e.get_log_entries(start, end); });
+    }
+    auto get_last_log_index() -> LogIndex {
+        return dispatch([&](auto& e) { return e.get_last_log_index(); });
+    }
+    auto truncate_log(LogIndex index) -> void {
+        dispatch([&](auto& e) { e.truncate_log(index); });
+    }
+    auto save_snapshot(const snapshot_t& snap) -> void {
+        dispatch([&](auto& e) { e.save_snapshot(snap); });
+    }
+    auto load_snapshot() -> std::optional<snapshot_t> {
+        return dispatch([&](auto& e) { return e.load_snapshot(); });
+    }
+    auto delete_log_entries_before(LogIndex index) -> void {
+        dispatch([&](auto& e) { e.delete_log_entries_before(index); });
+    }
+
+    // ── The batch, reached through the handle rather than the concept ────────
+    //
+    // Deliberately NOT named begin_batch/commit_batch/abort_batch. Satisfying
+    // `batched_persistence_engine` would change what `group_scoped_persistence`
+    // exposes and therefore what a future `tick()` could call, which is a
+    // behaviour change smuggled in as a benchmark. The harness's controller
+    // calls these by name on the handles it kept.
+
+    auto open_barrier() -> void {
+        if (!_state->_file) {
+            return;
+        }
+        _state->_in_batch.store(0, std::memory_order_relaxed);
+        _state->_file->begin_batch();
+    }
+    auto close_barrier() -> void {
+        if (!_state->_file) {
+            return;
+        }
+        // Whether this commit will actually fsync is decided by whether
+        // anything was buffered, and `file_persistence_engine` does not expose
+        // that. Counting the appends this handle forwarded since
+        // `open_barrier()` answers it from the outside, which is the point:
+        // Requirement 8.2 keeps the counter out of production code, so the
+        // wrapper counts what it forwards rather than asking the engine.
+        //
+        // The distinction is not pedantic. `commit_batch()` returns without
+        // touching the disk when its buffer is empty, and a tick in which no
+        // group had anything to append is most ticks in a quiet window.
+        // Folding those into the barrier count would divide the entry total by
+        // ticks in which nothing happened, and report a system that fsyncs far
+        // more often and far more cheaply than it does.
+        const bool flushed = _state->_in_batch.load(std::memory_order_relaxed) != 0;
+        _state->_file->commit_batch();
+        if (_state->_counters != nullptr) {
+            if (flushed) {
+                _state->_counters->_barriers.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                _state->_counters->_empty_batches.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+    auto abort_barrier() -> void {
+        if (_state->_file) {
+            _state->_file->abort_batch();
+        }
+    }
+
+private:
+    struct state {
+        std::optional<memory_engine_type> _memory{};
+        std::unique_ptr<file_engine_type> _file{};
+        durability_counters* _counters{nullptr};
+        /// Appends forwarded since the last `open_barrier()`. Only read by
+        /// `close_barrier()`, on the same host driver thread that opened it.
+        std::atomic<std::uint64_t> _in_batch{0};
+    };
+
+    template<typename F> auto dispatch(F&& f) -> decltype(auto) {
+        if (_state->_file) {
+            return f(*_state->_file);
+        }
+        return f(*_state->_memory);
+    }
+
+    std::shared_ptr<state> _state;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The host `Types` bundle, over whichever transport
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -731,8 +916,12 @@ template<typename Transport> struct kv_host_types {
     using network_client_type = transport_client_handle<typename Transport::client_type>;
     using network_server_type = transport_server_handle<typename Transport::server_type>;
 
+    /// The wrapper, not `memory_persistence_engine` directly. It defaults to a
+    /// memory engine, so every row taken before Requirement 3.4 existed keeps
+    /// the store it was measured with; `kv_cluster_options::_durability`
+    /// chooses a file-backed one instead.
     using persistence_engine_type =
-        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+        benchmark_persistence_engine<node_id_type, term_id_type, log_index_type>;
     using logger_type = kythira::console_logger;
     using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
@@ -779,6 +968,19 @@ struct kv_cluster_options {
     std::chrono::milliseconds _election_timeout_min{300};
     std::chrono::milliseconds _election_timeout_max{600};
     std::chrono::milliseconds _heartbeat_interval{50};
+
+    /// Which engine every group's store is built from, and — for
+    /// `file_barrier` — whether this harness supplies the controller that is
+    /// the only thing in the codebase able to open a batch. Defaults to
+    /// `memory`, so a row that does not ask for durability gets exactly the
+    /// store every earlier row was measured with.
+    durability_mode _durability{durability_mode::memory};
+
+    /// Where a file-backed run puts its logs. Empty means a fresh directory
+    /// under `std::filesystem::temp_directory_path()`, removed on shutdown.
+    /// A cloud row points this at the volume whose class and IOPS the
+    /// provenance records (Requirement 3.4).
+    std::filesystem::path _data_dir{};
 };
 
 /// @brief `_nodes` hosts, each holding a replica of every one of `_groups`
@@ -802,9 +1004,31 @@ public:
     using descriptor_type = kythira::shard_descriptor<group_id_type, key_type, std::uint64_t>;
 
     explicit kv_cluster(kv_cluster_options options)
-        : _options(options), _transport(node_ids(options._nodes)) {
+        : _options(std::move(options)), _transport(node_ids(_options._nodes)) {
         const auto voters = node_ids(_options._nodes);
         _ranges = kv_shard_ranges(_options._groups, _options._key_count);
+
+        if (_options._durability != durability_mode::memory) {
+            if (_options._data_dir.empty()) {
+                // Owned, and therefore removed in `shutdown()`. A run that
+                // left its logs behind would make the next run's first append
+                // land on a non-empty log, which is a correctness problem
+                // before it is a measurement one.
+                _data_root =
+                    std::filesystem::temp_directory_path() /
+                    ("kythira-bench-" + std::to_string(::getpid()) + "-" +
+                     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+                _owns_data_root = true;
+            } else {
+                // A cloud row points this at the provisioned volume whose
+                // class and IOPS the provenance records. Not removed: it is
+                // the caller's directory, and deleting somebody's mount point
+                // contents on shutdown is not this class's business.
+                _data_root = _options._data_dir;
+                _owns_data_root = false;
+            }
+            std::filesystem::create_directories(_data_root);
+        }
 
         for (std::uint64_t id = 1; id <= _options._nodes; ++id) {
             _hosts.push_back(std::make_unique<host_type>(make_config(id)));
@@ -861,6 +1085,28 @@ public:
         _transport.drain();
         _hosts.clear();
         _transport.shutdown();
+        // After the hosts, because a store outlives the node that held it
+        // only by the handle this class kept, and a directory removed while a
+        // group is still appending is a crash rather than a leak.
+        _stores_by_host.clear();
+        if (_owns_data_root && !_data_root.empty()) {
+            std::error_code ec;
+            std::filesystem::remove_all(_data_root, ec);
+        }
+    }
+
+    /// @brief Barriers and entries since this cluster started.
+    ///
+    /// Requirement 3.4's two numbers come from differencing two of these
+    /// around the measured window: a barrier issued during election or warm-up
+    /// belongs to neither the numerator nor the denominator of "entries per
+    /// fsync".
+    [[nodiscard]] auto durability_counts() const -> durability_snapshot {
+        return durability_snapshot{
+            ._barriers = _durability_counters._barriers.load(std::memory_order_relaxed),
+            ._empty_batches = _durability_counters._empty_batches.load(std::memory_order_relaxed),
+            ._entries = _durability_counters._entries.load(std::memory_order_relaxed),
+        };
     }
 
     [[nodiscard]] auto host(std::size_t index) -> host_type& { return *_hosts.at(index); }
@@ -1196,8 +1442,8 @@ private:
                                                                          &_rpc},
             .network_server =
                 transport_server_handle<typename Transport::server_type>{_transport.server(id)},
-            .store_factory =
-                [](const group_id_type&) { return typename types::persistence_engine_type{}; },
+            .store_factory = [this,
+                              id](const group_id_type& group) { return make_store(id, group); },
         };
         cfg.config._election_timeout_min = _options._election_timeout_min;
         cfg.config._election_timeout_max = _options._election_timeout_max;
@@ -1213,7 +1459,68 @@ private:
         cfg.automatic_split_merge_enabled = false;
         cfg.heartbeat_interval = std::chrono::milliseconds{0};
         cfg.partitioner = kythira::make_partitioner<key_type>(kv_partitioner{});
+        // The ONLY thing in this codebase that opens a batch. `tick()` has no
+        // fallback — nothing else calls `begin_batch()` — so without this a
+        // file-backed log is written to the page cache and never fsynced,
+        // which is `durability_mode::file_buffered` and is labelled NOT
+        // DURABLE wherever it appears (Requirement 3.5).
+        //
+        // It fans out across the per-group handles this host created, so it is
+        // N barriers wearing one name rather than one barrier for N groups.
+        // `tick_batch_controller`'s own documentation is explicit that no
+        // wrapper can manufacture the second from N independent engines, and a
+        // row measured through this must say which one it got.
+        if (_options._durability == durability_mode::file_barrier) {
+            // `operator[]`, not `at`: `make_config(id)` runs before this
+            // host's first `create_group`, so the vector does not exist yet.
+            // `unordered_map` keeps pointers to its elements valid across
+            // rehash, so the address taken here stays good as other hosts are
+            // added.
+            auto* stores = &_stores_by_host[id];
+            cfg.batch_controller = kythira::tick_batch_controller{
+                ._begin =
+                    [stores] {
+                        for (auto& [group, store] : *stores) {
+                            store.open_barrier();
+                        }
+                    },
+                ._commit =
+                    [stores] {
+                        for (auto& [group, store] : *stores) {
+                            store.close_barrier();
+                        }
+                    },
+                ._abort =
+                    [stores] {
+                        for (auto& [group, store] : *stores) {
+                            store.abort_barrier();
+                        }
+                    },
+            };
+        }
         return cfg;
+    }
+
+    /// @brief One group's store on one host, remembered so the controller can
+    /// reach it.
+    ///
+    /// `store_factory` hands its result to `multi_raft`, which moves it into
+    /// the group's `node`; the handle kept here shares state with that copy,
+    /// which is the whole reason `benchmark_persistence_engine` is a handle.
+    auto make_store(std::uint64_t host_id, const group_id_type& group) ->
+        typename types::persistence_engine_type {
+        if (_options._durability == durability_mode::memory) {
+            return typename types::persistence_engine_type{&_durability_counters};
+        }
+        // One directory per host per group. `group_scoped_persistence` owns
+        // its engine and the isolation is in the location, so two groups
+        // sharing a directory would share a log file and interleave two
+        // independent index spaces into it.
+        const auto dir =
+            _data_root / ("host-" + std::to_string(host_id)) / ("group-" + std::to_string(group));
+        typename types::persistence_engine_type store{dir, &_durability_counters};
+        _stores_by_host[host_id].emplace_back(group, store);
+        return store;
     }
 
     auto drive(std::size_t index) -> void {
@@ -1228,6 +1535,23 @@ private:
     /// answer without consulting a `multi_raft` shard map — which is the very
     /// lookup the routing-cost scenario exists to price.
     std::vector<kythira::shard_range<key_type>> _ranges;
+    /// Where a file-backed run's logs live, and whether this object owns the
+    /// directory. An owned one is removed in `shutdown()`; a caller-supplied
+    /// one — a cloud row pointing at a provisioned volume — is left alone.
+    std::filesystem::path _data_root;
+    bool _owns_data_root{false};
+    /// Barrier and entry counts, shared by every store on every host. Declared
+    /// before `_transport` and `_hosts` for the same reason `_rpc` is: a tick
+    /// still in flight during `shutdown()` writes through a pointer to it.
+    durability_counters _durability_counters;
+    /// Every store this cluster created, by host, so the per-host batch
+    /// controller can open and close a barrier across all of them. Keyed by
+    /// host id rather than index because `make_config` runs before `_hosts`
+    /// has an entry to index.
+    std::unordered_map<
+        std::uint64_t,
+        std::vector<std::pair<group_id_type, typename types::persistence_engine_type>>>
+        _stores_by_host;
     /// Declared before `_transport` and `_hosts`, so it is destroyed after
     /// them: every handle inside a host holds a pointer to it, and a tick
     /// still in flight during `shutdown()` would otherwise write through a
@@ -1286,7 +1610,8 @@ struct workload_options {
 template<typename Transport>
 auto fill_result(const kv_cluster<Transport>& cluster, const workload_options& workload,
                  latency_sample_set& samples, const operation_tally& tally,
-                 std::chrono::nanoseconds elapsed, const rpc_snapshot& rpc) -> benchmark_result {
+                 std::chrono::nanoseconds elapsed, const rpc_snapshot& rpc,
+                 const durability_snapshot& durability) -> benchmark_result {
     samples.sort();
 
     typename Transport::transport_bundle::serializer_type serializer{};
@@ -1310,6 +1635,8 @@ auto fill_result(const kv_cluster<Transport>& cluster, const workload_options& w
     result._duration = elapsed;
     result._tally = tally;
     result._rpc = rpc;
+    result._durability = cluster.options()._durability;
+    result._durability_counts = durability;
     result._p50 = samples.p50();
     result._p95 = samples.p95();
     result._p99 = samples.p99();
@@ -1374,6 +1701,7 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
     // Taken before the clock and read after the join, so the window the RPC
     // ratios describe is exactly the window the throughput describes.
     const auto rpc_before = cluster.rpc_counts();
+    const auto durability_before = cluster.durability_counts();
     const auto started = std::chrono::steady_clock::now();
     {
         std::vector<std::thread> workers;
@@ -1441,6 +1769,7 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
     }
     const auto elapsed = std::chrono::steady_clock::now() - started;
     const auto rpc_after = cluster.rpc_counts();
+    const auto durability_after = cluster.durability_counts();
 
     latency_sample_set all;
     operation_tally tally;
@@ -1450,7 +1779,8 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
         tally.merge(tallies[w]);
         total_lag += lag[w];
     }
-    auto result = fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before);
+    auto result = fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before,
+                              durability_after - durability_before);
     result._mean_schedule_lag = tally._completed == 0
                                     ? std::chrono::nanoseconds{0}
                                     : total_lag / static_cast<std::int64_t>(tally._completed);
@@ -1504,6 +1834,7 @@ auto run_read_workload(kv_cluster<Transport>& cluster, const workload_options& w
         1, workload._operations / std::max<std::size_t>(1, workload._in_flight));
 
     const auto rpc_before = cluster.rpc_counts();
+    const auto durability_before = cluster.durability_counts();
     const auto started = std::chrono::steady_clock::now();
     {
         std::vector<std::thread> workers;
@@ -1544,6 +1875,7 @@ auto run_read_workload(kv_cluster<Transport>& cluster, const workload_options& w
     }
     const auto elapsed = std::chrono::steady_clock::now() - started;
     const auto rpc_after = cluster.rpc_counts();
+    const auto durability_after = cluster.durability_counts();
 
     latency_sample_set all;
     operation_tally tally;
@@ -1554,7 +1886,8 @@ auto run_read_workload(kv_cluster<Transport>& cluster, const workload_options& w
         total_bytes += bytes[w];
     }
 
-    auto result = fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before);
+    auto result = fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before,
+                              durability_after - durability_before);
     result._bytes_returned = total_bytes;
     result._read_kind = kind;
     return result;

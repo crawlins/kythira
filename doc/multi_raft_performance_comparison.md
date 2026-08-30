@@ -67,7 +67,7 @@ than the comparison claim being quietly narrowed to the tiers that were run.
 | A | All hosts in one process over the in-process fabric, memory persistence | yes | **never** (Requirement 3.1) |
 | B | In-process hosts, real HTTP transport over loopback, memory persistence | yes | no (Requirement 3.3) |
 | C | One host process per node on one machine | **no** | would be, for a no-fsync number |
-| D | Tier C plus `file_persistence` in `barrier` mode against a real volume | **no** | the only tier comparable to a durable number |
+| D | Tier C plus `file_persistence` in `barrier` mode against a real volume | **no** — but the durability half is built and measured at Tier B, see below | the only tier comparable to a durable number |
 | E | One host per machine or container | **no** | yes |
 
 **Why C, D and E are not delivered.** All three need a process that hosts
@@ -244,6 +244,42 @@ nothing to amplify. **Task 11b's conclusion holds on the machine it was measured
 on and does not generalise, and the correction is this document's, not a later
 reader's.**
 
+### Durability
+
+Three persistence configurations at 128 B, 16 in flight, a 2 ms tick, on the
+development machine. Two runs of five repetitions each.
+
+| mode | ops/sec r1 | r2 | p50 r1 | r2 | fsync/sec/host | entries/fsync | barriers | empty batches | entries |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| memory | 1137.2 | 1163.5 | 13564 us | 13214 us | 0.00 | 0.00 | 0 | 0 | 1200 |
+| file, buffered — **NOT DURABLE** | 821.1 | 839.0 | 18569 us | 18366 us | 0.00 | 0.00 | 0 | 0 | 1200 |
+| file, barrier | 706.3 | 714.0 | 21647 us | 21493 us | 74.8 / 84.5 | 9.45 / 8.45 | 127 / 142 | 1070 / 833 | 1200 |
+
+**This is not Tier D.** Requirement 3.1 defines Tier D as *Tier C plus* file
+persistence, and all three hosts here are in one process. The fsync is real and
+the process separation is not, so nothing in this table may be compared to an
+external durable number.
+
+**The middle row's zeroes are the measurement, not a gap in it.** 1200 entries
+were appended and no durability barrier was issued, on both runs, because
+`file_persistence_engine::append_log_entry` outside a batch flushes the
+`ofstream` and stops. That is the mode Requirement 3.5 insists be labelled not
+durable, and it is the configuration anyone gets who wires a file-backed log
+into a multi-group host without also supplying a `tick_batch_controller`.
+
+**The cost splits cleanly into two halves.** The JSON-line append alone —
+buffered against memory, no fsync in either — is **28% of throughput**. The
+barrier on top of it is a further **15%**. Anyone deciding whether durability
+is affordable here should note that more than half the cost is the log format
+rather than the disk.
+
+**`entries/fsync` of 8.5–9.5, not 1, is why the fsync rate is bearable.** Four
+groups at a 2 ms tick would be 2000 barriers per second per host if every tick
+flushed; the measurement is 75–85, because 833–1070 of the batches closed with
+nothing buffered. A group flushes about once every twelve ticks. Counting those
+empty batches as barriers would have reported a system fsyncing twenty-five
+times more often, and twenty-five times more cheaply, than it does.
+
 ### Reads
 
 Measured on the development machine only; the cloud sweep did not include the
@@ -328,7 +364,7 @@ Requirement 11.3. Each verdict, and the number behind it.
 | H1 | No proposal batching — one call, one entry, one round | **REFUTED as stated** | 1.03 entries/AppendEntries at one in flight; 29.5 at 64 uniform, 48.7 Zipfian. Batching is real; nothing configures it. The mechanism task 8 named for it ("tick-driven") is itself refuted — see H6 |
 | H2 | Replication rounds are not deduplicated | **REFUTED on concurrency, CONFIRMED on the tick and on value size** | 3.74–6.64 RPCs/commit across a 64-fold concurrency range (does not track N); 5.41 → 2.23 over a twentyfold tick sweep; 6.6–8.7 entry-sends per commit on cloud hardware and 9–76x locally |
 | H3 | JSON on the wire costs, a little at small values | **CONFIRMED, with a hardware caveat this document adds** | Encodings within 2.2% at 128 B on both machines. CBOR is 2.5–5.3x faster at 4 KiB *on four cores* and 1.4–1.5x on eight. The effect is real; its size is a property of the machine |
-| H4 | The log is JSON lines and lives entirely in memory | **UNTESTED** | `file_persistence` is not wired into this harness. This is Tier D, which is not delivered. Nothing here measured it and nothing here should be read as evidence about it |
+| H4 | The log is JSON lines and lives entirely in memory | **HALF CONFIRMED — the encode cost is measured, the memory growth is not** | A file-backed log with no fsync anywhere in it costs **28% of throughput** against memory persistence (1137/1163 → 821/839 ops/sec, two runs) and 39% more p50. That is the JSON-line append, priced. The `std::map` the same class keeps alongside it is untouched by any measurement here |
 | H5 | Reads transfer whole state | **CONFIRMED, linear to three figures** | 146.08 / 146.01 / 146.00 bytes per key at 100 / 1000 / 5000 keys, independently corroborated at 146.03 by a differently-configured row |
 | H6 | The tick sets a latency floor | **REFUTED, in the opposite direction** | Every percentile *falls* as the clock slows, on both machines. p50 at a 20 ms tick is 9.4 ms locally and 3.75 ms on cloud hardware — in both cases well under the tick period. No floor at any cadence |
 | H7 | Per-group locking is coarse | **CONFIRMED, and the cap is lower than the wording suggests** | Hot-group throughput never rises: 1460.5 → 1403.9 → 1221.1 → 513.1 ops/sec from 1 to 64 in flight. At one in flight the hot group *beats* the spread cluster; the ordering inverts by 64 |
@@ -405,9 +441,13 @@ and the hypothesis each confirms or refutes.
 Requirement 16.5, stated plainly rather than filled in with the nearest
 available number.
 
-- **Whether this implementation is competitive on a durable write.** Nothing
-  here has an fsync in it. Every external write number does. This is the single
-  most important open question and it needs Tier D.
+- **Whether this implementation is competitive on a durable write.** The
+  durability axis above has a real fsync in it, which is new, but it is Tier B —
+  three hosts in one process, on a laptop SSD. Every external write number is a
+  cluster of machines. This is still the single most important open question and
+  it still needs Tier C underneath it.
+- **How much of the 28% JSON-line cost is the format and how much is the
+  `std::map` beside it.** H4 names both; only the first is priced.
 - **What a real network does to the round.** The inter-round interval is
   0.75–0.91 ms on loopback and the response-driven-pacing hypothesis predicts it
   tracks the RPC round trip. On a real network that is 100x larger. Nothing here
@@ -432,13 +472,12 @@ implemented here.
 1. **A host binary in `cmd/`.** Unblocks Tiers C, D and E simultaneously, which
    is every tier that could carry a like-for-like claim. It is the single
    highest-value item in this list and nothing else in it matters as much.
-2. **`file_persistence` plus `tick_batch_controller` in the benchmark harness,
-   against a real volume.** Tier D, and with it the first durable number this
-   project could compare to anyone's. Requires reporting fsyncs/sec per host and
-   entries per fsync — and, because of the finding above, a harness-supplied
-   controller that fans out across the per-group engines, plus a row that says
-   plainly that this is N barriers wearing one name rather than one barrier per
-   tick.
+2. **Run the durability axis on a cloud instance, against a provisioned
+   volume.** The harness half is done — `durability_mode`, the fan-out
+   controller, the barrier and entry counters, and the row above — so what
+   remains is a volume whose class and IOPS the provenance records, which
+   `kv_cluster_options::_data_dir` already accepts and nothing has yet used.
+   Cheap, and it turns the barrier column from a laptop SSD's number into one.
 3. **Decide whether `tick()` should batch without a controller.** Separate from
    the above and larger than it: today a multi-group host with a file-backed log
    and no controller fsyncs once per appended entry. Whether that is the

@@ -132,13 +132,6 @@ jobs:
           esac
           echo "Instance type $INSTANCE_TYPE is not burstable."
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
-          role-session-name: kythira-perf-cloud
-          aws-region: ${{ env.AWS_REGION }}
-
       # ── Build the binary this run will ship ──────────────────────────────
       # Built here rather than on the instance, and that is the experiment
       # rather than a convenience. Requirement 18.7 wants the local-vs-cloud
@@ -246,6 +239,24 @@ jobs:
         with:
           path: ~/.ccache
           key: ccache-${{ runner.os }}-${{ runner.arch }}-g++-13-${{ github.ref_name }}-${{ github.run_id }}
+
+      # ── Credentials, minted AFTER the build ─────────────────────────────
+      #
+      # Position is load-bearing. An OIDC session lasts an hour, and a cold
+      # vcpkg build is ~55 minutes on its own — so credentials taken before
+      # the build can expire before the TEARDOWN, which is the one step that
+      # must never fail for lack of them. A build that overruns would then
+      # leave a running instance and an audit that cannot see it.
+      #
+      # Nothing above this line touches AWS: the burstable refusal is a string
+      # match on the instance type, and the build needs no cloud at all.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-perf-cloud
+          aws-region: ${{ env.AWS_REGION }}
+
 
       # ── Provision, measure, retrieve, tear down ──────────────────────────
       # One script, and the same one an operator runs by hand from a

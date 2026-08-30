@@ -89,6 +89,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
@@ -741,6 +742,150 @@ BOOST_AUTO_TEST_CASE(write_amplification_by_encoding,
 #else
     BOOST_TEST_MESSAGE(
         "  encoding/amplification cross: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
+#endif
+}
+
+// ── durability ───────────────────────────────────────────────────────────────
+
+/// @brief The three persistence configurations side by side, with the two
+///        numbers Requirement 3.4 asks a durable row to carry.
+///
+/// `fsync/sec/host` and `entries/fsync` are the pair, and they have to be read
+/// together: a system that fsyncs rarely because it batches well and one that
+/// fsyncs rarely because it is doing nothing look identical in the first column
+/// and nothing alike in the second.
+///
+/// The `barrier` column is the honest one and says so in the table rather than
+/// only in a doc comment. `multi_raft`'s tick opens ONE batch across every
+/// ready group, but each group owns an independent
+/// `file_persistence_engine` at its own directory, so a commit fans out to N
+/// engines and issues N fsyncs. `tick_batch_controller`'s own documentation is
+/// explicit that no wrapper can manufacture one barrier for N groups out of N
+/// independent stores; this is N barriers wearing one name and the row must not
+/// be quoted as though it were the other thing.
+auto report_durability_comparison(const std::vector<repeated_result>& rows) -> void {
+    if (rows.empty()) {
+        return;
+    }
+    const auto seconds = [](const benchmark_result& r) -> double {
+        return std::chrono::duration<double>(r._duration).count();
+    };
+    const auto fsyncs_per_second_per_host = [&seconds](const benchmark_result& r) -> double {
+        const auto t = seconds(r);
+        if (t <= 0.0 || r._nodes == 0) {
+            return 0.0;
+        }
+        return static_cast<double>(r._durability_counts._barriers) / t /
+               static_cast<double>(r._nodes);
+    };
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2);
+    out << "durability (Requirements 3.4, 3.5) — every figure is the median run's, at a "
+        << rows.front().median_run()._tick_interval.count() << " ms tick:"
+        << "\n      mode                          ops/sec     p50        fsync/sec/host   "
+           "entries/fsync   barriers   empty batches   entries";
+    for (const auto& row : rows) {
+        const auto& m = row.median_run();
+        out << "\n      " << std::left << std::setw(28) << to_string(m._durability) << std::right
+            << std::setw(9) << std::setprecision(1) << m._ops_per_second << "  " << std::setw(9)
+            << std::chrono::duration_cast<std::chrono::microseconds>(m._p50).count() << "us  "
+            << std::setw(14) << std::setprecision(2) << fsyncs_per_second_per_host(m) << "  "
+            << std::setw(14) << m._durability_counts.entries_per_barrier() << "  " << std::setw(9)
+            << m._durability_counts._barriers << "  " << std::setw(14)
+            << m._durability_counts._empty_batches << "  " << std::setw(9)
+            << m._durability_counts._entries;
+        if (!row.comparable()) {
+            out << "  [" << to_string(row.verdict()) << "]";
+        }
+    }
+    out << "\n      `file/buffered` issues NO barrier at all and its zeroes are not a "
+           "measurement error: outside a batch, `file_persistence_engine::append_log_entry` "
+           "flushes the ofstream and stops, and `sync_log_and_directory()` is reached only from "
+           "`commit_batch()`. Requirement 3.5 requires that row be read as NOT DURABLE."
+        << "\n      `file/barrier` is N barriers wearing one name, not one barrier for N groups: "
+           "the tick opens one batch across every ready group, but each group owns an independent "
+           "engine at its own directory, so a commit fans out to one fsync per group."
+        << "\n      `entries/fsync` counts only batches that flushed. A tick in which no group "
+           "had anything to append closes an empty batch, which touches no disk; folding those in "
+           "would divide the entry total by ticks in which nothing happened and report a system "
+           "that fsyncs far more often and far more cheaply than it does."
+        << "\n      The memory row is the control and the ONLY one of the three whose durability "
+           "barrier is genuinely zero. It is here to price the other two, not to be quoted.";
+    BOOST_TEST_MESSAGE(out.str());
+}
+
+/// @brief What durability costs, and whether a file-backed log is durable at
+///        all without a batch controller.
+///
+/// **This is NOT Tier D**, and the distinction is the first thing the row has
+/// to carry. Requirement 3.1 defines Tier D as *Tier C plus* `file_persistence`
+/// in `barrier` mode — Tier C being one host process per node — and every row
+/// in this suite is Tier B, with all three hosts inside one process. What this
+/// case delivers is Tier B with a real durability barrier: the fsync is real,
+/// the volume is real, and the process separation is not. Requirement 3.3 still
+/// forbids a like-for-like external comparison from it, and Requirement 3.7
+/// asks that the missing tier be named rather than the claim quietly narrowed.
+///
+/// Three arms, and the middle one exists because of what reading
+/// `multi_raft.hpp` for this case turned up. `tick_batch_controller`'s
+/// documentation said that without a controller `tick()` falls back to
+/// per-group batching. It does not: nothing in `include/` or `src/` calls
+/// `begin_batch()` except a conditional forwarder that nothing calls either, so
+/// the caller-supplied controller is the only thing in the codebase that opens
+/// a batch. `file_buffered` is that configuration, and its purpose is to make
+/// the consequence measurable rather than merely stated — a file-backed log
+/// with no controller writes to the page cache and never fsyncs.
+///
+/// The prediction, written before the run: `file/buffered` should cost little
+/// against `memory` — an ofstream append and a flush to page cache — and
+/// `file/barrier` should cost a great deal, because a gp3 volume at 3000 IOPS
+/// cannot absorb one fsync per group per tick at a 2 ms cadence. Four groups at
+/// 500 ticks per second per host is 2000 fsyncs per second per host before the
+/// workload contributes anything, which is already most of the volume's budget.
+/// If `file/barrier` is *not* much slower, the barrier is not reaching the
+/// device and the row is wrong rather than good.
+BOOST_AUTO_TEST_CASE(write_throughput_by_durability,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
+    BOOST_TEST_MESSAGE(
+        "write throughput by durability mode, 128B values, 16 in flight (Requirement 3.4):");
+
+#if defined(KYTHIRA_BENCH_HAS_BEAST)
+    std::vector<repeated_result> rows;
+    for (auto mode : {kythira::testing::durability_mode::memory,
+                      kythira::testing::durability_mode::file_buffered,
+                      kythira::testing::durability_mode::file_barrier}) {
+        auto cluster = kythira::testing::standard_cluster_options();
+        cluster._durability = mode;
+        // Empty means a temporary directory this cluster owns and removes.
+        // A cloud row sets KYTHIRA_BENCH_DATA_DIR to the provisioned volume
+        // whose class and IOPS the provenance records, which is the whole
+        // point of running this on an instance rather than here.
+        if (const char* dir = std::getenv("KYTHIRA_BENCH_DATA_DIR"); dir != nullptr) {
+            cluster._data_dir = dir;
+        }
+        rows.push_back(measure<kythira::testing::beast_http_transport<json>>(
+            {._operations = 400,
+             ._cluster = cluster,
+             // No floor. The barrier arm is bounded by a real device and this
+             // suite has never measured it, so a floor here would be a guess
+             // asserted as a requirement — which is the failure doctrine 98 is
+             // about, from the other direction.
+             ._floor_ops_per_second = 0.0}));
+    }
+    report_durability_comparison(rows);
+    // The claim the middle arm exists to make, asserted rather than left to a
+    // reader comparing two columns. If a future change gives `tick()` a
+    // batching fallback, this is the check that notices.
+    BOOST_CHECK_MESSAGE(
+        rows[1].median_run()._durability_counts._barriers == 0,
+        "file/buffered issued a durability barrier — `tick()` has acquired a batching fallback, "
+        "which would make this arm durable and its label wrong");
+    BOOST_CHECK_MESSAGE(rows[2].median_run()._durability_counts._barriers > 0,
+                        "file/barrier issued NO durability barrier — the controller this harness "
+                        "supplies is not reaching the engines, and the row is not durable");
+#else
+    BOOST_TEST_MESSAGE("  durability sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
 #endif
 }
 
