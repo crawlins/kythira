@@ -930,6 +930,38 @@ kythira_wire_multi_raft_bench(multi_raft_http_benchmark_test)
 # instrumented legs (coverage, TSan) run the same binary far slower, and a
 # per-test timeout tighter than ci.yml's own 1800 ceiling for those jobs would
 # turn a slow instrumented run into a failure.
+# .kiro/specs/multi-raft-host-binary/ task 5 — the test that decides whether
+# any of the rest is worth trusting: the driver and the in-process harness must
+# offer the SAME workload, or every cross-tier delta is a comparison of two
+# workloads. It reaches the two binaries' headers by include path, the way the
+# chaos-node tests reach `http_control.hpp`.
+#
+# Gated on cpp-httplib because the data path is served over it. Deliberately
+# NOT gated on `TARGET multi_raft_node`: `cmd/` is added after `tests/` in the
+# root CMakeLists, so that target does not exist yet here — and the test needs
+# only the binaries' headers, not their objects.
+if(httplib_FOUND)
+    add_raft_completion_test(multi_raft_driver_agreement_test
+                             multi_raft_driver_agreement_test.cpp)
+    target_include_directories(multi_raft_driver_agreement_test PRIVATE
+        "${CMAKE_SOURCE_DIR}/cmd/multi_raft_node"
+        "${CMAKE_SOURCE_DIR}/cmd/multi_raft_bench_common"
+        # `data_path_target.hpp` includes the workload by its bare name, the
+        # same way the two binaries do, so this directory has to be reachable
+        # from here too. That is the sharing Requirement 4.1 asks for, seen
+        # from the build system's side.
+        "${CMAKE_SOURCE_DIR}/tests"
+    )
+    target_link_libraries(multi_raft_driver_agreement_test PRIVATE httplib::httplib)
+    # The same transport wiring the benchmark suite gets. Not for coverage of
+    # the matrix — this case is transport-independent by construction — but
+    # because cpp-httplib's Raft path costs ~250 ms per committed operation
+    # here, and an identity test should not take minutes to prove something
+    # that has nothing to do with the transport.
+    kythira_wire_multi_raft_bench(multi_raft_driver_agreement_test)
+    set_tests_properties(multi_raft_driver_agreement_test PROPERTIES TIMEOUT 600)
+endif()
+
 add_test(NAME multi_raft_regression_tier
     COMMAND multi_raft_http_benchmark_test
             --run_test=multi_raft_http_benchmark/ci_regression_tier)
