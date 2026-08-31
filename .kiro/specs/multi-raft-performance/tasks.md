@@ -1572,6 +1572,34 @@ and the answer is currently no for every one of them.
     the cloud half — `kv_cluster_options::_data_dir` and the
     `KYTHIRA_BENCH_DATA_DIR` override, both wired and never exercised — has not
     run, so the volume class and IOPS Requirement 3.4 asks for are unreported
+  - **HANDOVER, August 31 2026 — the barrier half is delivered and this task's
+    blocker is now one item rather than two.**
+    `.kiro/specs/durable-append-barrier/` is complete: the barrier is taken at
+    the boundary where `node` advertises an append, group commit coalesces
+    concurrent appends behind one `fsync`, and `tick_batch_controller` is
+    removed. Re-running this axis unchanged on the development machine:
+
+    | mode | ops/sec | p50 | fsync/sec/host | entries/fsync | **barriered** | barriers | empty | entries |
+    |---|---:|---:|---:|---:|---:|---:|---:|---:|
+    | memory | 826.2 | 18.6 ms | 0.00 | 0.00 | 0.0% | 0 | 0 | 1200 |
+    | file/buffered (NOT DURABLE) | 575.8 | 26.9 ms | 0.00 | 0.00 | 0.0% | 0 | 1044 | 1200 |
+    | file/barrier | 164.1 | 95.6 ms | 128.99 | 1.27 | **100.0%** | 943 | 3 | 1202 |
+
+    **100% barriered**, against 19.9–24.5%. The case now *asserts* it rather
+    than printing it (Requirement 2.2 of that spec), and the cost is what the
+    design predicted in advance: a correct implementation is slower than the
+    one that was not doing the work. Read the barriered row against `buffered`
+    rather than against `memory` — that difference, 576 → 164 on this machine,
+    is the fsync and nothing else
+  - **This is a handover note, not a measurement.** The row above is Tier B on
+    a laptop SSD; it is here to record that the blocker moved, not to be
+    quoted. What this task still needs is unchanged and is now a single item:
+    **Tier C, i.e. the host binary**, which is
+    `.kiro/specs/multi-raft-host-binary/`. The volume class and IOPS
+    Requirement 3.4 asks for still require a cloud row against a provisioned
+    volume, and `entries/fsync` of 1.27 on four cores says nothing about what
+    group commit yields on a machine that can actually run appends
+    concurrently
   - _Requirements: 3.4, 3.5, 18.7_
 
 - [ ] 20. Shape 2 — Tier E, one host per instance

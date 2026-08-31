@@ -89,21 +89,33 @@ than the comparison claim being quietly narrowed to the tiers that were run.
 Shape 1 has been run on both an x64 and a Graviton instance (Requirement 18.12);
 Shape 2 has not.
 
-**Tier D has a second blocker, discovered by trying to build it**: the only
-barrier hook in the codebase fires inside `tick()`, and the appends it needs to
-cover do not. See the durability results below.
+**Tier D's second blocker — discovered by trying to build it, and since
+removed.** The only barrier hook in the codebase fired inside `tick()`, and the
+appends it needed to cover did not.
+`.kiro/specs/durable-append-barrier/` moved the barrier to the boundary where a
+node advertises an append; the durability axis now reports **100% of appended
+entries covered**, against the 19.9% and 24.5% recorded below. The paragraphs
+below are kept as measured and are marked where they have been superseded.
+Tier D remains undelivered, but for one reason rather than two: it still needs
+the host binary, and that is `.kiro/specs/multi-raft-host-binary/`.
 
 **Why C, D and E are not delivered.** All three need a process that hosts
 `multi_raft` and accepts client traffic — a binary in `cmd/`, of which
 `cmd/chaos_node` is the nearest precedent and not a substitute. That binary is
-Appendix B's third open question and it has not been built. Tier D additionally
-needs `file_persistence` plus `tick_batch_controller` wired into the benchmark
-harness, whose `persistence_engine_type` is currently a fixed
-`memory_persistence_engine` in `tests/multi_raft_transport_harness.hpp`. Neither
-is blocked on anything measured here; both are work that was not done.
+Appendix B's third open question, and it is now
+`.kiro/specs/multi-raft-host-binary/`. Tier D's additional requirement — a
+file-backed log that actually fsyncs — is **no longer outstanding**: the
+harness's `persistence_engine_type` takes a file-backed engine through
+`kv_cluster_options::_durability`, and the barrier is taken by `node` at the
+advertise boundary. What is left for Tier D is the host binary and nothing
+else.
 
 **One thing reading for Tier D did turn up, and it belongs in front of anyone
-sizing a durable deployment.** `tick_batch_controller`'s documentation used to
+sizing a durable deployment. It has since been fixed — see
+`.kiro/specs/durable-append-barrier/` — and is kept here because the sequence
+matters more than the conclusion: the claim was in a doc comment, it named real
+types, and only a search for `begin_batch()` call sites disproved it.**
+`tick_batch_controller`'s documentation used to
 say that without a controller, `tick()` falls back to per-group batching and
 pays one durability barrier per ready group. It does not: nothing in `include/`
 or `src/` calls `begin_batch()` except a conditional forwarder that nothing
@@ -474,18 +486,23 @@ that any of them is avoidable.
 5. **`node<Types>` serializes on one mutex per group**, and single-group
    throughput never rises with concurrency — it falls monotonically from one
    operation in flight.
-6. **The only durability barrier hook in the codebase fires on the wrong
-   thread.** `tick_batch_controller` opens and commits a batch inside one
-   `tick()` call, but proposals append on the caller's thread and follower
+6. **The only durability barrier hook in the codebase fired on the wrong
+   thread. FIXED.** `tick_batch_controller` opened and committed a batch inside
+   one `tick()` call, but proposals append on the caller's thread and follower
    appends on the RPC handler's. A controller supplied exactly as the header
-   describes covered 19.9% and 24.5% of appended entries in two runs. This is
-   the one item on this list that is closer to a defect than to a trade-off,
-   and it is stated as measured rather than diagnosed: nothing here establishes
-   what the intended contract was.
-7. **Nothing calls `begin_batch()` except that controller.** So a file-backed
-   log in a host whose caller supplies none is written to the page cache and
-   never fsynced at all — `buffered` mode, which Requirement 3.5 requires be
-   labelled not durable wherever it appears.
+   described covered 19.9% and 24.5% of appended entries in two runs. This was
+   the one item on this list closer to a defect than to a trade-off, and it was
+   stated as measured rather than diagnosed — nothing here established what the
+   intended contract was. `.kiro/specs/durable-append-barrier/` made that
+   decision: the barrier moved to the boundary where a node advertises an
+   append, `tick_batch_controller` was removed, and the axis reports 100%.
+7. **Nothing called `begin_batch()` except that controller. FIXED with the
+   above.** A file-backed log in a host whose caller supplied none was written
+   to the page cache and never fsynced at all. The `buffered` arm still exists
+   and is still labelled not durable, but it is now an explicit configuration —
+   `file_persistence_engine` constructed with barriers disabled, whose
+   `durability()` answers `buffered` — rather than the default a caller fell
+   into by omission.
 8. **`max_concurrent_connections` is inert in all three HTTP transports.**
    Declared, documented as an accept-time counter, read by nothing.
 
@@ -609,19 +626,27 @@ implemented here.
 1. **A host binary in `cmd/`.** Unblocks Tiers C, D and E simultaneously, which
    is every tier that could carry a like-for-like claim. It is the single
    highest-value item in this list and nothing else in it matters as much.
-2. **Move the durability barrier to where appends happen.** The measurement
-   above says a `tick_batch_controller` covers only a fifth of the log, because
-   proposals and follower appends do not run inside the tick's persist phase.
-   No amount of benchmark work reaches Tier D until this is decided, and it is
-   a decision about `node` and `multi_raft` rather than about a harness.
+2. ~~**Move the durability barrier to where appends happen.**~~ **DONE** —
+   `.kiro/specs/durable-append-barrier/`. The barrier is taken where a node
+   advertises an append: before a leader counts an entry toward `match_index`,
+   before a follower returns success. Group commit keeps it affordable, and the
+   durability axis reports 100% coverage where it reported 19.9–24.5%. The cost
+   on this development machine, at a 2 ms tick with four groups: 826 ops/sec on
+   memory, 576 buffered, 164 barriered — and the barriered row is the one that
+   is durable.
 3. **Then run the durability axis on a cloud instance, against a provisioned
    volume.** The rest of the harness half is done —
    `kv_cluster_options::_data_dir` already accepts one and nothing has used it
    — so this turns a laptop SSD's barrier cost into a stated volume class and
    IOPS. Cheap, and worth little until item 2.
-4. **Decide whether `tick()` should batch without a controller.** Separate from
-   the above and larger than it: today a multi-group host with a file-backed log
-   and no controller fsyncs once per appended entry. Whether that is the
+4. ~~**Decide whether `tick()` should batch without a controller.**~~
+   **ANSWERED: neither.** `tick()` does not batch and the controller is gone.
+   Batching a tick's writes cannot cover appends made on other threads, which
+   is the whole finding. The replacement is a barrier at the advertise boundary
+   with group commit underneath it, so concurrent appends share one `fsync`
+   without anything having to know about ticks. The original text follows,
+   because the question was the right one to ask and its framing is what led
+   to the answer. Whether that is the
    intended contract or an omission is a design question this measurement work
    is not entitled to answer.
 5. **Instrument the leader's send path.** Settles response-driven pacing and
