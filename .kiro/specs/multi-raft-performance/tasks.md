@@ -1413,9 +1413,70 @@ and the answer is currently no for every one of them.
     exit 1
   - _Requirements: 18.10, 18.11_
 
-- [ ] 18. Shape 1 on Graviton
+- [x] 18. Shape 1 on Graviton
   - The arm64 leg already exists in CI; a modern arm64 instance is its own point
     in the design space, not a portability check
+  - **Run on a `c7g.2xlarge` in `us-east-1d`** — Neoverse-V1, 8 vCPU, 15,665
+    MiB, kernel 7.0.0-1011-aws, aarch64, gp3 root at 3000 IOPS, "Up to 15
+    Gigabit", shared tenancy. Two repetitions of the same five-case filter the
+    x64 row used, both exit 0, torn down with a clean six-class audit. About
+    seventy minutes of instance life at $0.29/hr — **$0.34** — of which
+    fifty-five minutes was the build
+  - **The binary was built ON the instance, and that is a deliberate departure
+    from task 16's rule.** Shipping a prebuilt binary is preferred precisely so
+    the local-vs-cloud delta is hardware alone; there is no arm64 build host on
+    the development side of this project, so the Graviton row is either built
+    there or not measured. `run.json` records `binary_origin` so a reader can
+    tell the two modes apart, and the recipe is `ci.yml`'s step for step and
+    pin for pin — g++-13, Release, `configs/ci_full_defconfig`, the same pinned
+    vcpkg commit
+  - **Graviton is faster, and the margin GROWS with payload size** — which a
+    clock-speed difference would not do:
+
+    | value | c5.2xlarge r1 / r2 | c7g.2xlarge r1 / r2 | c7g/c5 |
+    |---:|---:|---:|---:|
+    | 16 B | 3636.3 / 3643.0 | 3770.0 / 3837.8 | 1.04 / 1.05x |
+    | 128 B | 3477.4 / 3515.8 | 3720.4 / 3770.2 | 1.07 / 1.07x |
+    | 1024 B | 2801.8 / 2782.8 | 3119.9 / 3120.1 | 1.11 / 1.12x |
+    | 2048 B | 2124.7 / 2110.1 | 2560.3 / 2511.7 | 1.21 / 1.19x |
+    | 4096 B | 1280.5 / 1218.5 | 1631.0 / 1577.3 | 1.27 / 1.29x |
+
+    A flat 1.05x would be a faster core; 1.04x rising monotonically to 1.29x is
+    a *per-byte* advantage, which points at the encode-and-copy path rather than
+    at instruction throughput. Not isolated here, and stated as a direction
+  - **The 4 KiB decline is shallower again**: 0.43 / 0.41x of the 16 B rate
+    against 0.35 / 0.33x on x64 and **0.047 / 0.039x** on the development
+    machine. Three machines now, and the cliff tasks 11a and 11b characterised
+    is visible on exactly one of them
+  - **The structural ratios are architecture-independent, which is the finding
+    that matters most.** Entries per AppendEntries is 4.45–4.86 on Graviton
+    against 4.44–4.83 on x64 and 4.03–4.89 locally — three machines, two
+    instruction sets, one value. RPCs per committed entry converges to
+    **2.09–2.10** on both cloud machines at a 20 ms tick (2.23 locally), against
+    a floor of two. Amplification at 16 B is 6.74–6.81 against 6.68–6.72
+  - **H6 replicates a third time**, at 1.34x against x64's 1.40x and the
+    development machine's 2.3x, with every percentile falling as the clock slows
+    and no floor at any cadence. The per-stream round interval is 0.70–0.88 ms
+    against 0.75–0.91 ms on x64 and 1.89–2.26 ms locally — it tracks the
+    machine, never the clock, on every machine tried
+  - **The routing bound is now the tightest it has ever been: ≤22.1 µs, at most
+    7.8% of one committed operation** (≤36.1 µs on the first run). Across three
+    machines and eight runs the two `submit_command` overloads have never
+    separated. Doctrine 107 holds and the bound keeps improving
+  - **CBOR/JSON amplification is 0.87–0.99**, and the case's own decision rule
+    reads "not encoded size" here as it does on x64. Task 11b's conclusion is
+    now known to be specific to the development machine on two independent cloud
+    machines rather than one
+  - **The serializer axis is within 3.3% at 128 B** — JSON 3683.0, CBOR 3803.0,
+    protobuf 3752.4, every row `stable` at 0.7–1.5% spread
+  - **Getting here found a bug that made this task impossible.**
+    `capture-provenance.sh` could never run on aarch64: `grep '^model name'
+    /proc/cpuinfo` matches nothing there, and under `set -o pipefail` that grep's
+    exit 1 killed the script even though the `sed` at the end of the pipe had
+    succeeded. The lscpu fallback on the next line was unreachable for the same
+    reason. It cost a fifty-five-minute build to find, because provenance ran
+    after the build; it now runs **before** it, so a failure of this kind costs
+    seconds
   - _Requirements: 18.6, 18.12_
 
 - [ ] 19. Tier D on a cloud instance

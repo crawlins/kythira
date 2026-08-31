@@ -70,6 +70,9 @@ than the comparison claim being quietly narrowed to the tiers that were run.
 | D | Tier C plus `file_persistence` in `barrier` mode against a real volume | **no**, and the durability axis below shows a second blocker beyond the tier | the only tier comparable to a durable number |
 | E | One host per machine or container | **no** | yes |
 
+Shape 1 has been run on both an x64 and a Graviton instance (Requirement 18.12);
+Shape 2 has not.
+
 **Tier D has a second blocker, discovered by trying to build it**: the only
 barrier hook in the codebase fires inside `tick()`, and the appends it needs to
 cover do not. See the durability results below.
@@ -107,16 +110,24 @@ rather than because nothing was measured.**
 
 Two, and the difference between them is a finding rather than a footnote.
 
-| | Development machine | Cloud instance (Shape 1) |
-|---|---|---|
-| CPU | Intel Core i5-6300U @ 2.40 GHz | Intel Xeon Platinum 8124M @ 3.00 GHz |
-| vCPU | 4 | 8 |
-| Memory | — | 15,502 MiB |
-| Kernel | — | 7.0.0-1011-aws |
-| Provider | none (workstation) | AWS `c5.2xlarge`, `us-east-1a`, shared tenancy |
-| Network (stated) | — | Up to 10 Gigabit |
-| Root volume | — | gp3, 3000 IOPS |
-| Quiet? | **no, never** | yes |
+| | Development machine | Shape 1, x64 | Shape 1, Graviton |
+|---|---|---|---|
+| CPU | Intel Core i5-6300U @ 2.40 GHz | Intel Xeon Platinum 8124M @ 3.00 GHz | Neoverse-V1 |
+| Architecture | x86_64 | x86_64 | aarch64 |
+| vCPU | 4 | 8 | 8 |
+| Memory | — | 15,502 MiB | 15,665 MiB |
+| Kernel | — | 7.0.0-1011-aws | 7.0.0-1011-aws |
+| Provider | none (workstation) | AWS `c5.2xlarge`, `us-east-1a`, shared | AWS `c7g.2xlarge`, `us-east-1d`, shared |
+| Network (stated) | — | Up to 10 Gigabit | Up to 15 Gigabit |
+| Root volume | — | gp3, 3000 IOPS | gp3, 3000 IOPS |
+| Binary | built here | **shipped from here** | **built on the instance** |
+| Quiet? | **no, never** | yes | yes |
+
+The x64 row ships the same Release ELF the local table was produced with, so
+its delta is hardware alone. The Graviton row cannot: there is no arm64 build
+host on the development side, so its binary was built on the instance from the
+same commit with `ci.yml`'s recipe. That is one more difference than the x64
+row carries and the artifact records which mode produced each.
 
 Machine provenance for every cloud row is captured on the instance itself by
 `scripts/perf-cloud/capture-provenance.sh` and travels with the artifact.
@@ -160,7 +171,9 @@ The same sweep on the development machine, from
 | 4096 B | 61 | 52 | **0.047 / 0.039x** | 30.96 | 35.69 |
 
 **The 4 KiB cliff is a property of the four-core development machine, not of
-this implementation.** On four cores the 4 KiB row collapses to about a
+this implementation**, and a third machine says so too — the Graviton row below
+declines to 0.43/0.41x where x64 reaches 0.35/0.33x and the development machine
+reaches 0.047/0.039x. On four cores the 4 KiB row collapses to about a
 twentieth of the 16 B row and entry-bearing rounds per commit rise 8.3–9.9x. On
 eight modern cores the same sweep declines smoothly to about a third, and rounds
 per commit rise 1.35–1.41x. Both measurements are correct; only one of them is
@@ -175,6 +188,35 @@ does not vanish either: **every committed entry still crosses the wire 6.6 to
 8.7 times per commit on the fast machine**, against a floor of two (one per
 follower). The blow-up to 62–76x is local; the baseline redundancy of roughly
 6.6x is not.
+
+### Graviton
+
+The same five-case sweep, same commit, on a `c7g.2xlarge`. Two repetitions.
+
+| value | c5.2xlarge r1 / r2 | c7g.2xlarge r1 / r2 | c7g/c5 |
+|---:|---:|---:|---:|
+| 16 B | 3636.3 / 3643.0 | 3770.0 / 3837.8 | 1.04 / 1.05x |
+| 128 B | 3477.4 / 3515.8 | 3720.4 / 3770.2 | 1.07 / 1.07x |
+| 1024 B | 2801.8 / 2782.8 | 3119.9 / 3120.1 | 1.11 / 1.12x |
+| 2048 B | 2124.7 / 2110.1 | 2560.3 / 2511.7 | 1.21 / 1.19x |
+| 4096 B | 1280.5 / 1218.5 | 1631.0 / 1577.3 | 1.27 / 1.29x |
+
+**Graviton is faster and the margin grows monotonically with payload size**,
+1.04x at 16 B to 1.29x at 4 KiB. A faster core would show a flat factor; a
+margin that scales with bytes points at the encode-and-copy path rather than at
+instruction throughput. This comparison does not isolate that, and the
+direction is what is claimed.
+
+**The structural ratios do not move across the instruction set.** Entries per
+AppendEntries is 4.45–4.86 on Graviton against 4.44–4.83 on x64 and 4.03–4.89
+on the development machine — three machines, two architectures, one value. RPCs
+per committed entry converges to 2.09–2.10 on both cloud machines at a 20 ms
+tick, against a floor of two. Write amplification at 16 B is 6.74–6.81 against
+6.68–6.72.
+
+**The routing bound reaches its tightest here: ≤22.1 µs, at most 7.8% of one
+committed operation.** Across three machines and eight runs the two
+`submit_command` overloads have never separated.
 
 ### The tick cadence
 
@@ -382,10 +424,10 @@ Requirement 11.3. Each verdict, and the number behind it.
 |---|---|---|---|
 | H1 | No proposal batching — one call, one entry, one round | **REFUTED as stated** | 1.03 entries/AppendEntries at one in flight; 29.5 at 64 uniform, 48.7 Zipfian. Batching is real; nothing configures it. The mechanism task 8 named for it ("tick-driven") is itself refuted — see H6 |
 | H2 | Replication rounds are not deduplicated | **REFUTED on concurrency, CONFIRMED on the tick and on value size** | 3.74–6.64 RPCs/commit across a 64-fold concurrency range (does not track N); 5.41 → 2.23 over a twentyfold tick sweep; 6.6–8.7 entry-sends per commit on cloud hardware and 9–76x locally |
-| H3 | JSON on the wire costs, a little at small values | **CONFIRMED, with a hardware caveat this document adds** | Encodings within 2.2% at 128 B on both machines. CBOR is 2.5–5.3x faster at 4 KiB *on four cores* and 1.4–1.5x on eight. The effect is real; its size is a property of the machine |
+| H3 | JSON on the wire costs, a little at small values | **CONFIRMED, with a hardware caveat this document adds** | Encodings within 2.2% (x64) and 3.3% (Graviton) at 128 B. CBOR is 2.5–5.3x faster at 4 KiB *on four cores* and 1.4–1.5x on eight, on both cloud architectures. The effect is real; its size is a property of the machine |
 | H4 | The log is JSON lines and lives entirely in memory | **HALF CONFIRMED — the encode cost is measured, the memory growth is not** | A file-backed log with no fsync anywhere in it costs **~33% of throughput** against memory persistence and ~40% more p50, over three runs. That is the JSON-line append, priced. The `std::map` the same class keeps alongside it is untouched by any measurement here |
 | H5 | Reads transfer whole state | **CONFIRMED, linear to three figures** | 146.08 / 146.01 / 146.00 bytes per key at 100 / 1000 / 5000 keys, independently corroborated at 146.03 by a differently-configured row |
-| H6 | The tick sets a latency floor | **REFUTED, in the opposite direction** | Every percentile *falls* as the clock slows, on both machines. p50 at a 20 ms tick is 9.4 ms locally and 3.75 ms on cloud hardware — in both cases well under the tick period. No floor at any cadence |
+| H6 | The tick sets a latency floor | **REFUTED, in the opposite direction, on three machines** | Every percentile *falls* as the clock slows. p50 at a 20 ms tick is 9.4 ms locally, 3.75 ms on x64 cloud and 3.6 ms on Graviton — in every case well under the tick period. The effect is 2.3x, 1.40x and 1.34x respectively. No floor at any cadence anywhere |
 | H7 | Per-group locking is coarse | **CONFIRMED, and the cap is lower than the wording suggests** | Hot-group throughput never rises: 1460.5 → 1403.9 → 1221.1 → 513.1 ops/sec from 1 to 64 in flight. At one in flight the hot group *beats* the spread cluster; the ordering inverts by 64 |
 
 ## The comparison
