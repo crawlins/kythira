@@ -122,12 +122,16 @@ while every host shared one process:
    cause is queueing at the host and not consensus inside it. The same
    configuration with `--data-threads 32` gives 1155–1397 at a 13.9% spread.
 
-**Tier E was run and is not claimed.** Three rootless-Podman containers on one
-machine, driver outside every container: 335.4 ops/sec, 11.8% spread, zero
-elections, 200 of 200 completed. Over the 10% bar, so Requirement 6.3 keeps it
-out of the table below — and it is **not N machines** in any case: containers on
-one host share a kernel, a scheduler and a memory bus, and a Tier E number
-should be read with the placement, which the row carries verbatim.
+**Tier E was run under two container networking models and is not claimed under
+either.** Driver outside every container in both cases: rootless Podman gave
+335.4 ops/sec at an 11.8% spread with zero elections, and rootful Podman
+(netavark bridge) gave 408.7 at 84.5% with one of five windows containing an
+election. Both are over the 10% bar, so Requirement 6.3 keeps them out of the
+table below, and the pair is **not** a comparison of the two models — they were
+not taken under comparable load. It is **not N machines** in any case:
+containers on one host share a kernel, a scheduler and a memory bus, and a
+Tier E number should be read with its placement, which every row carries
+verbatim.
 
 **Tier D's second blocker — discovered by trying to build it, and since
 removed.** The only barrier hook in the codebase fired inside `tick()`, and the
