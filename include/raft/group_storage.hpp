@@ -205,6 +205,40 @@ public:
         _engine.abort_batch();
     }
 
+    // ── barriered_persistence_engine, conditionally ──────────────────────────
+    //
+    // Forwarded for the same reason the batching methods are: so that
+    // `barriered_persistence_engine<group_scoped_persistence<E, G>>` holds
+    // exactly when it holds of `E`. Without this a group-scoped store would
+    // silently lose the barrier, and `node` would fall back to the
+    // no-barrier path — which is the shape of the defect
+    // `.kiro/specs/durable-append-barrier/` exists to remove, reintroduced by
+    // a wrapper.
+
+    auto append_log_entry_sequenced(const log_entry_t& entry) -> write_sequence
+    requires barriered_persistence_engine<Engine>
+    {
+        return _engine.append_log_entry_sequenced(entry);
+    }
+
+    auto barrier_through(write_sequence seq) -> void
+    requires barriered_persistence_engine<Engine>
+    {
+        _engine.barrier_through(seq);
+    }
+
+    [[nodiscard]] auto durable_through() const -> write_sequence
+    requires barriered_persistence_engine<Engine>
+    {
+        return _engine.durable_through();
+    }
+
+    [[nodiscard]] auto durability() const -> durability_class
+    requires barriered_persistence_engine<Engine>
+    {
+        return _engine.durability();
+    }
+
 private:
     GroupId _group;
     Engine _engine;

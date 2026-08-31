@@ -94,7 +94,6 @@ struct tick_report {
     std::size_t _ready_count{0};        ///< Groups driven this tick.
     std::size_t _hibernating_count{0};  ///< Groups skipped because they are hibernating.
     std::size_t _total_count{0};        ///< Groups in the registry.
-    std::size_t _batch_size{0};         ///< Groups covered by one durability barrier.
 
     std::chrono::nanoseconds _persist_duration{};
     std::chrono::nanoseconds _send_duration{};
@@ -124,62 +123,37 @@ enum class hibernation_mode : std::uint8_t {
     auto_above_group_count = 2,
 };
 
-/// @brief One durability barrier spanning every ready group's persist phase.
-///
-/// Supplied by a caller whose engine spans groups (one store with a
-/// group-prefixed key space, say), and it is the ONLY thing in this codebase
-/// that opens a batch. Nothing else calls `begin_batch()` — not `tick()`, not
-/// `node`, not `group_scoped_persistence`, whose conditional forwarders exist
-/// so that a controller can reach through them. Without a controller there is
-/// no batching at all.
-///
-/// For `file_persistence_engine` that is not merely slower, it is **not
-/// durable**: `append_log_entry` outside a batch calls `append_to_log_file`,
-/// which flushes the `ofstream` and stops. `sync_log_and_directory()` — the
-/// only fsync on the log path — is called from `commit_batch()` and from
-/// nowhere else. So a multi-group host with a file-backed log and no
-/// controller writes its log to the page cache and never issues a barrier at
-/// all, which is the `buffered` mode Requirement 3.5 of
-/// .kiro/specs/multi-raft-performance/ insists be labelled "not durable"
-/// wherever it appears.
-///
-/// Those two paragraphs replace an earlier one which said `tick()` "falls back
-/// to per-group batching through `batched_persistence_engine`", collapsing
-/// each group's appends into one barrier per ready group. No such fallback is
-/// implemented; the claim was found to be false while
-/// .kiro/specs/multi-raft-performance/ task 19 was reading this file for a
-/// durable benchmark tier. It was the most reassuring possible way to be
-/// wrong — it named a real concept, in a real header, describing behaviour a
-/// reader would have had to go looking for `begin_batch()` call sites to
-/// disprove. Building the fallback is a behaviour change and is deliberately
-/// not made here.
-///
-/// The constraint the original comment was reaching for is still real and
-/// still worth stating: a single barrier for N groups requires a store that
-/// spans N groups, and no wrapper can manufacture one from N independent
-/// engines. A caller holding N independent engines can supply a controller
-/// that fans out across them, but that is N barriers wearing one name.
-///
-/// **And a supplied controller does not make a host durable, which is a
-/// sharper limit than the one above.** The batch opens and closes inside one
-/// `tick()` call, around the persist phase — but a proposal appends to the
-/// leader's log on the CALLER's thread, and a follower appends on its RPC
-/// handler's thread. Neither runs inside that window. Measured on this
-/// project's own benchmark with a controller supplied exactly as described
-/// here, a barrier covered **19.9% and 24.5%** of appended entries in two
-/// independent runs; the rest reached the page cache and stopped. See
-/// .kiro/specs/multi-raft-performance/ task 19. Covering every append needs
-/// the barrier at the append site rather than around the tick, which is a
-/// design decision this comment records and does not make.
-struct tick_batch_controller {
-    std::function<void()> _begin;
-    std::function<void()> _commit;
-    std::function<void()> _abort;
-
-    [[nodiscard]] auto valid() const -> bool {
-        return static_cast<bool>(_begin) && static_cast<bool>(_commit) && static_cast<bool>(_abort);
-    }
-};
+// `tick_batch_controller` used to live here: a caller-supplied
+// `{begin, commit, abort}` triple that `tick()` wrapped around its persist
+// phase, so that one durability barrier would span every ready group.
+//
+// **It was removed by `.kiro/specs/durable-append-barrier/` task 7, and the
+// reason is worth keeping.** It could not do what its name said, for a reason
+// that had nothing to do with how it was written. A batch is a property of one
+// *thread's* sequence of writes, and `tick()` runs on the host's driver
+// thread — while a proposal appends on the client's thread and a follower
+// appends on its transport's handler thread. A batch opened on one thread
+// cannot capture writes made on another except by accident of timing, and the
+// accident was measured: with a controller supplied exactly as this comment
+// used to describe, a barrier covered **19.9% and 24.5%** of appended entries
+// in two independent runs (`.kiro/specs/multi-raft-performance/` task 19).
+//
+// It was also unsafe rather than merely incomplete. An append arriving on an
+// RPC thread while the tick held a batch open was silently buffered into that
+// batch and became durable only when the tick committed — after
+// `handle_append_entries` had already returned success.
+//
+// The barrier now lives where the node **advertises** an append: before a
+// leader counts an entry toward `match_index`, and before a follower returns
+// success. Those are response boundaries rather than append sites, which is
+// what makes group commit possible — several appends can pile up between the
+// write and the response, and one `fsync` serves all of them. See
+// `node::settle_barrier` and `file_persistence_engine::barrier_through`.
+//
+// `batched_persistence_engine` (include/raft/group_storage.hpp) stays. The
+// group-commit writer still needs "flush these bytes, then one barrier" from
+// an engine, which is what `commit_batch()` already is. What changed is who
+// calls it and when.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Partitioning
@@ -459,9 +433,6 @@ struct multi_raft_config {
     /// decays faster. One degenerates to "everything since the last policy
     /// tick", which is legitimate but coarse.
     std::size_t latency_window_count{latency_digest::k_default_windows};
-
-    /// One barrier per tick instead of one per ready group; see the type's docs.
-    std::optional<tick_batch_controller> batch_controller{};
 
     /// Where the host's own durable state lives (shard map, tombstones).
     /// Empty means the host keeps them in memory only.

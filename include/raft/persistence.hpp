@@ -8,11 +8,103 @@
 
 #include "fault_injection.hpp"
 #include "types.hpp"
+#include <cstdint>
 #include <optional>
+#include <string_view>
 #include <vector>
 #include <unordered_map>
 
 namespace kythira {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The durability barrier (`.kiro/specs/durable-append-barrier/`)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief A monotonically increasing count of writes an engine has accepted.
+///
+/// Not a log index. Two different entries can be written at one index (a
+/// follower overwriting a conflicting suffix) and both writes have to be
+/// orderable against a barrier, which an index cannot express. It is also not
+/// per-group: the whole point of group commit is that one `fsync` covers every
+/// write an engine took, whoever asked for it.
+using write_sequence = std::uint64_t;
+
+/// @brief What a configuration is entitled to call itself.
+///
+/// Requirement 5.4 of `.kiro/specs/durable-append-barrier/`: an engine that
+/// cannot take a barrier must be *detectable*, so that a configuration using
+/// one is refused the word durable rather than assumed optimistic. The three
+/// values are exactly the three the benchmark's durability axis reports, and
+/// two of them are not durable.
+enum class durability_class : std::uint8_t {
+    /// Nothing survives the process. `memory_persistence_engine`.
+    none = 0,
+    /// Bytes reach the operating system and no barrier is ever taken. Survives
+    /// a process crash, loses everything to a power cut. **Not durable**, and
+    /// labelled so wherever it appears.
+    buffered = 1,
+    /// Every advertised append is covered by a barrier before it is advertised.
+    barrier = 2,
+};
+
+[[nodiscard]] inline auto to_string(durability_class c) -> std::string_view {
+    switch (c) {
+        case durability_class::none:
+            return "none";
+        case durability_class::buffered:
+            return "buffered";
+        case durability_class::barrier:
+            return "barrier";
+    }
+    return "unknown";
+}
+
+/// @brief Optional extension: an engine that can separate "write these bytes"
+///        from "make everything through sequence S durable".
+///
+/// `commit_batch()` fuses the two, which is why it cannot serve the append
+/// path: the writer needs to hand over bytes on one thread and wait for
+/// somebody's barrier on another. Splitting them is what makes group commit
+/// possible at all.
+///
+/// Detected with `if constexpr`, never required. An engine without it keeps
+/// exactly the behaviour it has today — `node` calls plain
+/// `append_log_entry()` — and `describes_durable_storage()` then refuses to
+/// call a configuration using it durable.
+///
+/// **The ordering rule an implementation must honour**, restated wherever this
+/// is implemented: the sequence is assigned under the same lock that writes
+/// the bytes, and a barrier samples the highest sequence it will claim
+/// **before** it makes the syscall and publishes it **after**. Sampling after
+/// would credit the barrier with writes that raced in while it was running —
+/// writes the syscall never saw.
+template<typename P>
+concept barriered_persistence_engine =
+    requires(P& p, const typename P::log_entry_t& entry, write_sequence seq) {
+        /// Append `entry` and return the sequence assigned to its bytes.
+        { p.append_log_entry_sequenced(entry) } -> std::same_as<write_sequence>;
+        /// Block until a barrier has covered every write through `seq`.
+        /// Throws if the barrier fails; see Requirement 1.5.
+        { p.barrier_through(seq) } -> std::same_as<void>;
+        /// The highest sequence a completed barrier has covered.
+        { p.durable_through() } -> std::same_as<write_sequence>;
+        /// What this engine, as configured, is entitled to claim.
+        { p.durability() } -> std::same_as<durability_class>;
+    };
+
+/// @brief Whether a configuration built on `engine` may be described as durable.
+///
+/// Requirement 5.4: the answer for an engine that does not implement the
+/// extension is **no**, not "probably". A missing barrier is not an omission
+/// to be read charitably — it is the defect this spec exists to remove.
+template<typename P> [[nodiscard]] auto describes_durable_storage(P& engine) -> bool {
+    if constexpr (barriered_persistence_engine<P>) {
+        return engine.durability() == durability_class::barrier;
+    } else {
+        (void)engine;
+        return false;
+    }
+}
 
 /// @brief Concept for a durable Raft-state store.
 ///
@@ -100,10 +192,34 @@ public:
     auto load_voted_for() -> std::optional<NodeId> { return _voted_for; }
 
     auto append_log_entry(const log_entry_t& entry) -> void {
+        (void)append_log_entry_sequenced(entry);
+    }
+
+    // ── barriered_persistence_engine ─────────────────────────────────────────
+    //
+    // Implemented so that `node` takes the same code path for a memory engine
+    // as for a file-backed one, and Requirement 5.1 is met by construction
+    // rather than by a branch: the barrier here is an empty function over an
+    // integer compare, so a memory-backed row pays nothing for a durability
+    // feature it cannot use.
+    //
+    // `durability()` still answers `none`. A no-op barrier is not durability,
+    // and Requirement 5.4 forbids reading it as though it were — this engine
+    // reports 100% barrier *coverage* and no durability at all, which are two
+    // different questions and both answers are true.
+
+    auto append_log_entry_sequenced(const log_entry_t& entry) -> write_sequence {
         fiu_do_on("raft/persistence/append_log_entry",
                   throw std::runtime_error("chaos: append_log_entry"););
         _log[entry.index()] = entry;
+        return ++_write_seq;
     }
+
+    auto barrier_through(write_sequence) -> void {}
+
+    [[nodiscard]] auto durable_through() const -> write_sequence { return _write_seq; }
+
+    [[nodiscard]] auto durability() const -> durability_class { return durability_class::none; }
 
     auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
         auto it = _log.find(index);
@@ -174,6 +290,9 @@ private:
     std::optional<NodeId> _voted_for;
     std::unordered_map<LogIndex, log_entry_t> _log;
     std::optional<snapshot_t> _snapshot;
+    /// Assigned under the caller's serialisation (`node`'s mutex), like every
+    /// other member here — this engine has never been internally synchronised.
+    write_sequence _write_seq{0};
 };
 
 }  // namespace kythira
