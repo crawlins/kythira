@@ -989,9 +989,66 @@ the harness to be rewritten.
    cause instead of fixing it: the cpp-httplib row's 24-operation budget
    (Requirement 10 below), the 2000-4000 ms benchmark election timeout the
    design justifies by this round trip, and the serializer sweep that skips
-   cpp-httplib entirely. All three are now revisitable. **None was revisited in
-   the change that made them revisitable**, because a fix and a re-tune landing
-   together leaves nobody able to say which produced the difference
+   cpp-httplib entirely. None was revisited in the change that removed their
+   cause, because a fix and a re-tune landing together leave nobody able to say
+   which produced the difference.
+
+   **All three were then revisited, separately, and they did not all go the
+   same way.**
+
+   **The budget: removed.** The cpp-httplib row runs the same 592 operations at
+   the same sixteen in flight as the other two, and its floor moves from 0.2 to
+   20 ops/sec — 0.2 was set when the row managed single digits, and leaving it
+   would let a thousand-fold regression pass. The axis is a **comparison** for
+   the first time: Requirement 11 asks that everything but the swept axis be
+   held identical, and three rows at two concurrencies held nothing identical.
+
+   | transport | ops/sec | p50 | verdict |
+   |---|---:|---:|---|
+   | cpp-httplib | 507.6 | 35.2 ms | UNSTABLE (13.8%) |
+   | beast | 865.6 | 16.7 ms | stable (9.7%) |
+   | proxygen | 976.7 | 15.5 ms | stable (7.1%) |
+
+   cpp-httplib is **1.7x** slower than Beast, not two orders of magnitude. What
+   is left is the blocking sequential round trip this suite has always
+   described, and it is now a number rather than an adjective.
+
+   **The election timeout: kept, with a live reason replacing a dead one.**
+   Lowering it to 600-1200 ms with a 150 ms heartbeat was measured rather than
+   argued: nothing elected in fifteen windows, so the tighter timing is *safe* —
+   and H2 (RPCs per committed entry) moved from 3.99 to 4.38 on Beast and 3.99
+   to 4.19 on Proxygen, while H1 did not move at all. H2 is the quantity this
+   spec has tracked across three machines and two cloud vendors and found
+   converging on 2.10; moving it by a configuration change would cost every
+   comparison against those rows. **And nothing in this suite fails a leader**,
+   so faster failover is a benefit none of these numbers would show. Paying a
+   real cost in comparability for a benefit no row measures is the wrong trade.
+
+   **The serializer sweep: cpp-httplib promoted from disqualified to
+   first-class.** The axis runs on **two** transports now, and that is the point
+   rather than a bonus — an encoding effect that appears on one transport and
+   not on another is a transport effect wearing an encoding's name, and this
+   axis could not tell those apart while it had one transport. The first run
+   suggests exactly such a case:
+
+   | transport | JSON | CBOR | protobuf | CBOR/JSON | protobuf/JSON |
+   |---|---:|---:|---:|---:|---:|
+   | cpp-httplib | 497.7 | 1622.2 | 1653.9 | **3.26x** | **3.32x** |
+   | beast | 899.5 | 1042.1 | 909.6 | **1.16x** | **1.01x** |
+
+   **The protobuf row is what makes that readable, and it is the reason both
+   transports carry every serializer rather than one carrying a subset.** With
+   CBOR alone the 3.26x could have been a CBOR quirk. A second, unrelated binary
+   encoding landing on 3.32x on the same transport and 1.01x on the other says
+   the axis is not about the encoding's identity at all — it is encoded size
+   meeting a transport whose round trips are sequential. On an async transport
+   that pipelines, the same size reduction buys almost nothing.
+
+   **Still not a finding.** Only the two CBOR rows are `stable` (5.6% and 5.7%);
+   both JSON baselines are UNSTABLE at 11.7% and 13.9% on a machine that was not
+   quiet, and Requirement 6.3 keeps such rows out of every comparison — a ratio
+   is no more quotable than its denominator. It is recorded as the question the
+   axis is now able to ask, and as the shape of the answer it is pointing at
 10. WHEN operation budgets differ between rows — as they must, since a row at
     ~83 ms per round trip cannot carry the same budget as one at ~250 µs — THEN
     the system SHALL keep throughput comparable (it is a rate) and SHALL report

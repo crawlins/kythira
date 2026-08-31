@@ -360,23 +360,23 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_transport,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
     BOOST_TEST_MESSAGE("write throughput, 128B values, JSON on the wire:");
 
-    // cpp-httplib: 24 operations at four in flight. The budget is small because
-    // at ~83ms per round trip a full-sized one took tens of seconds — and that
-    // round trip was Nagle, which `tcp_nodelay` now defaults away (see this
-    // file's header). **The budget and the concurrency are deliberately left
-    // where they were in this change**: raising them moves the row being
-    // measured, and a fix and a re-tune landing together leave nobody able to
-    // say which produced the difference. The floor stays for the same reason —
-    // it is a floor, and a row clearing it by three orders of magnitude is the
-    // result rather than a reason to move it.
+    // cpp-httplib now runs the **same budget and the same concurrency** as the
+    // other two, and that is the whole point of this row.
     //
-    // Note what that leaves: this row runs four operations in flight while the
-    // two below run sixteen, so the three are **not** a comparison with each
-    // other (Requirement 11 asks that everything but the swept axis be held
-    // identical). Making this axis honest is now possible and is follow-on
-    // work.
-    std::ignore = measure<cpp_httplib_transport<json>>(
-        {._operations = 24, ._in_flight = 4, ._floor_ops_per_second = 0.2});
+    // It ran 24 operations at four in flight for as long as its round trip was
+    // ~83 ms — a full-sized budget took tens of seconds. That round trip was
+    // Nagle, and `tcp_nodelay` removed it. Until this change the axis was
+    // therefore not a comparison at all: Requirement 11 asks that everything
+    // but the swept axis be held identical, and three rows at two different
+    // concurrencies hold nothing identical. The axis compares transports now.
+    //
+    // The floor moves with it, from 0.2 to 20. 0.2 was chosen when the row was
+    // expected to manage single digits; leaving it there would mean a row that
+    // had regressed by a factor of a thousand still passed. 20 is an order of
+    // magnitude below the 369.4 measured here, which is what a floor is for —
+    // it catches a cluster that elected and then committed almost nothing, and
+    // nothing else.
+    std::ignore = measure<cpp_httplib_transport<json>>({._floor_ops_per_second = 20.0});
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
     std::ignore =
@@ -401,6 +401,36 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
     BOOST_TEST_MESSAGE("write throughput by wire serializer, 128B values:");
 
+    // **cpp-httplib carries this axis now, and did not before.**
+    //
+    // The sweep used to run on Beast alone, with a comment explaining that
+    // cpp-httplib's ~83 ms round trip dwarfed every encoding difference — the
+    // rows would have measured Nagle rather than the serializer. That was
+    // correct, and `tcp_nodelay` removed the reason: the same transport
+    // measures a 9.8 ms p50, and an encoding difference is now a visible
+    // fraction of a round trip rather than noise on top of a tenth of a second.
+    //
+    // Running it on **two transports** is the point rather than a bonus.
+    // Hypothesis H3 is about the encoding, and an encoding effect that appears
+    // on one transport and not on another is a transport effect wearing an
+    // encoding's name. Until now this axis could not tell those apart, because
+    // it only ever had one transport to look at.
+    std::ignore = measure<cpp_httplib_transport<json>>({._floor_ops_per_second = 20.0});
+    std::ignore = measure<cpp_httplib_transport<cbor>>({._floor_ops_per_second = 20.0});
+#if defined(KYTHIRA_BENCH_HAS_PROTOBUF)
+    // Nothing about protobuf is transport-specific — the fixture is templated
+    // on the serializer exactly as Beast's is, and the harness gates protobuf
+    // nowhere. Carrying it on both transports is what lets the JSON/CBOR
+    // spread below be read as an encoding effect rather than a binary-versus-
+    // text one: protobuf is the second binary encoding, and if the effect were
+    // about binary framing it would show here too.
+    std::ignore = measure<cpp_httplib_transport<kythira::protobuf_serializer>>(
+        {._floor_ops_per_second = 20.0});
+#else
+    BOOST_TEST_MESSAGE(
+        "  cpp-httplib protobuf row: NOT RUN (KYTHIRA_BENCH_HAS_PROTOBUF undefined)");
+#endif
+
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
     std::ignore =
         measure<kythira::testing::beast_http_transport<json>>({._floor_ops_per_second = 5.0});
@@ -424,21 +454,13 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer,
         "CONFIG_ION_SERIALIZER)");
 #endif
 #else
-    // Without Beast the serializer axis would have to ride on cpp-httplib.
-    // That used to be disqualifying — its ~83 ms round trip dwarfed any
-    // encoding difference, so the sweep would have measured Nagle rather than
-    // the serializer — and `tcp_nodelay` removed the reason: the same row is
-    // 32x faster and its round trip is ~9.8 ms rather than ~252 ms.
-    //
-    // **Still not run, and deliberately.** Enabling an axis that has never been
-    // measured on this transport, in the same change that made it possible, is
-    // how a fix and an unvalidated new row become indistinguishable. It is a
-    // one-line change for whoever takes the before-and-after.
+    // A build without Beast is no longer a build without this axis. It used to
+    // report the whole sweep as unmeasured, which is Requirement 13.4's failure
+    // one level up — a shorter, entirely plausible table with an axis missing
+    // rather than a row.
     BOOST_TEST_MESSAGE(
-        "  serializer sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined). "
-        "cpp-httplib could now carry this axis — `tcp_nodelay` removed the "
-        "~83ms round trip that used to disqualify it — but enabling it here "
-        "would land an unvalidated row inside the change that enabled it");
+        "  beast rows: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined). The "
+        "cpp-httplib rows above carry the axis.");
 #endif
 }
 

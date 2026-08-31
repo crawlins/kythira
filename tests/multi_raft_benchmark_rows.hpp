@@ -59,11 +59,40 @@ namespace kythira::testing {
 /// axis under test, so these are constants rather than per-transport tuning.
 ///
 /// The election timings are deliberately far more generous than the fabric
-/// suites use. On cpp-httplib a single tick's send phase blocks for one ~83 ms
-/// round trip per follower per stripe, so a 300 ms election timeout — fine over
-/// an in-process fabric — would have followers timing out on a leader that is
-/// merely mid-heartbeat. Four stripes for four groups keeps each stripe to one
-/// group's worth of blocking I/O per tick.
+/// suites use. Four stripes for four groups keeps each stripe to one group's
+/// worth of blocking I/O per tick.
+///
+/// **The reason these numbers are what they are has changed, and the numbers
+/// have not.** They were chosen because a cpp-httplib tick's send phase blocked
+/// for one ~83 ms round trip per follower per stripe, so a 300 ms election
+/// timeout — fine over an in-process fabric — would have had followers timing
+/// out on a leader that was merely mid-heartbeat. That round trip was Nagle and
+/// is gone: `tcp_nodelay` defaults to `true` and the same row measures a 9.8 ms
+/// p50.
+///
+/// So the old justification was retired and the values were **measured** rather
+/// than inherited. Lowering them to 600–1200 ms with a 150 ms heartbeat, and
+/// re-running the transport axis:
+///
+/// | | 2000–4000 / 400 ms | 600–1200 / 150 ms |
+/// |---|---:|---:|
+/// | elections | 0 of 15 windows | 0 of 15 windows |
+/// | H1 entries/AppendEntries (beast) | 4.64 | 4.64 |
+/// | **H2 RPCs/committed entry (beast)** | **3.99** | **4.38** |
+/// | H2 RPCs/committed entry (proxygen) | 3.99 | 4.19 |
+///
+/// The tighter timing is *safe* — nothing elected in fifteen windows — and it
+/// is **not free**. A 2.7x faster heartbeat adds heartbeat AppendEntries the
+/// commits did not need, and H2 moves about 10%. H2 is the quantity this
+/// project has tracked across three machines and two cloud vendors and found
+/// converging on 2.10; moving it by a configuration change would cost every
+/// comparison against those rows. H1 does not move at all.
+///
+/// **And nothing here measures what a shorter election timeout buys.** No row
+/// in this suite fails a leader, so faster failover is a property none of these
+/// numbers would show. Paying a real cost in comparability for a benefit no row
+/// measures is the wrong trade, so the values stay — now for a reason that is
+/// true today rather than one that expired.
 inline auto standard_cluster_options() -> kv_cluster_options {
     kv_cluster_options options;
     options._nodes = 3;
