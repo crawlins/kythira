@@ -126,18 +126,23 @@ rather than because nothing was measured.**
 
 Two, and the difference between them is a finding rather than a footnote.
 
-| | Development machine | Shape 1, x64 | Shape 1, Graviton |
-|---|---|---|---|
-| CPU | Intel Core i5-6300U @ 2.40 GHz | Intel Xeon Platinum 8124M @ 3.00 GHz | Neoverse-V1 |
-| Architecture | x86_64 | x86_64 | aarch64 |
-| vCPU | 4 | 8 | 8 |
-| Memory | — | 15,502 MiB | 15,665 MiB |
-| Kernel | — | 7.0.0-1011-aws | 7.0.0-1011-aws |
-| Provider | none (workstation) | AWS `c5.2xlarge`, `us-east-1a`, shared | AWS `c7g.2xlarge`, `us-east-1d`, shared |
-| Network (stated) | — | Up to 10 Gigabit | Up to 15 Gigabit |
-| Root volume | — | gp3, 3000 IOPS | gp3, 3000 IOPS |
-| Binary | built here | **shipped from here** | **built on the instance** |
-| Quiet? | **no, never** | yes | yes |
+| | Development machine | Shape 1, AWS x64 | Shape 1, Graviton | Shape 1, GCP |
+|---|---|---|---|---|
+| CPU | Intel Core i5-6300U @ 2.40 GHz | Intel Xeon Platinum 8124M @ 3.00 GHz | Neoverse-V1 | Intel Xeon @ 2.80 GHz |
+| Architecture | x86_64 | x86_64 | aarch64 | x86_64 |
+| vCPU | 4 | 8 | 8 | 8 |
+| Memory | — | 15,502 MiB | 15,665 MiB | 32,090 MiB |
+| Kernel | — | 7.0.0-1011-aws | 7.0.0-1011-aws | 6.17.0-1022-gcp |
+| Provider | none (workstation) | AWS `c5.2xlarge`, `us-east-1a`, shared | AWS `c7g.2xlarge`, `us-east-1d`, shared | GCP `n2-standard-8`, `us-central1-a`, shared |
+| Network (stated) | — | Up to 10 Gigabit | Up to 15 Gigabit | not stated by the provider |
+| Boot volume | — | gp3, 3000 IOPS | gp3, 3000 IOPS | pd-balanced |
+| Binary | built here | **shipped from here** | **built on the instance** | **shipped from here** |
+| Quiet? | **no, never** | yes | yes | yes |
+
+The GCP row carries 32 GiB against the AWS rows' 16, because `n2-standard-8`
+has a fixed 4 GiB-per-vCPU ratio and there is no 16 GiB variant at 8 vCPU. This
+workload's resident set is far below either, so it is recorded as a difference
+rather than treated as one.
 
 The x64 row ships the same Release ELF the local table was produced with, so
 its delta is hardware alone. The Graviton row cannot: there is no arm64 build
@@ -233,6 +238,45 @@ tick, against a floor of two. Write amplification at 16 B is 6.74–6.81 against
 **The routing bound reaches its tightest here: ≤22.1 µs, at most 7.8% of one
 committed operation.** Across three machines and eight runs the two
 `submit_command` overloads have never separated.
+
+### The second provider
+
+Same five-case sweep, same shipped binary, on a GCP `n2-standard-8`. Two
+repetitions.
+
+| value | c5.2xlarge | c7g.2xlarge | n2-standard-8 |
+|---:|---:|---:|---:|
+| 16 B | 3636.3 / 3643.0 | 3770.0 / 3837.8 | 3180.2 / 3156.9 |
+| 128 B | 3477.4 / 3515.8 | 3720.4 / 3770.2 | 3137.0 / 3081.2 |
+| 1024 B | 2801.8 / 2782.8 | 3119.9 / 3120.1 | 2531.7 / 2574.0 |
+| 2048 B | 2124.7 / 2110.1 | 2560.3 / 2511.7 | 1981.1 / 2004.9 |
+| 4096 B | 1280.5 / 1218.5 | 1631.0 / 1577.3 | 1265.9 / 1283.5 |
+
+**The rates differ and the ratios do not, which is the finding.** Three cloud
+machines, two providers, two instruction sets:
+
+| quantity | local (4 core) | AWS x64 | Graviton | GCP |
+|---|---:|---:|---:|---:|
+| entries per AppendEntries | 4.03–4.89 | 4.44–4.83 | 4.45–4.86 | 4.46–4.84 |
+| amplification at 16 B | ~9x | 6.68–6.72 | 6.74–6.81 | 6.84–6.95 |
+| RPC/commit at a 20 ms tick | 2.23 | 2.10 | 2.09–2.10 | 2.10 |
+| CBOR/JSON amplification | 0.30–0.87 | 0.92–0.99 | 0.87–0.99 | 0.96–1.01 |
+| 4096 B ÷ 16 B throughput | **0.039–0.047** | 0.33–0.35 | 0.41–0.43 | 0.40–0.41 |
+
+**RPCs per committed entry converges to 2.10 on all three cloud machines**,
+against a floor of two — one AppendEntries per follower. Two instruction sets
+and two cloud vendors, agreeing to three figures. That is as strong a statement
+as this suite can make that the quantity is a property of the algorithm rather
+than of anything underneath it.
+
+**H6 is refuted a fourth time**, at 1.44–1.49x here against 1.34x on Graviton,
+1.40x on AWS x64 and 2.3x locally.
+
+**And the knee verdict is now unanimous across the cloud.** CBOR/JSON
+amplification is 0.96–1.01 here, and the case's own printed rule — *at or near
+1.00x says the knee is NOT about encoded size* — reads the same way on three
+machines. Task 11b's finding is confirmed as specific to the development
+machine rather than to the implementation.
 
 ### The tick cadence
 
@@ -553,8 +597,9 @@ available number.
 - **Whether the response-driven pacing hypothesis is true.** It now fits two
   axes and two machines. It has never been measured directly, because that needs
   instrumentation on the leader's send path.
-- **Anything about arm64, a second cloud provider, or Tier D/E.** Recorded as
-  not delivered in the tier table above, with reasons.
+- **Anything about Tier C, D or E.** Recorded as not delivered in the tier
+  table above, with reasons. arm64 and a second cloud provider are no longer on
+  this list: both have been measured.
 
 ## Follow-on work the measurements motivate
 
