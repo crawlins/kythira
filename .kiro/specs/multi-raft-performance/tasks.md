@@ -1451,50 +1451,61 @@ and the answer is currently no for every one of them.
     corrected in this commit to say what the code does; building the fallback
     is a production behaviour change and is deliberately not made from a
     performance spec
-  - **The harness half IS built and measured; the tier half is not.**
+  - **The harness half is built and measured, and what it measured is that
+    `tick_batch_controller` CANNOT make a multi-group host durable.**
     `durability_mode` (three values), `benchmark_persistence_engine` (a handle
-    over either engine, with the counters on the outside of it), a per-host
-    `tick_batch_controller` fanning out across that host's stores, and
-    `write_throughput_by_durability` with the two numbers Requirement 3.4 asks
-    for. Two runs of five repetitions each, `build-default`, this machine:
+    over either engine, with the counters outside it), a per-host controller
+    fanning out across that host's stores, and
+    `write_throughput_by_durability`. Three runs of five repetitions each on
+    this machine, plus an independent run through the report generator:
 
-    | mode | ops/sec r1 | r2 | p50 r1 | r2 | fsync/sec/host | entries/fsync | barriers | empty batches | entries |
-    |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-    | memory | 1137.2 | 1163.5 | 13564 us | 13214 us | 0.00 | 0.00 | 0 | 0 | 1200 |
-    | file/buffered (NOT DURABLE) | 821.1 | 839.0 | 18569 us | 18366 us | 0.00 | 0.00 | 0 | 0 | 1200 |
-    | file/barrier | 706.3 | 714.0 | 21647 us | 21493 us | 74.8 / 84.5 | 9.45 / 8.45 | 127 / 142 | 1070 / 833 | 1200 |
+    | mode | ops/sec | p50 | fsync/sec/host | entries/fsync | **barriered** | barriers | empty batches | entries |
+    |---|---:|---:|---:|---:|---:|---:|---:|---:|
+    | memory | 1137–1185 | 13.0–13.6 ms | 0.00 | 0.00 | 0.0% | 0 | 0 | 1200 |
+    | file/buffered (NOT DURABLE) | 794–839 | 18.4–19.1 ms | 0.00 | 0.00 | 0.0% | 0 | 0 | 1200 |
+    | file/barrier | 688–714 | 21.5–22.4 ms | 76.2 / 95.1 | 1.72 / 1.77 | **19.9% / 24.5%** | 139 / 166 | 802 / 1078 | 1200 |
 
-  - **`file/buffered` issues ZERO barriers against 1200 appended entries, on
-    both runs, and that is the measurement of the finding above.** The claim
-    that `tick()` has no batching fallback was made by grepping for
-    `begin_batch()` call sites; this is the same claim as a number, and the
-    case asserts it (`BOOST_CHECK` on `_barriers == 0`) so that a future change
-    giving `tick()` a fallback fails here rather than silently relabelling an
-    arm as durable
-  - **The split of the cost is the useful part.** The JSON-line append alone —
-    `file/buffered` against `memory`, no fsync anywhere in either — costs
-    **28% of throughput** (0.72x on both runs) and 39% more p50. The barrier on
-    top of that costs a further **15%** (0.85x). H4 predicted both the encode
-    cost and the memory growth would be measurable; the encode cost now is,
-    and the memory growth still is not
-  - **The prediction written into the case before the run was wrong, and the
-    reason is the column that was added to catch exactly this.** It predicted
-    ~2000 fsyncs per second per host, from four groups at a 2 ms tick. The
-    measurement is **75–85**, twenty-five times lower, because a batch that
-    closes with nothing buffered issues no fsync at all — 833–1070 of the
-    batches were empty. `entries/fsync` of 8.5–9.5 is the same fact from the
-    other side: entries accumulate between flushes, so a group flushes about
-    once every twelve ticks rather than every tick. Folding the empty batches
-    into the barrier count would have reported a system fsyncing 25x more often
-    and 25x more cheaply than it does
-  - **What is still missing is the TIER, and it is not a small remainder.**
-    Requirement 3.1 defines Tier D as *Tier C plus* file persistence, and every
-    row above is Tier B with three hosts in one process. The case says so in
-    its own doc comment and the row is labelled Tier B. A cloud run against a
-    provisioned volume is also not done — `kv_cluster_options::_data_dir` and
-    the `KYTHIRA_BENCH_DATA_DIR` environment override exist for it and have
-    never been exercised, so the volume class and IOPS Requirement 3.4 asks for
-    are still unreported
+  - **`barriered` is the column that decides whether a row is durable at all,
+    and it is 20–25%.** Three quarters of the appended log reached the page
+    cache and no barrier ever reached it. The reason is structural rather than
+    a tuning problem: `multi_raft`'s tick opens the batch, runs the persist
+    phase and commits it inside one `tick()` call, but **a proposal appends on
+    the caller's thread and a follower appends on its RPC handler's thread**,
+    and neither is inside that window. The hook is in the wrong place for the
+    appends it is meant to cover
+  - **So Tier D is not reachable by supplying a controller**, which is what
+    this task's own plan assumed. Reaching it needs the barrier moved to where
+    appends happen — which is a production design decision about `node` and
+    `multi_raft`, not a benchmark change, and this spec is not entitled to make
+    it. That is the single most useful thing this task produced and it is a
+    negative result
+  - **It was nearly missed, and the near-miss is the methodological point.**
+    The first version of this row reported `entries/fsync` as
+    `total entries ÷ barriers` — 8.45 — which quietly averaged over entries no
+    fsync had touched. Adding the covered-entry counter dropped it to 1.72–1.77
+    and put a 20–25% beside it. **Print the denominator's own denominator**: a
+    ratio whose numerator is "all entries" and whose divisor is "barriers" is
+    only meaningful if every entry was barriered, and nothing had checked that
+  - **And the counter was itself dropped once, silently, by an aggregate.**
+    `operator-(durability_snapshot, durability_snapshot)` is a designated
+    initialiser; omitting the new member value-initialised it, so the field
+    arrived at the report as a plausible zero. The row then said a barrier had
+    covered **0%** of entries while also reporting 122 barriers — two numbers
+    that cannot both be true, which is the only reason it was caught. There is
+    a `static_assert` on the struct's size beside that function now
+  - **`file/buffered` issues ZERO barriers against 1200 appended entries**, on
+    every run, and the case asserts it — so a future change giving `tick()` a
+    batching fallback fails here rather than silently relabelling an arm
+  - **The cost split still holds and is the other useful number.** The
+    JSON-line append alone — buffered against memory, no fsync in either —
+    costs **~33% of throughput**; the partial barrier on top costs a further
+    ~13%. H4 predicted the encode cost would be measurable and it now is; the
+    memory growth it also names still is not
+  - **What is still missing: the TIER, and now also a barrier that covers
+    anything.** Every row above is Tier B with three hosts in one process, and
+    the cloud half — `kv_cluster_options::_data_dir` and the
+    `KYTHIRA_BENCH_DATA_DIR` override, both wired and never exercised — has not
+    run, so the volume class and IOPS Requirement 3.4 asks for are unreported
   - _Requirements: 3.4, 3.5, 18.7_
 
 - [ ] 20. Shape 2 — Tier E, one host per instance

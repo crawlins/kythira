@@ -784,7 +784,7 @@ auto report_durability_comparison(const std::vector<repeated_result>& rows) -> v
     out << "durability (Requirements 3.4, 3.5) — every figure is the median run's, at a "
         << rows.front().median_run()._tick_interval.count() << " ms tick:"
         << "\n      mode                          ops/sec     p50        fsync/sec/host   "
-           "entries/fsync   barriers   empty batches   entries";
+           "entries/fsync   barriered   barriers   empty batches   entries";
     for (const auto& row : rows) {
         const auto& m = row.median_run();
         out << "\n      " << std::left << std::setw(28) << to_string(m._durability) << std::right
@@ -792,14 +792,24 @@ auto report_durability_comparison(const std::vector<repeated_result>& rows) -> v
             << std::chrono::duration_cast<std::chrono::microseconds>(m._p50).count() << "us  "
             << std::setw(14) << std::setprecision(2) << fsyncs_per_second_per_host(m) << "  "
             << std::setw(14) << m._durability_counts.entries_per_barrier() << "  " << std::setw(9)
-            << m._durability_counts._barriers << "  " << std::setw(14)
-            << m._durability_counts._empty_batches << "  " << std::setw(9)
+            << std::setprecision(1) << 100.0 * m._durability_counts.barriered_fraction() << "%  "
+            << std::setprecision(2) << std::setw(9) << m._durability_counts._barriers << "  "
+            << std::setw(14) << m._durability_counts._empty_batches << "  " << std::setw(9)
             << m._durability_counts._entries;
         if (!row.comparable()) {
             out << "  [" << to_string(row.verdict()) << "]";
         }
     }
-    out << "\n      `file/buffered` issues NO barrier at all and its zeroes are not a "
+    out << "\n      `barriered` is the fraction of appended entries a barrier ever covered, and "
+           "it is the column that decides whether a row is durable at all. It is NOT 100% here, "
+           "and the reason is structural: `multi_raft`'s tick opens the batch, runs the persist "
+           "phase and commits it inside one `tick()` call, but a proposal appends on the "
+           "CALLER's thread and a follower appends on its RPC handler's thread. An append that "
+           "lands between two ticks reaches the page cache and no barrier ever reaches it."
+        << "\n      So `file/barrier` is not a durable configuration either — it is a partially "
+           "barriered one, and `entries/fsync` counts only the covered entries so that it is not "
+           "quietly averaged over entries that were never fsynced."
+        << "\n      `file/buffered` issues NO barrier at all and its zeroes are not a "
            "measurement error: outside a batch, `file_persistence_engine::append_log_entry` "
            "flushes the ofstream and stops, and `sync_log_and_directory()` is reached only from "
            "`commit_batch()`. Requirement 3.5 requires that row be read as NOT DURABLE."
@@ -884,6 +894,21 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_durability,
     BOOST_CHECK_MESSAGE(rows[2].median_run()._durability_counts._barriers > 0,
                         "file/barrier issued NO durability barrier — the controller this harness "
                         "supplies is not reaching the engines, and the row is not durable");
+    // Recorded, not asserted, and the distinction is deliberate. What fraction
+    // of appends land inside a tick's persist window is a property of the
+    // arrival process and the tick cadence, so a bound here would be a
+    // threshold nobody measured. What must never happen silently is the
+    // fraction being read as 100%, which is why it is a printed column and why
+    // this message names the number rather than a verdict.
+    {
+        std::ostringstream note;
+        note << "  file/barrier: a barrier covered "
+             << 100.0 * rows[2].median_run()._durability_counts.barriered_fraction()
+             << "% of appended entries. Anything under 100% means the rest reached the page "
+                "cache and stopped, so this configuration is PARTIALLY barriered and is not a "
+                "durable one.";
+        BOOST_TEST_MESSAGE(note.str());
+    }
 #else
     BOOST_TEST_MESSAGE("  durability sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
 #endif

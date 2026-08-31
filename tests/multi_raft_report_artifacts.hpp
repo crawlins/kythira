@@ -218,7 +218,8 @@ inline constexpr std::string_view k_csv_header =
     "axis,scenario,tier,tier_comparable_externally,transport,wire_serializer,"
     "node_serializer,routing,load_mode,offered_rate_per_second,nodes,groups,value_bytes,"
     "in_flight,tick_interval_ms,durability,durability_barriers,"
-    "durability_empty_batches,durability_entries,fsyncs_per_second_per_host,"
+    "durability_empty_batches,durability_entries,durability_entries_barriered,"
+    "barriered_fraction,fsyncs_per_second_per_host,"
     "entries_per_fsync,read_kind,read_consistency,repetitions,warmup_operations,"
     "measured_operations,headline_ops_per_second,min_ops_per_second,max_ops_per_second,"
     "spread_fraction,p50_spread_fraction,governing_spread_fraction,governing_spread_is,"
@@ -245,7 +246,8 @@ inline auto write_csv_row(std::ostream& out, const report_row& row,
         << ',' << m._groups << ',' << m._value_bytes << ',' << m._in_flight << ','
         << m._tick_interval.count() << ',' << csv_field(to_string(m._durability)) << ','
         << m._durability_counts._barriers << ',' << m._durability_counts._empty_batches << ','
-        << m._durability_counts._entries << ',' << fsyncs_per_second_per_host(m) << ','
+        << m._durability_counts._entries << ',' << m._durability_counts._entries_batched << ','
+        << m._durability_counts.barriered_fraction() << ',' << fsyncs_per_second_per_host(m) << ','
         << m._durability_counts.entries_per_barrier() << ','
         << csv_field(m._read_kind.has_value() ? to_string(*m._read_kind)
                                               : std::string_view{"write"})
@@ -388,6 +390,10 @@ inline auto write_json_row(std::ostream& out, const report_row& row, std::string
         << indent << "  \"durability_empty_batches\": " << m._durability_counts._empty_batches
         << ",\n"
         << indent << "  \"durability_entries\": " << m._durability_counts._entries << ",\n"
+        << indent << "  \"durability_entries_barriered\": " << m._durability_counts._entries_batched
+        << ",\n"
+        << indent << "  \"barriered_fraction\": " << m._durability_counts.barriered_fraction()
+        << ",\n"
         << indent << "  \"fsyncs_per_second_per_host\": " << fsyncs_per_second_per_host(m) << ",\n"
         << indent << "  \"entries_per_fsync\": " << m._durability_counts.entries_per_barrier()
         << ",\n"

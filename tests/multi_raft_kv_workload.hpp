@@ -629,19 +629,54 @@ struct durability_snapshot {
     std::uint64_t _barriers{0};
     std::uint64_t _empty_batches{0};
     std::uint64_t _entries{0};
+    /// Of `_entries`, how many were appended while their store's batch was
+    /// open — and therefore how many a barrier ever covered.
+    ///
+    /// This exists because the obvious reading of the other three is wrong.
+    /// `multi_raft`'s tick opens the batch, runs the persist phase and commits
+    /// it, all inside one `tick()` call. But a proposal appends to the leader's
+    /// log on the *caller's* thread and a follower appends on its RPC handler's
+    /// thread, and neither of those is inside the tick's window. An append that
+    /// lands between two ticks is written to the page cache and no barrier ever
+    /// reaches it, so `_entries / _barriers` would report an entries-per-fsync
+    /// figure covering entries that were never fsynced at all.
+    std::uint64_t _entries_batched{0};
 
+    /// Entries per durability barrier, counting only entries a barrier
+    /// actually covered. Zero when nothing was barriered.
     [[nodiscard]] auto entries_per_barrier() const -> double {
-        return _barriers == 0 ? 0.0
-                              : static_cast<double>(_entries) / static_cast<double>(_barriers);
+        return _barriers == 0
+                   ? 0.0
+                   : static_cast<double>(_entries_batched) / static_cast<double>(_barriers);
+    }
+
+    /// The fraction of appended entries that any barrier covered. **1.0 is the
+    /// only value a durable configuration may report**; anything less means
+    /// that proportion of the log reached the page cache and stopped.
+    [[nodiscard]] auto barriered_fraction() const -> double {
+        return _entries == 0
+                   ? 0.0
+                   : static_cast<double>(_entries_batched) / static_cast<double>(_entries);
     }
 };
 
 [[nodiscard]] inline auto operator-(const durability_snapshot& a, const durability_snapshot& b)
     -> durability_snapshot {
+    // Every field, and a static_assert on the size so that adding one to
+    // `durability_snapshot` without differencing it here fails to compile.
+    // This function silently dropped `_entries_batched` once already: a
+    // designated-initialiser aggregate that omits a member value-initialises
+    // it, so the field arrived at the report as a perfectly plausible zero and
+    // the row said a barrier had covered 0% of entries while also reporting
+    // 122 barriers. Two numbers that cannot both be true is the only reason it
+    // was caught.
+    static_assert(sizeof(durability_snapshot) == 4 * sizeof(std::uint64_t),
+                  "durability_snapshot gained a field; difference it below");
     return durability_snapshot{
         ._barriers = a._barriers - b._barriers,
         ._empty_batches = a._empty_batches - b._empty_batches,
         ._entries = a._entries - b._entries,
+        ._entries_batched = a._entries_batched - b._entries_batched,
     };
 }
 
