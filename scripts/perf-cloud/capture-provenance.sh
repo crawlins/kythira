@@ -23,6 +23,11 @@
 # whose provenance silently lost a field is worse than one that says it does
 # not know, because only the second is visible in the artifact.
 #
+# Two metadata servers are probed, AWS's first and GCE's second, because they
+# share no address, header or path shape. Anything neither serves comes from
+# the caller through KYTHIRA_PERF_STATED_*, and anything nobody supplies is
+# emitted as null.
+#
 # Usage:  capture-provenance.sh [output.json]     (default: provenance.json)
 
 set -euo pipefail
@@ -49,6 +54,23 @@ imds() {
 
 imds_token="$(fetch_token)"
 
+# ── GCE metadata ─────────────────────────────────────────────────────────────
+# A different server at a different address with a different header and
+# different paths, so it is a second probe rather than a parameterisation of
+# the first. Requirement 18.12 asks for a second provider, and Requirement
+# 18.4 asks for facts "as the guest reports it" -- which on GCE means this
+# server and not what the caller believes it asked for.
+#
+# GCE returns fully-qualified resource URLs for machine-type and zone
+# (".../zones/us-central1-a/machineTypes/n2-standard-8"), so both are reduced
+# to their last path element. The region is not served at all: it is the zone
+# with its trailing "-<letter>" removed, which is a documented property of GCE
+# zone naming rather than a guess.
+gce() {
+    curl -fsS --max-time 3 -H "Metadata-Flavor: Google" \
+        "http://metadata.google.internal/computeMetadata/v1/$1" 2>/dev/null || true
+}
+
 provider="unknown"
 region=""; az=""; instance_type=""; image=""; instance_id=""
 if [ -n "$imds_token" ]; then
@@ -58,6 +80,13 @@ if [ -n "$imds_token" ]; then
     instance_type="$(imds instance-type)"
     image="$(imds ami-id)"
     instance_id="$(imds instance-id)"
+elif [ -n "$(gce instance/id)" ]; then
+    provider="gcp"
+    az="$(gce instance/zone | sed 's#.*/##')"
+    region="$(printf '%s' "$az" | sed 's/-[a-z]$//')"
+    instance_type="$(gce instance/machine-type | sed 's#.*/##')"
+    image="$(gce instance/image | sed 's#.*/##')"
+    instance_id="$(gce instance/id)"
 fi
 
 # Fallback for providers without an AWS-shaped IMDS, and the seam the burstable
