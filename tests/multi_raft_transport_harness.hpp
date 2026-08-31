@@ -88,6 +88,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -1649,6 +1650,140 @@ struct workload_options {
     std::string _scenario{"put"};
 };
 
+/// @brief Everything a workload needs from the thing it offers load to.
+///
+/// **This concept is the whole of `.kiro/specs/multi-raft-host-binary/`'s
+/// architectural claim.** The key sampler, value construction, the command
+/// mix, the read-kind taxonomy, open- and closed-loop scheduling with the
+/// intended-start-time rule, `latency_sample_set`, `repeated_result`, the
+/// spread rule and `verdict()` are all *above* this line and shared by every
+/// consumer. What legitimately differs between an in-process row and an
+/// out-of-process one is the **submit** step, and that is what this names.
+///
+/// `.kiro/specs/multi-raft-performance/` doctrine 115 — extract the
+/// measurement before writing the second consumer, not after — is why this
+/// exists before `cmd/multi_raft_bench` rather than being retrofitted around
+/// it. There are three consumers now: the CI suite, the report generator, and
+/// a driver in a different process against a different transport.
+///
+/// If a future reader finds a consumer sampling its own keys, this seam has
+/// failed and every cross-tier delta it produced is a comparison of two
+/// workloads rather than of two tiers (Requirement 4.1).
+// `std::same_as` — the concept below is the first thing in this header to need
+// it directly.
+template<typename T>
+concept workload_target =
+    requires(T& t, const std::string& key, const std::vector<std::byte>& command, read_kind kind,
+             std::chrono::milliseconds timeout, operation_tally& tally, std::uint64_t& bytes,
+             benchmark_result& row) {
+        /// Submit one write and return the latency actually waited, or
+        /// `nullopt` on a failure the target has already classified in `tally`.
+        {
+            t.submit_write(key, command, timeout, tally)
+        } -> std::same_as<std::optional<std::chrono::nanoseconds>>;
+        /// Submit one read of the given kind, accumulating bytes returned.
+        {
+            t.submit_read(kind, key, timeout, tally, bytes)
+        } -> std::same_as<std::optional<std::chrono::nanoseconds>>;
+        /// Replication and durability counters, cumulative. Differenced around
+        /// the window by the loop, exactly as before.
+        { t.rpc_counts() } -> std::same_as<rpc_snapshot>;
+        { t.durability_counts() } -> std::same_as<durability_snapshot>;
+        /// Fill the labels that come from the deployment rather than from the
+        /// workload: transport, both serializers, tier, node and group counts,
+        /// tick cadence, durability mode.
+        { t.describe(row) } -> std::same_as<void>;
+    };
+
+/// @brief The in-process half of the seam: a `kv_cluster` behind it.
+///
+/// Holds the routing decision (`workload_options::_routing`) and the
+/// descriptor cache, because both are in-process-only concepts —
+/// `run_attributed_command` addresses a group directly, which a client on the
+/// far side of a wire cannot do. The cache is taken **once, at construction**,
+/// before any measured window: that is what a cache is, and paying for it
+/// inside the window would price the very thing the attributed arms exist to
+/// remove.
+template<typename Transport> class in_process_target {
+public:
+    in_process_target(kv_cluster<Transport>& cluster, const workload_options& workload)
+        : _cluster(cluster),
+          _routing(workload._routing),
+          _cache(workload._routing == routing_mode::by_key ? std::vector<addressed_shard>{}
+                                                           : cluster.descriptor_cache()) {}
+
+    auto submit_write(const std::string& key, const std::vector<std::byte>& command,
+                      std::chrono::milliseconds timeout, operation_tally& tally)
+        -> std::optional<std::chrono::nanoseconds> {
+        if (_routing == routing_mode::by_key) {
+            return _cluster.run_command(key, command, timeout, tally);
+        }
+        const auto group = _cluster.group_of_key(key);
+        if (!group.has_value()) {
+            // No range holds this key. A tiling failure, not a slow operation,
+            // and counted where a reader will see it rather than dropped.
+            ++tally._offered;
+            ++tally._not_leader;
+            return std::nullopt;
+        }
+        return _cluster.run_attributed_command(_cache.at(*group - 1), key, command, _routing,
+                                               timeout, tally);
+    }
+
+    auto submit_read(read_kind kind, const std::string& key, std::chrono::milliseconds timeout,
+                     operation_tally& tally, std::uint64_t& bytes_returned)
+        -> std::optional<std::chrono::nanoseconds> {
+        std::size_t local_bytes = 0;
+        std::optional<std::chrono::nanoseconds> latency;
+        switch (kind) {
+            case read_kind::read_state:
+                latency = _cluster.run_read_state(key, timeout, tally, local_bytes);
+                break;
+            case read_kind::log_get: {
+                std::vector<std::byte> out;
+                latency = _cluster.run_command(key, kv_get(key), timeout, tally, &out);
+                local_bytes += out.size();
+                break;
+            }
+            case read_kind::local_stale:
+                latency = _cluster.run_local_read(key, tally, local_bytes);
+                break;
+        }
+        bytes_returned += local_bytes;
+        return latency;
+    }
+
+    [[nodiscard]] auto rpc_counts() const -> rpc_snapshot { return _cluster.rpc_counts(); }
+    [[nodiscard]] auto durability_counts() const -> durability_snapshot {
+        return _cluster.durability_counts();
+    }
+
+    auto describe(benchmark_result& row) const -> void {
+        typename Transport::transport_bundle::serializer_type serializer{};
+        typename kv_cluster<Transport>::types::serializer_type node_serializer{};
+        row._transport = std::string{Transport::name()};
+        row._serializer = serializer.media_type();
+        row._node_serializer = node_serializer.media_type();
+        row._tier = Transport::tier();
+        row._nodes = _cluster.options()._nodes;
+        row._groups = _cluster.options()._groups;
+        row._tick_interval = _cluster.options()._tick_interval;
+        row._durability = _cluster.options()._durability;
+        row._internal_counters = true;
+        // Requirement 3.5 asks the placement to be recorded rather than
+        // inferred. For an in-process row it is not a machine list — it is the
+        // fact that there is no separation at all, which is the confound Tiers
+        // C and above exist to remove and the reason these rows cannot carry a
+        // like-for-like external claim.
+        row._placement = "in-process: every host and the load driver share one process";
+    }
+
+private:
+    kv_cluster<Transport>& _cluster;
+    routing_mode _routing;
+    std::vector<addressed_shard> _cache;
+};
+
 /// @brief Assemble the parts of a `benchmark_result` that do not depend on
 ///        whether the window was reads or writes.
 ///
@@ -1657,35 +1792,28 @@ struct workload_options {
 /// `_node_serializer` off the bundle the cluster was actually built from — and
 /// two copies of that logic is two chances for a read row to describe itself
 /// differently from a write row taken on the same cluster.
-template<typename Transport>
-auto fill_result(const kv_cluster<Transport>& cluster, const workload_options& workload,
+template<workload_target Target>
+auto fill_result(const Target& target, const workload_options& workload,
                  latency_sample_set& samples, const operation_tally& tally,
                  std::chrono::nanoseconds elapsed, const rpc_snapshot& rpc,
                  const durability_snapshot& durability) -> benchmark_result {
     samples.sort();
 
-    typename Transport::transport_bundle::serializer_type serializer{};
-    typename kv_cluster<Transport>::types::serializer_type node_serializer{};
-
     benchmark_result result;
-    result._transport = std::string{Transport::name()};
-    result._serializer = serializer.media_type();
-    result._node_serializer = node_serializer.media_type();
+    // The deployment's labels come from the target, the workload's from the
+    // options. Splitting them that way is what lets one row description serve
+    // an in-process cluster and a cluster on the far side of a wire.
+    target.describe(result);
     result._scenario = workload._scenario;
-    result._nodes = cluster.options()._nodes;
-    result._groups = cluster.options()._groups;
     result._value_bytes = workload._value_bytes;
     result._in_flight = workload._in_flight;
-    result._tier = Transport::tier();
     result._routing = workload._routing;
     result._load = workload._load;
     result._offered_rate_per_second =
         workload._load == load_mode::open_loop ? workload._offered_rate_per_second : 0.0;
-    result._tick_interval = cluster.options()._tick_interval;
     result._duration = elapsed;
     result._tally = tally;
     result._rpc = rpc;
-    result._durability = cluster.options()._durability;
     result._durability_counts = durability;
     result._p50 = samples.p50();
     result._p95 = samples.p95();
@@ -1722,9 +1850,8 @@ auto fill_result(const kv_cluster<Transport>& cluster, const workload_options& w
 /// due time the average operation began, so a row whose lag is a large fraction
 /// of its latency was not measured at the rate it asked for, and the row says
 /// so instead of quietly reporting a lower rate as a result.
-template<typename Transport>
-auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& workload)
-    -> benchmark_result {
+template<workload_target Target>
+auto run_put_workload_on(Target& target, const workload_options& workload) -> benchmark_result {
     std::vector<latency_sample_set> per_worker(workload._in_flight);
     std::vector<operation_tally> tallies(workload._in_flight);
     std::vector<std::chrono::nanoseconds> lag(workload._in_flight, std::chrono::nanoseconds{0});
@@ -1741,17 +1868,10 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
                   std::chrono::duration<double>(1.0 / workload._offered_rate_per_second))
             : std::chrono::nanoseconds{0};
 
-    // The client's descriptor cache, taken once before the window rather than
-    // per operation: that is what a cache is, and paying for it inside the
-    // window would price the thing the attributed arms exist to remove. Empty
-    // and unused on the production path.
-    const auto cache = workload._routing == routing_mode::by_key ? std::vector<addressed_shard>{}
-                                                                 : cluster.descriptor_cache();
-
     // Taken before the clock and read after the join, so the window the RPC
     // ratios describe is exactly the window the throughput describes.
-    const auto rpc_before = cluster.rpc_counts();
-    const auto durability_before = cluster.durability_counts();
+    const auto rpc_before = target.rpc_counts();
+    const auto durability_before = target.durability_counts();
     const auto started = std::chrono::steady_clock::now();
     {
         std::vector<std::thread> workers;
@@ -1784,21 +1904,12 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
                     const auto n = sampler.next() * workload._key_stride;
                     const auto key = kv_key(n);
                     const auto command = kv_put(key, kv_value(n + i, workload._value_bytes));
-                    std::optional<std::chrono::nanoseconds> latency;
-                    if (workload._routing == routing_mode::by_key) {
-                        latency =
-                            cluster.run_command(key, command, workload._op_timeout, tallies[w]);
-                    } else if (const auto group = cluster.group_of_key(key)) {
-                        latency = cluster.run_attributed_command(cache.at(*group - 1), key, command,
-                                                                 workload._routing,
-                                                                 workload._op_timeout, tallies[w]);
-                    } else {
-                        // No range holds this key. A tiling failure, not a
-                        // slow operation, and counted where a reader will see
-                        // it rather than dropped.
-                        ++tallies[w]._offered;
-                        ++tallies[w]._not_leader;
-                    }
+                    // **The seam.** Everything above this line is the workload
+                    // and is identical for every tier; this one call is the
+                    // whole difference between an in-process row and an
+                    // out-of-process one.
+                    const auto latency =
+                        target.submit_write(key, command, workload._op_timeout, tallies[w]);
                     if (latency) {
                         // Requirement 4.2: from the intended start, not from
                         // dispatch. `run_command` timed from its own entry, so
@@ -1818,8 +1929,8 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
         }
     }
     const auto elapsed = std::chrono::steady_clock::now() - started;
-    const auto rpc_after = cluster.rpc_counts();
-    const auto durability_after = cluster.durability_counts();
+    const auto rpc_after = target.rpc_counts();
+    const auto durability_after = target.durability_counts();
 
     latency_sample_set all;
     operation_tally tally;
@@ -1829,7 +1940,7 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
         tally.merge(tallies[w]);
         total_lag += lag[w];
     }
-    auto result = fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before,
+    auto result = fill_result(target, workload, all, tally, elapsed, rpc_after - rpc_before,
                               durability_after - durability_before);
     result._mean_schedule_lag = tally._completed == 0
                                     ? std::chrono::nanoseconds{0}
@@ -1847,19 +1958,31 @@ auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& wo
 ///
 /// Keys are `kv_key(i * stride)` for `i` in `[0, count)`, matching what
 /// `workload_options::_key_stride` makes the sampler draw.
-template<typename Transport>
-auto preload_keys(kv_cluster<Transport>& cluster, std::uint64_t count, std::uint64_t stride,
-                  std::size_t value_bytes, std::chrono::milliseconds timeout,
-                  operation_tally& tally) -> std::uint64_t {
+template<workload_target Target>
+auto preload_keys_on(Target& target, std::uint64_t count, std::uint64_t stride,
+                     std::size_t value_bytes, std::chrono::milliseconds timeout,
+                     operation_tally& tally) -> std::uint64_t {
     std::uint64_t committed = 0;
     for (std::uint64_t i = 0; i < count; ++i) {
         const auto n = i * stride;
         const auto key = kv_key(n);
-        if (cluster.run_command(key, kv_put(key, kv_value(n, value_bytes)), timeout, tally)) {
+        if (target.submit_write(key, kv_put(key, kv_value(n, value_bytes)), timeout, tally)) {
             ++committed;
         }
     }
     return committed;
+}
+
+/// @brief `preload_keys_on` without a tally the caller cares about.
+///
+/// The out-of-process driver has no use for the preload's tally — a failed
+/// preload is reported by the returned count being short — and threading one
+/// through its `main` would be ceremony.
+template<workload_target Target>
+auto preload_keys_on(Target& target, std::uint64_t count, std::uint64_t stride,
+                     std::size_t value_bytes, std::chrono::milliseconds timeout) -> std::uint64_t {
+    operation_tally ignored;
+    return preload_keys_on(target, count, stride, value_bytes, timeout, ignored);
 }
 
 /// @brief Run `_operations` reads of one kind, spread over `_in_flight` client
@@ -1874,17 +1997,17 @@ auto preload_keys(kv_cluster<Transport>& cluster, std::uint64_t count, std::uint
 /// store measures a miss path: `read_state` returns an empty store, `GET`
 /// returns nothing, and the local read finds nothing. Callers preload, and the
 /// bytes-per-operation figure on the row is what shows whether they did.
-template<typename Transport>
-auto run_read_workload(kv_cluster<Transport>& cluster, const workload_options& workload,
-                       read_kind kind) -> benchmark_result {
+template<workload_target Target>
+auto run_read_workload_on(Target& target, const workload_options& workload, read_kind kind)
+    -> benchmark_result {
     std::vector<latency_sample_set> per_worker(workload._in_flight);
     std::vector<operation_tally> tallies(workload._in_flight);
-    std::vector<std::size_t> bytes(workload._in_flight, 0);
+    std::vector<std::uint64_t> bytes(workload._in_flight, 0);
     const auto per_worker_ops = std::max<std::size_t>(
         1, workload._operations / std::max<std::size_t>(1, workload._in_flight));
 
-    const auto rpc_before = cluster.rpc_counts();
-    const auto durability_before = cluster.durability_counts();
+    const auto rpc_before = target.rpc_counts();
+    const auto durability_before = target.durability_counts();
     const auto started = std::chrono::steady_clock::now();
     {
         std::vector<std::thread> workers;
@@ -1896,23 +2019,11 @@ auto run_read_workload(kv_cluster<Transport>& cluster, const workload_options& w
                 per_worker[w].reserve(per_worker_ops);
                 for (std::size_t i = 0; i < per_worker_ops; ++i) {
                     const auto key = kv_key(sampler.next() * workload._key_stride);
-                    std::optional<std::chrono::nanoseconds> latency;
-                    switch (kind) {
-                        case read_kind::read_state:
-                            latency = cluster.run_read_state(key, workload._op_timeout, tallies[w],
-                                                             bytes[w]);
-                            break;
-                        case read_kind::log_get: {
-                            std::vector<std::byte> out;
-                            latency = cluster.run_command(key, kv_get(key), workload._op_timeout,
-                                                          tallies[w], &out);
-                            bytes[w] += out.size();
-                            break;
-                        }
-                        case read_kind::local_stale:
-                            latency = cluster.run_local_read(key, tallies[w], bytes[w]);
-                            break;
-                    }
+                    // **The seam**, as on the write path: the kind travels
+                    // through it, and which of the three the target reaches for
+                    // is the target's business rather than the workload's.
+                    const auto latency =
+                        target.submit_read(kind, key, workload._op_timeout, tallies[w], bytes[w]);
                     if (latency) {
                         per_worker[w].record(*latency);
                     }
@@ -1924,8 +2035,8 @@ auto run_read_workload(kv_cluster<Transport>& cluster, const workload_options& w
         }
     }
     const auto elapsed = std::chrono::steady_clock::now() - started;
-    const auto rpc_after = cluster.rpc_counts();
-    const auto durability_after = cluster.durability_counts();
+    const auto rpc_after = target.rpc_counts();
+    const auto durability_after = target.durability_counts();
 
     latency_sample_set all;
     operation_tally tally;
@@ -1936,11 +2047,49 @@ auto run_read_workload(kv_cluster<Transport>& cluster, const workload_options& w
         total_bytes += bytes[w];
     }
 
-    auto result = fill_result(cluster, workload, all, tally, elapsed, rpc_after - rpc_before,
+    auto result = fill_result(target, workload, all, tally, elapsed, rpc_after - rpc_before,
                               durability_after - durability_before);
     result._bytes_returned = total_bytes;
     result._read_kind = kind;
     return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The in-process entry points, now adapters over the seam
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every existing caller — the CI suite, the report generator, every row
+// definition in `multi_raft_benchmark_rows.hpp` — keeps the signature it had.
+// That is the point of doing the extraction as a refactor with three consumers
+// at the end of it rather than as a rewrite: nothing above these three
+// functions had to change, and the second consumer could not have been written
+// honestly before they existed.
+
+template<typename Transport>
+auto run_put_workload(kv_cluster<Transport>& cluster, const workload_options& workload)
+    -> benchmark_result {
+    in_process_target<Transport> target{cluster, workload};
+    return run_put_workload_on(target, workload);
+}
+
+template<typename Transport>
+auto run_read_workload(kv_cluster<Transport>& cluster, const workload_options& workload,
+                       read_kind kind) -> benchmark_result {
+    in_process_target<Transport> target{cluster, workload};
+    return run_read_workload_on(target, workload, kind);
+}
+
+template<typename Transport>
+auto preload_keys(kv_cluster<Transport>& cluster, std::uint64_t count, std::uint64_t stride,
+                  std::size_t value_bytes, std::chrono::milliseconds timeout,
+                  operation_tally& tally) -> std::uint64_t {
+    // Preloading is by key, always: it is setup, and the attributed arms exist
+    // to price a routing lookup inside a measured window rather than outside
+    // one.
+    workload_options by_key;
+    by_key._routing = routing_mode::by_key;
+    in_process_target<Transport> target{cluster, by_key};
+    return preload_keys_on(target, count, stride, value_bytes, timeout, tally);
 }
 
 }  // namespace kythira::testing

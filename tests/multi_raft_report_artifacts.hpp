@@ -178,6 +178,21 @@ inline auto json_optional_ns(const std::optional<std::chrono::nanoseconds>& v) -
 /// reading `0` averages it in, and a reader seeing `null` in a numeric column
 /// cannot tell it from a literal. An empty cell is the one spelling every
 /// consumer treats as missing.
+/// @brief A counter that only an in-process measurement could see.
+///
+/// Empty when the measuring process had no view of the cluster's internals —
+/// which is every out-of-process row, because the host is deliberately
+/// uninstrumented. A zero there would read as "no replication happened",
+/// which is a different claim from "nobody was counting" and the more
+/// dangerous one to leave in a table.
+inline auto csv_counter(std::uint64_t value, bool visible) -> std::string {
+    return visible ? std::to_string(value) : std::string{};
+}
+
+inline auto json_counter(std::uint64_t value, bool visible) -> std::string {
+    return visible ? std::to_string(value) : std::string{"null"};
+}
+
 template<typename T> auto csv_optional(const std::optional<T>& v) -> std::string {
     if (!v.has_value()) {
         return {};
@@ -227,7 +242,8 @@ inline constexpr std::string_view k_csv_header =
     "latency_samples,mean_schedule_lag_ns,offered,completed,not_leader,timeout,epoch_mismatch,"
     "merging,other,duration_ns,bytes_returned,bytes_per_operation,bytes_per_second,"
     "append_entries,append_entries_empty,entries,request_vote,install_snapshot,"
-    "entries_per_append_entries,rpcs_per_committed_entry,machine_quiet_at_start\n";
+    "entries_per_append_entries,rpcs_per_committed_entry,machine_quiet_at_start,"
+    "internal_counters_visible,placement\n";
 
 /// @brief Write one row's median run as a CSV line.
 inline auto write_csv_row(std::ostream& out, const report_row& row,
@@ -245,10 +261,21 @@ inline auto write_csv_row(std::ostream& out, const report_row& row,
         << csv_field(to_string(m._load)) << ',' << m._offered_rate_per_second << ',' << m._nodes
         << ',' << m._groups << ',' << m._value_bytes << ',' << m._in_flight << ','
         << m._tick_interval.count() << ',' << csv_field(to_string(m._durability)) << ','
-        << m._durability_counts._barriers << ',' << m._durability_counts._empty_batches << ','
-        << m._durability_counts._entries << ',' << m._durability_counts._entries_batched << ','
-        << m._durability_counts.barriered_fraction() << ',' << fsyncs_per_second_per_host(m) << ','
-        << m._durability_counts.entries_per_barrier() << ','
+        << detail::csv_counter(m._durability_counts._barriers, m._internal_counters) << ','
+        << detail::csv_counter(m._durability_counts._empty_batches, m._internal_counters) << ','
+        << detail::csv_counter(m._durability_counts._entries, m._internal_counters) << ','
+        << detail::csv_counter(m._durability_counts._entries_batched, m._internal_counters) << ','
+        << detail::csv_optional(m._internal_counters
+                                    ? std::optional{m._durability_counts.barriered_fraction()}
+                                    : std::nullopt)
+        << ','
+        << detail::csv_optional(m._internal_counters ? std::optional{fsyncs_per_second_per_host(m)}
+                                                     : std::nullopt)
+        << ','
+        << detail::csv_optional(m._internal_counters
+                                    ? std::optional{m._durability_counts.entries_per_barrier()}
+                                    : std::nullopt)
+        << ','
         << csv_field(m._read_kind.has_value() ? to_string(*m._read_kind)
                                               : std::string_view{"write"})
         << ','
@@ -266,11 +293,17 @@ inline auto write_csv_row(std::ostream& out, const report_row& row,
         << ',' << m._tally._epoch_mismatch << ',' << m._tally._merging << ',' << m._tally._other
         << ',' << m._duration.count() << ',' << m._bytes_returned << ','
         << detail::csv_optional(m.bytes_per_operation()) << ',' << m.bytes_per_second() << ','
-        << m._rpc._append_entries << ',' << m._rpc._append_entries_empty << ',' << m._rpc._entries
-        << ',' << m._rpc._request_vote << ',' << m._rpc._install_snapshot << ','
-        << detail::csv_optional(m._rpc.entries_per_append_entries()) << ','
-        << detail::csv_optional(m.rpcs_per_committed_entry()) << ','
-        << (machine._quiet_at_start ? "true" : "false") << '\n';
+        << detail::csv_counter(m._rpc._append_entries, m._internal_counters) << ','
+        << detail::csv_counter(m._rpc._append_entries_empty, m._internal_counters) << ','
+        << detail::csv_counter(m._rpc._entries, m._internal_counters) << ','
+        << detail::csv_counter(m._rpc._request_vote, m._internal_counters) << ','
+        << detail::csv_counter(m._rpc._install_snapshot, m._internal_counters) << ','
+        << detail::csv_optional(m._internal_counters ? m._rpc.entries_per_append_entries()
+                                                     : std::nullopt)
+        << ','
+        << detail::csv_optional(m._internal_counters ? m.rpcs_per_committed_entry() : std::nullopt)
+        << ',' << (machine._quiet_at_start ? "true" : "false") << ','
+        << (m._internal_counters ? "true" : "false") << ',' << csv_field(m._placement) << '\n';
 }
 
 /// @brief Write the whole set of rows as CSV.
@@ -340,16 +373,27 @@ inline auto write_json_run(std::ostream& out, const benchmark_result& m, std::st
         << indent << "    \"merging\": " << m._tally._merging << ",\n"
         << indent << "    \"other\": " << m._tally._other << "\n"
         << indent << "  },\n"
+        << indent
+        << "  \"internal_counters_visible\": " << (m._internal_counters ? "true" : "false") << ",\n"
         << indent << "  \"replication\": {\n"
-        << indent << "    \"append_entries\": " << m._rpc._append_entries << ",\n"
-        << indent << "    \"append_entries_empty\": " << m._rpc._append_entries_empty << ",\n"
-        << indent << "    \"entries\": " << m._rpc._entries << ",\n"
-        << indent << "    \"request_vote\": " << m._rpc._request_vote << ",\n"
-        << indent << "    \"install_snapshot\": " << m._rpc._install_snapshot << ",\n"
+        << indent << "    \"append_entries\": "
+        << detail::json_counter(m._rpc._append_entries, m._internal_counters) << ",\n"
+        << indent << "    \"append_entries_empty\": "
+        << detail::json_counter(m._rpc._append_entries_empty, m._internal_counters) << ",\n"
+        << indent
+        << "    \"entries\": " << detail::json_counter(m._rpc._entries, m._internal_counters)
+        << ",\n"
+        << indent << "    \"request_vote\": "
+        << detail::json_counter(m._rpc._request_vote, m._internal_counters) << ",\n"
+        << indent << "    \"install_snapshot\": "
+        << detail::json_counter(m._rpc._install_snapshot, m._internal_counters) << ",\n"
         << indent << "    \"entries_per_append_entries\": "
-        << detail::json_optional(m._rpc.entries_per_append_entries()) << ",\n"
+        << detail::json_optional(m._internal_counters ? m._rpc.entries_per_append_entries()
+                                                      : std::nullopt)
+        << ",\n"
         << indent << "    \"rpcs_per_committed_entry\": "
-        << detail::json_optional(m.rpcs_per_committed_entry()) << "\n"
+        << detail::json_optional(m._internal_counters ? m.rpcs_per_committed_entry() : std::nullopt)
+        << "\n"
         << indent << "  },\n"
         << indent << "  \"bytes_returned\": " << m._bytes_returned << ",\n"
         << indent << "  \"bytes_per_operation\": " << detail::json_optional(m.bytes_per_operation())
@@ -386,16 +430,31 @@ inline auto write_json_row(std::ostream& out, const report_row& row, std::string
         << indent << "  \"in_flight\": " << m._in_flight << ",\n"
         << indent << "  \"tick_interval_ms\": " << m._tick_interval.count() << ",\n"
         << indent << "  \"durability\": \"" << json_escape(to_string(m._durability)) << "\",\n"
-        << indent << "  \"durability_barriers\": " << m._durability_counts._barriers << ",\n"
-        << indent << "  \"durability_empty_batches\": " << m._durability_counts._empty_batches
+        << indent << "  \"placement\": \"" << json_escape(m._placement) << "\",\n"
+        << indent
+        << "  \"internal_counters_visible\": " << (m._internal_counters ? "true" : "false") << ",\n"
+        << indent << "  \"durability_barriers\": "
+        << detail::json_counter(m._durability_counts._barriers, m._internal_counters) << ",\n"
+        << indent << "  \"durability_empty_batches\": "
+        << detail::json_counter(m._durability_counts._empty_batches, m._internal_counters) << ",\n"
+        << indent << "  \"durability_entries\": "
+        << detail::json_counter(m._durability_counts._entries, m._internal_counters) << ",\n"
+        << indent << "  \"durability_entries_barriered\": "
+        << detail::json_counter(m._durability_counts._entries_batched, m._internal_counters)
         << ",\n"
-        << indent << "  \"durability_entries\": " << m._durability_counts._entries << ",\n"
-        << indent << "  \"durability_entries_barriered\": " << m._durability_counts._entries_batched
+        << indent << "  \"barriered_fraction\": "
+        << detail::json_optional(m._internal_counters
+                                     ? std::optional{m._durability_counts.barriered_fraction()}
+                                     : std::nullopt)
         << ",\n"
-        << indent << "  \"barriered_fraction\": " << m._durability_counts.barriered_fraction()
+        << indent << "  \"fsyncs_per_second_per_host\": "
+        << detail::json_optional(m._internal_counters ? std::optional{fsyncs_per_second_per_host(m)}
+                                                      : std::nullopt)
         << ",\n"
-        << indent << "  \"fsyncs_per_second_per_host\": " << fsyncs_per_second_per_host(m) << ",\n"
-        << indent << "  \"entries_per_fsync\": " << m._durability_counts.entries_per_barrier()
+        << indent << "  \"entries_per_fsync\": "
+        << detail::json_optional(m._internal_counters
+                                     ? std::optional{m._durability_counts.entries_per_barrier()}
+                                     : std::nullopt)
         << ",\n"
         << indent << "  \"read_kind\": "
         << (m._read_kind.has_value()

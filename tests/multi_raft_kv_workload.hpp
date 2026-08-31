@@ -282,6 +282,19 @@ enum class deployment_tier : std::uint8_t {
     a_fabric,
     /// In-process hosts, a real transport over loopback, memory persistence.
     b_loopback,
+    /// **One host process per node**, on one machine, driver in its own
+    /// process. The first tier whose CPU can be attributed to a node rather
+    /// than to a process containing several, and therefore the first that may
+    /// carry a like-for-like claim at all. Delivered by
+    /// `.kiro/specs/multi-raft-host-binary/`.
+    c_process,
+    /// Tier C plus a durable log. Needs both
+    /// `.kiro/specs/multi-raft-host-binary/` and
+    /// `.kiro/specs/durable-append-barrier/`.
+    d_durable,
+    /// Tier C spread across machines or containers, with the network between
+    /// the nodes measured and reported alongside the row.
+    e_multi_machine,
 };
 
 [[nodiscard]] inline auto to_string(deployment_tier tier) -> std::string_view {
@@ -290,6 +303,12 @@ enum class deployment_tier : std::uint8_t {
             return "Tier A (in-process fabric, memory persistence)";
         case deployment_tier::b_loopback:
             return "Tier B (real transport over loopback, memory persistence)";
+        case deployment_tier::c_process:
+            return "Tier C (one host process per node, one machine, driver in its own process)";
+        case deployment_tier::d_durable:
+            return "Tier D (Tier C with a durable log)";
+        case deployment_tier::e_multi_machine:
+            return "Tier E (one host per machine or container)";
     }
     return "unknown";
 }
@@ -297,10 +316,26 @@ enum class deployment_tier : std::uint8_t {
 /// @brief Whether a comparison drawn from this tier may be published as
 ///        like-for-like (Requirement 3.3).
 ///
-/// Constant `false` today because this suite reaches Tier B at most. It is a
-/// function rather than a literal so that the rule lives beside the tier it
-/// governs, and so Tier C's arrival is one line here instead of a search.
-[[nodiscard]] inline auto publishable_as_like_for_like(deployment_tier) -> bool {
+/// It was constant `false` for as long as this suite reached Tier B at most,
+/// with a note that Tier C's arrival would be one line here instead of a
+/// search. This is that line.
+///
+/// **What Tier C does and does not license.** It licenses a like-for-like claim
+/// against an external number *of the same kind* — and for a Tier C row that
+/// means a **no-fsync** number, because Tier C's log is not durable. Comparing
+/// it against a published figure taken with `fsync` on would be the same
+/// category error the tier table exists to prevent, one tier further along. The
+/// row still carries its durability mode, and a reader still has to match it.
+[[nodiscard]] inline auto publishable_as_like_for_like(deployment_tier tier) -> bool {
+    switch (tier) {
+        case deployment_tier::a_fabric:
+        case deployment_tier::b_loopback:
+            return false;
+        case deployment_tier::c_process:
+        case deployment_tier::d_durable:
+        case deployment_tier::e_multi_machine:
+            return true;
+    }
     return false;
 }
 
@@ -767,6 +802,31 @@ struct benchmark_result {
     /// Empty on a write row. Present on a read row even when the kind is
     /// obvious, so that no reported read can omit its kind (Requirement 2.1).
     std::optional<read_kind> _read_kind{};
+
+    /// @brief Whether the process that measured this row could see the
+    ///        cluster's internal counters.
+    ///
+    /// True for every in-process row: the harness wraps the transport and the
+    /// stores, so `_rpc` and `_durability_counts` are real. **False for every
+    /// out-of-process row** (Tier C and above), because the host is
+    /// deliberately uninstrumented — `.kiro/specs/multi-raft-performance/`
+    /// Requirement 8.2 keeps measurement counters out of the measured process,
+    /// and a host that counted its own RPCs would be doing work the Tier B
+    /// rows did not, inside the very window being compared with them.
+    ///
+    /// The artifacts write those columns **empty** rather than zero when this
+    /// is false. A zero would read as "no replication happened", which is a
+    /// different claim from "nobody was counting" and the more dangerous one.
+    bool _internal_counters{true};
+
+    /// @brief Where the hosts and the driver actually were.
+    ///
+    /// `.kiro/specs/multi-raft-host-binary/` Requirement 3.5: a Tier E number
+    /// without the driver's placement is not reproducible, and the driver
+    /// cannot infer it — one machine and several look identical from the
+    /// client's side of a socket. So it is an input, recorded verbatim, and it
+    /// says `"not stated"` rather than guessing when nobody supplied one.
+    std::string _placement{"not stated"};
 
     /// @brief Bytes returned per second over the measured window.
     [[nodiscard]] auto bytes_per_second() const -> double {
