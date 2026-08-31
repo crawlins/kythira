@@ -1554,6 +1554,14 @@ if(NOT ENABLE_COVERAGE)
     if(KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND)
         add_subdirectory(cmd/chaos_node)
         add_subdirectory(cmd/poco_discovery_node)
+        # The Tier C/E measurement host and its driver
+        # (.kiro/specs/multi-raft-host-binary/). Neither is in any install
+        # target: they are measurement tools, not supported servers, and the
+        # surest way to keep one from being deployed is for `cmake --install`
+        # never to place it anywhere. Both are excluded from coverage builds by
+        # the enclosing guard, like every other `cmd/` binary.
+        add_subdirectory(cmd/multi_raft_node)
+        add_subdirectory(cmd/multi_raft_bench)
     endif()
     if(LIBLDNS_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND httplib_FOUND)
         add_subdirectory(cmd/dns_discovery_node)
