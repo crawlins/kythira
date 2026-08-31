@@ -1592,25 +1592,41 @@ and the answer is currently no for every one of them.
 - [ ] 21. A second provider
   - GCP, following the Workload Identity Federation path already live and the
     audit pattern its own live run established
-  - **NOT DELIVERED, and it is blocked on credentials rather than on code
-    (Requirement 3.7).** The federation path is genuinely live: the repository
-    already carries `GCP_CI_WORKLOAD_IDENTITY_PROVIDER` and
-    `GCP_CI_SERVICE_ACCOUNT`, so a CI job needs no new trust relationship. What
-    it needs is Compute Engine permissions on that service account, and
-    granting them is an IAM write that requires an authenticated gcloud
-    session. The local one has expired — `gcloud projects list` returns
-    "Reauthentication failed. cannot prompt during non-interactive execution" —
-    and re-authenticating is an interactive browser flow
-  - **So the next session should start here, because it is cheap once
-    unblocked**: `gcloud auth login`, then a GCP analogue of
-    `scripts/ci-cloud-credentials/aws/policies/perf-cloud.json` granting
+  - **NOT DELIVERED, and the blocker is project configuration rather than code
+    or authentication (Requirement 3.7).** Three things were established rather
+    than assumed, so the next session does not have to rediscover them:
+    1. **The federation path is live.** The repository already carries
+       `GCP_CI_WORKLOAD_IDENTITY_PROVIDER` and `GCP_CI_SERVICE_ACCOUNT`, so a CI
+       job needs no new trust relationship.
+    2. **Local credentials are NOT the blocker, contrary to first appearances.**
+       `gcloud projects list` fails with "Reauthentication failed. cannot prompt
+       during non-interactive execution" — but that is the *gcloud user*
+       credential. The **application-default credential still refreshes**, and
+       it carries `cloud-platform` scope. Project `prefab-sky-500619-s9` reads
+       as ACTIVE through it, the Compute Engine API is **ENABLED**, and the
+       project currently holds **zero GCE instances** in any zone.
+    3. **What actually blocks it**: the Cloud Resource Manager API is *not*
+       enabled on that project, so the service account's current role bindings
+       cannot even be read — `getIamPolicy` returns 403 "Cloud Resource Manager
+       API has not been used in project … before or it is disabled". Enabling
+       an API and granting IAM roles are outward-facing changes to a second
+       cloud account, and they were deliberately not made here
+  - **So the next session's first move is not `gcloud auth login`.** It is:
+    enable `cloudresourcemanager.googleapis.com`, read what the CI service
+    account already has, and grant only the delta. Then a GCP analogue of
+    `scripts/ci-cloud-credentials/aws/policies/perf-cloud.json` —
     `compute.instances.{create,delete,get,list}`, `compute.disks.*`,
-    `compute.firewalls.*` and image lookup, then a `gcp-shape-1` job in
-    `perf-cloud.yml` alongside the AWS one. The measurement side is already
-    provider-agnostic: `capture-provenance.sh` takes its provider-stated fields
-    from the caller and refuses burstable types across all three providers'
-    naming conventions, and `audit-aws-leaks.sh` is the pattern a
-    `audit-gcp-leaks.sh` follows rather than the code it would reuse
+    `compute.firewalls.*` and image lookup — and a `gcp-shape-1` job in
+    `perf-cloud.yml` beside the AWS one
+  - **The measurement side is already provider-agnostic and needs nothing.**
+    `capture-provenance.sh` takes its provider-stated fields from the caller and
+    refuses burstable types across all three providers' naming conventions
+    (`e2-micro`, `f1-*` and `Standard_B*` are all in its table already).
+    `audit-aws-leaks.sh` is the *pattern* an `audit-gcp-leaks.sh` follows rather
+    than code it would reuse — but its two hard-won properties transfer
+    verbatim: a query that fails must report UNKNOWN rather than clean, and
+    `out=$("$@" 2>&1) || rc=$?` is what keeps `set -e` from aborting before the
+    handling runs
   - _Requirements: 18.12_
 
 ## The comparison itself
