@@ -398,8 +398,9 @@ to anything external.
 At one operation in flight — the concurrency at which a p50 *is* one operation —
 the routing bound tightens further: **under 38.2–39.2 us, at most 11.9–13.3% of
 one committed operation**, against 212.8–299.4 us locally. Routing is not where
-the time goes, and after four local runs and two cloud runs the bound is the
-result rather than a placeholder for one.
+the time goes, and after four local runs and four cloud runs across two
+architectures the bound is the result rather than a placeholder for one. Its
+tightest value, on Graviton, is **≤22.1 us — at most 7.8%**.
 
 **The shift in the transport share is mostly Little's law and should not be read
 as "transport got cheap".** At 16 in flight the p50 is dominated by queueing
@@ -413,10 +414,10 @@ These are properties of the implementation that any comparison has to be read
 against. Each is measured, and none is a bug report — nothing here establishes
 that any of them is avoidable.
 
-1. **Write amplification of roughly 6.6x per commit at the small end, on the
-   fast machine**, against a floor of two entry-sends per commit. Locally it is
-   about 9x. Every throughput claim this system makes has to be read against
-   that number.
+1. **Write amplification of roughly 6.6–6.8x per commit at the small end, on
+   both cloud machines**, against a floor of two entry-sends per commit.
+   Locally it is about 9x. It does not move with the instruction set, and every
+   throughput claim this system makes has to be read against it.
 2. **The batch is set by proposals outstanding per group and by nothing else.**
    Invariant to the tick (twentyfold sweep), invariant to value size (256-fold
    sweep), tracking in-flight per group from 1.03 at one to 48.7 at sixty-four
@@ -429,7 +430,19 @@ that any of them is avoidable.
 5. **`node<Types>` serializes on one mutex per group**, and single-group
    throughput never rises with concurrency — it falls monotonically from one
    operation in flight.
-6. **`max_concurrent_connections` is inert in all three HTTP transports.**
+6. **The only durability barrier hook in the codebase fires on the wrong
+   thread.** `tick_batch_controller` opens and commits a batch inside one
+   `tick()` call, but proposals append on the caller's thread and follower
+   appends on the RPC handler's. A controller supplied exactly as the header
+   describes covered 19.9% and 24.5% of appended entries in two runs. This is
+   the one item on this list that is closer to a defect than to a trade-off,
+   and it is stated as measured rather than diagnosed: nothing here establishes
+   what the intended contract was.
+7. **Nothing calls `begin_batch()` except that controller.** So a file-backed
+   log in a host whose caller supplies none is written to the page cache and
+   never fsynced at all — `buffered` mode, which Requirement 3.5 requires be
+   labelled not durable wherever it appears.
+8. **`max_concurrent_connections` is inert in all three HTTP transports.**
    Declared, documented as an accept-time counter, read by nothing.
 
 ## Structural hypotheses H1–H7
