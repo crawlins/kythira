@@ -59,7 +59,6 @@ using kythira::hibernation_mode;
 using kythira::multi_raft;
 using kythira::multi_raft_config;
 using kythira::shard_epoch;
-using kythira::tick_batch_controller;
 using kythira::tombstone_reason;
 using kythira::testing::fabric_client;
 using kythira::testing::fabric_server;
@@ -67,6 +66,92 @@ using kythira::testing::message_fabric;
 
 using key_type = std::string;
 using group_id_type = std::uint64_t;
+
+/// @brief Somewhere for a group's store to say that it was written to.
+struct trace_sink {
+    std::mutex _mu;
+    std::vector<std::string> _events;
+
+    auto record(std::string what) -> void {
+        std::lock_guard lock(_mu);
+        _events.push_back(std::move(what));
+    }
+
+    /// Whether some `a` is immediately followed by some `b` — which for a
+    /// single-group host is "both happened in the same tick, in this order".
+    [[nodiscard]] auto adjacent(std::string_view a, std::string_view b) -> bool {
+        std::lock_guard lock(_mu);
+        for (std::size_t i = 0; i + 1 < _events.size(); ++i) {
+            if (_events[i] == a && _events[i + 1] == b) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+/// @brief A memory store that can be watched.
+///
+/// It exists because the persist phase used to be observable through the
+/// `tick_batch_controller` the caller supplied, and that type was removed by
+/// `.kiro/specs/durable-append-barrier/` task 7 — it could not deliver the
+/// barrier its name promised, because `tick()` runs on the host's driver
+/// thread and the appends it was meant to cover do not. The **ordering** claim
+/// it was incidentally the only witness for is still true and still worth a
+/// test, so this is the replacement witness: a store that says when it was
+/// written to.
+///
+/// Default-constructed with no sink, which is what every other case in this
+/// file gets, it is `memory_persistence_engine` with one null check.
+class tracing_persistence_engine {
+public:
+    using inner_type =
+        kythira::memory_persistence_engine<std::uint64_t, std::uint64_t, std::uint64_t>;
+    using log_entry_t = inner_type::log_entry_t;
+    using snapshot_t = inner_type::snapshot_t;
+
+    tracing_persistence_engine() = default;
+    explicit tracing_persistence_engine(std::shared_ptr<trace_sink> sink)
+        : _sink(std::move(sink)) {}
+
+    auto save_current_term(std::uint64_t term) -> void {
+        note();
+        _inner.save_current_term(term);
+    }
+    auto load_current_term() -> std::uint64_t { return _inner.load_current_term(); }
+    auto save_voted_for(std::uint64_t node) -> void {
+        note();
+        _inner.save_voted_for(node);
+    }
+    auto load_voted_for() -> std::optional<std::uint64_t> { return _inner.load_voted_for(); }
+    auto append_log_entry(const log_entry_t& entry) -> void {
+        note();
+        _inner.append_log_entry(entry);
+    }
+    auto get_log_entry(std::uint64_t index) -> std::optional<log_entry_t> {
+        return _inner.get_log_entry(index);
+    }
+    auto get_log_entries(std::uint64_t start, std::uint64_t end) -> std::vector<log_entry_t> {
+        return _inner.get_log_entries(start, end);
+    }
+    auto get_last_log_index() -> std::uint64_t { return _inner.get_last_log_index(); }
+    auto truncate_log(std::uint64_t index) -> void { _inner.truncate_log(index); }
+    auto save_snapshot(const snapshot_t& snap) -> void { _inner.save_snapshot(snap); }
+    auto load_snapshot() -> std::optional<snapshot_t> { return _inner.load_snapshot(); }
+    auto delete_log_entries_before(std::uint64_t index) -> void {
+        _inner.delete_log_entries_before(index);
+    }
+
+private:
+    auto note() -> void {
+        if (_sink) {
+            _sink->record("persist");
+        }
+    }
+
+    inner_type _inner;
+    std::shared_ptr<trace_sink> _sink;
+};
 
 /// The host's shared-transport bundle. Note that the client and server named
 /// here are the *shared* ones; `multi_raft` derives each group's scoped views
@@ -87,8 +172,7 @@ struct host_types {
     using network_client_type = fabric_client;
     using network_server_type = fabric_server;
 
-    using persistence_engine_type =
-        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using persistence_engine_type = tracing_persistence_engine;
     using logger_type = kythira::console_logger;
     using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
@@ -346,58 +430,18 @@ BOOST_AUTO_TEST_CASE(the_tick_report_counts_ready_and_hibernating_groups) {
     host.stop();
 }
 
-BOOST_AUTO_TEST_CASE(n_ready_groups_produce_one_durability_barrier_per_tick) {
-    // The claim the batch controller exists for. Without it the persist phase
-    // pays one barrier per ready group; a single barrier for N groups requires
-    // a store that spans N groups, and no wrapper can manufacture one from N
-    // independent engines.
-    message_fabric fabric{2};
-    auto cfg = make_config(fabric, 1);
-
-    std::atomic<int> begins{0};
-    std::atomic<int> commits{0};
-    std::atomic<int> aborts{0};
-    cfg.batch_controller = tick_batch_controller{
-        ._begin = [&] { begins.fetch_add(1); },
-        ._commit = [&] { commits.fetch_add(1); },
-        ._abort = [&] { aborts.fetch_add(1); },
-    };
-
-    host_type host{std::move(cfg)};
-    for (group_id_type g = 1; g <= 12; ++g) {
-        host.create_group(g, {1});
-    }
-    host.start();
-
-    const auto report = host.tick();
-    BOOST_CHECK_EQUAL(report._batch_size, 12u);
-    BOOST_CHECK_EQUAL(begins.load(), 1);
-    BOOST_CHECK_EQUAL(commits.load(), 1);
-    BOOST_CHECK_EQUAL(aborts.load(), 0);
-
-    host.tick();
-    BOOST_CHECK_EQUAL(begins.load(), 2);
-    BOOST_CHECK_EQUAL(commits.load(), 2);
-    host.stop();
-}
-
-BOOST_AUTO_TEST_CASE(a_tick_with_no_ready_groups_opens_no_batch) {
-    message_fabric fabric{2};
-    auto cfg = make_config(fabric, 1);
-    std::atomic<int> begins{0};
-    cfg.batch_controller = tick_batch_controller{
-        ._begin = [&] { begins.fetch_add(1); },
-        ._commit = [] {},
-        ._abort = [] {},
-    };
-    host_type host{std::move(cfg)};
-    host.start();
-    const auto report = host.tick();
-    BOOST_CHECK_EQUAL(report._ready_count, 0u);
-    BOOST_CHECK_EQUAL(report._batch_size, 0u);
-    BOOST_CHECK_EQUAL(begins.load(), 0);
-    host.stop();
-}
+// `n_ready_groups_produce_one_durability_barrier_per_tick` and
+// `a_tick_with_no_ready_groups_opens_no_batch` used to be here. Both asserted
+// the behaviour of `tick_batch_controller`, which
+// `.kiro/specs/durable-append-barrier/` task 7 removed: the barrier it opened
+// around the persist phase covered 19.9–24.5% of appended entries, because a
+// batch belongs to one thread's writes and the appends happen on the client's
+// and the transport's. They are deleted rather than rewritten because the
+// behaviour they described is gone, not moved — the barrier now lives at the
+// boundary where `node` advertises an append, and
+// `tests/durable_append_barrier_test.cpp` is where it is tested. Requirement
+// 5.2 of that spec asks that every modification to an existing test be
+// justified where it is made; this is that.
 
 BOOST_AUTO_TEST_CASE(the_apply_phase_runs_deferred_work_on_the_groups_own_stripe) {
     // Phase 3 exists so that Phase 6's admin-entry dispatch has a place that is
@@ -431,39 +475,31 @@ BOOST_AUTO_TEST_CASE(the_phases_run_in_persist_send_apply_order) {
     // Ordering is TiKV's and matters: persist before send (never advertise an
     // append that is not durably taken), apply after send (a follower's copy is
     // on the wire before the leader spends time in the state machine).
+    //
+    // The witness used to be the supplied batch controller's begin/commit
+    // bracketing the persist phase. That type is gone (see the note above), so
+    // the witness is now the group's own store saying when it was written to —
+    // which happens in the persist phase, because that is where `tick()` drives
+    // the election and heartbeat clocks.
     message_fabric fabric{2};
     auto cfg = make_config(fabric, 1);
-
-    std::vector<std::string> trace;
-    std::mutex trace_mutex;
-    cfg.batch_controller = tick_batch_controller{
-        ._begin =
-            [&] {
-                std::lock_guard lock(trace_mutex);
-                trace.emplace_back("persist-begin");
-            },
-        ._commit =
-            [&] {
-                std::lock_guard lock(trace_mutex);
-                trace.emplace_back("persist-commit");
-            },
-        ._abort = [] {},
+    auto sink = std::make_shared<trace_sink>();
+    cfg.store_factory = [sink](const group_id_type&) {
+        return host_types::persistence_engine_type{sink};
     };
 
     host_type host{std::move(cfg)};
     host.create_group(1, {1});
     host.start();
-    host.defer_to_apply_phase(1, [&] {
-        std::lock_guard lock(trace_mutex);
-        trace.emplace_back("apply");
-    });
-    host.tick();
 
-    std::lock_guard lock(trace_mutex);
-    BOOST_REQUIRE_EQUAL(trace.size(), 3u);
-    BOOST_CHECK_EQUAL(trace[0], "persist-begin");
-    BOOST_CHECK_EQUAL(trace[1], "persist-commit");
-    BOOST_CHECK_EQUAL(trace[2], "apply");
+    // The deferred callback is drained by each tick's apply phase, so it is
+    // re-registered every round. A tick in which the node writes to its store
+    // therefore produces "persist" then "apply", adjacent.
+    const bool ordered = tick_until(host, [&] {
+        host.defer_to_apply_phase(1, [&] { sink->record("apply"); });
+        return sink->adjacent("persist", "apply");
+    });
+    BOOST_CHECK(ordered);
     host.stop();
 }
 

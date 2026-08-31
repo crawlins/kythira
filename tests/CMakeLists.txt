@@ -460,6 +460,23 @@ add_raft_completion_test(persistence_round_trip_property_test persistence_round_
 # New component unit tests (file_persistence_engine + tcp_rpc)
 add_raft_completion_test(file_persistence_unit_test file_persistence_unit_test.cpp)
 
+# .kiro/specs/durable-append-barrier/ — the barrier-coverage, crash, group-commit
+# and ordering tests. Drives a real `node<Types>` over a file-backed engine, so
+# it is registered beside file_persistence_unit_test rather than with the
+# multi-Raft suites: nothing about a `multi_raft` host is needed to show that a
+# barrier is or is not taken on the append path.
+add_raft_completion_test(durable_append_barrier_test durable_append_barrier_test.cpp)
+set_tests_properties(durable_append_barrier_test PROPERTIES TIMEOUT 600)
+# The ordering and group-commit cases need a barrier that takes a knowable
+# amount of time, and the "a failed barrier is not advertised" case needs one
+# that fails — both through libfiu's control API. Without it those cases
+# compile away rather than asserting on faults that never arrive.
+if(FIU_FOUND)
+    target_compile_definitions(durable_append_barrier_test PRIVATE FIU_ENABLE)
+    target_link_libraries(durable_append_barrier_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(durable_append_barrier_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+
 # Cloud key-object persistence: the generic engine and its conformance suite
 # (.kiro/specs/cloud-object-persistence/ tasks 1-2).
 #

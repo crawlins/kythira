@@ -76,7 +76,6 @@ using kythira::hibernation_mode;
 using kythira::multi_raft;
 using kythira::multi_raft_config;
 using kythira::shard_epoch;
-using kythira::tick_batch_controller;
 using kythira::tombstone_reason;
 using kythira::testing::fabric_client;
 using kythira::testing::fabric_server;
