@@ -577,29 +577,20 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
     // ── PHASE 1: persist ─────────────────────────────────────────────────────
     //
     // Strictly before send: never advertise an append that is not durably
-    // taken. The barrier spans the whole phase when the caller supplied a
-    // controller, and otherwise collapses each group's own appends.
+    // taken. **The barrier itself is no longer here**, and the removed
+    // `tick_batch_controller` is why — see the note where it used to be
+    // declared in multi_raft.hpp. A barrier taken around this phase covers the
+    // appends that happen *in* it, and almost none of them do: a proposal
+    // appends on the client's thread and a follower on its transport's, and
+    // neither is inside this window. `node` now takes the barrier at the
+    // boundary where it advertises the append, which is the only place that
+    // can see all of them.
     {
         const auto t0 = clock::now();
-        const bool shared_batch = _cfg.batch_controller && _cfg.batch_controller->valid();
-        if (shared_batch && !ready.empty()) {
-            _cfg.batch_controller->_begin();
-            report._batch_size = ready.size();
-        }
-        try {
-            run_phase(ready, [](group_state& g) {
-                g._node->check_election_timeout();
-                g._node->check_heartbeat_timeout();
-            });
-        } catch (...) {
-            if (shared_batch && !ready.empty()) {
-                _cfg.batch_controller->_abort();
-            }
-            throw;
-        }
-        if (shared_batch && !ready.empty()) {
-            _cfg.batch_controller->_commit();
-        }
+        run_phase(ready, [](group_state& g) {
+            g._node->check_election_timeout();
+            g._node->check_heartbeat_timeout();
+        });
         report._persist_duration = clock::now() - t0;
     }
 

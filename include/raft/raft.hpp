@@ -656,6 +656,20 @@ private:
     // Index of highest log entry known to be committed (initialized to 0, increases monotonically)
     log_index_type _commit_index;
 
+    // Index of the highest log entry a durability barrier has covered
+    // (`.kiro/specs/durable-append-barrier/` Requirement 1.1).
+    //
+    // This is what the leader counts as its own acknowledgement in
+    // advance_commit_index(), instead of the unconditional self-ack it used
+    // to give itself. An entry the leader has written but not yet barriered is
+    // an entry the leader does not yet hold, and Raft's safety argument is
+    // about what a node holds rather than about what it has buffered.
+    //
+    // For an engine with no barrier (or a memory engine, whose barrier is a
+    // no-op) this tracks the last append exactly, so the self-ack is
+    // unconditional again and nothing about those configurations changes.
+    log_index_type _durable_log_index{0};
+
     // Index of highest log entry applied to state machine (initialized to 0, increases
     // monotonically)
     log_index_type _last_applied;
@@ -995,6 +1009,78 @@ private:
     auto finish_leader_transfer(std::exception_ptr error) -> std::function<void()>;
     auto become_leader() -> void;
 
+    // ── The durability barrier (`.kiro/specs/durable-append-barrier/`) ───────
+    //
+    // Raft's requirement is not "every append is fsynced immediately". It is
+    // that an append is durable **before the node acts on it as though it
+    // were** — before a leader counts it toward `match_index`, before a
+    // follower returns success. Those are response boundaries, not append
+    // sites, and the distinction is what makes group commit possible: several
+    // appends can pile up between the write and the response and one barrier
+    // serves all of them.
+    //
+    // Every one of these is a no-op for an engine that does not implement
+    // `barriered_persistence_engine`, which keeps the pre-change behaviour
+    // exactly, and free for `memory_persistence_engine`, whose barrier is an
+    // empty function (Requirement 5.1).
+
+    /// @brief What an append owes a barrier before it may be advertised.
+    struct pending_barrier {
+        kythira::write_sequence _seq{0};
+        log_index_type _index{0};
+        bool _any{false};
+    };
+
+    /// @brief Write `entry` to the store and record what it owes a barrier.
+    ///
+    /// Does NOT take the barrier: the caller decides where the response
+    /// boundary is, and — for the paths that can — releases `_mutex` first.
+    auto persist_append(const log_entry_type& entry, pending_barrier& pending) -> void;
+
+    /// @brief Whether a barrier on this engine can block.
+    ///
+    /// The question a call site has to answer before deciding to break its own
+    /// critical section open. It is `false` for `memory_persistence_engine`
+    /// (whose barrier is an empty function) and for a file engine configured
+    /// without barriers, and for an engine with no barrier at all — so **every
+    /// configuration that was not paying for durability keeps exactly the
+    /// locking it had**, which is what Requirements 5.1 and 5.2 are asking
+    /// for. Dropping and re-acquiring `_mutex` around a no-op would open a new
+    /// interleaving window in every existing test to buy nothing.
+    [[nodiscard]] auto barrier_can_block() const -> bool;
+
+    /// @brief Take the barrier `pending` owes. Takes no lock and needs none.
+    ///
+    /// @return `false` if the barrier failed. The caller must not advertise
+    ///         the append (Requirement 1.5).
+    [[nodiscard]] auto take_barrier(const pending_barrier& pending) -> bool;
+
+    /// @brief Record that everything through `pending` is durable.
+    ///        `_mutex` must be held.
+    auto mark_durable_locked(const pending_barrier& pending) -> void;
+
+    /// @brief `take_barrier` then `mark_durable_locked`, acquiring `_mutex`
+    ///        for the second half.
+    ///
+    /// **Call with `_mutex` released.** Requirement 3.2: a barrier waited for
+    /// under a lock that other appends need is a barrier nothing else can
+    /// join, which is group commit in name only.
+    [[nodiscard]] auto settle_barrier(const pending_barrier& pending) -> bool;
+
+    /// @brief `persist_append` + `settle_barrier`, for the call sites that
+    ///        cannot release `_mutex`.
+    ///
+    /// The configuration-change and no-op-entry sites, which run inside larger
+    /// critical sections that are not safe to break open. They are correct
+    /// (Requirement 1.3 — a lost configuration entry is worse than a lost
+    /// command, not better) and they do not coalesce, which costs nothing
+    /// measurable because none of them is on a hot path: at most one per
+    /// election and one per membership change.
+    ///
+    /// @throws whatever the barrier throws, which the surrounding try/catch at
+    ///         each site already handles.
+    auto persist_and_barrier_locked(const log_entry_type& entry) -> void;
+
     // Log operations
     auto append_log_entry(const log_entry_type& entry) -> void;
     [[nodiscard]] auto get_last_log_index() const -> log_index_type;
@@ -1023,9 +1109,17 @@ private:
     // argument needed. Does NOT touch _commit_index, _known_leader, or the
     // election timer — those remain exclusively handle_append_entries()'s own
     // concern. Must be called with _mutex held.
+    //
+    // `pending` collects what the appends owe a durability barrier. The caller
+    // takes that barrier with `_mutex` released and **before** it advertises
+    // the result — for `handle_append_entries` that means before it returns
+    // success (`.kiro/specs/durable-append-barrier/` Requirement 1.2). This
+    // function does not take it itself precisely because it does not own the
+    // response boundary; two callers have two different ones.
     [[nodiscard]] auto append_entries_with_consistency_check(
         log_index_type prev_log_index, term_id_type prev_log_term,
-        const std::vector<log_entry_type>& entries) -> append_entries_response_type;
+        const std::vector<log_entry_type>& entries, pending_barrier& pending)
+        -> append_entries_response_type;
 
     // Core cluster membership: _configuration.nodes(), unioned with old_nodes()
     // during joint consensus. Excludes learners() (Requirement 11.2).
@@ -1634,8 +1728,9 @@ auto node<Types>::submit_command(const std::vector<std::byte>& command,
     log_entry_type entry{
         ._term = _current_term, ._index = get_last_log_index() + 1, ._command = command};
 
+    pending_barrier pending;
     try {
-        _persistence.append_log_entry(entry);
+        persist_append(entry, pending);
         _log.push_back(entry);
 
         _logger.debug("Appended command to log", {{"node_id", node_id_to_string(_node_id)},
@@ -1759,9 +1854,24 @@ auto node<Types>::submit_command(const std::vector<std::byte>& command,
                    {"log_index", std::to_string(entry_index)},
                    {"timeout_ms", std::to_string(timeout.count())}});
 
-    // Step 3: Trigger replication to followers
-    // Release lock first — replicate_to_followers() acquires _mutex itself for each I/O phase
+    // Step 3: the durability barrier, before this entry counts toward anything
+    // (`.kiro/specs/durable-append-barrier/` Requirement 1.1).
+    //
+    // Release lock first — replicate_to_followers() acquires _mutex itself for each I/O phase,
+    // and the barrier must be waited for with the lock down or no two concurrent submissions
+    // can ever join the same fsync (Requirement 3.2). This is the call site group commit
+    // exists for: N clients submitting at once each leave their bytes with the engine and
+    // then queue behind one barrier.
     lock.unlock();
+    if (!settle_barrier(pending)) {
+        // Requirement 1.5: the append is not advertised — `_durable_log_index`
+        // was not advanced, so advance_commit_index() withholds this leader's
+        // own acknowledgement — and the failure reaches the caller rather than
+        // being logged and forgotten.
+        _commit_waiter.cancel_operations_for_index(
+            entry_index, "durability barrier failed; entry is not durable");
+        return future;
+    }
     replicate_to_followers();
 
     // Emit replication trigger metric
@@ -2207,7 +2317,10 @@ auto node<Types>::propose_admin_entry(entry_type type, std::vector<std::byte> pa
                          ._type = type};
 
     try {
-        _persistence.append_log_entry(entry);
+        // Under the lock, like the five configuration sites: an administration
+        // entry is proposed at most once per split or merge, so it is not
+        // worth breaking a critical section open to let it coalesce.
+        persist_and_barrier_locked(entry);
         _log.push_back(entry);
     } catch (const std::exception& e) {
         _logger.error("Failed to append administration entry",
@@ -3015,7 +3128,9 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
     _next_index[new_node] = joint_idx;
     _match_index[new_node] = 0;
     append_log_entry(joint_entry);
-    _persistence.append_log_entry(joint_entry);
+    // Requirement 1.3: a configuration entry gets exactly what a command entry
+    // gets. One that is lost is worse than a lost command, not better.
+    persist_and_barrier_locked(joint_entry);
     _configuration = joint_config;
     sync_peer2peer_membership();
 
@@ -3167,7 +3282,9 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
                                ._command = std::move(joint_bytes),
                                ._type = entry_type::configuration};
     append_log_entry(joint_entry);
-    _persistence.append_log_entry(joint_entry);
+    // Requirement 1.3: a configuration entry gets exactly what a command entry
+    // gets. One that is lost is worse than a lost command, not better.
+    persist_and_barrier_locked(joint_entry);
     _configuration = joint_config;
     sync_peer2peer_membership();
     _unresponsive_followers.erase(old_node);
@@ -3296,7 +3413,8 @@ auto node<Types>::add_learner(node_id_type new_node) -> future_type {
     _next_index[new_node] = entry_index;
     _match_index[new_node] = 0;
     append_log_entry(entry);
-    _persistence.append_log_entry(entry);
+    // Requirement 1.3, as above.
+    persist_and_barrier_locked(entry);
     _configuration = new_config;
     sync_peer2peer_membership();
 
@@ -3377,7 +3495,8 @@ auto node<Types>::remove_learner(node_id_type learner) -> future_type {
                          ._type = entry_type::configuration};
 
     append_log_entry(entry);
-    _persistence.append_log_entry(entry);
+    // Requirement 1.3, as above.
+    persist_and_barrier_locked(entry);
     _configuration = new_config;
     sync_peer2peer_membership();
     // _next_index/_match_index for `learner` are cleaned up once this entry commits
@@ -3506,7 +3625,9 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
     // already exist from the learner's time as a non-voting replica, and resetting them
     // would force a wasteful resend of already-replicated entries (Requirement 6.6).
     append_log_entry(joint_entry);
-    _persistence.append_log_entry(joint_entry);
+    // Requirement 1.3: a configuration entry gets exactly what a command entry
+    // gets. One that is lost is worse than a lost command, not better.
+    persist_and_barrier_locked(joint_entry);
     _configuration = joint_config;
     sync_peer2peer_membership();
 
@@ -3762,6 +3883,13 @@ auto node<Types>::initialize_from_storage() -> void {
             break;
         }
     }
+
+    // Everything that came back off the store is durable by definition — it
+    // survived. Starting the watermark anywhere lower would make a restarted
+    // leader withhold its own acknowledgement for entries it demonstrably
+    // holds, and it would never catch up: nothing re-barriers an entry that is
+    // already on disk.
+    _durable_log_index = get_last_log_index();
 
     _logger.info("Node initialized from storage", {{"node_id", node_id_to_string(_node_id)},
                                                    {"current_term", std::to_string(_current_term)},
@@ -4085,7 +4213,9 @@ template<raft_types Types>
 
 auto node<Types>::handle_append_entries(const append_entries_request_type& request)
     -> append_entries_response_type {
-    std::lock_guard<std::mutex> lock(_mutex);
+    // A `unique_lock` rather than a `lock_guard` because the durability
+    // barrier below is waited for with the lock down (Requirement 3.2).
+    std::unique_lock<std::mutex> lock(_mutex);
 
     _logger.debug("Received AppendEntries RPC",
                   {{"node_id", node_id_to_string(_node_id)},
@@ -4158,10 +4288,44 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     // Rules 3-5 (consistency check, conflict-truncation, append) — extracted into
     // append_entries_with_consistency_check() (.kiro/specs/peer2peer-log-replication/,
     // Requirement 6.1) so the peer-to-peer fetch path shares this exact logic.
+    pending_barrier pending;
     auto response = append_entries_with_consistency_check(
-        request.prev_log_index(), request.prev_log_term(), request.entries());
+        request.prev_log_index(), request.prev_log_term(), request.entries(), pending);
     if (!response.success()) {
         return response;
+    }
+
+    // Requirement 1.2: the barrier is taken **before** this returns success.
+    // Returning success is the follower's promise to the leader that it holds
+    // these entries, and the leader counts that promise toward a commit — so
+    // it is the exact boundary Raft's safety argument needs the fsync to be
+    // on the other side of.
+    //
+    // The lock is released across the wait so that a concurrent AppendEntries
+    // for another group sharing this engine can join the same barrier, which
+    // is the whole of Requirement 3.2.
+    //
+    // The lock is released **only when the barrier can actually block**. For a
+    // memory engine, or a file engine configured without barriers, there is no
+    // syscall to wait for and nothing to coalesce with, so breaking the
+    // critical section open would introduce a new interleaving window in every
+    // existing test and buy nothing (Requirements 5.1, 5.2).
+    if (pending._any) {
+        bool durable = false;
+        if (barrier_can_block()) {
+            lock.unlock();
+            durable = take_barrier(pending);
+            lock.lock();
+        } else {
+            durable = take_barrier(pending);
+        }
+        if (!durable) {
+            // Requirement 1.5: not advertised. The leader retries, and the
+            // entries stay in this node's log — they are simply not counted
+            // as held until a barrier does cover them.
+            return append_entries_response_type{_current_term, false, std::nullopt, std::nullopt};
+        }
+        mark_durable_locked(pending);
     }
 
     // Rule 6: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new
@@ -4198,7 +4362,8 @@ template<raft_types Types>
 
 auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_index,
                                                         term_id_type prev_log_term,
-                                                        const std::vector<log_entry_type>& entries)
+                                                        const std::vector<log_entry_type>& entries,
+                                                        pending_barrier& pending)
     -> append_entries_response_type {
     // Rule 3: Reply false if log doesn't contain an entry at prevLogIndex whose term matches
     // prevLogTerm (§5.3)
@@ -4285,6 +4450,13 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
 
                 // Persist truncation
                 _persistence.truncate_log(entry_index);
+                // Entries that no longer exist cannot be durable. Without this
+                // the watermark would still name a truncated index and a later
+                // barrier would appear to have covered entries this node threw
+                // away.
+                if (_durable_log_index >= entry_index) {
+                    _durable_log_index = entry_index - 1;
+                }
                 break;
             }
         }
@@ -4300,8 +4472,12 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
             append_log_entry(new_entry);
             log_modified = true;
 
-            // Persist the new entry
-            _persistence.append_log_entry(new_entry);
+            // Persist the new entry. One barrier covers every entry this RPC
+            // brought — the caller takes it before returning success, which is
+            // the follower's response boundary (Requirement 1.2). An
+            // AppendEntries carrying four entries therefore costs one fsync,
+            // not four.
+            persist_append(new_entry, pending);
 
             _logger.debug("Appended new log entry", {{"node_id", node_id_to_string(_node_id)},
                                                      {"index", std::to_string(entry_index)},
@@ -4528,6 +4704,14 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     // Persist snapshot
     _persistence.save_snapshot(snap);
     _persistence.save_current_term(_current_term);
+
+    // The snapshot covers everything through its last included index, and the
+    // truncation above may have removed entries the watermark named. Clamp to
+    // what is still in the log, then raise to the snapshot point — retained
+    // entries above it keep whatever durability they already had rather than
+    // being credited with the snapshot's.
+    _durable_log_index =
+        std::max(request.last_included_index(), std::min(_durable_log_index, get_last_log_index()));
 
     // Clean up snapshot buffer. Copied out first: `complete_snapshot_data` is a
     // reference INTO it, and the metric below still reads the size.
@@ -5386,7 +5570,10 @@ auto node<Types>::become_leader() -> void {
                                ._command = {},
                                ._type = entry_type::no_op};
     append_log_entry(no_op_entry);
-    _persistence.append_log_entry(no_op_entry);
+    // The no-op a new leader appends is a configuration-shaped entry for this
+    // purpose: the commit-index advance that establishes the leader's term
+    // depends on it, so it is barriered like the rest (Requirement 1.3).
+    persist_and_barrier_locked(no_op_entry);
 
     // Initialize leader-specific state
     auto last_log_idx = get_last_log_index();
@@ -5443,6 +5630,94 @@ auto node<Types>::get_last_log_term() const -> term_id_type {
 }
 
 // Placeholder implementations for remaining methods
+template<raft_types Types>
+auto node<Types>::persist_append(const log_entry_type& entry, pending_barrier& pending) -> void {
+    if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+        // The sequence comes back from the same critical section inside the
+        // engine that wrote the bytes. Keeping the highest one is all a caller
+        // needs to barrier a whole AppendEntries batch at once, because
+        // sequences are monotonic per engine.
+        const auto seq = _persistence.append_log_entry_sequenced(entry);
+        if (!pending._any || seq > pending._seq) {
+            pending._seq = seq;
+            pending._index = entry.index();
+        }
+        pending._any = true;
+    } else {
+        _persistence.append_log_entry(entry);
+        // No barrier to wait for, so the entry is as durable as it will ever
+        // be the moment the append returns. Advancing the watermark here keeps
+        // advance_commit_index()'s self-ack unconditional for these engines.
+        if (!pending._any || entry.index() > pending._index) {
+            pending._index = entry.index();
+        }
+        pending._any = true;
+    }
+}
+
+template<raft_types Types> auto node<Types>::barrier_can_block() const -> bool {
+    if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+        return _persistence.durability() == kythira::durability_class::barrier;
+    } else {
+        return false;
+    }
+}
+
+template<raft_types Types> auto node<Types>::take_barrier(const pending_barrier& pending) -> bool {
+    if (!pending._any) {
+        return true;
+    }
+    if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+        try {
+            _persistence.barrier_through(pending._seq);
+        } catch (const std::exception& e) {
+            // Requirement 1.5: surfaced, not logged-and-continued. The caller
+            // turns this into a failed future or a false AppendEntries
+            // response; what it must not do is advertise the append.
+            _logger.error("Durability barrier failed",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"log_index", std::to_string(pending._index)},
+                           {"error", e.what()}});
+            _metrics.set_metric_name("raft_durability_barrier_failed");
+            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+            _metrics.add_one();
+            _metrics.emit();
+            return false;
+        }
+    }
+    return true;
+}
+
+template<raft_types Types>
+auto node<Types>::mark_durable_locked(const pending_barrier& pending) -> void {
+    if (pending._any && pending._index > _durable_log_index) {
+        _durable_log_index = pending._index;
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::settle_barrier(const pending_barrier& pending) -> bool {
+    if (!take_barrier(pending)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(_mutex);
+    mark_durable_locked(pending);
+    return true;
+}
+
+template<raft_types Types>
+auto node<Types>::persist_and_barrier_locked(const log_entry_type& entry) -> void {
+    if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+        const auto seq = _persistence.append_log_entry_sequenced(entry);
+        _persistence.barrier_through(seq);
+    } else {
+        _persistence.append_log_entry(entry);
+    }
+    if (entry.index() > _durable_log_index) {
+        _durable_log_index = entry.index();
+    }
+}
+
 template<raft_types Types>
 
 auto node<Types>::append_log_entry(const log_entry_type& entry) -> void {
@@ -6204,11 +6479,27 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
                         // _known_leader, or the election timer (Requirement 6.3).
                         append_entries_response_type consistency_response;
                         log_index_type new_last_index{};
+                        pending_barrier pending;
                         {
                             std::lock_guard<std::mutex> lock(this->_mutex);
                             consistency_response = this->append_entries_with_consistency_check(
-                                from_index - 1, response.prev_log_term(), response.entries());
+                                from_index - 1, response.prev_log_term(), response.entries(),
+                                pending);
                             new_last_index = this->get_last_log_index();
+                        }
+
+                        // The same barrier the leader-driven path takes, at
+                        // this path's own response boundary: a peer-fetched
+                        // entry is advertised through progress gossip, and an
+                        // entry this node has not made durable is one it does
+                        // not hold (Requirement 1.2).
+                        if (consistency_response.success() && pending._any &&
+                            !this->settle_barrier(pending)) {
+                            this->_logger.debug(
+                                "Peer-to-peer catch-up barrier failed",
+                                {{"node_id", node_id_to_string(this->_node_id)},
+                                 {"source_peer", node_id_to_string(source.node_id)}});
+                            return;
                         }
 
                         if (consistency_response.success()) {
@@ -6264,7 +6555,18 @@ auto node<Types>::advance_commit_index() -> void {
             std::size_t cnt = 0;
             for (const auto& nid : node_set) {
                 if (nid == _node_id) {
-                    cnt++;  // leader self-ack
+                    // The leader's self-ack, and the one place
+                    // `.kiro/specs/durable-append-barrier/` Requirement 1.1
+                    // changes what a commit means: an entry the leader has
+                    // written but not yet barriered is an entry the leader
+                    // does not hold, and it must not be counted toward the
+                    // quorum that commits it. For an engine with no barrier —
+                    // and for `memory_persistence_engine`, whose barrier is a
+                    // no-op — `_durable_log_index` tracks the last append, so
+                    // this is unconditional again and nothing changes.
+                    if (_durable_log_index >= n) {
+                        cnt++;
+                    }
                     continue;
                 }
                 if (auto it = _match_index.find(nid); it != _match_index.end() && it->second >= n) {
@@ -6483,7 +6785,8 @@ auto node<Types>::apply_committed_entries() -> void {
                                            ._command = std::move(c_new_bytes),
                                            ._type = entry_type::configuration};
                 append_log_entry(c_new_entry);
-                _persistence.append_log_entry(c_new_entry);
+                // Requirement 1.3, as at the other five configuration sites.
+                persist_and_barrier_locked(c_new_entry);
                 _logger.info("Appended C_new entry after joint commit",
                              {{"node_id", node_id_to_string(_node_id)},
                               {"c_new_index", std::to_string(c_new_entry.index())}});
