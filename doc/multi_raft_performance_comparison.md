@@ -6,9 +6,9 @@ This document answers one question — *how close is this implementation's
 multi-Raft write and read path to published numbers* — and it spends most of its
 length on why the honest answer is narrower than the question.
 
-It reports what `tests/multi_raft_http_benchmark_test` measured, on two machines,
-under the deployment tiers `.kiro/specs/multi-raft-performance/requirements.md`
-Requirement 3 defines. It carries the external comparison register in full, and
+It reports what `tests/multi_raft_http_benchmark_test` measured, on three
+machines and two instruction sets, under the deployment tiers
+`.kiro/specs/multi-raft-performance/requirements.md` Requirement 3 defines. It carries the external comparison register in full, and
 it keeps like-for-like comparisons and indicative ones in separate tables that
 are never interleaved.
 
@@ -16,9 +16,12 @@ are never interleaved.
 there is currently no like-for-like comparison in this document, and there
 cannot be one yet.** Requirement 3.3 forbids publishing a like-for-like claim
 from any tier below C, and every row measured to date is Tier A or Tier B — all
-hosts in one process, over loopback, with `memory_persistence_engine`. Every
-external number in the register was measured on a cluster of separate machines
-with a real disk under it. What follows is therefore an *indicative* comparison
+hosts in one process, over loopback. Most of them use `memory_persistence_engine`
+and have no disk in the path at all; the three durability rows do have a real
+file-backed log, and one of those has real fsyncs, but they are Tier B like
+everything else and a barrier covers only a fifth of their log. Every external
+number in the register was measured on a cluster of separate machines with a
+real disk under it and every entry durable. What follows is therefore an *indicative* comparison
 throughout, plus a set of structural findings that do not depend on the
 comparison at all and are the substance of the work.
 
@@ -26,8 +29,9 @@ The second headline is about the measuring instrument rather than the system:
 **a benchmark row of this suite became quotable for the first time on cloud
 hardware.** Every throughput row taken on the development machine carries
 `UNSTABLE` or `machine was not quiet at start`; on one `c5.2xlarge` every row of
-a five-case sweep came back `stable` with a 0.8–3.9% spread, twice. Several
-findings below exist only because that happened.
+a five-case sweep came back `stable` with a 0.8–3.9% spread, twice, and on a
+`c7g.2xlarge` at 0.7–1.5%. Several findings below exist only because that
+happened, and one two-session conclusion did not survive it.
 
 ## Quick Start
 
