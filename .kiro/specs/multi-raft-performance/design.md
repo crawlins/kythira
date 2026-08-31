@@ -293,7 +293,7 @@ reasoning that fixes each value:
 | nodes / groups | 3 / 4 | the shape the static-cluster suite already validates |
 | stripes | 4 | one group per stripe, so a tick's blocking I/O does not serialize across groups |
 | tick interval | 2 ms | fast relative to the heartbeat; swept separately for H6 |
-| election timeout | 2000–4000 ms | a cpp-httplib tick's send phase blocks for a ~83 ms round trip per follower; a 300 ms timeout would have followers deposing a leader that is merely mid-heartbeat |
+| election timeout | 2000–4000 ms | a cpp-httplib tick's send phase blocks for a ~83 ms round trip per follower; a 300 ms timeout would have followers deposing a leader that is merely mid-heartbeat. **That round trip was Nagle and is gone** — `tcp_nodelay` now defaults to `true` and the same row measures a 9.8 ms p50 rather than 252 ms, with 0 of 5 windows containing an election against 5 of 5 before. The 2000–4000 ms figure is therefore no longer justified by this reason and is **deliberately left in place**: lowering it moves every row in the suite, and belongs to a change that can show its own before-and-after |
 | heartbeat | 400 ms | as above |
 | hibernation | off | a population that hibernated mid-window would be measuring hibernation |
 | policy / split-merge | disabled, 1 h interval | so neither lands inside a timed window (Requirement 7.8) |
@@ -371,7 +371,9 @@ Every gate that is off announces the rows it dropped (Requirement 17.2).
 
 **cpp-httplib gets a smaller operation budget**, and this is the only per-row
 deviation. Its vendored header defaults `CPPHTTPLIB_TCP_NODELAY` to `false`, so
-each small RPC body pays the classic Nagle/delayed-ACK round trip — measured at
+each small RPC body **used to pay** the classic Nagle/delayed-ACK round trip
+(`tcp_nodelay` now defaults to `true`; see Requirement 9's resolution note) —
+measured at
 12 ops/sec against Beast's 3,527 on a bare ping-pong
 (`doc/http_transport_performance_comparison.md`, July 28 2026). Throughput stays
 comparable because it is a rate; the tail does not, which is what

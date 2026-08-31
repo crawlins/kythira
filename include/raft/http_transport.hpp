@@ -92,6 +92,21 @@ struct cpp_httplib_client_config {
     std::string min_tls_version{"TLSv1.2"};
     std::string max_tls_version{"TLSv1.3"};
     std::string user_agent{"raft-cpp-httplib/1.0"};
+
+    /// @brief Disable Nagle's algorithm on the socket.
+    ///
+    /// **Default `true`, which is a change of behaviour and a deliberate one.**
+    /// cpp-httplib's own default (`CPPHTTPLIB_TCP_NODELAY`) is `false`, so a
+    /// small write waits for an ACK the peer's delayed-ACK timer will not send
+    /// for 40 ms. That is the wrong default for RPC traffic, where every
+    /// message is small and every one is on a latency path.
+    ///
+    /// It is a field rather than an unconditional call so that a row taken
+    /// before this existed can be re-taken as it was originally measured.
+    /// `.kiro/specs/multi-raft-performance/` compares rows across sessions and
+    /// machines; a behaviour change with no way back makes every such
+    /// comparison a comparison of two binaries.
+    bool tcp_nodelay{true};
 };
 
 // Server configuration structure
@@ -107,6 +122,21 @@ struct cpp_httplib_server_config {
     std::string cipher_suites{};
     std::string min_tls_version{"TLSv1.2"};
     std::string max_tls_version{"TLSv1.3"};
+
+    /// @brief Disable Nagle's algorithm on the socket.
+    ///
+    /// **Default `true`, which is a change of behaviour and a deliberate one.**
+    /// cpp-httplib's own default (`CPPHTTPLIB_TCP_NODELAY`) is `false`, so a
+    /// small write waits for an ACK the peer's delayed-ACK timer will not send
+    /// for 40 ms. That is the wrong default for RPC traffic, where every
+    /// message is small and every one is on a latency path.
+    ///
+    /// It is a field rather than an unconditional call so that a row taken
+    /// before this existed can be re-taken as it was originally measured.
+    /// `.kiro/specs/multi-raft-performance/` compares rows across sessions and
+    /// machines; a behaviour change with no way back makes every such
+    /// comparison a comparison of two binaries.
+    bool tcp_nodelay{true};
 };
 
 // HTTP client implementation

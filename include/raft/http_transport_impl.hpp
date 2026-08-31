@@ -1039,6 +1039,14 @@ auto cpp_httplib_client<Types>::get_or_create_client(std::uint64_t node_id) -> h
         // Enable keep-alive
         client->set_keep_alive(true);
 
+        // Nagle off by default. cpp-httplib leaves it ON
+        // (`CPPHTTPLIB_TCP_NODELAY` defaults to false), which makes a small
+        // write wait for an ACK the peer's delayed-ACK timer will not send for
+        // 40 ms — and every RPC on this path is a small write on a latency
+        // path. See `cpp_httplib_client_config::tcp_nodelay` for why it is a
+        // field rather than an unconditional call.
+        client->set_tcp_nodelay(_config.tcp_nodelay);
+
     } catch (const std::exception& e) {
         throw kythira::ssl_configuration_error(
             std::format("Failed to create HTTP client for node {}: {}", node_id, e.what()));
@@ -1435,6 +1443,10 @@ cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uin
         _http_server->set_payload_max_length(_config.max_request_body_size);
         _http_server->set_read_timeout(_config.request_timeout.count());
         _http_server->set_write_timeout(_config.request_timeout.count());
+        // See the client's equivalent. A response is as small and as
+        // latency-bound as the request that provoked it, so setting this on
+        // one side only would leave half the round trip stalled.
+        _http_server->set_tcp_nodelay(_config.tcp_nodelay);
     }
 }
 
@@ -1589,6 +1601,11 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> void {
     _ssl_server->set_payload_max_length(_config.max_request_body_size);
     _ssl_server->set_read_timeout(_config.request_timeout.count());
     _ssl_server->set_write_timeout(_config.request_timeout.count());
+    // **The site that is easy to miss.** The SSL server is built in a
+    // different function from the plain one, so a fix applied to the client
+    // and the plain server leaves every TLS deployment on the old behaviour
+    // with nothing to indicate it.
+    _ssl_server->set_tcp_nodelay(_config.tcp_nodelay);
 #else
     throw kythira::ssl_configuration_error("SSL support not available (OpenSSL not enabled)");
 #endif
