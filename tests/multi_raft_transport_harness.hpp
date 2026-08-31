@@ -728,6 +728,9 @@ struct durability_counters {
     std::atomic<std::uint64_t> _empty_batches{0};
     /// Log entries handed to `append_log_entry`, batched or not.
     std::atomic<std::uint64_t> _entries{0};
+    /// Of those, the ones appended while their store's batch was open. See
+    /// `durability_snapshot::_entries_batched` for why the difference matters.
+    std::atomic<std::uint64_t> _entries_batched{0};
 };
 
 /// @brief One group's store, either memory- or file-backed, with the barrier
@@ -797,7 +800,16 @@ public:
         if (_state->_counters != nullptr) {
             _state->_counters->_entries.fetch_add(1, std::memory_order_relaxed);
         }
-        _state->_in_batch.fetch_add(1, std::memory_order_relaxed);
+        // `_batch_open` is this wrapper's own flag rather than the engine's
+        // `batch_open()`, because the engine's answer is taken under its mutex
+        // and this is on the hot path of every append. It is written only by
+        // the host's tick thread, in `open_barrier` / `close_barrier`.
+        if (_state->_batch_open.load(std::memory_order_relaxed)) {
+            _state->_in_batch.fetch_add(1, std::memory_order_relaxed);
+            if (_state->_counters != nullptr) {
+                _state->_counters->_entries_batched.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
         dispatch([&](auto& e) { e.append_log_entry(entry); });
     }
     auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
@@ -836,6 +848,7 @@ public:
         }
         _state->_in_batch.store(0, std::memory_order_relaxed);
         _state->_file->begin_batch();
+        _state->_batch_open.store(true, std::memory_order_relaxed);
     }
     auto close_barrier() -> void {
         if (!_state->_file) {
@@ -855,6 +868,7 @@ public:
         // ticks in which nothing happened, and report a system that fsyncs far
         // more often and far more cheaply than it does.
         const bool flushed = _state->_in_batch.load(std::memory_order_relaxed) != 0;
+        _state->_batch_open.store(false, std::memory_order_relaxed);
         _state->_file->commit_batch();
         if (_state->_counters != nullptr) {
             if (flushed) {
@@ -866,6 +880,7 @@ public:
     }
     auto abort_barrier() -> void {
         if (_state->_file) {
+            _state->_batch_open.store(false, std::memory_order_relaxed);
             _state->_file->abort_batch();
         }
     }
@@ -878,6 +893,9 @@ private:
         /// Appends forwarded since the last `open_barrier()`. Only read by
         /// `close_barrier()`, on the same host driver thread that opened it.
         std::atomic<std::uint64_t> _in_batch{0};
+        /// Whether a batch is open on this store right now. Written by the
+        /// host's tick thread and read by every appending thread.
+        std::atomic<bool> _batch_open{false};
     };
 
     template<typename F> auto dispatch(F&& f) -> decltype(auto) {
@@ -1106,6 +1124,8 @@ public:
             ._barriers = _durability_counters._barriers.load(std::memory_order_relaxed),
             ._empty_batches = _durability_counters._empty_batches.load(std::memory_order_relaxed),
             ._entries = _durability_counters._entries.load(std::memory_order_relaxed),
+            ._entries_batched =
+                _durability_counters._entries_batched.load(std::memory_order_relaxed),
         };
     }
 

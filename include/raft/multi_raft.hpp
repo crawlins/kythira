@@ -159,6 +159,18 @@ enum class hibernation_mode : std::uint8_t {
 /// spans N groups, and no wrapper can manufacture one from N independent
 /// engines. A caller holding N independent engines can supply a controller
 /// that fans out across them, but that is N barriers wearing one name.
+///
+/// **And a supplied controller does not make a host durable, which is a
+/// sharper limit than the one above.** The batch opens and closes inside one
+/// `tick()` call, around the persist phase — but a proposal appends to the
+/// leader's log on the CALLER's thread, and a follower appends on its RPC
+/// handler's thread. Neither runs inside that window. Measured on this
+/// project's own benchmark with a controller supplied exactly as described
+/// here, a barrier covered **19.9% and 24.5%** of appended entries in two
+/// independent runs; the rest reached the page cache and stopped. See
+/// .kiro/specs/multi-raft-performance/ task 19. Covering every append needs
+/// the barrier at the append site rather than around the tick, which is a
+/// design decision this comment records and does not make.
 struct tick_batch_controller {
     std::function<void()> _begin;
     std::function<void()> _commit;
