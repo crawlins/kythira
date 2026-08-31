@@ -755,14 +755,15 @@ BOOST_AUTO_TEST_CASE(write_amplification_by_encoding,
 /// fsyncs rarely because it is doing nothing look identical in the first column
 /// and nothing alike in the second.
 ///
-/// The `barrier` column is the honest one and says so in the table rather than
-/// only in a doc comment. `multi_raft`'s tick opens ONE batch across every
-/// ready group, but each group owns an independent
-/// `file_persistence_engine` at its own directory, so a commit fans out to N
-/// engines and issues N fsyncs. `tick_batch_controller`'s own documentation is
-/// explicit that no wrapper can manufacture one barrier for N groups out of N
-/// independent stores; this is N barriers wearing one name and the row must not
-/// be quoted as though it were the other thing.
+/// The `barriered` column is the honest one and says so in the table rather
+/// than only in a doc comment: it is the fraction of appended entries a
+/// completed barrier covered before the node advertised them, and **only 100%
+/// is a durable row**. It read 19.9% and 24.5% when this axis was first
+/// measured, with a `tick_batch_controller` supplied exactly as
+/// `multi_raft.hpp` then documented; `.kiro/specs/durable-append-barrier/`
+/// moved the barrier to the boundary where `node` advertises an append and it
+/// reads 100% now. The column stays because a durability claim that is not a
+/// number is the thing that let the first one go unnoticed.
 auto report_durability_comparison(const std::vector<repeated_result>& rows) -> void {
     if (rows.empty()) {
         return;
@@ -800,33 +801,32 @@ auto report_durability_comparison(const std::vector<repeated_result>& rows) -> v
             out << "  [" << to_string(row.verdict()) << "]";
         }
     }
-    out << "\n      `barriered` is the fraction of appended entries a barrier ever covered, and "
-           "it is the column that decides whether a row is durable at all. It is NOT 100% here, "
-           "and the reason is structural: `multi_raft`'s tick opens the batch, runs the persist "
-           "phase and commits it inside one `tick()` call, but a proposal appends on the "
-           "CALLER's thread and a follower appends on its RPC handler's thread. An append that "
-           "lands between two ticks reaches the page cache and no barrier ever reaches it."
-        << "\n      So `file/barrier` is not a durable configuration either — it is a partially "
-           "barriered one, and `entries/fsync` counts only the covered entries so that it is not "
-           "quietly averaged over entries that were never fsynced."
+    out << "\n      `barriered` is the fraction of appended entries a completed barrier covered "
+           "before the node advertised them, and it is the column that decides whether a row is "
+           "durable at all. **Only 100% is a durable row.** It read 19.9% and 24.5% before "
+           "`.kiro/specs/durable-append-barrier/`, when the barrier was taken around "
+           "`multi_raft::tick()`'s persist phase — the tick runs on the host's driver thread and "
+           "the appends run on the client's and the transport's, so a barrier there covered "
+           "whatever happened to race into its window."
+        << "\n      `entries/fsync` counts ONLY the covered entries, so it cannot be inflated by "
+           "entries no barrier reached. That is not a hypothetical: this axis reported 8.45 "
+           "entries per fsync on its first draft, over a configuration where a barrier had "
+           "touched a fifth of them."
         << "\n      `file/buffered` issues NO barrier at all and its zeroes are not a "
-           "measurement error: outside a batch, `file_persistence_engine::append_log_entry` "
-           "flushes the ofstream and stops, and `sync_log_and_directory()` is reached only from "
-           "`commit_batch()`. Requirement 3.5 requires that row be read as NOT DURABLE."
-        << "\n      `file/barrier` is N barriers wearing one name, not one barrier for N groups: "
-           "the tick opens one batch across every ready group, but each group owns an independent "
-           "engine at its own directory, so a commit fans out to one fsync per group."
-        << "\n      `entries/fsync` counts only batches that flushed. A tick in which no group "
-           "had anything to append closes an empty batch, which touches no disk; folding those in "
-           "would divide the entry total by ticks in which nothing happened and report a system "
-           "that fsyncs far more often and far more cheaply than it does."
+           "measurement error — the engine is constructed with barriers disabled, so the log "
+           "file is written and the stream flushed and no fsync is ever requested. It survives a "
+           "process death and loses everything to a power cut. Requirement 3.5 requires that row "
+           "be read as NOT DURABLE, and `file_persistence_engine::durability()` answers "
+           "`buffered` for it rather than leaving a reader to remember."
+        << "\n      `empty batches` is the group-commit yield: barrier requests that issued no "
+           "syscall because a concurrent barrier had already covered the caller's sequence. A "
+           "large number here against a small `barriers` is coalescing working."
         << "\n      The memory row is the control and the ONLY one of the three whose durability "
            "barrier is genuinely zero. It is here to price the other two, not to be quoted.";
     BOOST_TEST_MESSAGE(out.str());
 }
 
-/// @brief What durability costs, and whether a file-backed log is durable at
-///        all without a batch controller.
+/// @brief What durability costs, now that it is real.
 ///
 /// **This is NOT Tier D**, and the distinction is the first thing the row has
 /// to carry. Requirement 3.1 defines Tier D as *Tier C plus* `file_persistence`
@@ -837,24 +837,27 @@ auto report_durability_comparison(const std::vector<repeated_result>& rows) -> v
 /// forbids a like-for-like external comparison from it, and Requirement 3.7
 /// asks that the missing tier be named rather than the claim quietly narrowed.
 ///
-/// Three arms, and the middle one exists because of what reading
-/// `multi_raft.hpp` for this case turned up. `tick_batch_controller`'s
-/// documentation said that without a controller `tick()` falls back to
-/// per-group batching. It does not: nothing in `include/` or `src/` calls
-/// `begin_batch()` except a conditional forwarder that nothing calls either, so
-/// the caller-supplied controller is the only thing in the codebase that opens
-/// a batch. `file_buffered` is that configuration, and its purpose is to make
-/// the consequence measurable rather than merely stated — a file-backed log
-/// with no controller writes to the page cache and never fsyncs.
+/// Three arms. The middle one, `file_buffered`, is the file-backed path with
+/// barriers switched off: it pays the JSON encode and the write and none of the
+/// fsync, which is what makes the two halves of the cost separable. It is not
+/// durable and every row that carries it says so.
+///
+/// **This axis is where the durability defect was found**, and the history is
+/// worth keeping beside the numbers. Its first run reported `barriered` at
+/// 19.9% and 24.5% over two runs — a `tick_batch_controller` supplied exactly
+/// as `multi_raft.hpp` then documented, covering a fifth of the appends
+/// because the tick is not where appends happen. That produced
+/// `.kiro/specs/durable-append-barrier/`, which moved the barrier to the
+/// boundary where `node` advertises an append. This axis now reads **100%**,
+/// and the `barriered` column stays because a durability claim that is not a
+/// number is exactly what let the first one stand.
 ///
 /// The prediction, written before the run: `file/buffered` should cost little
 /// against `memory` — an ofstream append and a flush to page cache — and
-/// `file/barrier` should cost a great deal, because a gp3 volume at 3000 IOPS
-/// cannot absorb one fsync per group per tick at a 2 ms cadence. Four groups at
-/// 500 ticks per second per host is 2000 fsyncs per second per host before the
-/// workload contributes anything, which is already most of the volume's budget.
-/// If `file/barrier` is *not* much slower, the barrier is not reaching the
-/// device and the row is wrong rather than good.
+/// `file/barrier` should cost a great deal, because every advertised append now
+/// waits on a real barrier and group commit only coalesces the appends that are
+/// concurrently outstanding. If `file/barrier` is *not* much slower, the barrier
+/// is not reaching the device and the row is wrong rather than good.
 BOOST_AUTO_TEST_CASE(write_throughput_by_durability,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
     BOOST_TEST_MESSAGE(
@@ -885,29 +888,45 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_durability,
     }
     report_durability_comparison(rows);
     // The claim the middle arm exists to make, asserted rather than left to a
-    // reader comparing two columns. If a future change gives `tick()` a
-    // batching fallback, this is the check that notices.
+    // reader comparing two columns. If a future change makes the buffered arm
+    // fsync after all, this is the check that notices — and its label would be
+    // wrong, which is worse than its number being wrong.
     BOOST_CHECK_MESSAGE(
         rows[1].median_run()._durability_counts._barriers == 0,
-        "file/buffered issued a durability barrier — `tick()` has acquired a batching fallback, "
-        "which would make this arm durable and its label wrong");
+        "file/buffered issued a durability barrier — the arm that exists to price the write "
+        "without the fsync is paying for one, and its NOT DURABLE label is now wrong");
     BOOST_CHECK_MESSAGE(rows[2].median_run()._durability_counts._barriers > 0,
-                        "file/barrier issued NO durability barrier — the controller this harness "
-                        "supplies is not reaching the engines, and the row is not durable");
-    // Recorded, not asserted, and the distinction is deliberate. What fraction
-    // of appends land inside a tick's persist window is a property of the
-    // arrival process and the tick cadence, so a bound here would be a
-    // threshold nobody measured. What must never happen silently is the
-    // fraction being read as 100%, which is why it is a printed column and why
-    // this message names the number rather than a verdict.
+                        "file/barrier issued NO durability barrier — the barrier is not reaching "
+                        "the engines, and the row is not durable");
+
+    // **Asserted, not merely recorded**, which is the change
+    // `.kiro/specs/durable-append-barrier/` earned. Requirement 2.2 of that
+    // spec: a coverage fraction other than 1.0 in a configuration claiming
+    // durability is a failure, not a slow row. This used to be a printed note
+    // precisely because the fraction was 19.9–24.5% and a bound would have
+    // been a threshold nobody measured.
+    //
+    // The bound is 0.99 rather than 1.0 for one reason, and it is about the
+    // instrument rather than the system: both counters are differenced around
+    // the measured window while the hosts keep ticking, so an append that
+    // lands inside the window and whose barrier settles just after the closing
+    // snapshot is counted in the denominator and not yet in the numerator. At
+    // ~1200 entries that is worth at most a few tenths of a percent. Anything
+    // materially below 1.0 is the defect, not the sampling.
     {
+        const auto covered = rows[2].median_run()._durability_counts.barriered_fraction();
         std::ostringstream note;
-        note << "  file/barrier: a barrier covered "
-             << 100.0 * rows[2].median_run()._durability_counts.barriered_fraction()
-             << "% of appended entries. Anything under 100% means the rest reached the page "
-                "cache and stopped, so this configuration is PARTIALLY barriered and is not a "
-                "durable one.";
+        note << "  file/barrier: a barrier covered " << 100.0 * covered << "% of appended entries ("
+             << rows[2].median_run()._durability_counts._entries_batched << " of "
+             << rows[2].median_run()._durability_counts._entries << ").";
         BOOST_TEST_MESSAGE(note.str());
+        BOOST_CHECK_MESSAGE(covered >= 0.99,
+                            "file/barrier covered only "
+                                << 100.0 * covered
+                                << "% of appended entries. The rest reached the page cache and "
+                                   "stopped, so this configuration is PARTIALLY barriered and is "
+                                   "NOT durable (Requirement 2.2 of "
+                                   ".kiro/specs/durable-append-barrier/)");
     }
 #else
     BOOST_TEST_MESSAGE("  durability sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");

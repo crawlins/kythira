@@ -719,17 +719,22 @@ private:
 /// `include/`. This lives on the harness side of `benchmark_persistence_engine`
 /// for exactly that reason: the wrapper counts what it forwards.
 struct durability_counters {
-    /// `commit_batch()` calls that actually flushed. A batch that closed with
-    /// nothing buffered issues no barrier, and counting it would divide the
-    /// entry count by a number that includes ticks where nothing happened.
+    /// Barriers the engines actually issued — one `fsync` each. Read from
+    /// `file_persistence_engine::barriers_issued()` rather than counted here,
+    /// because whether a `barrier_through()` call *performed* a syscall or
+    /// joined somebody else's is not observable from outside it, and that
+    /// distinction is exactly what group commit is.
     std::atomic<std::uint64_t> _barriers{0};
-    /// Batches that closed empty. Reported separately for the same reason
-    /// empty AppendEntries are: a quiet tick is not a cheap fsync.
+    /// `barrier_through()` calls that issued no syscall because a concurrent
+    /// barrier had already covered the caller's sequence. **This is the
+    /// group-commit yield**, and it is reported separately for the same reason
+    /// an empty batch used to be: a request that cost nothing is not a cheap
+    /// fsync, it is no fsync.
     std::atomic<std::uint64_t> _empty_batches{0};
-    /// Log entries handed to `append_log_entry`, batched or not.
+    /// Log entries handed to the store.
     std::atomic<std::uint64_t> _entries{0};
-    /// Of those, the ones appended while their store's batch was open. See
-    /// `durability_snapshot::_entries_batched` for why the difference matters.
+    /// Of those, the ones a completed barrier covered before the node
+    /// advertised them. See `durability_snapshot::_entries_batched`.
     std::atomic<std::uint64_t> _entries_batched{0};
 };
 
@@ -773,9 +778,17 @@ public:
 
     /// File-backed at `dir`. `counters` may be null; a row that does not
     /// report durability does not have to supply one.
-    benchmark_persistence_engine(std::filesystem::path dir, durability_counters* counters)
+    ///
+    /// `barriers_enabled` is what separates the two file arms now that the
+    /// barrier lives inside `node`: `true` is `durability_mode::file_barrier`,
+    /// `false` is `file_buffered`, which writes through to the operating system
+    /// and takes no barrier at all and is labelled **NOT DURABLE** wherever it
+    /// appears (Requirement 3.5). The engine's own `durability()` says which,
+    /// so nothing downstream has to infer it.
+    benchmark_persistence_engine(std::filesystem::path dir, durability_counters* counters,
+                                 bool barriers_enabled = true)
         : _state(std::make_shared<state>()) {
-        _state->_file = std::make_unique<file_engine_type>(std::move(dir));
+        _state->_file = std::make_unique<file_engine_type>(std::move(dir), barriers_enabled);
         _state->_counters = counters;
     }
 
@@ -797,20 +810,71 @@ public:
     }
 
     auto append_log_entry(const log_entry_t& entry) -> void {
+        (void)append_log_entry_sequenced(entry);
+    }
+
+    // ── barriered_persistence_engine ─────────────────────────────────────────
+    //
+    // **The question this wrapper asks changed** with
+    // `.kiro/specs/durable-append-barrier/` task 8. It used to be "was a batch
+    // open when this append passed through", which is the right question for a
+    // batch opened around a tick and the wrong one for a barrier taken at a
+    // response boundary — under group commit an append is covered when a
+    // barrier whose sequence reaches it *completes*, which may be a barrier
+    // some other thread was already running.
+    //
+    // The wrapper can answer that because it sees both calls, and Requirement
+    // 8.2 of `.kiro/specs/multi-raft-performance/` is why it, rather than the
+    // engine, is the thing answering.
+
+    auto append_log_entry_sequenced(const log_entry_t& entry) -> kythira::write_sequence {
         if (_state->_counters != nullptr) {
             _state->_counters->_entries.fetch_add(1, std::memory_order_relaxed);
         }
-        // `_batch_open` is this wrapper's own flag rather than the engine's
-        // `batch_open()`, because the engine's answer is taken under its mutex
-        // and this is on the hot path of every append. It is written only by
-        // the host's tick thread, in `open_barrier` / `close_barrier`.
-        if (_state->_batch_open.load(std::memory_order_relaxed)) {
-            _state->_in_batch.fetch_add(1, std::memory_order_relaxed);
-            if (_state->_counters != nullptr) {
-                _state->_counters->_entries_batched.fetch_add(1, std::memory_order_relaxed);
+        const auto seq = dispatch([&](auto& e) { return e.append_log_entry_sequenced(entry); });
+        if (_state->_file) {
+            std::lock_guard lock(_state->_mu);
+            _state->_pending.push_back(seq);
+        }
+        return seq;
+    }
+
+    auto barrier_through(kythira::write_sequence seq) -> void {
+        if (!_state->_file) {
+            // A memory row has nothing to make durable and pays nothing for
+            // saying so (Requirement 5.1). Deliberately no coverage counted:
+            // reporting 100% barriered for a store with no barrier would be a
+            // true sentence read as a false one.
+            return;
+        }
+        const auto before = _state->_file->barriers_issued();
+        _state->_file->barrier_through(seq);
+        const auto after = _state->_file->barriers_issued();
+
+        if (_state->_counters != nullptr) {
+            if (after > before) {
+                _state->_counters->_barriers.fetch_add(after - before, std::memory_order_relaxed);
+            } else {
+                // Covered by a barrier somebody else was already running —
+                // this call cost no syscall at all. That is the coalescing.
+                _state->_counters->_empty_batches.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        dispatch([&](auto& e) { e.append_log_entry(entry); });
+        settle_covered();
+    }
+
+    [[nodiscard]] auto durable_through() const -> kythira::write_sequence {
+        if (_state->_file) {
+            return _state->_file->durable_through();
+        }
+        return _state->_memory->durable_through();
+    }
+
+    [[nodiscard]] auto durability() const -> kythira::durability_class {
+        if (_state->_file) {
+            return _state->_file->durability();
+        }
+        return kythira::durability_class::none;
     }
     auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
         return dispatch([&](auto& e) { return e.get_log_entry(index); });
@@ -834,68 +898,42 @@ public:
         dispatch([&](auto& e) { e.delete_log_entries_before(index); });
     }
 
-    // ── The batch, reached through the handle rather than the concept ────────
-    //
-    // Deliberately NOT named begin_batch/commit_batch/abort_batch. Satisfying
-    // `batched_persistence_engine` would change what `group_scoped_persistence`
-    // exposes and therefore what a future `tick()` could call, which is a
-    // behaviour change smuggled in as a benchmark. The harness's controller
-    // calls these by name on the handles it kept.
-
-    auto open_barrier() -> void {
-        if (!_state->_file) {
-            return;
-        }
-        _state->_in_batch.store(0, std::memory_order_relaxed);
-        _state->_file->begin_batch();
-        _state->_batch_open.store(true, std::memory_order_relaxed);
-    }
-    auto close_barrier() -> void {
-        if (!_state->_file) {
-            return;
-        }
-        // Whether this commit will actually fsync is decided by whether
-        // anything was buffered, and `file_persistence_engine` does not expose
-        // that. Counting the appends this handle forwarded since
-        // `open_barrier()` answers it from the outside, which is the point:
-        // Requirement 8.2 keeps the counter out of production code, so the
-        // wrapper counts what it forwards rather than asking the engine.
-        //
-        // The distinction is not pedantic. `commit_batch()` returns without
-        // touching the disk when its buffer is empty, and a tick in which no
-        // group had anything to append is most ticks in a quiet window.
-        // Folding those into the barrier count would divide the entry total by
-        // ticks in which nothing happened, and report a system that fsyncs far
-        // more often and far more cheaply than it does.
-        const bool flushed = _state->_in_batch.load(std::memory_order_relaxed) != 0;
-        _state->_batch_open.store(false, std::memory_order_relaxed);
-        _state->_file->commit_batch();
-        if (_state->_counters != nullptr) {
-            if (flushed) {
-                _state->_counters->_barriers.fetch_add(1, std::memory_order_relaxed);
-            } else {
-                _state->_counters->_empty_batches.fetch_add(1, std::memory_order_relaxed);
+private:
+    /// Move every pending sequence a completed barrier now covers into
+    /// `_entries_batched`. A sequence no barrier ever reaches stays pending and
+    /// is therefore reported as uncovered, which is Requirement 2.4: an entry
+    /// appended while no barrier is pending is uncovered now, not credited to
+    /// a barrier that may never come.
+    auto settle_covered() -> void {
+        const auto durable = _state->_file->durable_through();
+        std::uint64_t newly = 0;
+        {
+            std::lock_guard lock(_state->_mu);
+            auto it = _state->_pending.begin();
+            while (it != _state->_pending.end()) {
+                if (*it <= durable) {
+                    ++newly;
+                    it = _state->_pending.erase(it);
+                } else {
+                    ++it;
+                }
             }
         }
-    }
-    auto abort_barrier() -> void {
-        if (_state->_file) {
-            _state->_batch_open.store(false, std::memory_order_relaxed);
-            _state->_file->abort_batch();
+        if (newly != 0 && _state->_counters != nullptr) {
+            _state->_counters->_entries_batched.fetch_add(newly, std::memory_order_relaxed);
         }
     }
 
-private:
     struct state {
         std::optional<memory_engine_type> _memory{};
         std::unique_ptr<file_engine_type> _file{};
         durability_counters* _counters{nullptr};
-        /// Appends forwarded since the last `open_barrier()`. Only read by
-        /// `close_barrier()`, on the same host driver thread that opened it.
-        std::atomic<std::uint64_t> _in_batch{0};
-        /// Whether a batch is open on this store right now. Written by the
-        /// host's tick thread and read by every appending thread.
-        std::atomic<bool> _batch_open{false};
+        /// Sequences appended through this store that no completed barrier has
+        /// covered yet. Guarded because appends arrive on the client's and the
+        /// transport's threads and barriers settle on whichever of them got
+        /// there first.
+        std::mutex _mu;
+        std::vector<kythira::write_sequence> _pending;
     };
 
     template<typename F> auto dispatch(F&& f) -> decltype(auto) {
@@ -987,11 +1025,15 @@ struct kv_cluster_options {
     std::chrono::milliseconds _election_timeout_max{600};
     std::chrono::milliseconds _heartbeat_interval{50};
 
-    /// Which engine every group's store is built from, and — for
-    /// `file_barrier` — whether this harness supplies the controller that is
-    /// the only thing in the codebase able to open a batch. Defaults to
-    /// `memory`, so a row that does not ask for durability gets exactly the
+    /// Which engine every group's store is built from, and — for the two file
+    /// arms — whether that engine takes a durability barrier at all. Defaults
+    /// to `memory`, so a row that does not ask for durability gets exactly the
     /// store every earlier row was measured with.
+    ///
+    /// The barrier itself is `node`'s, taken where it advertises an append
+    /// (`.kiro/specs/durable-append-barrier/`). This harness used to supply a
+    /// `tick_batch_controller` for the `file_barrier` arm; that covered
+    /// 19.9–24.5% of appended entries, and the type is gone.
     durability_mode _durability{durability_mode::memory};
 
     /// Where a file-backed run puts its logs. Empty means a fresh directory
@@ -1103,10 +1145,8 @@ public:
         _transport.drain();
         _hosts.clear();
         _transport.shutdown();
-        // After the hosts, because a store outlives the node that held it
-        // only by the handle this class kept, and a directory removed while a
+        // The data root goes only after the hosts: a directory removed while a
         // group is still appending is a crash rather than a leak.
-        _stores_by_host.clear();
         if (_owns_data_root && !_data_root.empty()) {
             std::error_code ec;
             std::filesystem::remove_all(_data_root, ec);
@@ -1479,45 +1519,18 @@ private:
         cfg.automatic_split_merge_enabled = false;
         cfg.heartbeat_interval = std::chrono::milliseconds{0};
         cfg.partitioner = kythira::make_partitioner<key_type>(kv_partitioner{});
-        // The ONLY thing in this codebase that opens a batch. `tick()` has no
-        // fallback — nothing else calls `begin_batch()` — so without this a
-        // file-backed log is written to the page cache and never fsynced,
-        // which is `durability_mode::file_buffered` and is labelled NOT
-        // DURABLE wherever it appears (Requirement 3.5).
+        // **No batch controller.** There used to be one here, fanned out across
+        // this host's per-group handles, and it was the only thing in this
+        // codebase that opened a batch. `.kiro/specs/durable-append-barrier/`
+        // removed the type: the barrier it took around `tick()`'s persist phase
+        // covered 19.9% and 24.5% of appended entries in two runs, because the
+        // tick runs on the host's driver thread and the appends run on the
+        // client's and the transport's.
         //
-        // It fans out across the per-group handles this host created, so it is
-        // N barriers wearing one name rather than one barrier for N groups.
-        // `tick_batch_controller`'s own documentation is explicit that no
-        // wrapper can manufacture the second from N independent engines, and a
-        // row measured through this must say which one it got.
-        if (_options._durability == durability_mode::file_barrier) {
-            // `operator[]`, not `at`: `make_config(id)` runs before this
-            // host's first `create_group`, so the vector does not exist yet.
-            // `unordered_map` keeps pointers to its elements valid across
-            // rehash, so the address taken here stays good as other hosts are
-            // added.
-            auto* stores = &_stores_by_host[id];
-            cfg.batch_controller = kythira::tick_batch_controller{
-                ._begin =
-                    [stores] {
-                        for (auto& [group, store] : *stores) {
-                            store.open_barrier();
-                        }
-                    },
-                ._commit =
-                    [stores] {
-                        for (auto& [group, store] : *stores) {
-                            store.close_barrier();
-                        }
-                    },
-                ._abort =
-                    [stores] {
-                        for (auto& [group, store] : *stores) {
-                            store.abort_barrier();
-                        }
-                    },
-            };
-        }
+        // The barrier is now taken by `node` at the boundary where it
+        // advertises an append, so a file-backed row is durable — or, in the
+        // `file_buffered` arm, explicitly and detectably not — without this
+        // harness wiring anything.
         return cfg;
     }
 
@@ -1538,9 +1551,8 @@ private:
         // independent index spaces into it.
         const auto dir =
             _data_root / ("host-" + std::to_string(host_id)) / ("group-" + std::to_string(group));
-        typename types::persistence_engine_type store{dir, &_durability_counters};
-        _stores_by_host[host_id].emplace_back(group, store);
-        return store;
+        return typename types::persistence_engine_type{
+            dir, &_durability_counters, _options._durability == durability_mode::file_barrier};
     }
 
     auto drive(std::size_t index) -> void {
@@ -1564,14 +1576,6 @@ private:
     /// before `_transport` and `_hosts` for the same reason `_rpc` is: a tick
     /// still in flight during `shutdown()` writes through a pointer to it.
     durability_counters _durability_counters;
-    /// Every store this cluster created, by host, so the per-host batch
-    /// controller can open and close a barrier across all of them. Keyed by
-    /// host id rather than index because `make_config` runs before `_hosts`
-    /// has an entry to index.
-    std::unordered_map<
-        std::uint64_t,
-        std::vector<std::pair<group_id_type, typename types::persistence_engine_type>>>
-        _stores_by_host;
     /// Declared before `_transport` and `_hosts`, so it is destroyed after
     /// them: every handle inside a host holds a pointer to it, and a tick
     /// still in flight during `shutdown()` would otherwise write through a
