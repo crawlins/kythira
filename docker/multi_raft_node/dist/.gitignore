@@ -1,0 +1,9 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The binary is COPIED here by the build script, never committed. Doctrine 134
+# of `.kiro/specs/multi-raft-performance/`: ship the binary, do not rebuild it —
+# a container that rebuilt would fold a different compiler and a different
+# dependency resolution into the very delta the tier exists to isolate.
+*
+!.gitignore
