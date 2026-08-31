@@ -33,6 +33,15 @@ EXPOSE 7000 7001 7002
 # Readiness is "every group has a leader", not "the process is up". A driver
 # that starts offering load while the cluster is still electing measures the
 # election.
+#
+# **Build this with `scripts/build-tier-e-image.sh`, not a bare `podman
+# build`.** Podman's default output is the OCI image format, which has no
+# healthcheck field: it warns "HEALTHCHECK is not supported for OCI image
+# format and will be ignored" among the build noise and produces an image with
+# no health check in it. The compose stack's readiness gate is this check, so a
+# stack built the obvious way comes up "running" and never "healthy" while
+# nothing reports an error. That script passes `--format docker` for Podman and
+# then *verifies* the check survived rather than trusting that it did.
 HEALTHCHECK --interval=2s --timeout=3s --start-period=5s --retries=30 \
     CMD curl -sf "http://localhost:${CONTROL_PORT:-7002}/ready" || exit 1
 
