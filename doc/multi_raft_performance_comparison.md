@@ -82,12 +82,52 @@ than the comparison claim being quietly narrowed to the tiers that were run.
 |---|---|---|---|
 | A | All hosts in one process over the in-process fabric, memory persistence | yes | **never** (Requirement 3.1) |
 | B | In-process hosts, real HTTP transport over loopback, memory persistence | yes | no (Requirement 3.3) |
-| C | One host process per node on one machine | **no** | would be, for a no-fsync number |
-| D | Tier C plus `file_persistence` in `barrier` mode against a real volume | **no**, and the durability axis below shows a second blocker beyond the tier | the only tier comparable to a durable number |
-| E | One host per machine or container | **no** | yes |
+| C | One host process per node on one machine | **yes**, August 31 2026 | yes, **for a no-fsync number** |
+| D | Tier C plus `file_persistence` in `barrier` mode against a real volume | **not run**; both blockers are gone and nothing but the run remains | the only tier comparable to a durable number |
+| E | One host per machine or container | **containers only**, and not N machines | yes, with the placement stated |
 
 Shape 1 has been run on both an x64 and a Graviton instance (Requirement 18.12);
 Shape 2 has not.
+
+**Tier C exists, and its first row is stable.**
+`.kiro/specs/multi-raft-host-binary/` delivered `cmd/multi_raft_node` (one
+`multi_raft` per process, serving a client-facing key-value data path) and
+`cmd/multi_raft_bench` (the driver, hosting no Raft node). Three host processes,
+four pre-split shards, four operations in flight, beast, memory persistence, on
+the four-core development machine:
+
+**1530.2 ops/sec, spread 6.1% of the median, verdict `stable`, p50 2160 µs,
+zero elections in all five windows.**
+
+That is the first row this project has produced that Requirement 3.3 permits to
+be set beside an external number — and only beside a **no-fsync** one, because
+Tier C's log is not durable. `publishable_as_like_for_like()` is no longer
+constant `false`, and its comment records exactly that limit.
+
+**What Tier C exposed that no earlier tier could.** Two things, both invisible
+while every host shared one process:
+
+1. **`cpp-httplib` leaves `CPPHTTPLIB_TCP_NODELAY` false**, so Nagle's algorithm
+   meets the peer's delayed-ACK timer. Same cluster, same workload, only the
+   Raft transport changed: **14.6 ops/sec at a 252 ms p50 over cpp-httplib
+   against 1397.1 at 2.4 ms over beast**, a 96x gap, with the inter-node probe
+   reading 41 ms of round trip *on loopback*. `include/raft/http_transport_impl.hpp`
+   is deliberately unchanged — it carries Raft RPCs and is a swept axis of this
+   spec, so setting the flag there would silently move every Tier B httplib row
+   published here. That is a decision this document records and does not make.
+2. **The data path's server thread pool caps client concurrency**, because a
+   request handler blocks for the whole commit. At sixteen operations in flight
+   with cpp-httplib's default pool the row goes bimodal — 75 and 1387 ops/sec
+   alternating, 1622% spread — with **zero elections in any window**, so the
+   cause is queueing at the host and not consensus inside it. The same
+   configuration with `--data-threads 32` gives 1155–1397 at a 13.9% spread.
+
+**Tier E was run and is not claimed.** Three rootless-Podman containers on one
+machine, driver outside every container: 335.4 ops/sec, 11.8% spread, zero
+elections, 200 of 200 completed. Over the 10% bar, so Requirement 6.3 keeps it
+out of the table below — and it is **not N machines** in any case: containers on
+one host share a kernel, a scheduler and a memory bus, and a Tier E number
+should be read with the placement, which the row carries verbatim.
 
 **Tier D's second blocker — discovered by trying to build it, and since
 removed.** The only barrier hook in the codebase fired inside `tick()`, and the
@@ -130,9 +170,15 @@ Requirement 3.5 insists be labelled "not durable" wherever it appears. The
 comment is corrected; the fallback is not built, because that is a production
 behaviour change and this is a measurement spec.
 
-The consequence is stated once, plainly, and then assumed throughout: **the
-like-for-like table below is empty, and it is empty for a structural reason
-rather than because nothing was measured.**
+The consequence was stated once and assumed throughout: **the like-for-like
+table below is empty, and it is empty for a structural reason rather than
+because nothing was measured.** That is still true, and **the reason has
+changed** — which is worth more than the table filling would have been. Tier C
+now exists and Requirement 3.3's tier bar is cleared. What blocks the table now
+is the other half of "like for like": every external number in the register was
+taken with durability on or unstated, and the Tier C row was taken with no disk
+in the path at all. Pairing them would be the same category error one tier
+further along.
 
 ## Reference machines
 
@@ -524,13 +570,27 @@ Requirement 11.3. Each verdict, and the number behind it.
 
 ### Like-for-like table
 
-**Empty, and this is a finding rather than an omission.**
+**Still empty — and the reason has moved, which is the useful part.**
 
-Requirement 3.3 forbids a like-for-like comparison from any tier below C under
-any circumstances. Every row in this document is Tier A or Tier B. Every
-external number in the register was taken on a multi-machine cluster with a real
-disk. There is no pair of numbers here that a like-for-like table could
-truthfully hold.
+It used to be empty because Requirement 3.3 forbids a like-for-like comparison
+from any tier below C, and every row here was Tier A or Tier B. **That barrier
+is gone**: `.kiro/specs/multi-raft-host-binary/` delivered Tier C, and its
+first row is stable (1530.2 ops/sec, 6.1% spread, five repetitions, zero
+elections).
+
+What blocks the table now is the *other* half of like-for-like. A Tier C row is
+comparable to an external number **of the same kind**, and Tier C's log is not
+durable — while every record in the register was taken with `fsync` honoured or
+with durability unstated. There is still no pair of numbers this table could
+truthfully hold, but the missing half is now a durable row of ours rather than a
+tier, and **that row is a run away rather than a spec away**: the barrier lands
+100% of appends (`.kiro/specs/durable-append-barrier/`) and the host takes
+`--persistence file-barrier` today. What is needed is a Tier D row against a
+provisioned volume whose class and IOPS it records.
+
+A second, smaller blocker is on the register's side and this document cannot
+fix it: a source that does not state its durability setting cannot be paired
+like-for-like with anything, and several do not.
 
 Requirement 9.8 asks that a metric with no possible like-for-like comparison say
 so explicitly rather than substituting the closest indicative one. Doing that
@@ -538,8 +598,8 @@ metric by metric:
 
 | Metric | Like-for-like comparison possible? | Why not, and what it would take |
 |---|---|---|
-| Committed write throughput | **No** | Needs Tier D: a durable log on a real volume, one host process per node. Every external write number is fsync-durable; ours has no disk in the path at all (`durability barrier: 0.0 us, exactly`) |
-| Write latency p99 | **No** | Same, and worse: our p99 is frequently `n/a` because a 400–600-operation measured window does not contain enough samples to estimate it. The window would have to grow as well as the tier |
+| Committed write throughput | **No — but for one reason now, not two** | The tier is no longer missing: Tier C is delivered and stable at 1530.2 ops/sec. What is missing is durability on *our* side. Every external write number is fsync-durable or silent about it; the Tier C row has no disk in the path. Needs a Tier D row — host processes plus `--persistence file-barrier` on a provisioned volume — which nothing now blocks |
+| Write latency p99 | **No** | Same, and worse: our p99 is frequently `n/a` because a 400–600-operation measured window does not contain enough samples to estimate it. The window would have to grow as well as the durability setting — the tier no longer being the obstacle does not make a 200-sample window estimate a p99 |
 | `read_state` (whole-shard read) | **No** | No external source in the register publishes a whole-store read at all. The metric has no counterpart, not merely no matching configuration |
 | Linearizable point read | **No** | etcd's linearizable read uses ReadIndex; ours is submitted as a proposal through the log. These are different mechanisms with the same consistency label, which is an indicative comparison at best |
 | Non-linearizable read | **No** | etcd's serializable read is a replica read like ours, which makes it the *closest* pair in this document — and it is still one process against a cluster |
@@ -592,19 +652,22 @@ and the hypothesis each confirms or refutes.
 Requirement 16.5, stated plainly rather than filled in with the nearest
 available number.
 
-- **Whether this implementation is competitive on a durable write.** The
-  durability axis above has real fsyncs in it, which is new — but they cover
-  only a fifth of the log, it is Tier B with three hosts in one process, and it
-  ran on a laptop SSD. Every external write number is a cluster of machines with
-  every entry durable. This is still the single most important open question,
-  and it now has a named blocker in front of Tier C: the barrier hook covers the
-  wrong thread.
+- **Whether this implementation is competitive on a durable write.** Still the
+  single most important open question, but for the first time **nothing is
+  blocking it except running the row**. The durability axis covers 100% of the
+  log now (`.kiro/specs/durable-append-barrier/`) and Tier C exists
+  (`.kiro/specs/multi-raft-host-binary/`); what has not happened is a Tier D
+  row — host processes, a file-backed log in `barrier` mode, on a provisioned
+  volume whose class and IOPS the row records. Both former blockers are gone
+  and neither the harness nor the host needs further work for it.
 - **How much of the 28% JSON-line cost is the format and how much is the
   `std::map` beside it.** H4 names both; only the first is priced.
 - **What a real network does to the round.** The inter-round interval is
   0.75–0.91 ms on loopback and the response-driven-pacing hypothesis predicts it
-  tracks the RPC round trip. On a real network that is 100x larger. Nothing here
-  tested it; Tier E would.
+  tracks the RPC round trip. On a real network that is 100x larger. The Tier E
+  containers do **not** answer this: they share one kernel and one loopback
+  stack, and their measured inter-node round trip is 0.7–0.9 ms — the same
+  number, which is the point. This needs N machines.
 - **Whether the write amplification is avoidable.** It is measured, repeatedly
   and on two machines. Nothing establishes that a different send path would
   remove it, and this suite deliberately has no byte counter on that path
@@ -614,9 +677,18 @@ available number.
 - **Whether the response-driven pacing hypothesis is true.** It now fits two
   axes and two machines. It has never been measured directly, because that needs
   instrumentation on the leader's send path.
-- **Anything about Tier C, D or E.** Recorded as not delivered in the tier
-  table above, with reasons. arm64 and a second cloud provider are no longer on
-  this list: both have been measured.
+- **Tier D, and Tier E across real machines.** No longer "anything about Tier C,
+  D or E": Tier C is delivered and its first row is stable, and Tier E has been
+  run across containers on one machine. What is left is a Tier D row against a
+  provisioned volume, and a Tier E deployment on N machines rather than N
+  containers. arm64 and a second cloud provider left this list earlier; Tier C
+  leaves it now.
+- **Whether the httplib Raft transport should keep Nagle on.** Tier C measured
+  it at 96x against beast (14.6 against 1397.1 ops/sec, same cluster, same
+  workload) and the fix is one line. It was deliberately not made, because that
+  transport is a swept axis of this spec and every Tier B httplib row published
+  here would move. Making it is a decision, and re-taking the affected rows is
+  part of the decision.
 
 ## Follow-on work the measurements motivate
 
