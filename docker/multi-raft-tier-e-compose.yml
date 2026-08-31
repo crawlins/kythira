@@ -1,0 +1,110 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Tier E: one `multi_raft` host per container, on N containers.
+# `.kiro/specs/multi-raft-host-binary/` tasks 8 and 10.
+#
+# CLAUDE.md's container rules, and what each one costs if broken:
+#
+#   * **No static IPs.** There is no `ipam` block and no
+#     `ipv4_address` anywhere below. Rootless Podman ignores
+#     `ipam.config.ipv4_address` *silently*, so a compose file that depends on
+#     one works under Docker and fails under Podman with nothing to read. Hosts
+#     address each other by **service name**, which both runtimes resolve.
+#   * **No `docker` hardcoded anywhere.** Nothing here names a runtime; the
+#     harness picks one through `container_runtime()` in
+#     `tests/docker_chaos/os_faults.hpp`, honouring
+#     `$KYTHIRA_CONTAINER_RUNTIME`.
+#   * **No privileged networking and no capabilities.** The chaos images ask
+#     for `NET_ADMIN` because they inject network faults with `tc` and
+#     `iptables`; a measurement host injects nothing, and rootless Podman
+#     cannot grant those without explicit configuration.
+#
+# The published ports exist so the driver can run **outside** every container —
+# Requirement 3.1: the driver hosts no Raft node, and putting it in one of
+# these containers would put its CPU back on a host's cores, which is the
+# confound this tier exists to remove.
+#
+# **`TRANSPORT: beast`, and that is a measured choice rather than a taste.** The
+# first Tier C rows taken over `cpp-httplib` measured 14.6 ops/sec at a 252 ms
+# p50 against beast's 1397.1 at 2.4 ms on the same cluster with the same
+# workload — a 96x gap whose 40 ms-multiple signature is Nagle's algorithm
+# meeting the peer's delayed-ACK timer, since cpp-httplib defaults
+# `CPPHTTPLIB_TCP_NODELAY` to false. A Tier E stack defaulting to that would
+# measure the TCP stack. `TRANSPORT: httplib` is still available and still
+# comparable with the Tier B httplib rows; it is simply not the default.
+
+services:
+  raft1:
+    image: kythira-multi-raft-node:dev
+    hostname: raft1
+    environment:
+      NODE_ID: "1"
+      # Service names. See the note above about static IPs.
+      PEERS: "2:raft2:7000,3:raft3:7000"
+      PEER_CONTROL: "2:raft2:7002,3:raft3:7002"
+      VOTERS: "1,2,3"
+      RAFT_PORT: "7000"
+      DATA_PORT: "7001"
+      CONTROL_PORT: "7002"
+      GROUPS: "4"
+      KEY_COUNT: "100000"
+      TICK_INTERVAL_MS: "2"
+      TRANSPORT: "beast"
+      SERIALIZER: "json"
+      PERSISTENCE: "memory"
+    ports:
+      - "17001:7001"   # data path
+      - "17002:7002"   # control surface — a SEPARATE port, deliberately
+    networks:
+      - raft_net
+
+  raft2:
+    image: kythira-multi-raft-node:dev
+    hostname: raft2
+    environment:
+      NODE_ID: "2"
+      PEERS: "1:raft1:7000,3:raft3:7000"
+      PEER_CONTROL: "1:raft1:7002,3:raft3:7002"
+      VOTERS: "1,2,3"
+      RAFT_PORT: "7000"
+      DATA_PORT: "7001"
+      CONTROL_PORT: "7002"
+      GROUPS: "4"
+      KEY_COUNT: "100000"
+      TICK_INTERVAL_MS: "2"
+      TRANSPORT: "beast"
+      SERIALIZER: "json"
+      PERSISTENCE: "memory"
+    ports:
+      - "27001:7001"
+      - "27002:7002"
+    networks:
+      - raft_net
+
+  raft3:
+    image: kythira-multi-raft-node:dev
+    hostname: raft3
+    environment:
+      NODE_ID: "3"
+      PEERS: "1:raft1:7000,2:raft2:7000"
+      PEER_CONTROL: "1:raft1:7002,2:raft2:7002"
+      VOTERS: "1,2,3"
+      RAFT_PORT: "7000"
+      DATA_PORT: "7001"
+      CONTROL_PORT: "7002"
+      GROUPS: "4"
+      KEY_COUNT: "100000"
+      TICK_INTERVAL_MS: "2"
+      TRANSPORT: "beast"
+      SERIALIZER: "json"
+      PERSISTENCE: "memory"
+    ports:
+      - "37001:7001"
+      - "37002:7002"
+    networks:
+      - raft_net
+
+networks:
+  raft_net:
+    driver: bridge
