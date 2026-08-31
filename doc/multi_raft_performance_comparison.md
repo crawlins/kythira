@@ -687,12 +687,17 @@ available number.
   provisioned volume, and a Tier E deployment on N machines rather than N
   containers. arm64 and a second cloud provider left this list earlier; Tier C
   leaves it now.
-- **Whether the httplib Raft transport should keep Nagle on.** Tier C measured
-  it at 96x against beast (14.6 against 1397.1 ops/sec, same cluster, same
-  workload) and the fix is one line. It was deliberately not made, because that
-  transport is a swept axis of this spec and every Tier B httplib row published
-  here would move. Making it is a decision, and re-taking the affected rows is
-  part of the decision.
+- ~~**Whether the httplib Raft transport should keep Nagle on.**~~ **Answered
+  elsewhere: no.** Tier C is what made the question answerable — it measured the
+  transport at 96x against beast (14.6 against 1397.1 ops/sec, same cluster,
+  same workload) — and the fix landed as its own change against `main`,
+  *"fix(http-transport): disable Nagle by default, and stop working around it"*,
+  rather than here. It is one configuration field forwarded at three call sites,
+  and it belongs to the transport rather than to this spec's tooling.
+
+  Deliberately kept out of this change: it touches a production transport that
+  ~30 other tests use, and mixing it with new binaries and a test-side refactor
+  would make one review of three different risks.
 
 ## Follow-on work the measurements motivate
 
