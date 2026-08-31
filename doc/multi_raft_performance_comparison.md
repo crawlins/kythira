@@ -54,10 +54,22 @@ ctest --test-dir build-default -R multi_raft_regression_tier --output-on-failure
 ./build-default/tests/multi_raft_performance_report --list
 ./build-default/tests/multi_raft_performance_report --axis smoke --out-dir test_results
 
+# The durability axis, which is where the fsync numbers come from.
+# KYTHIRA_BENCH_DATA_DIR points the file-backed arms at a specific volume.
+./build-default/tests/multi_raft_http_benchmark_test \
+    --run_test='multi_raft_http_benchmark/write_throughput_by_durability' \
+    --log_level=test_suite
+
 # One cloud row, provisioned and torn down (spends money; see the cost estimate)
 ./scripts/perf-cloud/run-aws-shape-1.sh \
     --binary build-default/tests/multi_raft_http_benchmark_test \
     --instance-type c5.2xlarge --region us-east-1 --repeat 2
+
+# The same on Graviton. There is no arm64 build host here, so --build-ref
+# builds on the instance instead of shipping a binary; run.json records which.
+./scripts/perf-cloud/run-aws-shape-1.sh \
+    --build-ref <sha> \
+    --instance-type c7g.2xlarge --region us-east-1 --repeat 2
 ```
 
 ## Deployment tiers, and which ones exist
