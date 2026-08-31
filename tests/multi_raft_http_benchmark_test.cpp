@@ -106,6 +106,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "multi_raft_benchmark_rows.hpp"
+#include "multi_raft_row_report.hpp"
 
 #include <raft/cbor_serializer.hpp>
 #include <raft/json_serializer.hpp>
@@ -155,6 +156,7 @@ using kythira::testing::consistency_of;
 using kythira::testing::cpp_httplib_transport;
 using kythira::testing::deployment_tier;
 using kythira::testing::describe_machine;
+using kythira::testing::describe_row;
 using kythira::testing::fabric_transport;
 using kythira::testing::k_election_budget;
 using kythira::testing::k_operation_timeout;
@@ -222,101 +224,15 @@ auto report(const machine_description& m) -> void {
     BOOST_TEST_MESSAGE(out.str());
 }
 
-/// @brief The replication cost of one measured window, in the two ratios
-///        Hypotheses H1 and H2 are stated in.
+/// One row, printed in the shape the comparison document wants.
 ///
-/// Printed for the *median run* rather than summed across repetitions: the
-/// headline names a real run (Requirement 6.2), and a batching factor averaged
-/// over five clusters would not describe the run the headline came from.
-///
-/// Both ratios are `std::optional` at source and print `n/a` with the reason
-/// rather than a zero — 0/0 entries per AppendEntries is "nothing replicated",
-/// which is a different statement from "no batching".
-auto replication_cost(const benchmark_result& row) -> std::string {
-    std::ostringstream out;
-    out << std::fixed << std::setprecision(2);
-    out << "replication (median run): " << row._rpc._append_entries << " AppendEntries ("
-        << row._rpc._append_entries_empty << " empty) carrying " << row._rpc._entries
-        << " entries, " << row._rpc._request_vote << " RequestVote, " << row._rpc._install_snapshot
-        << " InstallSnapshot";
-    out << "\n      H1 entries/AppendEntries: ";
-    if (const auto batching = row._rpc.entries_per_append_entries()) {
-        out << *batching << " (over the " << row._rpc.carrying() << " that carried anything)";
-    } else {
-        out << "n/a — no AppendEntries carried an entry";
-    }
-    out << "\n      H2 RPCs/committed entry:  ";
-    if (const auto cost = row.rpcs_per_committed_entry()) {
-        out << *cost << " (" << row._rpc.total_rpcs() << " RPCs / " << row._tally._completed
-            << " commits)";
-    } else {
-        out << "n/a — nothing committed";
-    }
-    return out.str();
-}
-
-/// One row, printed in the shape the comparison document wants: a headline that
-/// exists only when enough repetitions stand behind it, the spread beside it,
-/// and the verdict that decides whether the row may be compared to anything.
+/// The formatting moved to `multi_raft_row_report.hpp` when
+/// `.kiro/specs/multi-raft-host-binary/` added a third consumer that produces
+/// rows: its Requirement 3.4 asks the out-of-process driver to emit the same
+/// fields a Tier B row carries, and two printers would satisfy that on the day
+/// they were written and drift the week after.
 auto report(const repeated_result& row) -> void {
-    const auto& median = row.median_run();
-    std::ostringstream out;
-    out << std::fixed << std::setprecision(1);
-    out << "  " << median._transport << " / " << median._serializer << " / " << median._scenario
-        << ": nodes=" << median._nodes << " groups=" << median._groups
-        << " value=" << median._value_bytes << "B in_flight=" << median._in_flight
-        << " tick=" << median._tick_interval.count()
-        << "ms"
-        // Requirement 3.1: exactly one tier per result, and 3.3: say so at the
-        // point of the number rather than once in a preamble a quoted row
-        // leaves behind.
-        << "\n      tier:     " << to_string(median._tier)
-        << (publishable_as_like_for_like(median._tier)
-                ? ""
-                : " — NOT a like-for-like comparison with any external number (Requirement 3.3)")
-        << "\n      routing:  " << to_string(median._routing) << "\n      headline: ";
-    if (const auto headline = row.headline_ops_per_second()) {
-        out << *headline << " ops/sec (median of " << row.runs() << " runs)";
-    } else {
-        out << "NONE — " << row.runs() << " run(s), " << k_required_repetitions
-            << " required before a headline exists";
-    }
-    out << " | min " << row.min_ops_per_second() << " max " << row.max_ops_per_second()
-        << " | spread " << std::setprecision(1) << (row.spread() * 100.0) << "% of median"
-        << " (p50 spread " << (row.p50_spread() * 100.0) << "%)"
-        << "\n      verdict:  " << to_string(row.verdict())
-        << (median._load == kythira::testing::load_mode::open_loop
-                ? " (judged on the p50 spread; in open loop the offered rate is an input, so its "
-                  "spread is a tautology)"
-                : " (judged on the throughput spread)");
-    if (!row.comparable()) {
-        out << " — MUST NOT ENTER A COMPARISON TABLE (Requirement 6.3)";
-    }
-    if (!machine()._quiet_at_start) {
-        out << "; machine was not quiet at start";
-    }
-    out << "\n      median run: p50=" << us(median._p50) << "us p95=" << us(median._p95) << "us";
-    if (median._p99.has_value()) {
-        out << " p99=" << us(*median._p99) << "us";
-    } else {
-        out << " p99=n/a (" << median._tally._completed << " samples)";
-    }
-    out << "\n      counts:   " << row._warmup_operations
-        << " warm-up operations discarded per run, " << row._measured_operations
-        << " offered per measured run (Requirement 6.1)";
-    if (median._read_kind.has_value()) {
-        out << "\n      read kind: " << to_string(*median._read_kind)
-            << "\n      consistency: " << consistency_of(*median._read_kind)
-            << "\n      bytes:    " << median._bytes_returned << " returned in the median run, "
-            << median.bytes_per_second() / (1024.0 * 1024.0) << " MiB/sec";
-        if (const auto per_op = median.bytes_per_operation()) {
-            out << ", " << *per_op << " bytes/operation";
-        } else {
-            out << ", bytes/operation n/a — nothing completed";
-        }
-    }
-    out << "\n      " << replication_cost(median);
-    BOOST_TEST_MESSAGE(out.str());
+    BOOST_TEST_MESSAGE(describe_row(row, machine()._quiet_at_start));
 }
 
 /// @brief Elect, commit a PUT on every shard, read each one back through the
