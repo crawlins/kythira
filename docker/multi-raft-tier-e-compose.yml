@@ -33,6 +33,18 @@
 # `CPPHTTPLIB_TCP_NODELAY` to false. A Tier E stack defaulting to that would
 # measure the TCP stack. `TRANSPORT: httplib` is still available and still
 # comparable with the Tier B httplib rows; it is simply not the default.
+#
+# **Build the image with `scripts/build-tier-e-image.sh`**, not with a bare
+# `podman build` — Podman's default OCI output silently drops the HEALTHCHECK
+# these services' readiness depends on. See that script's header.
+#
+# Verified under **both** runtimes available on the development machine:
+# rootless Podman (slirp4netns port publishing) and **rootful** Podman
+# (netavark bridge, real netfilter port publishing) — the second being the
+# closest local analogue to Docker's rootful bridge, which CLAUDE.md names as
+# CI's default. Three containers came up `healthy` and every group elected a
+# leader under both, addressing each other by service name. Docker's own engine
+# is not installed here and remains unverified; CI settles that.
 
 services:
   raft1:

@@ -170,17 +170,34 @@ in-process harness at Tier B — happens before Tier C is claimed.
   - `CLAUDE.md`'s container rules: no static IPs (rootless Podman ignores
     `ipam.config.ipv4_address` *silently*), no hardcoded `docker`, no
     privileged networking. Verified under both runtimes
-  - **Done for Podman; NOT verified under Docker, and that is stated rather
-    than glossed.** `docker/multi-raft-tier-e-compose.yml` and
-    `docker/multi_raft_node/`. Verified end to end under **rootless Podman
-    4.9.3 with podman-compose 1.0.6**: three containers, every group led,
-    a row measured from a driver outside every container
-  - **Docker is not installed on this machine**, so the half of CLAUDE.md's
-    rule that says "and Docker" is unverified here. The compose file is written
-    to the rule — no `ipam`/`ipv4_address` anywhere, service names for
-    addressing, no `cap_add`, no privileged networking, no runtime hardcoded —
-    but written-to-the-rule is not the same as run-under-both, and CI is where
-    that gets settled
+  - **Done under both of the two networking models available here, and Docker's
+    own engine is still not one of them.** `docker/multi-raft-tier-e-compose.yml`
+    and `docker/multi_raft_node/`, verified end to end twice:
+    - **rootless Podman 4.9.3 / podman-compose 1.0.6** — slirp4netns port
+      publishing, aardvark-dns. Three containers, every group led, a row
+      measured from a driver outside every container.
+    - **rootful Podman** — netavark bridge, port publishing through the host's
+      real netfilter rules, aardvark-dns. Architecturally the same shape as
+      Docker's rootful bridge with its embedded DNS, which is the runtime
+      CLAUDE.md names as CI's default. Three containers reported `healthy`,
+      every group elected, and a row was measured from outside all of them.
+  - **What that does and does not settle.** The rule exists because rootless
+    Podman *silently ignores* things Docker honours, and the compose file uses
+    none of them: no `ipam`/`ipv4_address` anywhere, service names for
+    addressing, no `cap_add`, no privileged networking, no runtime hardcoded.
+    Rootful Podman exercises the permissive networking model the rule is
+    written against. What is still unverified is Docker's **engine** and its
+    own `docker compose` implementation, and CI settles that
+  - **Running it rootful found a defect the rootless run had hidden.** Podman
+    defaults to the OCI image format, which has no healthcheck field: it warns
+    "HEALTHCHECK is not supported for OCI image format and will be ignored"
+    among the build noise and hands back a working image with no health check
+    in it. The compose stack's readiness gate *is* that health check, so the
+    stack came up `running` and never `healthy` and nothing reported an error.
+    `scripts/build-tier-e-image.sh` now passes `--format docker` for Podman —
+    Docker's builder emits that format by default and does not take the flag —
+    and then **verifies the check survived** rather than trusting that it did,
+    refusing to hand over an image that would fail silently
   - Discovery is the static peer list (Requirement 5.1), supplied by the
     compose file through the entrypoint. Requirement 5.2's "does not require
     every host to know every address in advance" is **not delivered**; see the
@@ -218,12 +235,18 @@ in-process harness at Tier B — happens before Tier C is claimed.
     metrics, and its tier table can stop recording C and E as undelivered
   - **Tier D is still blocked** on `.kiro/specs/durable-append-barrier/` and
     this task must not claim otherwise
-  - **Tier E rows: taken, and NOT claimed as publishable.** Three rootless
-    Podman containers on one machine with the driver outside every one of them:
-    **335.4 ops/sec, 11.8% spread, verdict UNSTABLE, p50 11.1 ms, zero
-    elections in all five windows, 200 of 200 completed.** The placement is on
-    the row verbatim, and 11.8% is over the 10% bar, so it may not enter a
-    comparison table — the machine was building at the time and says so
+  - **Tier E rows: taken under both runtimes, and NOT claimed as publishable.**
+    The placement is on each row verbatim, and both are over the 10% bar, so
+    neither may enter a comparison table:
+    - rootless Podman, driver outside every container: **335.4 ops/sec, 11.8%
+      spread, p50 11.1 ms, zero elections in all five windows, 200 of 200**
+    - rootful Podman, netavark bridge: **408.7 ops/sec, 84.5% spread, p50
+      8.6 ms, one of five windows contained an election, 200 of 200**
+    The second is far noisier, and the row says why rather than the reader
+    having to guess: the machine was building at the time and one window
+    contained an election. Neither number is evidence about the two networking
+    models — they were not taken under comparable load, and saying so is
+    cheaper than a comparison nobody could rely on
   - **This is not N machines.** Requirement 5.5's "several machines" is
     unreached: there is one machine here, and containers on it share a kernel,
     a scheduler and a memory bus. The row says `Tier E` because the hosts are
