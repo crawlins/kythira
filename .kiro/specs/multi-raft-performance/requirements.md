@@ -945,6 +945,53 @@ the harness to be rewritten.
    The row SHALL NOT be presented as evidence about cpp-httplib in general, and
    SHALL NOT be quietly dropped either — a transport this project ships is part
    of the answer to "how fast is it"
+
+   **RESOLVED, August 31 2026, and the way it was resolved is the lesson.** The
+   sentence above is accurate about cpp-httplib's default and stops one step
+   short of the consequence: the default was *this project's* to override, and
+   `cpp_httplib_client_config` / `cpp_httplib_server_config` now carry
+   `tcp_nodelay`, defaulting to `true`, forwarded at three call sites in
+   `http_transport_impl.hpp` — the client, the plain server, and the SSL server.
+   **Both arms are reproducible from the suite's own binary**, which is why the
+   fixture reads `KYTHIRA_BENCH_TCP_NODELAY` rather than requiring two builds
+   nobody can line up afterwards:
+
+       ./multi_raft_http_benchmark_test \
+           --run_test=multi_raft_http_benchmark/write_throughput_by_transport
+       KYTHIRA_BENCH_TCP_NODELAY=0 ./multi_raft_http_benchmark_test \
+           --run_test=multi_raft_http_benchmark/write_throughput_by_transport
+
+   **And the round trip was not only slow, it was destabilising** — which a
+   throughput figure alone would have hidden. A 40 ms stall on every heartbeat
+   deposes a leader that is merely mid-heartbeat, which is precisely the effect
+   the design's timing table raised the election timeout to 2000-4000 ms to
+   avoid.
+
+   **The transport axis, both arms, one binary, five repetitions each:**
+
+   | | `KYTHIRA_BENCH_TCP_NODELAY=0` | default |
+   |---|---:|---:|
+   | throughput | 11.5 ops/sec | **369.4** |
+   | p50 | 250.1 ms | **9.8 ms** |
+   | throughput spread | 34.5% | **4.4%** |
+   | verdict | UNSTABLE | **stable** |
+
+   **32x, and the row became quotable for the first time.** Requirement 6.3
+   keeps an unstable row out of every comparison table, and this one had never
+   cleared that bar — so the fix did not merely make the number larger, it made
+   the row *exist* as evidence.
+
+   The 11.5 is the third independent measurement of the same defect: 12 ops/sec
+   on a bare ping-pong in July 2026, 12.1 at Tier C, 11.5 here. A year apart, on
+   three harnesses, at two tiers.
+
+   This requirement's own workarounds are the cost of having documented the
+   cause instead of fixing it: the cpp-httplib row's 24-operation budget
+   (Requirement 10 below), the 2000-4000 ms benchmark election timeout the
+   design justifies by this round trip, and the serializer sweep that skips
+   cpp-httplib entirely. All three are now revisitable. **None was revisited in
+   the change that made them revisitable**, because a fix and a re-tune landing
+   together leaves nobody able to say which produced the difference
 10. WHEN operation budgets differ between rows — as they must, since a row at
     ~83 ms per round trip cannot carry the same budget as one at ~250 µs — THEN
     the system SHALL keep throughput comparable (it is a rate) and SHALL report

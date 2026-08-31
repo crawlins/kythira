@@ -45,16 +45,52 @@
 ///
 /// ### A word about cpp-httplib's row
 ///
-/// It is expected to be roughly two orders of magnitude slower than the other
-/// two, and the cause is known and already documented: cpp-httplib's vendored
-/// header defaults `CPPHTTPLIB_TCP_NODELAY` to `false`, so every small RPC body
-/// pays the classic ~80ms Nagle/delayed-ACK round trip
+/// It **was** roughly two orders of magnitude slower than the other two, for a
+/// cause this project documented for a year and then worked around four times
+/// rather than fixing once: cpp-httplib's vendored header defaults
+/// `CPPHTTPLIB_TCP_NODELAY` to `false`, so every small RPC body paid the
+/// classic ~80ms Nagle/delayed-ACK round trip
 /// (`doc/http_transport_performance_comparison.md`, which measured 12 ops/sec
 /// against Beast's 3,527 on a bare ping-pong). Beast and Proxygen sit on
-/// Asio/Folly `AsyncSocket`, which set `TCP_NODELAY` themselves. That is a
-/// configuration default, not a verdict on the transport, and it is why this
-/// row runs a much smaller operation budget: at ~83ms per RPC a full-sized
-/// budget would take longer than the whole rest of the suite.
+/// Asio/Folly `AsyncSocket`, which set `TCP_NODELAY` themselves.
+///
+/// **`cpp_httplib_client_config::tcp_nodelay` now defaults to `true`.** The old
+/// text called it "a configuration default, not a verdict on the transport",
+/// which was exactly right and stopped one step short: it was *this project's*
+/// configuration of that transport, and one line in `http_transport_impl.hpp`
+/// at each of three call sites.
+///
+/// **Both arms are reproducible from this binary**, which is the point of the
+/// environment override rather than a rebuild:
+///
+///     ./multi_raft_http_benchmark_test \
+///         --run_test=multi_raft_http_benchmark/write_throughput_by_transport
+///     KYTHIRA_BENCH_TCP_NODELAY=0 ./multi_raft_http_benchmark_test \
+///         --run_test=multi_raft_http_benchmark/write_throughput_by_transport
+///
+/// Five repetitions each, on the development machine:
+///
+///     KYTHIRA_BENCH_TCP_NODELAY=0    11.5 ops/sec, p50 250.1 ms, spread 34.5%,
+///                                    verdict UNSTABLE
+///     default                       369.4 ops/sec, p50   9.8 ms, spread  4.4%,
+///                                    verdict stable
+///
+/// **The row became quotable for the first time**, which matters more than the
+/// 32x: Requirement 6.3 keeps an unstable row out of every comparison table,
+/// and this one had never cleared that bar.
+///
+/// **Nagle was not only slowing this transport, it was breaking leadership**,
+/// and a throughput number alone would have hidden that. A 40 ms stall on every
+/// heartbeat deposes a leader that is merely mid-heartbeat. That is why the
+/// design raised this suite's election timeout to 2000-4000 ms, why this row's
+/// operation budget is 24 rather than 592, and why the serializer sweep skips
+/// cpp-httplib entirely — three workarounds whose combined cost exceeded the
+/// fix.
+///
+/// Those three are now **revisitable and deliberately not revisited here**:
+/// re-tuning budgets and timeouts moves every other row in this file, and a fix
+/// and a re-tune landing together leave nobody able to say which produced the
+/// difference.
 ///
 /// ### CoAP
 ///
@@ -408,10 +444,21 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_transport,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(5400))) {
     BOOST_TEST_MESSAGE("write throughput, 128B values, JSON on the wire:");
 
-    // cpp-httplib: 24 operations at four in flight. At ~83ms per round trip
-    // (Nagle/delayed-ACK, see this file's header) that is already tens of
-    // seconds, and the client threads contend with the tick threads for the same
-    // per-peer connection.
+    // cpp-httplib: 24 operations at four in flight. The budget is small because
+    // at ~83ms per round trip a full-sized one took tens of seconds — and that
+    // round trip was Nagle, which `tcp_nodelay` now defaults away (see this
+    // file's header). **The budget and the concurrency are deliberately left
+    // where they were in this change**: raising them moves the row being
+    // measured, and a fix and a re-tune landing together leave nobody able to
+    // say which produced the difference. The floor stays for the same reason —
+    // it is a floor, and a row clearing it by three orders of magnitude is the
+    // result rather than a reason to move it.
+    //
+    // Note what that leaves: this row runs four operations in flight while the
+    // two below run sixteen, so the three are **not** a comparison with each
+    // other (Requirement 11 asks that everything but the swept axis be held
+    // identical). Making this axis honest is now possible and is follow-on
+    // work.
     std::ignore = measure<cpp_httplib_transport<json>>(
         {._operations = 24, ._in_flight = 4, ._floor_ops_per_second = 0.2});
 
@@ -461,12 +508,21 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer,
         "CONFIG_ION_SERIALIZER)");
 #endif
 #else
-    // Without Beast the serializer axis would have to ride on cpp-httplib,
-    // whose ~83ms round trip dwarfs any encoding difference — the sweep would
-    // measure Nagle, not the serializer. Saying so beats printing it.
+    // Without Beast the serializer axis would have to ride on cpp-httplib.
+    // That used to be disqualifying — its ~83 ms round trip dwarfed any
+    // encoding difference, so the sweep would have measured Nagle rather than
+    // the serializer — and `tcp_nodelay` removed the reason: the same row is
+    // 32x faster and its round trip is ~9.8 ms rather than ~252 ms.
+    //
+    // **Still not run, and deliberately.** Enabling an axis that has never been
+    // measured on this transport, in the same change that made it possible, is
+    // how a fix and an unvalidated new row become indistinguishable. It is a
+    // one-line change for whoever takes the before-and-after.
     BOOST_TEST_MESSAGE(
-        "  serializer sweep: NOT RUN (needs a transport whose round trip is not "
-        "dominated by Nagle; KYTHIRA_BENCH_HAS_BEAST undefined)");
+        "  serializer sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined). "
+        "cpp-httplib could now carry this axis — `tcp_nodelay` removed the "
+        "~83ms round trip that used to disqualify it — but enabling it here "
+        "would land an unvalidated row inside the change that enabled it");
 #endif
 }
 

@@ -89,6 +89,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -529,18 +530,43 @@ private:
         return static_cast<std::uint16_t>(std::stoi(url.substr(url.rfind(':') + 1)));
     }
 
+    /// @brief Whether this fixture disables Nagle, and the one knob that makes
+    ///        the change that introduced it reproducible.
+    ///
+    /// `cpp_httplib_client_config::tcp_nodelay` defaults to `true` now, which
+    /// is a change from cpp-httplib's own default and is worth roughly 32x on
+    /// this transport. Setting `KYTHIRA_BENCH_TCP_NODELAY=0` restores the old
+    /// behaviour, so both arms of that comparison can be measured **from one
+    /// binary** rather than from two builds nobody can line up afterwards.
+    ///
+    /// An environment override rather than a row field because it is not a
+    /// swept axis — it is the way a past row is re-taken as it was originally
+    /// measured. `KYTHIRA_BENCH_DATA_DIR` is the existing precedent for that
+    /// shape.
+    [[nodiscard]] static auto bench_tcp_nodelay() -> bool {
+        const char* raw = std::getenv("KYTHIRA_BENCH_TCP_NODELAY");
+        if (raw == nullptr) {
+            return true;
+        }
+        const std::string_view value{raw};
+        return !(value == "0" || value == "false" || value == "no");
+    }
+
     static auto client_config() -> kythira::cpp_httplib_client_config {
         kythira::cpp_httplib_client_config cfg;
         // A replication round must not be able to outlive the tick that issued
         // it by minutes; the benchmark's own deadlines are far shorter.
         cfg.connection_timeout = std::chrono::milliseconds{2000};
         cfg.request_timeout = std::chrono::milliseconds{5000};
+        cfg.tcp_nodelay = bench_tcp_nodelay();
         return cfg;
     }
 
     static auto server_config() -> kythira::cpp_httplib_server_config {
         kythira::cpp_httplib_server_config cfg;
         cfg.request_timeout = std::chrono::seconds{5};
+        // Both ends, or half the round trip is still stalled.
+        cfg.tcp_nodelay = bench_tcp_nodelay();
         return cfg;
     }
 
