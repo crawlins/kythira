@@ -599,17 +599,23 @@ enum class durability_mode : std::uint8_t {
     /// `memory_persistence_engine`. Nothing reaches a disk; the decomposition
     /// prints the durability barrier as exactly 0.0 us, and it is exactly zero.
     memory = 0,
-    /// `file_persistence_engine` with NO batch controller. The log file is
-    /// written and the stream flushed; `sync_log_and_directory()` is never
-    /// reached, because it is called only from `commit_batch()`. This mode
-    /// exists to be measured against `barrier`, and every row that uses it
-    /// must be labelled **not durable** (Requirement 3.5).
+    /// `file_persistence_engine` constructed with barriers **disabled**. The
+    /// log file is written and the stream flushed; no `fsync` is ever issued.
+    /// It survives a process death and loses everything to a power cut. This
+    /// mode exists to price the encode-and-write half separately from the
+    /// fsync half, and every row that uses it must be labelled **not durable**
+    /// (Requirement 3.5) — which `durability()` answers for it, rather than the
+    /// reader having to remember.
     file_buffered = 1,
-    /// `file_persistence_engine` with a controller supplied by this harness
-    /// that opens a batch across every group before the persist phase and
-    /// commits it after. One fsync per group per tick, which — as
-    /// `tick_batch_controller`'s own documentation says — is N barriers
-    /// wearing one name, not one barrier for N groups.
+    /// `file_persistence_engine` with barriers enabled, taking one at the
+    /// boundary where `node` advertises an append: before a leader counts an
+    /// entry toward `match_index`, before a follower returns success. Several
+    /// appends outstanding at once are satisfied by one `fsync`, so the cost is
+    /// per group commit rather than per entry.
+    ///
+    /// This used to mean "with a `tick_batch_controller` supplied by this
+    /// harness", which covered 19.9–24.5% of appended entries because the tick
+    /// is not where appends happen. See `.kiro/specs/durable-append-barrier/`.
     file_barrier = 2,
 };
 
@@ -629,17 +635,24 @@ struct durability_snapshot {
     std::uint64_t _barriers{0};
     std::uint64_t _empty_batches{0};
     std::uint64_t _entries{0};
-    /// Of `_entries`, how many were appended while their store's batch was
-    /// open — and therefore how many a barrier ever covered.
+    /// Of `_entries`, how many a completed barrier covered before the node
+    /// advertised them.
     ///
     /// This exists because the obvious reading of the other three is wrong.
-    /// `multi_raft`'s tick opens the batch, runs the persist phase and commits
-    /// it, all inside one `tick()` call. But a proposal appends to the leader's
-    /// log on the *caller's* thread and a follower appends on its RPC handler's
-    /// thread, and neither of those is inside the tick's window. An append that
-    /// lands between two ticks is written to the page cache and no barrier ever
-    /// reaches it, so `_entries / _barriers` would report an entries-per-fsync
-    /// figure covering entries that were never fsynced at all.
+    /// `_entries / _barriers` divides every append by the fsyncs that were
+    /// issued, whether or not any of them reached that append — and when this
+    /// project first measured a durable tier it reported 8.45 entries per fsync
+    /// on a configuration where a barrier had touched a fifth of them. Printing
+    /// the divisor's own denominator is the fix, and the reason the ratio below
+    /// uses this field rather than `_entries`.
+    ///
+    /// It used to mean "appended while their store's batch was open", which was
+    /// the right question when a `tick_batch_controller` opened a batch around
+    /// the persist phase. `.kiro/specs/durable-append-barrier/` moved the
+    /// barrier to the boundary where a node advertises an append and removed
+    /// that type, so the question is now "did a barrier whose covered sequence
+    /// reaches this entry complete" — which under group commit may be a barrier
+    /// another thread was already running.
     std::uint64_t _entries_batched{0};
 
     /// Entries per durability barrier, counting only entries a barrier
