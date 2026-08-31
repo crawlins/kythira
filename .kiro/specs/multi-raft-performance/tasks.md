@@ -1562,6 +1562,11 @@ and the answer is currently no for every one of them.
     costs **~33% of throughput**; the partial barrier on top costs a further
     ~13%. H4 predicted the encode cost would be measurable and it now is; the
     memory growth it also names still is not
+  - **The follow-on now has a spec: `.kiro/specs/durable-append-barrier/`.**
+    It moves the barrier to the advertise boundary — before a leader counts an
+    entry toward `match_index`, before a follower returns success — and makes
+    that affordable with group commit. Ten tasks, the first of which must
+    produce a *failing* coverage test. **Tier D needs that spec and this one**
   - **What is still missing: the TIER, and now also a barrier that covers
     anything.** Every row above is Tier B with three hosts in one process, and
     the cloud half — `kv_cluster_options::_data_dir` and the
@@ -1582,6 +1587,13 @@ and the answer is currently no for every one of them.
     (where the load driver runs, and whether the host belongs in `cmd/`) are
     both still open and both have to be answered before this task is even
     specifiable
+  - **It now has a spec: `.kiro/specs/multi-raft-host-binary/`.** Ten tasks,
+    and it settles Appendix B's questions 2 and 3 — the host belongs in `cmd/`,
+    and the load driver gets its own process. The larger half of that work is
+    the client-facing data path rather than the host. Its task 1 extracts the
+    workload seam so a Tier C row and a Tier B row differ in tier and nothing
+    else, and its task 5 proves that by running one row both ways at Tier B
+    before Tier C is claimed
   - **`scripts/perf-cloud/run-aws-shape-1.sh` was written with this in mind and
     does not reach it.** It provisions one instance; Shape 2 needs N, a
     placement group, service discovery between them, and an RTT/bandwidth
@@ -1589,44 +1601,100 @@ and the answer is currently no for every one of them.
     unconditional teardown and the leak audit all generalise; nothing else does
   - _Requirements: 3.1 (Tier E), 18.8_
 
-- [ ] 21. A second provider
+- [x] 21. A second provider
   - GCP, following the Workload Identity Federation path already live and the
     audit pattern its own live run established
-  - **NOT DELIVERED, and the blocker is project configuration rather than code
-    or authentication (Requirement 3.7).** Three things were established rather
-    than assumed, so the next session does not have to rediscover them:
-    1. **The federation path is live.** The repository already carries
-       `GCP_CI_WORKLOAD_IDENTITY_PROVIDER` and `GCP_CI_SERVICE_ACCOUNT`, so a CI
-       job needs no new trust relationship.
-    2. **Local credentials are NOT the blocker, contrary to first appearances.**
-       `gcloud projects list` fails with "Reauthentication failed. cannot prompt
-       during non-interactive execution" — but that is the *gcloud user*
-       credential. The **application-default credential still refreshes**, and
-       it carries `cloud-platform` scope. Project `prefab-sky-500619-s9` reads
-       as ACTIVE through it, the Compute Engine API is **ENABLED**, and the
-       project currently holds **zero GCE instances** in any zone.
-    3. **What actually blocks it**: the Cloud Resource Manager API is *not*
-       enabled on that project, so the service account's current role bindings
-       cannot even be read — `getIamPolicy` returns 403 "Cloud Resource Manager
-       API has not been used in project … before or it is disabled". Enabling
-       an API and granting IAM roles are outward-facing changes to a second
-       cloud account, and they were deliberately not made here
-  - **So the next session's first move is not `gcloud auth login`.** It is:
-    enable `cloudresourcemanager.googleapis.com`, read what the CI service
-    account already has, and grant only the delta. Then a GCP analogue of
-    `scripts/ci-cloud-credentials/aws/policies/perf-cloud.json` —
-    `compute.instances.{create,delete,get,list}`, `compute.disks.*`,
-    `compute.firewalls.*` and image lookup — and a `gcp-shape-1` job in
-    `perf-cloud.yml` beside the AWS one
-  - **The measurement side is already provider-agnostic and needs nothing.**
-    `capture-provenance.sh` takes its provider-stated fields from the caller and
-    refuses burstable types across all three providers' naming conventions
-    (`e2-micro`, `f1-*` and `Standard_B*` are all in its table already).
-    `audit-aws-leaks.sh` is the *pattern* an `audit-gcp-leaks.sh` follows rather
-    than code it would reuse — but its two hard-won properties transfer
-    verbatim: a query that fails must report UNKNOWN rather than clean, and
-    `out=$("$@" 2>&1) || rc=$?` is what keeps `set -e` from aborting before the
-    handling runs
+  - **Run on a `n2-standard-8` in `us-central1-a`** — Intel Xeon @ 2.80GHz, 8
+    vCPU, 32,090 MiB, kernel 6.17.0-1022-gcp, pd-balanced boot disk, shared
+    tenancy. Two repetitions of the same five-case filter the two AWS rows
+    used, both exit 0, deleted with a clean five-class audit. About fifteen
+    minutes at $0.3886/hr — **$0.10**
+  - **The blocker recorded as "expired gcloud login" was wrong, and finding
+    that out was most of the work.** The gcloud *user* credential is expired,
+    but the application-default credential still refreshes and carries
+    `cloud-platform` scope. What actually blocked it was that
+    `cloudresourcemanager.googleapis.com` was not enabled, so the CI service
+    account's role bindings could not even be **read**
+  - **And once read, the IAM delta was ZERO.**
+    `kythira-ci-real-cloud-tests@…` already held
+    `roles/compute.instanceAdmin.v1`, `roles/compute.networkAdmin` and
+    `roles/iam.serviceAccountUser` — everything Shape 1 needs. **No role was
+    granted.** The only change to the project was enabling one read-only API,
+    which is a much smaller footprint than this task's plan assumed
+  - **A third machine, a second provider, a second cloud vendor's silicon —
+    and the structural ratios do not move:**
+
+    | quantity | local (4 core) | c5.2xlarge | c7g.2xlarge | n2-standard-8 |
+    |---|---:|---:|---:|---:|
+    | entries per AppendEntries | 4.03–4.89 | 4.44–4.83 | 4.45–4.86 | 4.46–4.84 |
+    | amplification at 16 B | ~9x | 6.68–6.72 | 6.74–6.81 | 6.84–6.95 |
+    | RPC/commit at a 20 ms tick | 2.23 | 2.10 | 2.09–2.10 | 2.10 |
+    | CBOR/JSON amplification | 0.30–0.87 | 0.92–0.99 | 0.87–0.99 | 0.96–1.01 |
+    | 4096 B ÷ 16 B throughput | **0.039–0.047** | 0.33–0.35 | 0.41–0.43 | 0.40–0.41 |
+
+    **RPCs per committed entry converges to 2.10 on all three cloud machines**,
+    against a floor of two — one AppendEntries per follower. Two instruction
+    sets and two cloud vendors produce the same number to three figures. That
+    is as strong a statement as this suite can make that the quantity is a
+    property of the algorithm rather than of anything underneath it
+  - **H6 is refuted a fourth time**, at 1.44–1.49x here against 1.34x on
+    Graviton, 1.40x on AWS x64 and 2.3x locally; every percentile falls as the
+    clock slows and no floor appears at any cadence
+  - **The knee verdict is unanimous across the cloud.** CBOR/JSON amplification
+    is 0.96–1.01 here, and the case's own printed decision rule — *at or near
+    1.00x says the knee is NOT about encoded size* — now reads the same way on
+    three machines. Task 11b's finding is confirmed as specific to the
+    development machine rather than to the implementation
+  - **`scripts/perf-cloud/audit-gcp-leaks.sh` is a re-implementation, not a
+    shared abstraction, and that was the right call**: GCE has no key pairs
+    (SSH keys are metadata), its boot disk is a zonal child of the instance,
+    and its firewall rules cannot carry labels. What IS carried over verbatim
+    are the two properties `audit-aws-leaks.sh` learned the hard way — a failed
+    query reports UNKNOWN rather than clean, and `out=$(...) || rc=$?` keeps
+    `set -e` from aborting before the handling runs
+  - **GCP needed a third property AWS did not, and it is the nastier one.**
+    `gcloud compute ... list` **exits 0 when authentication fails** — it prints
+    "WARNING: Some requests did not succeed" to stderr, emits nothing on
+    stdout, and returns success. Measured directly with a deliberately invalid
+    token: four of the five queries "succeeded" with empty output. That is the
+    same "an auditor that cannot see reports clean" defect task 17 fixed on
+    AWS, arriving through a different door — there a swallowed stderr, here a
+    command that reports success having looked at nothing. The audit now
+    inspects stderr for the partial-failure and authentication markers, and
+    **captures stdout and stderr separately**, because merging them would let a
+    benign "filter keys were not present" warning be counted as a surviving
+    resource. Verified in both directions: bad credential → exit 1 with all
+    five queries UNKNOWN and zero reported clean; good credential → exit 0 with
+    all five clean
+  - **No firewall rule is created, deliberately.** The default network already
+    carries `default-allow-ssh` permitting tcp:22 from 0.0.0.0/0, so a narrower
+    run-scoped rule cannot subtract from it and would only add a resource
+    capable of leaking — and GCE firewall rules cannot carry labels, so it
+    would have to be audited by name prefix, a weaker contract than every other
+    resource here has. Tightening it would mean editing a project-wide rule,
+    which is out of scope for a measurement
+  - **GCE's dead-man switch is better than the one AWS forced.**
+    `--max-run-duration` with `--instance-termination-action=DELETE` is
+    enforced by the control plane, so it fires even if the guest never boots,
+    and it **deletes** rather than stopping — a stopped GCE instance still
+    bills its boot disk. It needs no credentials on the instance, so
+    Requirement 18.4's "the instance needs no cloud permissions" survives
+  - **SSH keys go in INSTANCE metadata, never project metadata.**
+    `gcloud compute ssh` would push a key into the project's metadata, where it
+    outlives the run and grants access to every instance in the project that
+    accepts project keys. An instance-scoped key dies with the instance and
+    cannot leak
+  - **`capture-provenance.sh` grew a GCE branch** — a different server, header
+    and path shape, so a second probe rather than a parameterisation of the
+    first. GCE returns fully-qualified URLs for zone and machine type, and does
+    not serve the region at all (it is the zone minus its trailing letter)
+  - **One defect this run found in its own first attempt**: the boot disk class
+    was read from `instances describe disks[0].type`, which reports the
+    *attachment kind* — `PERSISTENT` — not the class. Requirement 3.4 asks for
+    the volume class, and `PERSISTENT` would satisfy nobody comparing a
+    pd-balanced row against a pd-ssd one. `disks describe type` is the right
+    query and returns `pd-balanced`; the artifact from this run carries the
+    wrong value and is superseded
   - _Requirements: 18.12_
 
 ## The comparison itself
