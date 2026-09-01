@@ -1,0 +1,22 @@
+    run 1/11: 1162.9 ops/sec
+    run 2/11: 1027.5 ops/sec
+    run 3/11: 1036.2 ops/sec
+    run 4/11: 1099.0 ops/sec
+    run 5/11: 1049.9 ops/sec
+    run 6/11: 1012.2 ops/sec
+    run 7/11: 1093.0 ops/sec
+    run 8/11: 1072.3 ops/sec
+    run 9/11: 1060.2 ops/sec
+    run 10/11: 1043.6 ops/sec
+    run 11/11: 1030.8 ops/sec
+  httplib / application/json / write: nodes=3 groups=4 value=128B in_flight=4 tick=2ms
+      tier:     Tier E (one host per machine or container) — a like-for-like comparison with an external number is permitted at this tier (Requirement 3.3)
+      routing:  submit_command(key, ...), leader resolved by key
+      headline: 1049.9 ops/sec (median of 11 runs) | min 1012.2 max 1162.9 | spread 10.8% of median (p50 spread 9.5%)
+      verdict:  UNSTABLE (judged on the throughput spread) — MUST NOT ENTER A COMPARISON TABLE (Requirement 6.3)
+      median run: p50=3590.7us p95=6090.6us p99=n/a (400 samples)
+      counts:   50 warm-up operations discarded per run, 400 offered per measured run (Requirement 6.1)
+      replication: NOT MEASURED at this tier — the host process is deliberately uninstrumented (Requirement 8.2 keeps measurement counters out of the measured process), so these columns are absent rather than zero
+      placement: cluster; region us-east-1; hosts 1=us-east-1a 2=us-east-1a 3=us-east-1a | driver c5.2xlarge in us-east-1a; placement group kythira-perf-local-1788267108-419099 (cluster); inter-node RTT 126.0 us vs loopback 55.0 us (container-shaped)
+      elections: 0 of 11 measured windows contained one. Reported, never asserted — a window that contained an election is not a window measuring a workload, and a row that cannot say whether it did cannot be read at all.
+      artifacts: /tmp/results/multi_raft_bench_20260901_125347.{csv,json}

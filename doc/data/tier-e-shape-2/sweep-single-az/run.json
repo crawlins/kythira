@@ -1,0 +1,58 @@
+{
+  "shape": "aws-shape-2",
+  "tier": "e",
+  "run_tag": "perf-local-1788266283-412024",
+  "region": "us-east-1",
+  "placement": "single-az",
+  "placement_group": null,
+  "placement_verbatim": "single-az; region us-east-1; hosts 1=us-east-1a 2=us-east-1a 3=us-east-1a | driver c5.2xlarge in us-east-1a; inter-node RTT 171.0 us vs loopback 54.0 us (container-shaped)",
+  "nodes": 3,
+  "instances_total": 4,
+  "host_instance_type": "c5.2xlarge",
+  "driver_instance_type": "c5.2xlarge",
+  "host_availability_zones": [
+    "us-east-1a",
+    "us-east-1a",
+    "us-east-1a"
+  ],
+  "driver_availability_zone": "us-east-1a",
+  "instance_ids": [
+    "i-00bc593d567d2823b",
+    "i-0fb5fb3f0419f6502",
+    "i-00d7f29fb627afac9",
+    "i-0e41c3d8285bafaa0"
+  ],
+  "image_id": "ami-0d7f022123f8ff19d",
+  "arch": "amd64",
+  "discovery": "static",
+  "network": {
+    "loopback_rtt_us": 54.0,
+    "inter_node_rtt_us": 171.0,
+    "ratio_to_loopback": 3.17,
+    "verdict": "container-shaped",
+    "probe_matrix_files": [
+      "probe-node-1.json",
+      "probe-node-2.json",
+      "probe-node-3.json"
+    ]
+  },
+  "workload": {
+    "scenario": "write",
+    "groups": 4,
+    "operations": 400,
+    "in_flight": 4,
+    "value_bytes": 128,
+    "repetitions": 11,
+    "tick_interval_ms": 2,
+    "transport": "httplib",
+    "persistence": "memory",
+    "data_threads": 0
+  },
+  "durability_note": "persistence=memory: comparable to an external NO-FSYNC number and to nothing else (Requirement 6.2). The durable comparison needs Tier D.",
+  "benchmark_exit_code": "0",
+  "tier_c_comparison_taken": true,
+  "node_binary_sha256": "3ee79727134a15eed5ce09b872e84310f219ffaf689be18a00269270ab4f00d6",
+  "bench_binary_sha256": "42c7bcf360f1d72ef334167fa490e8e80be9a0cf0fa472ebb0d884ff89a59552",
+  "binary_origin": "shipped from the controlling machine",
+  "git_commit": "d7b6ab6a9ade7136b1be4fad4e82fd1e835c6725"
+}
