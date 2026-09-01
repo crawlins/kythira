@@ -669,8 +669,54 @@ difference is not established by these data.
 
 ### Like-for-like table
 
-**Still empty — and the reason has moved a second time, which is again the
-useful part.**
+**No longer empty. It holds exactly one row, and it took Tier E on real
+machines to earn it.**
+
+| Ours | Theirs | Reading |
+|---|---|---|
+| **1261.2 ops/sec**, p50 **765.4 µs**, p95 972.1 µs, p99 **1150.9 µs**. Tier E, 3 hosts on 3 c5.2xlarge (8 vCPU each) in one AZ, driver on a 4th, 1 Raft group, 256 B values, **1 operation in flight**, replica read (`read-local`), **NOT LINEARIZABLE**, durability not applicable. 2,000 operations × 11 windows, spread 3.4%, **stable**, zero elections | etcd 3.2.0 serializable read: **2,909 QPS, average latency 0.3 ms**. 3 GCE servers of 8 vCPU each, 1 client machine, 1 Raft group, 256 B values, **1 connection / 1 client**, replica read, durability not applicable | **We are at 43.4% of etcd's rate, and our p50 is 2.55x their average latency.** These are the same statement: at one operation in flight both systems are latency-bound, and 1/765 µs = 1307 ops/sec against our measured 1261, while 1/300 µs = 3333 against their published 2909. The rate gap *is* the latency gap; there is no throughput story here separate from the per-operation cost |
+
+**Why this pairing is admissible where none before it was.** Requirement 3.3
+needs tier C or above: both are three-machine clusters with the client on its
+own machine. Requirement 6.2 needs durability to match: a read has none, and
+**both records say so explicitly** rather than leaving it unstated — which is
+the single thing that disqualifies every write pairing in this document. The
+mechanism matches: etcd's serializable read is served from one member's local
+state without a quorum round, and so is `read_kind::local_stale`. And the axes
+that usually differ do not: 1 Raft group, 256 B values, and **one client**
+against one client, which is the concurrency mismatch Requirement 6.4 names as
+probably dominating every other comparison here.
+
+**The differences that remain, stated rather than smoothed over
+(Requirement 9.6).** None of these is quantified, because none of them can be
+from these data:
+
+- **Their client machine is 16 vCPU; ours is 8.** At one operation in flight
+  the client is not the bottleneck, so this should not move the rate — but it
+  is a difference and it is not measured.
+- **Different clouds and different eras.** etcd's numbers are on 2017-era GCE
+  and Ubuntu 17.04; ours are on 2026 EC2 c5.2xlarge. This is the largest
+  uncontrolled term in the pairing and it plausibly favours us.
+- **They publish a mean, we publish a p50.** Requirement 4.2's reason for
+  preferring the median is exactly that the two differ under scheduling noise.
+  Ours also carries a p99, and theirs does not.
+- **Which replica serves the read.** Ours routes by key and is served by the
+  leader's local state; etcd's is served by whichever member the client is
+  connected to. Both are one client-to-server hop with no quorum round, so the
+  consistency class and the network cost match, but the server is not chosen
+  the same way.
+- **Our read is `NOT LINEARIZABLE` and so is theirs.** That is a match, not a
+  caveat — but it is the reason this row cannot be read as a statement about
+  linearizable performance, which remains uncompared.
+
+**What this row does not license.** It says nothing about write throughput,
+where the durability blocker below still stands, and nothing about
+linearizable reads, where the mechanisms differ. One admissible pair after
+fifty sessions is a narrow result, and its narrowness is the point:
+Requirement 9.8 asks that a metric with no possible comparison say so, and six
+of the seven metrics below still do.
+
+### Write metrics: still empty, and the reason has moved a second time
 
 It was first empty because Requirement 3.3 forbids a like-for-like comparison
 from any tier below C, and every row was Tier A or Tier B. That barrier went
@@ -718,7 +764,7 @@ metric by metric:
 | Write latency p99 | **No** | Same, and worse: our p99 is still `n/a` in every Tier E row above, because a 400-operation window does not contain enough samples to estimate one. The window has to grow as well as the durability setting, and Tier E did not change that — a 400-sample window does not estimate a p99 however many machines it ran on |
 | `read_state` (whole-shard read) | **No** | No external source in the register publishes a whole-store read at all. The metric has no counterpart, not merely no matching configuration |
 | Linearizable point read | **No** | etcd's linearizable read uses ReadIndex; ours is submitted as a proposal through the log. These are different mechanisms with the same consistency label, which is an indicative comparison at best |
-| Non-linearizable read | **No — but for the first time the obstacle is a missing run, not a missing capability** | etcd's serializable read is a replica read like ours, and its record marks durability not applicable, so the durability blocker that stops every write row does not apply here. Until now the pairing also failed on tier: "one process against a cluster". **Tier E removes that half.** A Tier E `read-local` row at 4 groups, 256 B values and 1 client would match etcd's 3-machine, 1-connection serializable record on tier, durability, payload and concurrency at once — the closest this project has ever been to a lawful pair. It is not claimed here because that row has not been taken: the Tier E rows above are 100% write at 128 B and 4 in flight. This is the single cheapest row that could open this table |
+| Non-linearizable read | **YES — the only one, and the row has been taken** | etcd's serializable read is a replica read like ours and its record marks durability not applicable, so the blocker that stops every write pairing does not apply. Tier E supplied the missing half. The row is in the like-for-like table above: 1261.2 ops/sec at p50 765.4 µs against etcd's 2,909 QPS at 0.3 ms mean, matched on tier, durability, group count, payload size and client concurrency |
 | Entries per AppendEntries | **No** | No external source in the register states it. This is a ratio we can measure and nobody publishes |
 | RPCs per committed entry | **No** | Same |
 

@@ -224,11 +224,23 @@ one reporting clean while blind.
     against 4 and 66 cores against 24 are mismatched enough that Requirement
     9.6 forbids the ratio anyway. The table stays empty for a reason no further
     work of ours removes.
-  - **One lawful pair is now within reach and is named:** etcd's serializable
-    read record marks durability not applicable and was taken on 3 machines at
-    1 connection. A Tier E `read-local` row at 256 B and 1 client would match
-    it on tier, durability, payload and concurrency at once. It is not claimed,
-    because that row has not been taken — the rows above are 100% write.
+  - **The table is no longer empty.** The one lawful pair was identified and
+    then taken: a Tier E `read-local` row at 1 group, 256 B values and **1
+    operation in flight** — **1261.2 ops/sec, p50 765.4 µs, p95 972.1, p99
+    1150.9, spread 3.4%, stable over 11 windows, zero elections** — against
+    etcd 3.2.0's serializable read at **2,909 QPS and 0.3 ms mean**, matched on
+    tier, durability (not applicable to a read, and *stated* so on both sides),
+    Raft group count, payload size and client concurrency.
+  - **43.4% of etcd's rate at 2.55x their latency, and those are one fact.** At
+    one operation in flight both systems are latency-bound: 1/765 µs = 1307
+    against our measured 1261, 1/300 µs = 3333 against their published 2909.
+  - It also produced this project's **first non-`n/a` p99**, because 2000
+    operations per window finally supply the samples one needs.
+  - The differences that remain are stated and not quantified, because they
+    cannot be from these data: their 16-vCPU client against our 8 (immaterial
+    at 1 in flight, but unmeasured), 2017 GCE against 2026 EC2 — the largest
+    uncontrolled term, and it plausibly favours us — a mean against a median,
+    and which replica serves the read.
   - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5_
 
 - [x] 10. Hand Tier E back, and say what is left

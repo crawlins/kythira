@@ -1,0 +1,25 @@
+    run 1/11: 1228.8 ops/sec
+    run 2/11: 1243.1 ops/sec
+    run 3/11: 1271.4 ops/sec
+    run 4/11: 1250.2 ops/sec
+    run 5/11: 1261.2 ops/sec
+    run 6/11: 1303.9 ops/sec
+    run 7/11: 1274.8 ops/sec
+    run 8/11: 1255.4 ops/sec
+    run 9/11: 1245.6 ops/sec
+    run 10/11: 1281.1 ops/sec
+    run 11/11: 1269.3 ops/sec
+  httplib / application/json / read-local: nodes=3 groups=1 value=256B in_flight=1 tick=2ms
+      tier:     Tier E (one host per machine or container) — a like-for-like comparison with an external number is permitted at this tier (Requirement 3.3)
+      routing:  submit_command(key, ...), leader resolved by key
+      headline: 1261.2 ops/sec (median of 11 runs) | min 1228.8 max 1303.9 | spread 3.4% of median (p50 spread 2.4%)
+      verdict:  stable (judged on the throughput spread)
+      median run: p50=765.4us p95=972.1us p99=1150.9us
+      counts:   50 warm-up operations discarded per run, 2000 offered per measured run (Requirement 6.1)
+      read kind: local stale read
+      consistency: NOT LINEARIZABLE (local replica, may be arbitrarily stale)
+      bytes:    512000 returned in the median run, 0.3 MiB/sec, 256.0 bytes/operation
+      replication: NOT MEASURED at this tier — the host process is deliberately uninstrumented (Requirement 8.2 keeps measurement counters out of the measured process), so these columns are absent rather than zero
+      placement: single-az; region us-east-1; hosts 1=us-east-1a 2=us-east-1a 3=us-east-1a | driver c5.2xlarge in us-east-1a; inter-node RTT 170.0 us vs loopback 52.0 us (container-shaped)
+      elections: 0 of 11 measured windows contained one. Reported, never asserted — a window that contained an election is not a window measuring a workload, and a row that cannot say whether it did cannot be read at all.
+      artifacts: /tmp/results/multi_raft_bench_20260901_143812.{csv,json}
