@@ -4208,6 +4208,33 @@ set_tests_properties(aws_quorum_manager_localstack_test PROPERTIES
     SKIP_RETURN_CODE 77
 )
 
+# LocalStack coverage for the EC2 tag-scan peer-discovery back-end
+# (.kiro/specs/multi-machine-placement/ task 8). LocalStack rather than real
+# EC2 because the subject is DescribeInstances filter syntax and tag round
+# tripping, which a hand-written mock would get wrong in the same direction as
+# the code under test. What LocalStack cannot check is IAM -- it authorises
+# everything -- and the file says so.
+add_executable(aws_ec2_peer_discovery_localstack_test
+    aws_ec2_peer_discovery_localstack_test.cpp)
+target_compile_definitions(aws_ec2_peer_discovery_localstack_test PRIVATE
+    KYTHIRA_AWS_LOCALSTACK_TESTS
+)
+target_link_libraries(aws_ec2_peer_discovery_localstack_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(aws_ec2_peer_discovery_localstack_test PRIVATE Folly::folly)
+endif()
+target_compile_features(aws_ec2_peer_discovery_localstack_test PRIVATE cxx_std_23)
+add_test(NAME aws_ec2_peer_discovery_localstack_test
+         COMMAND aws_ec2_peer_discovery_localstack_test)
+set_tests_properties(aws_ec2_peer_discovery_localstack_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;raft;discovery;aws;localstack;slow"
+    SKIP_RETURN_CODE 77
+)
+
 # LocalStack coverage for the ca_cluster_node-specific 3-AZ topology shape
 # (Requirement 17.12(b)) — see file header for what this does and doesn't
 # re-test relative to aws_quorum_manager_localstack_test.cpp above.
