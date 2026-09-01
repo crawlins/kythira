@@ -67,6 +67,15 @@ docker/dns_sd_discovery_node/dist/
 # Tracking it produced merge conflicts on a file nobody reads from git.
 RESUME.md
 
+# Claude Code local tooling — working-copy only, never committed.
+# `.claude/agents/kfc/` and `.claude/system-prompts/` are vendored
+# third-party content (kiro-for-claude-code), so they are exempt from this
+# project's copyright header and are not ours to commit; `settings.local.json`
+# holds per-machine permission grants. The install is also configured for
+# `.claude/specs/`, while every spec in this tree lives in `.kiro/specs/`.
+# Ignoring the directory keeps `git add -A` from sweeping it into a commit.
+.claude/
+
 # OS files
 .DS_Store
 Thumbs.db
