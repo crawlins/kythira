@@ -1602,7 +1602,7 @@ and the answer is currently no for every one of them.
     concurrently
   - _Requirements: 3.4, 3.5, 18.7_
 
-- [ ] 20. Shape 2 — Tier E, one host per instance
+- [x] 20. Shape 2 — Tier E, one host per instance
   - A host binary in `cmd/`, N instances, service discovery between them
   - Measure and report inter-node RTT and bandwidth **before** the measured
     window, plus the placement
@@ -1627,6 +1627,25 @@ and the answer is currently no for every one of them.
     placement group, service discovery between them, and an RTT/bandwidth
     measurement *before* the measured window. The run-scoped tag, the
     unconditional teardown and the leak audit all generalise; nothing else does
+  - **DELIVERED September 1, 2026** by `.kiro/specs/multi-machine-placement/`,
+    which is now 10/10. `scripts/perf-cloud/run-aws-shape-2.sh` provisions N+1
+    instances, opens the Raft port between them, probes every ordered pair
+    before the window and tears down from an EXIT trap. Discovery is
+    `aws_ec2_peer_discovery` behind the existing `peer_discovery` concept, with
+    `--discovery ec2-tag` on the host; the static list stays the default for a
+    measured row, because a control-plane call inside a window measures EC2.
+  - **The rows: 1037.9 ops/sec one AZ and 775.0 across three, both stable over
+    11 windows with zero elections**, against 1175.4 for the same binaries and
+    workload co-located on one instance. Inter-node RTT 171 µs and 469 µs
+    against a 51–69 µs loopback baseline.
+  - **This is the row task 11 was waiting for.** Its response-driven-pacing
+    prediction — that the round interval tracks the RPC round trip — was
+    untestable on loopback because the round trip barely varied. Read against
+    measured RTT it gives **4.39 round trips per operation at one AZ and 4.18
+    at three**, two independent placements agreeing across a 3.5x difference in
+    round trip. Predicted first, then measured, at two widely separated points.
+  - Tier E's tier table can stop saying "containers only". **Tier D is still
+    unrun** and is a volume and a run away, not a spec.
   - _Requirements: 3.1 (Tier E), 18.8_
 
 - [x] 21. A second provider
