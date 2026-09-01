@@ -41,6 +41,19 @@ enum class wire_serializer : std::uint8_t {
     cbor = 1,
 };
 
+/// @brief Where this host's peer list comes from.
+///
+/// `.kiro/specs/multi-machine-placement/` Requirement 3. `static_list` is the
+/// DEFAULT AND THE ONE A MEASURED ROW USES (Requirement 3.4): discovery is a
+/// control-plane API call, and a row whose numbers include one of those is
+/// measuring the cloud's control plane. `ec2_tag` exists to prove the cluster
+/// can form without a hand-edited file, which is a functional claim and not a
+/// performance one.
+enum class discovery_mode : std::uint8_t {
+    static_list = 0,
+    ec2_tag = 1,
+};
+
 /// @brief What the host's log is written to.
 ///
 /// The same three arms the in-process durability axis sweeps, with the same
@@ -133,6 +146,65 @@ struct node_options {
     /// How long to wait for a leader before reporting readiness on the control
     /// port. A driver waits on that rather than sleeping.
     std::chrono::milliseconds _ready_timeout{30000};
+
+    /// Where `_peers` comes from. `static_list` leaves it exactly as the
+    /// command line gave it, which is what every measured row uses.
+    discovery_mode _discovery{discovery_mode::static_list};
+
+    /// The run-scoped tag scoping an `ec2_tag` search. The same tag the leak
+    /// audit keys off, so one run has one identity everywhere.
+    std::string _discovery_run_tag{};
+
+    /// Region for the discovery client. Empty uses the SDK's own resolution.
+    std::string _discovery_region{};
+
+    /// Only instances whose role tag starts with this are peers. Shape 2
+    /// launches N hosts and one driver under one run tag, and the driver is
+    /// not a replica — without this the cluster believes it has N+1 voters.
+    std::string _discovery_role_prefix{};
+
+    /// How many peers must appear, this host included. Discovery that
+    /// proceeded with whatever it found would measure a cluster with a replica
+    /// missing and report a number for it (Requirement 3.5).
+    std::size_t _discovery_expect{0};
+
+    /// Total time discovery is allowed to converge before the host refuses to
+    /// start and names what it never saw.
+    std::chrono::milliseconds _discovery_budget{120000};
+
+    /// The Raft URL this host publishes for its peers to dial. It cannot be
+    /// derived from `_bind_address`, which is typically 0.0.0.0 — a host that
+    /// advertised that would tell every peer to connect to itself.
+    std::string _advertise_address{};
+
+    /// Every discovered peer's control port.
+    ///
+    /// **Stated, never derived.** `_peer_control` is deliberately not computed
+    /// from a peer's Raft URL by a convention like "control is Raft plus two",
+    /// because that silently probes whatever happens to be listening there.
+    /// This is not that: it is the operator saying that in THIS deployment
+    /// every host was given the same control port, which Shape 2 guarantees by
+    /// construction because each host is alone on its machine. Left zero,
+    /// `_peer_control` stays empty and the network probe reports null figures
+    /// rather than guessing — the same behaviour a missing `--peer-control`
+    /// already has.
+    std::uint16_t _discovery_control_port{0};
+
+    /// EC2 endpoint override for the discovery client.
+    ///
+    /// Present so that discovery is TESTABLE WITHOUT A CLOUD ACCOUNT — pointed
+    /// at LocalStack, the whole path runs on a workstation. The AWS SDK's
+    /// `AWS_ENDPOINT_URL_EC2` environment variable is not honoured by the
+    /// version vendored here: a run configured that way silently reached real
+    /// EC2 and failed with `AuthFailure`, which reads like a credentials
+    /// problem and is actually a routing one. An explicit option cannot do
+    /// that.
+    std::string _discovery_endpoint{};
+
+    /// This instance's own id. Empty asks IMDS, which is the only way a
+    /// process learns it unaided; injectable for tests and for a controller
+    /// driving this from outside the instance.
+    std::string _discovery_instance_id{};
 };
 
 [[nodiscard]] auto parse_node_options(int argc, char** argv) -> node_options;

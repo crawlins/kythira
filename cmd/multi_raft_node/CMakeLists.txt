@@ -45,6 +45,23 @@ if(TARGET Boost::beast OR Boost_FOUND)
     target_compile_definitions(multi_raft_node PRIVATE KYTHIRA_BENCH_HAS_BEAST)
 endif()
 
+# The EC2 tag-scan discovery back-end, when the SDK is present
+# (.kiro/specs/multi-machine-placement/ task 8). OPTIONAL on purpose, and
+# guarded exactly as aws_ec2_quorum_manager is: a host built without the SDK
+# keeps every measured code path it has today and refuses only `--discovery
+# ec2-tag`, which no measured row uses. Requirement 3.4 makes the static list
+# the default for a row, so the SDK is never in a measured window's way.
+if(TARGET AWS::aws-sdk-cpp-ec2 OR AWSSDK_FOUND)
+    find_package(AWSSDK QUIET COMPONENTS core ec2)
+    if(AWSSDK_FOUND)
+        target_compile_definitions(multi_raft_node PRIVATE KYTHIRA_HAS_AWS_SDK)
+        target_link_libraries(multi_raft_node PRIVATE ${AWSSDK_LINK_LIBRARIES})
+        message(STATUS "multi_raft_node: EC2 tag-scan discovery enabled")
+    endif()
+else()
+    message(STATUS "multi_raft_node: no AWS SDK — --discovery ec2-tag unavailable")
+endif()
+
 set_target_properties(multi_raft_node PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )

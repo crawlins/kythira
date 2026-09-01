@@ -57,6 +57,12 @@
 #include <csignal>
 #include <exception>
 #include <iostream>
+#ifdef KYTHIRA_HAS_AWS_SDK
+#include <raft/aws_ec2_peer_discovery.hpp>
+
+#include <aws/core/Aws.h>
+#endif
+
 #include <memory>
 #include <mutex>
 #include <string>
@@ -83,6 +89,109 @@ using kythira::bench::wire_serializer;
 [[nodiscard]] auto url_map(const node_options& opt)
     -> std::unordered_map<std::uint64_t, std::string> {
     return {opt._peers.begin(), opt._peers.end()};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Discovery
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `.kiro/specs/multi-machine-placement/` Requirement 3: bring N hosts up
+// without every one of them being handed every address.
+//
+// This runs ONCE, BEFORE the transport is built, and never again. That is the
+// whole design and it is what keeps Requirement 3.4 true: the peer list a
+// measured window uses is a fixed map either way, and the only difference
+// between `--discovery static` and `--discovery ec2-tag` is who wrote it.
+// Re-scanning during the window would put a control-plane call on the data
+// path and the row would be measuring EC2.
+//
+// A failure here refuses to start. The alternative — carry on with the peers
+// that did answer — runs the cluster a replica short, and nothing downstream
+// can tell that from a healthy row.
+void resolve_peers_by_discovery(node_options& opt) {
+    if (opt._discovery == kythira::bench::discovery_mode::static_list) {
+        return;
+    }
+#ifndef KYTHIRA_HAS_AWS_SDK
+    throw std::runtime_error(
+        "multi_raft_node: --discovery ec2-tag needs the AWS SDK, and this binary was built "
+        "without it. Rebuild with the SDK available, or use --discovery static with --peer");
+#else
+    Aws::SDKOptions sdk_options;
+    Aws::InitAPI(sdk_options);
+    // The SDK is shut down on every path out of here, including the throwing
+    // ones: a half-initialised SDK left behind by a failed discovery would
+    // outlive the reason it was created.
+    struct sdk_guard {
+        Aws::SDKOptions& o;
+        ~sdk_guard() { Aws::ShutdownAPI(o); }
+    } guard{sdk_options};
+
+    kythira::aws_ec2_peer_discovery_config cfg;
+    cfg.aws.region = opt._discovery_region;
+    cfg.aws.endpoint_override = opt._discovery_endpoint;
+    cfg.run_tag_value = opt._discovery_run_tag;
+    cfg.role_tag_prefix = opt._discovery_role_prefix;
+    cfg.instance_id = opt._discovery_instance_id;
+
+    kythira::aws_ec2_peer_discovery<std::uint64_t, std::string> finder{cfg};
+
+    std::cerr << "multi_raft_node: registering node " << opt._node_id << " at "
+              << opt._advertise_address << " under tag " << opt._discovery_run_tag << "\n";
+    finder.register_node(opt._node_id, opt._advertise_address).get();
+
+    std::cerr << "multi_raft_node: waiting for " << opt._discovery_expect << " peer(s), budget "
+              << opt._discovery_budget.count() << " ms\n";
+    // No `required` list is passed: the ids are precisely what is not known in
+    // advance here, which is the point of discovery. The count is the contract,
+    // and await_peers still names every peer it DID see when it gives up.
+    const auto peers = finder.await_peers(opt._discovery_expect, opt._discovery_budget);
+
+    opt._peers.clear();
+    opt._peer_control.clear();
+    for (const auto& peer : peers) {
+        opt._peers.emplace(peer.node_id, peer.address);
+        if (opt._discovery_control_port != 0) {
+            // Host part of the advertised Raft URL, with the operator's stated
+            // control port. Not a "control is Raft plus two" convention: the
+            // port is given explicitly, and omitted it stays absent so the
+            // probe reports null rather than measuring whatever is listening.
+            const auto scheme = peer.address.find("://");
+            auto host =
+                scheme == std::string::npos ? peer.address : peer.address.substr(scheme + 3);
+            const auto colon = host.rfind(':');
+            if (colon != std::string::npos) {
+                host = host.substr(0, colon);
+            }
+            opt._peer_control.emplace(peer.node_id,
+                                      host + ":" + std::to_string(opt._discovery_control_port));
+        }
+    }
+
+    if (opt._peers.find(opt._node_id) == opt._peers.end()) {
+        // The one failure discovery can produce that looks like success: every
+        // OTHER host answered, so the count is met, but this host's own tags
+        // are missing from the result. The transport's URL map is used for
+        // every target including self, so a host absent from its own map
+        // cannot route to itself.
+        throw std::runtime_error(
+            "multi_raft_node: discovery returned " + std::to_string(opt._peers.size()) +
+            " peer(s) but not this host (id " + std::to_string(opt._node_id) +
+            "). The transport's URL map is used for every target including self");
+    }
+
+    if (opt._voters.empty()) {
+        for (const auto& [id, url] : opt._peers) {
+            opt._voters.push_back(id);
+        }
+    }
+
+    std::cerr << "multi_raft_node: discovered " << opt._peers.size() << " peer(s):";
+    for (const auto& [id, url] : opt._peers) {
+        std::cerr << " " << id << "=" << url;
+    }
+    std::cerr << "\n";
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,6 +495,16 @@ auto main(int argc, char** argv) -> int {
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n\n" << kythira::bench::node_usage();
         return 2;
+    }
+
+    // Before folly::Init and before any transport: discovery only fills in the
+    // peer map, and everything downstream must see a map that is already
+    // final.
+    try {
+        resolve_peers_by_discovery(opt);
+    } catch (const std::exception& e) {
+        std::cerr << "multi_raft_node: discovery failed: " << e.what() << "\n";
+        return 3;
     }
 
     int folly_argc = 1;
