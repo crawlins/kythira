@@ -190,10 +190,66 @@ Timing
   --ready-timeout MS         How long to wait for a leader before the control
                              port reports ready (default 30000).
 
+Discovery — how the peer list is obtained
+  --discovery MODE           static | ec2-tag (default static).
+                             THE STATIC LIST IS THE DEFAULT FOR A MEASURED ROW
+                             on purpose: discovery is a control-plane API call,
+                             and a row whose numbers include one of those is
+                             measuring the cloud rather than this cluster.
+                             ec2-tag exists to show the cluster can form with
+                             no hand-edited peer list, which is a functional
+                             claim and not a performance one.
+  --discovery-run-tag VALUE  The run-scoped tag scoping the search. Required
+                             with ec2-tag. Same tag the leak audit keys off.
+  --advertise URL            The Raft URL peers should dial, e.g.
+                             http://10.0.0.4:9001. Required with ec2-tag: it
+                             cannot be derived from --bind, which is normally
+                             0.0.0.0, and a host advertising that would tell
+                             every peer to connect to itself.
+  --discovery-expect N       How many hosts must appear, this one included.
+                             Required with ec2-tag. Without it discovery would
+                             proceed with whatever it found and the cluster
+                             would run a replica short with nothing saying so.
+  --discovery-budget MS      Time allowed to converge (default 120000). On
+                             expiry the host REFUSES TO START and names the
+                             ids it never saw.
+  --discovery-role-prefix P  Only instances whose role tag starts with P are
+                             peers. Shape 2 runs N hosts and one driver under
+                             one run tag, and the driver is not a replica.
+  --discovery-control-port N Every discovered peer's control port, for the
+                             network probe. STATED, never derived from the
+                             Raft URL by a convention — omitted, peer control
+                             addresses stay empty and the probe reports null
+                             rather than measuring whatever is listening.
+  --discovery-region REGION  Region for the discovery client.
+  --discovery-endpoint URL   EC2 endpoint override, e.g. a LocalStack at
+                             http://localhost:4566. Exists so discovery can be
+                             exercised end to end with no cloud account. The
+                             SDK's AWS_ENDPOINT_URL_EC2 variable is NOT honoured
+                             by the vendored version — setting it sends the
+                             request to real EC2, which then fails with
+                             AuthFailure and looks like a credentials problem.
+  --discovery-instance-id ID This instance's id. Empty asks IMDS.
+
   --config FILE              Read any of the above as `key=value` lines.
   --help                     This text.
 )";
 }
+
+namespace {
+
+[[nodiscard]] auto parse_discovery(const std::string& value) -> discovery_mode {
+    if (value == "static" || value == "static-list") {
+        return discovery_mode::static_list;
+    }
+    if (value == "ec2-tag" || value == "ec2_tag") {
+        return discovery_mode::ec2_tag;
+    }
+    throw std::runtime_error("multi_raft_node: --discovery must be static or ec2-tag, got " +
+                             value);
+}
+
+}  // namespace
 
 auto parse_node_options(int argc, char** argv) -> node_options {
     node_options out;
@@ -250,6 +306,26 @@ auto parse_node_options(int argc, char** argv) -> node_options {
                 o._op_timeout = to_ms(value, flag.c_str());
             } else if (flag == "--ready-timeout") {
                 o._ready_timeout = to_ms(value, flag.c_str());
+            } else if (flag == "--discovery") {
+                o._discovery = parse_discovery(value);
+            } else if (flag == "--discovery-run-tag") {
+                o._discovery_run_tag = value;
+            } else if (flag == "--discovery-region") {
+                o._discovery_region = value;
+            } else if (flag == "--discovery-role-prefix") {
+                o._discovery_role_prefix = value;
+            } else if (flag == "--discovery-expect") {
+                o._discovery_expect = static_cast<std::size_t>(to_u64(value, flag.c_str()));
+            } else if (flag == "--discovery-budget") {
+                o._discovery_budget = to_ms(value, flag.c_str());
+            } else if (flag == "--discovery-control-port") {
+                o._discovery_control_port = static_cast<std::uint16_t>(to_u64(value, flag.c_str()));
+            } else if (flag == "--discovery-endpoint") {
+                o._discovery_endpoint = value;
+            } else if (flag == "--discovery-instance-id") {
+                o._discovery_instance_id = value;
+            } else if (flag == "--advertise") {
+                o._advertise_address = value;
             } else {
                 throw std::runtime_error("multi_raft_node: unknown option " + flag);
             }
@@ -278,10 +354,36 @@ auto parse_node_options(int argc, char** argv) -> node_options {
         throw std::runtime_error(
             "multi_raft_node: --raft-port, --data-port and --control-port are all required");
     }
-    if (out._peers.find(out._node_id) == out._peers.end()) {
-        throw std::runtime_error(
-            "multi_raft_node: --peer must include this host's own id; the transport's URL map is "
-            "used for every target including self");
+    if (out._discovery == discovery_mode::static_list) {
+        if (out._peers.find(out._node_id) == out._peers.end()) {
+            throw std::runtime_error(
+                "multi_raft_node: --peer must include this host's own id; the transport's URL map "
+                "is used for every target including self");
+        }
+    } else {
+        // Under discovery the peer list is empty here BY DESIGN — it is filled
+        // in before the transport is built. What the host must be given
+        // instead is checked with the same "refuse at startup, not at first
+        // use" rule: a host that starts and then cannot route is far harder to
+        // diagnose than one that says which option was missing.
+        if (out._discovery_run_tag.empty()) {
+            throw std::runtime_error(
+                "multi_raft_node: --discovery ec2-tag requires --discovery-run-tag; an empty run "
+                "tag matches no instances and is indistinguishable from a cluster that has not "
+                "started yet");
+        }
+        if (out._advertise_address.empty()) {
+            throw std::runtime_error(
+                "multi_raft_node: --discovery ec2-tag requires --advertise, the Raft URL peers "
+                "should dial. It cannot be derived from --bind, which is normally 0.0.0.0 — a "
+                "host advertising that would tell every peer to connect to itself");
+        }
+        if (out._discovery_expect == 0) {
+            throw std::runtime_error(
+                "multi_raft_node: --discovery ec2-tag requires --discovery-expect, the number of "
+                "hosts that must appear. Without it discovery would proceed with whatever it "
+                "found and measure a cluster with a replica missing");
+        }
     }
     if (out._voters.empty()) {
         // Every peer, which is what Tier C wants and what the in-process rows
