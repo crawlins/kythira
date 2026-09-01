@@ -61,6 +61,7 @@ CEILING_MINUTES=45
 OUT_DIR="perf-cloud-results-shape2"
 SSH_CIDR=""
 DISCOVERY="static"
+ALSO_TIER_C=0
 DRY_RUN=0
 KEEP=0
 
@@ -133,6 +134,16 @@ Safety and output:
                              list is the default for a measured row on
                              purpose: discovery inside a window is a cost in
                              that window (Requirement 3.4).
+  --also-tier-c             After the Tier E row, take a Tier C row ON THE
+                             DRIVER INSTANCE -- every host process and the
+                             driver co-located on one machine. This is task
+                             6's deliverable: the same binaries, the same
+                             workload and the SAME INSTANCE TYPE, differing in
+                             placement alone. A Tier C row taken on a
+                             development machine instead would differ in the
+                             hardware too, and the delta would say nothing
+                             about placement. Costs a couple of minutes of
+                             instance time already paid for.
   --out-dir DIR             default: perf-cloud-results-shape2
   --ssh-cidr CIDR           Source CIDR allowed to reach port 22. Default is
                              this machine's public address with a /32.
@@ -166,6 +177,7 @@ while [[ $# -gt 0 ]]; do
         --key-space) KEY_SPACE="$2"; shift 2 ;;
         --ceiling-minutes) CEILING_MINUTES="$2"; shift 2 ;;
         --discovery) DISCOVERY="$2"; shift 2 ;;
+        --also-tier-c) ALSO_TIER_C=1; shift ;;
         --out-dir) OUT_DIR="$2"; shift 2 ;;
         --ssh-cidr) SSH_CIDR="$2"; shift 2 ;;
         --keep) KEEP=1; shift ;;
@@ -383,7 +395,7 @@ teardown() {
         echo "!!! --keep given: NOT tearing down. These are billing now:"
         echo "!!!   instances:      ${INSTANCE_IDS[*]:-none}"
         echo "!!!   security group: ${SG_ID:-none}"
-        echo "!!!   placement grp:  $([[ ${PG_CREATED} == 1 ]] && echo "${PG_NAME}" || echo none)"
+        echo "!!!   placement grp:  ${PG_NAME} (created: ${PG_CREATED})"
         echo "!!!   key pair:       ${KEY_NAME}"
         return $rc
     fi
@@ -668,6 +680,10 @@ mkdir -p "${OUT_DIR}"
 # so running it first makes a refusal cost seconds rather than a whole deploy.
 # The first live Graviton run failed here, on a script bug, after fifty-five
 # minutes of on-instance build.
+PLACEMENT_GROUP_NAME=""
+if [[ "${PG_CREATED}" == "1" ]]; then
+    PLACEMENT_GROUP_NAME="${PG_NAME}"
+fi
 echo "[step] Capture provenance on every instance (Requirement 18.4)"
 for (( i = 0; i < TOTAL_INSTANCES; ++i )); do
     role="host-$(( i + 1 ))"; itype="${INSTANCE_TYPE}"
@@ -681,7 +697,7 @@ for (( i = 0; i < TOTAL_INSTANCES; ++i )); do
     ssh_to "$i" "chmod +x /tmp/capture-provenance.sh && \
         KYTHIRA_PERF_STATED_NETWORK='${STATED_NETWORK}' \
         KYTHIRA_PERF_STATED_TENANCY='default' \
-        KYTHIRA_PERF_STATED_PLACEMENT='$([[ ${PG_CREATED} == 1 ]] && echo "${PG_NAME}")' \
+        KYTHIRA_PERF_STATED_PLACEMENT='${PLACEMENT_GROUP_NAME}' \
         KYTHIRA_PERF_STATED_INSTANCE_TYPE='${itype}' \
         /tmp/capture-provenance.sh /tmp/provenance.json"
     scp "${SSH_OPTS[@]}" -q "ubuntu@${PUBLIC_IP[$i]}:/tmp/provenance.json" \
@@ -698,6 +714,15 @@ for (( i = 0; i < NODES; ++i )); do
 done
 scp "${SSH_OPTS[@]}" -q "${BENCH_BINARY}" "ubuntu@${PUBLIC_IP[$NODES]}:/tmp/"
 ssh_to "${NODES}" "chmod +x /tmp/${BENCH_BIN_NAME}"
+if [[ "${ALSO_TIER_C}" == "1" ]]; then
+    # The Tier C arm runs every host process on the driver instance, so that
+    # instance needs the node binary too. Shipped here, with everything else,
+    # so the deploy step remains the only place binaries move.
+    scp "${SSH_OPTS[@]}" -q "${NODE_BINARY}" "ubuntu@${PUBLIC_IP[$NODES]}:/tmp/"
+    scp "${SSH_OPTS[@]}" -q "${REPO_ROOT}/scripts/run-tier-c-row.sh" \
+        "ubuntu@${PUBLIC_IP[$NODES]}:/tmp/"
+    ssh_to "${NODES}" "chmod +x /tmp/${NODE_BIN_NAME} /tmp/run-tier-c-row.sh"
+fi
 NODE_SHA=$(sha256sum "${NODE_BINARY}" | cut -d' ' -f1)
 BENCH_SHA=$(sha256sum "${BENCH_BINARY}" | cut -d' ' -f1)
 echo "  ${NODE_BIN_NAME} -> ${NODES} host(s); ${BENCH_BIN_NAME} -> driver"
@@ -762,9 +787,18 @@ for (( i = 0; i < NODES; ++i )); do
             echo "ERROR: host ${nid} was not ready within 180s. Last: ${body:-no response}" >&2
             echo "--- its log ---" >&2
             ssh_to "$i" "tail -40 /tmp/node.log" >&2 2>/dev/null || true
+            # `head -c` FIRST, and that bound is not caution — it is the same
+            # non-termination the success path hit. The hosts are still
+            # running here (that is what failed), so the log is still growing
+            # at tick rate and a plain read to EOF never finishes. `head`
+            # bounds it deterministically, and it takes the log from the
+            # START because a host that never reached /ready failed during
+            # startup and the beginning is where that is visible.
             for (( j = 0; j < NODES; ++j )); do
-                scp "${SSH_OPTS[@]}" -q "ubuntu@${PUBLIC_IP[$j]}:/tmp/node.log" \
-                    "${OUT_DIR}/node-$(( j + 1 )).log" 2>/dev/null || true
+                ssh_to "$j" "head -c 50000000 /tmp/node.log | gzip -9 -c > /tmp/node.log.gz" \
+                    2>/dev/null || true
+                scp "${SSH_OPTS[@]}" -q "ubuntu@${PUBLIC_IP[$j]}:/tmp/node.log.gz" \
+                    "${OUT_DIR}/node-$(( j + 1 )).log.gz" 2>/dev/null || true
             done
             exit 1
         fi
@@ -807,27 +841,40 @@ echo "[step] Measure a loopback baseline for Requirement 4.5"
 LOOPBACK_US=""
 PEERWISE_US=""
 if (( NODES >= 2 )); then
-    self_urls=""
+    # `-o /dev/null` is POSITIONAL: curl pairs each -o with the next URL, so a
+    # single one covers only the FIRST of eleven and the other ten bodies land
+    # on stdout, interleaved with the timings. awk then reads a JSON line as a
+    # number, gets 0, and the median comes back 0.0 -- which is what the first
+    # live run of this produced. One -o per URL.
+    self_args=""
+    peer_args=""
     for _ in $(seq 1 11); do
-        self_urls="${self_urls} http://127.0.0.1:${CONTROL_PORT}/health"
+        self_args="${self_args} -o /dev/null http://127.0.0.1:${CONTROL_PORT}/health"
+        peer_args="${peer_args} -o /dev/null http://${PRIVATE_IP[1]}:${CONTROL_PORT}/health"
     done
-    peer_urls=""
-    for _ in $(seq 1 11); do
-        peer_urls="${peer_urls} http://${PRIVATE_IP[1]}:${CONTROL_PORT}/health"
-    done
-    # Median of eleven, by the same rule /probe uses.
-    median_of() { sort -n | awk '{a[NR]=$1} END {if (NR) printf "%.1f", a[int((NR+1)/2)]}'; }
-    LOOPBACK_US=$(ssh_to 0 "curl -s -o /dev/null -w '%{time_total}\n' ${self_urls}" 2>/dev/null \
-        | awk '{printf "%.1f\n", $1 * 1000000}' | median_of)
-    PEERWISE_US=$(ssh_to 0 "curl -s -o /dev/null -w '%{time_total}\n' ${peer_urls}" 2>/dev/null \
-        | awk '{printf "%.1f\n", $1 * 1000000}' | median_of)
+    # Median of eleven, by the same rule /probe uses: one scheduling hiccup
+    # moves a mean and does not move a median. Non-numeric lines are DROPPED
+    # rather than read as zero, so a partial failure shrinks the sample instead
+    # of dragging the median to nothing and reporting an instantaneous network.
+    measure_rtt() {
+        ssh_to 0 "curl -s -w '%{time_total}\n' $1" 2>/dev/null \
+            | awk '$1 ~ /^[0-9]*\.?[0-9]+$/ { printf "%.1f\n", $1 * 1000000 }' \
+            | sort -n \
+            | awk '{a[NR] = $1} END { if (NR) printf "%.1f", a[int((NR + 1) / 2)] }'
+    }
+    # `|| true`: a failed probe must not end a run whose measured phase has not
+    # happened yet. An absent baseline is reported as unknown, which is
+    # Requirement 18.4's rule -- null, never guessed.
+    LOOPBACK_US=$(measure_rtt "${self_args}" || true)
+    PEERWISE_US=$(measure_rtt "${peer_args}" || true)
     echo "  node 1 -> itself:  ${LOOPBACK_US:-unknown} us (median of 11)"
     echo "  node 1 -> node 2:  ${PEERWISE_US:-unknown} us (median of 11)"
 fi
 
 NETWORK_VERDICT="unknown"
 NETWORK_RATIO=""
-if [[ -n "${LOOPBACK_US}" && -n "${PEERWISE_US}" ]]; then
+if [[ -n "${LOOPBACK_US}" && -n "${PEERWISE_US}" ]] \
+   && python3 -c "import sys; sys.exit(0 if ${LOOPBACK_US} > 0 else 1)" 2>/dev/null; then
     NETWORK_RATIO=$(python3 -c "print('%.2f' % (${PEERWISE_US} / ${LOOPBACK_US}))" 2>/dev/null || echo "")
     if [[ -n "${NETWORK_RATIO}" ]]; then
         # Requirement 4.5, verbatim: within an order of magnitude of loopback
@@ -851,11 +898,20 @@ if [[ -n "${LOOPBACK_US}" && -n "${PEERWISE_US}" ]]; then
 fi
 
 # Every zone verbatim on the row (Requirement 2.2), not in a commit message.
-PLACEMENT_TEXT="${PLACEMENT}; region ${REGION}; hosts $(
-    for (( i = 0; i < NODES; ++i )); do printf '%s=%s ' "$(( i + 1 ))" "${REAL_AZ[$i]}"; done
-)| driver ${DRIVER_INSTANCE_TYPE} in ${REAL_AZ[$NODES]}$(
-    [[ ${PG_CREATED} == 1 ]] && printf '; placement group %s (cluster)' "${PG_NAME}"
-); inter-node RTT ${PEERWISE_US:-unknown} us vs loopback ${LOOPBACK_US:-unknown} us (${NETWORK_VERDICT})"
+# Built up in pieces rather than one interpolated string. A `$( [[ test ]] &&
+# printf ... )` inside an assignment makes the ASSIGNMENT fail when the test is
+# false -- the command substitution's status becomes the assignment's -- and
+# under `set -e` that silently ended the first live run of this script between
+# the network probe and the measured phase, after provisioning four instances.
+PLACEMENT_ZONES=""
+for (( i = 0; i < NODES; ++i )); do
+    PLACEMENT_ZONES="${PLACEMENT_ZONES}$(( i + 1 ))=${REAL_AZ[$i]} "
+done
+PLACEMENT_PG=""
+if [[ "${PG_CREATED}" == "1" ]]; then
+    PLACEMENT_PG="; placement group ${PG_NAME} (cluster)"
+fi
+PLACEMENT_TEXT="${PLACEMENT}; region ${REGION}; hosts ${PLACEMENT_ZONES}| driver ${DRIVER_INSTANCE_TYPE} in ${REAL_AZ[$NODES]}${PLACEMENT_PG}; inter-node RTT ${PEERWISE_US:-unknown} us vs loopback ${LOOPBACK_US:-unknown} us (${NETWORK_VERDICT})"
 
 echo "[step] Measured phase: ${REPETITIONS} repetitions (ceiling ${CEILING_MINUTES}m)"
 echo "  placement recorded as: ${PLACEMENT_TEXT}"
@@ -883,17 +939,73 @@ fi
 # there is no second chance: the instances are about to be destroyed. Pulled
 # unconditionally, before any judgement about success, and with `|| true` so
 # that one unreachable host does not cost the artifacts of the others.
+# ── Stop the hosts BEFORE collecting their logs ──────────────────────────────
+# Not tidiness — correctness. `multi_raft` has no timer of its own, so the host
+# drives tick() on a thread at --tick-interval, and every tick logs. An idle
+# three-node cluster at 2 ms therefore writes megabytes a minute FOREVER, and
+# the first live run of this script discovered what that means for collection:
+# scp reads to EOF, the writer appends faster than a home downstream can pull,
+# and the copy never terminates. The log went 46 MB -> 78 MB while being
+# fetched. A measured phase that finished in seconds was followed by a
+# collection that could not finish at all.
+#
+# Stopping the unit first makes the log a fixed-size object. It is safe here
+# because the measured phase is over and the Tier C arm, if any, runs entirely
+# on the driver instance with host processes of its own.
+echo "[step] Stop the hosts so their logs stop growing"
+for (( i = 0; i < NODES; ++i )); do
+    ssh_to "$i" "sudo systemctl stop kythira-multi-raft-node 2>/dev/null; true" >/dev/null 2>&1 || true
+done
+
 echo "[step] Collect artifacts from all ${TOTAL_INSTANCES} instances"
 ssh_to "${NODES}" "sed -e 's/\x1b\[[0-9;]*m//g' /tmp/bench.log > /tmp/bench.clean.log" 2>/dev/null || true
 scp "${SSH_OPTS[@]}" -q "ubuntu@${PUBLIC_IP[$NODES]}:/tmp/bench.clean.log" "${OUT_DIR}/" || true
 scp "${SSH_OPTS[@]}" -q "ubuntu@${PUBLIC_IP[$NODES]}:/tmp/bench.rc" "${OUT_DIR}/" || true
 scp "${SSH_OPTS[@]}" -qr "ubuntu@${PUBLIC_IP[$NODES]}:/tmp/results/." "${OUT_DIR}/" || true
+# COMPRESSED ON THE INSTANCE, not pulled raw. A host's log is tens of
+# megabytes for a few hundred operations — the first live run produced 46 MB
+# each — and pulling N of those over the controlling machine's downstream took
+# longer than the measured phase, the deploy and the boot combined. gzip on an
+# idle 8-vCPU instance is seconds and the text is highly repetitive, so this is
+# most of an order of magnitude off the wall clock for no loss: Requirement 1.5
+# asks for every host's log, not for it uncompressed.
 for (( i = 0; i < NODES; ++i )); do
-    scp "${SSH_OPTS[@]}" -q "ubuntu@${PUBLIC_IP[$i]}:/tmp/node.log" \
-        "${OUT_DIR}/node-$(( i + 1 )).log" || true
+    ssh_to "$i" "gzip -9 -c /tmp/node.log > /tmp/node.log.gz" 2>/dev/null || true
+    scp "${SSH_OPTS[@]}" -q "ubuntu@${PUBLIC_IP[$i]}:/tmp/node.log.gz" \
+        "${OUT_DIR}/node-$(( i + 1 )).log.gz" || true
 done
 BENCH_RC=$(cat "${OUT_DIR}/bench.rc" 2>/dev/null || echo unknown)
 echo "  driver exited ${BENCH_RC}; artifacts in ${OUT_DIR}/"
+
+TIER_C_TAKEN=0
+if [[ "${ALSO_TIER_C}" == "1" ]]; then
+    echo "[step] Tier C arm on the driver instance — the delta task 6 asks for"
+    # Same binaries, same workload, same instance type. The ONLY difference
+    # from the Tier E row above is that all N host processes and the driver now
+    # share one machine, which is precisely the variable this spec exists to
+    # isolate. run-tier-c-row.sh is reused verbatim rather than reimplemented
+    # here so that the Tier C row is the same row the local launcher produces.
+    set +e
+    ssh_to "${NODES}" "mkdir -p /tmp/bin /tmp/tierc && \
+        cp /tmp/${NODE_BIN_NAME} /tmp/bin/multi_raft_node && \
+        cp /tmp/${BENCH_BIN_NAME} /tmp/bin/multi_raft_bench && \
+        timeout --signal=KILL ${CEILING_MINUTES}m /tmp/run-tier-c-row.sh \
+          --build-dir /tmp/bin --nodes ${NODES} --groups ${GROUP_COUNT} \
+          --operations ${OPERATIONS} --in-flight ${IN_FLIGHT} \
+          --value-bytes ${VALUE_BYTES} --repetitions ${REPETITIONS} \
+          --scenario ${SCENARIO} --tick-interval ${TICK_INTERVAL} \
+          --transport ${TRANSPORT} --persistence ${PERSISTENCE} \
+          --data-threads ${DATA_THREADS} --out-dir /tmp/tierc \
+          > /tmp/tierc.log 2>&1; echo \$? > /tmp/tierc.rc"
+    set -e
+    ssh_to "${NODES}" "sed -e 's/\x1b\[[0-9;]*m//g' /tmp/tierc.log > /tmp/tierc.clean.log" 2>/dev/null || true
+    scp "${SSH_OPTS[@]}" -q "ubuntu@${PUBLIC_IP[$NODES]}:/tmp/tierc.clean.log" "${OUT_DIR}/" || true
+    mkdir -p "${OUT_DIR}/tier-c"
+    scp "${SSH_OPTS[@]}" -qr "ubuntu@${PUBLIC_IP[$NODES]}:/tmp/tierc/." "${OUT_DIR}/tier-c/" || true
+    TIER_C_RC=$(ssh_to "${NODES}" "cat /tmp/tierc.rc 2>/dev/null" 2>/dev/null || echo unknown)
+    echo "  Tier C arm exited ${TIER_C_RC}; artifacts in ${OUT_DIR}/tier-c/"
+    [[ "${TIER_C_RC}" == "0" ]] && TIER_C_TAKEN=1
+fi
 
 python3 - "${OUT_DIR}/run.json" <<PY
 import json, sys
@@ -904,7 +1016,7 @@ json.dump({
     "run_tag": "${RUN_TAG}",
     "region": "${REGION}",
     "placement": "${PLACEMENT}",
-    "placement_group": "$([[ ${PG_CREATED} == 1 ]] && echo "${PG_NAME}")" or None,
+    "placement_group": "${PLACEMENT_GROUP_NAME}" or None,
     "placement_verbatim": """${PLACEMENT_TEXT}""",
     "nodes": ${NODES},
     "instances_total": ${TOTAL_INSTANCES},
@@ -940,6 +1052,9 @@ json.dump({
         if "${PERSISTENCE}" == "memory" else
         "persistence=${PERSISTENCE}"),
     "benchmark_exit_code": "${BENCH_RC}",
+    # Task 6: a Tier C row taken on ONE of these instances, so the Tier C/Tier
+    # E delta differs in placement and not in hardware.
+    "tier_c_comparison_taken": bool(${TIER_C_TAKEN}),
     "node_binary_sha256": "${NODE_SHA}",
     "bench_binary_sha256": "${BENCH_SHA}",
     "binary_origin": "shipped from the controlling machine",
