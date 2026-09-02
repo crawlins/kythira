@@ -1369,7 +1369,33 @@ jobs:
           echo "── after ──"; df -h /; free -h
 
       - name: Build
-        run: cmake --build build-${{ matrix.backend }} -j$(nproc)
+        # -j3 rather than -j$(nproc), on this job only.
+        #
+        # The stdexec leg has been dying with exit 143 and "the runner has
+        # received a shutdown signal" -- the platform reclaiming an
+        # over-memory VM, not a compiler error. The 24 GiB swapfile added
+        # earlier reduced it without removing it, and the tree has since grown
+        # from 1024 build steps to 1109.
+        #
+        # A GitHub ubuntu-24.04 runner is 4 vCPU / 16 GiB, so -j$(nproc) is 4
+        # concurrent compilers on ~15 GiB usable. Measured under this backend
+        # on the tree that was failing: the heaviest TU is
+        # examples/raft/proxygen_transport_example.cpp at 2.27 GiB, and it
+        # compiles cleanly on its own. No single TU is the problem; four at
+        # once are.
+        #
+        #   -j4: 4 x 2.27 + ~2 GiB overhead = 11.1 GiB, leaving 3.9 GiB
+        #   -j3: 3 x 2.27 + ~2 GiB overhead =  8.8 GiB, leaving 6.2 GiB
+        #
+        # Dropping one worker roughly doubles the margin. It is also why the
+        # 24 GiB swapfile helped without fixing it: swap absorbs a spike, but
+        # the platform reclaims on total footprint, so the lever is allocation.
+        #
+        # Deliberately NOT -j2: the earlier analysis rejected that because the
+        # failing runs reached step ~505 of 1024 in ~70 minutes and -j2 would
+        # not fit the 180-minute budget. -j3 keeps three quarters of the
+        # throughput while cutting the peak, which is the trade this job needs.
+        run: cmake --build build-${{ matrix.backend }} -j3
 
       # `always()`, because the interesting case is the one where Build died:
       # a near-zero figure here names the mechanism the logs above could not.
