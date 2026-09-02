@@ -150,8 +150,34 @@ endfunction()
 # unconditionally, matching future.hpp's own posture). All tests carry the
 # "proxygen-http" label (Requirement 19.6), letting `ctest -L proxygen-http`
 # select or `-LE proxygen-http` exclude this suite.
+# A Ninja job pool that lets at most ONE of the heavy Proxygen translation
+# units compile at a time.
+#
+# MEASURED, not guessed. Under the stdexec backend a single one of these TUs
+# peaks at 5.6 GiB of compiler RSS -- three_way_http_transport_equivalence_test
+# measured at 5,649 MiB on its own. A GitHub runner has 16 GiB. When three of
+# them coincided under `cmake --build -j3`, the full-suite job ran at
+#
+#     mem_used 15,879 MiB   mem_available 109 MiB   swap_used 19,185 MiB
+#
+# sustained for ~90 minutes -- a ~35 GiB footprint on a 16 GiB machine. That is
+# why the leg has been failing intermittently: with the 24 GiB swapfile it
+# thrashes and sometimes beats the 180-minute timeout, and sometimes stalls 82
+# minutes on one step and does not. Without the swapfile the platform simply
+# reclaimed the VM (exit 143).
+#
+# Serialising just this family is the surgical fix. Lowering global -j would
+# cost wall clock on all 1109 build steps to solve a problem caused by four of
+# them; the pool leaves every other target parallel.
+#
+# JOB_POOL_COMPILE is a Ninja feature and is ignored by other generators, which
+# is harmless: CI builds this job with -G Ninja, and a Makefiles build simply
+# gets today's behaviour.
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS heavy_proxygen_tu=1)
+
 function(add_proxygen_test test_name source_file)
     add_executable(${test_name} ${source_file})
+    set_target_properties(${test_name} PROPERTIES JOB_POOL_COMPILE heavy_proxygen_tu)
     target_link_libraries(${test_name} PRIVATE kythira_test_pch
         proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
     if(TARGET OpenSSL::SSL)
@@ -4820,6 +4846,12 @@ if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND TARGET httplib::httplib)
     # off-diagonal. Same dependency pair, so it is gated identically.
     add_beast_test(http_implementation_interop_test
         http_implementation_interop_test.cpp)
+    # Same 5.6 GiB-class TU as the proxygen tests below: it compiles all three
+    # HTTP implementations in one translation unit. Tagged individually rather
+    # than in add_beast_test(), which also builds cheap targets that should
+    # stay parallel.
+    set_target_properties(http_implementation_interop_test PROPERTIES
+        JOB_POOL_COMPILE heavy_proxygen_tu)
 else()
     message(STATUS "beast_cross_transport_equivalence_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
     message(STATUS "http_implementation_interop_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
@@ -4850,6 +4882,12 @@ endif()
 # and dependency set.
 if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
     add_executable(three_way_http_transport_equivalence_test three_way_http_transport_equivalence_test.cpp)
+    # MEASURED AT 5,649 MiB of compiler RSS under the stdexec backend -- the
+    # heaviest TU in the tree, because it instantiates the Beast, Proxygen and
+    # cpp-httplib stacks together. Three of this class at once is what put the
+    # full-suite runner at 109 MiB available and 19 GiB swapped.
+    set_target_properties(three_way_http_transport_equivalence_test PROPERTIES
+        JOB_POOL_COMPILE heavy_proxygen_tu)
     target_link_libraries(three_way_http_transport_equivalence_test PRIVATE kythira_test_pch
         Boost::beast proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
     if(TARGET OpenSSL::SSL)
