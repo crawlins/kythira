@@ -1395,7 +1395,31 @@ jobs:
         # failing runs reached step ~505 of 1024 in ~70 minutes and -j2 would
         # not fit the 180-minute budget. -j3 keeps three quarters of the
         # throughput while cutting the peak, which is the trade this job needs.
-        run: cmake --build build-${{ matrix.backend }} -j3
+        run: |
+          # INSTRUMENTATION: this leg stalls for over an hour around step ~516
+          # of 1109 and then hits the job timeout, with no compiler error
+          # anywhere in the log. Local measurement has excluded every
+          # candidate -- the heaviest TU is 2.27 GiB and compiles fine alone,
+          # the TUs it stalls near compile at 0.65 GiB combined, and linking
+          # all 19 of them peaks at 35 MiB. So the constraint is something
+          # only visible on the runner. Sample it every 30s straight into the
+          # job log, which survives a timeout, unlike an uploaded artifact.
+          ( while :; do
+              echo "[probe] $(date -u +%H:%M:%S)           mem_used_MB=$(free -m | awk '/^Mem:/{print $3}')           mem_avail_MB=$(free -m | awk '/^Mem:/{print $7}')           swap_used_MB=$(free -m | awk '/^Swap:/{print $3}')           disk_avail_MB=$(df -m / | tail -1 | awk '{print $4}')           load=$(cut -d' ' -f1-3 /proc/loadavg)           procs=$(pgrep -c cc1plus || echo 0)"
+              sleep 30
+            done ) &
+          PROBE=$!
+          # `timeout` below the 180-minute job budget so the step fails on its
+          # own terms and the always() reporting steps still run. A job killed
+          # by the platform skips them, which is how the first diagnoses were
+          # lost.
+          set +e
+          timeout --signal=INT 155m cmake --build build-${{ matrix.backend }} -j3
+          rc=$?
+          set -e
+          kill $PROBE 2>/dev/null || true
+          echo "=== build exited $rc ==="
+          exit $rc
 
       # `always()`, because the interesting case is the one where Build died:
       # a near-zero figure here names the mechanism the logs above could not.
