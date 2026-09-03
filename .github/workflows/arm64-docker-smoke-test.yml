@@ -245,3 +245,16 @@ jobs:
       - name: Run docker-cloud-monitoring-config-tests (Collector validate on example configs)
         if: success() || failure()
         run: cmake --build build --target docker-cloud-monitoring-config-tests -j$(nproc)
+
+      # The redis-compatible-kv acceptance tests (.kiro/specs/redis-compatible-kv/
+      # tasks 12 and 13): real upstream sccache 0.10 in a container, building a
+      # Rust crate against a three-node redis_gateway_node cluster, asserted
+      # through `sccache --show-stats`. Builds two images of its own (the
+      # gateway daemon, host-built and packaged like chaos_node; the runner,
+      # which is the rust toolchain image plus sccache's musl release tarball
+      # for `uname -m`, so it is arm64-native here). Verified under rootless
+      # Podman on x64 before this step existed; this is the Docker-and-arm64
+      # half of the spec's "both runtimes" requirement. Not continue-on-error.
+      - name: Run docker-sccache-e2e-tests (redis_gateway_node + sccache runner images)
+        if: success() || failure()
+        run: cmake --build build --target docker-sccache-e2e-tests -j$(nproc)
