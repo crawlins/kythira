@@ -1387,12 +1387,24 @@ jobs:
         # leaves everything else parallel. See that comment for the measured
         # numbers.
         #
-        # -j3 is kept because the green run that validated the job pool was
-        # taken with it (1 h 53 m, against 2 h 27 m and 2 h 33 m for -j3
-        # without the pool), so this is the configuration actually known to
-        # work. Whether -j$(nproc) is now safe -- and faster -- is worth one
-        # experiment, but it should be changed on evidence rather than on the
-        # assumption that the pool made it unnecessary.
+        # -j3 is kept, and that experiment HAS NOW BEEN RUN -- do not repeat
+        # it. Restoring -j$(nproc) with the job pool in place is green but
+        # SLOWER, measured on this leg:
+        #
+        #     -j3      + pool   1 h 51 m   (baseline)
+        #     -j(nproc)+ pool   2 h 09 m   (+18 min, ~16% slower)
+        #     -j3      no pool  2 h 27 m / 2 h 32 m
+        #
+        # The fourth worker is affordable -- it no longer fails -- but it does
+        # not pay. Adding parallelism making the build SLOWER is the signature
+        # of residual memory pressure: the pool bounds the one 5.6 GiB compile,
+        # but three other workers beside it still push the runner into some
+        # swapping.
+        #
+        # So the pool and -j3 address different things and both earn their
+        # place: the pool bounds the worst single allocation, -j3 bounds the
+        # aggregate. Note also that the pool's headline speedup came from
+        # ending the thrashing, not from restored parallelism.
         run: cmake --build build-${{ matrix.backend }} -j3
 
       # `always()`, because the interesting case is the one where Build died:
