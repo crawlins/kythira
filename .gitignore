@@ -59,6 +59,7 @@ docker/chaos_node/dist/
 docker/poco_discovery_node/dist/
 docker/dns_discovery_node/dist/
 docker/dns_sd_discovery_node/dist/
+docker/redis_gateway_node/dist/
 
 # Session handoff scratch notes — working-copy only, never committed.
 # RESUME.md is a per-machine set of notes-to-self about in-flight work; it

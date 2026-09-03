@@ -1647,6 +1647,11 @@ if(NOT ENABLE_COVERAGE)
         add_subdirectory(cmd/multi_raft_node)
         add_subdirectory(cmd/multi_raft_bench)
     endif()
+    if(KYTHIRA_BUILD_REDIS_GATEWAY AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND folly_FOUND)
+        # The Redis-compatible gateway daemon (.kiro/specs/redis-compatible-kv/
+        # task 10). Same posture as multi_raft_node: not in any install target.
+        add_subdirectory(cmd/redis_gateway_node)
+    endif()
     if(LIBLDNS_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND httplib_FOUND)
         add_subdirectory(cmd/dns_discovery_node)
         add_subdirectory(cmd/dns_sd_discovery_node)
