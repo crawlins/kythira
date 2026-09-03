@@ -1387,13 +1387,12 @@ jobs:
         # leaves everything else parallel. See that comment for the measured
         # numbers.
         #
-        # -j3 is kept because the green run that validated the job pool was
-        # taken with it (1 h 53 m, against 2 h 27 m and 2 h 33 m for -j3
-        # without the pool), so this is the configuration actually known to
-        # work. Whether -j$(nproc) is now safe -- and faster -- is worth one
-        # experiment, but it should be changed on evidence rather than on the
-        # assumption that the pool made it unnecessary.
-        run: cmake --build build-${{ matrix.backend }} -j3
+        # EXPERIMENT: restoring -j$(nproc) now that the job pool caps the four
+        # heavy TUs. The pool bounds the peak at ONE 5.6 GiB compile plus
+        # whatever cheap TUs fill the other workers, so the fourth worker
+        # should be affordable again. Baseline to beat: 1 h 51 m, which is
+        # what #298 took at -j3 with the pool in place.
+        run: cmake --build build-${{ matrix.backend }} -j$(nproc)
 
       # `always()`, because the interesting case is the one where Build died:
       # a near-zero figure here names the mechanism the logs above could not.
