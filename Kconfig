@@ -70,6 +70,23 @@ config PROXYGEN_TRANSPORT
 	  both this and CONFIG_FOLLY (as the selected default backend) are
 	  active.
 
+config REDIS_GATEWAY
+	bool "Redis-compatible KV gateway over multi_raft (sccache's redis backend)"
+	default y
+	depends on OPENSSL
+	help
+	  Builds include/raft/redis_gateway.hpp, the redis_gateway_node daemon
+	  and their tests: a RESP2/RESP3 front end over the multi_raft sharding
+	  layer scoped to exactly the command closure sccache's `redis` backend
+	  (via OpenDAL / redis-rs) puts on the wire -- GET, SET, SETEX, DEL,
+	  EXISTS, STRLEN, GETRANGE, PING, AUTH, HELLO, SELECT and CLIENT
+	  SETINFO -- plus a splittable replicated KV state machine, ACL with
+	  PBKDF2-SHA256 secrets, one-hop leader forwarding and TLS/mTLS. Needs
+	  nothing beyond what the tree already requires (Boost.Asio, OpenSSL),
+	  so the symbol exists to keep the feature's targets out of a build
+	  that does not want them, not to gate a dependency. See
+	  .kiro/specs/redis-compatible-kv/.
+
 config COAP_TRANSPORT
 	bool "CoAP transport"
 	default y
