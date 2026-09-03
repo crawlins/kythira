@@ -1382,10 +1382,15 @@ jobs:
         # kept failing at -j3, just by thrashing to the job timeout instead of
         # having its VM reclaimed.
         #
-        # The actual fix is the heavy_proxygen_tu job pool in
-        # tests/CMakeLists.txt, which serialises exactly those four TUs and
+        # The actual fix is the heavy_tu job pool declared in the top-level
+        # CMakeLists.txt, which serialises exactly the TUs of that class and
         # leaves everything else parallel. See that comment for the measured
-        # numbers.
+        # numbers -- it is where the per-TU compiler-RSS table lives.
+        #
+        # The pool is necessary and was not sufficient on its own: it bounded
+        # the four tests/ TUs it was written for, and cmd/multi_raft_node's
+        # main.cpp was outside it at 10,974 MiB -- larger than any of them.
+        # That TU is now split four ways and pooled too.
         #
         # -j3 is kept because the green run that validated the job pool was
         # taken with it (1 h 53 m, against 2 h 27 m and 2 h 33 m for -j3

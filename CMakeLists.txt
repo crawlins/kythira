@@ -1517,6 +1517,74 @@ else()
     message(STATUS "libfiu not found — chaos tests disabled (sudo apt install libfiu-dev)")
 endif()
 
+# ── The heavy-translation-unit job pool ──────────────────────────────────────
+#
+# A Ninja job pool that lets at most ONE memory-heavy translation unit compile
+# at a time, across every directory. Declared here rather than in
+# `tests/CMakeLists.txt`, where it started, because `cmd/multi_raft_node` is
+# now a member and `tests/` is added conditionally -- a target naming a pool
+# that was never declared makes Ninja fail at build time with "unknown pool".
+#
+# MEASURED, not guessed, with this project's CI compiler (g++-13, Release,
+# `-DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`), one translation unit at a time:
+#
+#     POOLED
+#       cmd/multi_raft_node/run_beast_cbor.cpp             5,967 MiB   280 s
+#       cmd/multi_raft_node/run_beast_json.cpp             5,965 MiB   305 s
+#       three_way_http_transport_equivalence_test          5,649 MiB          *
+#       cmd/multi_raft_node/run_httplib_cbor.cpp           5,407 MiB   234 s
+#       cmd/multi_raft_node/run_httplib_json.cpp           5,407 MiB   204 s
+#       tests/http_implementation_interop_test.cpp         4,422 MiB   174 s
+#       tests/beast_cross_transport_equivalence_test.cpp   4,420 MiB   176 s
+#       tests/proxygen_negotiation_integration_test.cpp    3,280 MiB    84 s
+#       tests/proxygen_transport_test.cpp                  2,458 MiB    53 s
+#       cmd/multi_raft_node/main.cpp, after the split      1,509 MiB    25 s
+#       cmd/multi_raft_node/config.cpp                       208 MiB     3 s
+#     NOT POOLED
+#       tests/beast_negotiation_retry_test.cpp             4,373 MiB   180 s
+#       tests/beast_server_test.cpp                        3,843 MiB   141 s
+#       tests/beast_client_test.cpp                        3,519 MiB   153 s
+#       tests/beast_integration_test.cpp                   3,514 MiB   155 s
+#       tests/beast_ssl_test.cpp                           3,501 MiB   131 s
+#       examples/raft/proxygen_transport_example.cpp       2,287 MiB    52 s
+#       cmd/multi_raft_bench/main.cpp                      1,611 MiB    45 s
+#     AND, THE REASON THIS POOL MOVED HERE AND GREW
+#       cmd/multi_raft_node/main.cpp, before the split    10,974 MiB   535 s
+#
+#     * carried from this pool's original comment, not re-measured here. Every
+#       other figure was taken this way in this configuration.
+#
+# A GitHub runner has 16 GiB, and the `Full suite` job builds with `-j3`. Three
+# of the 5-plus-GiB class at once does not fit; one of them beside two of the
+# unpooled beast tests comes to about 14 GiB and does. That is the whole
+# design: this pool bounds the worst single allocation, `-j3` bounds the
+# aggregate, and both are needed. See `.github/workflows/ci.yml`'s Build step
+# for the wall-clock measurements that rejected `-j$(nproc)`.
+#
+# beast_cross_transport_equivalence_test joined the pool on this evidence, and
+# only this evidence: at 4,420 MiB it is within 2 MiB of
+# http_implementation_interop_test, which was already pooled, and the two are
+# gated by the SAME `if()` and built by the same helper. They compile Beast and
+# cpp-httplib into one translation unit apiece; there was never a reason for
+# one to be bounded and the other not, and nothing but a measurement would have
+# shown that.
+#
+# The rest of the beast family is deliberately left out. Pooling it too would
+# serialise most of the expensive tail, and the numbers say it does not have
+# to be: the worst remaining unpooled pair (4,373 + 3,843) beside the worst
+# pooled TU is inside the envelope that measured green at 1 h 51 m before
+# cmd/multi_raft_node existed. If this leg fails again, that family is where to
+# look next, and these are its figures.
+#
+# The members are expensive for a legible reason: each instantiates a whole
+# transport stack -- or, in the tests' case, Beast, Proxygen and cpp-httplib
+# together -- and stdexec's sender types multiply what that costs.
+#
+# `JOB_POOL_COMPILE` is a Ninja feature and is ignored by other generators,
+# which is harmless: CI configures every affected job with `-G Ninja`, and a
+# Makefiles build keeps today's behaviour.
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS heavy_tu=1)
+
 # Enable testing
 enable_testing()
 
