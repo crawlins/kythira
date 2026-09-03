@@ -605,6 +605,22 @@ else()
 endif()
 kythira_kconfig_require(PROXYGEN_TRANSPORT KYTHIRA_BUILD_PROXYGEN_TRANSPORT "proxygen::proxygen")
 
+# redis-compatible-kv spec: a RESP gateway over multi_raft for sccache's
+# redis backend. No new third-party dependency (Requirement 16.2): Boost.Asio
+# is part of the unconditional Boost dependency and OpenSSL backs both the
+# PBKDF2 secret records and the TLS listener. The gate exists so that a build
+# can leave the gateway's headers, daemon and tests out entirely, which
+# Requirement 16.4 checks by diffing the target list with the symbol ON and OFF.
+kythira_kconfig_gate(REDIS_GATEWAY)
+set(KYTHIRA_BUILD_REDIS_GATEWAY FALSE)
+if(_KYTHIRA_GATE_REDIS_GATEWAY AND OpenSSL_FOUND AND Boost_FOUND)
+    set(KYTHIRA_BUILD_REDIS_GATEWAY TRUE)
+    message(STATUS "redis-compatible KV gateway enabled (.kiro/specs/redis-compatible-kv/)")
+else()
+    message(STATUS "redis-compatible KV gateway disabled (OpenSSL/Boost not found, or CONFIG_REDIS_GATEWAY=n)")
+endif()
+kythira_kconfig_require(REDIS_GATEWAY KYTHIRA_BUILD_REDIS_GATEWAY "OpenSSL")
+
 if(NOT folly_FOUND)
     # include/raft/future.hpp (kythira::Future/Promise/Try, the default
     # backend every other backend coexists alongside — see
