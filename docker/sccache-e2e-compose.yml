@@ -1,0 +1,104 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Real sccache against a real three-node Redis-compatible gateway
+# (.kiro/specs/redis-compatible-kv/ tasks 12 and 13, Requirement 17).
+#
+# CLAUDE.md's container rules, as they apply here:
+#
+#   * **No static IPs.** No `ipam`, no `ipv4_address`. Rootless Podman drops
+#     those silently, so a file that depended on one would pass under Docker
+#     and fail under Podman with nothing to read. The three gateways find each
+#     other, and the runner finds the gateway, by **service name**.
+#   * **No runtime named anywhere.** The scenario tests pick one through
+#     `container_runtime()` / `compose_prefix()` (tests/docker_chaos/
+#     os_faults.hpp), honouring $KYTHIRA_CONTAINER_RUNTIME.
+#   * **No capabilities, no privileged or host networking.** Nothing here
+#     injects faults; the negative case is `compose stop`, which needs none.
+#
+# Bring up the gateways with `up -d kv1 kv2 kv3`; the runner is a one-shot
+# job started per scenario with `run --rm -e ... sccache`, so `up` must never
+# start it (hence the `profiles` guard). The ports are published so the
+# scenario test, running on the host, can probe readiness and read INFO.
+#
+# The single shard cut sits in the middle of sccache's key space: its keys
+# are `<prefix><h>/<h>/<h>/<hex hash>`, so "sccache/8" splits them roughly in
+# half, and with three nodes the two shards usually have different leaders —
+# which is what makes the runner's single endpoint exercise forwarding.
+#
+# The internal secret and the ACL are test fixtures, not secrets; see
+# docker/sccache_e2e/acl.txt for the users.
+
+x-gateway: &gateway
+  image: kythira-redis-gateway:dev
+  volumes:
+    - ./sccache_e2e/acl.txt:/etc/kythira/acl.txt:ro
+  networks:
+    - sccache_e2e_net
+
+x-gateway-env: &gateway-env
+  KYTHIRA_PEERS: "1=http://kv1:7000,2=http://kv2:7000,3=http://kv3:7000"
+  KYTHIRA_RAFT_PORT: "7000"
+  KYTHIRA_SHARD_CUTS: "sccache/8"
+  KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "150"
+  KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "300"
+  KYTHIRA_HEARTBEAT_INTERVAL_MS: "50"
+  KYTHIRA_POLICY_INTERVAL_MS: "2000"
+  KYTHIRA_REDIS_LISTEN: "0.0.0.0:6379"
+  KYTHIRA_REDIS_ACL_FILE: "/etc/kythira/acl.txt"
+  KYTHIRA_REDIS_INTERNAL_SECRET: "sccache-e2e-internal"
+  KYTHIRA_REDIS_PEER_GATEWAYS: "1=kv1:6379,2=kv2:6379,3=kv3:6379"
+  # Small on purpose: a whole test run is a few hundred KiB, and the log
+  # dump on failure should stay readable.
+  KYTHIRA_REDIS_MAX_VALUE_BYTES: "8388608"
+
+services:
+  kv1:
+    <<: *gateway
+    container_name: sccache-e2e-kv1
+    hostname: kv1
+    environment:
+      <<: *gateway-env
+      KYTHIRA_NODE_ID: "1"
+    ports:
+      - "16381:6379"
+
+  kv2:
+    <<: *gateway
+    container_name: sccache-e2e-kv2
+    hostname: kv2
+    environment:
+      <<: *gateway-env
+      KYTHIRA_NODE_ID: "2"
+    ports:
+      - "16382:6379"
+
+  kv3:
+    <<: *gateway
+    container_name: sccache-e2e-kv3
+    hostname: kv3
+    environment:
+      <<: *gateway-env
+      KYTHIRA_NODE_ID: "3"
+    ports:
+      - "16383:6379"
+
+  # The CI job. Which user it authenticates as, and whether it asks for an
+  # expiration, is decided per `run` by the scenario test; these are the
+  # settings every scenario shares. `tcp://` because the gateways above
+  # listen in plaintext; a real deployment says `rediss://`.
+  sccache:
+    image: kythira-sccache-runner:dev
+    profiles:
+      - runner
+    environment:
+      SCCACHE_REDIS_ENDPOINT: "tcp://kv1:6379"
+      SCCACHE_REDIS_KEY_PREFIX: "sccache/"
+      SCCACHE_REDIS_USERNAME: "ci-main"
+      SCCACHE_REDIS_PASSWORD: "ci-main-secret"
+    networks:
+      - sccache_e2e_net
+
+networks:
+  sccache_e2e_net:
+    driver: bridge

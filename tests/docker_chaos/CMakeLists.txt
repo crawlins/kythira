@@ -114,6 +114,17 @@ add_docker_chaos_scenario_test(docker_dns_sd_discovery_test
 add_docker_chaos_scenario_test(docker_otlp_collector_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/otlp_collector_test.cpp")
 
+# The real-sccache acceptance tests (.kiro/specs/redis-compatible-kv/ tasks 12
+# and 13). Gated with the feature so that CONFIG_REDIS_GATEWAY=n leaves no
+# trace of it in the target list (Requirement 16.4). The test speaks RESP to
+# the gateways directly for its readiness probe and wire-level checks, which
+# is the one reason it reaches into include/ for resp_protocol.hpp.
+if(KYTHIRA_BUILD_REDIS_GATEWAY)
+    add_docker_chaos_scenario_test(docker_sccache_e2e_test
+        "${CMAKE_SOURCE_DIR}/tests/docker_chaos/sccache_e2e_test.cpp")
+    target_include_directories(docker_sccache_e2e_test PRIVATE "${CMAKE_SOURCE_DIR}/include")
+endif()
+
 # ── Self-hosted metrics backend scenario tests (doc/TODO.md "Metrics
 # Backends", Docker tier). Each pairs a real chaos_node (wired to the
 # backend via its env var) with the real agent's stock upstream image —
@@ -191,6 +202,9 @@ if(_RUNTIME_EXE)
     set(_DNS_SD_DISCOVERY_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/dns-sd-discovery-compose.yml")
     set(_DNS_SD_DISCOVERY_DOCKERFILE     "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/Dockerfile")
     set(_OTLP_COLLECTOR_COMPOSE_FILE     "${CMAKE_SOURCE_DIR}/docker/otlp-collector-compose.yml")
+    set(_REDIS_GATEWAY_DOCKERFILE        "${CMAKE_SOURCE_DIR}/docker/redis_gateway_node/Dockerfile")
+    set(_SCCACHE_RUNNER_DOCKERFILE       "${CMAKE_SOURCE_DIR}/docker/sccache_runner/Dockerfile")
+    set(_SCCACHE_E2E_COMPOSE_FILE        "${CMAKE_SOURCE_DIR}/docker/sccache-e2e-compose.yml")
     set(_PROMETHEUS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/prometheus-metrics-compose.yml")
     set(_PROMETHEUS_REMOTE_WRITE_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/prometheus-remote-write-compose.yml")
     set(_VICTORIAMETRICS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/victoriametrics-metrics-compose.yml")
@@ -422,6 +436,58 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    # The redis-compatible-kv acceptance tests (tasks 12 and 13). Two images:
+    # the gateway daemon, staged from the host build exactly like
+    # docker-chaos-image (and guarded exactly like cmd/redis_gateway_node's
+    # inclusion at the top level, for the same `if(TARGET ...)` reason), and
+    # the sccache runner, which is upstream sccache plus a Rust toolchain and
+    # needs nothing from this build. Everything is gated on the feature so a
+    # CONFIG_REDIS_GATEWAY=n configure defines none of these targets.
+    if(KYTHIRA_BUILD_REDIS_GATEWAY)
+        if(NOT ENABLE_COVERAGE AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND folly_FOUND)
+            add_custom_target(docker-redis-gateway-image
+                DEPENDS redis_gateway_node
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "${CMAKE_SOURCE_DIR}/docker/redis_gateway_node/dist"
+                COMMAND ${CMAKE_COMMAND} -E copy
+                        "$<TARGET_FILE:redis_gateway_node>"
+                        "${CMAKE_SOURCE_DIR}/docker/redis_gateway_node/dist/redis_gateway_node"
+                COMMAND ${_RUNTIME_EXE} build
+                        --file "${_REDIS_GATEWAY_DOCKERFILE}"
+                        --tag kythira-redis-gateway:dev
+                        "${CMAKE_SOURCE_DIR}"
+                COMMENT "Staging redis_gateway_node binary and building kythira-redis-gateway:dev image"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            )
+        else()
+            add_custom_target(docker-redis-gateway-image
+                COMMAND ${CMAKE_COMMAND} -E echo
+                        "'docker-redis-gateway-image' requires redis_gateway_node to be buildable (folly + a future backend, and not a coverage build)"
+                COMMAND ${CMAKE_COMMAND} -E false
+            )
+        endif()
+
+        add_custom_target(docker-sccache-runner-image
+            COMMAND ${_RUNTIME_EXE} build
+                    --file "${_SCCACHE_RUNNER_DOCKERFILE}"
+                    --tag kythira-sccache-runner:dev
+                    "${CMAKE_SOURCE_DIR}"
+            COMMENT "Building kythira-sccache-runner:dev image (upstream sccache + rust toolchain)"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+
+        add_custom_target(docker-sccache-e2e-tests
+            COMMAND ${CMAKE_COMMAND} -E env
+                    ${_RT_ENV}
+                    KYTHIRA_SCCACHE_E2E_COMPOSE_FILE=${_SCCACHE_E2E_COMPOSE_FILE}
+                    $<TARGET_FILE:docker_sccache_e2e_test>
+                    --log_level=message
+            DEPENDS docker-redis-gateway-image docker-sccache-runner-image docker_sccache_e2e_test
+            COMMENT "Running real-sccache acceptance tests against the redis gateway (runtime: ${CONTAINER_RUNTIME})"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    endif()
+
     # Agent images are pulled directly (no custom Dockerfiles) — these
     # targets only need the existing chaos-node image, same as OTLP above.
     add_custom_target(docker-prometheus-metrics-tests
@@ -516,8 +582,18 @@ if(_RUNTIME_EXE)
         "docker-victoriametrics-metrics-tests, "
         "docker-telegraf-metrics-tests, docker-netdata-metrics-tests, "
         "docker-cloudwatch-metrics-tests, docker-cloud-monitoring-config-tests targets available")
+    if(KYTHIRA_BUILD_REDIS_GATEWAY)
+        message(STATUS
+            "Container runtime: docker-redis-gateway-image, docker-sccache-runner-image, "
+            "docker-sccache-e2e-tests targets available")
+    endif()
 else()
+    if(KYTHIRA_BUILD_REDIS_GATEWAY)
+        list(APPEND _redis_docker_targets
+            docker-redis-gateway-image docker-sccache-runner-image docker-sccache-e2e-tests)
+    endif()
     foreach(_t
+        ${_redis_docker_targets}
         docker-chaos-image docker-chaos-tests
         quorum-healing-tests
         docker-poco-discovery-image docker-poco-discovery-tests

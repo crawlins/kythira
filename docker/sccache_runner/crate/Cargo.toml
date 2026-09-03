@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The crate the sccache acceptance test compiles. No dependencies, so the
+# build is hermetic; a library and a binary, so one `cargo build` is two
+# rustc invocations and therefore two cache entries.
+
+[package]
+name = "kythira_cache_probe"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "kythira_cache_probe"
+path = "src/main.rs"
+
+[profile.dev]
+# sccache does not cache incremental compilations; a default dev profile
+# would make every build a miss and prove nothing.
+incremental = false

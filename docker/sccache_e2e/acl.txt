@@ -1,0 +1,17 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+#
+# Test-only ACL for docker/sccache-e2e-compose.yml. The secrets are the
+# user names with "-secret" appended (ci-main → "ci-main-secret", and so on)
+# and are of course not secret; the records were produced with
+# `redis_gateway_node --hash-secret 10000`. The forwarding user is not here:
+# the daemon appends it from KYTHIRA_REDIS_INTERNAL_SECRET.
+#
+# ci-main   populates the cache (Requirement 17.3's read_write user)
+# ci-pr     may only read it, so its sccache runs in read-only mode
+# elsewhere is scoped to a prefix the runners never use: refused both ways
+# ops       is what the scenario tests use for readiness (INFO)
+user ci-main pbkdf2-sha256$10000$pKrfevzmRlAMynH8hjauHg==$rma30dAAHtgbxOn+JtukLSV/VUkdBxufjDohSsdZrQQ= read_write sccache/
+user ci-pr pbkdf2-sha256$10000$yQj2SGB3a6MfZvQwO7ZcpQ==$dhfXdHhPKjHNZtTDlr1x2stuIJiD1ouWwl6hf/HA3/k= read_only sccache/
+user elsewhere pbkdf2-sha256$10000$/pUrY4Fxlv9ueaPACM0L2g==$JCMnNVdCkWRYrd8hgsJSW3UnPBOd9SQWok1qrX+T2aA= read_write elsewhere/
+user ops pbkdf2-sha256$10000$S7/6htTEmS3NS+ziEjosWw==$T2tgLLRkSNWJDvgv1qLlIoMHGjIrYAEHtIX6Zuyw4DY= admin *
