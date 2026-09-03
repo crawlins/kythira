@@ -55,8 +55,14 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
   (gRPC/HTTP2) transport, three additional RPC serializers (CBOR, Protocol
   Buffers, Amazon Ion) alongside the default JSON one, and Azure and GCP
   joining AWS as supported cloud providers
-- `.kiro/specs/` now holds **45** per-feature spec directories, of which two
-  are outstanding — see "Pending Specifications" below
+- `.kiro/specs/` now holds **58** per-feature spec directories (re-counted
+  September 10, 2026 with `ls -d .kiro/specs/*/`; this line said 45 for a
+  month while thirteen were added). Two have zero implementation commits —
+  `coap-transport-multi-raft` and `elastic-shard-capacity` — and
+  `alibaba-cloud-services` is at wave 1 with its vendor-fact spike open; see
+  "Pending Specifications" below. (This said *three* when it was written on
+  September 3, naming `redis-compatible-kv` first. That one landed as PR #313
+  while this change was in CI, at 14/14.)
 - **Builds clean with no *errors*. It does not build with no warnings** — the
   second half of what this line used to claim was never true, and is now
   settled against CI's own logs rather than against one developer machine.
@@ -145,16 +151,23 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
 ## Pending Specifications
 
 The table above tracks the original 8 major feature areas; `.kiro/specs/`
-has since grown to 45 per-feature spec directories, most now complete (see
+has since grown to 58 per-feature spec directories, most now complete (see
 `doc/CHANGELOG.md` for their individual completion entries). The specs
 below are the ones that are not, split into two tables since they're
 different kinds of "not done": genuinely never started (only a design/
 requirements doc exists, zero implementation commits) versus a real,
 ongoing partial state (some tasks done, specific ones outstanding) — kept
 separate rather than folded into one list so each entry's actual status is
-unambiguous at a glance.
+unambiguous at a glance. A third table, first, holds four specs that are
+*done* but whose rows are kept because the findings live in them.
 
-### Not Started
+### Complete since August 28, rows kept for their record
+
+Four specs that sat in the "Not Started" table below from the day they were
+written, and were carried there through completion because their Notes column
+is where the findings were being recorded. All four are done; they move out of
+"Not Started" on September 3, 2026 rather than being deleted, because the rows
+are the only place several refutations are written down in one paragraph.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
@@ -163,6 +176,13 @@ unambiguous at a glance.
 | `multi-raft-host-binary` | **10/10** | Requirements, design and tasks written August 31, 2026; implemented the same day. **The single item blocking Tiers C, D and E together** — there is no process in this tree that hosts `multi_raft` and accepts client traffic, so every performance row ever produced is Tier A or B and `.kiro/specs/multi-raft-performance/`'s like-for-like comparison table is empty by construction (Requirement 3.3 forbids such a claim below Tier C). `cmd/chaos_node` is the nearest precedent and not a substitute: single-group, no sharding, no key routing, and its HTTP surface is a control plane rather than a data path. Settles two of that spec's Appendix B open questions — **yes**, the host belongs in `cmd/`; and the load driver gets **its own process**, the more expensive answer chosen deliberately because an in-process driver makes the host's CPU and the client's indistinguishable in every number, which is the confound these tiers exist to remove. Three binaries' worth of work of which the client-facing data path, not the host, is the larger half. The architectural constraint that decides whether any of it is worth trusting is task 1: the key sampler, value construction, command mix, read-kind taxonomy, loop scheduling and statistics must be **shared** with `tests/multi_raft_kv_workload.hpp` so that only the *submit* step differs between tiers — a second workload implementation turns every cross-tier delta into a comparison of two workloads. Task 5 enforces it by running one row both ways at Tier B and asserting they agree, before Tier C is claimed. Not-leader responses are returned and never forwarded, so routing cost stays measurable. **Does not unblock Tier D**, which additionally needs `durable-append-barrier`. **All ten tasks closed August 31.** The seam is `workload_target` in the harness: five members of which only `submit_write`/`submit_read` differ between tiers, with `run_put_workload`/`run_read_workload`/`preload_keys` kept as thin adapters so the CI suite, the report generator and every row definition compile unchanged. Task 5 is the one that decides whether any of it is trustworthy, and it asserts **the thing that can agree** — a recording wrapper captures every `(key, command)` pair each path submits and the two sequences must match exactly — while *recording* rather than asserting throughput, because the two paths differ by an HTTP round trip by construction and an equality assertion on that would be either vacuous or flaky. Measured at Tier B over beast: in-process 1200.97 ops/sec at a 2902 µs p50 against the data path's 1124.85 at 2800 µs, 6% and 3.5% apart, 64 of 64 both ways. **Tier C is real and stable: 1530.2 ops/sec, 6.1% spread, verdict `stable`, p50 2160 µs, zero elections in all five windows** — three host processes, four pre-split shards, four in flight, on four cores; `publishable_as_like_for_like` is no longer constant `false`, and its comment records that Tier C licenses a no-fsync claim against a no-fsync number and nothing more. **Two findings came out of the tier that could not have come out of any earlier one.** First: `cpp-httplib` leaves `CPPHTTPLIB_TCP_NODELAY` **false**, so Nagle meets the peer's delayed-ACK timer — the same cluster and workload measured **14.6 ops/sec at a 252 ms p50 over httplib against 1397.1 at 2.4 ms over beast**, a 96x gap, and the inter-node probe read 41 ms of RTT on *loopback* before the flag was set on this spec's own sockets. `include/raft/http_transport_impl.hpp` was deliberately left alone: it carries Raft RPCs and is a swept axis, so changing it would silently move every Tier B httplib row this project has published, and that is a decision for `multi-raft-performance` to make explicitly. Second: **the data path's server thread pool caps client concurrency**, because a handler blocks for the whole commit — at sixteen in flight with cpp-httplib's default pool the row goes bimodal 75/1387 at a 1622% spread with **zero elections in any window**, so the cause is queueing and not consensus; `--data-threads 32` turns the same configuration into 1155–1397 at 13.9%. The election probe (`/terms`, differenced around the window) earned its place by refuting the obvious hypothesis on its first run. **Tier E rows were taken and are not claimed as publishable**: three rootless-Podman containers with the driver outside every one of them gave 335.4 ops/sec at an 11.8% spread, zero elections, 200 of 200 — over the 10% bar, on a machine that was building at the time. It is also **not N machines**; containers on one host share a kernel, a scheduler and a memory bus, and the row says so. CLAUDE.md's "must work under both runtimes" is verified under **both networking models available here** — rootless Podman (slirp4netns publishing, aardvark-dns) and **rootful** Podman (netavark bridge, publishing through the host's real netfilter rules), the second being architecturally the same shape as Docker's rootful bridge with embedded DNS, which is the runtime CLAUDE.md names as CI's default. Three containers healthy and every group led under both. Docker's own **engine** and its `docker compose` implementation are still not installed here and remain CI's to settle. **Running it rootful found a defect the rootless run had hidden**: Podman defaults to the OCI image format, which has no healthcheck field, so it warns and hands back a working image with no health check — and since the compose stack's readiness gate *is* that check, the stack came up `running`, never `healthy`, and nothing reported an error. `scripts/build-tier-e-image.sh` now passes `--format docker` for Podman (Docker's builder emits that format anyway and does not take the flag) and then **verifies the check survived**, refusing to hand over an image that would fail silently |
 | `multi-machine-placement` | **10/10** | Requirements, design and tasks written August 31, 2026; implemented September 1, 2026. **The one thing Tier E exists to introduce — a real network between the nodes — now exists in a row.** `scripts/perf-cloud/run-aws-shape-2.sh` puts three `multi_raft_node` hosts and one `multi_raft_bench` driver on four `c5.2xlarge` instances, and the sweep covers a cluster placement group, one availability zone and three. Headline: **1037.9 ops/sec single-AZ and 775.0 cross-AZ, both stable over 11 windows with zero elections**, against **1175.4** for the same binaries and workload with all four processes on one instance — so a network costs 11.7% single-AZ and 34% across zones. ~~**Task 11's response-driven-pacing hypothesis was tested rather than fitted and survived**: reading p50 against measured RTT gives 4.39 round trips per operation at one AZ and 4.18 at three, two independent placements agreeing across a 3.5x difference in round trip.~~ **Withdrawn September 3**: the reading used the Tier C arm as a zero-RTT origin, and on uniform c6i.2xlarge hardware Tier E is *faster* than its own Tier C arm (CPU sharing outweighs a 194 µs network); and a repeat of the single-AZ row moved p50 by twice the cross-AZ delta the slope was read from. Untested, not refuted. **Two of the spec's own assumptions did not survive.** Requirement 4.5 says a row within an order of magnitude of loopback is container-shaped; three machines in three availability zones measure 9.20x their own loopback and so trip a test that is supposed to detect containers — the ratio is a good instrument (loopback came back 51–69 µs across six provisionings) and the constant is wrong, and the 0.7–0.9 ms the threshold was inferred from was never a network figure but a slow machine. Requirement 2.4's 'hold every other value identical' is **not achievable on EC2**: `c5.2xlarge` drew a mix of Xeon 8124M and 8275CL varying between runs and within a run, and a Raft commit waits on a majority, so a mixed cluster is gated by its slowest member — the provenance capture caught it, nothing else would have. Consequently the cross-AZ row is a finding and **cluster-group versus single-AZ is not established**: three identical cluster runs returned 120/222/126 µs and 891.5/989.6/1049.9 ops/sec, one of them UNSTABLE and excluded. Also delivered: `aws_ec2_peer_discovery` (Requirement 5.2 of `multi-raft-host-binary`, which that spec recorded as not delivered) with `--discovery ec2-tag` on the host, demonstrated forming a cluster with **no static peer list anywhere**; and the leak audit tested in the failing direction for the first time, which found that `perf-cloud.json` granted `DescribePlacementGroups` but not `CreatePlacementGroup` — the same anticipatory gap the audit check itself had. Seven live provisionings, every one torn down, every audit clean, ~$1.40 against a $2 pre-registration. **The like-for-like table is no longer empty**, for the first time in this project's history (and the row was observed a second time on September 3, on c6i.2xlarge: 1724.8 ops/sec at p50 576.0 µs, so the pairing is now the range 43–59% of etcd's rate): a Tier E `read-local` row at 1 group, 256 B values and 1 operation in flight — **1261.2 ops/sec, p50 765.4 µs, p99 1150.9 µs, stable over 11 windows** — pairs lawfully with etcd 3.2.0's serializable read (2,909 QPS, 0.3 ms mean), matched on tier, durability (not applicable to a read and *stated* so on both sides), Raft group count, payload size and client concurrency. 43.4% of etcd's rate at 2.55x the latency, which at one client are the same fact. Six of the seven metrics still have no admissible pair and say so. ~~**Tier D remains unrun**~~ Run September 3 (see `multi-raft-performance` task 19). **The same day reproduced refutation 2 at a size that empties the sweep**: the single-AZ row repeated with everything identical returned 573.0 ops/sec against 1037.9, both "stable", hosts 8124M/8275CL/8124M, and even the Tier C arm on a same-model driver moved 17%; no c5 placement delta is smaller than that swing, so none is a finding. Clark's call: `c5.2xlarge` is retired from Shape 2 for `c6i.2xlarge`, which drew four identical 8375C in two provisionings out of two and returned 1461.0 ops/sec single-AZ (Tier C arm 1224.7). The placement sweep has to be retaken there, repeated, before it says anything about placement. |
 | `redis-compatible-kv` | **14/14** | Requirements, design and tasks written August 28, 2026; implemented September 2–3, 2026. A minimal RESP2/RESP3 server over `multi_raft` scoped to exactly the command closure sccache's `redis` backend puts on the wire (read from sccache, OpenDAL and redis-rs 1.2, not from the Redis manual), motivated by the gap ccache cannot fill: ccache has no rustc backend. Six headers (`resp_protocol`, `redis_kv_commands`, `redis_kv_state_machine`, `redis_acl`, `redis_gateway` and its impl), the `redis_gateway_node` daemon, five unit/integration binaries and one container scenario binary, all behind `CONFIG_REDIS_GATEWAY` — the ON/OFF configure diff is exactly the ten feature-owned targets and `vcpkg.json` is untouched. **The acceptance evidence is real sccache 0.10.0, not a mock**: `make docker-sccache-e2e-tests` runs the upstream binary in a container against the three-node cluster (rootless Podman here; nothing in the compose file is Docker-specific) and asserts on `sccache --show-stats` — miss then hit, `SETEX` under `SCCACHE_REDIS_EXPIRATION`, both builds green with every gateway stopped, and the `read_only` user building green with `cache_write_errors` non-zero while hitting what `read_write` stored. Two findings that shape the operator doc (`doc/redis-gateway.md`): sccache's startup storage probe turns a failed *read* into `Server startup failed` for every subsequent compile, so a CI job has to gate `RUSTC_WRAPPER` on `sccache --start-server` succeeding for the cache to be an accelerant rather than a build dependency (Requirement 17.2 is a property of the job, not only of the server); and sccache 0.10 refuses to cache `bin` crate types, so a crate has one cache key and the runner salts its library source to force a miss on demand. Serializer measurement replaced the design's estimate: an 8 MiB value is 1.333× under JSON and 158 ms of leader CPU per follower, 1.0000× and 5 ms under CBOR, so the daemon defaults to CBOR. Adopting sccache in this repository's own build remains deliberately *not* part of the spec. |
+
+### Not Started
+
+| Spec | Tasks | Notes |
+|------|-------|-------|
+| `coap-transport-multi-raft` | 0/14 | Requirements, design and tasks written August 31, 2026 (`f09cb70`, `55cb4b0`); zero implementation commits. CoAP under `multi_raft` with a security context per group. **Never on this table until September 3, 2026** — the drift pattern below, in its original direction. |
+| `elastic-shard-capacity` | 0/17 | Requirements, design and tasks written August 31, 2026 (`5186c71`); zero implementation commits. Cloud-agnostic capacity elasticity: host composition, a `capacity_policy` concept, and the split between the capacity gate and host accounting in `multi_raft.hpp`. **Never on this table until September 3, 2026.** |
 
 `oci-build-cache` moved to "Partially Implemented" on September 9, 2026,
 the same direction `transport-multi-serializer` moved and for the same
@@ -295,6 +315,34 @@ unverified completion claim.
 ---
 
 ## Known Follow-ups
+
+- **Shape 2 on `c6i.2xlarge` — the placement sweep has to be retaken, and
+  repeated (September 3, 2026).** Everything in
+  `doc/data/tier-e-shape-2/` on `c5.2xlarge` compares provisionings: the
+  single-AZ row repeated with nothing changed returned 573.0 ops/sec against
+  1037.9, both "stable", and the Tier C arm on a same-model driver moved 17%.
+  On c6i (uniform Xeon 8375C in two provisionings out of two) the same
+  configuration returned 1461.0 write and 1724.8 `read-local`. What that
+  leaves, in the order it should be done:
+  1. **Repeat the c6i single-AZ write row.** Two provisionings of uniform
+     hardware establish that the *draw* is uniform, not that the row comes
+     back; until a repeat lands inside the spread rule, 1461.0 is one sample.
+  2. **c6i cross-AZ and cluster-group rows**, each repeated. Only then is
+     "a network costs N%" a statement about the network.
+  3. **Tier D on c6i, and durable Tier E with a real warm-up.** The c5
+     durable Tier E row (217.6, UNSTABLE 13.4%) is a first-window effect —
+     247 then 214–225 — and `multi_raft_bench` has `--warmup N` (default 50,
+     discarded before each window) but `scripts/perf-cloud/run-aws-shape-2.sh`
+     does not pass it through. Add the pass-through before reading anything
+     into that row. Tier D's 176.7 is about the volume: three logs on one gp3
+     root serialise their barriers, and IOPS is gp3's stated baseline, not a
+     measurement (Requirement 8.2 leaves the host uninstrumented).
+  4. **Never set a c6i row beside a c5 row**, and treat "spread ≤10%" as a
+     statement about eleven windows of one run, not about the row — that rule
+     let two runs 45% apart both pass.
+  The task-11 response-driven-pacing reading (4.39/4.18 round trips) is
+  withdrawn, not refuted: restoring it needs this sweep, with repeats, and an
+  origin that does not share CPU with the hosts.
 
 - **CI has never built warning-free, and the "no warnings" claim in Current
   Status is now settled — measured, attributed, and *not* fixed (September 5,
