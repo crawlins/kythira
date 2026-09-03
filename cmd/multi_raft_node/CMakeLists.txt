@@ -14,7 +14,31 @@ if(NOT folly_FOUND OR NOT Boost_FOUND OR NOT httplib_FOUND)
     return()
 endif()
 
-add_executable(multi_raft_node main.cpp config.cpp)
+# ONE TRANSLATION UNIT PER (transport x wire serializer) PAIR, and that is
+# load-bearing rather than tidiness. All four `multi_raft` instantiations used
+# to be in main.cpp; measured with this project's own CI compiler (g++-13,
+# Release, stdexec backend) that single translation unit peaked at 10,974 MiB of
+# compiler RSS -- the heaviest in the tree, ahead of the 5.6 GiB
+# three_way_http_transport_equivalence_test that tests/CMakeLists.txt's
+# `heavy_tu` Ninja job pool was created for. A GitHub runner has 16 GiB, so it
+# plus any two ordinary compiles exhausted the machine: the
+# `Full suite (stdexec future backend)` leg died once as an 82-minute stall
+# into the 180-minute timeout and once as `exit 143` VM reclamation, with no
+# compiler error anywhere in either log.
+#
+# It passed on main only because ccache answered for these objects. Any change
+# under cmd/multi_raft_node/ made them cold and the leg failed -- which is why
+# it read as intermittent.
+#
+# See cmd/multi_raft_node/host_stacks.hpp for the rest of the note.
+add_executable(multi_raft_node
+    main.cpp
+    config.cpp
+    run_httplib_json.cpp
+    run_httplib_cbor.cpp
+    run_beast_json.cpp
+    run_beast_cbor.cpp
+)
 
 target_include_directories(multi_raft_node PRIVATE
     "${CMAKE_SOURCE_DIR}/include"
@@ -62,6 +86,17 @@ else()
     message(STATUS "multi_raft_node: no AWS SDK — --discovery ec2-tag unavailable")
 endif()
 
+# The split alone is not the whole fix. Each run_*.cpp still measures
+# 5,407 MiB -- the same class as three_way_http_transport_equivalence_test's
+# 5,649 MiB -- so three of them at once under `-j3` would put the runner right
+# back over 16 GiB. `heavy_tu` (declared in the top-level CMakeLists.txt, where
+# the full measurement table lives) admits one at a time, which is what makes
+# the four of them safe to have.
+#
+# The property is per-target, so main.cpp and config.cpp are serialised with
+# them. That costs nothing worth naming: 25 s and 3 s respectively, against
+# 204 s for one run_*.cpp.
 set_target_properties(multi_raft_node PROPERTIES
+    JOB_POOL_COMPILE heavy_tu
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
