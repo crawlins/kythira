@@ -83,8 +83,8 @@ than the comparison claim being quietly narrowed to the tiers that were run.
 | A | All hosts in one process over the in-process fabric, memory persistence | yes | **never** (Requirement 3.1) |
 | B | In-process hosts, real HTTP transport over loopback, memory persistence | yes | no (Requirement 3.3) |
 | C | One host process per node on one machine | **yes**, August 31 2026 | yes, **for a no-fsync number** |
-| D | Tier C plus `file_persistence` in `barrier` mode against a real volume | **not run**; both blockers are gone and nothing but the run remains | the only tier comparable to a durable number |
-| E | One host per machine or container | **containers only**, and not N machines | yes, with the placement stated |
+| D | Tier C plus `file_persistence` in `barrier` mode against a real volume | **yes**, September 3 2026: the Tier C arm of a Shape 2 run with `--persistence file-barrier`, every host's log on a gp3 root volume; **176.7 ops/sec, stable**. The Tier E row of the same run was durable too, and UNSTABLE | the only tier comparable to a durable number — and the register holds no durable source it pairs with (see *Write metrics*) |
+| E | One host per machine or container | **yes**, N machines, September 1 2026; durable variant September 3 | yes, with the placement stated |
 
 Shape 1 has been run on both an x64 and a Graviton instance (Requirement 18.12);
 Shape 2 has not.
@@ -463,6 +463,13 @@ averages over entries no fsync ever touched, and it carried no `barriered`
 column at all. A reader would have taken the bottom row for a durable one. The
 covered-entry counter is what turned 8.45 into 1.77 and put a 20–25% beside it.
 
+**The barrier has since been moved and the axis has since been run on a cloud
+volume.** `.kiro/specs/durable-append-barrier/` put the barrier at the
+advertise boundary and the coverage column reads 100%; the table above is
+kept as the record of why. The durable rows on real hardware — Tier D at
+176.7 ops/sec on one gp3 volume and a durable Tier E row beside it — are in
+*Tier D, and a durable Tier E row beside it* under **The comparison**.
+
 ### Reads
 
 Measured on the development machine only; the cloud sweep did not include the
@@ -576,26 +583,36 @@ Requirement 11.3. Each verdict, and the number behind it.
 
 **This is the first row this project has produced over a network.** Every
 inter-node figure before it — including the Tier E rows taken on three
-rootless-Podman containers — was loopback. Four `c5.2xlarge` instances in
-`us-east-1`, three running `multi_raft_node` and one running
-`multi_raft_bench`, prebuilt binaries shipped rather than rebuilt, 400 write
-operations at 4 in flight, 4 groups, 128 B values, `memory` persistence,
-**11 measured windows** per row, taken by `scripts/perf-cloud/run-aws-shape-2.sh`.
+rootless-Podman containers — was loopback. Four instances in `us-east-1`,
+three running `multi_raft_node` and one running `multi_raft_bench`, prebuilt
+binaries shipped rather than rebuilt, 400 write operations at 4 in flight, 4
+groups, 128 B values, **11 measured windows** per row, taken by
+`scripts/perf-cloud/run-aws-shape-2.sh`. The first six rows are `c5.2xlarge`
+and `memory` persistence; the rows after them are what happened when one of
+those was repeated, when the hardware was changed, and when the log was made
+durable.
 
-| row | own loopback | inter-node RTT | ratio | throughput | spread | p50 | verdict |
-|---|---:|---:|---:|---:|---:|---:|---|
-| Tier C, all four processes on one c5.2xlarge | 54 µs | — | — | 1175.4 ops/sec | 3.2% | 3142.6 µs | stable |
-| Tier E, cluster placement group (obs 1) | 57 µs | 120 µs | 2.11x | 891.5 ops/sec | 9.2% | 4461.1 µs | stable |
-| Tier E, cluster placement group (obs 2) | 69 µs | 222 µs | 3.22x | 989.6 ops/sec | 8.1% | 3560.5 µs | stable |
-| Tier E, cluster placement group (obs 3) | 55 µs | 126 µs | 2.29x | 1049.9 ops/sec | 10.8% | 3590.7 µs | **UNSTABLE** |
-| Tier E, one availability zone | 54 µs | 171 µs | 3.17x | 1037.9 ops/sec | 6.5% | 3656.2 µs | stable |
-| Tier E, three availability zones | 51 µs | 469 µs | 9.20x | 775.0 ops/sec | 5.4% | 4876.1 µs | stable |
+| row | hosts drew | own loopback | inter-node RTT | ratio | throughput | spread | p50 | verdict |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| Tier C, all four processes on one c5.2xlarge | 8124M | 54 µs | — | — | 1175.4 ops/sec | 3.2% | 3142.6 µs | stable |
+| Tier E, cluster placement group (obs 1) | mixed | 57 µs | 120 µs | 2.11x | 891.5 ops/sec | 9.2% | 4461.1 µs | stable |
+| Tier E, cluster placement group (obs 2) | mixed | 69 µs | 222 µs | 3.22x | 989.6 ops/sec | 8.1% | 3560.5 µs | stable |
+| Tier E, cluster placement group (obs 3) | mixed | 55 µs | 126 µs | 2.29x | 1049.9 ops/sec | 10.8% | 3590.7 µs | **UNSTABLE** |
+| Tier E, one availability zone (Sept 1) | 8124M ×3 | 54 µs | 171 µs | 3.17x | 1037.9 ops/sec | 6.5% | 3656.2 µs | stable |
+| Tier E, three availability zones | 8124M, 8275CL ×2 | 51 µs | 469 µs | 9.20x | 775.0 ops/sec | 5.4% | 4876.1 µs | stable |
+| **Tier E, one availability zone, REPEATED (Sept 3)** | 8124M, 8275CL, 8124M | 56 µs | 137 µs | 2.45x | **573.0 ops/sec** | 9.0% | **7505.1 µs** | stable |
+| Tier C on that repeat's driver | 8124M | 56 µs | — | — | 970.8 ops/sec | 3.0% | 3819.1 µs | stable |
+| **Tier E, one availability zone, `c6i.2xlarge`** | 8375C ×3 | 43 µs | 194 µs | 4.51x | **1461.0 ops/sec** | 7.4% | **2598.8 µs** | stable |
+| Tier C on that run's driver, `c6i.2xlarge` | 8375C | 43 µs | — | — | 1224.7 ops/sec | 3.4% | 3029.9 µs | stable |
+| Tier E, one availability zone, **`file-barrier`** (c5) | 8124M ×3 | 67 µs | 192 µs | 2.87x | 217.6 ops/sec | 13.4% | 17531.3 µs | **UNSTABLE** |
+| **Tier D**: Tier C on that run's driver, **`file-barrier`** (c5) | 8124M | 67 µs | — | — | **176.7 ops/sec** | 2.2% | 21785.7 µs | stable |
 
-Zero elections in every measured window of every row. The Tier C row is not a
-development-machine row: it was taken **on the driver instance of the same
-run**, so it differs from the Tier E rows in placement and not in hardware,
-binaries or workload. That is what makes the first column a comparison rather
-than two unrelated numbers.
+Zero elections in every measured window of every row. A Tier C row here is
+never a development-machine row: each was taken **on the driver instance of the
+same run**, so it differs from its Tier E row in placement and not in hardware,
+binaries or workload. That is what makes each pair a comparison rather than two
+unrelated numbers — and, as the repeat shows, it is the *only* pairing in this
+table that is.
 
 #### Requirement 4.5's threshold is refuted, and the ratio it is built on is sound
 
@@ -608,73 +625,173 @@ Cross-AZ is the most distributed configuration short of cross-region; if that is
 The premise it rests on — that a real network is 10–100x loopback — is simply
 false for AWS. The design inferred it from the Podman rows' 0.7–0.9 ms, but
 **that figure was never a network measurement**: this project's own loopback,
-measured with the same request on a c5.2xlarge, is **51–69 µs**. The Podman
-number was a slow development machine and cpp-httplib's per-request overhead,
-not a container network stack. Comparing absolute RTTs across machines conflates
-machine speed with distance, which is exactly the error the ratio avoids.
+measured with the same request on a c5.2xlarge, is **51–69 µs**, and on a
+c6i.2xlarge **43 µs**. The Podman number was a slow development machine and
+cpp-httplib's per-request overhead, not a container network stack. Comparing
+absolute RTTs across machines conflates machine speed with distance, which is
+exactly the error the ratio avoids.
 
 The **instrument** is good and should be kept: the loopback baseline came back
-at 51–69 µs across six independent provisionings, and the ratio orders the
-placements the way physics does — cluster group and single-AZ around 2–3x,
+at 43–69 µs across nine independent provisionings, and the ratio orders the
+placements the way physics does — cluster group and single-AZ around 2–4.5x,
 three availability zones at 9.2x. What needs replacing is the constant. On this
 evidence a threshold near **5x** separates same-AZ from cross-AZ; a threshold at
 10x separates nothing.
 
-#### Task 11's response-driven pacing, tested rather than fitted
+#### Task 11's response-driven pacing: the reading this document gave is withdrawn
 
 `.kiro/specs/multi-raft-performance/` task 11 predicted the per-stream
-inter-round interval tracks the RPC round trip. On loopback that was
-untestable because the round trip barely varied. Reading p50 against measured
-RTT, with the Tier C row as the origin:
+inter-round interval tracks the RPC round trip. An earlier version of this
+section read p50 against measured RTT with the Tier C row as the origin, found
+4.39 and 4.18 implied round trips per operation at two placements, and called
+that "a mechanism, not a fit". **Both numbers rested on assumptions the
+September 3 runs falsified, and the reading is withdrawn.**
 
-| row | Δ RTT vs loopback | Δ p50 | implied round trips per operation |
-|---|---:|---:|---:|
-| one availability zone | +117 µs | +513.6 µs | **4.39** |
-| three availability zones | +415 µs | +1733.5 µs | **4.18** |
+- **The origin was wrong.** Using Tier C as the zero-RTT point assumes the
+  only thing that changes between Tier C and Tier E is the network. On uniform
+  hardware it is not: on `c6i.2xlarge` the Tier E row is **faster** than its
+  own Tier C arm (2598.8 against 3029.9 µs p50, 1461.0 against 1224.7
+  ops/sec) despite paying 194 µs of network per hop instead of 43. Four
+  processes on one 8-vCPU machine share the CPU, and that term is larger than
+  the network term at this RTT. The Tier C origin therefore carries a
+  CPU-sharing cost of unknown size, and any slope measured from it is
+  arithmetic on that cost.
+- **The lever was shorter than the noise.** The cross-AZ point was read as
+  +1733.5 µs of p50 over +415 µs of RTT. The single-AZ row, repeated with every
+  parameter identical, moved by **+3848.9 µs of p50 with the RTT 34 µs
+  *shorter*.** A provisioning-to-provisioning term twice the size of the
+  cross-AZ delta means the cross-AZ delta cannot be attributed to the network
+  from these data either.
 
-**Two independent placements agree on about 4.2–4.4 network round trips on the
-critical path of a committed write**, and they agree across a 3.5x difference
-in RTT. That is a mechanism, not a fit: a slope recovered at two widely
-separated points, from a prediction made before either was measured. It is also
-a plausible count — client to leader, leader to a follower majority, and the
-redirect a driver pays when it does not already hold the leader.
+What survives is the prediction itself, untested rather than refuted: nothing
+above contradicts it, and nothing above measures it. Testing it needs the
+placements taken on **uniform hardware** in the same session, each repeated,
+and the slope read between Tier E rows only. The c6i single-AZ row is the first
+such point; a c6i cross-AZ row is the second, and it has not been taken.
 
-**The cluster placement group cannot be read this way and the table does not
-try.** Its three observations sit 66–168 µs from loopback, and over so short a
-lever the same arithmetic returns slopes of 19.98 and 2.49 — noise, not
-measurement. Stated plainly: **within the 120–222 µs band the placement effect
-is below this apparatus's resolution**, and only the cross-AZ point is far
-enough out to resolve.
-
-#### Two confounds this sweep could not hold still
+#### Refutation 2, reproduced: a provisioning is a variable, and on c5 it is the largest one
 
 Requirement 2.4 asks that a placement comparison hold every other value
-identical. Two could not be held, and both were found by the provenance capture
-rather than reasoned about:
+identical. The September 1 sweep recorded two things it could not hold —
+`c5.2xlarge` drawing a mix of Xeon Platinum 8124M and 8275CL, and the cluster
+placement group returning 891.5, 989.6 and 1049.9 ops/sec from three identical
+provisionings — and said that "nothing repeats a run, and on this evidence it
+should". On September 3 the single-AZ row was repeated, once, with every
+argument identical and the same shipped binaries:
 
-- **`c5.2xlarge` is not one machine.** The hosts drew a mix of Xeon Platinum
-  8124M and 8275CL, varying *between* runs and *within* a run — the single-AZ
-  row got three 8124M, the cross-AZ row one 8124M and two 8275CL. A Raft commit
-  waits on a majority, so a mixed cluster is gated by its slowest member. The
-  throughput column therefore carries a hardware term the sweep did not choose.
-- **Provisioning is itself a variable.** The cluster placement group was run
-  three times with everything identical and returned 120, 222 and 126 µs of
-  inter-node RTT and 891.5, 989.6 and 1049.9 ops/sec. The spread rule governs
-  windows *within* a run; nothing repeats a run, and on this evidence it should.
-  One of the three was UNSTABLE at 10.8% and is excluded from every claim above.
+| | Sept 1 | Sept 3 repeat | moved by |
+|---|---:|---:|---:|
+| hosts drew | 8124M ×3 | 8124M, **8275CL**, 8124M | — |
+| inter-node RTT | 171 µs | 137 µs | −20% |
+| Tier E throughput | 1037.9 ops/sec | **573.0 ops/sec** | **−44.8%** |
+| Tier E p50 | 3656.2 µs | **7505.1 µs** | **+105%** |
+| Tier E verdict | stable, 6.5% | stable, 9.0% | — |
+| Tier C on the driver | 1175.4 ops/sec | 970.8 ops/sec | −17.4% |
+| driver drew | 8124M | 8124M | same |
 
-The honest reading is that the **cross-AZ row is a finding** — it is far outside
-that noise on both axes — and that the cluster-group-versus-single-AZ
-difference is not established by these data.
+**Both rows are "stable".** The spread rule judges windows *within* a run and
+both runs pass it; the rule has no view of the run-to-run term and this is what
+that term looks like when it is finally measured: a 45% throughput swing and a
+doubled p50 on the *same* configuration. The network got faster and the row
+got slower, so the network is not the cause. The mixed CPU draw is part of it —
+a commit waits on a majority and the 8275CL host is in every majority — but it
+is not all of it: **the Tier C arm, on a driver that drew the same 8124M model
+both times, moved 17% by itself.** Two c5.2xlarge instances of the same stated
+CPU are not the same machine either.
+
+The consequences for the table above are exact rather than qualitative:
+
+- **No c5 placement delta smaller than the repeat's 45% is a finding.** That
+  removes the cluster-group-versus-single-AZ question (already conceded), and
+  it also removes the cross-AZ row's 25% deficit against single-AZ from the
+  list of established results. The cross-AZ row is still the only row with an
+  RTT far outside the others', but its throughput cannot be attributed to that
+  RTT while a provisioning term of this size is loose.
+- **`c5.2xlarge` is retired from Shape 2.** At the same $0.34/hour,
+  `c6i.2xlarge` drew four identical Xeon Platinum 8375C @ 2.90 GHz in its first
+  provisioning, and its single-AZ row came back at 1461.0 ops/sec, p50
+  2598.8 µs — faster than *either* c5 observation, on a slower clock, which is
+  the generation difference (Ice Lake against Skylake) and not a surprise. Its
+  Tier C arm, 1224.7 ops/sec, is 4% above the best c5 Tier C arm. Every
+  further Shape 2 row is to be taken on c6i, and **a c6i row is not to be set
+  beside a c5 row**: the two differ in hardware generation and in whether the
+  hardware is uniform, and either alone is larger than the placement effect.
+- **Repeating is now part of the method, not a suggestion.** The row that
+  matters is the *difference between two provisionings* of the same
+  configuration on the instance type in use; until c6i has that number, its
+  1461.0 carries the same unmeasured term c5 did. It is the next run, and it is
+  a run rather than a spec.
+
+Stated plainly: on `c5.2xlarge` the placement sweep measured the provisioning
+lottery, and the only thing it established about placement is that the
+instrument (the RTT ratio) ranks placements correctly. The measured placement
+*effect* is not established for any pair of rows.
+
+#### Tier D, and a durable Tier E row beside it
+
+The same run that delivered Tier D took a durable Tier E row first. Both rows
+ran `--persistence file-barrier`: every host's log under `/tmp/kythira-data` on
+its instance's **gp3 root volume** (the AMI is the `ebs-gp3` variant; the
+provenance capture reads the class from the launch and records the IOPS as
+`null`, because it never queried the volume — gp3's baseline is 3,000 IOPS and
+125 MB/s, and that is the provider's figure, not a measurement). The barrier is
+`.kiro/specs/durable-append-barrier/`'s: taken where a node advertises an
+append, covering 100% of the log, with group commit underneath it.
+
+| row | throughput | spread | p50 | p95 | verdict |
+|---|---:|---:|---:|---:|---|
+| Tier E, three hosts, three volumes, `file-barrier` | 217.6 ops/sec | 13.4% | 17531.3 µs | 24570.1 µs | **UNSTABLE** — no headline |
+| **Tier D**, three host processes and the driver on one c5.2xlarge, one volume | **176.7 ops/sec** | 2.2% | 21785.7 µs | 32099.1 µs | stable |
+| for scale: the same run's shape on `memory`, same day, c5 | 573.0 / 970.8 ops/sec | | 7505.1 / 3819.1 µs | | |
+
+**Tier D is delivered, and its row is stable at 176.7 ops/sec with a 21.8 ms
+p50.** That is 4 in flight across 4 groups: each of the four closed-loop
+streams waits about 22 ms per committed write, and the barrier is what it
+costs — the same processes on the same instance type on `memory` run at
+970.8–1224.7 ops/sec with a 3–4 ms p50.
+
+**The durable Tier E row is UNSTABLE and carries no headline.** Its first window
+ran at 246.9 ops/sec and the other ten at 213.9–224.7; the spread rule is 10%
+and the row is at 13.4%. One fast window and then a plateau is a first-window
+effect — something 50 warm-up operations did not absorb, and this row cannot
+say what, because the host is uninstrumented — and the fix is more warm-up
+rather than a different row. It is reported here because Requirement 3.7 wants the row's
+absence explained, and because the plateau *is* readable even where the
+headline is not: the ten steady windows sit at 214–225 ops/sec, above Tier D.
+
+**Durable Tier E above durable Tier D is the opposite ordering from `memory`
+on the same instance type (573.0 below 970.8), and the reason is the disk
+rather than the network.** Tier D puts three logs and three barrier cadences on
+one gp3 volume; Tier E gives each host its own. On `memory` co-location costs
+the network nothing and CPU sharing something; on `file-barrier` it costs
+three-way contention for one volume's fsync throughput. That is not IOPS
+starvation: the cluster commits 177 entries per second and every host appends
+each of them, so at `entries_per_fsync` near 1.7 (the development-machine
+figure — the host is uninstrumented here by Requirement 8.2, so this row cannot
+report its own) three hosts on one volume are ~310 fsyncs per second against a
+3,000 IOPS baseline. What is left is serialisation of three processes'
+barriers through one block-device queue, which is a latency cost and shows up
+as one: Tier D's p50 is 4.3 ms above durable Tier E's.
+
+**What this row is comparable to.** Requirement 6.2 admits a durable row
+against a durable external number, and this is the first row of ours that is
+one. The register holds exactly two write sources that state fsync is honoured,
+Dragonboat and TiKV, and neither is admissible under Requirement 9.6 — 48
+shards and 66 cores against 4 and 8, unstated client counts — so the
+like-for-like write table stays empty, now **for a reason entirely on the
+register's side.** The number is here to be paired when a source appears that
+states its durability, its group count and its client concurrency; etcd's
+published write rows state none of the three.
 
 ### Like-for-like table
 
-**No longer empty. It holds exactly one row, and it took Tier E on real
-machines to earn it.**
+**No longer empty. It holds one pairing, observed twice on two instance
+types, and it took Tier E on real machines to earn it.**
 
 | Ours | Theirs | Reading |
 |---|---|---|
-| **1261.2 ops/sec**, p50 **765.4 µs**, p95 972.1 µs, p99 **1150.9 µs**. Tier E, 3 hosts on 3 c5.2xlarge (8 vCPU each) in one AZ, driver on a 4th, 1 Raft group, 256 B values, **1 operation in flight**, replica read (`read-local`), **NOT LINEARIZABLE**, durability not applicable. 2,000 operations × 11 windows, spread 3.4%, **stable**, zero elections | etcd 3.2.0 serializable read: **2,909 QPS, average latency 0.3 ms**. 3 GCE servers of 8 vCPU each, 1 client machine, 1 Raft group, 256 B values, **1 connection / 1 client**, replica read, durability not applicable | **We are at 43.4% of etcd's rate, and our p50 is 2.55x their average latency.** These are the same statement: at one operation in flight both systems are latency-bound, and 1/765 µs = 1307 ops/sec against our measured 1261, while 1/300 µs = 3333 against their published 2909. The rate gap *is* the latency gap; there is no throughput story here separate from the per-operation cost |
+| **1261.2 ops/sec**, p50 **765.4 µs**, p95 972.1 µs, p99 **1150.9 µs**. Tier E, 3 hosts on 3 c5.2xlarge (8 vCPU each, all 8124M) in one AZ, driver on a 4th, 1 Raft group, 256 B values, **1 operation in flight**, replica read (`read-local`), **NOT LINEARIZABLE**, durability not applicable. 2,000 operations × 11 windows, spread 3.4%, **stable**, zero elections. September 1 | etcd 3.2.0 serializable read: **2,909 QPS, average latency 0.3 ms**. 3 GCE servers of 8 vCPU each, 1 client machine, 1 Raft group, 256 B values, **1 connection / 1 client**, replica read, durability not applicable | **We are at 43.4% of etcd's rate, and our p50 is 2.55x their average latency.** These are the same statement: at one operation in flight both systems are latency-bound, and 1/765 µs = 1307 ops/sec against our measured 1261, while 1/300 µs = 3333 against their published 2909. The rate gap *is* the latency gap; there is no throughput story here separate from the per-operation cost |
+| **1724.8 ops/sec**, p50 **576.0 µs**, p95 627.1 µs, p99 **934.7 µs**. The same row on 3 + 1 **c6i.2xlarge** (8 vCPU each, all 8375C), inter-node RTT 172 µs. Spread 2.8%, **stable**, zero elections. September 3 | the same etcd record | **59.3% of etcd's rate at 1.92x their average latency**, and again one fact: 1/576 µs = 1736 ops/sec against 1725 measured. The 37% between our two observations is one hardware generation (Ice Lake against Skylake, over a network that measured the same 170 µs both times) and it is the size of the term the previous row's cloud-era caveat warned about — which is why this pairing is reported as a range, 43–59%, and not as either number |
 
 **Why this pairing is admissible where none before it was.** Requirement 3.3
 needs tier C or above: both are three-machine clusters with the client on its
@@ -695,8 +812,10 @@ from these data:
   the client is not the bottleneck, so this should not move the rate — but it
   is a difference and it is not measured.
 - **Different clouds and different eras.** etcd's numbers are on 2017-era GCE
-  and Ubuntu 17.04; ours are on 2026 EC2 c5.2xlarge. This is the largest
-  uncontrolled term in the pairing and it plausibly favours us.
+  and Ubuntu 17.04; ours are on 2026 EC2. This is the largest uncontrolled
+  term in the pairing and it plausibly favours us — and the second observation
+  put a size on part of it: one instance generation on our side alone is 37%
+  of the rate, with the network held at 170 µs.
 - **They publish a mean, we publish a p50.** Requirement 4.2's reason for
   preferring the median is exactly that the two differ under scheduling noise.
   Ours also carries a p99, and theirs does not.
@@ -716,39 +835,31 @@ fifty sessions is a narrow result, and its narrowness is the point:
 Requirement 9.8 asks that a metric with no possible comparison say so, and six
 of the seven metrics below still do.
 
-### Write metrics: still empty, and the reason has moved a second time
+### Write metrics: still empty, and the reason has moved a third time
 
 It was first empty because Requirement 3.3 forbids a like-for-like comparison
 from any tier below C, and every row was Tier A or Tier B. That barrier went
-when `.kiro/specs/multi-raft-host-binary/` delivered Tier C. It is now gone
-twice over: **Tier E on real machines exists**, three hosts and a driver on
-four EC2 instances, stable at 775.0–1037.9 ops/sec depending on placement, over
-a network measured at 171–469 µs. Tier is no longer the obstacle by any
-reading.
+when `.kiro/specs/multi-raft-host-binary/` delivered Tier C. Then it was
+durability on our side: every cloud row ran `--persistence memory`. **That is
+gone too**: Tier D exists — three host processes and the driver on one
+c5.2xlarge, every log in `file-barrier` mode on a gp3 volume, **176.7 ops/sec,
+stable** — and a durable Tier E row was taken beside it. Nothing on our side
+of Requirement 6.2 is missing any more.
 
-What blocks the table is durability, and the blocker is now on **both** sides.
+**What blocks the table is on the register's side, and it is not fixable by
+us.** Of its fourteen records, four state durability is honoured ("fsync is
+strictly honored", "sync enabled"), the read records mark it not applicable,
+and every remaining write record says **"not stated"** — including etcd's,
+where the register explicitly notes that inferring it is forbidden by
+Requirement 9.2. So the `memory` rows have no lawful counterpart (no source
+states a no-fsync number), and the durable rows pair only with the sources
+that state fsync is honoured — Dragonboat and TiKV — whose other axes (48
+shards against 4, 66 cores against 8, unstated client counts) are mismatched
+enough that Requirement 9.6 forbids the multiplier.
 
-On ours: every row above ran `--persistence memory`, so by Requirement 6.2 it is
-comparable to an external **no-fsync** number and to nothing else. That is
-fixable — the barrier lands 100% of appends
-(`.kiro/specs/durable-append-barrier/`), the host takes `--persistence
-file-barrier`, and `run-aws-shape-2.sh` passes it through, so a durable Tier E
-row is a volume and a run away.
-
-**On theirs, it is not fixable by us, and this is what running Tier E made
-visible.** There is no stated no-fsync write number anywhere in the register. Of
-its fourteen records, four state durability is honoured ("fsync is strictly
-honored", "sync enabled"), the read records mark it not applicable, and every
-remaining write record says **"not stated"** — including etcd's, where the
-register explicitly notes that inferring it is forbidden by Requirement 9.2.
-So the memory-persistence rows above have no lawful counterpart at all, and
-running a durable Tier D row would pair only with the sources that state fsync
-is honoured — Dragonboat and TiKV — whose other axes (48 shards against 4, 66
-cores against 24) are mismatched enough that Requirement 9.6 forbids the
-multiplier anyway.
-
-The table stays empty. The difference is that it is now empty for a reason no
-further work of ours removes, rather than for want of a tier.
+The table stays empty. It is now empty for a reason no further work of ours
+removes: a durable row of ours is on the page, and there is nothing it is
+lawful to put beside it.
 
 A second, smaller blocker is on the register's side and this document cannot
 fix it: a source that does not state its durability setting cannot be paired
@@ -760,11 +871,11 @@ metric by metric:
 
 | Metric | Like-for-like comparison possible? | Why not, and what it would take |
 |---|---|---|
-| Committed write throughput | **No, and the remaining reason is on the sources' side** | The tier is no longer missing by any reading: Tier E on four real machines is stable at 1037.9 ops/sec single-AZ and 775.0 cross-AZ. Ours is `memory`, so Requirement 6.2 admits only an external **no-fsync** number — and the register contains none: four records state fsync honoured, the read records mark it not applicable, and every other write record says "not stated", which 9.2 forbids us from resolving. A Tier D row of ours would pair only with Dragonboat and TiKV, whose shard counts and core counts are mismatched enough that 9.6 forbids the ratio |
+| Committed write throughput | **No, and the only remaining reason is on the sources' side** | Neither tier nor durability is missing any more: Tier D is stable at **176.7 ops/sec durable** on a gp3 volume, and Tier E on four real machines is stable at 1461.0 ops/sec (`memory`, c6i). The `memory` rows admit only an external **no-fsync** number under 6.2, and the register contains none: four records state fsync honoured, the read records mark it not applicable, and every other write record says "not stated", which 9.2 forbids us from resolving. The durable row pairs only with Dragonboat and TiKV, whose shard counts and core counts are mismatched enough that 9.6 forbids the ratio |
 | Write latency p99 | **No** | Same, and worse: our p99 is still `n/a` in every Tier E row above, because a 400-operation window does not contain enough samples to estimate one. The window has to grow as well as the durability setting, and Tier E did not change that — a 400-sample window does not estimate a p99 however many machines it ran on |
 | `read_state` (whole-shard read) | **No** | No external source in the register publishes a whole-store read at all. The metric has no counterpart, not merely no matching configuration |
 | Linearizable point read | **No** | etcd's linearizable read uses ReadIndex; ours is submitted as a proposal through the log. These are different mechanisms with the same consistency label, which is an indicative comparison at best |
-| Non-linearizable read | **YES — the only one, and the row has been taken** | etcd's serializable read is a replica read like ours and its record marks durability not applicable, so the blocker that stops every write pairing does not apply. Tier E supplied the missing half. The row is in the like-for-like table above: 1261.2 ops/sec at p50 765.4 µs against etcd's 2,909 QPS at 0.3 ms mean, matched on tier, durability, group count, payload size and client concurrency |
+| Non-linearizable read | **YES — the only one, and the row has been taken twice** | etcd's serializable read is a replica read like ours and its record marks durability not applicable, so the blocker that stops every write pairing does not apply. Tier E supplied the missing half. The rows are in the like-for-like table above: 1261.2 ops/sec at p50 765.4 µs on c5.2xlarge and 1724.8 at 576.0 µs on c6i.2xlarge, against etcd's 2,909 QPS at 0.3 ms mean, matched on tier, durability, group count, payload size and client concurrency; 43–59% of their rate, reported as the range |
 | Entries per AppendEntries | **No** | No external source in the register states it. This is a ratio we can measure and nobody publishes |
 | RPCs per committed entry | **No** | Same |
 
@@ -815,13 +926,12 @@ Requirement 16.5, stated plainly rather than filled in with the nearest
 available number.
 
 - **Whether this implementation is competitive on a durable write.** Still the
-  single most important open question, but for the first time **nothing is
-  blocking it except running the row**. The durability axis covers 100% of the
-  log now (`.kiro/specs/durable-append-barrier/`) and Tier C exists
-  (`.kiro/specs/multi-raft-host-binary/`); what has not happened is a Tier D
-  row — host processes, a file-backed log in `barrier` mode, on a provisioned
-  volume whose class and IOPS the row records. Both former blockers are gone
-  and neither the harness nor the host needs further work for it.
+  single most important open question, and the row now exists: Tier D at
+  176.7 ops/sec, 21.8 ms p50, 4 in flight, `file-barrier` on gp3. What it
+  cannot say is whether that is competitive, because no source in the register
+  states durability, group count and client concurrency together, and
+  Requirement 9.6 forbids the ratio without them. The number waits for a
+  source; the source is the whole of what is missing.
 - **How much of the 28% JSON-line cost is the format and how much is the
   `std::map` beside it.** H4 names both; only the first is priced.
 - **What a real network does to the round.** The inter-round interval is
@@ -839,12 +949,13 @@ available number.
 - **Whether the response-driven pacing hypothesis is true.** It now fits two
   axes and two machines. It has never been measured directly, because that needs
   instrumentation on the leader's send path.
-- **Tier D, and Tier E across real machines.** No longer "anything about Tier C,
-  D or E": Tier C is delivered and its first row is stable, and Tier E has been
-  run across containers on one machine. What is left is a Tier D row against a
-  provisioned volume, and a Tier E deployment on N machines rather than N
-  containers. arm64 and a second cloud provider left this list earlier; Tier C
-  leaves it now.
+- ~~**Tier D, and Tier E across real machines.**~~ **Both delivered**, September
+  1 and 3 2026. What replaces them on this list is narrower and harder: **the
+  placement effect on uniform hardware.** Every placement delta measured on
+  `c5.2xlarge` is smaller than the 45% that one repeated provisioning moved
+  by, so none of them is established. `c6i.2xlarge` draws uniform hardware and
+  has one single-AZ row; it needs a repeat, a cross-AZ row and a cluster-group
+  row before the sweep says anything about placement.
 - ~~**Whether the httplib Raft transport should keep Nagle on.**~~ **Answered
   elsewhere: no.** Tier C is what made the question answerable — it measured the
   transport at 96x against beast (14.6 against 1397.1 ops/sec, same cluster,
@@ -873,11 +984,14 @@ implemented here.
    on this development machine, at a 2 ms tick with four groups: 826 ops/sec on
    memory, 576 buffered, 164 barriered — and the barriered row is the one that
    is durable.
-3. **Then run the durability axis on a cloud instance, against a provisioned
-   volume.** The rest of the harness half is done —
-   `kv_cluster_options::_data_dir` already accepts one and nothing has used it
-   — so this turns a laptop SSD's barrier cost into a stated volume class and
-   IOPS. Cheap, and worth little until item 2.
+3. ~~**Then run the durability axis on a cloud instance, against a provisioned
+   volume.**~~ **DONE**, as Tier D: 176.7 ops/sec stable, 21.8 ms p50, three
+   host processes' logs on one gp3 root volume, and a durable Tier E row beside
+   it that ran *faster* (214–225 ops/sec on its steady windows) because each
+   host had its own volume. Left open by it: the IOPS figure is the provider's
+   baseline rather than a measurement, the row cannot report its own
+   fsync rate (Requirement 8.2), and a volume other than the root gp3 has not
+   been tried.
 4. ~~**Decide whether `tick()` should batch without a controller.**~~
    **ANSWERED: neither.** `tick()` does not batch and the controller is gone.
    Batching a tick's writes cannot cover appends made on other threads, which

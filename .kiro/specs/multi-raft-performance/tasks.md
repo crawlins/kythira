@@ -1479,7 +1479,7 @@ and the answer is currently no for every one of them.
     seconds
   - _Requirements: 18.6, 18.12_
 
-- [ ] 19. Tier D on a cloud instance
+- [x] 19. Tier D on a cloud instance
   - `file_persistence` plus `tick_batch_controller` against a real volume;
     report fsyncs/sec and entries per fsync, and the volume class and IOPS
   - This is the first configuration in the whole spec that could carry a
@@ -1600,6 +1600,41 @@ and the answer is currently no for every one of them.
     volume, and `entries/fsync` of 1.27 on four cores says nothing about what
     group commit yields on a machine that can actually run appends
     concurrently
+  - **DELIVERED, September 3 2026 — one Shape 2 run with `--persistence
+    file-barrier --also-tier-c`, data in
+    `doc/data/tier-e-shape-2/sweep-tier-d-single-az/`.** Tier D is the Tier C
+    arm of that run: three `multi_raft_node` processes and the driver on one
+    `c5.2xlarge` (all 8124M), every log under `/tmp/kythira-data` on the
+    instance's **gp3 root volume**, 4 groups, 128 B, 4 in flight, 2 ms tick,
+    11 windows, zero elections in any of them. **176.7 ops/sec, spread 2.2%,
+    stable; p50 21.8 ms, p95 32.1 ms.** The durable Tier E row taken first in
+    the same run, three hosts each on its own gp3 volume over a 192 µs network,
+    is **UNSTABLE at 13.4%** and gets no headline: one first window at 246.9
+    ops/sec, then ten at 213.9–224.7. Its steady windows sit *above* Tier D,
+    which is the disk and not the network — Tier D serialises three
+    processes' barriers through one block-device queue, Tier E gives each its
+    own; the ordering is the reverse of the `memory` rows on the same instance
+    type, where co-location is cheaper than the network
+  - **What this row reports, and what it cannot.** The volume class is
+    recorded (gp3, from the `ebs-gp3` AMI's block-device mapping); the IOPS is
+    gp3's 3,000 baseline, which is the provider's figure — the provenance
+    capture records `storage_iops: null` because it never queried the volume,
+    and that is the honest value. `fsyncs/sec` and `entries per fsync` are
+    **absent, not zero**: the host is deliberately uninstrumented
+    (Requirement 8.2), so the row cannot report them. The development-machine
+    axis above, at 1.27–1.77 entries per fsync, is the only figure for that
+    ratio and it is not this row's
+  - **What this row is comparable to: nothing in the register, and the reason
+    is now entirely the register's.** Requirement 6.2 admits it against a
+    durable external number; the two sources that state fsync is honoured
+    (Dragonboat, TiKV) fail Requirement 9.6 on shard count, core count and
+    unstated client concurrency, and every other write source says "not
+    stated" about durability. The like-for-like write table stays empty with a
+    durable row of ours waiting on it
+  - **Provisioning caveat, inherited from task 20's refutation 2.** This run
+    drew three 8124M hosts and its numbers are one provisioning's. The same
+    day's repeat of an identical `memory` row moved 45%, so the 176.7 is a
+    row, not a constant; a c6i.2xlarge repeat is the next Tier D run
   - _Requirements: 3.4, 3.5, 18.7_
 
 - [x] 20. Shape 2 — Tier E, one host per instance
@@ -1638,14 +1673,26 @@ and the answer is currently no for every one of them.
     11 windows with zero elections**, against 1175.4 for the same binaries and
     workload co-located on one instance. Inter-node RTT 171 µs and 469 µs
     against a 51–69 µs loopback baseline.
-  - **This is the row task 11 was waiting for.** Its response-driven-pacing
-    prediction — that the round interval tracks the RPC round trip — was
-    untestable on loopback because the round trip barely varied. Read against
-    measured RTT it gives **4.39 round trips per operation at one AZ and 4.18
-    at three**, two independent placements agreeing across a 3.5x difference in
-    round trip. Predicted first, then measured, at two widely separated points.
-  - Tier E's tier table can stop saying "containers only". **Tier D is still
-    unrun** and is a volume and a run away, not a spec.
+  - ~~**This is the row task 11 was waiting for.**~~ **WITHDRAWN, September 3
+    2026.** The 4.39 / 4.18 round-trips-per-operation reading used the Tier C
+    arm as a zero-RTT origin and the cross-AZ row as the far point. Both
+    assumptions failed the same day: on uniform `c6i.2xlarge` hardware the Tier
+    E row is *faster* than its own Tier C arm (p50 2598.8 against 3029.9 µs),
+    so the origin carries a CPU-sharing term larger than the network term; and
+    a repeat of the single-AZ row with every argument identical moved its p50
+    by +3.8 ms — twice the cross-AZ delta the slope was read from — with the
+    RTT 34 µs *shorter*. The prediction is untested, not refuted; testing it
+    needs Tier E rows only, on uniform hardware, each repeated.
+  - **Refutation 2 reproduced, and c5.2xlarge retired.** The repeat
+    (`doc/data/tier-e-shape-2/sweep-single-az-repeat/`): 573.0 ops/sec against
+    1037.9, both "stable", hosts 8124M/8275CL/8124M against 8124M ×3, and the
+    Tier C arm on a same-model driver moved 17% by itself. Clark's call: every
+    further Shape 2 row goes on `c6i.2xlarge`, which drew four identical 8375C
+    in each of two provisionings (`sweep-single-az-c6i/`: 1461.0 ops/sec, p50
+    2598.8 µs, stable; Tier C arm 1224.7). A c6i row is never to be set beside
+    a c5 row.
+  - Tier E's tier table can stop saying "containers only". **Tier D is
+    delivered** — task 19.
   - _Requirements: 3.1 (Tier E), 18.8_
 
 - [x] 21. A second provider
