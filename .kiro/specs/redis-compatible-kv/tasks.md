@@ -1,11 +1,28 @@
 # Implementation Plan — Redis-Compatible KV on Multi-Raft (sccache Backend)
 
-## Status: 0/14 tasks complete — specification only, no implementation commits
+## Status: 14/14 tasks complete
 
-**Last Updated**: August 28, 2026. This spec was written from a direct reading
-of the client stack (sccache, OpenDAL, redis-rs 1.2) rather than from the Redis
-manual; the command closure in requirements.md Requirement 1 is the scope
-boundary and every task below is measured against it.
+**Last Updated**: September 3, 2026 — implemented September 2–3, 2026. This
+spec was written from a direct reading of the client stack (sccache, OpenDAL,
+redis-rs 1.2) rather than from the Redis manual; the command closure in
+requirements.md Requirement 1 is the scope boundary and every task below is
+measured against it.
+
+What the acceptance run established, beyond the checkboxes: real sccache
+0.10.0 against the containerised three-node cluster under rootless Podman
+(`make docker-sccache-e2e-tests`, six scenarios) misses then hits, takes the
+`SETEX` path under `SCCACHE_REDIS_EXPIRATION`, builds successfully with every
+gateway stopped, and — for the `read_only` user — builds successfully with
+`cache_write_errors` non-zero and hits from what `read_write` populated. Two
+sccache facts found on the way shape the test and the operator doc
+(`doc/redis-gateway.md`): sccache's startup probe turns a failed *read* into
+`Server startup failed`, so a CI job must gate `RUSTC_WRAPPER` on
+`sccache --start-server` for the cache to be an accelerant rather than a
+dependency; and sccache 0.10 caches only the library compile (`bin` crate
+types are `CannotCache`), so the runner salts the library source to choose a
+fresh cache key on demand. The serializer measurement in design.md replaced
+the estimate with real numbers: at 8 MiB, JSON is 1.333× the payload and
+158 ms of leader CPU per follower, CBOR 1.0000× and 5 ms.
 
 ## Overview
 
@@ -71,7 +88,7 @@ Reference material to read before starting:
 
 ---
 
-- [ ] 1. RESP codec (`include/raft/resp_protocol.hpp`)
+- [x] 1. RESP codec (`include/raft/resp_protocol.hpp`)
   - Implement `resp_parser::consume()` returning every complete command in the
     buffer, retaining an incomplete tail — pipelining is not optional, it is
     the very first thing the client does.
@@ -87,7 +104,7 @@ Reference material to read before starting:
     boundary parse identically to the whole frame.
   - _Requirements: 1.3, 1.5, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7_
 
-- [ ] 2. Binary log-entry codec (`include/raft/redis_kv_commands.hpp`)
+- [x] 2. Binary log-entry codec (`include/raft/redis_kv_commands.hpp`)
   - Implement encode/decode for the four opcodes in design.md Component 2
     (`set`, `del`, `sweep`, `evict`), big-endian, length-prefixed, with a
     leading format-version byte.
@@ -98,7 +115,7 @@ Reference material to read before starting:
     that must not read out of bounds.
   - _Requirements: 4.8_
 
-- [ ] 3. `redis_kv_state_machine` (`include/raft/redis_kv_state_machine.hpp`)
+- [x] 3. `redis_kv_state_machine` (`include/raft/redis_kv_state_machine.hpp`)
   - Implement `apply`, `get_state`, `restore_from_snapshot`, and every
     `splittable_state_machine` hook, over an **ordered** map of
     `std::shared_ptr<const value_entry>`.
@@ -119,7 +136,7 @@ Reference material to read before starting:
   - Confirm the type satisfies both concepts with a `static_assert`.
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 8.2, 8.4, 8.6_
 
-- [ ] 4. ACL (`include/raft/redis_acl.hpp`)
+- [x] 4. ACL (`include/raft/redis_acl.hpp`)
   - Implement `redis_acl_user`, `redis_role`, `redis_identity`, and
     `redis_acl::{authenticate, authenticate_certificate, authorize, reload}`.
   - PBKDF2-HMAC-SHA256 via OpenSSL `PKCS5_PBKDF2_HMAC`; 16-byte salt from
@@ -134,7 +151,7 @@ Reference material to read before starting:
     atomicity, and the no-enumeration property (same reply, comparable timing).
   - _Requirements: 10.4, 10.5, 10.6, 11.2, 11.3, 11.5, 11.6, 11.7_
 
-- [ ] 5. Gateway skeleton: sessions, dispatch, authn/authz enforcement
+- [x] 5. Gateway skeleton: sessions, dispatch, authn/authz enforcement
   - `redis_gateway<Types>` + `_impl.hpp`: a Boost.Asio acceptor, a session per
     connection holding identity, protocol version and selected db, and a
     dispatch table covering every command in Requirement 1's table.
@@ -154,7 +171,7 @@ Reference material to read before starting:
     connection, and the max-clients rejection reply.
   - _Requirements: 10.1, 10.2, 10.3, 10.7, 10.8, 10.9, 10.10, 11.5, 11.6, 11.8, 14.1, 14.2, 14.3, 14.4, 14.5, 15.1, 15.2, 15.5_
 
-- [ ] 6. Write and read paths onto `multi_raft`
+- [x] 6. Write and read paths onto `multi_raft`
   - Writes: `SET`, `SETEX`, `DEL` through `submit_command(key, command,
     timeout)`, replying only after commit **and** apply; `SETEX` converted to
     an absolute `expire_at_ms` before proposing; `seconds <= 0` rejected without
@@ -175,7 +192,7 @@ Reference material to read before starting:
     `.sccache_check` case), and each consistency mode.
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 6.1, 6.2, 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 8.1, 11.4, 15.3, 15.4_
 
-- [ ] 7. Expiry and eviction maintenance
+- [x] 7. Expiry and eviction maintenance
   - Leader-side sweep on the existing policy tick: bounded batch, proposes
     `sweep{(key, expire_at_ms), …}`; no new thread.
   - Leader-local advisory LRU (never replicated) feeding an `evict{key, …}`
@@ -187,7 +204,7 @@ Reference material to read before starting:
     eviction reclaims to budget; a key rewritten mid-sweep survives.
   - _Requirements: 8.3, 8.5, 8.7, 9.1, 9.2, 9.3, 9.4, 9.5, 9.6_
 
-- [ ] 8. One-hop forwarding
+- [x] 8. One-hop forwarding
   - Forward a command whose owning shard's leader is elsewhere to that node's
     gateway; relay the reply verbatim.
   - Enforce one hop: a command that arrived on an internal connection is never
@@ -201,7 +218,7 @@ Reference material to read before starting:
     deliberately poisoned routing map does not produce a forwarding loop.
   - _Requirements: 12.5, 13.1, 13.2, 13.3, 13.4, 13.5, 13.6_
 
-- [ ] 9. TLS and mTLS
+- [x] 9. TLS and mTLS
   - TLS listener so `rediss://` works, certificate material either configured
     or provisioned through the existing certificate machinery; TLS 1.2 floor.
   - Optional required client certificate, with SAN/CN mapped to an ACL user via
@@ -213,7 +230,7 @@ Reference material to read before starting:
     refused.
   - _Requirements: 12.1, 12.2, 12.3, 12.4, 12.6_
 
-- [ ] 10. Daemon and configuration (`cmd/redis_gateway_node/`)
+- [x] 10. Daemon and configuration (`cmd/redis_gateway_node/`)
   - `from_env()` configuration following `cmd/chaos_node/config.hpp`'s
     convention, covering design.md Component 9's table, with a clear error
     naming the missing variable.
@@ -224,7 +241,7 @@ Reference material to read before starting:
     `redis-cli ping` and `redis-cli info`, and refuses to start with no ACL.
   - _Requirements: 10.1, 14.5, 18.3_
 
-- [ ] 11. Observability
+- [x] 11. Observability
   - Metrics through the `metrics` concept with a `command` dimension, covering
     the full list in Requirement 16.1.
   - `INFO` reporting version, uptime, clients, local shards, key count,
@@ -236,7 +253,7 @@ Reference material to read before starting:
     log line contains a secret or a value.
   - _Requirements: 16.1, 16.2, 16.3, 16.4_
 
-- [ ] 12. Real-sccache acceptance test
+- [x] 12. Real-sccache acceptance test
   - Compose file and harness running a real `sccache` against a real gateway:
     compile a small Rust crate twice from a clean target directory, assert zero
     hits then non-zero hits via `sccache --show-stats`.
@@ -251,7 +268,7 @@ Reference material to read before starting:
     features; run the suite under both Docker and rootless Podman.
   - _Requirements: 17.1, 17.2, 17.4_
 
-- [ ] 13. Authorization acceptance test
+- [x] 13. Authorization acceptance test
   - `ci-main` (`read_write`) populates the cache; `ci-pr` (`read_only`) gets
     hits from it and is refused a write with `-NOPERM`; a user scoped to a
     different prefix is refused both.
@@ -261,7 +278,7 @@ Reference material to read before starting:
   - Assert the audit line exists for each denial and contains no secret.
   - _Requirements: 11.1, 11.2, 11.3, 11.8, 17.3_
 
-- [ ] 14. Build isolation, serializer measurement, and documentation
+- [x] 14. Build isolation, serializer measurement, and documentation
   - CMake option gating the feature; verify the ON/OFF target lists match the
     method already used for the stdexec backend and for ccache.
   - Confirm no new third-party dependency entered `vcpkg.json`.
