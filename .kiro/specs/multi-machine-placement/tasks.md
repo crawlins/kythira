@@ -241,6 +241,15 @@ one reporting clean while blind.
     at 1 in flight, but unmeasured), 2017 GCE against 2026 EC2 — the largest
     uncontrolled term, and it plausibly favours us — a mean against a median,
     and which replica serves the read.
+  - **Second observation, September 3 2026, on `c6i.2xlarge`
+    (`doc/data/tier-e-shape-2/sweep-read-local-c6i/`): 1724.8 ops/sec, p50
+    576.0 µs, p95 627.1, p99 934.7, spread 2.8%, stable, zero elections**, four
+    identical 8375C, inter-node RTT 172 µs against the first observation's
+    170. That is 59.3% of etcd's rate at 1.92x their latency, and again one
+    fact (1/576 µs = 1736 against 1725 measured). The pairing is reported as
+    the range **43–59%**: the 37% between the two observations is one instance
+    generation with the network held still, which puts a size on part of the
+    "2017 GCE against 2026 EC2" caveat above.
   - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5_
 
 - [x] 10. Hand Tier E back, and say what is left
@@ -253,10 +262,22 @@ one reporting clean while blind.
   - **DONE.** Tier E is delivered on real machines and
     `.kiro/specs/multi-raft-performance/` task 20 can stop recording it as
     undelivered; the tier table can stop saying "containers only".
-  - **Tier D remains unrun** and nothing here claims otherwise. It needs a
-    provisioned volume and a run: the barrier lands 100% of appends, the host
-    takes `--persistence file-barrier`, and `run-aws-shape-2.sh` passes it
-    through, so the work is a run and not a spec.
+  - ~~**Tier D remains unrun**~~ **Run, September 3 2026**, exactly as the
+    line below predicted: `run-aws-shape-2.sh --persistence file-barrier
+    --also-tier-c`, no spec. Tier D is the Tier C arm — 176.7 ops/sec, stable,
+    21.8 ms p50 on a gp3 root volume; the durable Tier E row is UNSTABLE at
+    13.4% and sits above it on its steady windows, because three logs on one
+    volume cost more than a 192 µs network. Recorded under
+    `.kiro/specs/multi-raft-performance/` task 19 and in the comparison
+    document.
+  - **The sweep's own caveat came true, and it costs this task a claim.** The
+    single-AZ row was repeated with everything identical and returned 573.0
+    ops/sec against 1037.9 — "stable" both times. No c5 placement delta is
+    smaller than that, so the cross-AZ deficit this task reported is a row and
+    not a finding, and the task-11 round-trip reading built on it is
+    withdrawn. Every further Shape 2 row is on `c6i.2xlarge` (uniform 8375C in
+    two provisionings out of two; 1461.0 ops/sec single-AZ), and the placement
+    sweep has to be taken again there, repeated, before it says anything.
   - A second provider for this shape is its own task and inherits GCP Shape 1's
     re-implemented audit: GCE has no key pairs, its boot disk is a zonal child
     of the instance, and its firewall rules cannot carry labels. Shape 2 adds a

@@ -1,0 +1,58 @@
+{
+  "shape": "aws-shape-2",
+  "tier": "e",
+  "run_tag": "perf-local-1788443948-552716",
+  "region": "us-east-1",
+  "placement": "single-az",
+  "placement_group": null,
+  "placement_verbatim": "single-az; region us-east-1; hosts 1=us-east-1a 2=us-east-1a 3=us-east-1a | driver c5.2xlarge in us-east-1a; inter-node RTT 192.0 us vs loopback 67.0 us (container-shaped)",
+  "nodes": 3,
+  "instances_total": 4,
+  "host_instance_type": "c5.2xlarge",
+  "driver_instance_type": "c5.2xlarge",
+  "host_availability_zones": [
+    "us-east-1a",
+    "us-east-1a",
+    "us-east-1a"
+  ],
+  "driver_availability_zone": "us-east-1a",
+  "instance_ids": [
+    "i-07684c4ac140b4854",
+    "i-01a75b2bb4c567dc9",
+    "i-0d8abf459fb7dba9d",
+    "i-0803b27e61cc5a59e"
+  ],
+  "image_id": "ami-0d7f022123f8ff19d",
+  "arch": "amd64",
+  "discovery": "static",
+  "network": {
+    "loopback_rtt_us": 67.0,
+    "inter_node_rtt_us": 192.0,
+    "ratio_to_loopback": 2.87,
+    "verdict": "container-shaped",
+    "probe_matrix_files": [
+      "probe-node-1.json",
+      "probe-node-2.json",
+      "probe-node-3.json"
+    ]
+  },
+  "workload": {
+    "scenario": "write",
+    "groups": 4,
+    "operations": 400,
+    "in_flight": 4,
+    "value_bytes": 128,
+    "repetitions": 11,
+    "tick_interval_ms": 2,
+    "transport": "httplib",
+    "persistence": "file-barrier",
+    "data_threads": 0
+  },
+  "durability_note": "persistence=file-barrier",
+  "benchmark_exit_code": "0",
+  "tier_c_comparison_taken": true,
+  "node_binary_sha256": "af9eb402a5075974c903aee0601fa83a7c9849704326a14ec367bc45333cd1e5",
+  "bench_binary_sha256": "5b94582cc985cffa8ba6544e8220b054c4b07b7b676f0396b42bc6635950f3d4",
+  "binary_origin": "shipped from the controlling machine",
+  "git_commit": "cad5e888ec58fe035fd70c817432c6b1789f61d7"
+}
