@@ -12,7 +12,6 @@
 
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t test_port = 9091;
 }
 
 BOOST_AUTO_TEST_SUITE(httplib_basic_understanding_tests)
@@ -39,15 +38,23 @@ BOOST_AUTO_TEST_CASE(test_basic_server_behavior) {
         std::cout << "Response body size: " << res.body.size() << std::endl;
     });
 
-    // Start server in a thread
+    // Bind before starting the listen thread, and let the kernel choose the
+    // port. A hardcoded port makes this test fail on any host that already runs
+    // something there -- and the failure is confusing rather than obvious,
+    // because the client still gets a well-formed HTTP response, just from the
+    // unrelated service instead of from this server.
+    const int test_port = server.bind_to_any_port(test_bind_address);
+    BOOST_REQUIRE_GT(test_port, 0);
+
     std::thread server_thread([&]() {
         std::cout << "Starting server on " << test_bind_address << ":" << test_port << std::endl;
-        bool result = server.listen(test_bind_address, test_port);
+        bool result = server.listen_after_bind();
         std::cout << "Server listen result: " << result << std::endl;
     });
 
-    // Give server time to start
-    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    // bind_to_any_port() has already bound the socket, so readiness is a state
+    // change to wait on rather than a duration to guess at.
+    server.wait_until_ready();
 
     try {
         // Create client and test
