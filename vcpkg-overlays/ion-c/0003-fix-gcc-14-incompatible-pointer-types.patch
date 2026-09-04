@@ -1,0 +1,74 @@
+Fix the two GCC 14 -Wincompatible-pointer-types hard errors.
+
+GCC 14 promoted -Wincompatible-pointer-types from a warning to an error by
+default. ion-c 1.1.3 has two sites that trip it, so the port does not build at
+all on a GCC 14 toolchain (Debian 13 trixie, which ships g++/gcc 14 and has no
+gcc-13 package). CI builds this project under g++-13 and clang++-18, where both
+sites are warnings at most, so CI never sees either one.
+
+Both fixes are behaviour-preserving; neither changes what a correct build does.
+
+1. ionc/ion_allocation.c, _ion_strdup(): the memcpy source argument is a
+   conditional expression whose arms are "\0" (char *) and src->value (BYTE *,
+   i.e. unsigned char *). Those are different pointer types, so the conditional
+   has no composite type. Casting the literal arm to const BYTE * makes both
+   arms point to the same type; the result is const BYTE *, which memcpy takes
+   as its const void * source without complaint. Pure type repair -- the bytes
+   copied are identical.
+
+2. ionc/ion_binary.c, ion_binary_read_int_64_and_sign(): ION_GET(pstream, b)
+   expands, on its slow path, to ion_stream_read_byte(pstream, &b). That
+   function's second parameter is int *, but b here is declared uint64_t --
+   this is the one ION_GET call site in the whole library whose variable is not
+   an int. So the callee writes an int through a uint64_t *, which both
+   violates strict aliasing and initialises only 4 of b's 8 bytes. It is a real
+   latent bug, not merely a pedantic type mismatch, and it is only luck (b being
+   zero-initialised, plus little-endian layout) that it behaves at all today.
+
+   Fixed by reading into an int and widening explicitly, which is what every
+   other ION_GET site already does. b stays uint64_t because the code below
+   needs the 64-bit width for `b <<= (len * 8)`.
+
+   This does not change behaviour even at EOF, where ion_stream_read_byte sets
+   *p_c = EOF (-1) and still returns IERR_OK. The three candidate readings of
+   that -1 -- the current truncating write (0x00000000FFFFFFFF), sign-extension
+   (0xFFFFFFFFFFFFFFFF), and byte zero-extension (0xFF) -- all have bit 0x80
+   set, so `*isNegative` is TRUE in every case, and the immediately following
+   `b &= 0x7f` collapses all three to 0x7f before b is used again. For any
+   non-EOF read the value is 0..255 and all three readings are identical
+   anyway.
+
+diff --git a/ionc/ion_allocation.c b/ionc/ion_allocation.c
+index f92d430..90000e6 100644
+--- a/ionc/ion_allocation.c
++++ b/ionc/ion_allocation.c
+@@ -92,7 +92,7 @@ iERR _ion_strdup(hOWNER owner, iSTRING dst, iSTRING src)
+         dst->value = (BYTE *)ion_alloc_with_owner(owner, (is_empty) ? 1 : src->length);
+         if (!dst->value) FAILWITH(IERR_NO_MEMORY);
+     }
+-    memcpy(dst->value, (is_empty) ? "\0" : src->value, (is_empty) ? 1 : src->length);
++    memcpy(dst->value, (is_empty) ? (const BYTE *)"\0" : src->value, (is_empty) ? 1 : src->length);
+ 
+     dst->length = src->length;
+ 
+diff --git a/ionc/ion_binary.c b/ionc/ion_binary.c
+index d8d8650..01258d9 100644
+--- a/ionc/ion_binary.c
++++ b/ionc/ion_binary.c
+@@ -338,13 +338,15 @@ iERR ion_binary_read_int_64_and_sign(ION_STREAM *pstream, int32_t len, uint64_t
+     iENTER;
+     uint64_t unsignedValue = 0;
+     uint64_t b = 0;
++    int      b_byte = 0;
+ 
+     ASSERT(p_value);
+     ASSERT(isNegative != NULL);
+ 
+     if (len) {
+         // read the first byte, it's special since it carries the sign
+-        ION_GET(pstream, b);
++        ION_GET(pstream, b_byte);
++        b = (uint64_t)b_byte;
+         len--;
+         if ((*isNegative = (b & 0x80) != 0)) {
+             b &= 0x7f;
