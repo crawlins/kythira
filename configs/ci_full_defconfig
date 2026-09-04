@@ -60,6 +60,7 @@ CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y
 CONFIG_BOOST_BEAST_TRANSPORT=y
 CONFIG_PROXYGEN_TRANSPORT=y
+CONFIG_REDIS_GATEWAY=y
 # Protobuf is always available — `grpc` is an unconditional vcpkg.json
 # dependency and pulls it in — so unlike ion-c this is safe to select. It was
 # missing from this list while CONFIG_PROTOBUF_SERIALIZER was inert (the

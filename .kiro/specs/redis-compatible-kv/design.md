@@ -595,16 +595,34 @@ Per-command logging is off by default; a healthy server is quiet.
 
 The default `json_serializer` base64-encodes each log entry's command bytes
 into a JSON document (`include/raft/json_serializer.hpp:152`). Base64 is a 4/3
-expansion, so an 8 MiB value becomes roughly 11 MiB of AppendEntries payload
-**per follower**, plus JSON escaping overhead — and the same bytes again inside
-every snapshot that carries the entry. A four-replica shard therefore moves
-about 33 MiB across the network for one 8 MiB cache entry.
+expansion, and the tree ships three binary alternatives — `cbor_serializer`,
+`protobuf_serializer`, `ion_serializer` — that carry byte strings natively.
 
-This tree already ships three binary alternatives — `cbor_serializer`,
-`protobuf_serializer`, `ion_serializer` — that carry byte strings natively. Any
-deployment carrying this workload should use one. The design does not assert a
-winner among the three; measuring them under this workload is a task, not a
-claim.
+Measured (task 14): one AppendEntries request carrying one `SET` of a
+sccache-shaped key (`sccache/h/h/h/<64 hex>`) and an incompressible random
+value, serialized by `json_rpc_serializer` and `cbor_rpc_serializer` on the
+same host (g++ -O2, single thread; the time is serialize only):
+
+| value   | log command | JSON AppendEntries | ratio  | JSON time | CBOR AppendEntries | ratio   | CBOR time |
+|---------|-------------|--------------------|--------|-----------|--------------------|---------|-----------|
+| 4 KiB   | 4,192 B     | 5,783 B            | 1.380× | 80 µs     | 4,343 B            | 1.036×  | 4 µs      |
+| 64 KiB  | 65,632 B    | 87,703 B           | 1.336× | 1.7 ms    | 65,785 B           | 1.0023× | 12 µs     |
+| 1 MiB   | 1,048,672 B | 1,398,423 B        | 1.334× | 19 ms     | 1,048,825 B        | 1.0001× | 0.5 ms    |
+| 8 MiB   | 8,388,704 B | 11,185,131 B       | 1.333× | 158 ms    | 8,388,857 B        | 1.0000× | 4.9 ms    |
+
+So the estimate this section used to carry was right on the volume: JSON is
+the base64 4/3 plus a fixed ~150 B of framing, CBOR is the payload plus
+~150 B. An 8 MiB entry costs 10.7 MiB per follower under JSON and 8.0 MiB
+under CBOR, and the same again inside every snapshot that carries it. The
+time column is the part the estimate missed: at 8 MiB the JSON serializer
+spends 158 ms of leader CPU per follower on base64 and JSON escaping against
+5 ms for CBOR, which on a busy shard is a leader-side stall of the same order
+as the network transfer itself.
+
+Any deployment carrying this workload should use a binary serializer. The
+daemon (`cmd/redis_gateway_node`) is built on `cbor_serializer` for exactly
+this reason; the design does not assert a winner among the three binary
+options, only that JSON is not one.
 
 ---
 

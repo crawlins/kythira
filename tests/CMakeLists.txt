@@ -798,6 +798,29 @@ add_raft_completion_test(multi_raft_invariant_property_test
 add_raft_completion_test(multi_raft_scale_test multi_raft_scale_test.cpp)
 set_tests_properties(multi_raft_scale_test PROPERTIES LABELS "scale;multi-raft" TIMEOUT 1800)
 
+# redis-compatible-kv spec: the RESP gateway over multi_raft for sccache's
+# redis backend. The two codecs and the state machine have no dependency the
+# tree does not already require, but they are gated together with the gateway
+# anyway so that CONFIG_REDIS_GATEWAY=n leaves no trace of the feature in the
+# target list (Requirement 16.4). The ACL needs OpenSSL for PBKDF2; the gateway
+# integration test needs the in-process fabric, folly and Boost.Asio.
+if(KYTHIRA_BUILD_REDIS_GATEWAY)
+    add_raft_completion_test(resp_protocol_unit_test resp_protocol_unit_test.cpp)
+    add_raft_completion_test(redis_kv_commands_unit_test redis_kv_commands_unit_test.cpp)
+    add_raft_completion_test(redis_kv_state_machine_unit_test redis_kv_state_machine_unit_test.cpp)
+    add_raft_completion_test(redis_acl_unit_test redis_acl_unit_test.cpp)
+    target_link_libraries(redis_acl_unit_test PRIVATE OpenSSL::Crypto)
+    if(folly_FOUND)
+        add_raft_completion_test(redis_gateway_integration_test redis_gateway_integration_test.cpp)
+        target_link_libraries(redis_gateway_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        set_tests_properties(redis_gateway_integration_test PROPERTIES LABELS "multi-raft;redis" TIMEOUT 600)
+    else()
+        message(STATUS "redis_gateway_integration_test: skipped (requires folly)")
+    endif()
+else()
+    message(STATUS "redis gateway tests: skipped (requires KYTHIRA_BUILD_REDIS_GATEWAY)")
+endif()
+
 # Tier B of .kiro/specs/multi-raft-performance/: `multi_raft` carrying the
 # key/value payload over a REAL transport and a REAL RPC serializer. Every other
 # multi-Raft suite runs on the in-process fabric, which removes the two costs an
