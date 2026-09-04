@@ -1537,15 +1537,15 @@ endif()
 #       tests/http_implementation_interop_test.cpp         4,422 MiB   174 s
 #       tests/beast_cross_transport_equivalence_test.cpp   4,420 MiB   176 s
 #       tests/proxygen_negotiation_integration_test.cpp    3,280 MiB    84 s
-#       tests/proxygen_transport_test.cpp                  2,458 MiB    53 s
-#       cmd/multi_raft_node/main.cpp, after the split      1,509 MiB    25 s
-#       cmd/multi_raft_node/config.cpp                       208 MiB     3 s
-#     NOT POOLED
 #       tests/beast_negotiation_retry_test.cpp             4,373 MiB   180 s
 #       tests/beast_server_test.cpp                        3,843 MiB   141 s
 #       tests/beast_client_test.cpp                        3,519 MiB   153 s
 #       tests/beast_integration_test.cpp                   3,514 MiB   155 s
 #       tests/beast_ssl_test.cpp                           3,501 MiB   131 s
+#       tests/proxygen_transport_test.cpp                  2,458 MiB    53 s
+#       cmd/multi_raft_node/main.cpp, after the split      1,509 MiB    25 s
+#       cmd/multi_raft_node/config.cpp                       208 MiB     3 s
+#     NOT POOLED
 #       examples/raft/proxygen_transport_example.cpp       2,287 MiB    52 s
 #       cmd/multi_raft_bench/main.cpp                      1,611 MiB    45 s
 #     AND, THE REASON THIS POOL MOVED HERE AND GREW
@@ -1555,11 +1555,10 @@ endif()
 #       other figure was taken this way in this configuration.
 #
 # A GitHub runner has 16 GiB, and the `Full suite` job builds with `-j3`. Three
-# of the 5-plus-GiB class at once does not fit; one of them beside two of the
-# unpooled beast tests comes to about 14 GiB and does. That is the whole
-# design: this pool bounds the worst single allocation, `-j3` bounds the
-# aggregate, and both are needed. See `.github/workflows/ci.yml`'s Build step
-# for the wall-clock measurements that rejected `-j$(nproc)`.
+# of the 5-plus-GiB class at once does not fit. That is the whole design: this
+# pool bounds the worst single allocation, `-j3` bounds the aggregate, and both
+# are needed. See `.github/workflows/ci.yml`'s Build step for the wall-clock
+# measurements that rejected `-j$(nproc)`.
 #
 # beast_cross_transport_equivalence_test joined the pool on this evidence, and
 # only this evidence: at 4,420 MiB it is within 2 MiB of
@@ -1569,12 +1568,26 @@ endif()
 # one to be bounded and the other not, and nothing but a measurement would have
 # shown that.
 #
-# The rest of the beast family is deliberately left out. Pooling it too would
-# serialise most of the expensive tail, and the numbers say it does not have
-# to be: the worst remaining unpooled pair (4,373 + 3,843) beside the worst
-# pooled TU is inside the envelope that measured green at 1 h 51 m before
-# cmd/multi_raft_node existed. If this leg fails again, that family is where to
-# look next, and these are its figures.
+# The rest of the beast family (the five 3,501-4,373 MiB tests above) was at
+# first deliberately left out, on the arithmetic that the worst unpooled pair
+# (4,373 + 3,843) beside the worst pooled TU (5,967) is about 14 GiB and fits.
+# It fits on paper and did not in practice: with that configuration on `main`,
+# the leg went 2 h 59 m into its Build step and was cancelled by the 180-minute
+# job timeout (run 33800647048, at d31640a, nothing changed under it), and on
+# a PR that touched one Markdown file it died at 1 h 48 m with the post-steps
+# never reached and no log retrievable -- the VM-reclaimed `exit 143` shape --
+# then passed on re-run in 2 h 08 m. Three compilers at 14 GiB leave under one
+# GiB for the kernel, ccache, Ninja and whichever static link of a
+# Folly/Boost/OpenSSL/AWS-SDK test binary happens to be in the third slot,
+# and link steps are in no pool and were never in this table. So the whole
+# family is pooled now, from add_beast_test() itself. The worst case becomes
+# one pooled TU beside the two largest unpooled compiles,
+# 5,967 + 2,287 + 1,611, under 10 GiB, and the pool's serialised chain grows
+# by the family's 760 s to roughly 45 minutes -- well inside a build whose
+# critical path is over 100 minutes, so the two other workers absorb it.
+#
+# If this leg fails again, look at the link steps next: they are the one
+# class of memory consumer no figure here bounds.
 #
 # The members are expensive for a legible reason: each instantiates a whole
 # transport stack -- or, in the tests' case, Beast, Proxygen and cpp-httplib

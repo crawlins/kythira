@@ -119,6 +119,19 @@ endfunction()
 # select or `-LE beast-http` exclude this suite.
 function(add_beast_test test_name source_file)
     add_executable(${test_name} ${source_file})
+    # Every target this helper builds is in the `heavy_tu` Ninja job pool --
+    # at most one memory-heavy translation unit compiling at a time, declared
+    # in the top-level CMakeLists.txt beside the per-TU compiler-RSS table.
+    # The seven Beast tests measure 3,501 to 4,422 MiB apiece under the
+    # stdexec backend; there is no cheap target here. Two of them were pooled
+    # individually first, and the other five were left out on the arithmetic
+    # that one pooled 5.9 GiB compile beside two unpooled Beast compiles fits
+    # a 16 GiB runner. It fits on paper, at about 14 GiB, and the leg then
+    # failed twice more with nothing in the tree changed under it -- see the
+    # top-level comment. Pooling the whole family takes the worst case from
+    # ~14 GiB to under 10 GiB, at the cost of serialising about 13 minutes of
+    # compile that the other two workers overlap.
+    set_target_properties(${test_name} PROPERTIES JOB_POOL_COMPILE heavy_tu)
     target_link_libraries(${test_name} PRIVATE kythira_test_pch Boost::beast)
     if(TARGET OpenSSL::SSL)
         target_link_libraries(${test_name} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
@@ -4859,17 +4872,12 @@ if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND TARGET httplib::httplib)
     # off-diagonal. Same dependency pair, so it is gated identically.
     add_beast_test(http_implementation_interop_test
         http_implementation_interop_test.cpp)
-    # BOTH are heavy, and both are pooled. Tagged individually rather than in
-    # add_beast_test(), which also builds cheap targets.
-    #
-    # http_implementation_interop_test was pooled first, on the reasoning that
-    # it compiles Beast and cpp-httplib in one translation unit. Measuring said
-    # the pair are 4,422 MiB and 4,420 MiB -- two MiB apart, gated by the same
-    # `if()`, built by the same helper, and the same shape. Only one of them
-    # was bounded, for no reason anyone could have stated.
-    set_target_properties(beast_cross_transport_equivalence_test
-                          http_implementation_interop_test PROPERTIES
-        JOB_POOL_COMPILE heavy_tu)
+    # Both are in the `heavy_tu` pool, as every add_beast_test() target now
+    # is. These two were pooled first and individually: measuring said the
+    # pair are 4,422 MiB and 4,420 MiB -- two MiB apart, gated by the same
+    # `if()`, built by the same helper, and the same shape -- and only one of
+    # them had been bounded. The helper carries the property since the rest
+    # of the family, at 3,501 to 4,373 MiB, turned out to need it too.
 else()
     message(STATUS "beast_cross_transport_equivalence_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
     message(STATUS "http_implementation_interop_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
