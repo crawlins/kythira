@@ -76,6 +76,37 @@ jobs:
             os: ubuntu-24.04-arm
             arch_label: arm64
             timeout_minutes: 180
+          # GCC 14 / libstdc++ 14. This leg exists because the rest of the
+          # matrix (g++-13, clang++-18) structurally cannot see a whole class
+          # of breakage: libstdc++ 14 dropped transitive includes that 13
+          # provided, and GCC 14 promoted several C diagnostics to errors by
+          # default. Both were hit for real on Debian 13 (gcc 14.2.0, the same
+          # version noble ships) -- see vcpkg-overlays/mvfst/README.md.
+          #
+          # x64 only, deliberately: this buys compiler coverage, not
+          # architecture coverage, and the arm64 legs already cover the latter
+          # for the two compilers that CI has always used.
+          #
+          # vcpkg_cc/vcpkg_cxx are set ONLY on this leg, and point vcpkg's own
+          # port builds at GCC 14 as well. That is the entire point -- the
+          # mvfst failure this leg is meant to catch happens while vcpkg
+          # compiles a dependency, long before any kythira source is touched,
+          # so a leg that only set CMAKE_CXX_COMPILER would sail straight past
+          # it. On the other four legs these keys are unset, vcpkg keeps using
+          # the runner's default c++, and nothing about their behaviour or
+          # their cache keys changes.
+          #
+          # Higher timeout than the others for one reason: pointing vcpkg at a
+          # different compiler changes every port's ABI hash, so this leg
+          # cannot share the x-gha binary cache with the g++-13 legs and its
+          # first run is a genuinely cold build of the full dependency set.
+          # Later runs restore from cache and look like any other leg.
+          - compiler: g++-14
+            os: ubuntu-24.04
+            arch_label: x64
+            timeout_minutes: 300
+            vcpkg_cc: gcc-14
+            vcpkg_cxx: g++-14
 
     steps:
       - name: Checkout
@@ -107,6 +138,7 @@ jobs:
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
                  g++-13 \
+                 g++-14 \
                  clang-18 \
                  cmake \
                  ninja-build \
@@ -167,7 +199,16 @@ jobs:
           # runner.arch is part of the key (Requirement 4) so an arm64 leg
           # can never restore (or silently corrupt) an x86_64-built cache
           # entry, or vice versa — runner.os alone is "Linux" on both.
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          #
+          # matrix.vcpkg_cxx is appended only on legs that override vcpkg's
+          # compiler (currently just g++-14). Without it that leg would share
+          # this key with the g++-13 legs and restore a dependency tree built
+          # by a different compiler -- the same class of silent cross-
+          # contamination runner.arch is here to prevent. The conditional
+          # leaves the key byte-identical on every leg that does not set it,
+          # so adding the GCC 14 leg neither invalidates the existing caches
+          # nor stops this job sharing them with the coverage job below.
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc${{ matrix.vcpkg_cxx && format('-{0}', matrix.vcpkg_cxx) || '' }}-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -189,6 +230,16 @@ jobs:
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
           export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # Build the ports themselves with this leg's compiler, when it asks
+          # for one. Guarded rather than exported unconditionally: on the legs
+          # that set neither, `export CC=` would hand CMake an empty string as
+          # the compiler rather than leaving it to its own detection, which is
+          # a worse failure than the one this prevents.
+          if [ -n "${{ matrix.vcpkg_cxx }}" ]; then
+            export CC="${{ matrix.vcpkg_cc }}"
+            export CXX="${{ matrix.vcpkg_cxx }}"
+            echo "vcpkg will build ports with CC=$CC CXX=$CXX"
+          fi
           # Blobless clone: full commit+tree history (needed for git read-tree
           # when vcpkg checks out port files), but no file blobs until accessed.
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
