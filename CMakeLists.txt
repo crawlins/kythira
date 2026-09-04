@@ -1582,9 +1582,22 @@ endif()
 # and link steps are in no pool and were never in this table. So the whole
 # family is pooled now, from add_beast_test() itself. The worst case becomes
 # one pooled TU beside the two largest unpooled compiles,
-# 5,967 + 2,287 + 1,611, under 10 GiB, and the pool's serialised chain grows
-# by the family's 760 s to roughly 45 minutes -- well inside a build whose
-# critical path is over 100 minutes, so the two other workers absorb it.
+# 5,967 + 2,287 + 1,611, under 10 GiB.
+#
+# MEASURED, with the family pooled (run 33884029194, stdexec leg): green,
+# Build 2 h 21 m, 191 MiB of swap in use after the build against 198 MiB on
+# the same day's 2 h 08 m green run without it -- so the pool did what it was
+# for. But the wall clock showed where the serialised chain sits. In BOTH
+# runs the pool's chain (ten compiles, ~31 minutes end to end) started only at
+# step ~509 of 1115, because Ninja 1.11 pops ready edges in build.ninja order
+# and every pooled target was declared in the last tenth of the tree; with
+# the family pooled the chain finished 9 minutes after every other step, the
+# other two `-j3` workers idle for that tail, against 3 minutes before. The
+# remedy is positional: cmd/multi_raft_node is added before tests/, and the
+# pooled tests are the first section of tests/CMakeLists.txt, so the chain
+# starts at step 1 and overlaps the thousand steps that do not need it. A
+# Ninja that schedules by critical path ignores the position, and the worst
+# case is then the measured tail, not a failure.
 #
 # If this leg fails again, look at the link steps next: they are the one
 # class of memory consumer no figure here bounds.
@@ -1626,6 +1639,16 @@ endif()
 # benchmark comparisons); those are individually gated on
 # `if(TARGET Folly::folly)` within tests/CMakeLists.txt itself rather
 # than blocking the whole subdirectory the way this guard used to.
+# cmd/multi_raft_node is added BEFORE tests/ so that its four ~5.4-6.0 GiB
+# `heavy_tu` translation units are the first edges Ninja sees: Ninja 1.11 pops
+# ready edges in build.ninja order, which is declaration order, and a pooled
+# chain that starts at step 1 overlaps the build instead of trailing it (see
+# the pool's comment above, and tests/CMakeLists.txt's first section). It
+# depends on nothing in tests/, and tests/ reaches its headers by path, not by
+# target. Its sibling multi_raft_bench stays below with the other cmd/ tools.
+if(NOT ENABLE_COVERAGE AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND)
+    add_subdirectory(cmd/multi_raft_node)
+endif()
 if(Boost_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE)
     add_subdirectory(tests)
 elseif(Boost_FOUND)
@@ -1641,7 +1664,6 @@ if(NOT ENABLE_COVERAGE)
         # surest way to keep one from being deployed is for `cmake --install`
         # never to place it anywhere. Both are excluded from coverage builds by
         # the enclosing guard, like every other `cmd/` binary.
-        add_subdirectory(cmd/multi_raft_node)
         add_subdirectory(cmd/multi_raft_bench)
     endif()
     if(LIBLDNS_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND httplib_FOUND)

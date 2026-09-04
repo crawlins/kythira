@@ -130,7 +130,10 @@ function(add_beast_test test_name source_file)
     # failed twice more with nothing in the tree changed under it -- see the
     # top-level comment. Pooling the whole family takes the worst case from
     # ~14 GiB to under 10 GiB, at the cost of serialising about 13 minutes of
-    # compile that the other two workers overlap.
+    # compile -- which the other two workers overlap only if the pooled chain
+    # is scheduled early enough, which is why the pooled targets are declared
+    # in the first section of this file (see the comment there, and the
+    # measured tail in the top-level comment).
     set_target_properties(${test_name} PROPERTIES JOB_POOL_COMPILE heavy_tu)
     target_link_libraries(${test_name} PRIVATE kythira_test_pch Boost::beast)
     if(TARGET OpenSSL::SSL)
@@ -193,6 +196,158 @@ function(add_proxygen_test test_name source_file)
     add_test(NAME ${test_name} COMMAND ${test_name})
     set_tests_properties(${test_name} PROPERTIES LABELS "proxygen-http")
 endfunction()
+
+# ── The `heavy_tu` pool's members, declared FIRST on purpose ──────────────────
+#
+# Every target in this section compiles in the `heavy_tu` Ninja job pool (see
+# the top-level CMakeLists.txt for the pool and its measurements). Ninja 1.11,
+# the version on the ubuntu-24.04 runners, pops ready edges in build.ninja
+# order, and CMake writes targets in declaration order -- so where a target is
+# declared decides WHEN Ninja starts it. Measured on the stdexec leg (run
+# 33884029194): with these declared at the end of this file, the pool's
+# serialised chain of ten compiles did not start until step 509 of 1115, ran
+# for 31 minutes, and finished 9 minutes after every other step, with the two
+# other `-j3` workers idle for that tail. Declared here, before every ordinary
+# test, the same chain starts at the beginning of the build and overlaps the
+# thousand steps that do not need it. Nothing in this section depends on
+# anything declared after it: the helpers above, `kythira_test_pch`, and the
+# transport targets found by the root CMakeLists.txt are all it uses.
+#
+# This is a scheduling hint by position, not a mechanism: a Ninja that
+# schedules by critical path (1.12 and later, given a .ninja_log) ignores it,
+# and the worst case is then today's tail, not a failure.
+
+# ── boost-beast-http-transport (.kiro/specs/boost-beast-http-transport/) ─────
+# One-file-per-concern layout, one-to-one with tests/http_client_*/
+# tests/http_server_*/tests/http_integration_test.cpp/tests/http_ssl_*
+# (previously a single tests/beast_transport_test.cpp; split per this spec's
+# tasks.md Known Follow-ups). Each file picks its own disjoint port range, so
+# these can safely run concurrently under `ctest -j` alongside each other and
+# alongside beast_cross_transport_equivalence_test below.
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
+    # Requirement 7.3's 415 retry, over Beast. Each transport implements the
+    # retry itself, so each needs its own runtime evidence; Beast's is the chain
+    # where the retry sits outside the connection-teardown handler.
+    add_beast_test(beast_negotiation_retry_test beast_negotiation_retry_test.cpp)
+    add_beast_test(beast_client_test beast_client_test.cpp)
+    add_beast_test(beast_server_test beast_server_test.cpp)
+    add_beast_test(beast_integration_test beast_integration_test.cpp)
+    add_beast_test(beast_ssl_test beast_ssl_test.cpp)
+else()
+    message(STATUS "beast_client_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+    message(STATUS "beast_server_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+    message(STATUS "beast_integration_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+    message(STATUS "beast_ssl_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+endif()
+# Task 15 (Property 9): cpp_httplib_client/server vs. boost_beast_client/
+# server run against the same RPC sequence -- needs both transports enabled,
+# not just Beast (network_simulator's INTERFACE target, already linked
+# transitively via kythira_test_pch, carries httplib::httplib whenever it was
+# found, so add_beast_test() doesn't need to name it explicitly).
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND TARGET httplib::httplib)
+    add_beast_test(beast_cross_transport_equivalence_test
+        beast_cross_transport_equivalence_test.cpp)
+    # The interop axis the equivalence test above does *not* cover: one
+    # implementation's client against a different implementation's server.
+    # Both suites instantiate both transports; only this one pairs them
+    # off-diagonal. Same dependency pair, so it is gated identically.
+    add_beast_test(http_implementation_interop_test
+        http_implementation_interop_test.cpp)
+    # Both are in the `heavy_tu` pool, as every add_beast_test() target now
+    # is. These two were pooled first and individually: measuring said the
+    # pair are 4,422 MiB and 4,420 MiB -- two MiB apart, gated by the same
+    # `if()`, built by the same helper, and the same shape -- and only one of
+    # them had been bounded. The helper carries the property since the rest
+    # of the family, at 3,501 to 4,373 MiB, turned out to need it too.
+else()
+    message(STATUS "beast_cross_transport_equivalence_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
+    message(STATUS "http_implementation_interop_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
+endif()
+# ── proxygen-http-transport (.kiro/specs/proxygen-http-transport/) ───────────
+if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+    add_proxygen_test(proxygen_transport_test proxygen_transport_test.cpp)
+else()
+    message(STATUS "proxygen_transport_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+endif()
+# transport-multi-serializer Task 10a: content negotiation against a live
+# proxygen_server, driven by a raw httplib::Client. Gated on cpp-httplib as
+# well as Proxygen -- the client has to send headers proxygen_client would
+# never send (an unsupported Content-Type, an unsatisfiable Accept), which is
+# the only way to reach the 415/406 branches at all.
+if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT AND TARGET httplib::httplib)
+    add_proxygen_test(proxygen_negotiation_integration_test
+        proxygen_negotiation_integration_test.cpp)
+else()
+    message(STATUS "proxygen_negotiation_integration_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT and httplib)")
+endif()
+# Requirement 19.5 (.kiro/specs/proxygen-http-transport/) / Task 15
+# (.kiro/specs/boost-beast-http-transport/, that spec's own stated
+# prerequisite for this one): needs cpp-httplib, Boost.Beast, and Proxygen
+# all linked into the same binary, so it's gated on both transport flags
+# rather than either add_beast_test()/add_proxygen_test() alone -- mirrors
+# examples/raft/http_transport_comparison_benchmark.cpp's identical gating
+# and dependency set.
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+    add_executable(three_way_http_transport_equivalence_test three_way_http_transport_equivalence_test.cpp)
+    # MEASURED AT 5,649 MiB of compiler RSS under stdexec -- the heaviest TU in
+    # the tree, because it instantiates Beast, Proxygen and cpp-httplib
+    # together. Three of this class at once is what put the runner at 109 MiB
+    # available with 19 GiB swapped.
+    set_target_properties(three_way_http_transport_equivalence_test PROPERTIES
+        JOB_POOL_COMPILE heavy_tu)
+    target_link_libraries(three_way_http_transport_equivalence_test PRIVATE kythira_test_pch
+        Boost::beast proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(three_way_http_transport_equivalence_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # See add_beast_test()'s/add_proxygen_test()'s own identical comment.
+        target_link_libraries(three_way_http_transport_equivalence_test PRIVATE atomic)
+    endif()
+    target_precompile_headers(three_way_http_transport_equivalence_test REUSE_FROM kythira_test_pch)
+    add_test(NAME three_way_http_transport_equivalence_test COMMAND three_way_http_transport_equivalence_test)
+    set_tests_properties(three_way_http_transport_equivalence_test PROPERTIES
+        LABELS "beast-http;proxygen-http"
+        TIMEOUT 180)
+
+    # The interop axis the equivalence test above does *not* cover, for the
+    # four grid cells that involve Proxygen (doc/TODO.md, "client-implementation
+    # x server-implementation interop grid"). Same three-transport dependency
+    # set and the same gating, for the same reason: one implementation's client
+    # has to meet a different implementation's server in a single process. The
+    # httplib <-> Beast cells need neither Proxygen nor Folly and stay in
+    # http_implementation_interop_test, which builds on every default leg.
+    add_executable(proxygen_implementation_interop_test proxygen_implementation_interop_test.cpp)
+    # Pooled on SHAPE, not on a measurement of its own: it instantiates Beast,
+    # Proxygen and cpp-httplib in one translation unit exactly as
+    # three_way_http_transport_equivalence_test (5,649 MiB) does, and it is
+    # declared in this first-scheduled section, where an unpooled 5 GiB
+    # compile would run beside a pooled one from step 1. The same reasoning
+    # put beast_cross_transport_equivalence_test in the pool; measure it and
+    # move the figure into the top-level table when the leg is next
+    # instrumented.
+    set_target_properties(proxygen_implementation_interop_test PROPERTIES
+        JOB_POOL_COMPILE heavy_tu)
+    target_link_libraries(proxygen_implementation_interop_test PRIVATE kythira_test_pch
+        Boost::beast proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(proxygen_implementation_interop_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # See add_beast_test()'s/add_proxygen_test()'s own identical comment.
+        target_link_libraries(proxygen_implementation_interop_test PRIVATE atomic)
+    endif()
+    target_precompile_headers(proxygen_implementation_interop_test REUSE_FROM kythira_test_pch)
+    add_test(NAME proxygen_implementation_interop_test COMMAND proxygen_implementation_interop_test)
+    set_tests_properties(proxygen_implementation_interop_test PROPERTIES
+        LABELS "beast-http;proxygen-http"
+        TIMEOUT 180)
+else()
+    message(STATUS "three_way_http_transport_equivalence_test: skipped (requires both "
+                    "KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+    message(STATUS "proxygen_implementation_interop_test: skipped (requires both "
+                    "KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+endif()
 
 # Test files
 add_network_test(concept_test concept_test.cpp)
@@ -932,9 +1087,11 @@ kythira_wire_multi_raft_bench(multi_raft_http_benchmark_test)
 # chaos-node tests reach `http_control.hpp`.
 #
 # Gated on cpp-httplib because the data path is served over it. Deliberately
-# NOT gated on `TARGET multi_raft_node`: `cmd/` is added after `tests/` in the
-# root CMakeLists, so that target does not exist yet here — and the test needs
-# only the binaries' headers, not their objects.
+# NOT gated on `TARGET multi_raft_node`: the test needs only the binaries'
+# headers, not their objects, so it reaches them by path. (cmd/multi_raft_node
+# is now added BEFORE tests/ for Ninja scheduling reasons -- see the root
+# CMakeLists -- but cmd/multi_raft_bench still comes after, and this test must
+# not depend on either order.)
 if(httplib_FOUND)
     add_raft_completion_test(multi_raft_driver_agreement_test
                              multi_raft_driver_agreement_test.cpp)
@@ -4836,127 +4993,6 @@ else()
     message(STATUS "backend_non_interference_compile_fail_test: skipped (requires Folly)")
 endif()
 
-# ── boost-beast-http-transport (.kiro/specs/boost-beast-http-transport/) ─────
-# One-file-per-concern layout, one-to-one with tests/http_client_*/
-# tests/http_server_*/tests/http_integration_test.cpp/tests/http_ssl_*
-# (previously a single tests/beast_transport_test.cpp; split per this spec's
-# tasks.md Known Follow-ups). Each file picks its own disjoint port range, so
-# these can safely run concurrently under `ctest -j` alongside each other and
-# alongside beast_cross_transport_equivalence_test below.
-if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
-    # Requirement 7.3's 415 retry, over Beast. Each transport implements the
-    # retry itself, so each needs its own runtime evidence; Beast's is the chain
-    # where the retry sits outside the connection-teardown handler.
-    add_beast_test(beast_negotiation_retry_test beast_negotiation_retry_test.cpp)
-    add_beast_test(beast_client_test beast_client_test.cpp)
-    add_beast_test(beast_server_test beast_server_test.cpp)
-    add_beast_test(beast_integration_test beast_integration_test.cpp)
-    add_beast_test(beast_ssl_test beast_ssl_test.cpp)
-else()
-    message(STATUS "beast_client_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
-    message(STATUS "beast_server_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
-    message(STATUS "beast_integration_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
-    message(STATUS "beast_ssl_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
-endif()
-# Task 15 (Property 9): cpp_httplib_client/server vs. boost_beast_client/
-# server run against the same RPC sequence -- needs both transports enabled,
-# not just Beast (network_simulator's INTERFACE target, already linked
-# transitively via kythira_test_pch, carries httplib::httplib whenever it was
-# found, so add_beast_test() doesn't need to name it explicitly).
-if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND TARGET httplib::httplib)
-    add_beast_test(beast_cross_transport_equivalence_test
-        beast_cross_transport_equivalence_test.cpp)
-    # The interop axis the equivalence test above does *not* cover: one
-    # implementation's client against a different implementation's server.
-    # Both suites instantiate both transports; only this one pairs them
-    # off-diagonal. Same dependency pair, so it is gated identically.
-    add_beast_test(http_implementation_interop_test
-        http_implementation_interop_test.cpp)
-    # Both are in the `heavy_tu` pool, as every add_beast_test() target now
-    # is. These two were pooled first and individually: measuring said the
-    # pair are 4,422 MiB and 4,420 MiB -- two MiB apart, gated by the same
-    # `if()`, built by the same helper, and the same shape -- and only one of
-    # them had been bounded. The helper carries the property since the rest
-    # of the family, at 3,501 to 4,373 MiB, turned out to need it too.
-else()
-    message(STATUS "beast_cross_transport_equivalence_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
-    message(STATUS "http_implementation_interop_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
-endif()
-# ── proxygen-http-transport (.kiro/specs/proxygen-http-transport/) ───────────
-if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
-    add_proxygen_test(proxygen_transport_test proxygen_transport_test.cpp)
-else()
-    message(STATUS "proxygen_transport_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
-endif()
-# transport-multi-serializer Task 10a: content negotiation against a live
-# proxygen_server, driven by a raw httplib::Client. Gated on cpp-httplib as
-# well as Proxygen -- the client has to send headers proxygen_client would
-# never send (an unsupported Content-Type, an unsatisfiable Accept), which is
-# the only way to reach the 415/406 branches at all.
-if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT AND TARGET httplib::httplib)
-    add_proxygen_test(proxygen_negotiation_integration_test
-        proxygen_negotiation_integration_test.cpp)
-else()
-    message(STATUS "proxygen_negotiation_integration_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT and httplib)")
-endif()
-# Requirement 19.5 (.kiro/specs/proxygen-http-transport/) / Task 15
-# (.kiro/specs/boost-beast-http-transport/, that spec's own stated
-# prerequisite for this one): needs cpp-httplib, Boost.Beast, and Proxygen
-# all linked into the same binary, so it's gated on both transport flags
-# rather than either add_beast_test()/add_proxygen_test() alone -- mirrors
-# examples/raft/http_transport_comparison_benchmark.cpp's identical gating
-# and dependency set.
-if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
-    add_executable(three_way_http_transport_equivalence_test three_way_http_transport_equivalence_test.cpp)
-    # MEASURED AT 5,649 MiB of compiler RSS under stdexec -- the heaviest TU in
-    # the tree, because it instantiates Beast, Proxygen and cpp-httplib
-    # together. Three of this class at once is what put the runner at 109 MiB
-    # available with 19 GiB swapped.
-    set_target_properties(three_way_http_transport_equivalence_test PROPERTIES
-        JOB_POOL_COMPILE heavy_tu)
-    target_link_libraries(three_way_http_transport_equivalence_test PRIVATE kythira_test_pch
-        Boost::beast proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
-    if(TARGET OpenSSL::SSL)
-        target_link_libraries(three_way_http_transport_equivalence_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    endif()
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        # See add_beast_test()'s/add_proxygen_test()'s own identical comment.
-        target_link_libraries(three_way_http_transport_equivalence_test PRIVATE atomic)
-    endif()
-    target_precompile_headers(three_way_http_transport_equivalence_test REUSE_FROM kythira_test_pch)
-    add_test(NAME three_way_http_transport_equivalence_test COMMAND three_way_http_transport_equivalence_test)
-    set_tests_properties(three_way_http_transport_equivalence_test PROPERTIES
-        LABELS "beast-http;proxygen-http"
-        TIMEOUT 180)
-
-    # The interop axis the equivalence test above does *not* cover, for the
-    # four grid cells that involve Proxygen (doc/TODO.md, "client-implementation
-    # x server-implementation interop grid"). Same three-transport dependency
-    # set and the same gating, for the same reason: one implementation's client
-    # has to meet a different implementation's server in a single process. The
-    # httplib <-> Beast cells need neither Proxygen nor Folly and stay in
-    # http_implementation_interop_test, which builds on every default leg.
-    add_executable(proxygen_implementation_interop_test proxygen_implementation_interop_test.cpp)
-    target_link_libraries(proxygen_implementation_interop_test PRIVATE kythira_test_pch
-        Boost::beast proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
-    if(TARGET OpenSSL::SSL)
-        target_link_libraries(proxygen_implementation_interop_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    endif()
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        # See add_beast_test()'s/add_proxygen_test()'s own identical comment.
-        target_link_libraries(proxygen_implementation_interop_test PRIVATE atomic)
-    endif()
-    target_precompile_headers(proxygen_implementation_interop_test REUSE_FROM kythira_test_pch)
-    add_test(NAME proxygen_implementation_interop_test COMMAND proxygen_implementation_interop_test)
-    set_tests_properties(proxygen_implementation_interop_test PROPERTIES
-        LABELS "beast-http;proxygen-http"
-        TIMEOUT 180)
-else()
-    message(STATUS "three_way_http_transport_equivalence_test: skipped (requires both "
-                    "KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
-    message(STATUS "proxygen_implementation_interop_test: skipped (requires both "
-                    "KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
-endif()
 # ── future-backend-performance-benchmark (.kiro/specs/future-backend-performance-benchmark/) ─
 # Single binary rather than a second add_stdexec_test()-gated executable:
 # the Folly-only sanity floors must still run when stdexec is unavailable,
