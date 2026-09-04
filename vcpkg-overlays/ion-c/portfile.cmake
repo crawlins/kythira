@@ -42,6 +42,22 @@
 # exactly the case ion-rpc-serializer's own
 # tests/ion_malformed_message_property_test.cpp exercises) hung indefinitely
 # inside this exact macro. Patches ASSERT() to be a true no-op under NDEBUG.
+# 0003-fix-gcc-14-incompatible-pointer-types.patch: GCC 14 turned
+# -Wincompatible-pointer-types from a warning into an error by default, and
+# ion-c 1.1.3 trips it twice, so the port does not compile at all under GCC 14
+# (Debian 13 trixie, which ships gcc 14 and has no gcc-13 package). CI uses
+# g++-13 and clang++-18 and so never sees either site. First:
+# _ion_strdup()'s memcpy source is a conditional whose arms are "\0" (char *)
+# and src->value (BYTE *), which have no composite type -- repaired by casting
+# the literal arm, copying identical bytes. Second, and the more interesting
+# one: ion_binary_read_int_64_and_sign() is the library's only ION_GET call
+# site whose variable is not an int, so ion_stream_read_byte()'s `int *p_c`
+# receives a `uint64_t *` and writes 4 of the 8 bytes through the wrong type --
+# a genuine latent aliasing bug that happens to work only because the variable
+# is zero-initialised on a little-endian host. Repaired by reading into an int
+# and widening, as every other ION_GET site already does. Behaviour is
+# unchanged including at EOF; see the patch header for that argument in full.
+
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO amazon-ion/ion-c
@@ -55,6 +71,7 @@ vcpkg_from_github(
     PATCHES
         0001-fix-version-header-without-git-describe.patch
         0002-fix-assert-infinite-loop-under-ndebug.patch
+        0003-fix-gcc-14-incompatible-pointer-types.patch
 )
 
 vcpkg_cmake_configure(
