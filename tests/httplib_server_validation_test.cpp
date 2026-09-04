@@ -11,8 +11,6 @@
 
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t test_port = 9090;
-constexpr std::uint16_t test_port_offset = 1;
 constexpr std::chrono::milliseconds server_startup_delay{200};
 constexpr std::chrono::seconds connection_timeout{1};
 constexpr std::chrono::seconds read_timeout{2};
@@ -47,11 +45,14 @@ BOOST_AUTO_TEST_CASE(test_basic_httplib_server, *boost::unit_test::timeout(30)) 
         // Let httplib handle Content-Length automatically
     });
 
-    // Start server in a thread
-    std::thread server_thread([&]() { server.listen(test_bind_address, test_port); });
+    // Let the kernel choose the port. Binding happens here, on the test thread,
+    // before the listen thread starts, so there is no startup race to sleep
+    // through either.
+    const int test_port = server.bind_to_any_port(test_bind_address);
+    BOOST_REQUIRE_GT(test_port, 0);
 
-    // Give server time to start
-    std::this_thread::sleep_for(server_startup_delay);
+    std::thread server_thread([&]() { server.listen_after_bind(); });
+    server.wait_until_ready();
 
     try {
         // Create client and test
@@ -122,11 +123,21 @@ BOOST_AUTO_TEST_CASE(test_multiple_requests, *boost::unit_test::timeout(45)) {
         // Let httplib handle Content-Length automatically
     });
 
-    // Start server on a different port to avoid conflicts
-    constexpr std::uint16_t unique_port = test_port + test_port_offset;
-    std::thread server_thread([&]() { server.listen(test_bind_address, unique_port); });
+    // Let the kernel choose the port, rather than deriving one from a fixed
+    // base. The previous "different port to avoid conflicts" arithmetic picked
+    // a second hardcoded port, which is not conflict avoidance -- it just moves
+    // which host service it can collide with.
+    const int unique_port = server.bind_to_any_port(test_bind_address);
+    BOOST_REQUIRE_GT(unique_port, 0);
 
-    // Wait for server to be ready by polling the health endpoint
+    std::thread server_thread([&]() { server.listen_after_bind(); });
+    server.wait_until_ready();
+
+    // The health endpoint is still polled, but only to confirm this server is
+    // answering -- not to discover whether the port came up. Polling for
+    // readiness on a port owned by someone else was what made the original
+    // failure so opaque: an unrelated service answered every probe, so the
+    // 5-second loop expired without ever reaching this server.
     httplib::Client health_client(test_bind_address, unique_port);
     health_client.set_connection_timeout(1, 0);
     health_client.set_read_timeout(1, 0);
