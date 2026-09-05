@@ -2158,6 +2158,23 @@ if(TARGET raft_ion_serializer)
     target_compile_features(ion_serialization_property_test PRIVATE cxx_std_23)
     add_test(NAME ion_serialization_property_test COMMAND ion_serialization_property_test)
 
+    # Regression coverage for the ion-c overlay's GCC 14 patch (0003), which
+    # rewrites ion_binary_read_int_64_and_sign(). Links raft_ion_serializer for
+    # the ionc linkage and the DECNUMDIGITS=34 define ion_decimal.h #errors
+    # without, but includes no kythira header -- it drives ion-c's C API
+    # directly, because the only route to that function is a binary decimal's
+    # mantissa and nothing in kythira's wire format emits one. See the file
+    # header. LABELS "ion" matches ion_http_coap_end_to_end_test.
+    add_executable(ion_binary_decimal_regression_test ion_binary_decimal_regression_test.cpp)
+    target_link_libraries(ion_binary_decimal_regression_test PRIVATE
+        raft_ion_serializer
+        Boost::unit_test_framework
+    )
+    target_compile_features(ion_binary_decimal_regression_test PRIVATE cxx_std_23)
+    add_test(NAME ion_binary_decimal_regression_test
+             COMMAND ion_binary_decimal_regression_test)
+    set_tests_properties(ion_binary_decimal_regression_test PROPERTIES LABELS "ion" TIMEOUT 60)
+
     add_executable(ion_malformed_message_property_test ion_malformed_message_property_test.cpp)
     target_link_libraries(ion_malformed_message_property_test PRIVATE
         raft_ion_serializer
