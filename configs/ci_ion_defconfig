@@ -1,0 +1,36 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# ci_ion_defconfig — the feature set the Ion Serializer Build job resolves.
+# That job's vcpkg install is `--x-feature=edhoc --x-feature=ion`, i.e. the
+# edhoc image ci_full_defconfig models plus ion-c, so this file is
+# ci_full_defconfig with CONFIG_ION_SERIALIZER turned on and nothing else
+# changed. Written, like ci_full_defconfig, against
+# `-DKYTHIRA_KCONFIG_STRICT=ON` (Requirement 5.1) — see that file's header for
+# the reasoning; only the difference is annotated here.
+#
+#   ION_SERIALIZER          — the point of the job. ci_full_defconfig leaves it
+#                             unset because no image the other jobs build had
+#                             ion-c in it; this one does, and strict mode is
+#                             what makes that a real assertion rather than a
+#                             hope: if `--x-feature=ion` ever stops delivering
+#                             ion-c, the configure here FATAL_ERRORs instead of
+#                             quietly dropping every ion_* test on the floor.
+#
+# Everything else is verbatim from ci_full_defconfig and must stay that way —
+# the job builds the ion targets out of the same tree the main legs build, and
+# a divergence here would mean the ion tests were compiled against a
+# configuration nothing else uses.
+CONFIG_ION_SERIALIZER=y
+CONFIG_EDHOC=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
+CONFIG_BOOST_BEAST_TRANSPORT=y
+CONFIG_PROXYGEN_TRANSPORT=y
+CONFIG_PROTOBUF_SERIALIZER=y
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set

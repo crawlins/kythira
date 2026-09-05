@@ -24,11 +24,15 @@
 #                             Coverage is a separate build variant with its own
 #                             CI job and its own -DENABLE_COVERAGE=ON.
 #   ION_SERIALIZER          — ion-c comes from the opt-in `ion` vcpkg feature,
-#                             and no CI job installs it (the main legs use
+#                             which these legs do not install (they use
 #                             --x-feature=edhoc only). Selecting it here would
 #                             make a strict configure fail on an image that
-#                             cannot satisfy it. Enable the vcpkg feature in
-#                             ci.yml *first* if this is ever wanted.
+#                             cannot satisfy it. The ion_* tests are not
+#                             uncovered, though: ci.yml's ion-serializer-build
+#                             job installs the feature and applies
+#                             configs/ci_ion_defconfig, which is this file plus
+#                             CONFIG_ION_SERIALIZER=y. Keep the two in sync —
+#                             every other symbol below must match.
 #   COAP_TRANSPORT_LIBNYOCI — same shape: opt-in `coap-libnyoci` vcpkg feature,
 #   COAP_TRANSPORT_CANTCOAP   and opt-in `coap-cantcoap`; neither is installed
 #                             by any CI job.
