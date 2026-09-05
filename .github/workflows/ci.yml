@@ -541,6 +541,173 @@ jobs:
           ctest --test-dir build --output-on-failure \
             -R '^(gcp_quorum_manager_unit_test|gcp_privateca_provider_unit_test|gcp_gcs_client_unit_test)$'
 
+  # ── Ion serializer build (ion-c) ─────────────────────────────────────────────
+  # The only job that installs the opt-in vcpkg `ion` feature, and therefore the
+  # only one under which ion-c is compiled at all or any ion_* test runs. Before
+  # it existed, all six of those tests were registered by tests/CMakeLists.txt
+  # and then silently skipped everywhere, because no CI image had ion-c in it.
+  #
+  # It is pinned to GCC 14 on purpose, and that is the load-bearing part rather
+  # than an arbitrary compiler choice. vcpkg-overlays/ion-c/0003-… exists because
+  # GCC 14 promoted -Wincompatible-pointer-types to an error and ion-c 1.1.3
+  # trips it twice; under g++-13 or clang++-18 both sites are warnings at most,
+  # so a leg on either compiler would keep building a *reverted* patch happily
+  # and prove nothing. Under gcc-14 dropping that patch is a hard build failure
+  # here, which is the regression guard the patch previously had none of.
+  #
+  # vcpkg_cc/vcpkg_cxx equivalents are set inline (this job has no matrix): the
+  # ion-c compile happens inside vcpkg's own port build, long before any kythira
+  # source is touched, so pointing only CMAKE_CXX_COMPILER at GCC 14 would sail
+  # straight past it — the same reasoning as the GCC 14 build-and-test leg.
+  #
+  # Timeout 300, not 180, for that leg's reason too: CC/CXX are part of every
+  # port's ABI hash, so this job's x-gha entries are shared with the GCC 14
+  # build-and-test leg and with nothing else, and the first run after either
+  # changes is a cold build of the whole dependency set.
+  ion-serializer-build:
+    name: Ion Serializer Build (g++-14, x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      CCACHE_DIR: /home/runner/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
+          # g++-14 pulls gcc-14, which is what actually compiles ion-c (a C
+          # library) and so what actually enforces the patch this job guards.
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 g++-14 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      # configs/ci_ion_defconfig keeps CONFIG_EDHOC=y, so this job installs the
+      # edhoc feature too and needs the Rust toolchain the lakers overlay port
+      # builds from source, exactly as the build-and-test legs do.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      # Distinct cache key ("-edhoc-ion-g++-14"): this tree is the edhoc tree
+      # plus ion-c AND is built by a different compiler than the default legs,
+      # so it must not collide with either the plain edhoc caches or the
+      # GCC 14 build-and-test leg's edhoc-only one.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-ion-g++-14-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
+      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
+      # to `run:` steps. This re-exports them so the vcpkg invocation below can
+      # reach the cache.
+      - name: Export Actions cache credentials for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Bootstrap vcpkg and install dependencies (with ion feature)
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          # Per-package binary cache keyed on vcpkg's own ABI hash (port version,
+          # triplet, compiler, features, patches). The ion tree is the GCC 14
+          # edhoc tree plus ion-c, so once that leg has run only the delta is
+          # ever built here.
+          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # Unconditional here, unlike the matrix leg's guarded export: this job
+          # has exactly one compiler and building ion-c under it is the point.
+          export CC=gcc-14
+          export CXX=g++-14
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          # Both features, not just ion: configs/ci_ion_defconfig is
+          # ci_full_defconfig plus CONFIG_ION_SERIALIZER, and CONFIG_EDHOC=y
+          # under KYTHIRA_KCONFIG_STRICT=ON hard-fails without lakers.
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc --x-feature=ion
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-ion-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-ion-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
+            ccache-ion-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
+      # KYTHIRA_KCONFIG_STRICT=ON is what turns "ion-c is installed" into an
+      # assertion: if --x-feature=ion ever stops delivering it, this configure
+      # FATAL_ERRORs instead of quietly dropping every target below.
+      - name: Configure (Release, Ion serializer)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-14 \
+            -DKYTHIRA_KCONFIG=configs/ci_ion_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # Only the ion-gated targets, not the whole tree: everything else here is
+      # byte-identical to what the build-and-test legs already build, and this
+      # job is not a second full build.
+      - name: Build Ion targets
+        run: |
+          cmake --build build -j$(nproc) --target \
+            ion_binary_decimal_regression_test \
+            ion_serializer_concept_test \
+            ion_serialization_property_test \
+            ion_malformed_message_property_test \
+            ion_json_serializer_equivalence_property_test \
+            shard_group_id_ion_wire_property_test \
+            ion_http_coap_end_to_end_test
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-ion-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      # --no-tests=error, not a bare ctest: an empty selection is the exact
+      # failure this job exists to catch, and ctest exits 0 on one by default.
+      - name: Run Ion tests
+        run: |
+          ctest --test-dir build --output-on-failure --no-tests=error \
+            -R '^(ion_binary_decimal_regression_test|ion_serializer_concept_test|ion_serialization_property_test|ion_malformed_message_property_test|ion_json_serializer_equivalence_property_test|shard_group_id_ion_wire_property_test|ion_http_coap_end_to_end_test)$'
+
   # ── Coverage (clang only) ────────────────────────────────────────────────────
   # ENABLE_COVERAGE uses LLVM source-based instrumentation and requires clang.
   # gcovr-based coverage with GCC is not supported by this project's CMakeLists.

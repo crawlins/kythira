@@ -82,3 +82,52 @@ patch makes `ASSERT(x)` a true no-op under `NDEBUG`, restoring the
 (evidently intended, just miswritten) debug-vs-release split. This is a
 real hazard for *any* consumer building `ion-c` in Release mode and feeding
 it malformed/truncated input, not specific to kythira's own reader code.
+
+## Patch: GCC 14 `-Wincompatible-pointer-types`
+
+`0003-fix-gcc-14-incompatible-pointer-types.patch` is what makes this port
+build at all on a GCC 14 toolchain. GCC 14 promoted
+`-Wincompatible-pointer-types` from a warning to an error by default, and
+ion-c 1.1.3 trips it in two places. Both were found in one pass by sweeping
+every `.c` in the tree with `-fsyntax-only` under the newly-fatal
+diagnostics, rather than by a fix-and-rebuild loop — ninja reports only the
+first error per file, so each iteration of that loop costs a full rebuild to
+surface one more site.
+
+The first hunk (`ionc/ion_allocation.c`) is pure type repair: a `memcpy`
+source argument is a conditional whose arms are `char *` and `BYTE *`, so it
+has no composite type. Identical bytes are copied either way.
+
+The second hunk (`ionc/ion_binary.c`, `ion_binary_read_int_64_and_sign()`)
+is a real latent bug. `ION_GET(pstream, b)` expands on its slow path to
+`ion_stream_read_byte(pstream, &b)`, whose parameter is `int *`, but `b` is
+declared `uint64_t` — **the only one of ~28 `ION_GET` call sites in the
+library whose variable is not an `int`** (all were checked). The callee
+writes an `int` through a `uint64_t *`, which violates strict aliasing and
+initialises 4 of the variable's 8 bytes. It works today only by luck: `b` is
+zero-initialised and the host is little-endian. The fix reads into an `int`
+and widens explicitly, which is what every other call site already does.
+The argument for why this is behaviour-preserving even at EOF — where
+`ion_stream_read_byte` sets `*p_c = EOF` and still returns `IERR_OK` — is
+written out in the patch header; check it rather than take it on faith.
+
+### How this patch is guarded
+
+Both hunks are compile-time fixes for a compiler the rest of CI does not
+use, so neither is guarded by anything the main legs do. Two things cover
+them, and they are meant to be read together:
+
+- **`ion-serializer-build` in `.github/workflows/ci.yml`** — the only job
+  that installs the `ion` vcpkg feature, pinned to `gcc-14`/`g++-14`
+  precisely so that reverting this patch is a hard build failure. Under
+  g++-13 or clang++-18 both sites are warnings at most, so a leg on either
+  compiler would build a reverted patch happily and prove nothing.
+- **`tests/ion_binary_decimal_regression_test.cpp`** — value coverage for
+  the rewritten function. Reaching it is not obvious: the binary reader's
+  `int64` path does not route through it, so none of the other five `ion_*`
+  tests execute a single instruction of it (confirmed under gdb with a
+  positive control). Its only reachable caller is a binary decimal's
+  mantissa decode, and only for mantissas of 8 bytes or fewer. That test
+  cannot detect a straight revert on its own — on little-endian the
+  truncating write still lands the right value — which is exactly why the
+  compiler leg above is the primary guard.

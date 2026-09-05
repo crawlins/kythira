@@ -2853,7 +2853,14 @@ surface a conforming implementation must cover).
   macro spinning forever under `-DNDEBUG` on malformed input, fixed by an
   overlay patch). Because the `ion` feature is opt-in, these binaries are
   **not** part of the default CI build's 430 (see "Current Status") — enabling
-  them needs `vcpkg install --x-feature=ion`
+  them needs `vcpkg install --x-feature=ion`. They are no longer CI-invisible,
+  though: ci.yml's `ion-serializer-build` job installs that feature (under
+  `gcc-14`, so ion-c's GCC 14 overlay patch is enforced rather than merely
+  hoped for) and runs them plus
+  `tests/ion_binary_decimal_regression_test.cpp` as a separate check, the
+  same way `gcp-sdk-build` covers the `gcp` feature. Its count is deliberately
+  kept out of the 430 — a different image, a different defconfig, a different
+  compiler
 
 ### Metrics Backends
 
