@@ -1218,10 +1218,27 @@ jobs:
   future-backend-compat:
     name: Full suite (${{ matrix.backend }} future backend)
     runs-on: ubuntu-24.04
-    # Matches build-and-test's budget. This job used to build one target and
-    # finish in ~2 minutes on a 60-minute budget; it now does the same work a
-    # Build & Test leg does, so it needs the same headroom on a cold ccache.
-    timeout-minutes: 180
+    # Was 180 ("matches build-and-test's budget"), and that stopped being
+    # enough. The stdexec leg is materially heavier than a Build & Test leg,
+    # and pooling the heavy TUs (17c720a, df8dbdf) traded wall time for the
+    # memory headroom it needed: measured on real runs, stdexec took 2h01m on
+    # PR #314 and 2h00m on PR #315 -- both of which ran *before* those pooling
+    # commits landed -- and 172 minutes on main immediately after them. That is
+    # 96% of a 180-minute budget, and it is main's own steady state, not an
+    # outlier.
+    #
+    # Eight minutes of headroom is not a budget, it is a coin flip. Any PR that
+    # adds cost on top -- most obviously one touching vcpkg.json or
+    # vcpkg-overlays/**, which changes the vcpkg cache key and forces a cold
+    # dependency build -- goes over. PR #316 did exactly that and timed out
+    # three times in Build, never reaching a single test.
+    #
+    # 300 matches the GCC 14 leg's budget and is sized for the genuinely bad
+    # case: cold vcpkg *and* cold ccache, which is the normal state on a branch
+    # that touches dependencies, since ccache keys are scoped per ref. This is
+    # a ceiling, not a target -- a warm run still finishes in well under half
+    # of it.
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
