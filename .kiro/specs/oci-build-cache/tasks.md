@@ -158,13 +158,25 @@ bucket does.
     exactly midnight UTC ("hours, minutes, seconds, and second fractions must
     be 0"), so asking for usage "up to now" always failed. The end bound is
     tomorrow's date.
-  - **Requirement 2.6's live direction is not proven yet.** `test-audit.sh
-    --live` creates a throwaway tagged bucket and waits for the audit to flag
-    it; the OCI resource-search index had not caught up within five minutes,
-    and a longer window is running. The query itself is known good — the
-    audit's own section 5 lists the real bucket and all six other resources
-    by tag. A timeout is now reported as INCONCLUSIVE rather than as a
-    failure, since a slow index is not a broken auditor.
+  - **Requirement 2.6's live direction: the query is proven, the latency
+    test is not.** `test-audit.sh --live` creates a throwaway tagged bucket
+    and waits for the audit to flag it. It did not appear within five minutes,
+    nor within twenty on a second run, so that check reports INCONCLUSIVE —
+    a slow search index is not a broken auditor, and reporting it as a
+    failure would be exactly the unearned red the test exists to prevent.
+
+    **What the live run does establish is the thing that matters**: the
+    audit's section 5 finds **all seven** real resources — the bucket, three
+    groups, two users and the policy — through the identical
+    `structured-search` query, in a tenancy where they were created by
+    `provision.sh` and tagged by it. So the query, the tag and the
+    expected-versus-unexpected classification are all verified against live
+    data; the stub covers the classification of an *unexpected* one. The only
+    unverified link is how long OCI takes to index a brand-new resource,
+    which is a property of the service. For reference: the real bucket was
+    created at 10:16Z and was listed by the audit at 10:26Z, so indexing does
+    happen — it appears to run on a sweep longer than the 20-minute window,
+    not continuously.
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6_
 
 - [ ] 3. Composite action `.github/actions/oci-build-cache/` — **written and
