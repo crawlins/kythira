@@ -161,8 +161,13 @@ echo
 # pre-registered" is checkable before the bill rather than after it.
 echo "4. Month-to-date usage (Object Storage, this tenancy)"
 if [ -n "$tenancy_id" ]; then
+    # Both bounds must be midnight UTC exactly. The Usage API rejects anything
+    # finer with "Passed UTC date does not have the right precision: hours,
+    # minutes, seconds, and second fractions must be 0", so the end bound is
+    # tomorrow's date rather than the current instant — asking for "up to now"
+    # is what fails.
     month_start=$(date -u +%Y-%m-01T00:00:00Z)
-    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    now=$(date -u -d 'tomorrow' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -u -v+1d +%Y-%m-%dT00:00:00Z)
     if out=$(try "usage summary" oci usage-api usage-summary request-summarized-usages \
                  --tenant-id "$tenancy_id" --granularity MONTHLY --query-type COST \
                  --time-usage-started "$month_start" --time-usage-ended "$now"); then

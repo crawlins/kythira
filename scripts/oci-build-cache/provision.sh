@@ -40,6 +40,8 @@
 #   --compartment-id  default: $OCI_CI_COMPARTMENT_ID
 #   --region          default: $OCI_CI_REGION
 #   --tenancy-id      default: derived by walking up from the compartment
+#   --email           primary email for the two service users; default: the
+#                     address of the OCI CLI user running this script
 #
 # Requires the OCI CLI, authenticated as a principal that can create buckets
 # in the compartment and users, groups and policies in the tenancy. This is
@@ -51,6 +53,7 @@ BUCKET="kythira-build-cache"
 COMPARTMENT_ID="${OCI_CI_COMPARTMENT_ID:-}"
 REGION="${OCI_CI_REGION:-}"
 TENANCY_ID=""
+EMAIL=""
 APPLY=0
 ROTATE=""
 
@@ -82,6 +85,7 @@ while [[ $# -gt 0 ]]; do
         --bucket)         BUCKET="${2:?--bucket needs a name}"; shift 2 ;;
         --compartment-id) COMPARTMENT_ID="${2:?--compartment-id needs an OCID}"; shift 2 ;;
         --region)         REGION="${2:?--region needs a region}"; shift 2 ;;
+        --email)          EMAIL="${2:?--email needs an address}"; shift 2 ;;
         --tenancy-id)     TENANCY_ID="${2:?--tenancy-id needs an OCID}"; shift 2 ;;
         -h|--help)        usage; exit 0 ;;
         *)                echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -161,6 +165,34 @@ if [ -z "$TENANCY_ID" ]; then
     TENANCY_ID="$parent"
 fi
 echo "Tenancy: $TENANCY_ID"
+
+# ── Primary email ────────────────────────────────────────────────────────────
+# A tenancy on Identity Domains (IDCS) refuses `user create` without one:
+#   "The primary email must be specified" (error.identity.user.primaryEmailNotSpecified)
+# A tenancy on legacy IAM does not need it and ignores it, so this is passed
+# unconditionally rather than probed for. Defaults to the address of whoever
+# is running the script, read from the OCI CLI config, because these two
+# service users are that operator's to answer for; --email overrides.
+if [ -z "$EMAIL" ]; then
+    profile="${OCI_CLI_PROFILE:-DEFAULT}"
+    caller=$(awk -v p="[$profile]" '
+        $0 == p { inprofile = 1; next }
+        /^\[/    { inprofile = 0 }
+        inprofile && /^user[[:space:]]*=/ { sub(/^user[[:space:]]*=[[:space:]]*/, ""); print; exit }
+    ' "${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}" 2>/dev/null || echo "")
+    if [ -n "$caller" ]; then
+        EMAIL=$(oci iam user get --user-id "$caller" --query 'data.email' \
+                    --raw-output 2>/dev/null </dev/null || echo "")
+        [ "$EMAIL" = "null" ] && EMAIL=""
+    fi
+fi
+if [ -z "$EMAIL" ]; then
+    echo "error: could not determine a primary email for the new users." >&2
+    echo "  Pass --email ADDRESS. Identity-domain tenancies reject a user" >&2
+    echo "  created without one." >&2
+    exit 2
+fi
+echo "Primary email for the two service users: $EMAIL"
 echo
 
 # ── 1. Bucket ────────────────────────────────────────────────────────────────
@@ -182,36 +214,8 @@ else
 fi
 echo
 
-# ── 2. Lifecycle ─────────────────────────────────────────────────────────────
-# The asymmetry is deliberate (Requirement 2.2): a vcpkg archive is minutes of
-# build per object and there are a few hundred; an sccache object is seconds
-# and there are tens of thousands. Deleting the cheap ones sooner keeps the
-# storage line flat without ever making a port rebuild.
-echo "2. Lifecycle rules (sccache/ 30 days, vcpkg/ 90 days)"
-LIFECYCLE_JSON=$(cat <<'JSON'
-{"items": [
-  {"name": "expire-sccache-objects", "action": "DELETE", "time-amount": 30,
-   "time-unit": "DAYS", "is-enabled": true,
-   "object-name-filter": {"inclusion-prefixes": ["sccache/"]}},
-  {"name": "expire-vcpkg-archives", "action": "DELETE", "time-amount": 90,
-   "time-unit": "DAYS", "is-enabled": true,
-   "object-name-filter": {"inclusion-prefixes": ["vcpkg/"]}}
-]}
-JSON
-)
-if [ "$APPLY" -eq 0 ]; then
-    printf '%s\n' "$LIFECYCLE_JSON" | sed 's/^/  would put: /'
-else
-    # --force because this is a PUT of the whole policy: re-running replaces
-    # the two rules with the same two rules, which is what idempotent means
-    # here. There is no partial update API for lifecycle rules.
-    printf '%s' "$LIFECYCLE_JSON" | \
-        oci os object-lifecycle-policy put --bucket-name "$BUCKET" --items file:///dev/stdin --force
-fi
-echo
-
-# ── 3. Group and users ───────────────────────────────────────────────────────
-echo "3. Group $GROUP_NAME and its two users"
+# ── 2. Group and users ───────────────────────────────────────────────────────
+echo "2. Group $GROUP_NAME and its two users"
 # Every lookup is "list by name, take the id, empty if absent". OCI's list
 # calls exit 0 with an empty data array when nothing matches, so the exit
 # status says nothing and only the query result does — which is why none of
@@ -245,35 +249,66 @@ for user in "$RW_USER" "$RO_USER"; do
     else
         act oci iam user create --compartment-id "$TENANCY_ID" --name "$user" \
             --description "kythira build cache: ${user##*-} access to $BUCKET" \
+            --email "$EMAIL" \
             --freeform-tags "{\"${SPEC_TAG_KEY}\":\"${SPEC_TAG_VALUE}\"}"
         [ "$APPLY" -eq 1 ] && uid=$(user_id_of "$user")
     fi
+    # A group per role, named after the user, in addition to the umbrella
+    # group. Not redundancy: **OCI policy statements have no `user` subject**.
+    # The grammar takes any-user, group, dynamic-group or service, so the
+    # rw/ro split design.md writes as two user-scoped statements cannot be
+    # expressed that way at all — the service answers `Allow user ...` with
+    # "Failed to parse policy due to an issue with token: user at character:
+    # 6". One group per role is how that split is actually written, and the
+    # umbrella group keeps the one grant both roles share (read buckets).
+    role_group="$user"
+    role_gid=$(group_id_of "$role_group")
+    if [ -n "$role_gid" ]; then
+        echo "  group exists: $role_group ($role_gid)"
+    else
+        act oci iam group create --compartment-id "$TENANCY_ID" --name "$role_group" \
+            --description "Holds ${user}; policy subjects must be groups, not users" \
+            --freeform-tags "{\"${SPEC_TAG_KEY}\":\"${SPEC_TAG_VALUE}\"}"
+        [ "$APPLY" -eq 1 ] && role_gid=$(group_id_of "$role_group")
+    fi
+
     # Membership is checked separately from creation: a user that exists but
     # is not in the group has no access at all, and that is precisely the
     # state a half-finished earlier run leaves behind.
-    if [ -z "$uid" ] || [ -z "$group_id" ]; then
-        echo "  would add $user to $GROUP_NAME"
-        continue
-    fi
-    member=$(oci iam group list-users --group-id "$group_id" \
-                 --query "length(data[?id=='$uid'])" --raw-output 2>/dev/null </dev/null || echo 0)
-    if [ "$member" != "0" ]; then
-        echo "  $user is already in $GROUP_NAME"
-    else
-        act oci iam group add-user --group-id "$group_id" --user-id "$uid"
-    fi
+    for gname_gid in "${GROUP_NAME}:${group_id}" "${role_group}:${role_gid}"; do
+        gname="${gname_gid%%:*}"; gid="${gname_gid#*:}"
+        if [ -z "$uid" ] || [ -z "$gid" ]; then
+            echo "  would add $user to $gname"
+            continue
+        fi
+        member=$(oci iam group list-users --group-id "$gid" \
+                     --query "length(data[?id=='$uid'])" --raw-output 2>/dev/null </dev/null || echo 0)
+        if [ "$member" != "0" ]; then
+            echo "  $user is already in $gname"
+        else
+            act oci iam group add-user --group-id "$gid" --user-id "$uid"
+        fi
+    done
 done
 echo
 
-# ── 4. Policies ──────────────────────────────────────────────────────────────
+# ── 3. Policies ──────────────────────────────────────────────────────────────
 # Scoped with `where target.bucket.name` so these users can reach this bucket
-# and nothing else in the compartment. OBJECT_DELETE appears in neither
+# and nothing else in the compartment. OBJECT_DELETE appears in neither USER
 # statement; see the header.
-echo "4. Policy kythira-build-cache-access"
+#
+# The third statement is not for a person. Lifecycle rules are executed by
+# Object Storage's own service principal rather than by the caller, so without
+# it the lifecycle PUT in step 4 fails with InsufficientServicePermissions —
+# found by the service refusing the call, since design.md's Component 1 does
+# not mention it. That principal DOES need delete: expiring objects is the
+# whole job.
+echo "3. Policy kythira-build-cache-access"
 POLICY_STATEMENTS=$(cat <<POLICY
 Allow group ${GROUP_NAME} to read buckets in compartment id ${COMPARTMENT_ID} where target.bucket.name = '${BUCKET}'
-Allow user ${RW_USER} to manage objects in compartment id ${COMPARTMENT_ID} where all { target.bucket.name = '${BUCKET}', any { request.permission = 'OBJECT_READ', request.permission = 'OBJECT_INSPECT', request.permission = 'OBJECT_CREATE', request.permission = 'OBJECT_OVERWRITE' } }
-Allow user ${RO_USER} to read objects in compartment id ${COMPARTMENT_ID} where target.bucket.name = '${BUCKET}'
+Allow group ${RW_USER} to manage objects in compartment id ${COMPARTMENT_ID} where all { target.bucket.name = '${BUCKET}', any { request.permission = 'OBJECT_READ', request.permission = 'OBJECT_INSPECT', request.permission = 'OBJECT_CREATE', request.permission = 'OBJECT_OVERWRITE' } }
+Allow group ${RO_USER} to read objects in compartment id ${COMPARTMENT_ID} where target.bucket.name = '${BUCKET}'
+Allow service objectstorage-${REGION} to manage object-family in compartment id ${COMPARTMENT_ID} where target.bucket.name = '${BUCKET}'
 POLICY
 )
 printf '%s\n' "$POLICY_STATEMENTS" | sed 's/^/  /'
@@ -288,7 +323,7 @@ if [ -n "$policy_id" ]; then
 else
     statements_json=$(printf '%s\n' "$POLICY_STATEMENTS" | jq -R . | jq -s .)
     if [ "$APPLY" -eq 0 ]; then
-        echo "  would create policy kythira-build-cache-access with those 3 statements"
+        echo "  would create policy kythira-build-cache-access with those 4 statements"
     else
         printf '%s' "$statements_json" | oci iam policy create \
             --compartment-id "$COMPARTMENT_ID" \
@@ -297,6 +332,66 @@ else
             --statements file:///dev/stdin \
             --freeform-tags "{\"${SPEC_TAG_KEY}\":\"${SPEC_TAG_VALUE}\"}"
     fi
+fi
+echo
+
+# ── 4. Lifecycle ─────────────────────────────────────────────────────────────
+# Deliberately AFTER the policy above, and not for tidiness: the lifecycle
+# engine runs as the Object Storage service principal, so this PUT fails with
+# InsufficientServicePermissions until that statement exists. IAM is
+# eventually consistent, hence the retry rather than a single attempt.
+#
+# The 30/90 asymmetry is deliberate (Requirement 2.2): a vcpkg archive is
+# minutes of build per object and there are a few hundred; an sccache object
+# is seconds and there are tens of thousands. Deleting the cheap ones sooner
+# keeps the storage line flat without ever making a port rebuild.
+echo "4. Lifecycle rules (sccache/ 30 days, vcpkg/ 90 days)"
+# A bare JSON ARRAY in camelCase, which is what --items wants. Both halves of
+# that were learned from the live service rejecting the alternatives: an
+# object wrapped as {"items": [...]}, and kebab-case keys, are each refused
+# with a bare "InvalidJSON: Could not parse body as valid
+# ObjectLifecycleDetails" that names neither the offending key nor the
+# expected shape. The authority is
+# `oci os object-lifecycle-policy put --generate-param-json-input items`.
+LIFECYCLE_JSON=$(cat <<'JSON'
+[
+  {"name": "expire-sccache-objects", "action": "DELETE", "timeAmount": 30,
+   "timeUnit": "DAYS", "isEnabled": true,
+   "objectNameFilter": {"inclusionPrefixes": ["sccache/"]}},
+  {"name": "expire-vcpkg-archives", "action": "DELETE", "timeAmount": 90,
+   "timeUnit": "DAYS", "isEnabled": true,
+   "objectNameFilter": {"inclusionPrefixes": ["vcpkg/"]}}
+]
+JSON
+)
+if [ "$APPLY" -eq 0 ]; then
+    printf '%s\n' "$LIFECYCLE_JSON" | sed 's/^/  would put: /'
+else
+    # --force because this is a PUT of the whole policy: re-running replaces
+    # the two rules with the same two rules, which is what idempotent means
+    # here. There is no partial update API for lifecycle rules.
+    # Via a temp file rather than file:///dev/stdin: this call needs BOTH the
+    # JSON on stdin and stdin closed against an interactive prompt, and those
+    # are the same file descriptor. shellcheck SC2259 caught the attempt to
+    # have both, which would have sent an empty body.
+    lifecycle_file=$(mktemp)
+    printf '%s' "$LIFECYCLE_JSON" > "$lifecycle_file"
+    trap 'rm -f "$lifecycle_file"' EXIT
+    for attempt in 1 2 3 4 5 6; do
+        if oci os object-lifecycle-policy put --bucket-name "$BUCKET" \
+                --items "file://$lifecycle_file" --force </dev/null; then
+            break
+        fi
+        if [ "$attempt" -eq 6 ]; then
+            echo "  lifecycle rules could not be set after 6 attempts." >&2
+            echo "  If that was InsufficientServicePermissions, the service" >&2
+            echo "  statement in step 3 has not propagated or was not created." >&2
+            echo "  Everything else still works; the caches simply never expire." >&2
+            exit 1
+        fi
+        echo "  attempt ${attempt} failed; waiting 10s for the IAM policy to propagate"
+        sleep 10
+    done
 fi
 echo
 
@@ -315,6 +410,11 @@ mint_key() {
     local existing
     existing=$(oci iam customer-secret-key list --user-id "$uid" \
                    --query 'length(data)' --raw-output 2>/dev/null </dev/null || echo 0)
+    # A user with no keys makes this command print NOTHING and exit 0 — not
+    # `{"data": []}`, and not a 0 from `length(data)`. Left as an empty string
+    # it compares unequal to "0" and the script silently declines to mint the
+    # very keys it exists to create, reporting "already holds  key(s)".
+    case "$existing" in ""|null) existing=0 ;; esac
     local rotating=0
     case "$ROTATE" in both) rotating=1 ;; "$which") rotating=1 ;; esac
     if [ "$existing" != "0" ] && [ "$rotating" -eq 0 ]; then
