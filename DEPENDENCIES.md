@@ -356,8 +356,12 @@ This document lists the dependencies required to build and use the network simul
   everything else is unaffected.
 
 ### ccache — faster rebuilds
-- **Status**: Optional — auto-detected via `find_program(ccache)`; absent, the build is
-  identical to today (`-DKYTHIRA_ENABLE_CCACHE=OFF` to force off even when installed)
+- **Status**: Optional — the default launcher when present.
+  `-DKYTHIRA_COMPILER_LAUNCHER=auto` (the default) takes ccache if it is on
+  `PATH`, then sccache, then builds with no launcher at all, in which case the
+  build is identical to today. `-DKYTHIRA_COMPILER_LAUNCHER=none` forces it off
+  even when installed; the old `-DKYTHIRA_ENABLE_CCACHE=OFF` still works as an
+  alias for one release and says so with a deprecation warning.
 - **Purpose**: Skips recompiling a translation unit whose preprocessed content and
   compiler flags exactly match a prior compile. Measured on this project's own CI: a
   from-scratch rebuild where nothing changed since the last build dropped from 29m07s to
@@ -380,6 +384,46 @@ This document lists the dependencies required to build and use the network simul
   its real default. CI also uses smaller, explicit `--max-size` values scoped to
   each job's own disk budget (`.kiro/specs/ccache-adoption/`); that sizing is
   CI-only and not relevant to local use.
+
+### sccache — the same idea, with the cache somewhere else
+- **Status**: Optional, and **no local build needs it**. Named explicitly with
+  `-DKYTHIRA_COMPILER_LAUNCHER=sccache`, or picked up by `auto` on a machine
+  that has sccache but not ccache. An explicit name that is not on `PATH` is a
+  configure error rather than a silent fallback — a launcher that quietly does
+  nothing is worse than one that refuses, which this project learned from a
+  ccache directory that nothing restored for five days.
+- **Purpose**: What ccache does, except that the objects can live in object
+  storage rather than on the machine that compiled them. That is why CI uses
+  it (`.kiro/specs/oci-build-cache/`): a GitHub runner is destroyed after every
+  job, so a local cache is cold every time, and this repository's Actions cache
+  is over its 10 GB ceiling and evicting. sccache also caches **rustc**, which
+  ccache cannot, so the `lakers` port's `cargo build` is cached for the first
+  time.
+- **Installation**: there is no apt package. CI installs a pinned release
+  tarball verified by SHA-256; locally, take a release binary from
+  <https://github.com/mozilla/sccache/releases> or `cargo install sccache`.
+- **Pointing a local build at CI's bucket, read-only** — optional, and only
+  worth it if you are rebuilding what CI has already built:
+  ```bash
+  export AWS_ACCESS_KEY_ID=...        # the kythira-build-cache-ro key
+  export AWS_SECRET_ACCESS_KEY=...
+  export AWS_ENDPOINT_URL=https://<namespace>.compat.objectstorage.<region>.oraclecloud.com
+  export AWS_REGION=<region>
+  export SCCACHE_BUCKET=kythira-build-cache
+  export SCCACHE_ENDPOINT="$AWS_ENDPOINT_URL"
+  export SCCACHE_REGION="$AWS_REGION"
+  export SCCACHE_S3_KEY_PREFIX=sccache/
+  sccache --start-server
+  cmake -B build -G Ninja -DKYTHIRA_COMPILER_LAUNCHER=sccache ...
+  ```
+  The read-only key cannot write: sccache counts the refused uploads as cache
+  write errors in `sccache --show-stats` and returns the compile anyway. That
+  is the intended behaviour, not a misconfiguration — only a push to `main`
+  writes what everyone else reads. See `doc/ci_build_cache.md`.
+- **Notes**: sccache has no direct mode, so every lookup preprocesses; on a
+  machine where ccache already works, ccache is usually the better local
+  choice and is what `auto` picks. The two can coexist — the launcher is a
+  configure-time choice per build tree, not a machine-wide one.
 
 ### kconfiglib — build configuration tooling (Kconfig)
 - **Status**: Optional Python *tooling*, not a C++ library — distinct from every
