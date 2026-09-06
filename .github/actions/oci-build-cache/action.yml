@@ -1,0 +1,185 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+#
+# Picks the credential for the triggering event and exports one environment
+# that vcpkg's x-aws backend and sccache's s3 backend both read
+# (.kiro/specs/oci-build-cache/ Requirements 3 and 4, design.md Component 2).
+#
+# The writer policy lives here and nowhere else: a push to main gets the
+# read-write key, everything else gets the read-only one, and a run with no
+# key at all (a pull request from a fork, where GitHub withholds secrets)
+# turns both caches off and builds anyway. IAM enforces the same rule from
+# the other side -- the ro user cannot create objects -- so a bug in the case
+# statement below is refused by the service rather than poisoning a cache.
+#
+# This action never fails a build because a cache is unavailable. It fails
+# only when a repository VARIABLE is missing, which is a configuration error
+# with a one-line fix, and when the sccache download does not match its
+# pinned checksum, which is a wrong binary on the compile path.
+
+name: OCI build cache
+description: Select the build-cache credential for this event and export it for vcpkg and sccache
+
+inputs:
+  triplet:
+    description: vcpkg triplet, e.g. x64-linux — selects the bucket prefix
+    required: true
+  rw-access-key-id:
+    description: secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID
+    required: false
+    default: ""
+  rw-secret-access-key:
+    description: secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY
+    required: false
+    default: ""
+  ro-access-key-id:
+    description: secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID
+    required: false
+    default: ""
+  ro-secret-access-key:
+    description: secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY
+    required: false
+    default: ""
+  bucket:
+    description: vars.OCI_BUILD_CACHE_BUCKET
+    required: false
+    default: ""
+  namespace:
+    description: vars.OCI_BUILD_CACHE_NAMESPACE — the Object Storage namespace in the endpoint host
+    required: false
+    default: ""
+  region:
+    description: vars.OCI_CI_REGION
+    required: false
+    default: ""
+  sccache-version:
+    description: pinned sccache release; the checksums below belong to it
+    required: false
+    default: "0.17.0"
+
+outputs:
+  enabled:
+    description: "true when a credential was found and the environment was exported"
+    value: ${{ steps.select.outputs.enabled }}
+
+runs:
+  using: composite
+  steps:
+    - name: Select credential and export the cache environment
+      id: select
+      shell: bash
+      env:
+        # Passed through the environment rather than interpolated into the
+        # script body: a secret spliced into a shell script is one quoting
+        # mistake away from being executed, and `${{ }}` interpolation happens
+        # before bash ever sees the line.
+        RW_ID: ${{ inputs.rw-access-key-id }}
+        RW_SECRET: ${{ inputs.rw-secret-access-key }}
+        RO_ID: ${{ inputs.ro-access-key-id }}
+        RO_SECRET: ${{ inputs.ro-secret-access-key }}
+        BUCKET: ${{ inputs.bucket }}
+        NAMESPACE: ${{ inputs.namespace }}
+        REGION: ${{ inputs.region }}
+        TRIPLET: ${{ inputs.triplet }}
+      run: |
+        set -euo pipefail
+
+        # Variables first. These are repository *variables*, not secrets, so
+        # they are present on fork pull requests too; one being empty means
+        # the repository is misconfigured, and failing here costs a few
+        # seconds instead of a whole build that silently cached nothing.
+        missing=0
+        for v in BUCKET NAMESPACE REGION TRIPLET; do
+          if [ -z "${!v}" ]; then
+            echo "::error::${v} is empty — set the repository variable (see .kiro/specs/oci-build-cache/)"
+            missing=1
+          fi
+        done
+        [ "$missing" -eq 0 ] || exit 1
+
+        # The exact match on push:main is the whole writer policy. A push to
+        # any other branch, and every pull_request, falls to the read-only
+        # key: `*` is deliberately the last pattern and deliberately not a
+        # prefix match on refs/heads/main, which would also match main-foo.
+        case "${GITHUB_EVENT_NAME}:${GITHUB_REF_NAME}" in
+          push:main) key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write" ;;
+          *)         key_id="$RO_ID"; secret="$RO_SECRET"; mode="read";      which="read-only" ;;
+        esac
+
+        if [ -z "$key_id" ] || [ -z "$secret" ]; then
+          echo "::warning::no OCI build-cache credential for ${GITHUB_EVENT_NAME} on ${GITHUB_REF_NAME}; both caches disabled for this run"
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "build cache: ${which} key, vcpkg mode=${mode}, prefix vcpkg/${TRIPLET}/"
+
+        # vcpkg's x-aws backend shells out to the AWS CLI. Asserted rather
+        # than assumed: it is present on ubuntu-24.04 and ubuntu-24.04-arm
+        # today, and if a future image drops it every port would rebuild from
+        # source with only a per-port warning to say so.
+        if ! command -v aws >/dev/null 2>&1; then
+          echo "::error::the AWS CLI is not on this runner; vcpkg's x-aws backend cannot work"
+          exit 1
+        fi
+        aws --version
+
+        endpoint="https://${NAMESPACE}.compat.objectstorage.${REGION}.oraclecloud.com"
+        {
+          echo "AWS_ENDPOINT_URL=${endpoint}"
+          echo "AWS_REGION=${REGION}"
+          echo "AWS_ACCESS_KEY_ID=${key_id}"
+          echo "AWS_SECRET_ACCESS_KEY=${secret}"
+          echo "VCPKG_BINARY_SOURCES=clear;x-aws,s3://${BUCKET}/vcpkg/${TRIPLET}/,${mode}"
+          echo "SCCACHE_BUCKET=${BUCKET}"
+          echo "SCCACHE_ENDPOINT=${endpoint}"
+          echo "SCCACHE_REGION=${REGION}"
+          echo "SCCACHE_S3_KEY_PREFIX=sccache/"
+          echo "SCCACHE_S3_USE_SSL=true"
+          echo "RUSTC_WRAPPER=sccache"
+          # vcpkg scrubs the environment of port builds. Without this the
+          # lakers port's cargo build sees no RUSTC_WRAPPER and no
+          # credentials, which is the rustc coverage ccache never had.
+          echo "VCPKG_KEEP_ENV_VARS=RUSTC_WRAPPER;SCCACHE_BUCKET;SCCACHE_ENDPOINT;SCCACHE_REGION;SCCACHE_S3_KEY_PREFIX;SCCACHE_S3_USE_SSL;AWS_ENDPOINT_URL;AWS_REGION;AWS_ACCESS_KEY_ID;AWS_SECRET_ACCESS_KEY"
+        } >> "$GITHUB_ENV"
+        echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+    - name: Install the pinned sccache
+      if: steps.select.outputs.enabled == 'true'
+      shell: bash
+      env:
+        SCCACHE_VERSION: ${{ inputs.sccache-version }}
+      run: |
+        set -euo pipefail
+
+        # There is no apt package, so this is a release tarball pinned by
+        # version AND by checksum. The checksums were taken by downloading
+        # each asset and hashing it, and they agree with the .sha256 files
+        # published beside them.
+        case "${RUNNER_ARCH}" in
+          X64)
+            target=x86_64-unknown-linux-musl
+            sha=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006 ;;
+          ARM64)
+            target=aarch64-unknown-linux-musl
+            sha=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77 ;;
+          *)
+            echo "::error::no pinned sccache for RUNNER_ARCH=${RUNNER_ARCH}"
+            exit 1 ;;
+        esac
+
+        # The checksums above belong to 0.17.0. Refuse rather than install an
+        # unverified binary if someone bumps the input without bumping them.
+        if [ "${SCCACHE_VERSION}" != "0.17.0" ]; then
+          echo "::error::sccache-version=${SCCACHE_VERSION} but the pinned checksums in this action are for 0.17.0"
+          exit 1
+        fi
+
+        tarball="sccache-v${SCCACHE_VERSION}-${target}.tar.gz"
+        url="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${tarball}"
+        tmp=$(mktemp -d)
+        curl --retry 3 --retry-delay 5 -sSfL -o "${tmp}/${tarball}" "$url"
+        echo "${sha}  ${tmp}/${tarball}" | sha256sum -c -
+        tar xzf "${tmp}/${tarball}" -C "$tmp"
+        sudo install -m 0755 "${tmp}/sccache-v${SCCACHE_VERSION}-${target}/sccache" /usr/local/bin/sccache
+        rm -rf "$tmp"
+        sccache --version

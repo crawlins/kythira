@@ -144,15 +144,49 @@ bucket does.
     namespace and key creation dates here.
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6_
 
-- [ ] 3. Composite action `.github/actions/oci-build-cache/`
-  - `action.yml` with the inputs in Requirement 4.5 and the logic in design.md
-    Component 2: event-to-key selection, variable checks with `::error::`,
-    the no-credentials `enabled=false` path, the environment export, and the
-    pinned sccache download with SHA-256 verification for `X64` and `ARM64`.
-  - Assert the AWS CLI is present and print its version.
-  - Verify on a scratch workflow that a `push` to a non-main branch selects
-    the RO key (the `push:main` case must be exact), and that unsetting a
-    variable fails the job at the action.
+- [ ] 3. Composite action `.github/actions/oci-build-cache/` — **written and
+      exercised September 5, 2026; not yet run by any workflow**
+  - `action.yml` implements design.md Component 2: the inputs of Requirement
+    4.5, the `::error::` on a missing repository *variable*, the
+    no-credentials `enabled=false` path for missing *secrets*, the AWS CLI
+    assertion, the environment export, and the pinned sccache install for
+    `X64` and `ARM64`.
+  - **The selection logic was run, not reviewed.** The step's script was
+    extracted from the YAML and executed with a stub `aws`, a temporary
+    `GITHUB_ENV` and `GITHUB_OUTPUT`, once per state:
+
+    | Event and ref | Key | vcpkg mode | `enabled` | Exit |
+    | --- | --- | --- | --- | --- |
+    | `push:main` | read-write | `readwrite` | true | 0 |
+    | `push:main-experiment` | read-only | `read` | true | 0 |
+    | `pull_request:318/merge` | read-only | `read` | true | 0 |
+    | `push:main`, RO secrets absent | read-write | `readwrite` | true | 0 |
+    | `pull_request`, RO secrets absent | none | — | **false**, with a warning | 0 |
+    | `push:main`, `BUCKET` unset | — | — | — | **1**, `::error::BUCKET is empty` |
+
+    The second row is the one worth having: Task 3 asks specifically that the
+    `push:main` case be exact, and `main-experiment` takes the read-only key.
+  - **sccache is pinned by version and by checksum, and the checksums were
+    measured rather than copied.** Both `linux-musl` assets of v0.17.0 were
+    downloaded and hashed on this box; each agrees with the `.sha256`
+    published beside it (x86_64 `67c4a96d…`, aarch64 `821a8634…`), and the
+    x86_64 binary runs and reports `sccache 0.17.0`. Both guards were run:
+    an unrecognised `RUNNER_ARCH` exits 1, and bumping `sccache-version`
+    without bumping the checksums exits 1 rather than installing an
+    unverified binary. A deliberately wrong hash was fed to the same
+    `sha256sum -c` line to confirm it fails.
+  - **`actionlint` cannot check this file.** 1.7.7 parses any `.yml` under
+    `.github/` as a *workflow*, so it reports a missing `on:` and `jobs:`
+    section for a composite action's metadata and never looks at the
+    contents; a deliberately typo'd copy produced the identical output, so it
+    was not checking either way. Verified instead by parsing the YAML
+    (`runs.using == composite`, every step declares `shell: bash`) and
+    running `shellcheck` 0.10.0 over each extracted `run:` block — clean.
+  - Secrets reach the script through `env:` rather than `${{ }}` splicing in
+    the body, so a secret containing shell metacharacters cannot be executed.
+  - **Still to do**: the two verification runs Task 3 names, which need a
+    scratch workflow and the bucket — and Tasks 6 and 7, which are what
+    actually reference this action.
   - _Requirements: 3.2, 4.1, 4.2, 4.3, 4.5, 5.3_
 
 - [x] 4. CMake `KYTHIRA_COMPILER_LAUNCHER` — **done September 5, 2026**
@@ -201,11 +235,10 @@ bucket does.
   - `message(DEPRECATION)` is kept as designed rather than downgraded to
     `WARNING`: checked on CMake 3.31.6 that it prints by default, with and
     without `CMAKE_WARN_DEPRECATED`.
-  - **Not verified here**: that sccache is a *working* launcher. There is no
-    sccache on this box, so the "only sccache present" and "explicit sccache"
-    states used a stub on `PATH`; `find_program` looks for a name, so those
-    states test what CMake does, not what sccache does. Task 1 is where a real
-    sccache is measured.
+  - The two sccache states were re-run against the **real** sccache 0.17.0
+    binary (the one Task 3 pins), not only the stub they were first taken
+    with, and select it identically. What is still not verified here is that
+    sccache *caches* anything — that is Task 1's measurement, on a runner.
   - _Requirements: 5.2, 9.1_
 
 - [ ] 5. `DEPENDENCIES.md` and `doc/ci_build_cache.md`
