@@ -241,12 +241,36 @@ bucket does.
     sccache *caches* anything — that is Task 1's measurement, on a runner.
   - _Requirements: 5.2, 9.1_
 
-- [ ] 5. `DEPENDENCIES.md` and `doc/ci_build_cache.md`
-  - sccache entry beside the ccache one: install, the local read-only recipe
-    (`ro` key, `AWS_ENDPOINT_URL`, `-DKYTHIRA_COMPILER_LAUNCHER=sccache`),
-    and that no local build needs it.
-  - `doc/ci_build_cache.md` per Requirement 8.2, written from the design and
-    updated by Tasks 10 and 12 with measured figures.
+- [ ] 5. `DEPENDENCIES.md` and `doc/ci_build_cache.md` — **written September 5,
+      2026; the measured figures Tasks 10 and 12 add are still missing**
+  - `DEPENDENCIES.md` gains an sccache entry beside ccache: what it is, why CI
+    wants it and a local machine does not, the read-only recipe (`ro` key,
+    `AWS_ENDPOINT_URL`, `-DKYTHIRA_COMPILER_LAUNCHER=sccache`), and that
+    refused uploads on that key are the intended behaviour rather than a
+    misconfiguration. The ccache entry's Status line is rewritten for the new
+    launcher variable, including the deprecated alias.
+  - `doc/ci_build_cache.md` covers Requirement 8.2: what each cache holds and
+    how its key is formed, the bucket layout and why there is no per-leg
+    sccache prefix, the 30/90 lifecycle asymmetry, the writer policy enforced
+    twice (action, then IAM) with the PR trade-off stated, absence as a no-op,
+    how to read the job-summary statistics and what each number would mean,
+    the three scripts, key rotation, and the repository configuration table.
+  - Not ingested by Doxygen: `Doxyfile`'s `INPUT` is `include README.md`, so a
+    new file under `doc/` cannot break the docs gate. Checked rather than
+    assumed, because that gate is `WARN_AS_ERROR = FAIL_ON_WARNINGS`.
+  - **A discrepancy found while writing it, and written into the document.**
+    `requirements.md` attributes the $0.50-per-month pre-registration to
+    `doc/sccache_dogfood_cost_estimate.md` — "ten gigabytes of standard
+    storage is $0.26, roughly 700,000 requests … about $0.24". Those figures
+    are **not in that document**. It prices the Redis-gateway deployment
+    (compute, block volume, egress, about $55 per month), has no Object
+    Storage price line at all, and says explicitly that Object Storage is
+    "not included … this deployment does not use". The $0.50 is therefore a
+    pre-registration made in the spec, not a figure carried from a costed
+    document, and `doc/ci_build_cache.md` says so at the point it quotes it.
+    Requirement 8.3's cross-reference (Task 11) is where the two are
+    reconciled; whoever does it should add the Object Storage line to the
+    estimate rather than quietly re-citing it.
   - _Requirements: 8.1, 8.2_
 
 - [ ] 6. vcpkg binary cache to the bucket, every workflow
