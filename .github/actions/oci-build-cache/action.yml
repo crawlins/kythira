@@ -101,9 +101,17 @@ runs:
         # any other branch, and every pull_request, falls to the read-only
         # key: `*` is deliberately the last pattern and deliberately not a
         # prefix match on refs/heads/main, which would also match main-foo.
+        # THROWAWAY BRANCH ONLY — the measure/* arm below does not exist on
+        # main and must never be merged. Task 1 of the spec measures a cold
+        # run followed by a warm one, and a warm run is only meaningful if the
+        # cold one populated the cache, which needs write access from a branch
+        # that is not main. The bucket is emptied after the measurement, and
+        # this PR is closed rather than merged (Requirement 1.5).
         case "${GITHUB_EVENT_NAME}:${GITHUB_REF_NAME}" in
-          push:main) key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write" ;;
-          *)         key_id="$RO_ID"; secret="$RO_SECRET"; mode="read";      which="read-only" ;;
+          push:main)                    key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write" ;;
+          push:measure/oci-build-cache-task1)
+                                        key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write (THROWAWAY MEASUREMENT BRANCH)" ;;
+          *)                            key_id="$RO_ID"; secret="$RO_SECRET"; mode="read";      which="read-only" ;;
         esac
 
         if [ -z "$key_id" ] || [ -z "$secret" ]; then
