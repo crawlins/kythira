@@ -94,17 +94,54 @@ bucket does.
   - Close the PR without merging.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
-- [ ] 2. Provision the bucket, users, policies and keys
-  - Write `scripts/oci-build-cache/provision.sh` per design.md Component 1:
-    dry-run by default, `--apply`, `--rotate`, idempotent, never writes a key
-    to disk. Copyright header after the shebang.
-  - Write `scripts/oci-build-cache/audit.sh` per Component 1, and
-    `scripts/oci-build-cache/test-audit.sh` that tags a scratch bucket and
-    asserts the audit fails, then removes it and asserts the audit passes.
-  - Run the audit in the failing direction and paste both outputs here.
-  - Apply, set the three repository variables and four secrets, and record
-    the bucket name, namespace and the key creation dates here (never the
-    keys).
+- [ ] 2. Provision the bucket, users, policies and keys — **scripts written
+      and logic-tested September 5, 2026; the tenancy half is not done**
+  - `scripts/oci-build-cache/provision.sh`, `audit.sh` and `test-audit.sh`
+    exist, carry the copyright header after the shebang, and are clean under
+    `shellcheck` 0.10.0 at default severity.
+  - **`test-audit.sh`'s stub mode passes all five checks**, and three of them
+    are the failing direction Requirement 2.6 asks for. Run on this box with
+    a fake `oci` earlier on `PATH`:
+
+    ```
+    PASS  a tenancy holding exactly this spec's resources passes (exit 0)
+    PASS  an unexpected tagged resource FAILS and is named (exit 1)
+    PASS  a leak query that errors FAILS rather than reporting clean (exit 1)
+    PASS  unparseable leak output FAILS rather than reading as empty (exit 1)
+    PASS  an informational query failing does not fail the audit (exit 0)
+    ```
+
+  - **Writing the test found a hole in the audit and closed it.** The leak
+    check read the search result through `jq ... 2>/dev/null`, so a query that
+    exited 0 and returned something unparseable — an HTML error page from an
+    expired session is the realistic case — produced no rows and printed
+    "nothing found", which is indistinguishable from a clean tenancy. That is
+    precisely the failure `audit-aws-leaks.sh`'s header warns about, arriving
+    in a script written from that header. It is now a separate `blind=1` path,
+    and the fourth check above is what holds it.
+  - **The audit fails on exactly one thing, deliberately**: an unexpected
+    resource carrying `kythira-spec=oci-build-cache`, or a leak query that
+    could not run. The contents, lifecycle, key and usage sections are
+    reports; a briefly unavailable billing endpoint prints UNKNOWN and does
+    not fail an audit whose subject is intact. Written down in the script's
+    header so it is not "fixed" later.
+  - `provision.sh` is dry-run by default and its plan was exercised end to end
+    against a stub CLI: namespace, endpoint, tenancy walk, bucket, both
+    lifecycle rules, group, two users, group membership, three policy
+    statements, the key step and the `gh variable set` lines. Guard rails
+    checked too — absent OCI CLI, absent compartment, bad `--rotate` value,
+    unknown argument.
+  - Two things the design left implicit, decided here and commented in place:
+    an existing IAM policy is **reported, never overwritten** (a policy CI
+    depends on is not something a script should rewrite without knowing why it
+    was last edited), and `--rotate` mints the new key and prints it **before**
+    deleting the old one, so a failure mid-rotation leaves a usable
+    credential rather than none.
+  - **Still to do, and it needs the OCI tenancy** (no OCI CLI or credentials
+    on this box): run `provision.sh --apply`, run `test-audit.sh --live` for
+    the real search-query direction a stub cannot check, set the two new
+    repository variables and the four secrets, and record the bucket name,
+    namespace and key creation dates here.
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6_
 
 - [ ] 3. Composite action `.github/actions/oci-build-cache/`
