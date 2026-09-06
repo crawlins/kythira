@@ -95,26 +95,83 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$" AND CMAKE_CXX_COMPILER_ID 
     add_compile_options(-include "${CMAKE_SOURCE_DIR}/include/raft/arm64_clang_ext_random_compat.hpp")
 endif()
 
-# ccache: speeds up rebuilds by skipping recompilation of translation units
-# whose preprocessed content + compiler flags exactly match a prior compile.
-# Purely opt-in acceleration — absent or disabled, the build is identical to
-# today. See .kiro/specs/ccache-adoption/ for the measured impact (~59%
-# reduction in a from-scratch "nothing changed" rebuild; real numbers from
-# a throwaway CI experiment, not a guess).
-option(KYTHIRA_ENABLE_CCACHE "Use ccache to speed up rebuilds when available" ON)
+# Compiler launcher: skips recompilation of translation units whose
+# preprocessed content + compiler flags exactly match a prior compile. Purely
+# opt-in acceleration — with no launcher the build is identical, which
+# Requirement 9.1 of .kiro/specs/oci-build-cache/ checks by diffing the target
+# lists with it on and off. See .kiro/specs/ccache-adoption/ for the measured
+# impact (~59% reduction in a from-scratch "nothing changed" rebuild; real
+# numbers from a throwaway CI experiment, not a guess).
+#
+# ccache and sccache are interchangeable here as far as CMake is concerned;
+# they differ in where the cache lives. ccache is local-only, which is what a
+# developer's machine wants; sccache can put the objects in object storage,
+# which is what CI wants now that the Actions cache cannot hold them
+# (.kiro/specs/oci-build-cache/). Hence `auto` preferring ccache: a machine
+# that has always used ccache keeps using it, and CI asks for sccache by name.
+set(KYTHIRA_COMPILER_LAUNCHER "auto" CACHE STRING
+    "Compiler launcher: auto (ccache, then sccache, then none), ccache, sccache or none")
+set_property(CACHE KYTHIRA_COMPILER_LAUNCHER PROPERTY STRINGS auto ccache sccache none)
 
-if(KYTHIRA_ENABLE_CCACHE)
-    find_program(CCACHE_PROGRAM ccache)
-    if(CCACHE_PROGRAM)
-        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "" FORCE)
-        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "" FORCE)
-        message(STATUS "ccache: enabled (${CCACHE_PROGRAM})")
-    else()
-        message(STATUS "ccache: not found, building without it")
-    endif()
-else()
-    message(STATUS "ccache: disabled (KYTHIRA_ENABLE_CCACHE=OFF)")
+# Deprecated alias, kept for one release. Declared with option() so that it
+# still appears in ccmake and so an existing build tree carrying it does not
+# start warning about an unused variable.
+option(KYTHIRA_ENABLE_CCACHE "Deprecated: use KYTHIRA_COMPILER_LAUNCHER=none" ON)
+if(DEFINED KYTHIRA_ENABLE_CCACHE AND NOT KYTHIRA_ENABLE_CCACHE)
+    # DEPRECATION rather than WARNING: it prints by default (verified on
+    # CMake 3.31.6, with and without CMAKE_WARN_DEPRECATED), and a project
+    # that opts into -DCMAKE_ERROR_DEPRECATED=ON gets a hard error, which is
+    # the right answer for a knob scheduled for removal.
+    message(DEPRECATION
+        "KYTHIRA_ENABLE_CCACHE=OFF is deprecated and will be removed; "
+        "it is now KYTHIRA_COMPILER_LAUNCHER=none")
+    set(KYTHIRA_COMPILER_LAUNCHER "none")
 endif()
+
+set(_kythira_launcher "")
+if(KYTHIRA_COMPILER_LAUNCHER STREQUAL "auto")
+    # Two separate cache entries rather than one find_program(NAMES ccache
+    # sccache): find_program skips the search when its result variable is
+    # already cached, so a single shared entry would pin whichever launcher
+    # the tree was first configured with and quietly ignore a later change of
+    # KYTHIRA_COMPILER_LAUNCHER — the silent-no-op failure mode this whole
+    # block exists to avoid.
+    find_program(KYTHIRA_CCACHE_PROGRAM ccache)
+    find_program(KYTHIRA_SCCACHE_PROGRAM sccache)
+    if(KYTHIRA_CCACHE_PROGRAM)
+        set(_kythira_launcher "${KYTHIRA_CCACHE_PROGRAM}")
+    elseif(KYTHIRA_SCCACHE_PROGRAM)
+        set(_kythira_launcher "${KYTHIRA_SCCACHE_PROGRAM}")
+    endif()
+elseif(NOT KYTHIRA_COMPILER_LAUNCHER STREQUAL "none")
+    string(TOUPPER "${KYTHIRA_COMPILER_LAUNCHER}" _kythira_launcher_upper)
+    find_program(KYTHIRA_${_kythira_launcher_upper}_PROGRAM
+                 NAMES "${KYTHIRA_COMPILER_LAUNCHER}")
+    set(_kythira_launcher "${KYTHIRA_${_kythira_launcher_upper}_PROGRAM}")
+    if(NOT _kythira_launcher)
+        # Deliberately fatal rather than a fallback to no launcher. The
+        # ccache spec's CCACHE_DIR incident is the reason: CI asked for a
+        # compiler cache, silently got nothing, and nobody noticed for five
+        # days because the build still worked.
+        message(FATAL_ERROR
+            "KYTHIRA_COMPILER_LAUNCHER=${KYTHIRA_COMPILER_LAUNCHER} but it is not on PATH")
+    endif()
+    unset(_kythira_launcher_upper)
+endif()
+
+if(_kythira_launcher)
+    set(CMAKE_C_COMPILER_LAUNCHER "${_kythira_launcher}" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${_kythira_launcher}" CACHE STRING "" FORCE)
+    message(STATUS "compiler launcher: ${_kythira_launcher}")
+else()
+    # Clear rather than leave alone: reconfiguring an existing tree down to
+    # `none` must actually stop launching, and both entries were written with
+    # FORCE above, so they survive a reconfigure otherwise.
+    set(CMAKE_C_COMPILER_LAUNCHER "" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "" CACHE STRING "" FORCE)
+    message(STATUS "compiler launcher: none")
+endif()
+unset(_kythira_launcher)
 
 # Code coverage support. CONFIG_COVERAGE (cmake/Kconfig.cmake) pre-seeds this
 # cache entry when Kconfig is engaged; set(... CACHE ...) without FORCE only
