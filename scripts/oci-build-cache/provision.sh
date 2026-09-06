@@ -116,14 +116,32 @@ act() {
 # A read-only query whose failure is not fatal: used to decide whether a thing
 # already exists. `oci ... get` exits non-zero for "not found", which is the
 # answer this wants, not an error.
-exists() { "$@" >/dev/null 2>&1; }
+exists() { "$@" >/dev/null 2>&1 </dev/null; }
 
 # ── Namespace ────────────────────────────────────────────────────────────────
 # The Object Storage namespace is a property of the tenancy and is part of the
 # S3-compatibility endpoint host, which is why it becomes a repository
 # variable rather than being derived in the workflow: deriving it would need
 # the OCI CLI on every runner, which is exactly what x-aws avoids.
-NAMESPACE=$(oci os ns get --query data --raw-output)
+# The first call is also the authentication check, and it is worth making
+# that explicit: the CLI's own failure here is a bare "Abort:" with no
+# indication that ~/.oci/config is missing, and under `set -e` inside a
+# command substitution that is the entire output of the script.
+# stdin closed deliberately: an unconfigured CLI PROMPTS rather than failing
+# ("config file not found — do you want to create one?"), and a provisioning
+# script that blocks on a question nobody can see is worse than one that
+# exits. With no stdin it declines and returns.
+ns_rc=0
+NAMESPACE=$(oci os ns get --query data --raw-output 2>&1 </dev/null) || ns_rc=$?
+if [ "$ns_rc" -ne 0 ] || [ -z "$NAMESPACE" ]; then
+    echo "error: the OCI CLI could not reach the tenancy. Its message was:" >&2
+    printf '%s\n' "${NAMESPACE:-(no output)}" | sed 's/^/  /' >&2
+    echo >&2
+    echo "  Configure it with 'oci setup config' (needs the tenancy OCID, your" >&2
+    echo "  user OCID and an API key), or set OCI_CLI_* / instance-principal" >&2
+    echo "  auth. Nothing was created." >&2
+    exit 1
+fi
 echo "Object Storage namespace: $NAMESPACE"
 echo "S3 compatibility endpoint: https://${NAMESPACE}.compat.objectstorage.${REGION}.oraclecloud.com"
 echo
@@ -136,7 +154,7 @@ if [ -z "$TENANCY_ID" ]; then
     parent="$COMPARTMENT_ID"
     while :; do
         next=$(oci iam compartment get --compartment-id "$parent" \
-                   --query 'data."compartment-id"' --raw-output 2>/dev/null || echo "")
+                   --query 'data."compartment-id"' --raw-output 2>/dev/null </dev/null || echo "")
         [ -n "$next" ] || break
         parent="$next"
     done
@@ -201,7 +219,7 @@ echo "3. Group $GROUP_NAME and its two users"
 id_of() {   # $1 = list subcommand (group|user), $2 = name
     local out
     out=$(oci iam "$1" list --compartment-id "$TENANCY_ID" --name "$2" \
-              --query 'data[0].id' --raw-output 2>/dev/null || echo "")
+              --query 'data[0].id' --raw-output 2>/dev/null </dev/null || echo "")
     [ "$out" = "null" ] && out=""
     printf '%s' "$out"
 }
@@ -238,7 +256,7 @@ for user in "$RW_USER" "$RO_USER"; do
         continue
     fi
     member=$(oci iam group list-users --group-id "$group_id" \
-                 --query "length(data[?id=='$uid'])" --raw-output 2>/dev/null || echo 0)
+                 --query "length(data[?id=='$uid'])" --raw-output 2>/dev/null </dev/null || echo 0)
     if [ "$member" != "0" ]; then
         echo "  $user is already in $GROUP_NAME"
     else
@@ -260,7 +278,7 @@ POLICY
 )
 printf '%s\n' "$POLICY_STATEMENTS" | sed 's/^/  /'
 policy_id=$(oci iam policy list --compartment-id "$COMPARTMENT_ID" \
-                --name kythira-build-cache-access --query 'data[0].id' --raw-output 2>/dev/null || echo "")
+                --name kythira-build-cache-access --query 'data[0].id' --raw-output 2>/dev/null </dev/null || echo "")
 [ "$policy_id" = "null" ] && policy_id=""
 if [ -n "$policy_id" ]; then
     echo "  policy exists ($policy_id) — the statements above are what it should"
@@ -296,7 +314,7 @@ mint_key() {
     fi
     local existing
     existing=$(oci iam customer-secret-key list --user-id "$uid" \
-                   --query 'length(data)' --raw-output 2>/dev/null || echo 0)
+                   --query 'length(data)' --raw-output 2>/dev/null </dev/null || echo 0)
     local rotating=0
     case "$ROTATE" in both) rotating=1 ;; "$which") rotating=1 ;; esac
     if [ "$existing" != "0" ] && [ "$rotating" -eq 0 ]; then

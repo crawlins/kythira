@@ -148,8 +148,21 @@ bucket does.
     was last edited), and `--rotate` mints the new key and prints it **before**
     deleting the old one, so a failure mid-rotation leaves a usable
     credential rather than none.
-  - **Still to do, and it needs the OCI tenancy** (no OCI CLI or credentials
-    on this box): run `provision.sh --apply`, run `test-audit.sh --live` for
+  - **Installing the OCI CLI 3.92.0 on this box (September 6, 2026) found a
+    hang, before any tenancy existed.** With no `~/.oci/config` the CLI does
+    not fail — it *prompts* ("Do you want to create a new config file?
+    [Y/n]") — so `provision.sh`'s first call blocked on a question nobody
+    could see, and under `set -e` inside a command substitution the entire
+    output of the script was a bare `Abort:`. Every CLI invocation in both
+    scripts now runs with stdin closed, and the first call is an explicit
+    authentication probe that prints the CLI's own message plus what to do
+    about it. Re-verified against the real, unconfigured CLI: `provision.sh`
+    exits 1 naming the missing config, and `audit.sh` reports UNKNOWN for
+    each informational section and **fails** on the leak query — "the tag
+    inventory is UNKNOWN, not clean" — which is the doctrine holding against
+    a real failure rather than a stub.
+  - **Still to do, and it needs the tenancy** (the CLI is now installed at
+    `~/.local/bin/oci`, but there is no `~/.oci/config`): run `provision.sh --apply`, run `test-audit.sh --live` for
     the real search-query direction a stub cannot check, set the two new
     repository variables and the four secrets, and record the bucket name,
     namespace and key creation dates here.

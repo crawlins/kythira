@@ -86,7 +86,10 @@ blind=0     # leak queries that could not run — as bad as a leak
 try() {
     local label="$1"; shift
     local out rc=0
-    out=$("$@" 2>&1) || rc=$?
+    # stdin closed: an unconfigured CLI prompts ("config file not found — do
+    # you want to create one?") instead of failing, and an audit that blocks
+    # on an invisible question reports nothing at all.
+    out=$("$@" 2>&1 </dev/null) || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "  UNKNOWN: $label could not be read (exit $rc):" >&2
         printf '%s\n' "$out" | sed 's/^/    /' >&2
@@ -138,7 +141,7 @@ for user in "$RW_USER" "$RO_USER"; do
         continue
     fi
     uid=$(oci iam user list --compartment-id "$tenancy_id" --name "$user" \
-              --query 'data[0].id' --raw-output 2>/dev/null || echo "")
+              --query 'data[0].id' --raw-output 2>/dev/null </dev/null || echo "")
     if [ -z "$uid" ] || [ "$uid" = "null" ]; then
         echo "  $user: does not exist"
         continue
@@ -187,7 +190,7 @@ search_rc=0
 # would otherwise be the tested command under any future `set -e`, and the
 # intent — "run it, remember whether it worked" — reads better here anyway.
 search_out=$(oci search resource structured-search --query-text \
-    "query all resources where (freeformTags.key = '${SPEC_TAG_KEY}' && freeformTags.value = '${SPEC_TAG_VALUE}')" 2>&1) || search_rc=$?
+    "query all resources where (freeformTags.key = '${SPEC_TAG_KEY}' && freeformTags.value = '${SPEC_TAG_VALUE}')" 2>&1 </dev/null) || search_rc=$?
 if [ "$search_rc" -ne 0 ]; then
     echo "::error::The leak query FAILED — the tag inventory is UNKNOWN, not clean:" >&2
     printf '%s\n' "$search_out" | sed 's/^/    /' >&2
