@@ -1,10 +1,15 @@
 # Implementation Plan — OCI-Hosted Build Cache
 
-## Status: 1/12 tasks complete
+## Status: 2/12 tasks complete
 
-**Last Updated**: September 5, 2026. Task 4 (the CMake launcher) is done and
-verified locally; it is the only task in the graph with no edge into it, and
-it needs neither the bucket nor a CI run.
+**Last Updated**: September 6, 2026. Task 2 is done: **the bucket, the IAM and
+the credentials exist**, and `audit.sh` reads them back clean. Task 4 (the
+CMake launcher) is done and verified locally; it is the only task in the graph
+with no edge into it, and it needed neither the bucket nor a CI run.
+
+With Task 2 applied, Tasks 1, 3, 6 and 7 are unblocked: the bucket Task 1's
+measurement needs now exists, and so do the repository variables and secrets
+the composite action reads.
 
 Tasks 2, 3 and 5 have their **artifacts written and exercised as far as a
 machine with no OCI tenancy can exercise them** — the provisioning and audit
@@ -105,67 +110,61 @@ bucket does.
   - Close the PR without merging.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
-- [ ] 2. Provision the bucket, users, policies and keys — **scripts written
-      and logic-tested September 5, 2026; the tenancy half is not done**
-  - `scripts/oci-build-cache/provision.sh`, `audit.sh` and `test-audit.sh`
-    exist, carry the copyright header after the shebang, and are clean under
-    `shellcheck` 0.10.0 at default severity.
-  - **`test-audit.sh`'s stub mode passes all five checks**, and three of them
-    are the failing direction Requirement 2.6 asks for. Run on this box with
-    a fake `oci` earlier on `PATH`:
-
-    ```
-    PASS  a tenancy holding exactly this spec's resources passes (exit 0)
-    PASS  an unexpected tagged resource FAILS and is named (exit 1)
-    PASS  a leak query that errors FAILS rather than reporting clean (exit 1)
-    PASS  unparseable leak output FAILS rather than reading as empty (exit 1)
-    PASS  an informational query failing does not fail the audit (exit 0)
-    ```
-
-  - **Writing the test found a hole in the audit and closed it.** The leak
-    check read the search result through `jq ... 2>/dev/null`, so a query that
-    exited 0 and returned something unparseable — an HTML error page from an
-    expired session is the realistic case — produced no rows and printed
-    "nothing found", which is indistinguishable from a clean tenancy. That is
-    precisely the failure `audit-aws-leaks.sh`'s header warns about, arriving
-    in a script written from that header. It is now a separate `blind=1` path,
-    and the fourth check above is what holds it.
-  - **The audit fails on exactly one thing, deliberately**: an unexpected
-    resource carrying `kythira-spec=oci-build-cache`, or a leak query that
-    could not run. The contents, lifecycle, key and usage sections are
-    reports; a briefly unavailable billing endpoint prints UNKNOWN and does
-    not fail an audit whose subject is intact. Written down in the script's
-    header so it is not "fixed" later.
-  - `provision.sh` is dry-run by default and its plan was exercised end to end
-    against a stub CLI: namespace, endpoint, tenancy walk, bucket, both
-    lifecycle rules, group, two users, group membership, three policy
-    statements, the key step and the `gh variable set` lines. Guard rails
-    checked too — absent OCI CLI, absent compartment, bad `--rotate` value,
-    unknown argument.
-  - Two things the design left implicit, decided here and commented in place:
-    an existing IAM policy is **reported, never overwritten** (a policy CI
-    depends on is not something a script should rewrite without knowing why it
-    was last edited), and `--rotate` mints the new key and prints it **before**
-    deleting the old one, so a failure mid-rotation leaves a usable
-    credential rather than none.
-  - **Installing the OCI CLI 3.92.0 on this box (September 6, 2026) found a
-    hang, before any tenancy existed.** With no `~/.oci/config` the CLI does
-    not fail — it *prompts* ("Do you want to create a new config file?
-    [Y/n]") — so `provision.sh`'s first call blocked on a question nobody
-    could see, and under `set -e` inside a command substitution the entire
-    output of the script was a bare `Abort:`. Every CLI invocation in both
-    scripts now runs with stdin closed, and the first call is an explicit
-    authentication probe that prints the CLI's own message plus what to do
-    about it. Re-verified against the real, unconfigured CLI: `provision.sh`
-    exits 1 naming the missing config, and `audit.sh` reports UNKNOWN for
-    each informational section and **fails** on the leak query — "the tag
-    inventory is UNKNOWN, not clean" — which is the doctrine holding against
-    a real failure rather than a stub.
-  - **Still to do, and it needs the tenancy** (the CLI is now installed at
-    `~/.local/bin/oci`, but there is no `~/.oci/config`): run `provision.sh --apply`, run `test-audit.sh --live` for
-    the real search-query direction a stub cannot check, set the two new
-    repository variables and the four secrets, and record the bucket name,
-    namespace and key creation dates here.
+- [x] 2. Provision the bucket, users, policies and keys — **applied against
+      the real tenancy September 6, 2026**
+  - `provision.sh --apply` ran green end to end. What exists now, read back by
+    `audit.sh` (exit 0, no UNKNOWNs): bucket `kythira-build-cache` in
+    `us-phoenix-1`, namespace **`axunmw4f0mln`**, NoPublicAccess, Standard,
+    versioning disabled; both lifecycle rules (`sccache/` 30 days, `vcpkg/`
+    90 days, enabled); three groups, two users, one policy of four
+    statements; and one ACTIVE customer secret key per user, created
+    **2026-09-06T10:25:52Z** (rw) and **10:25:56Z** (ro). Keys themselves are
+    not recorded here, by design.
+  - Repository configuration set: variables `OCI_BUILD_CACHE_BUCKET` and
+    `OCI_BUILD_CACHE_NAMESPACE`, secrets `OCI_BUILD_CACHE_R{W,O}_ACCESS_KEY_ID`
+    and `_SECRET_ACCESS_KEY` (2026-09-06T10:26Z).
+  - **Five defects, each found by the service refusing the call rather than by
+    review.** The dry run cannot find any of them, which is the point worth
+    keeping: a plan that prints correctly is not a plan that works.
+    1. **The lifecycle payload shape was wrong twice over.** `--items` takes a
+       bare JSON *array* in *camelCase*; the design's `{"items": [...]}` with
+       kebab-case keys is refused as `InvalidJSON: Could not parse body as
+       valid ObjectLifecycleDetails`, which names neither the key nor the
+       shape. `--generate-param-json-input items` is the authority.
+    2. **Lifecycle rules need a policy for the Object Storage service
+       principal**, which design.md Component 1 does not mention:
+       `InsufficientServicePermissions` until
+       `Allow service objectstorage-us-phoenix-1 to manage object-family …`
+       exists. The lifecycle step now runs *after* the policy step and
+       retries, because IAM is eventually consistent — it failed on attempt 1
+       and succeeded on attempt 2, ten seconds later, on the very first run.
+    3. **`user create` needs `--email` on an identity-domain tenancy**
+       (`error.identity.user.primaryEmailNotSpecified`). Added as an `--email`
+       flag defaulting to the address of the OCI CLI user running the script.
+    4. **OCI policy statements have no `user` subject.** The grammar admits
+       `any-user`, `group`, `dynamic-group` and `service` only, so the
+       user-scoped rw/ro split in design.md cannot be written at all —
+       `Failed to parse policy due to an issue with token: user at character:
+       6`. It is now one group per role (`kythira-build-cache-rw`,
+       `kythira-build-cache-ro`) holding one user each, with the umbrella
+       group keeping the single grant both share (`read buckets`).
+    5. **The key-minting guard read "no keys" as "has keys".**
+       `oci iam customer-secret-key list` on a user with none prints
+       **nothing** and exits 0 — not `{"data": []}` — so `length(data)` gave
+       an empty string, which compares unequal to `"0"`, and the script
+       declined to mint the keys it exists to create while reporting
+       "already holds  key(s)". Empty and `null` now normalise to 0.
+  - One more, in `audit.sh`: the Usage API rejects any bound that is not
+    exactly midnight UTC ("hours, minutes, seconds, and second fractions must
+    be 0"), so asking for usage "up to now" always failed. The end bound is
+    tomorrow's date.
+  - **Requirement 2.6's live direction is not proven yet.** `test-audit.sh
+    --live` creates a throwaway tagged bucket and waits for the audit to flag
+    it; the OCI resource-search index had not caught up within five minutes,
+    and a longer window is running. The query itself is known good — the
+    audit's own section 5 lists the real bucket and all six other resources
+    by tag. A timeout is now reported as INCONCLUSIVE rather than as a
+    failure, since a slow index is not a broken auditor.
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6_
 
 - [ ] 3. Composite action `.github/actions/oci-build-cache/` — **written and
