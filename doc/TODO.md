@@ -57,7 +57,67 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
   joining AWS as supported cloud providers
 - `.kiro/specs/` now holds **45** per-feature spec directories, of which two
   are outstanding — see "Pending Specifications" below
-- Build clean with no errors or warnings
+- **Builds clean with no *errors*. It does not build with no warnings** — the
+  second half of what this line used to claim was never true, and is now
+  settled against CI's own logs rather than against one developer machine.
+  Read off run
+  [33997439418](https://github.com/crawlins/kythira/actions/runs/33997439418),
+  commit `d782b6b`, September 5, 2026. One run, so every leg below compiled
+  the same source under the same `configs/ci_full_defconfig` and the counts
+  are comparable to each other; each of these jobs concluded `success`:
+
+  | Leg | Compiler warnings | Errors |
+  | --- | --- | --- |
+  | `Build & Test (g++-13, x64)` | 144 | 0 |
+  | `Build & Test (g++-13, arm64)` | 144 | 0 |
+  | `Build & Test (g++-14, x64)` | 202 | 0 |
+  | `Build & Test (clang++-18, x64)` | 160 | 0 |
+  | `Build & Test (clang++-18, arm64)` | 160 | 0 |
+  | `Coverage (clang++-18)` | 179 | 0 |
+  | `Ion Serializer Build (g++-14, x64)` | 6 | 0 |
+
+  - **They are not GCC-14-specific**, which was the open question the
+    September 2026 g++-14 work raised. The 94 `-Wdeprecated-declarations` and
+    3 `-Wmissing-requires` are the *same sites* on g++-13 and g++-14 —
+    established as a set difference over `file:line:column`, not by comparing
+    totals, so a coincidental one-added-one-removed could not hide inside
+    matching counts — and the 94 appear under clang++-18 as well. GCC 14's
+    own contribution is 41 further `-Wunused-result` sites, 2 further
+    `-Wstringop-overflow=` and all 3 `-Wfree-nonheap-object`.
+  - Composition of the 202 on the g++-14 leg, counted by occurrence (57
+    distinct source sites, since a warning in a header is re-reported per
+    translation unit): 94 `-Wdeprecated-declarations` — 48 `folly::init` in
+    48 test mains, 32 OpenSSL 3.0 `EC_KEY_*` from 8 sites in
+    `include/raft/acme_jws.hpp`, 14 `httplib::set_url_encode` in
+    `include/raft/oci_http_client.hpp` — plus 66 `-Wunused-result`, 36
+    `-Wstringop-overflow=`, 3 `-Wmissing-requires` and 3
+    `-Wfree-nonheap-object`.
+  - **Only the deprecations are diagnosed in code with anything to fix.**
+    Every `-Wunused-result` and every `-Wmissing-requires` is in `tests/`;
+    the two GCC-only diagnostics point either into libstdc++ headers or at
+    one `memcpy` in `include/raft/test_state_machine.hpp` (the reference
+    state machine the tests, the examples and `cmd/chaos_node` /
+    `cmd/multi_raft_node` all share), and that one is a false positive — see
+    below.
+  - `-Wstringop-overflow=` and `-Wfree-nonheap-object` are **GCC false
+    positives**, and their own text says so. Both fire after deep inlining
+    through `std::allocator`, at value ranges GCC only prints when
+    value-range propagation has given up: the delete is "called on pointer
+    `<unknown>` with nonzero offset `[1, 9223372036854775807]`" in
+    `/usr/include/c++/14/bits/new_allocator.h`, inlined from
+    `encode_kv_command` in `tests/multi_raft_kv_workload.hpp`, and half the
+    `-Wstringop-overflow=` are a `memcpy` "specified bound
+    18446744073709551611", i.e. `(size_t)-5`. The originating code is
+    correct — `test_state_machine.hpp:225` `memcpy`s four bytes into a
+    `std::vector<std::byte>` that the line above it resized to hold them.
+    clang++-18 reports neither class.
+  - Nothing is suppressed and the C++ build sets no `-Werror` anywhere; the
+    `WarningsAsErrors` and `FAIL_ON_WARNINGS` gates recorded further down
+    this file are clang-tidy's and Doxygen's, not the compiler's, and this
+    line was never about them.
+
+  See "Known Follow-ups" for which of these are worth fixing and which are
+  not.
 - Both Folly-decoupling follow-up gaps closed for `tests/`/`certificate_authority`:
   test-bootstrap backend-conditional gating (PR #93) and per-target rather than
   subdirectory-level Folly CMake gating (PR #94) — see "Known Follow-ups" below
@@ -224,6 +284,84 @@ unverified completion claim.
 ---
 
 ## Known Follow-ups
+
+- **CI has never built warning-free, and the "no warnings" claim in Current
+  Status is now settled — measured, attributed, and *not* fixed (September 5,
+  2026).** The measurement, the per-leg counts and the false-positive
+  argument are in Current Status above; this entry is only the fixable
+  remainder, in descending order of value. Nothing here is a build failure
+  and nothing here is urgent — the point of writing it down is that a status
+  line claiming zero warnings made all 144–202 of them invisible.
+
+  Worth fixing, in production code:
+  1. **`include/raft/acme_jws.hpp` — 8 sites on OpenSSL 3.0's deprecated
+     low-level EC API** (`EVP_PKEY_get1_EC_KEY`, `EC_KEY_new_by_curve_name`,
+     `EC_KEY_get0_group`/`get0_public_key`,
+     `EC_KEY_set_public_key_affine_coordinates`, `EVP_PKEY_set1_EC_KEY`,
+     `EC_KEY_free`), reported 32 times because a warning in a header is
+     re-diagnosed in every translation unit that pulls it in. These are the
+     only warnings in the tree with a real migration behind them rather than
+     a rename: the reader at line 175 wants `EVP_PKEY_get_bn_param` with
+     `OSSL_PKEY_PARAM_EC_PUB_X`/`_Y`, and the builder at line 227 wants
+     `OSSL_PARAM_BLD` plus `EVP_PKEY_fromdata`. Both paths are exercised by
+     `tests/acme_jws_unit_test.cpp` and the RFC 8555 mock server in
+     `tests/acme_test_server.hpp`, so the work is
+     mechanical but must not be done blind —
+     `include/raft/http_transport_impl.hpp:218` is the existing precedent
+     for an `OPENSSL_VERSION_NUMBER >= 0x30000000L` guard if 1.1.1 support
+     is ever wanted back. vcpkg currently resolves
+     OpenSSL 3.6.0.
+  2. **`include/raft/oci_http_client.hpp:375` — `httplib::set_url_encode`**,
+     renamed upstream to `set_path_encode` with identical semantics. One
+     line, reported once per translation unit that reaches it, 14 in all.
+     The cheapest 14 warnings in the tree.
+
+  Worth fixing, in tests:
+  3. **48 × deprecated `folly::init(int*, char***, bool)`**, one per test main
+     across 48 files. Upstream's replacement is the RAII `folly::Init`, so
+     this is a mechanical sweep — but it is 48 files and it is the single
+     largest class, so it is also the one most likely to be done badly in a
+     hurry.
+  4. **66 × `-Wunused-result`**, all in `tests/`, and **63 of them are one
+     idiom**: `BOOST_CHECK_THROW(f(...), some_error)` where `f` is
+     `[[nodiscard]]`. The macro evaluates the expression expecting it to
+     throw, so there is no value to use and the discard is correct by
+     construction — this class is noise, and the fix, if one is wanted, is a
+     wrapper or a `static_cast<void>` at the macro rather than 63 edits.
+     **The three that are not that idiom are worth reading**, and were:
+     `tests/tcp_rpc_unit_test.cpp:75` ignores `::write`'s return while
+     deliberately writing a malformed 4-byte frame (a short write would make
+     the test pass for the wrong reason),
+     `tests/ca_test_fixture_unit_test.cpp:155` discards a
+     `bootstrap_client` result used only as setup, and
+     `tests/aws_ec2_peer_discovery_localstack_test.cpp:387` discards
+     `await_peers`' result inside a `try` that only cares whether it threw.
+  5. **One clang-only `-Wswitch`**, at
+     `tests/multi_raft_performance_report.cpp:150`: `tier_letter` switches
+     on `deployment_tier` and handles `a_fabric` and `b_loopback`, falling
+     through to `"?"` for `c_process`, `d_durable` and
+     `e_multi_machine`. **Not a live defect** — every tier argument in that
+     binary's catalog is `a_fabric` or `b_loopback`, so the `"?"` is
+     unreachable today — but it is exactly the latent kind: the day a tier C
+     row is added to the catalog, the report labels it `?` and nothing
+     fails.
+  6. **3 × `-Wmissing-requires`** in
+     `tests/folly_concept_compilation_property_test.cpp:203/205/207` — a
+     comment, not a code change. `requires { kythira::try_type<T, int>; }`
+     asks whether the concept-*id* is a valid expression rather than whether
+     `T` satisfies it, and GCC assumes the second was meant. Here the first
+     is: `test_concept_expression_wellformedness` says so in its own comment
+     and its `static_assert` messages ("should be usable in SFINAE"), and it
+     does catch a real failure mode — a concept with the wrong arity makes
+     the expression ill-formed and the `constexpr bool` `false`. **Do not
+     "fix" this by adding the second `requires`**; that silently converts
+     three well-formedness checks into three satisfaction checks and changes
+     what the test asserts. Say so at the site instead, since the warning
+     will otherwise be re-diagnosed as a bug by the next reader.
+
+  Not worth chasing: the 36 `-Wstringop-overflow=` and 3
+  `-Wfree-nonheap-object` are GCC false positives through `std::allocator`
+  inlining (argued in Current Status), and clang++-18 reports neither.
 
 - **A transport-neutral OSCORE — RESOLVED (August 8, 2026), one day after it
   was raised.** `include/raft/oscore.hpp` now implements RFC 8613 against CoAP
