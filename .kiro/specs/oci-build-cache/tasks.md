@@ -4,8 +4,19 @@
 
 **Last Updated**: September 5, 2026. Task 4 (the CMake launcher) is done and
 verified locally; it is the only task in the graph with no edge into it, and
-it needs neither the bucket nor a CI run. Everything else is still gated on
-Tasks 1 and 2, which need the OCI tenancy.
+it needs neither the bucket nor a CI run.
+
+Tasks 2, 3 and 5 have their **artifacts written and exercised as far as a
+machine with no OCI tenancy can exercise them** — the provisioning and audit
+scripts with their two-direction test, the composite action with its selection
+logic run once per event state, and the documentation — and each records below
+exactly what is still owed. They stay unchecked because what is owed is the
+half that touches the tenancy and CI.
+
+**Nothing is wired into a workflow.** The composite action exists and no job
+references it; Tasks 6 and 7 are where that changes, and they are correctly
+gated on Tasks 1 and 2. Task 1's measurement is what everything after it is
+calibrated against, and it needs a bucket and a runner.
 
 **A premise of the Introduction has changed since it was written, and it
 strengthens the case rather than weakening it.** `.github/workflows/ci.yml`
