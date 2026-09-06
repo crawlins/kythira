@@ -1,10 +1,25 @@
 # Implementation Plan — OCI-Hosted Build Cache
 
-## Status: 0/12 tasks complete
+## Status: 1/12 tasks complete
 
-**Last Updated**: September 4, 2026. Requirements, design and tasks written;
-no implementation commits. Added to `doc/TODO.md`'s "Not Started" table the
-same day (Requirement 8.4).
+**Last Updated**: September 5, 2026. Task 4 (the CMake launcher) is done and
+verified locally; it is the only task in the graph with no edge into it, and
+it needs neither the bucket nor a CI run. Everything else is still gated on
+Tasks 1 and 2, which need the OCI tenancy.
+
+**A premise of the Introduction has changed since it was written, and it
+strengthens the case rather than weakening it.** `.github/workflows/ci.yml`
+still exports `VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'`, and vcpkg now
+answers `warning: The 'x-gha' binary caching backend has been removed`
+(observed in every job of run 33997439418, September 5, 2026). The layer this
+spec proposes to replace is therefore not degraded by eviction; it is **gone**,
+and has been since whichever vcpkg release dropped it. The whole-tree
+`actions/cache` L1 in front of it has no `restore-keys`, so a change to
+`vcpkg.json` or any overlay misses in every job with nothing to fall back on:
+that run's `Build & Test (g++-13, x64)` spent **70 m 30 s** in "Bootstrap
+vcpkg and install dependencies", building 117 of the 131 ports it handled,
+against 18 m 48 s building kythira and 8 m 24 s running its tests. Requirement
+1's measurement should be read against that, not against a working `x-gha`.
 
 ## Overview
 
@@ -103,15 +118,57 @@ bucket does.
     variable fails the job at the action.
   - _Requirements: 3.2, 4.1, 4.2, 4.3, 4.5, 5.3_
 
-- [ ] 4. CMake `KYTHIRA_COMPILER_LAUNCHER`
-  - Replace the `KYTHIRA_ENABLE_CCACHE` block in the root `CMakeLists.txt`
-    with design.md Component 3, including the deprecation alias.
-  - Verify all five states: `auto` with ccache present, `auto` with only
-    sccache present, `auto` with neither, `sccache` explicit (present and
-    absent, the latter a `FATAL_ERROR`), `none`, and `KYTHIRA_ENABLE_CCACHE=OFF`.
-    Record the `CMakeCache.txt` launcher entry for each.
-  - Diff `ninja -t targets` between launcher on and off (Requirement 9.1) and
-    record that it is empty.
+- [x] 4. CMake `KYTHIRA_COMPILER_LAUNCHER` — **done September 5, 2026**
+  - The `KYTHIRA_ENABLE_CCACHE` block in the root `CMakeLists.txt` is replaced
+    by design.md Component 3, with the deprecation alias.
+  - **All seven states verified**, by extracting the block verbatim into a
+    scratch project so each state is a separate configure rather than a
+    reconfigure of one tree (`CMAKE_IGNORE_PATH` hides this box's
+    `/usr/bin/ccache` for the "absent" cases, with `CMAKE_MAKE_PROGRAM`
+    pinned so that ignoring `/usr/bin` does not also hide `make`):
+
+    | State | `CMAKE_CXX_COMPILER_LAUNCHER` | Exit |
+    | --- | --- | --- |
+    | `auto`, ccache present | `/home/clark/.local/bin/ccache` | 0 |
+    | `auto`, only sccache present | the sccache found | 0 |
+    | `auto`, neither present | empty, "compiler launcher: none" | 0 |
+    | `sccache` explicit, present | the sccache found | 0 |
+    | `sccache` explicit, absent | — | **1**, `FATAL_ERROR` naming the launcher |
+    | `none` | empty | 0 |
+    | `KYTHIRA_ENABLE_CCACHE=OFF` | empty, after a deprecation warning | 0 |
+
+  - **Requirement 9.1 (target-list diff): identical.** Two full configures of
+    `ci_full_defconfig` in scratch trees, `-DKYTHIRA_COMPILER_LAUNCHER=auto`
+    against `=none`, **3128 targets each**, and `diff` of `ninja -t targets
+    all` is empty once the build-directory path is normalised (the only
+    textual difference was each tree's own absolute path). The launcher is
+    demonstrably wired in the `auto` tree — 561 `ccache` occurrences in
+    `build.ninja`, `LAUNCHER = /home/clark/.local/bin/ccache` — and absent in
+    the `none` tree at 0.
+  - **Two deviations from design.md Component 3, both needed to make it work
+    across reconfigures**, since CI legs and developers will change this
+    variable on an existing tree:
+    1. `find_program(_launcher NAMES ccache sccache)` as written pins its
+       result in a cache entry, and `find_program` skips the search when its
+       result variable is already cached — so a tree first configured with
+       ccache would keep launching ccache after a later
+       `-DKYTHIRA_COMPILER_LAUNCHER=sccache`, silently. The block now uses one
+       cache entry per launcher name (`KYTHIRA_CCACHE_PROGRAM`,
+       `KYTHIRA_SCCACHE_PROGRAM`, and `KYTHIRA_<NAME>_PROGRAM` on the explicit
+       path). Verified: `auto` → explicit `sccache` on the same tree switches.
+    2. The `else()` branch now writes empty `CMAKE_C/CXX_COMPILER_LAUNCHER`
+       cache entries rather than leaving them alone. Both are written with
+       `FORCE`, so without this a tree configured with a launcher and then
+       reconfigured to `none` kept launching. Verified: the entry goes from
+       `/home/clark/.local/bin/ccache` to empty.
+  - `message(DEPRECATION)` is kept as designed rather than downgraded to
+    `WARNING`: checked on CMake 3.31.6 that it prints by default, with and
+    without `CMAKE_WARN_DEPRECATED`.
+  - **Not verified here**: that sccache is a *working* launcher. There is no
+    sccache on this box, so the "only sccache present" and "explicit sccache"
+    states used a stub on `PATH`; `find_program` looks for a name, so those
+    states test what CMake does, not what sccache does. Task 1 is where a real
+    sccache is measured.
   - _Requirements: 5.2, 9.1_
 
 - [ ] 5. `DEPENDENCIES.md` and `doc/ci_build_cache.md`
