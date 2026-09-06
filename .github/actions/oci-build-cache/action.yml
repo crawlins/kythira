@@ -107,11 +107,16 @@ runs:
         # cold one populated the cache, which needs write access from a branch
         # that is not main. The bucket is emptied after the measurement, and
         # this PR is closed rather than merged (Requirement 1.5).
-        case "${GITHUB_EVENT_NAME}:${GITHUB_REF_NAME}" in
-          push:main)                    key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write" ;;
-          push:measure/oci-build-cache-task1)
-                                        key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write (THROWAWAY MEASUREMENT BRANCH)" ;;
-          *)                            key_id="$RO_ID"; secret="$RO_SECRET"; mode="read";      which="read-only" ;;
+        # On a pull_request event GITHUB_REF_NAME is "<number>/merge", not the
+        # branch, so the measurement arm has to look at GITHUB_HEAD_REF. On a
+        # push they are the same thing and HEAD_REF is empty.
+        branch="${GITHUB_REF_NAME}"
+        [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && branch="${GITHUB_HEAD_REF}"
+        case "${GITHUB_EVENT_NAME}:${branch}" in
+          push:main)  key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write" ;;
+          *:measure/oci-build-cache-task1)
+                      key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write (THROWAWAY MEASUREMENT BRANCH)" ;;
+          *)          key_id="$RO_ID"; secret="$RO_SECRET"; mode="read";      which="read-only" ;;
         esac
 
         if [ -z "$key_id" ] || [ -z "$secret" ]; then
