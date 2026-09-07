@@ -13,9 +13,12 @@ it works:
 2. **A CMake launcher switch** (`KYTHIRA_COMPILER_LAUNCHER`) that replaces
    the ccache-only auto-detection with an explicit choice, so CI can say
    `sccache` and a developer's machine keeps saying `ccache`.
-3. **A guarded start** in every leg — `sccache --start-server` first, the
-   launcher exported only if that worked — so the bucket is an accelerant
-   and never a dependency.
+3. **A guarded start** in every leg — a reachability check first
+   (`sccache --start-server || sccache --show-stats`), the launcher exported
+   only if that worked — so the bucket is an accelerant and never a
+   dependency. The check must accept an *already running* server: the vcpkg
+   install starts one via `RUSTC_WRAPPER`, so testing only whether this step
+   started it reports failure on a healthy cache (measured in Task 1).
 
 Everything else is provisioning, measurement and documentation in support of
 those three.
@@ -67,7 +70,16 @@ OCI CLI, idempotent, dry-run by default, `--apply` to create. In order:
 
 1. Resolve the Object Storage namespace (`oci os ns get`) and print it; it
    becomes the `OCI_BUILD_CACHE_NAMESPACE` repository variable.
-2. Create the bucket in `OCI_CI_COMPARTMENT_ID` with `--public-access-type
+1a. Resolve `default-s3-compartment-id` (`oci os ns get-metadata`). **The
+   bucket must live there, not in `OCI_CI_COMPARTMENT_ID`.** The S3
+   Compatibility API resolves a bucket *name* inside exactly one compartment
+   per namespace and cannot be pointed at another, so a bucket anywhere else
+   is invisible to both `x-aws` and sccache, which report `NoSuchBucket` for
+   a bucket that plainly exists. The IAM policy follows the bucket, using
+   `in tenancy` when that compartment is the tenancy root, since
+   `in compartment id <tenancy-ocid>` is rejected there. Found by
+   provisioning it the way this document originally said.
+2. Create the bucket in the S3-compatibility compartment with `--public-access-type
    NoPublicAccess`, `--storage-tier Standard`, versioning disabled, and the
    freeform tag `kythira-spec=oci-build-cache` that the audit keys on.
 3. Put the lifecycle policy: two `DELETE` rules, `sccache/` at 30 days and
@@ -212,7 +224,13 @@ Each moved leg's step sequence becomes:
   id: sccache
   if: steps.cache.outputs.enabled == 'true'
   run: |
-    if sccache --start-server; then echo "launcher=sccache" >> "$GITHUB_OUTPUT";
+    # "Is a server reachable", NOT "did I start one". The lakers port's cargo
+    # build runs under RUSTC_WRAPPER=sccache during the vcpkg install, so a
+    # server is usually ALREADY listening here and --start-server exits
+    # non-zero with "Address in use". Task 1's attempt 2 read that as failure
+    # and compiled all nine legs with no launcher, while reporting success.
+    if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+      echo "launcher=sccache" >> "$GITHUB_OUTPUT";
     else echo "::warning::sccache could not reach the bucket; building without a compiler cache"; fi
 - name: Configure
   run: cmake -B build -G Ninja ... -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }}
@@ -296,7 +314,8 @@ estimate is least sure of are printed on every run (Requirement 5.5).
 
 | Failure | Behaviour |
 |---|---|
-| Bucket unreachable at `sccache --start-server` | warning; leg builds with no launcher |
+| Bucket unreachable at the sccache reachability check | warning; leg builds with no launcher |
+| sccache download or checksum fails | a **checksum mismatch** fails the job — a wrong binary on the compile path is not a warning. A failed *download* must degrade to no compiler cache: Task 1 lost a leg to a transient download, which contradicts "never a build dependency" |
 | Bucket unreachable during `vcpkg install` | vcpkg warns per port and builds from source |
 | Read-only key used for a write | 403 from OCI; sccache counts a write error and returns the compile; vcpkg `read` mode never writes |
 | Repository variable unset | `::error::` naming it; job fails at the action, before any build time is spent |
