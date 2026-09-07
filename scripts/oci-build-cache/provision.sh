@@ -42,6 +42,9 @@
 #   --tenancy-id      default: derived by walking up from the compartment
 #   --email           primary email for the two service users; default: the
 #                     address of the OCI CLI user running this script
+#   --update-policy   replace the existing policy's statements with the ones
+#                     this script would create. Off by default: an IAM policy
+#                     CI depends on is not something to overwrite blindly.
 #
 # Requires the OCI CLI, authenticated as a principal that can create buckets
 # in the compartment and users, groups and policies in the tenancy. This is
@@ -55,6 +58,7 @@ REGION="${OCI_CI_REGION:-}"
 TENANCY_ID=""
 EMAIL=""
 APPLY=0
+UPDATE_POLICY=0
 ROTATE=""
 
 GROUP_NAME="kythira-build-cache"
@@ -86,6 +90,7 @@ while [[ $# -gt 0 ]]; do
         --compartment-id) COMPARTMENT_ID="${2:?--compartment-id needs an OCID}"; shift 2 ;;
         --region)         REGION="${2:?--region needs a region}"; shift 2 ;;
         --email)          EMAIL="${2:?--email needs an address}"; shift 2 ;;
+        --update-policy)  UPDATE_POLICY=1; shift ;;
         --tenancy-id)     TENANCY_ID="${2:?--tenancy-id needs an OCID}"; shift 2 ;;
         -h|--help)        usage; exit 0 ;;
         *)                echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -122,6 +127,27 @@ act() {
 # answer this wants, not an error.
 exists() { "$@" >/dev/null 2>&1 </dev/null; }
 
+# Runs a `--query length(...)` call and prints a NUMBER, always.
+#
+# This exists because the same bug shipped twice in this script. An OCI list
+# call that matches nothing prints **nothing at all** and exits 0 — not
+# `{"data": []}`, not `0` — so `count=$(oci ... --query 'length(data)')`
+# yields an empty string, and `[ "$count" != "0" ]` is then TRUE. Written the
+# obvious way, "no keys" reads as "has keys" and "not a member" reads as
+# "already a member": both were silently skipping the work they guard. The
+# membership one was the worse of the two, because it made provision.sh print
+# "kythira-build-cache-rw is already in kythira-build-cache-rw" about a group
+# that was empty, and an empty group is a policy that grants nothing to
+# nobody — which surfaces much later as an unexplained S3 "NoSuchBucket".
+#
+# Route every count through here rather than repeating the guard.
+count_of() {
+    local out
+    out=$("$@" --raw-output 2>/dev/null </dev/null || echo 0)
+    case "$out" in ""|null) out=0 ;; esac
+    printf '%s' "$out"
+}
+
 # ── Namespace ────────────────────────────────────────────────────────────────
 # The Object Storage namespace is a property of the tenancy and is part of the
 # S3-compatibility endpoint host, which is why it becomes a repository
@@ -148,6 +174,33 @@ if [ "$ns_rc" -ne 0 ] || [ -z "$NAMESPACE" ]; then
 fi
 echo "Object Storage namespace: $NAMESPACE"
 echo "S3 compatibility endpoint: https://${NAMESPACE}.compat.objectstorage.${REGION}.oraclecloud.com"
+
+# ── The compartment the S3 Compatibility API can actually see ────────────────
+# This corrects design.md Component 1, and it is not a detail. The S3 endpoint
+# resolves a bucket NAME inside exactly one compartment per namespace --
+# `default-s3-compartment-id`, the tenancy root unless someone changed it --
+# and there is no way to point it at another. A bucket created in
+# OCI_CI_COMPARTMENT_ID, as the design says, is invisible to both vcpkg's
+# x-aws backend and sccache, which report:
+#
+#   S3Error { code: "NoSuchBucket", message: "Either the bucket named
+#   'kythira-build-cache' does not exist in the namespace '<ns>' or you are
+#   not authorized to access it" }
+#
+# an error that reads like a permissions problem and is not one. The cost of
+# learning that the slow way was a full CI matrix that cached nothing while
+# reporting success, because the guarded sccache start did its job.
+S3_COMPARTMENT=$(oci os ns get-metadata --namespace "$NAMESPACE" \
+                     --query 'data."default-s3-compartment-id"' --raw-output 2>/dev/null </dev/null || echo "")
+if [ -z "$S3_COMPARTMENT" ] || [ "$S3_COMPARTMENT" = "null" ]; then
+    echo "error: could not read the namespace's default S3 compartment." >&2
+    exit 1
+fi
+echo "S3-compatibility compartment: $S3_COMPARTMENT"
+if [ "$S3_COMPARTMENT" != "$COMPARTMENT_ID" ]; then
+    echo "  NOTE: differs from --compartment-id. The bucket goes HERE, because the"
+    echo "  S3 endpoint cannot see it anywhere else, and the policy follows it."
+fi
 echo
 
 # ── Tenancy ──────────────────────────────────────────────────────────────────
@@ -202,10 +255,17 @@ echo
 # untested, which is how a later public-ACL mistake turns into a write path.
 echo "1. Bucket $BUCKET"
 if exists oci os bucket get --bucket-name "$BUCKET"; then
-    echo "  exists"
+    current=$(oci os bucket get --bucket-name "$BUCKET" \
+                  --query 'data."compartment-id"' --raw-output 2>/dev/null </dev/null || echo "")
+    if [ "$current" = "$S3_COMPARTMENT" ]; then
+        echo "  exists, in the S3-compatibility compartment"
+    else
+        echo "  exists but lives in $current, where the S3 endpoint cannot see it"
+        act oci os bucket update --bucket-name "$BUCKET" --compartment-id "$S3_COMPARTMENT"
+    fi
 else
     act oci os bucket create \
-        --compartment-id "$COMPARTMENT_ID" \
+        --compartment-id "$S3_COMPARTMENT" \
         --name "$BUCKET" \
         --public-access-type NoPublicAccess \
         --storage-tier Standard \
@@ -281,8 +341,8 @@ for user in "$RW_USER" "$RO_USER"; do
             echo "  would add $user to $gname"
             continue
         fi
-        member=$(oci iam group list-users --group-id "$gid" \
-                     --query "length(data[?id=='$uid'])" --raw-output 2>/dev/null </dev/null || echo 0)
+        member=$(count_of oci iam group list-users --group-id "$gid" \
+                     --query "length(data[?id=='$uid'])")
         if [ "$member" != "0" ]; then
             echo "  $user is already in $gname"
         else
@@ -304,29 +364,58 @@ echo
 # not mention it. That principal DOES need delete: expiring objects is the
 # whole job.
 echo "3. Policy kythira-build-cache-access"
+# Scoped where the BUCKET is, which is the S3 compartment, not
+# --compartment-id. A policy in the wrong compartment grants nothing and says
+# so nowhere. "in tenancy" rather than "in compartment id <ocid>" when that
+# compartment is the tenancy root, which is the syntax OCI accepts there.
+if [ "$S3_COMPARTMENT" = "$TENANCY_ID" ]; then
+    POLICY_SCOPE="in tenancy"
+else
+    POLICY_SCOPE="in compartment id ${S3_COMPARTMENT}"
+fi
 POLICY_STATEMENTS=$(cat <<POLICY
-Allow group ${GROUP_NAME} to read buckets in compartment id ${COMPARTMENT_ID} where target.bucket.name = '${BUCKET}'
-Allow group ${RW_USER} to manage objects in compartment id ${COMPARTMENT_ID} where all { target.bucket.name = '${BUCKET}', any { request.permission = 'OBJECT_READ', request.permission = 'OBJECT_INSPECT', request.permission = 'OBJECT_CREATE', request.permission = 'OBJECT_OVERWRITE' } }
-Allow group ${RO_USER} to read objects in compartment id ${COMPARTMENT_ID} where target.bucket.name = '${BUCKET}'
-Allow service objectstorage-${REGION} to manage object-family in compartment id ${COMPARTMENT_ID} where target.bucket.name = '${BUCKET}'
+Allow group ${GROUP_NAME} to read buckets ${POLICY_SCOPE} where target.bucket.name = '${BUCKET}'
+Allow group ${RW_USER} to manage objects ${POLICY_SCOPE} where all { target.bucket.name = '${BUCKET}', any { request.permission = 'OBJECT_READ', request.permission = 'OBJECT_INSPECT', request.permission = 'OBJECT_CREATE', request.permission = 'OBJECT_OVERWRITE' } }
+Allow group ${RO_USER} to read objects ${POLICY_SCOPE} where target.bucket.name = '${BUCKET}'
+Allow service objectstorage-${REGION} to manage object-family ${POLICY_SCOPE} where target.bucket.name = '${BUCKET}'
 POLICY
 )
 printf '%s\n' "$POLICY_STATEMENTS" | sed 's/^/  /'
-policy_id=$(oci iam policy list --compartment-id "$COMPARTMENT_ID" \
+policy_id=$(oci iam policy list --compartment-id "$S3_COMPARTMENT" \
                 --name kythira-build-cache-access --query 'data[0].id' --raw-output 2>/dev/null </dev/null || echo "")
 [ "$policy_id" = "null" ] && policy_id=""
-if [ -n "$policy_id" ]; then
+if [ -n "$policy_id" ] && [ "$UPDATE_POLICY" -eq 1 ]; then
+    echo "  policy exists ($policy_id) — replacing its statements (--update-policy)"
+    statements_json=$(printf '%s\n' "$POLICY_STATEMENTS" | jq -R . | jq -s .)
+    if [ "$APPLY" -eq 1 ]; then
+        # Temp file, not file:///dev/stdin: this call needs the JSON on stdin
+        # AND stdin closed against a prompt, and those are one descriptor
+        # (shellcheck SC2259 — the same trap the lifecycle PUT fell into).
+        stmt_file=$(mktemp)
+        printf '%s' "$statements_json" > "$stmt_file"
+        # --version-date is not optional here even though it looks it: the CLI
+        # refuses with "If updating either statements or version date, both
+        # parameters must be specified". An empty value is the documented
+        # "evaluate against current service behaviour" setting, i.e. no version
+        # pinning — the same thing policy create defaults to.
+        oci iam policy update --policy-id "$policy_id" \
+            --statements "file://$stmt_file" --version-date "" --force </dev/null >/dev/null
+        rm -f "$stmt_file"
+        echo "  updated"
+    fi
+elif [ -n "$policy_id" ]; then
     echo "  policy exists ($policy_id) — the statements above are what it should"
     echo "  say. Not updated automatically: an IAM policy that CI depends on is"
     echo "  not something to overwrite from a script that cannot see why it was"
-    echo "  last edited. Compare with: oci iam policy get --policy-id $policy_id"
+    echo "  last edited. Pass --update-policy to replace them, or compare with:"
+    echo "  oci iam policy get --policy-id $policy_id"
 else
     statements_json=$(printf '%s\n' "$POLICY_STATEMENTS" | jq -R . | jq -s .)
     if [ "$APPLY" -eq 0 ]; then
         echo "  would create policy kythira-build-cache-access with those 4 statements"
     else
         printf '%s' "$statements_json" | oci iam policy create \
-            --compartment-id "$COMPARTMENT_ID" \
+            --compartment-id "$S3_COMPARTMENT" \
             --name kythira-build-cache-access \
             --description "kythira build cache access, .kiro/specs/oci-build-cache/" \
             --statements file:///dev/stdin \
@@ -408,13 +497,8 @@ mint_key() {
         return 0
     fi
     local existing
-    existing=$(oci iam customer-secret-key list --user-id "$uid" \
-                   --query 'length(data)' --raw-output 2>/dev/null </dev/null || echo 0)
-    # A user with no keys makes this command print NOTHING and exit 0 — not
-    # `{"data": []}`, and not a 0 from `length(data)`. Left as an empty string
-    # it compares unequal to "0" and the script silently declines to mint the
-    # very keys it exists to create, reporting "already holds  key(s)".
-    case "$existing" in ""|null) existing=0 ;; esac
+    existing=$(count_of oci iam customer-secret-key list --user-id "$uid" \
+                   --query 'length(data)')
     local rotating=0
     case "$ROTATE" in both) rotating=1 ;; "$which") rotating=1 ;; esac
     if [ "$existing" != "0" ] && [ "$rotating" -eq 0 ]; then
