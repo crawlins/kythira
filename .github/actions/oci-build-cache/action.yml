@@ -152,7 +152,13 @@ runs:
           echo "SCCACHE_BUCKET=${BUCKET}"
           echo "SCCACHE_ENDPOINT=${endpoint}"
           echo "SCCACHE_REGION=${REGION}"
-          echo "SCCACHE_S3_KEY_PREFIX=sccache/"
+          # MEASUREMENT BRANCH: a virgin prefix, not sccache/. Requirement
+          # 1.1's cold column needs an empty one, and the existing sccache/
+          # prefix cannot be emptied — OBJECT_DELETE is granted to nobody by
+          # design, so its objects survive until the 30-day lifecycle rule
+          # takes them. A fresh prefix costs nothing and needs no delete
+          # rights. main keeps sccache/.
+          echo "SCCACHE_S3_KEY_PREFIX=sccache-measure-3/"
           echo "SCCACHE_S3_USE_SSL=true"
           echo "RUSTC_WRAPPER=sccache"
           # vcpkg scrubs the environment of port builds. Without this the
