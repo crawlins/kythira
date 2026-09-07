@@ -180,8 +180,80 @@ bucket does.
     `sccache-measure-3/`) for a virgin prefix. This applies to every future
     re-measurement and is a consequence of the no-delete rule, not a fault in
     it.
-  - **Still owed**: the per-leg sccache table (Requirement 1.1) from a run
-    where the launcher is actually sccache,
+  - **Attempt 3 (run 34133234910) is the measurement.** Nine of ten measured
+    legs green; the tenth died on a transient sccache download (see below).
+    Both halves recorded.
+
+    **Requirement 1.2 — vcpkg install, empty bucket → populated:**
+
+    | Leg | empty | populated | factor |
+    | --- | ---: | ---: | ---: |
+    | `gcp-sdk-build` | 163.4 min | **6.5 min** | **25×** |
+    | `Full suite (stdexec)` | 98.9 min | 6.4 min | 15× |
+    | `Full suite (boost)` | 96.6 min | 5.3 min | 18× |
+    | `Build & Test (g++-14, x64)` | 83.6 min | 6.1 min | 14× |
+    | `Build & Test (g++-13, x64)` | 75.9 min | 6.1 min | 12× |
+    | `Coverage (clang++-18)` | 74.3 min | 5.9 min | 13× |
+    | `Build & Test (clang++-18, arm64)` | 69.4 min | 5.1 min | 14× |
+    | `Build & Test (clang++-18, x64)` | — | 4.0 min | — |
+    | `ThreadSanitizer` | — | 4.2 min | — |
+    | **`ion-serializer-build` (control, no binary cache)** | **97.9 min** | **97.8 min** | **1.00×** |
+
+    **The control is the load-bearing row.** It is untouched, still asking for
+    the removed `x-gha`, and it reproduced itself to within six seconds across
+    two runs hours apart while every cached leg fell by an order of magnitude.
+    That is what rules out "the runners were faster today", which is the
+    objection a single-run measurement always invites.
+
+    Requirement 6.3's criterion is met on a real run: **zero ports built from
+    source** (checked on `g++-13 x64`; all 131 packages came from OCI). Attempt
+    2 uploaded 397 archives / 5.06 GB to produce this.
+
+    **Requirement 1.1 — sccache, cold column** (virgin prefix
+    `sccache-measure-3/`, so 0% hits is the correct result, not a
+    disappointment):
+
+    | Leg | requests | non-cacheable | misses | write errors | Build |
+    | --- | ---: | ---: | ---: | ---: | ---: |
+    | `Build & Test (clang++-18, arm64)` | 561 | **0** | 561 | 0 | 36.8 min (cold-cache 34.8) |
+    | `Build & Test (clang++-18, x64)` | 561 | **0** | 561 | 0 | 54.1 min |
+    | `Build & Test (g++-13, x64)` | 561 | **0** | 561 | 0 | 54.7 min |
+    | `Build & Test (g++-14, x64)` | 561 | **0** | 561 | 0 | 59.6 min |
+    | `Coverage (clang++-18)` | 542 | **0** | 542 | 0 | 43.3 min |
+    | `Full suite (boost)` | 527 | **0** | 527 | 0 | 79.3 min (was 80.9) |
+    | `Full suite (stdexec)` | 527 | **0** | 527 | 0 | 166.6 min (was 170.3) |
+    | `ThreadSanitizer` | 9 | **0** | 9 | 0 | 4.5 min |
+    | `gcp-sdk-build` | 7 | **0** | 7 | 0 | 0.9 min |
+
+  - **Requirement 1.3 is answered, and the answer is yes to both.** Across
+    **3,856 compiles** spanning Release, ThreadSanitizer and coverage builds,
+    on two compilers and two architectures, there is **not one non-cacheable
+    call, not one unsupported-compiler call, and not one write error**. The
+    `kythira_test_pch` precompiled header does not defeat sccache, and the
+    coverage leg's `-fprofile-instr-generate` objects are fully cacheable —
+    542 of 542. Requirement 5.1's clause about keeping a leg on ccache when
+    fewer than 50% of its requests are cacheable therefore has **no
+    candidates**: every leg is at 100%.
+  - **The cold-cache penalty is noise.** Build wall clocks moved by −2% to
+    +6% while populating the cache (boost 80.9 → 79.3, stdexec 170.3 → 166.6,
+    clang arm64 34.8 → 36.8). Average cache write is 0.050 s, so ~28 s spread
+    over a whole build. Populating costs nothing measurable; the entire saving
+    so far is the vcpkg half.
+  - **Still owed: the WARM sccache column.** Every leg above is a first pass
+    against a virgin prefix. A re-run against the same prefix is what produces
+    Requirement 6.1's ≤15 min `build-and-test` Build, 6.2's ≤45 min stdexec
+    Build, and 6.3's ≥90% hit rate — and it is cheap now that installs are
+    4–7 minutes. **Note 6.2's threshold should be read against 170.3 min, not
+    the 1 h 51 m – 2 h 09 m the requirement quotes.**
+  - **One leg failed, and it exposed a real brittleness in the action.**
+    `Build & Test (g++-13, arm64)` died 60 seconds in, inside the pinned
+    sccache download; the other arm64 leg passed the identical step, so it was
+    transient. But the action **failed the whole job over an unavailable
+    cache**, which contradicts its own stated contract and the guarded-start
+    discipline used everywhere else. A checksum *mismatch* must stay fatal — a
+    wrong binary on the compile path is not a warning — but a failed download
+    should degrade to no compiler cache. Fix before Task 7.
+  - **Also still owed**: the per-leg sccache table from a warm run,
     the same table from a warm re-run, the `kythira_test_pch` and
     `-fprofile-instr-generate` answers Requirement 1.3 names, and the
     populated-bucket install timings. The warm round needs the L1 entries this
