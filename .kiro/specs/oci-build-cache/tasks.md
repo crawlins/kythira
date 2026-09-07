@@ -90,24 +90,48 @@ bucket does.
 
 ## Tasks
 
-- [ ] 1. Throwaway measurement
-  - On a scratch branch, install a pinned sccache on every leg in
-    Requirement 5.1's table, point it at a scratch bucket (or the real one
-    once Task 2 exists), replace the ccache launcher for that run only, and
-    run the full matrix twice: cold, then warm.
-  - Record per leg from `sccache --show-stats`: compile requests, cacheable,
-    non-cacheable with sccache's reason string, hits, misses, bytes read and
-    written; and the Build step's wall clock both times. Call out the
-    `kythira_test_pch` users and the coverage leg's
-    `-fprofile-instr-generate` objects specifically (Requirement 1.3).
-  - Run one job with `VCPKG_BINARY_SOURCES` on `x-aws` against the bucket,
-    empty then populated: ports uploaded, bytes, and the install step's wall
-    clock each time.
-  - Write the table here, with run ids. If any leg is under 50% cacheable,
-    note it as the leg Requirement 5.1 keeps on ccache. If warm wall clocks
-    disagree with Requirement 6's thresholds, re-derive them here and in
-    `requirements.md`.
-  - Close the PR without merging.
+- [ ] 1. Throwaway measurement — **in flight; two attempts, both instructive**
+  - Branch `measure/oci-build-cache-task1`, draft PR
+    [#320](https://github.com/crawlins/kythira/pull/320), marked DO NOT MERGE
+    per Requirement 1.5. It wires the composite action, `x-aws` and sccache
+    into the nine legs of Requirement 5.1's table and leaves
+    `ion-serializer-build` on its original wiring as an unmodified control.
+    The action gains a throwaway arm selecting the read-write key for this
+    branch, because a warm run is meaningless unless the cold one populated
+    the cache and only `main` may otherwise write.
+  - **Attempt 1 (run 34030385117) measured nothing, and was cancelled.**
+    `sccache --start-server` failed on every leg, so every Configure received
+    `KYTHIRA_COMPILER_LAUNCHER=none` and the statistics step skipped itself.
+    The run reported success throughout: the guarded start is designed to let
+    a build proceed without a cache, so "no cache at all" and "healthy" look
+    identical from the outside. **Anything that reads a green run as evidence
+    the cache works is reading nothing.** The cause was the empty IAM groups
+    recorded under Task 2, not the wiring.
+  - **Attempt 1 also could not have measured Requirement 1.2 even had sccache
+    worked.** Every measured leg logged `Bootstrap vcpkg and install
+    dependencies: skipped`: the `vcpkg_installed/` tree cache (the L1) is
+    keyed on `hashFiles('vcpkg.json', 'vcpkg-overlays/**')`, it hit, and a hit
+    there skips the vcpkg invocation entirely — so `x-aws` never ran. The
+    fix is a comment appended to an overlay README, which moves that hash
+    without touching any portfile, forcing an L1 miss without changing what is
+    built. Worth keeping: **the vcpkg binary cache can only be measured on an
+    L1 miss**, and nothing in the workflow says so.
+  - **Attempt 2 (run 34087833341) is running with both halves live.** Before
+    launching it, the `x-aws` call was probed by hand — which found a fourth
+    blocker that would have wasted the run: AWS CLI ≥2.23 sends `PutObject`
+    as an aws-chunked stream and OCI answers `NotImplemented: AWS chunked
+    encoding not supported`, so every port upload would have failed. With
+    `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` exported by the action it
+    round-trips byte-identically, and the run has since uploaded **315 port
+    archives, 788 MiB** (x64 211 / 479 MiB, arm64 104 / 308 MiB) into the
+    correct per-triplet prefixes. That is Requirement 1.2's empty-bucket
+    column, generated.
+  - **Still owed**: the per-leg sccache table (Requirement 1.1) from this run,
+    the same table from a warm re-run, the `kythira_test_pch` and
+    `-fprofile-instr-generate` answers Requirement 1.3 names, and the
+    populated-bucket install timings. The warm round needs the L1 entries this
+    run saves to be deleted first, or its vcpkg install is skipped exactly as
+    in attempt 1.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
 - [x] 2. Provision the bucket, users, policies and keys — **applied against
