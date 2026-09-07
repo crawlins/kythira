@@ -177,6 +177,44 @@ bucket does.
     created at 10:16Z and was listed by the audit at 10:26Z, so indexing does
     happen — it appears to run on a sweep longer than the 20-minute window,
     not continuously.
+  - **The bucket was provisioned but unusable for a further three hours, and
+    the reason was neither IAM nor OCI (September 6, 2026).** Everything below
+    was found by the service refusing a call; none of it is visible in a dry
+    run, and the first CI matrix that tried to use the cache reported success
+    while caching nothing.
+    1. **The three IAM groups were empty, and this script said they were
+       not.** This is the root cause of every `NoSuchBucket` in the chain, and
+       it is the empty-versus-zero trap for the *second* time in this file:
+       `oci iam group list-users --query "length(data[?id=='…'])"` prints
+       nothing and exits 0 for a non-member, so `member=""`, `[ "$member" !=
+       "0" ]` is true, and the script printed "kythira-build-cache-rw is
+       already in kythira-build-cache-rw" six times while adding nobody. A
+       policy that grants to an empty group grants nothing, and the S3 API
+       reports that as a bucket which does not exist. Both counts now go
+       through one `count_of()` helper.
+    2. **The S3 Compatibility API cannot see a bucket outside its designated
+       compartment.** It resolves a bucket *name* in exactly one compartment
+       per namespace (`default-s3-compartment-id`, the tenancy root here), and
+       design.md says to create the bucket in `OCI_CI_COMPARTMENT_ID`. The
+       script now reads that compartment, creates the bucket there, moves one
+       that is elsewhere, and scopes the policy to follow it — `in tenancy`,
+       since `in compartment id <tenancy-ocid>` is not accepted for the root.
+    3. `oci iam policy update` refuses `--statements` without
+       `--version-date`; empty is the documented "current service behaviour"
+       value. Hence `--update-policy`, off by default.
+  - **A negative result worth keeping.** The `read buckets` statement was
+    relaxed (its `target.bucket.name` condition dropped) on the theory that a
+    condition cannot be evaluated before a bucket name is resolved. That
+    experiment ran while the groups were still empty, so it could not have
+    shown anything; re-run after the real fix, the tightened statement works
+    unchanged. The condition is back, all four statements are bucket-scoped,
+    and the hypothesis is recorded as **refuted** rather than left standing.
+  - **Proof the cache works, taken after the fix rather than assumed:** both
+    keys start sccache against the bucket; a fresh source compiles cold, then
+    hits from a server restarted with no local state — a hit that can only
+    have come from OCI — at 100% hit rate with 0 cache and 0 write errors;
+    the bucket goes from empty to 3 objects / 3753 bytes; `audit.sh` exits 0
+    with no UNKNOWNs.
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6_
 
 - [ ] 3. Composite action `.github/actions/oci-build-cache/` — **written and
