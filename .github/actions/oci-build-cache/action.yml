@@ -129,6 +129,16 @@ runs:
           echo "AWS_REGION=${REGION}"
           echo "AWS_ACCESS_KEY_ID=${key_id}"
           echo "AWS_SECRET_ACCESS_KEY=${secret}"
+          # Without these two, every upload fails against OCI with
+          #   NotImplemented: AWS chunked encoding not supported
+          # AWS CLI 2.23 flipped its default to when_supported, which sends
+          # PutObject as an aws-chunked stream with a trailing checksum; OCI's
+          # S3 Compatibility API does not implement that framing. vcpkg's
+          # x-aws backend shells out to this CLI, so a port upload is exactly
+          # this call — measured on aws-cli/2.23.6: refused with the default,
+          # byte-identical round-trip with when_required.
+          echo "AWS_REQUEST_CHECKSUM_CALCULATION=when_required"
+          echo "AWS_RESPONSE_CHECKSUM_VALIDATION=when_required"
           echo "VCPKG_BINARY_SOURCES=clear;x-aws,s3://${BUCKET}/vcpkg/${TRIPLET}/,${mode}"
           echo "SCCACHE_BUCKET=${BUCKET}"
           echo "SCCACHE_ENDPOINT=${endpoint}"
@@ -139,7 +149,7 @@ runs:
           # vcpkg scrubs the environment of port builds. Without this the
           # lakers port's cargo build sees no RUSTC_WRAPPER and no
           # credentials, which is the rustc coverage ccache never had.
-          echo "VCPKG_KEEP_ENV_VARS=RUSTC_WRAPPER;SCCACHE_BUCKET;SCCACHE_ENDPOINT;SCCACHE_REGION;SCCACHE_S3_KEY_PREFIX;SCCACHE_S3_USE_SSL;AWS_ENDPOINT_URL;AWS_REGION;AWS_ACCESS_KEY_ID;AWS_SECRET_ACCESS_KEY"
+          echo "VCPKG_KEEP_ENV_VARS=RUSTC_WRAPPER;SCCACHE_BUCKET;SCCACHE_ENDPOINT;SCCACHE_REGION;SCCACHE_S3_KEY_PREFIX;SCCACHE_S3_USE_SSL;AWS_ENDPOINT_URL;AWS_REGION;AWS_ACCESS_KEY_ID;AWS_SECRET_ACCESS_KEY;AWS_REQUEST_CHECKSUM_CALCULATION;AWS_RESPONSE_CHECKSUM_VALIDATION"
         } >> "$GITHUB_ENV"
         echo "enabled=true" >> "$GITHUB_OUTPUT"
 
