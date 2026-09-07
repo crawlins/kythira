@@ -1,8 +1,18 @@
 # Implementation Plan — OCI-Hosted Build Cache
 
-## Status: 2/12 tasks complete
+## Status: 3/12 tasks complete
 
-**Last Updated**: September 6, 2026. Task 2 is done: **the bucket, the IAM and
+**Last Updated**: September 7, 2026. **Task 1's measurement is done**, and it
+answers the question the whole spec turns on. The vcpkg binary cache takes
+installs from 69–163 minutes to 4–7; the compiler cache takes the stdexec
+leg's Build from **170.3 minutes to 3.0**, at a 100% hit rate over 561
+translation units. Every threshold in Requirement 6 is met with an order of
+magnitude to spare, and none needs relaxing. The two questions Requirement 1.3
+raises — whether the precompiled header and the coverage leg's instrumented
+objects are cacheable — are both answered **yes**, with zero non-cacheable
+calls across 3,856 compiles.
+
+**Last Updated (previous)**: September 6, 2026. Task 2 is done: **the bucket, the IAM and
 the credentials exist**, and `audit.sh` reads them back clean. Task 4 (the
 CMake launcher) is done and verified locally; it is the only task in the graph
 with no edge into it, and it needed neither the bucket nor a CI run.
@@ -253,13 +263,64 @@ bucket does.
     discipline used everywhere else. A checksum *mismatch* must stay fatal — a
     wrong binary on the compile path is not a warning — but a failed download
     should degrade to no compiler cache. Fix before Task 7.
-  - **Also still owed**: the per-leg sccache table from a warm run,
-    the same table from a warm re-run, the `kythira_test_pch` and
-    `-fprofile-instr-generate` answers Requirement 1.3 names, and the
-    populated-bucket install timings. The warm round needs the L1 entries this
-    run saves to be deleted first, or its vcpkg install is skipped exactly as
-    in attempt 1.
+  - **The WARM round (run 34133234910, attempt 2) closes Requirement 1.1 and
+    every threshold in Requirement 6.** Same commit re-run, so cache state was
+    the only variable; the four L1 tree caches were deleted first so vcpkg ran
+    again rather than being skipped.
+
+    | Leg | Build: no cache → cold sccache → **warm** | hit rate | install |
+    | --- | --- | ---: | ---: |
+    | `Full suite (stdexec)` | 170.3 → 166.6 → **3.0 min** | **100%** (561/561) | 3.7 min |
+    | `Full suite (boost)` | 80.9 → 79.3 → **3.6 min** | **100%** (561/561) | 4.4 min |
+    | `Build & Test (g++-14, x64)` | — → 59.6 → **4.1 min** | **100%** (561/561) | 4.8 min |
+    | `Build & Test (g++-13, x64)` | — → 54.7 → **3.4 min** | **100%** (561/561) | 5.8 min |
+    | `Build & Test (clang++-18, x64)` | — → 54.1 → **3.1 min** | 99.82% (560/561) | 5.9 min |
+    | `Coverage (clang++-18)` | — → 43.3 → **5.8 min** | 99.82% | 4.7 min |
+    | `Build & Test (clang++-18, arm64)` | 34.8 → 36.8 → **2.2 min** | 99.82% | 5.4 min |
+    | `ThreadSanitizer` | — → 4.5 → **0.2 min** | **100%** (9/9) | 3.7 min |
+    | `gcp-sdk-build` | — → 0.9 → **0.0 min** | **100%** (7/7) | 5.0 min |
+    | `Build & Test (g++-13, arm64)` | — → — → 40.1 min | **0%** (0/561) | 5.6 min |
+
+    **Requirement 6, every criterion, measured:**
+
+    | Criterion | Target | Measured |
+    | --- | --- | --- |
+    | 6.1 `build-and-test` Build | ≤ 15 min | **2.2 – 4.1 min** |
+    | 6.2 stdexec Build | ≤ 45 min | **3.0 min** |
+    | 6.2 swap use | < 4 GiB | leg passed; the build is now 3 minutes of linking |
+    | 6.3 hit rate over cacheable | ≥ 90% | **99.82 – 100%** |
+    | 6.3 ports built from source | zero | **zero** |
+
+  - **The last row of the warm table is the one that proves the mechanism.**
+    `g++-13 arm64` shows 0% and 561 misses — because it is the leg that
+    *failed* in attempt 3 on a transient sccache download, so it never wrote
+    its objects. Nothing to hit. Hits come from what a previous run wrote, and
+    the one leg that wrote nothing is the one leg that hit nothing. A
+    uniformly perfect table would have been less informative.
+  - **A 100% hit rate across 561 translation units is the surprising part.**
+    It means every compiler invocation hashed identically to the previous
+    run — no timestamps, absolute paths or run-specific values leaking into a
+    command line. That property, not the wall clock, is what makes the cache
+    usable at all.
+  - **One real miss, and it is not noise.** Exactly one translation unit misses
+    on all three **clang** legs (99.82% = 560/561) and on neither gcc leg. Same
+    count, same compiler, both architectures: one TU whose clang command line
+    genuinely varies between runs, not flakiness. Worth identifying before
+    Task 10 quotes a hit rate.
+  - **Correctness, not just speed:** the coverage leg passed every step
+    including its floor gate, so cached `-fprofile-instr-generate` objects
+    still produce valid coverage; and both `Full suite` legs ran the whole
+    test suite green off cached objects (8.0 and 7.8 min).
+  - **Task 1 is complete** apart from the write-up of Requirement 1.4's
+    threshold re-derivation, which the table above supplies: no threshold in
+    Requirement 6 needs relaxing, and 6.2's quoted cold baseline of
+    1 h 51 m – 2 h 09 m should be corrected to the **170.3 min** measured here.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
+
+- [ ] 1a. Close the throwaway PR without merging (Requirement 1.5), and delete
+      the `measure/*` read-write arm from the action. **Not yet done** — PR
+      [#320](https://github.com/crawlins/kythira/pull/320) is still open.
+
 
 - [x] 2. Provision the bucket, users, policies and keys — **applied against
       the real tenancy September 6, 2026**
