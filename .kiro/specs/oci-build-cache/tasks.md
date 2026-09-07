@@ -126,7 +126,62 @@ bucket does.
     archives, 788 MiB** (x64 211 / 479 MiB, arm64 104 / 308 MiB) into the
     correct per-triplet prefixes. That is Requirement 1.2's empty-bucket
     column, generated.
-  - **Still owed**: the per-leg sccache table (Requirement 1.1) from this run,
+  - **Attempt 2 finished green, 15/15 jobs, and its vcpkg half is complete.**
+    Requirement 1.2's *empty bucket* column, one full matrix with `x-aws`
+    writing into an empty bucket (run 34087833341):
+
+    | Leg | vcpkg install | Build |
+    | --- | ---: | ---: |
+    | `Build & Test (clang++-18, arm64)` | 69.4 min | 34.8 min |
+    | `Build & Test (g++-13, arm64)` | 70.2 min | — |
+    | `Coverage (clang++-18)` | 74.3 min | — |
+    | `Build & Test (g++-13, x64)` | 75.9 min | — |
+    | `Build & Test (g++-14, x64)` | 83.6 min | — |
+    | `Full suite (boost)` | 96.6 min | 80.9 min |
+    | `Full suite (stdexec)` | 98.9 min | **170.3 min** |
+    | `gcp-sdk-build` | **163.4 min** | — |
+    | `ion-serializer-build` (control, no binary cache) | 97.9 min | 0.7 min |
+
+    Uploaded: **397 archives, 5.06 GB** (x64 266 / 3.69 GB, arm64 131 /
+    1.34 GB) into the correct per-triplet prefixes.
+
+    Two rows carry the argument for the whole spec. **`gcp-sdk-build` at
+    163.4 minutes** reproduces the 2 h 33 m the Introduction cites, because an
+    empty bucket is that same situation; `ci.yml` claims "the gcp tree is the
+    edhoc tree plus google-cloud-cpp, so only the delta is ever built", which
+    has never been true *across* runs for want of a persistent binary cache,
+    and the populated column is the test of it. **`Full suite (stdexec)`'s
+    Build at 170.3 minutes** is worse than the 1 h 51 m – 2 h 09 m
+    Requirement 6.2 quotes, and 6.2 asks for ≤45 min once the compiler cache
+    is warm — so that threshold is now measured against 170.3, not 129.
+  - **Attempt 2's sccache half is void on every leg, for a new reason:**
+    `sccache: error: Server startup failed: Address in use`, then
+    `-DKYTHIRA_COMPILER_LAUNCHER=none`. The action exports `RUSTC_WRAPPER` and
+    keeps it through `VCPKG_KEEP_ENV_VARS`, so the `lakers` port's cargo build
+    starts an sccache server **during the vcpkg install** — which is
+    Requirement 5.7 working as designed. The guard then reads an
+    already-running server as failure. **design.md Component 4 has the same
+    bug**: `if sccache --start-server; then` asks "did I start one" when the
+    question is "is one reachable". It needs
+    `sccache --start-server || sccache --show-stats >/dev/null`.
+  - **The canary meant to catch exactly this was itself broken.** It checked
+    the `Start sccache` step's conclusion, which is `success` in both branches
+    because the `else` only echoes a warning. It reported green while every
+    leg ran uncached. A step that cannot fail is not a signal.
+  - **Unintended but real: the rustc half is proven.** `sccache/` ended the
+    run with **98 objects, 40 MiB**, and since the C++ launcher was `none`
+    everywhere those can only be rustc artifacts from the cargo build. That is
+    the coverage `.kiro/specs/redis-compatible-kv/` names as ccache's gap,
+    working against OCI.
+  - **A constraint discovered late: a cold sccache column cannot be re-taken
+    in the same prefix.** `OBJECT_DELETE` is granted to nobody, deliberately,
+    so the 98 objects cannot be removed before 30 days of lifecycle expiry.
+    Attempt 3 must use a fresh `SCCACHE_S3_KEY_PREFIX` (e.g.
+    `sccache-measure-3/`) for a virgin prefix. This applies to every future
+    re-measurement and is a consequence of the no-delete rule, not a fault in
+    it.
+  - **Still owed**: the per-leg sccache table (Requirement 1.1) from a run
+    where the launcher is actually sccache,
     the same table from a warm re-run, the `kythira_test_pch` and
     `-fprofile-instr-generate` answers Requirement 1.3 names, and the
     populated-bucket install timings. The warm round needs the L1 entries this
