@@ -131,3 +131,18 @@ them, and they are meant to be read together:
   cannot detect a straight revert on its own — on little-endian the
   truncating write still lands the right value — which is exactly why the
   compiler leg above is the primary guard.
+
+<!--
+MEASUREMENT BRANCH ONLY — not for main.
+
+This line exists to change hashFiles('vcpkg.json', 'vcpkg-overlays/**'),
+which is the key of the vcpkg_installed/ tree cache (the L1). Without a
+change here that cache HITS, the "Bootstrap vcpkg and install dependencies"
+step is skipped entirely, and vcpkg never runs — so the x-aws binary cache
+is never exercised and Requirement 1.2 measures nothing. That is exactly
+what happened on the first attempt at this measurement: every measured leg
+logged "Bootstrap vcpkg and install dependencies: skipped".
+
+It deliberately does NOT change any portfile or patch, so no port's ABI
+hash moves: this forces an L1 miss without changing what gets built.
+-->
