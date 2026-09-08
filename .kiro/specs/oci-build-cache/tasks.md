@@ -1,6 +1,6 @@
 # Implementation Plan — OCI-Hosted Build Cache
 
-## Status: 3/12 tasks complete
+## Status: 6/12 tasks complete (1, 1a, 2, 3, 4, 5)
 
 **Last Updated**: September 7, 2026. **Task 1's measurement is done**, and it
 answers the question the whole spec turns on. The vcpkg binary cache takes
