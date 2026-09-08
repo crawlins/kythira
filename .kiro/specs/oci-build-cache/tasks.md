@@ -317,9 +317,19 @@ bucket does.
     1 h 51 m – 2 h 09 m should be corrected to the **170.3 min** measured here.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
-- [ ] 1a. Close the throwaway PR without merging (Requirement 1.5), and delete
-      the `measure/*` read-write arm from the action. **Not yet done** — PR
-      [#320](https://github.com/crawlins/kythira/pull/320) is still open.
+- [x] 1a. Throwaway closed and deleted (Requirement 1.5) — **September 8, 2026**
+  - PR [#320](https://github.com/crawlins/kythira/pull/320) closed **unmerged**,
+    and the branch deleted from the remote.
+  - **The read-write arm never reached `main`.** It existed only on the
+    throwaway branch, which is why deleting the branch — not editing the
+    action — is what removed it. Verified after the fact: `origin/main` and
+    `fix/oci-build-cache-cli-prompt` both contain zero references to
+    `measure/`, and the branch no longer exists on the remote. The writer
+    policy is back to `push:main` alone, with IAM enforcing it independently.
+  - The permanent wiring (Tasks 6 and 7) should be written fresh against the
+    corrected `design.md`, not by resurrecting that branch: its ci.yml carries
+    an L1-busting comment in an overlay README and a measurement-only key
+    prefix, neither of which belongs on `main`.
 
 
 - [x] 2. Provision the bucket, users, policies and keys — **applied against
