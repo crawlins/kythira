@@ -187,7 +187,33 @@ runs:
         tarball="sccache-v${SCCACHE_VERSION}-${target}.tar.gz"
         url="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${tarball}"
         tmp=$(mktemp -d)
+
+        # A failed DOWNLOAD degrades to no compiler cache; a failed CHECKSUM
+        # fails the job. The asymmetry is the whole point:
+        #
+        #   - GitHub being unreachable for 20 seconds is not a reason to kill
+        #     a two-hour build. This action's own header promises the cache is
+        #     never a build dependency, and until this change it broke that
+        #     promise — Task 1 lost `Build & Test (g++-13, arm64)` sixty
+        #     seconds in to a transient download while the other arm64 leg
+        #     passed the identical step.
+        #   - A checksum mismatch is a *wrong binary on the compile path*.
+        #     That is not something to warn about and continue from, so it
+        #     stays fatal.
+        #
+        # `set -e` is disabled for the download only, so the failure is
+        # handled here rather than aborting the step.
+        set +e
         curl --retry 3 --retry-delay 5 -sSfL -o "${tmp}/${tarball}" "$url"
+        curl_rc=$?
+        set -e
+        if [ "$curl_rc" -ne 0 ]; then
+          echo "::warning::could not download sccache (curl exit ${curl_rc}); this leg will build with no compiler cache"
+          rm -rf "$tmp"
+          exit 0
+        fi
+
+        # Fatal on purpose — see above.
         echo "${sha}  ${tmp}/${tarball}" | sha256sum -c -
         tar xzf "${tmp}/${tarball}" -C "$tmp"
         sudo install -m 0755 "${tmp}/sccache-v${SCCACHE_VERSION}-${target}/sccache" /usr/local/bin/sccache
