@@ -586,7 +586,36 @@ bucket does.
     `sccache/` object count rises. Record run id and per-leg counts.
   - _Requirements: 5.1, 5.4, 5.5, 5.6, 5.7_
 
-- [ ] 8. Actions-cache accounting, re-measured
+- [ ] 8. Actions-cache accounting, re-measured — **"before" captured
+      September 8, 2026, and it refutes a premise**
+  - Measured immediately before the Tasks 6/7 wiring lands, since that
+    picture stops existing afterwards:
+
+    | | entries | size |
+    | --- | ---: | ---: |
+    | **Total** | 12 | **10.00 GiB** of a 10 GiB ceiling |
+    | `vcpkg-*` tree caches (the L1 this spec **keeps**) | 7 | **9.40 GiB** |
+    | `ccache-*` families (what Task 7 removes) | 5 | **0.60 GiB** |
+
+  - **The Introduction's arithmetic no longer holds.** It argues from "4.49 GB
+    of vcpkg archives" and "eight `ccache` families at 2 GB each cannot fit
+    beside them". Today ccache occupies **0.60 GiB in total**, not ~16, and
+    the vcpkg tree caches are **94%** of the ceiling. The ccache families are
+    small precisely *because* they are evicted constantly — which is the same
+    observation the spec makes ("cold every run"), read from the other end.
+  - **So this spec does not relieve the ceiling, and should stop claiming it
+    will.** Removing ccache frees 0.60 GiB; the occupant that matters is the
+    `vcpkg_installed/` tree cache, which Requirement 3.3 deliberately keeps as
+    the L1. What actually changes is that **eviction stops mattering**: a
+    tree-cache miss used to cost 69–163 minutes of rebuilding and now costs a
+    4–7 minute download from OCI (Task 1). The benefit is real, and it is a
+    different benefit from the one written down.
+  - Requirement 3.4 asks for the header of `scripts/prune-actions-caches.sh`
+    to be rewritten with post-move figures. It should also record the above,
+    because that header is where the next person will look for the rationale.
+  - _Requirements: 3.4_
+
+- [ ] 8b. Original task text, for the "after" half
   - After Tasks 6 and 7 have run on `main` for two days, re-run the
     measurement in `scripts/prune-actions-caches.sh`'s header (total bytes,
     entry count, bytes per family) and rewrite that header's accounting
