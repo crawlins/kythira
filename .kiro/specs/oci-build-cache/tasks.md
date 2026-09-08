@@ -532,36 +532,31 @@ bucket does.
     sccache *caches* anything — that is Task 1's measurement, on a runner.
   - _Requirements: 5.2, 9.1_
 
-- [ ] 5. `DEPENDENCIES.md` and `doc/ci_build_cache.md` — **written September 5,
-      2026; the measured figures Tasks 10 and 12 add are still missing**
-  - `DEPENDENCIES.md` gains an sccache entry beside ccache: what it is, why CI
-    wants it and a local machine does not, the read-only recipe (`ro` key,
-    `AWS_ENDPOINT_URL`, `-DKYTHIRA_COMPILER_LAUNCHER=sccache`), and that
-    refused uploads on that key are the intended behaviour rather than a
-    misconfiguration. The ccache entry's Status line is rewritten for the new
-    launcher variable, including the deprecated alias.
-  - `doc/ci_build_cache.md` covers Requirement 8.2: what each cache holds and
-    how its key is formed, the bucket layout and why there is no per-leg
-    sccache prefix, the 30/90 lifecycle asymmetry, the writer policy enforced
-    twice (action, then IAM) with the PR trade-off stated, absence as a no-op,
-    how to read the job-summary statistics and what each number would mean,
-    the three scripts, key rotation, and the repository configuration table.
-  - Not ingested by Doxygen: `Doxyfile`'s `INPUT` is `include README.md`, so a
-    new file under `doc/` cannot break the docs gate. Checked rather than
-    assumed, because that gate is `WARN_AS_ERROR = FAIL_ON_WARNINGS`.
-  - **A discrepancy found while writing it, and written into the document.**
-    `requirements.md` attributes the $0.50-per-month pre-registration to
-    `doc/sccache_dogfood_cost_estimate.md` — "ten gigabytes of standard
-    storage is $0.26, roughly 700,000 requests … about $0.24". Those figures
-    are **not in that document**. It prices the Redis-gateway deployment
-    (compute, block volume, egress, about $55 per month), has no Object
-    Storage price line at all, and says explicitly that Object Storage is
-    "not included … this deployment does not use". The $0.50 is therefore a
-    pre-registration made in the spec, not a figure carried from a costed
-    document, and `doc/ci_build_cache.md` says so at the point it quotes it.
-    Requirement 8.3's cross-reference (Task 11) is where the two are
-    reconciled; whoever does it should add the Object Storage line to the
-    estimate rather than quietly re-citing it.
+- [x] 5. `DEPENDENCIES.md` and `doc/ci_build_cache.md` — **done September 8,
+      2026, now with measured figures rather than the design's estimates**
+  - Both documents were written from the design in the first pass
+    (Requirement 8.1, 8.2: what each cache holds, bucket layout, the 30/90
+    lifecycle asymmetry, the writer policy and its trade-off, absence as a
+    no-op, statistics, the scripts, key rotation, repository configuration).
+  - `doc/ci_build_cache.md` gains a **"What it is worth"** section carrying
+    Task 1's numbers: installs 69–163 min → 4–7, the stdexec Build 170.3 → 3.0,
+    hit rates 99.8–100%, zero ports built from source — with the two caveats
+    that matter more than the headline. That a cold cache costs nothing
+    measurable (−2% to +6%), and that the comparison is **anchored** by the
+    deliberately uncached `ion` control at 97.9 / 97.8 / 92.2 minutes across
+    the same three runs, which is what makes it a measurement rather than a
+    good afternoon on the runners.
+  - It also records that every compile is cacheable (0 non-cacheable across
+    3,856), that coverage instrumentation caches *and still passes its floor
+    gate*, and the cache's steady-state size (397 archives / 5.06 GB, ~4,400
+    sccache objects / 2.04 GB) so the cost line can be sanity-checked.
+  - `DEPENDENCIES.md`'s sccache entry gains the headline measurement and a
+    pointer to the operator document.
+  - Requirement 8.3's cross-reference in
+    `doc/sccache_dogfood_cost_estimate.md` stays with Task 11, which is where
+    the first month's real bill lands — and note the discrepancy already
+    recorded there: the $0.50 figure is a pre-registration made in this spec,
+    not a figure carried from that document.
   - _Requirements: 8.1, 8.2_
 
 - [ ] 6. vcpkg binary cache to the bucket, every workflow

@@ -82,6 +82,41 @@ removed, or the endpoint unreachable:
 A fork's pull request has no secrets at all; the action reports
 `enabled=false` and the run proceeds without either cache.
 
+## What it is worth
+
+Measured on this repository, not estimated —
+`.kiro/specs/oci-build-cache/tasks.md` Task 1 has the full tables and the run
+ids.
+
+| | no cache | warm cache |
+|---|---:|---:|
+| `gcp-sdk-build` dependency install | 163.4 min | **6.5 min** |
+| Other legs' dependency install | 69–99 min | **4–7 min** |
+| `Full suite (stdexec)` Build | 170.3 min | **3.0 min** |
+| `Full suite (boost)` Build | 80.9 min | **3.6 min** |
+| `Build & Test` Builds | 36–60 min | **2.2–4.1 min** |
+| sccache hit rate | — | **99.8–100%** |
+| Ports built from source | all of them | **zero** |
+
+Two caveats that matter more than the headline:
+
+- **A cold cache costs nothing measurable.** Populating it moved build wall
+  clocks by −2% to +6%, at 0.050 s average per cache write. You do not pay to
+  fill it; you simply stop paying to rebuild.
+- **The comparison is anchored.** `ion-serializer-build` is deliberately left
+  without a binary cache, and it took 97.9, 97.8 and 92.2 minutes across the
+  three runs the table is drawn from. When every cached leg drops by an order
+  of magnitude and the uncached one does not move, the runners were not merely
+  having a good day.
+
+Every compile is cacheable: across 3,856 compiles spanning Release,
+ThreadSanitizer and coverage builds, on two compilers and two architectures,
+sccache reported **zero** non-cacheable calls. The `kythira_test_pch`
+precompiled header does not defeat it, and neither does
+`-fprofile-instr-generate` — the coverage leg cached 542 of 542 objects and
+still passed its coverage floor, so cached instrumentation produces valid
+coverage rather than merely fast builds.
+
 ## Reading the statistics
 
 Every leg runs `sccache --show-stats` after its build with `if: always()`,
@@ -176,7 +211,9 @@ the weaker of the two claims until the first bill arrives. Closing that gap is
 Requirement 8.3's cross-reference, owed by Task 11.
 
 `audit.sh` prints the month-to-date figure so the estimate can be checked
-before the bill rather than after it. Over $5 in a month, or over 5 TB of
+before the bill rather than after it. For scale, one full population of the
+cache is **397 vcpkg archives (5.06 GB)** and about **4,400 sccache objects
+(2.04 GB)**; the lifecycle rules then hold it roughly steady. Over $5 in a month, or over 5 TB of
 egress, is a falsified estimate to investigate — not a number to absorb.
 
 ## Local use

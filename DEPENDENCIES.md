@@ -398,7 +398,10 @@ This document lists the dependencies required to build and use the network simul
   job, so a local cache is cold every time, and this repository's Actions cache
   is over its 10 GB ceiling and evicting. sccache also caches **rustc**, which
   ccache cannot, so the `lakers` port's `cargo build` is cached for the first
-  time.
+  time. Measured on this repository: the `Full suite (stdexec)` leg's Build
+  step went from 170.3 minutes to **3.0** at a 100% hit rate over 561
+  translation units, and every `Build & Test` leg builds in 2.2–4.1 minutes.
+  See `doc/ci_build_cache.md`.
 - **Installation**: there is no apt package. CI installs a pinned release
   tarball verified by SHA-256; locally, take a release binary from
   <https://github.com/mozilla/sccache/releases> or `cargo install sccache`.
