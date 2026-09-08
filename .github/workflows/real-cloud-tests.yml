@@ -311,6 +311,22 @@ jobs:
             echo "value=x64-linux" >> "$GITHUB_OUTPUT"
           fi
 
+      # Exports the environment vcpkg's x-aws backend reads. Writer policy is
+      # in the action: only a push to main gets the read-write key.
+      # See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
@@ -339,7 +355,8 @@ jobs:
           # actions/cache above, jobs with different feature sets share every
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # From the OCI build cache action (x-aws); x-gha no longer exists.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
@@ -620,6 +637,22 @@ jobs:
             echo "value=x64-linux" >> "$GITHUB_OUTPUT"
           fi
 
+      # Exports the environment vcpkg's x-aws backend reads. Writer policy is
+      # in the action: only a push to main gets the read-write key.
+      # See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
@@ -646,7 +679,8 @@ jobs:
           # actions/cache above, jobs with different feature sets share every
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # From the OCI build cache action (x-aws); x-gha no longer exists.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
@@ -778,6 +812,22 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Exports the environment vcpkg's x-aws backend reads. Writer policy is
+      # in the action: only a push to main gets the read-write key.
+      # See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
@@ -804,7 +854,8 @@ jobs:
           # actions/cache above, jobs with different feature sets share every
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # From the OCI build cache action (x-aws); x-gha no longer exists.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
@@ -1031,6 +1082,22 @@ jobs:
         id: triplet
         run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
 
+      # Exports the environment vcpkg's x-aws backend reads. Writer policy is
+      # in the action: only a push to main gets the read-write key.
+      # See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
@@ -1063,7 +1130,8 @@ jobs:
           # actions/cache above, jobs with different feature sets share every
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # From the OCI build cache action (x-aws); x-gha no longer exists.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=gcp
@@ -1287,6 +1355,22 @@ jobs:
       # credentials step before that step worked, which is how "the job has
       # no vcpkg install at all" stayed invisible until the first real
       # configure ran.
+      # Exports the environment vcpkg's x-aws backend reads. Writer policy is
+      # in the action: only a push to main gets the read-write key.
+      # See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
@@ -1308,7 +1392,8 @@ jobs:
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # From the OCI build cache action (x-aws); x-gha no longer exists.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
@@ -1758,6 +1843,22 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Exports the environment vcpkg's x-aws backend reads. Writer policy is
+      # in the action: only a push to main gets the read-write key.
+      # See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
@@ -1775,7 +1876,8 @@ jobs:
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # From the OCI build cache action (x-aws); x-gha no longer exists.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
