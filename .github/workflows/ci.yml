@@ -53,8 +53,6 @@ jobs:
     # in the cache steps' own `path:` field. Found via .kiro/specs/ccache-adoption/
     # Task 7's real re-measurement (see tasks.md) after every prior run
     # silently missed on every restore-keys prefix, including the broadest.
-    env:
-      CCACHE_DIR: /home/runner/.ccache
 
     strategy:
       fail-fast: false
@@ -287,6 +285,10 @@ jobs:
       - name: Configure (format-check)
         if: matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
         run: |
+          # No launcher here on purpose: this tree exists only to run
+          # clang-format and is configured before `Start sccache`, so
+          # referencing that step's output would be a forward reference (and
+          # actionlint says so). It compiles nothing.
           cmake -B build-fmt -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=g++-13 \
@@ -310,17 +312,21 @@ jobs:
       # arm64 legs of this matrix, and ccache's own cached objects are not
       # portable across architectures. See .kiro/specs/ccache-adoption/ and
       # .kiro/specs/arm64-ci-verification/ Requirement 4.
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-${{ github.ref_name }}-
-            ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      # sccache, not ccache: its objects live in the OCI bucket, so they
+      # survive the runner being destroyed. The check is "is a server
+      # reachable", NOT "did this step start one" -- the lakers port's cargo
+      # build runs under RUSTC_WRAPPER during the vcpkg install, so a server
+      # is often already listening and --start-server exits non-zero with
+      # "Address in use". Reading that as failure cost Task 1 an entire run.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure (Release)
         run: |
@@ -336,6 +342,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -343,12 +350,19 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc)
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-${{ github.ref_name }}-${{ github.run_id }}
+      # The numbers Requirement 5.5 wants in the job summary, and the ones
+      # Requirement 6 is checked against. `always()` so a failed build still
+      # reports what it cached: a leg with 0 cacheable requests is a finding.
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — ${{ matrix.compiler }} ${{ matrix.arch_label }}"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
 
       - name: Test
         id: test
@@ -435,8 +449,6 @@ jobs:
     name: GCP SDK Build (clang++-18, x64)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-    env:
-      CCACHE_DIR: /home/runner/.ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -516,17 +528,21 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-gcp-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-gcp-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
-            ccache-gcp-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      # sccache, not ccache: its objects live in the OCI bucket, so they
+      # survive the runner being destroyed. The check is "is a server
+      # reachable", NOT "did this step start one" -- the lakers port's cargo
+      # build runs under RUSTC_WRAPPER during the vcpkg install, so a server
+      # is often already listening and --start-server exits non-zero with
+      # "Address in use". Reading that as failure cost Task 1 an entire run.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure (Release, GCP SDK + real-test compile)
         run: |
@@ -535,6 +551,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DKYTHIRA_KCONFIG=configs/ci_gcp_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DKYTHIRA_GCP_REAL_TESTS=ON \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -549,12 +566,19 @@ jobs:
             gcp_privateca_provider_real_test \
             ca_service
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-gcp-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+      # The numbers Requirement 5.5 wants in the job summary, and the ones
+      # Requirement 6 is checked against. `always()` so a failed build still
+      # reports what it cached: a leg with 0 cacheable requests is a finding.
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — gcp-sdk-build"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
 
       - name: Run GCP unit tests
         run: |
@@ -588,8 +612,6 @@ jobs:
     name: Ion Serializer Build (g++-14, x64)
     runs-on: ubuntu-24.04
     timeout-minutes: 300
-    env:
-      CCACHE_DIR: /home/runner/.ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -684,17 +706,21 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-ion-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-ion-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
-            ccache-ion-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      # sccache, not ccache: its objects live in the OCI bucket, so they
+      # survive the runner being destroyed. The check is "is a server
+      # reachable", NOT "did this step start one" -- the lakers port's cargo
+      # build runs under RUSTC_WRAPPER during the vcpkg install, so a server
+      # is often already listening and --start-server exits non-zero with
+      # "Address in use". Reading that as failure cost Task 1 an entire run.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       # KYTHIRA_KCONFIG_STRICT=ON is what turns "ion-c is installed" into an
       # assertion: if --x-feature=ion ever stops delivering it, this configure
@@ -706,6 +732,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=g++-14 \
             -DKYTHIRA_KCONFIG=configs/ci_ion_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -724,13 +751,19 @@ jobs:
             shard_group_id_ion_wire_property_test \
             ion_http_coap_end_to_end_test
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-ion-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
-
+      # The numbers Requirement 5.5 wants in the job summary, and the ones
+      # Requirement 6 is checked against. `always()` so a failed build still
+      # reports what it cached: a leg with 0 cacheable requests is a finding.
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — ion-serializer-build"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
       # --no-tests=error, not a bare ctest: an empty selection is the exact
       # failure this job exists to catch, and ctest exits 0 on one by default.
       - name: Run Ion tests
@@ -748,8 +781,6 @@ jobs:
     # See build-and-test's identical env block above — ccache >=4.0 defaults
     # to ~/.cache/ccache, not ~/.ccache, so without this the Restore/Save
     # ccache steps below never see what ccache actually wrote.
-    env:
-      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - name: Checkout
@@ -897,17 +928,21 @@ jobs:
       # never eats into headroom that step is specifically freeing up. Same
       # restore-broad/save-unique key pattern as build-and-test; see
       # .kiro/specs/ccache-adoption/.
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-coverage-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-coverage-${{ runner.os }}-${{ github.ref_name }}-
-            ccache-coverage-${{ runner.os }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=1G
+      # sccache, not ccache: its objects live in the OCI bucket, so they
+      # survive the runner being destroyed. The check is "is a server
+      # reachable", NOT "did this step start one" -- the lakers port's cargo
+      # build runs under RUSTC_WRAPPER during the vcpkg install, so a server
+      # is often already listening and --start-server exits non-zero with
+      # "Address in use". Reading that as failure cost Task 1 an entire run.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure (Coverage)
         run: |
@@ -920,6 +955,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
@@ -927,12 +963,19 @@ jobs:
       - name: Build (Coverage)
         run: cmake --build build-coverage -j$(nproc)
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-coverage-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+      # The numbers Requirement 5.5 wants in the job summary, and the ones
+      # Requirement 6 is checked against. `always()` so a failed build still
+      # reports what it cached: a leg with 0 cacheable requests is a finding.
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — coverage"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
 
       - name: Test (Coverage)
         id: test-coverage
@@ -1145,8 +1188,6 @@ jobs:
     name: ThreadSanitizer (Beast + Proxygen concurrency suites)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    env:
-      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - name: Checkout
@@ -1248,17 +1289,21 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-tsan-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-tsan-${{ runner.os }}-${{ github.ref_name }}-
-            ccache-tsan-${{ runner.os }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      # sccache, not ccache: its objects live in the OCI bucket, so they
+      # survive the runner being destroyed. The check is "is a server
+      # reachable", NOT "did this step start one" -- the lakers port's cargo
+      # build runs under RUSTC_WRAPPER during the vcpkg install, so a server
+      # is often already listening and --start-server exits non-zero with
+      # "Address in use". Reading that as failure cost Task 1 an entire run.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure (ThreadSanitizer)
         run: |
@@ -1267,6 +1312,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       - name: Assert ThreadSanitizer was requested
@@ -1333,12 +1379,19 @@ jobs:
           if [ "$uninstrumented" -ne 0 ]; then exit 1; fi
           echo "confirmed: all 7 targets are ThreadSanitizer-instrumented"
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-tsan-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+      # The numbers Requirement 5.5 wants in the job summary, and the ones
+      # Requirement 6 is checked against. `always()` so a failed build still
+      # reports what it cached: a leg with 0 cacheable requests is a finding.
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — tsan"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
 
       - name: Test under ThreadSanitizer
         id: test-tsan
@@ -1460,8 +1513,6 @@ jobs:
       fail-fast: false
       matrix:
         backend: [stdexec, boost]
-    env:
-      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - name: Checkout
@@ -1563,17 +1614,21 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-futurebackend-${{ matrix.backend }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-futurebackend-${{ matrix.backend }}-${{ runner.os }}-${{ github.ref_name }}-
-            ccache-futurebackend-${{ matrix.backend }}-${{ runner.os }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      # sccache, not ccache: its objects live in the OCI bucket, so they
+      # survive the runner being destroyed. The check is "is a server
+      # reachable", NOT "did this step start one" -- the lakers port's cargo
+      # build runs under RUSTC_WRAPPER during the vcpkg install, so a server
+      # is often already listening and --start-server exits non-zero with
+      # "Address in use". Reading that as failure cost Task 1 an entire run.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure (${{ matrix.backend }} backend)
         run: |
@@ -1590,6 +1645,7 @@ jobs:
             -DKYTHIRA_DEFAULT_FUTURE_BACKEND=${{ matrix.backend }} \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
@@ -1715,13 +1771,19 @@ jobs:
           echo "── disk after build ──"; df -h /
           echo "── memory after build ──"; free -h
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-futurebackend-${{ matrix.backend }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-
+      # The numbers Requirement 5.5 wants in the job summary, and the ones
+      # Requirement 6 is checked against. `always()` so a failed build still
+      # reports what it cached: a leg with 0 cacheable requests is a finding.
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — ${{ matrix.backend }} backend"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
       # Same selection as build-and-test's own Test step -- the whole registered
       # suite minus the label classes that job also excludes -- so this leg and
       # the folly legs differ in exactly one variable, the backend. Anything
