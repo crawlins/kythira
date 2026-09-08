@@ -215,17 +215,15 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ runner.arch }}-g++-13-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-${{ runner.os }}-${{ runner.arch }}-g++-13-${{ github.ref_name }}-
-            ccache-${{ runner.os }}-${{ runner.arch }}-g++-13-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       # Release and the folly future backend, because those are what the
       # local rows in .kiro/specs/multi-raft-performance/tasks.md were taken
@@ -238,6 +236,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
 
       # One target, not the whole tree. The tree is ~420 test binaries and
@@ -245,13 +244,16 @@ jobs:
       - name: Build the benchmark binary
         run: cmake --build build --target multi_raft_http_benchmark_test -j$(nproc)
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ runner.arch }}-g++-13-${{ github.ref_name }}-${{ github.run_id }}
-
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — aws-shape-1"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
       # ── Credentials, minted AFTER the build ─────────────────────────────
       #
       # Position is load-bearing. An OIDC session lasts an hour, and a cold

@@ -220,7 +220,6 @@ jobs:
       # see what ccache actually wrote. See ci.yml's build-and-test job for
       # the same fix and .kiro/specs/ccache-adoption/ Task 7 for how this
       # was found (every restore silently missed, Save failed outright).
-      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - name: Checkout
@@ -371,17 +370,15 @@ jobs:
       # both x64 and arm64 legs, and runner.os alone is "Linux" for both.
       # See .kiro/specs/ccache-adoption/ and
       # .kiro/specs/arm64-ci-verification/ Requirement 4.
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-realcloud-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
-            ccache-realcloud-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure (Release, real-cloud tests enabled)
         run: |
@@ -389,17 +386,22 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_AWS_REAL_EC2_TESTS=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — aws"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
 
       - name: Fail closed if a real-EC2 test binary is missing
         run: |
@@ -738,7 +740,6 @@ jobs:
       BUNDLE_KEY_VAULT: ${{ (github.event.inputs.azure_bundle_key_vault == 'true') || (github.event.inputs.azure_bundle_key_vault == null && vars.REAL_CLOUD_TESTS_AZURE_KEY_VAULT_ENABLED == 'true') }}
       # .kiro/specs/cloud-object-persistence/ task 17.
       BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.azure_bundle_object_persistence == 'true') || (github.event.inputs.azure_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_AZURE_OBJECT_PERSISTENCE_ENABLED == 'true') }}
-      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - name: Checkout
@@ -862,17 +863,15 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-azure-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-realcloud-azure-${{ runner.os }}-${{ github.ref_name }}-
-            ccache-realcloud-azure-${{ runner.os }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure (Release, real-Azure tests enabled)
         run: |
@@ -880,17 +879,22 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_AZURE_REAL_TESTS=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-azure-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — azure"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
 
       - name: Fail closed if a real-Azure test binary is missing
         run: |
@@ -1021,7 +1025,6 @@ jobs:
       BUNDLE_PRIVATECA: ${{ (github.event.inputs.gcp_bundle_privateca == 'true') || (github.event.inputs.gcp_bundle_privateca == null && vars.REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED == 'true') }}
       # .kiro/specs/cloud-object-persistence/ task 17.
       BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.gcp_bundle_object_persistence == 'true') || (github.event.inputs.gcp_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_GCP_OBJECT_PERSISTENCE_ENABLED == 'true') }}
-      CCACHE_DIR: /home/runner/.ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1138,17 +1141,15 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-gcp-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-realcloud-gcp-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
-            ccache-realcloud-gcp-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure (Release, real-cloud tests enabled)
         run: |
@@ -1156,18 +1157,22 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_GCP_REAL_TESTS=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-gcp-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
-
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — gcp"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
       # Mirror the aws job's fail-closed guard: if google-cloud-cpp did not
       # resolve (wrong vcpkg feature, stale cache) then KYTHIRA_HAS_GCP_SDK is
       # false, the real-test targets are never add_subdirectory'd, and the
@@ -1277,7 +1282,6 @@ jobs:
       BUNDLE_CERTIFICATES: ${{ (github.event.inputs.oci_bundle_certificates == 'true') || (github.event.inputs.oci_bundle_certificates == null && vars.REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED == 'true') }}
       # .kiro/specs/cloud-object-persistence/ task 17.
       BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.oci_bundle_object_persistence == 'true') || (github.event.inputs.oci_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED == 'true') }}
-      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - uses: actions/checkout@v4
@@ -1400,17 +1404,15 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-oci-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-realcloud-oci-${{ runner.os }}-${{ github.ref_name }}-
-            ccache-realcloud-oci-${{ runner.os }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure
         run: |
@@ -1418,6 +1420,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig
 
       # Built as named targets rather than via `ctest`: neither real-OCI binary
@@ -1442,13 +1445,16 @@ jobs:
           # shellcheck disable=SC2086
           cmake --build build --target $targets
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-oci-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — oci"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
       # ── Credentials (Requirement 14.2 — keyless federation) ──────────────
       #
       # Deliberately placed AFTER the build, immediately before the test
@@ -1792,7 +1798,6 @@ jobs:
     env:
       BUNDLE_ESS_QUORUM: ${{ (github.event.inputs.alibaba_bundle_ess_quorum == 'true') || (github.event.inputs.alibaba_bundle_ess_quorum == null && vars.REAL_CLOUD_TESTS_ALIBABA_ESS_QUORUM_ENABLED == 'true') }}
       BUNDLE_OSS_PERSISTENCE: ${{ (github.event.inputs.alibaba_bundle_oss_persistence == 'true') || (github.event.inputs.alibaba_bundle_oss_persistence == null && vars.REAL_CLOUD_TESTS_ALIBABA_OSS_PERSISTENCE_ENABLED == 'true') }}
-      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - name: Checkout
@@ -1884,23 +1889,22 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-alibaba-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-realcloud-alibaba-${{ runner.os }}-${{ github.ref_name }}-
-            ccache-realcloud-alibaba-${{ runner.os }}-
-
-      - name: ccache size limit
-        run: ccache --max-size=2G
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: |
+          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
+          fi
 
       - name: Configure (Release)
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       - name: Build the real-Alibaba suites
@@ -1911,13 +1915,16 @@ jobs:
           # shellcheck disable=SC2086
           cmake --build build --target $targets
 
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-realcloud-alibaba-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — alibaba"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
       # Deliberately AFTER the build and immediately before the test steps.
       # The azure job learned this the expensive way: it logged in first, took
       # ~84 minutes to cold-build, and its credentials had expired before the
