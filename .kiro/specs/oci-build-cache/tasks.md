@@ -439,49 +439,45 @@ bucket does.
     with no UNKNOWNs.
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6_
 
-- [ ] 3. Composite action `.github/actions/oci-build-cache/` — **written and
-      exercised September 5, 2026; not yet run by any workflow**
-  - `action.yml` implements design.md Component 2: the inputs of Requirement
-    4.5, the `::error::` on a missing repository *variable*, the
+- [x] 3. Composite action `.github/actions/oci-build-cache/` — **done
+      September 8, 2026, verified by three real runs rather than a scratch
+      workflow**
+  - `action.yml` implements design.md Component 2 as corrected: event-to-key
+    selection, `::error::` on a missing repository *variable*, the
     no-credentials `enabled=false` path for missing *secrets*, the AWS CLI
     assertion, the environment export, and the pinned sccache install for
     `X64` and `ARM64`.
-  - **The selection logic was run, not reviewed.** The step's script was
-    extracted from the YAML and executed with a stub `aws`, a temporary
-    `GITHUB_ENV` and `GITHUB_OUTPUT`, once per state:
-
-    | Event and ref | Key | vcpkg mode | `enabled` | Exit |
-    | --- | --- | --- | --- | --- |
-    | `push:main` | read-write | `readwrite` | true | 0 |
-    | `push:main-experiment` | read-only | `read` | true | 0 |
-    | `pull_request:318/merge` | read-only | `read` | true | 0 |
-    | `push:main`, RO secrets absent | read-write | `readwrite` | true | 0 |
-    | `pull_request`, RO secrets absent | none | — | **false**, with a warning | 0 |
-    | `push:main`, `BUCKET` unset | — | — | — | **1**, `::error::BUCKET is empty` |
-
-    The second row is the one worth having: Task 3 asks specifically that the
-    `push:main` case be exact, and `main-experiment` takes the read-only key.
-  - **sccache is pinned by version and by checksum, and the checksums were
-    measured rather than copied.** Both `linux-musl` assets of v0.17.0 were
-    downloaded and hashed on this box; each agrees with the `.sha256`
-    published beside it (x86_64 `67c4a96d…`, aarch64 `821a8634…`), and the
-    x86_64 binary runs and reports `sccache 0.17.0`. Both guards were run:
-    an unrecognised `RUNNER_ARCH` exits 1, and bumping `sccache-version`
-    without bumping the checksums exits 1 rather than installing an
-    unverified binary. A deliberately wrong hash was fed to the same
-    `sha256sum -c` line to confirm it fails.
-  - **`actionlint` cannot check this file.** 1.7.7 parses any `.yml` under
-    `.github/` as a *workflow*, so it reports a missing `on:` and `jobs:`
-    section for a composite action's metadata and never looks at the
-    contents; a deliberately typo'd copy produced the identical output, so it
-    was not checking either way. Verified instead by parsing the YAML
-    (`runs.using == composite`, every step declares `shell: bash`) and
-    running `shellcheck` 0.10.0 over each extracted `run:` block — clean.
-  - Secrets reach the script through `env:` rather than `${{ }}` splicing in
-    the body, so a secret containing shell metacharacters cannot be executed.
-  - **Still to do**: the two verification runs Task 3 names, which need a
-    scratch workflow and the bucket — and Tasks 6 and 7, which are what
-    actually reference this action.
+  - **Task 3's own verification list is discharged by Task 1's runs**, which
+    exercised this action on ten legs across two architectures, three times:
+    - the RW key is selected only for `push:main` and (on the throwaway
+      branch, now deleted) an explicit branch arm; every other ref took the
+      read-only key. Confirmed in job logs: `build cache: read-write … key`
+      versus `read-only`.
+    - an unset variable fails the job at the action — the `::error::` path was
+      exercised locally with each of `BUCKET`, `NAMESPACE`, `REGION` and
+      `TRIPLET` empty in turn.
+    - the AWS CLI assertion passed on both `ubuntu-24.04` and
+      `ubuntu-24.04-arm` (`aws-cli/2.36.35` on the runners), so the header's
+      claim that it is present is now measured rather than assumed.
+    - the pinned sccache installed and reported `sccache 0.17.0` on every leg,
+      both architectures.
+  - **Two corrections the runs forced, both now in the action:**
+    1. `AWS_REQUEST_CHECKSUM_CALCULATION` / `AWS_RESPONSE_CHECKSUM_VALIDATION`
+       set to `when_required`. Without them OCI answers every upload with
+       `NotImplemented: AWS chunked encoding not supported`, because AWS CLI
+       ≥2.23 sends `PutObject` as an aws-chunked stream. vcpkg's `x-aws`
+       backend *is* that CLI call, so this was the difference between 397
+       archives uploaded and none.
+    2. **A failed sccache download now degrades to no compiler cache instead
+       of failing the job**, while a checksum mismatch stays fatal. The
+       asymmetry is the point: GitHub being unreachable for twenty seconds is
+       not a reason to kill a two-hour build, and Task 1 lost
+       `Build & Test (g++-13, arm64)` exactly that way while the other arm64
+       leg passed the identical step — which contradicted this action's own
+       header promise that the cache is never a build dependency. A wrong
+       binary on the compile path is a different matter and still stops
+       everything. Both paths were exercised by breaking each in turn: an
+       unreachable URL warns and exits 0, a wrong checksum exits 1.
   - _Requirements: 3.2, 4.1, 4.2, 4.3, 4.5, 5.3_
 
 - [x] 4. CMake `KYTHIRA_COMPILER_LAUNCHER` — **done September 5, 2026**
