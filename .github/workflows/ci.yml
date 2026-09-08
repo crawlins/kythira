@@ -191,6 +191,23 @@ jobs:
           fi
 
       # ── vcpkg (Boost, Folly, Poco, libcoap, lakers, …) ───────────────────
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. The writer policy -- only a
+      # push to main gets the read-write key -- lives in that action and
+      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
@@ -210,17 +227,6 @@ jobs:
           # nor stops this job sharing them with the coverage job below.
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc${{ matrix.vcpkg_cxx && format('-{0}', matrix.vcpkg_cxx) || '' }}-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
-      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
-      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
-      # to `run:` steps. This re-exports them so the vcpkg invocation below can
-      # reach the cache.
-      - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
@@ -229,7 +235,11 @@ jobs:
           # actions/cache above, jobs with different feature sets share every
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action as
+          # x-aws against the bucket. Re-exporting it here would override that,
+          # and x-gha is a backend vcpkg removed some time ago -- which is why
+          # these jobs had no binary cache at all until this change.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           # Build the ports themselves with this leg's compiler, when it asks
           # for one. Guarded rather than exported unconditionally: on the legs
           # that set neither, `export CC=` would hand CMake an empty string as
@@ -462,23 +472,29 @@ jobs:
       # Distinct cache key ("-gcp" suffix) so this job's vcpkg_installed (which
       # includes google-cloud-cpp via --x-feature=gcp) never collides with the
       # main build-and-test jobs' cache, which is built without that feature.
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. The writer policy -- only a
+      # push to main gets the read-write key -- lives in that action and
+      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
         with:
           path: vcpkg_installed
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
-
-      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
-      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
-      # to `run:` steps. This re-exports them so the vcpkg invocation below can
-      # reach the cache.
-      - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Bootstrap vcpkg and install dependencies (with gcp feature)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -488,7 +504,11 @@ jobs:
           # actions/cache above, jobs with different feature sets share every
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action as
+          # x-aws against the bucket. Re-exporting it here would override that,
+          # and x-gha is a backend vcpkg removed some time ago -- which is why
+          # these jobs had no binary cache at all until this change.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
@@ -614,23 +634,29 @@ jobs:
       # plus ion-c AND is built by a different compiler than the default legs,
       # so it must not collide with either the plain edhoc caches or the
       # GCC 14 build-and-test leg's edhoc-only one.
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. The writer policy -- only a
+      # push to main gets the read-write key -- lives in that action and
+      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
         with:
           path: vcpkg_installed
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-ion-g++-14-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
-
-      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
-      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
-      # to `run:` steps. This re-exports them so the vcpkg invocation below can
-      # reach the cache.
-      - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Bootstrap vcpkg and install dependencies (with ion feature)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -639,7 +665,11 @@ jobs:
           # triplet, compiler, features, patches). The ion tree is the GCC 14
           # edhoc tree plus ion-c, so once that leg has run only the delta is
           # ever built here.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action as
+          # x-aws against the bucket. Re-exporting it here would override that,
+          # and x-gha is a backend vcpkg removed some time ago -- which is why
+          # these jobs had no binary cache at all until this change.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           # Unconditional here, unlike the matrix leg's guarded export: this job
           # has exactly one compiler and building ion-c under it is the point.
           export CC=gcc-14
@@ -794,6 +824,23 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. The writer policy -- only a
+      # push to main gets the read-write key -- lives in that action and
+      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
@@ -804,17 +851,6 @@ jobs:
           # consistent with build-and-test's cache key (Requirement 4).
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
-      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
-      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
-      # to `run:` steps. This re-exports them so the vcpkg invocation below can
-      # reach the cache.
-      - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
@@ -823,7 +859,11 @@ jobs:
           # actions/cache above, jobs with different feature sets share every
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action as
+          # x-aws against the bucket. Re-exporting it here would override that,
+          # and x-gha is a backend vcpkg removed some time ago -- which is why
+          # these jobs had no binary cache at all until this change.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the vcpkg tool + scripts + registry to vcpkg.json's
           # builtin-baseline instead of a moving HEAD. This CI bootstraps
@@ -1146,23 +1186,29 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. The writer policy -- only a
+      # push to main gets the read-write key -- lives in that action and
+      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
         with:
           path: vcpkg_installed
           key: vcpkg-${{ runner.os }}-X64-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
-
-      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
-      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
-      # to `run:` steps. This re-exports them so the vcpkg invocation below can
-      # reach the cache.
-      - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -1172,7 +1218,11 @@ jobs:
           # actions/cache above, jobs with different feature sets share every
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action as
+          # x-aws against the bucket. Re-exporting it here would override that,
+          # and x-gha is a backend vcpkg removed some time ago -- which is why
+          # these jobs had no binary cache at all until this change.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the vcpkg tool + scripts + registry to vcpkg.json's
           # builtin-baseline instead of a moving HEAD. This CI bootstraps
@@ -1451,23 +1501,29 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. The writer policy -- only a
+      # push to main gets the read-write key -- lives in that action and
+      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
         with:
           path: vcpkg_installed
           key: vcpkg-${{ runner.os }}-X64-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
-
-      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
-      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
-      # to `run:` steps. This re-exports them so the vcpkg invocation below can
-      # reach the cache.
-      - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -1477,7 +1533,11 @@ jobs:
           # actions/cache above, jobs with different feature sets share every
           # package they have in common -- the gcp tree is the edhoc tree plus
           # google-cloud-cpp, so only the delta is ever built.
-          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action as
+          # x-aws against the bucket. Re-exporting it here would override that,
+          # and x-gha is a backend vcpkg removed some time ago -- which is why
+          # these jobs had no binary cache at all until this change.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the vcpkg tool + scripts + registry to vcpkg.json's
           # builtin-baseline instead of a moving HEAD. This CI bootstraps
