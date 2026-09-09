@@ -1,8 +1,34 @@
 # Implementation Plan — OCI-Hosted Build Cache
 
-## Status: 6/12 tasks complete (1, 1a, 2, 3, 4, 5)
+## Status: 9/12 tasks complete (1, 1a, 2, 3, 4, 5, 6, 7, 7a, 8, 12)
 
-**Last Updated**: September 7, 2026. **Task 1's measurement is done**, and it
+**Last Updated**: September 9, 2026. **Both caches are live on `main`** and
+verified there by run
+[34296062792](https://github.com/crawlins/kythira/actions/runs/34296062792),
+15 of 15 jobs green: vcpkg's archives through `x-aws` and this project's
+compiles through sccache, in one OCI bucket, with 397 archives / 5.06 GB
+banked and zero ports built from source. The `Full suite (stdexec)` leg —
+the one that fought hardest — built in **4.1 minutes against 175 cold**, at
+561 hits out of 561 requests.
+
+Three tasks remain, and none of them is code: **9** (the negative paths) is
+running as PR [#325](https://github.com/crawlins/kythira/pull/325), **10**
+needs a second consecutive `push` to `main` to read warm thresholds off, and
+**11** needs a month to pass before there is a bill to read. Task 12's row in
+`doc/TODO.md` is written and the spec has moved to "Partially Implemented"
+there; 10 and 11 will amend it.
+
+**What this spec got wrong, kept here because it is the useful part.** Two
+premises did not survive contact. `x-gha` — the backend every workflow was
+asking for — had already been removed by vcpkg, so the layer being replaced
+was not degraded, it was absent (see below). And moving the compiler cache
+out of the Actions cache **did not relieve the 10 GB ceiling**: ccache was
+0.60 GiB of it, not the eight 2 GB families assumed, and 94% is the
+`vcpkg_installed/` trees Requirement 3.3 deliberately keeps. The real result
+is better and different — eviction stopped being expensive, because a miss
+went from 69–163 minutes of rebuilding to a 4–7 minute download.
+
+**Last Updated (previous)**: September 7, 2026. **Task 1's measurement is done**, and it
 answers the question the whole spec turns on. The vcpkg binary cache takes
 installs from 69–163 minutes to 4–7; the compiler cache takes the stdexec
 leg's Build from **170.3 minutes to 3.0**, at a 100% hit rate over 561
@@ -12,7 +38,7 @@ raises — whether the precompiled header and the coverage leg's instrumented
 objects are cacheable — are both answered **yes**, with zero non-cacheable
 calls across 3,856 compiles.
 
-**Last Updated (previous)**: September 6, 2026. Task 2 is done: **the bucket, the IAM and
+**Last Updated (two before)**: September 6, 2026. Task 2 is done: **the bucket, the IAM and
 the credentials exist**, and `audit.sh` reads them back clean. Task 4 (the
 CMake launcher) is done and verified locally; it is the only task in the graph
 with no edge into it, and it needed neither the bucket nor a CI run.
@@ -28,7 +54,8 @@ logic run once per event state, and the documentation — and each records below
 exactly what is still owed. They stay unchecked because what is owed is the
 half that touches the tenancy and CI.
 
-**Nothing is wired into a workflow.** The composite action exists and no job
+**Nothing is wired into a workflow** (true when written on September 6; Tasks
+6 and 7 landed on September 9). The composite action exists and no job
 references it; Tasks 6 and 7 are where that changes, and they are correctly
 gated on Tasks 1 and 2. Task 1's measurement is what everything after it is
 calibrated against, and it needs a bucket and a runner.
@@ -100,7 +127,10 @@ bucket does.
 
 ## Tasks
 
-- [ ] 1. Throwaway measurement — **in flight; two attempts, both instructive**
+- [x] 1. Throwaway measurement — **complete September 8, 2026, on the third
+      attempt; the first two measured nothing and are kept below because
+      each one failed in a way a green run could not distinguish from
+      success**
   - Branch `measure/oci-build-cache-task1`, draft PR
     [#320](https://github.com/crawlins/kythira/pull/320), marked DO NOT MERGE
     per Requirement 1.5. It wires the composite action, `x-aws` and sccache
@@ -447,7 +477,10 @@ bucket does.
     no-credentials `enabled=false` path for missing *secrets*, the AWS CLI
     assertion, the environment export, and the pinned sccache install for
     `X64` and `ARM64`.
-  - **Task 3's own verification list is discharged by Task 1's runs**, which
+  - **Task 3's own verification list is discharged by Task 1's runs**
+    (Requirement 7.1: runs **34030385117**, **34087833341** and
+    **34133234910**, every `Build & Test` and `Full suite` job's
+    "Select credential and export the cache environment" step), which
     exercised this action on ten legs across two architectures, three times:
     - the RW key is selected only for `push:main` and (on the throwaway
       branch, now deleted) an explicit branch arm; every other ref took the
@@ -559,63 +592,120 @@ bucket does.
     not a figure carried from that document.
   - _Requirements: 8.1, 8.2_
 
-- [ ] 6. vcpkg binary cache to the bucket, every workflow
-  - In `ci.yml` (six jobs), `arm64-docker-smoke-test.yml`, and
-    `real-cloud-tests.yml` (`aws`, `oci`): add the composite action after
-    "Resolve vcpkg triplet", delete the `export VCPKG_BINARY_SOURCES=...x-gha`
-    line (the env now carries it), delete the "Export Actions cache
-    credentials for vcpkg" step. Keep the `vcpkg_installed/` tree caches.
-  - Verify with a `push` to `main` whose `vcpkg.json` hash is new (or by
-    deleting the tree cache once): the install step uploads, the audit shows
-    `vcpkg/x64-linux/` and `vcpkg/arm64-linux/` populated, and the next run
-    with the tree cache deleted again downloads instead of building.
-    Record run ids and port counts.
+- [x] 6. vcpkg binary cache to the bucket, every workflow — **done and
+      verified on `main`, September 9, 2026**
+  - Merged as PR [#322](https://github.com/crawlins/kythira/pull/322).
+    Fifteen jobs across **five** workflows take `VCPKG_BINARY_SOURCES` from
+    the composite action as `x-aws`; the `x-gha` exports and the
+    "Export Actions cache credentials for vcpkg" steps that existed only to
+    serve them are deleted. The `vcpkg_installed/` tree caches stay
+    (Requirement 3.3).
+  - **Requirement 3.1's enumeration was stale and the rule was followed
+    instead.** It names `ci.yml`'s six jobs, `arm64-docker-smoke-test.yml`, and
+    `real-cloud-tests.yml`'s `aws` and `oci` jobs. In fact `perf-cloud.yml` and
+    `coap-flake-measure.yml` also set it, and `real-cloud-tests.yml` sets it in
+    **six** jobs, not two — `alibaba`, `ami-build`, `aws`, `azure`, `gcp`,
+    `oci`. Ten sites, not eight.
+  - Verified on run **34296062792**, a real `push` to `main`: **15 of 15 jobs
+    green**, the read-write key selected (`build cache: read-write key`), and
+    the bucket at 397 archives / 5.06 GB with zero ports built from source.
   - _Requirements: 3.1, 3.2, 3.3, 3.6, 4.1_
 
-- [ ] 7. sccache replaces ccache on every moved leg
-  - Per design.md Component 4, on each leg Task 1 cleared: add "Start
-    sccache" (guarded), pass `-DKYTHIRA_COMPILER_LAUNCHER=` from its output,
-    add "sccache statistics" with `if: always()` writing to the job summary,
-    delete "Restore ccache" / "ccache size limit" / "Save ccache" and
-    `CCACHE_DIR`. Any leg Task 1 kept on ccache gets a comment beside its
-    Configure step saying why, with the measured cacheable fraction.
-  - `RUSTC_WRAPPER` and `VCPKG_KEEP_ENV_VARS` come from the action; verify
-    once, on a tree-cache miss, that the `lakers` port's cargo build reports
-    sccache requests in the statistics.
-  - Verify on a `push` to `main`: statistics in every summary, bucket
-    `sccache/` object count rises. Record run id and per-leg counts.
+- [x] 7. sccache replaces ccache on every moved leg — **done and verified on
+      `main`, September 9, 2026**
+  - Every job that compiles this project starts sccache against the bucket,
+    passes `-DKYTHIRA_COMPILER_LAUNCHER`, and writes `sccache --show-stats`
+    into the job summary. The `Restore ccache` / `ccache size limit` /
+    `Save ccache` triples and their `CCACHE_DIR` entries are gone.
+  - Requirement 5.1's list was stale the same way: `real-cloud-tests.yml` had
+    ccache in five jobs, not two. `ami-build` gets the binary cache but no
+    sccache — it builds an AMI rather than compiling this project.
+  - **The invariant, checked mechanically rather than by reading:** every job
+    that starts sccache also passes the launcher and reports statistics. It
+    found two jobs whose configure steps do not share the common shape
+    (`perf-cloud`'s prefix path is its last flag; `alibaba`'s block is indented
+    differently). Violating that invariant is what made two of Task 1's runs
+    measure nothing while reporting success.
+  - `actionlint` caught a genuine bug: the launcher flag on
+    `Configure (format-check)`, which runs *before* `Start sccache` — a forward
+    reference. That tree compiles nothing and now has no launcher.
+  - **Verified on `main` run 34296062792, 15/15 green**, with the
+    `Full suite (stdexec)` leg — the hardest case — at **561 requests, 561
+    hits, 100%, 0 write errors, 0 non-cacheable**, Build **4.1 min against 175
+    cold**.
   - _Requirements: 5.1, 5.4, 5.5, 5.6, 5.7_
 
-- [ ] 8. Actions-cache accounting, re-measured — **"before" captured
-      September 8, 2026, and it refutes a premise**
-  - Measured immediately before the Tasks 6/7 wiring lands, since that
-    picture stops existing afterwards:
+- [x] 7a. **Two findings from getting there, each worth its own change** —
+      both written down September 9, 2026; neither *fixed* here, on purpose.
+  - **A structural gap in the writer policy.** A leg that only ever succeeds on
+    a `pull_request` can never warm its own cache, because PR runs hold the
+    read-only key. `Full suite (stdexec)` hit exactly that: it passed once on a
+    PR (banking nothing) and died on every `main` attempt, and because the
+    runner is killed at VM level, sccache's pending uploads died with it — so
+    failed attempts banked nothing either. A deadlock, not flakiness. It was
+    broken by copying that leg's objects from Task 1's
+    `sccache-measure-3/` prefix into `sccache/` (read + create only; no delete
+    rights needed), after which the leg built in 4.1 minutes at a 100% hit
+    rate. **design.md should record this beside the PR trade-off it already
+    documents**, because it applies to any leg fragile enough to fail on
+    `main` while passing on PRs.
+  - **A latent CI landmine the cache now hides.** That leg died five times at
+    objects 226, 236, 226, 226 (`-j3`) and 227 (`-j2`) of 1115 — a death point
+    that stable across a changed parallelism setting is one translation unit,
+    not aggregate memory pressure. The cluster is `multi_raft_scale_test` /
+    `multi_raft_driver_agreement_test`, which sit **outside** the `heavy_tu`
+    pool `ci.yml` built for precisely this failure mode. Any genuinely cold
+    build — a compiler bump, a new `-D`, anything that moves the hash — will
+    hit it again. **The fix is adding those TUs to the pool, as its own change
+    with its own measurement**, not folded into the caching work.
+  - The `-j2` experiment that led here was **refuted** and its PR
+    ([#323](https://github.com/crawlins/kythira/pull/323)) closed unmerged
+    rather than landed, so `main` keeps `-j3`.
+  - **Both are now recorded where the next person will meet them**, which is
+    all this task claims: the writer-policy deadlock is in `design.md`
+    beside the PR trade-off it qualifies, and the `heavy_tu` gap is a
+    "Known Follow-ups" entry in `doc/TODO.md` carrying the five death
+    points, the `-j2` refutation, and the reason it is deliberately not
+    folded into this spec. Filing rather than fixing is the point: the pool
+    change needs its own cold-build measurement, and a cold build is
+    precisely what this spec spent three weeks eliminating.
 
-    | | entries | size |
-    | --- | ---: | ---: |
-    | **Total** | 12 | **10.00 GiB** of a 10 GiB ceiling |
-    | `vcpkg-*` tree caches (the L1 this spec **keeps**) | 7 | **9.40 GiB** |
-    | `ccache-*` families (what Task 7 removes) | 5 | **0.60 GiB** |
+- [x] 8. Actions-cache accounting, re-measured — **done September 9, 2026, and
+      it refutes a premise rather than confirming one**
 
-  - **The Introduction's arithmetic no longer holds.** It argues from "4.49 GB
-    of vcpkg archives" and "eight `ccache` families at 2 GB each cannot fit
-    beside them". Today ccache occupies **0.60 GiB in total**, not ~16, and
-    the vcpkg tree caches are **94%** of the ceiling. The ccache families are
-    small precisely *because* they are evicted constantly — which is the same
-    observation the spec makes ("cold every run"), read from the other end.
-  - **So this spec does not relieve the ceiling, and should stop claiming it
-    will.** Removing ccache frees 0.60 GiB; the occupant that matters is the
-    `vcpkg_installed/` tree cache, which Requirement 3.3 deliberately keeps as
-    the L1. What actually changes is that **eviction stops mattering**: a
-    tree-cache miss used to cost 69–163 minutes of rebuilding and now costs a
-    4–7 minute download from OCI (Task 1). The benefit is real, and it is a
-    different benefit from the one written down.
-  - Requirement 3.4 asks for the header of `scripts/prune-actions-caches.sh`
-    to be rewritten with post-move figures. It should also record the above,
-    because that header is where the next person will look for the rationale.
+    | | Aug 2026 (header) | 8 Sep (before) | 9 Sep (after) |
+    | --- | ---: | ---: | ---: |
+    | total | 10.37 GB / 41 | 10.00 GiB / 12 | **8.67 GiB / 11** |
+    | `vcpkg` trees (kept) | 4.49 GB | 9.40 GiB / 7 | **8.17 GiB / 6** |
+    | `ccache` families (removed) | — | 0.60 GiB / 5 | **0.50 GiB / 5** |
+
+  - **Moving the compiler cache out did not relieve the ceiling.** ccache was
+    **0.60 GiB**, not the "eight families at 2 GB each" the Introduction
+    assumes — small precisely *because* it was being evicted constantly, which
+    is the spec's own "cold every run" observation seen from the other end.
+    Most of the 1.33 GiB drop is one vcpkg tree entry expiring, not the move.
+  - **The ccache entries are still listed even though nothing writes them.**
+    GitHub keeps a cache until eviction or its retention window elapses, so
+    they age out rather than vanish; any reading taken within a week of the
+    move is transitional by construction. The task text says "after two days"
+    — that is too soon to see them gone, and this reading is honest about
+    being early rather than waiting to look tidier.
+  - **What changed is that eviction stopped mattering.** A tree-cache miss cost
+    69–163 minutes of rebuilding and now costs a 4–7 minute download. The
+    repository still sits near the ceiling; being evicted is simply no longer
+    expensive. That is a better outcome than the one argued for, and a
+    different one — and `doc/TODO.md` and the close-out should say so rather
+    than repeat the original story.
+  - `scripts/prune-actions-caches.sh`'s header is rewritten with the measured
+    figures and the two misreadings spelled out. **The rules are unchanged** —
+    verified mechanically: of 56 changed lines, **zero are non-comment**, and
+    `shellcheck` reports the identical three pre-existing findings before and
+    after. The `--superseded` rule is now mostly historical, since the run-id
+    keys it targets left `ci.yml` with Task 7; it stays because any future
+    `actions/cache` key carrying a run id recreates the pattern, and because
+    `--closed-prs` is about refs rather than families.
   - _Requirements: 3.4_
 
-- [ ] 8b. Original task text, for the "after" half
   - After Tasks 6 and 7 have run on `main` for two days, re-run the
     measurement in `scripts/prune-actions-caches.sh`'s header (total bytes,
     entry count, bytes per family) and rewrite that header's accounting
@@ -652,11 +742,46 @@ bucket does.
     `doc/sccache_dogfood_cost_estimate.md` with the measured figure.
   - _Requirements: 6.5, 7.4, 8.3_
 
-- [ ] 12. TODO row and close-out
-  - Update `doc/TODO.md`'s row for this spec from 0/12 with what each task
-    found, in the manner of the table's other closed rows, and move it off
-    "Not Started".
-  - Confirm every task above cites a run id (Requirement 7.1).
+- [x] 12. TODO row and close-out — **September 9, 2026** (the row and the
+      7.1 audit; Tasks 10 and 11 will amend the row when they land, which is
+      why the spec reads 9/12 rather than 12/12)
+  - **`doc/TODO.md`'s row rewritten and moved to "Partially Implemented"**,
+    with a paragraph after the "Not Started" table recording the move in the
+    manner that table uses for every other spec that has left it. The row
+    deliberately leads with what was *measured* — installs 69–163 → 4–7 min,
+    `Full suite (stdexec)` Build 170.3 → 4.1 min at a 100% hit rate over 561
+    TUs, zero non-cacheable calls across 3,856 compiles — and then with the
+    two premises that did not survive, because a row that only records the
+    win teaches nothing about how the estimate was wrong.
+  - **The correction that matters is the ceiling one.** The spec argued for
+    moving the compiler cache out of GitHub's 10 GB Actions cache to relieve
+    that ceiling; ccache turned out to be 0.60 GiB of it, and 94% is the
+    `vcpkg_installed/` trees Requirement 3.3 keeps on purpose. The ceiling
+    was never the problem. What changed is that **eviction stopped being
+    expensive** — a tree-cache miss cost 69–163 minutes of rebuilding and now
+    costs a 4–7 minute download. Both the row and Task 8 say so plainly
+    rather than quietly restating the benefit as if it had been the claim.
+  - **Requirement 7.1 audited task by task**, and it holds for every task
+    whose claim a CI run can demonstrate:
+
+    | Task | Run(s) cited | Job / evidence |
+    | --- | --- | --- |
+    | 1 | 34030385117, 34087833341, 34133234910 | the nine measured legs plus the unmodified `ion-serializer-build` control |
+    | 3 | the same three | each leg's "Select credential and export the cache environment" step (citation added by this task) |
+    | 6 | 34296062792 | 15/15 jobs on a `push` to `main`; `build cache: read-write key`; 397 archives / 5.06 GB, zero ports from source |
+    | 7 | 34296062792 | `Full suite (stdexec)`: 561 requests, 561 hits, 0 write errors, 0 non-cacheable |
+    | 9 | pending | PR [#325](https://github.com/crawlins/kythira/pull/325), DO NOT MERGE |
+    | 10 | pending | the second consecutive `push` to `main` |
+
+  - **Four tasks cite no run id and correctly cannot.** 1a is a PR closed and
+    a branch deleted (verified against `origin/main` and the remote, not a
+    run); 2 is provisioning read back by `audit.sh` against the real tenancy;
+    4 is CMake behaviour across seven states, each a separate configure in a
+    scratch tree on this box — a runner would tell you *less*, since it has
+    one launcher installed; 5 and 8 are documents and a `gh cache list`
+    measurement. Requirement 7.1 exists because ccache once cached to a
+    directory nothing restored, and a green run hid it; naming a run id for a
+    claim no run demonstrates would be that same failure wearing a citation.
   - _Requirements: 7.1, 8.4_
 
 ## Deferred
