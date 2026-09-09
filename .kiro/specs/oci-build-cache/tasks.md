@@ -1,6 +1,6 @@
 # Implementation Plan — OCI-Hosted Build Cache
 
-## Status: 9/12 tasks complete (1, 1a, 2, 3, 4, 5, 6, 7, 7a, 8, 12)
+## Status: 10/12 tasks complete (1, 1a, 2, 3, 4, 5, 6, 7, 7a, 8, 10, 12)
 
 **Last Updated**: September 9, 2026. **Both caches are live on `main`** and
 verified there by run
@@ -11,12 +11,24 @@ banked and zero ports built from source. The `Full suite (stdexec)` leg —
 the one that fought hardest — built in **4.1 minutes against 175 cold**, at
 561 hits out of 561 requests.
 
-Three tasks remain, and none of them is code: **9** (the negative paths) is
-running as PR [#325](https://github.com/crawlins/kythira/pull/325), **10**
-needs a second consecutive `push` to `main` to read warm thresholds off, and
-**11** needs a month to pass before there is a bill to read. Task 12's row in
-`doc/TODO.md` is written and the spec has moved to "Partially Implemented"
-there; 10 and 11 will amend it.
+**Task 10 is closed and every Requirement 6 threshold is met with room to
+spare**, read off run
+[34353211972](https://github.com/crawlins/kythira/actions/runs/34353211972):
+`build-and-test` Builds of 2.23–4.05 minutes against a 15-minute ceiling, the
+stdexec leg at 4.01 against 45, hit rates of 99.82–100%, and zero
+non-cacheable calls in 4,494 requests. Nothing needed investigating and no
+threshold was moved.
+
+**Task 9 found the one thing that was actually broken.** Three of its four
+states verified; the fourth — a job whose endpoint is deliberately wrong —
+built **red** instead of degrading to no compiler cache, violating
+Requirement 3.5. sccache validates its storage backend lazily, on the first
+request, so neither subcommand the guard used could see a dead server, and
+the guard selected sccache over one. Fixed in PR
+[#326](https://github.com/crawlins/kythira/pull/326) by deciding with a probe
+compile; the bad-endpoint leg is owed a re-run against the fix, and needs an
+L1 tree-cache miss to exercise the vcpkg half at all. **Task 11** needs a
+month to pass before there is a bill to read.
 
 **What this spec got wrong, kept here because it is the useful part.** Two
 premises did not survive contact. `x-gha` — the backend every workflow was
@@ -713,25 +725,151 @@ bucket does.
   - Record before/after here.
   - _Requirements: 3.4_
 
-- [ ] 9. Three-state credential verification and bad-endpoint run
-  - Real runs: a `push` to `main` writes (object count rises); a
-    `pull_request` from a branch of this repository reads with hits and
-    reports sccache write errors, object count unchanged; a run with the
-    four secrets temporarily renamed builds green with `enabled=false`.
-  - One run with `OCI_BUILD_CACHE_NAMESPACE` pointed at a non-existent
-    namespace: green, ports built from source, sccache start warning.
-  - Record all four run ids here.
+- [ ] 9. Three-state credential verification and bad-endpoint run — **three
+      of four states verified September 9, 2026. The fourth found a real
+      Requirement 3.5 violation, which is fixed but not yet re-verified.**
+
+  | State | Run | Result |
+  | --- | --- | --- |
+  | `push` to `main` writes | [34353211972](https://github.com/crawlins/kythira/actions/runs/34353211972) | 11 legs took the read-write key; 3 objects written; **0 write errors** |
+  | `pull_request` reads, cannot write | [34349573736](https://github.com/crawlins/kythira/actions/runs/34349573736) | every leg read-only; **write errors == misses, exactly**; count unchanged |
+  | secrets withheld | [34350454484](https://github.com/crawlins/kythira/actions/runs/34350454484), `Coverage` | `enabled=false`, `Start sccache` **skipped**, job **green** |
+  | bad endpoint | [34350454484](https://github.com/crawlins/kythira/actions/runs/34350454484), `ThreadSanitizer` | **FAILED — see below.** Fixed by PR [#326](https://github.com/crawlins/kythira/pull/326); re-run owed |
+
+  - **The writer policy is proven by a contrast, not by a count.** The same
+    translation unit — the one clang TU whose command line genuinely varies
+    between runs — misses on all three clang legs in both runs. On the
+    `pull_request` it produced a write error each time and the bucket did not
+    move. On the `push` to `main` it produced an object each time. Reading the
+    bucket by creation time attributes every write in the window with nothing
+    left over: three objects of 10.6–11.2 MB at 12:50:02, 12:51:13 and
+    12:56:39 for run 34353211972's three clang misses, then two of **555 and
+    509 bytes** at 12:57:35 and 12:57:50 — the new probe's own object, one per
+    architecture — and three more large ones for run 34354004247. 4,521 →
+    4,529 across both runs, fully accounted for. IAM refuses the read-only
+    write independently of the case statement in the action, so the policy is
+    enforced from both sides.
+  - **The withheld-secrets state is visible in step conclusions alone**, which
+    is the point of making it a distinct state: `OCI build cache` **succeeds**
+    with `enabled=false` rather than failing, `Start sccache` is **skipped** by
+    its `enabled == 'true'` guard, `Configure` falls back to
+    `KYTHIRA_COMPILER_LAUNCHER=none`, and the leg builds and tests green with
+    no compiler cache at all. Requirement 9.4 holds: a fork PR, which GitHub
+    denies secrets, still builds.
+
+  - **The bad-endpoint run did not go green, and finding that is what this
+    task was for.** `Build (ThreadSanitizer)` failed **one second** after it
+    started, 12:24:55 to 12:24:56, with `Configure` green ahead of it. The
+    first compile in the job — the precompiled header — died:
+
+    ```
+    [1/17] Building CXX object tests/CMakeFiles/kythira_test_pch.dir/cmake_pch.hxx.gch
+    FAILED: [code=2] ...
+    /usr/local/bin/sccache /usr/bin/g++-13 ...
+    sccache: error: Server startup failed: cache storage failed to read: ConfigInvalid (permanent)
+       uri: https://nonexistent-namespace-for-task-9.../.sccache_check
+       path: .sccache_check
+    ninja: build stopped: subcommand failed.
+    ```
+
+    Requirement 3.5 says a cache failure is a warning in the log, never a red
+    job. It was a red job. **Root cause: sccache validates its storage backend
+    lazily**, on the first request, with that `.sccache_check` read — not at
+    server startup — so neither subcommand the guard used could see a broken
+    backend. Reproduced locally against the pinned sccache 0.17.0 rather than
+    inferred from the timing:
+
+    | case | `--start-server` | `--show-stats` | probe compile |
+    | --- | ---: | ---: | ---: |
+    | healthy, no server yet | 0 | 0 | 0 |
+    | healthy, already listening | 2 | 0 | 0 |
+    | backend unreachable | 2 | **0** | **2** |
+
+    The `|| sccache --show-stats` fallback existed for the middle row — the
+    lakers port's cargo build leaves a healthy server listening, so
+    `--start-server` exits 2 with "Address in use", and reading *that* as
+    failure cost Task 1 an entire run. But `--show-stats` returns 0 for the
+    bottom row too. The guard could not tell a live server from a dead one,
+    chose sccache over a dead one, and every compile then exited 2.
+  - **Fixed in PR [#326](https://github.com/crawlins/kythira/pull/326)**
+    (merged to `main` as `cc11a5b`): the decision is now a probe compile of a
+    five-byte C file, the only check that separates all three rows, followed by
+    `sccache --zero-stats` so the probe stays out of the figures every other
+    task in this spec quotes. The guard was duplicated verbatim at **twelve
+    sites across three workflows** and is now one script,
+    `scripts/oci-build-cache/start-sccache.sh`, which exits 0 in every case —
+    it can only ever downgrade a job to no compiler cache, never fail one. A
+    fourth direction was verified too: with sccache **not installed at all**
+    (the composite action's transient-download-failure path) it warns and
+    degrades identically. The healthy path is confirmed on `main` in run
+    [34354004247](https://github.com/crawlins/kythira/actions/runs/34354004247).
+  - **Still owed:** re-run the bad-endpoint leg against the fixed guard and
+    confirm it goes green. It also needs an **L1 tree-cache miss** to mean
+    anything: on run 34350454484 the `Bootstrap vcpkg and install
+    dependencies` step was *skipped* because the `vcpkg_installed/` cache hit,
+    so `x-aws` never ran and Requirement 7.3's "ports built from source" half
+    was never exercised — the identical trap that cost Task 1 its second
+    attempt. Appending a comment to an overlay README moves
+    `hashFiles('vcpkg.json', 'vcpkg-overlays/**')` without touching a portfile.
   - _Requirements: 3.5, 4.3, 7.2, 7.3, 9.4_
 
-- [ ] 10. Second-run thresholds
-  - On the second consecutive `push` run to `main` after Task 7, read from
-    the job summaries: each `build-and-test` Build step ≤ 15 min; stdexec
-    leg Build ≤ 45 min with swap under 4 GiB in "Report headroom after
-    build"; every leg ≥ 90% hits over cacheable; zero ports built from
-    source. A following `pull_request` run shows the same hit rates.
-  - Record the table here, against the pre-registered figures. A miss on
-    any threshold is a finding to investigate in this task, not a threshold
-    to move.
+- [x] 10. Second-run thresholds — **every threshold met, September 9, 2026,
+      on run [34353211972](https://github.com/crawlins/kythira/actions/runs/34353211972)
+      (15/15 green), the second consecutive `push` to `main` after Task 7's
+      populating run 34296062792**
+
+    | Requirement | Threshold | Cold baseline | Measured | Margin |
+    | --- | --- | --- | --- | --- |
+    | 6.1 `build-and-test` Build | ≤ 15 min | 17–26 min | **2.23 – 4.05 min** | 3.7 – 6.7× |
+    | 6.2 stdexec Build | ≤ 45 min | 170.3 min | **4.01 min** | 11× |
+    | 6.2 stdexec swap after build | < 4 GiB | — | **88 KiB** | 5 orders |
+    | 6.3 hit rate over cacheable | ≥ 90% | — | **99.82 – 100%** | — |
+    | 6.3 non-cacheable calls | — | — | **0 of 4,494** | — |
+    | 6.4 following `pull_request` | same as 6.3 | — | **99.82 – 100%** | — |
+
+    Per leg, all eleven that compile anything:
+
+    | Leg | Build | requests | hits | rate |
+    | --- | ---: | ---: | ---: | ---: |
+    | `Build & Test (clang++-18, arm64)` | 2.23 min | 561 | 560 | 99.82% |
+    | `Build & Test (g++-13, arm64)` | 2.66 min | 561 | 561 | 100% |
+    | `Build & Test (clang++-18, x64)` | 3.08 min | 561 | 560 | 99.82% |
+    | `Build & Test (g++-13, x64)` | 3.36 min | 561 | 561 | 100% |
+    | `Build & Test (g++-14, x64)` | 4.05 min | 561 | 561 | 100% |
+    | `Full suite (boost)` | 3.68 min | 561 | 561 | 100% |
+    | `Full suite (stdexec)` | 4.01 min | 561 | 561 | 100% |
+    | `Coverage (clang++-18)` | 6.18 min | 542 | 541 | 99.82% |
+    | `ThreadSanitizer` | 0.36 min | 9 | 9 | 100% |
+    | `GCP SDK Build` | 0.08 min | 7 | 7 | 100% |
+    | `Ion Serializer Build` | 0.08 min | 9 | 9 | 100% |
+
+  - **Nothing needed investigating and no threshold was moved**, which is
+    worth stating explicitly because this task's own text reserves the right
+    to do neither. The closest any figure came to its ceiling was 6.1 at 27%
+    of it.
+  - **The 6.2 swap threshold is now measuring the wrong thing, and that is a
+    result rather than a problem.** It was written against a leg that
+    compiled 1115 objects and died doing it; the same leg now links 561
+    cached objects and finishes with **88 KiB** of a 23 GiB swap file
+    touched — the second `Full suite` leg used 8.0 KiB. The threshold was
+    guarding memory pressure during compilation, and there is no longer any
+    compilation to guard. It is kept as a regression tripwire: if it ever
+    rises, the cache has stopped working, and that is exactly when the
+    number becomes meaningful again.
+  - **6.3's "zero ports built from source" is satisfied vacuously here, and
+    the honest reading matters.** `Bootstrap vcpkg and install dependencies`
+    was **skipped on all eleven legs** — the `vcpkg_installed/` L1 tree cache
+    hit everywhere — so the vcpkg binary cache was not exercised on this run
+    at all. Zero ports were built because vcpkg never ran, not because it ran
+    and found everything. The requirement's own "when it runs at all" clause
+    anticipates this. The demonstration that vcpkg's cache works on a real L1
+    miss is Task 6's, on run 34296062792: 397 archives, zero from source.
+  - **6.4 is satisfied by run
+    [34349573736](https://github.com/crawlins/kythira/actions/runs/34349573736)**,
+    a `pull_request` against an unchanged `vcpkg.json`, showing the same
+    99.82–100% rates from the read-only key. The three clang legs' single
+    genuine miss is the only difference between the two runs, and it is a
+    property of that translation unit rather than of the key.
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
 - [ ] 11. Month-one audit and the cost cross-reference
