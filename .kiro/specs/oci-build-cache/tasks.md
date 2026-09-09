@@ -1,6 +1,6 @@
 # Implementation Plan — OCI-Hosted Build Cache
 
-## Status: 10/12 tasks complete (1, 1a, 2, 3, 4, 5, 6, 7, 7a, 8, 10, 12)
+## Status: 11/12 tasks complete (1, 1a, 2, 3, 4, 5, 6, 7, 7a, 8, 9, 10, 12)
 
 **Last Updated**: September 9, 2026. **Both caches are live on `main`** and
 verified there by run
@@ -19,16 +19,31 @@ stdexec leg at 4.01 against 45, hit rates of 99.82–100%, and zero
 non-cacheable calls in 4,494 requests. Nothing needed investigating and no
 threshold was moved.
 
-**Task 9 found the one thing that was actually broken.** Three of its four
-states verified; the fourth — a job whose endpoint is deliberately wrong —
-built **red** instead of degrading to no compiler cache, violating
-Requirement 3.5. sccache validates its storage backend lazily, on the first
-request, so neither subcommand the guard used could see a dead server, and
-the guard selected sccache over one. Fixed in PR
-[#326](https://github.com/crawlins/kythira/pull/326) by deciding with a probe
-compile; the bad-endpoint leg is owed a re-run against the fix, and needs an
-L1 tree-cache miss to exercise the vcpkg half at all. **Task 11** needs a
-month to pass before there is a bill to read.
+**Task 9 is closed, and it found the only things that were actually broken.**
+A job pointed at a deliberately wrong endpoint built **red** instead of
+degrading to no compiler cache — twice, for two independent reasons, both
+violating Requirement 3.5. sccache validates its storage backend lazily, on
+the first request, so no exit status could distinguish a healthy server that
+was already listening from a dead one (PR
+[#326](https://github.com/crawlins/kythira/pull/326)); and `RUSTC_WRAPPER` was
+exported before the vcpkg install, where the lakers port's cargo build uses it
+and where no per-job guard can reach (PR
+[#328](https://github.com/crawlins/kythira/pull/328)). Neither had ever fired,
+because the `vcpkg_installed/` tree cache had been hitting on every run. The
+re-run against both fixes is **15/15 green** (run
+[34358385332](https://github.com/crawlins/kythira/actions/runs/34358385332))
+and, as a by-product, is the first controlled measurement of what the vcpkg
+cache is worth: ten legs installing in **4.41–6.51 minutes** beside one at
+**95.01**, same commit, same L1 miss, cache reachable or not.
+
+**Task 11** is all that is left, and it needs a month to pass before there is
+a bill to read. Its non-billing half is already done: `audit.sh` run against
+the real tenancy on September 9 reports the leak check clean, both lifecycle
+rules enabled, both keys ACTIVE, and storage at **7.2 GiB** — vcpkg/x64-linux
+3,691 MiB, vcpkg/arm64-linux 1,373 MiB, sccache 2,282 MiB. That run also found
+the audit reporting both credentials as "does not exist" while CI was
+authenticating with them, fixed in PR
+[#329](https://github.com/crawlins/kythira/pull/329).
 
 **What this spec got wrong, kept here because it is the useful part.** Two
 premises did not survive contact. `x-gha` — the backend every workflow was
@@ -725,16 +740,18 @@ bucket does.
   - Record before/after here.
   - _Requirements: 3.4_
 
-- [ ] 9. Three-state credential verification and bad-endpoint run — **three
-      of four states verified September 9, 2026. The fourth found a real
-      Requirement 3.5 violation, which is fixed but not yet re-verified.**
+- [x] 9. Three-state credential verification and bad-endpoint run — **all four
+      states verified September 9, 2026. The fourth took two attempts: the
+      first found two real Requirement 3.5 violations, and the re-run against
+      the fixes is green.**
 
   | State | Run | Result |
   | --- | --- | --- |
   | `push` to `main` writes | [34353211972](https://github.com/crawlins/kythira/actions/runs/34353211972) | 11 legs took the read-write key; 3 objects written; **0 write errors** |
   | `pull_request` reads, cannot write | [34349573736](https://github.com/crawlins/kythira/actions/runs/34349573736) | every leg read-only; **write errors == misses, exactly**; count unchanged |
   | secrets withheld | [34350454484](https://github.com/crawlins/kythira/actions/runs/34350454484), `Coverage` | `enabled=false`, `Start sccache` **skipped**, job **green** |
-  | bad endpoint | [34350454484](https://github.com/crawlins/kythira/actions/runs/34350454484), `ThreadSanitizer` | **FAILED — see below.** Fixed by PR [#326](https://github.com/crawlins/kythira/pull/326); re-run owed |
+  | bad endpoint, take one | [34350454484](https://github.com/crawlins/kythira/actions/runs/34350454484), `ThreadSanitizer` | **FAILED — see below.** Two violations found, fixed by PRs [#326](https://github.com/crawlins/kythira/pull/326) and [#328](https://github.com/crawlins/kythira/pull/328) |
+  | bad endpoint, take two | [34358385332](https://github.com/crawlins/kythira/actions/runs/34358385332), `ThreadSanitizer` | **15/15 green**; 117 ports built from source; both probes warned; no compiler cache |
 
   - **The writer policy is proven by a contrast, not by a count.** The same
     translation unit — the one clang TU whose command line genuinely varies
@@ -803,14 +820,68 @@ bucket does.
     (the composite action's transient-download-failure path) it warns and
     degrades identically. The healthy path is confirmed on `main` in run
     [34354004247](https://github.com/crawlins/kythira/actions/runs/34354004247).
-  - **Still owed:** re-run the bad-endpoint leg against the fixed guard and
-    confirm it goes green. It also needs an **L1 tree-cache miss** to mean
-    anything: on run 34350454484 the `Bootstrap vcpkg and install
-    dependencies` step was *skipped* because the `vcpkg_installed/` cache hit,
-    so `x-aws` never ran and Requirement 7.3's "ports built from source" half
-    was never exercised — the identical trap that cost Task 1 its second
-    attempt. Appending a comment to an overlay README moves
+  - **A second violation, on the same requirement, that the first fix
+    structurally could not catch.** `RUSTC_WRAPPER=sccache` was exported
+    unconditionally, and the lakers port's cargo build runs under it *during*
+    `Bootstrap vcpkg and install dependencies` — which happens before any
+    per-job guard runs. Measured: `sccache rustc --version` exits 2 against an
+    unreachable endpoint, so cargo fails, the port fails, the install fails,
+    and the job goes red. It had never fired only because the tree cache had
+    been hitting on every run, and a hit skips the install entirely. Found by
+    predicting it before spending a run on it, and fixed in PR
+    [#328](https://github.com/crawlins/kythira/pull/328) by probing inside the
+    action and gating the export.
+
+  - **Take two (run
+    [34358385332](https://github.com/crawlins/kythira/actions/runs/34358385332)):
+    15 of 15 green, including the deliberately broken leg.** Requirement 3.5
+    and Requirement 7.3 both satisfied, and the run doubles as the controlled
+    comparison this spec had never managed — every leg took the same L1 miss
+    on the same commit, and the only variable was whether the binary cache was
+    reachable:
+
+    | Leg | vcpkg install |
+    | --- | ---: |
+    | `Full suite (stdexec)` | 4.41 min |
+    | `Build & Test (g++-13, x64)` | 4.66 min |
+    | `GCP SDK Build` | 4.71 min |
+    | `Build & Test (clang++-18, x64)` | 4.96 min |
+    | `Build & Test (clang++-18, arm64)` | 5.11 min |
+    | `Build & Test (g++-13, arm64)` | 5.46 min |
+    | `Ion Serializer Build` | 5.90 min |
+    | `Coverage (clang++-18)` | 6.00 min |
+    | `Build & Test (g++-14, x64)` | 6.28 min |
+    | `Full suite (boost)` | 6.51 min |
+    | **`ThreadSanitizer`, endpoint broken** | **95.01 min**, **117 ports from source** |
+
+    Every earlier figure for this ratio compared different runs on different
+    days. This is one run, and the ratio is **15 to 21×**. The 117 ports match
+    the 117 of 131 that run 33997439418 built cold in 70 m 30 s, so the
+    from-source path is the same one the project had before any of this.
+  - **Both probes fired, an hour and a half apart**, which is the two-layer
+    design working rather than redundancy:
+
+    ```
+    13:44:31  ##[warning]sccache could not serve a compile ...   <- the action's probe (#328)
+    15:19:33  ##[warning]sccache could not serve a compile ...   <- the job's Start sccache (#326)
+    ```
+
+    The first is what let the 95-minute install run at all: it gated
+    `RUSTC_WRAPPER` off before vcpkg started, so lakers' cargo build ran
+    unwrapped. The second set `KYTHIRA_COMPILER_LAUNCHER=none`, after which
+    `Build (ThreadSanitizer)` took 4.8 minutes uncached, the `sccache
+    statistics` step skipped itself, and the tests passed.
+  - **What made take two possible was busting the L1 tree cache.** On take one
+    the `Bootstrap vcpkg` step was *skipped* because `vcpkg_installed/` hit, so
+    `x-aws` never ran and Requirement 7.3's "ports built from source" half was
+    never exercised at all — the identical trap that cost Task 1 its second
+    attempt. A comment appended to an overlay README moves
     `hashFiles('vcpkg.json', 'vcpkg-overlays/**')` without touching a portfile.
+    **This is now twice that a verification has silently measured nothing
+    because of that L1 hit.** Any future test of the vcpkg binary cache has to
+    start by forcing the miss.
+  - PR [#325](https://github.com/crawlins/kythira/pull/325) closed **unmerged**
+    and its branch deleted, per Requirement 1.5. Nothing from it reaches `main`.
   - _Requirements: 3.5, 4.3, 7.2, 7.3, 9.4_
 
 - [x] 10. Second-run thresholds — **every threshold met, September 9, 2026,
@@ -872,10 +943,45 @@ bucket does.
     property of that translation unit rather than of the key.
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
-- [ ] 11. Month-one audit and the cost cross-reference
-  - Run `scripts/oci-build-cache/audit.sh` one month after Task 7: bytes per
-    prefix, request count and egress from the usage API, and the bill line.
-    Paste it here beside the $0.50 and 1 to 5 TB pre-registered.
+- [ ] 11. Month-one audit and the cost cross-reference — **the non-billing
+      half is done; the bill genuinely has to wait for a month to exist**
+  - **September 9, 2026 baseline**, `audit.sh` against the real tenancy,
+    exit 0:
+
+    | | |
+    | --- | ---: |
+    | `vcpkg/x64-linux/` | 267 objects, 3,691 MiB |
+    | `vcpkg/arm64-linux/` | 131 objects, 1,373 MiB |
+    | `sccache/` | 4,535 objects, 2,282 MiB |
+    | total | **~7.2 GiB** |
+
+    Both lifecycle rules present and enabled (sccache/ 30 days, vcpkg/ 90).
+    Both customer secret keys ACTIVE, created 2026-09-06T10:25:52Z (rw) and
+    10:25:56Z (ro) — matching what Task 2 recorded. Leak check clean.
+  - **The usage API has no line yet**: "no Object Storage line yet this month".
+    That is the honest month-one answer on September 9 and the reason this
+    task stays open rather than being closed on a guess.
+  - **That run also found the audit lying.** It reported
+    `kythira-build-cache-rw: does not exist` about the credential CI was
+    authenticating with at that moment, and answered the usage query with a
+    404 that reads like a missing IAM policy. One cause: `try()` folded stderr
+    into the captured value, and `oci iam compartment get --query` on the
+    tenancy root exits 0 while writing "Query returned empty result, no output
+    to show." to stderr — so that sentence became `tenancy_id` and was passed
+    on as an OCID. **This is the third variant of one failure mode in this
+    spec**: the first two were empty read as zero, this one a diagnostic read
+    as a value. The UNKNOWN tally was separately dead — every `try` call site
+    is a command substitution, so the counter incremented a subshell copy and
+    the "N informational queries could not be read" summary could never fire,
+    for the whole life of the script. Fixed in PR
+    [#329](https://github.com/crawlins/kythira/pull/329), with three checks
+    added to `test-audit.sh` that fail against the previous version. The stub
+    had to be tightened first: its `iam user list` answered with a valid user
+    id whatever compartment it was handed, so it could not reproduce the bug
+    at all.
+  - **Still owed:** re-run `audit.sh` on or after October 9, 2026 — one month
+    after Task 7 — for the request count, egress and bill line, and paste them
+    here beside the $0.50 and 1 to 5 TB pre-registered.
   - Add the one-paragraph cross-reference to
     `doc/sccache_dogfood_cost_estimate.md` with the measured figure.
   - _Requirements: 6.5, 7.4, 8.3_
