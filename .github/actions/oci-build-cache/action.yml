@@ -12,6 +12,12 @@
 # the other side -- the ro user cannot create objects -- so a bug in the case
 # statement below is refused by the service rather than poisoning a cache.
 #
+# The action also decides, by probing, whether sccache may be used at all --
+# and exports RUSTC_WRAPPER only if the probe passes. That decision has to
+# live here rather than in each job, because the lakers port's cargo build
+# runs under RUSTC_WRAPPER during the vcpkg install, which happens before any
+# per-job guard runs. See the probe step for the measurement behind it.
+#
 # This action never fails a build because a cache is unavailable. It fails
 # only when a repository VARIABLE is missing, which is a configuration error
 # with a one-line fix, and when the sccache download does not match its
@@ -145,7 +151,9 @@ runs:
           echo "SCCACHE_REGION=${REGION}"
           echo "SCCACHE_S3_KEY_PREFIX=sccache/"
           echo "SCCACHE_S3_USE_SSL=true"
-          echo "RUSTC_WRAPPER=sccache"
+          # RUSTC_WRAPPER is deliberately NOT exported here. It is exported
+          # by the probe step below, and only if a compile really does
+          # round-trip through sccache -- see that step for why.
           # vcpkg scrubs the environment of port builds. Without this the
           # lakers port's cargo build sees no RUSTC_WRAPPER and no
           # credentials, which is the rustc coverage ccache never had.
@@ -219,3 +227,32 @@ runs:
         sudo install -m 0755 "${tmp}/sccache-v${SCCACHE_VERSION}-${target}/sccache" /usr/local/bin/sccache
         rm -rf "$tmp"
         sccache --version
+
+    # The probe has to happen HERE, inside the action, and not in each job's
+    # "Start sccache" step, because of RUSTC_WRAPPER. That step runs *after*
+    # "Bootstrap vcpkg and install dependencies", and the lakers port's cargo
+    # build runs under RUSTC_WRAPPER during that install. Measured on sccache
+    # 0.17.0 against an unreachable endpoint: `sccache rustc --version` exits
+    # 2, so cargo fails, so the lakers port fails, so the vcpkg install fails,
+    # so the job goes red -- which is the cache failure Requirement 3.5
+    # forbids, reached by a path no per-job guard can cover because it happens
+    # before that guard runs.
+    #
+    # This has never fired in practice only because the `vcpkg_installed/`
+    # tree cache has been hitting, which skips the install entirely. It would
+    # fire on the first cold build with a misconfigured bucket.
+    #
+    # So: probe once, before anything can use sccache, and export
+    # RUSTC_WRAPPER only if a compile really round-trips. Each job's own
+    # "Start sccache" step runs the same script again for its C/C++ launcher
+    # decision; the second probe hits the cache the first one populated.
+    - name: Probe sccache before the vcpkg install can use it
+      id: probe
+      if: steps.select.outputs.enabled == 'true'
+      shell: bash
+      run: scripts/oci-build-cache/start-sccache.sh
+
+    - name: Export RUSTC_WRAPPER only if the probe passed
+      if: steps.probe.outputs.launcher == 'sccache'
+      shell: bash
+      run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
