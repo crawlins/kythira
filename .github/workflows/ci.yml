@@ -1761,7 +1761,26 @@ jobs:
         # place: the pool bounds the worst single allocation, -j3 bounds the
         # aggregate. Note also that the pool's headline speedup came from
         # ending the thrashing, not from restored parallelism.
-        run: cmake --build build-${{ matrix.backend }} -j3
+        #
+        # TEMPORARY, stdexec only: -j2 for one run, to break a deadlock.
+        #
+        # This leg has never completed a build on `main` since the OCI cache
+        # landed, so its sccache objects have never been written -- and it is
+        # slow and memory-fragile precisely because it compiles everything
+        # cold. The one time it did pass, it was a pull_request run, which
+        # holds the READ-ONLY key and cannot write. Meanwhile the runner is
+        # killed at VM level (exit 143, "lost communication"), which takes
+        # sccache's pending uploads with it, so failed attempts bank nothing.
+        #
+        # One successful `main` build ends this permanently: Task 1 measured
+        # this same Build at 3.0 minutes warm, against 175 cold, at a 100% hit
+        # rate. Nothing to compile means nothing to starve the runner.
+        #
+        # This does NOT repeat the experiment the note above forbids -- that
+        # one RAISED -j with the pool in place and found it slower. Lowering
+        # for a single population run is a different question, and -j3 is
+        # restored immediately afterwards.
+        run: cmake --build build-${{ matrix.backend }} -j${{ matrix.backend == 'stdexec' && '2' || '3' }}
 
       # `always()`, because the interesting case is the one where Build died:
       # a near-zero figure here names the mechanism the logs above could not.
