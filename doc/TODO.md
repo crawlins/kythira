@@ -2199,8 +2199,11 @@ unverified completion claim.
   against Beast, Proxygen and cpp-httplib at once (see
   `kythira_wire_multi_raft_bench()`), and stdexec's sender types multiply what
   that costs. Isolating the backend on one box and one compiler,
-  `multi_raft_driver_agreement_test` is 7,254 MiB under stdexec against 3,869
-  under folly; and on run
+  `multi_raft_driver_agreement_test` is 7,254 MiB under stdexec against 3,857
+  under folly, and the two benchmark TUs are 21,114/6,247 and 16,640/6,057 — a
+  1.9 to 3.4x multiplier. Note both are above 5,967 MiB (the heaviest
+  previously-pooled TU in the tree) even under folly, which is why membership
+  is unconditional rather than gated on the backend. On run
   [34350454484](https://github.com/crawlins/kythira/actions/runs/34350454484)
   the `Coverage (clang++-18)` leg compiled all 542 TUs **cold, with no compiler
   cache, on a 16 GiB runner whose swapfile that job deletes** — and all four of
