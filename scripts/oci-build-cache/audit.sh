@@ -77,7 +77,10 @@ command -v oci >/dev/null 2>&1 || { echo "error: the OCI CLI is not on PATH" >&2
 command -v jq  >/dev/null 2>&1 || { echo "error: jq is not on PATH" >&2; exit 1; }
 [ -n "$COMPARTMENT_ID" ] || { echo "error: --compartment-id or \$OCI_CI_COMPARTMENT_ID is required" >&2; exit 2; }
 
-unknown=0   # informational queries that could not run
+# Informational queries that could not run. A file rather than a variable
+# because `try` always runs in a command substitution; see its comment.
+UNKNOWN_TALLY=$(mktemp)
+trap 'rm -f "$UNKNOWN_TALLY"' EXIT
 leaked=0    # resources tagged for this spec that this spec does not name
 blind=0     # leak queries that could not run — as bad as a leak
 
@@ -85,17 +88,34 @@ blind=0     # leak queries that could not run — as bad as a leak
 # success; on failure prints the provider's own message and counts an UNKNOWN.
 try() {
     local label="$1"; shift
-    local out rc=0
+    local out rc=0 err
+    err=$(mktemp)
     # stdin closed: an unconfigured CLI prompts ("config file not found — do
     # you want to create one?") instead of failing, and an audit that blocks
     # on an invisible question reports nothing at all.
-    out=$("$@" 2>&1 </dev/null) || rc=$?
+    #
+    # stderr goes to a FILE, never into $out. It used to be folded in with
+    # `2>&1`, which meant a command that exited 0 while printing a diagnostic
+    # returned that diagnostic AS ITS VALUE. `oci iam compartment get` on the
+    # tenancy root does exactly that -- it succeeds and writes "Query returned
+    # empty result, no output to show." to stderr -- so `tenancy_id` became
+    # that sentence, the user lookup was handed it as an OCID, and the audit
+    # printed "kythira-build-cache-rw: does not exist" about the very
+    # credential CI was authenticating with at that moment. A false negative
+    # about a credential is worse than no answer at all.
+    out=$("$@" 2>"$err" </dev/null) || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "  UNKNOWN: $label could not be read (exit $rc):" >&2
-        printf '%s\n' "$out" | sed 's/^/    /' >&2
-        unknown=$((unknown + 1))
+        sed 's/^/    /' "$err" >&2
+        # Counted through a FILE, not a variable. Every call site is
+        # `$(try ...)`, a subshell, so `unknown=$((unknown + 1))` incremented
+        # a copy and the parent's total stayed at zero forever -- the summary
+        # that reports how much the audit could not see could never fire.
+        echo x >> "$UNKNOWN_TALLY"
+        rm -f "$err"
         return 1
     fi
+    rm -f "$err"
     printf '%s' "$out"
 }
 
@@ -133,15 +153,42 @@ echo
 # The secret itself is unreadable after creation, by design. What is readable
 # is that a key exists and when it was made, which is what a rotation needs.
 echo "3. Customer secret keys"
-tenancy_id=$(try "tenancy id" oci iam compartment get --compartment-id "$COMPARTMENT_ID" \
-                 --query 'data."compartment-id"' --raw-output) || tenancy_id=""
+# Users live in the tenancy root, so this needs the tenancy OCID. If the
+# caller already passed one -- and they will, because the bucket itself lives
+# in the root and that is what `--compartment-id` gets pointed at -- then
+# asking for its PARENT is both wrong and silently destructive: the root has
+# no parent, the CLI exits 0 with an empty result, and whatever comes back
+# gets used as an id. Take the OCID as given when it is already a tenancy.
+if [[ "$COMPARTMENT_ID" == ocid1.tenancy.* ]]; then
+    tenancy_id="$COMPARTMENT_ID"
+else
+    tenancy_id=$(try "tenancy id" oci iam compartment get --compartment-id "$COMPARTMENT_ID" \
+                     --query 'data."compartment-id"' --raw-output) || tenancy_id=""
+fi
+# Whatever it is, it has to LOOK like a tenancy OCID before being used as one.
+# This is the guard that would have caught the original bug on its own: a
+# diagnostic sentence is not an OCID, and refusing to pass it to the next call
+# turns a confident wrong answer into an honest UNKNOWN.
+if [ -n "$tenancy_id" ] && [[ "$tenancy_id" != ocid1.tenancy.* ]]; then
+    echo "  UNKNOWN: tenancy id did not look like an OCID (got: ${tenancy_id:0:60})" >&2
+    echo x >> "$UNKNOWN_TALLY"
+    tenancy_id=""
+fi
 for user in "$RW_USER" "$RO_USER"; do
     if [ -z "$tenancy_id" ]; then
         echo "  UNKNOWN: $user (tenancy id unavailable)"
         continue
     fi
-    uid=$(oci iam user list --compartment-id "$tenancy_id" --name "$user" \
-              --query 'data[0].id' --raw-output 2>/dev/null </dev/null || echo "")
+    # Through `try`, so that a lookup which FAILS is reported as UNKNOWN
+    # rather than as absence. "does not exist" is an assertion about the
+    # tenancy; it may only be made when the query actually ran and came back
+    # empty. Conflating the two is how an audit reports a missing credential
+    # that is in active use.
+    if ! uid=$(try "user $user" oci iam user list --compartment-id "$tenancy_id" \
+                   --name "$user" --query 'data[0].id' --raw-output); then
+        echo "  UNKNOWN: $user (lookup failed)"
+        continue
+    fi
     if [ -z "$uid" ] || [ "$uid" = "null" ]; then
         echo "  $user: does not exist"
         continue
@@ -229,6 +276,7 @@ else
 fi
 echo
 
+unknown=$(wc -l < "$UNKNOWN_TALLY" | tr -d ' ')
 if [ "$unknown" -ne 0 ]; then
     echo "$unknown informational query/queries could not be read; those lines are UNKNOWN above." >&2
 fi
