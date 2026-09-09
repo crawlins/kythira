@@ -53,3 +53,20 @@ resolves in `portfile.cmake`, inspected directly (compiled and run a probe
 program against the real installed headers with both `g++-13` and
 `clang++-18`) during this spec's Phase 0 spike; see `spike-notes.md` in
 `.kiro/specs/stdexec-future-backend/` for the full findings.
+
+<!--
+DELIBERATE CACHE BUST -- this comment exists to change a hash, not to
+document the port. Task 9 of `.kiro/specs/oci-build-cache/` verifies
+Requirement 7.3: with the endpoint pointed at a non-existent namespace the
+job must go green with its ports built from source. That cannot be observed
+unless vcpkg actually runs, and it does not -- the whole-tree
+`vcpkg_installed/` L1 cache is keyed on
+`hashFiles('vcpkg.json', 'vcpkg-overlays/**')`, and a hit there skips
+`Bootstrap vcpkg and install dependencies` entirely. Task 1's second attempt
+was lost to exactly this, and so was Task 9's first. Editing a README moves
+that hash without touching a portfile, so an L1 miss is forced without
+changing a single byte of what gets built.
+
+This belongs only on the throwaway measurement branch and must never reach
+`main`.
+-->

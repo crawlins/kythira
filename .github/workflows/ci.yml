@@ -1225,7 +1225,7 @@ jobs:
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
-          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          namespace: 'nonexistent-namespace-for-task-9'
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
