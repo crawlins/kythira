@@ -102,8 +102,28 @@ JSON
       echo '{"data":{"items":[
         {"name":"expire-sccache-objects","action":"DELETE","time-amount":30,"time-unit":"DAYS","is-enabled":true,"object-name-filter":{"inclusion-prefixes":["sccache/"]}},
         {"name":"expire-vcpkg-archives","action":"DELETE","time-amount":90,"time-unit":"DAYS","is-enabled":true,"object-name-filter":{"inclusion-prefixes":["vcpkg/"]}}]}}' ;;
-  *"iam compartment get"*)   echo "ocid1.tenancy.oc1..t" ;;
-  *"iam user list"*)         echo "ocid1.user.oc1..u" ;;
+  *"iam compartment get"*)
+      # `stderrnoise`: exit 0, print nothing on stdout, write a diagnostic to
+      # stderr -- exactly what the real CLI does for `--query` on the tenancy
+      # root ("Query returned empty result, no output to show."). The audit
+      # must NOT turn that sentence into a value.
+      if [ "${STUB_SCENARIO:-clean}" = "stderrnoise" ]; then
+          echo "Query returned empty result, no output to show." >&2; exit 0
+      fi
+      echo "ocid1.tenancy.oc1..t" ;;
+  *"iam user list"*)
+      # Rejects a compartment-id that is not an OCID, as the real CLI does.
+      # Without this the stub answers with a valid user id no matter what it
+      # is handed, and the `stderrnoise` scenario cannot reproduce the bug at
+      # all -- the audit would pass a diagnostic sentence as a compartment and
+      # still be told the user exists. A stub more permissive than the service
+      # it stands in for tests nothing.
+      cid=""; prev=""
+      for a in "$@"; do [ "$prev" = "--compartment-id" ] && cid="$a"; prev="$a"; done
+      case "$cid" in
+        ocid1.*) echo "ocid1.user.oc1..u" ;;
+        *) echo "ServiceError: InvalidParameter: compartment-id is not an OCID" >&2; exit 1 ;;
+      esac ;;
   *"customer-secret-key list"*)
       echo '{"data":[{"id":"ocid1.credential.oc1..key0001","time-created":"2026-09-05T00:00:00Z","lifecycle-state":"ACTIVE"}]}' ;;
   *"usage-api"*)
@@ -132,12 +152,34 @@ check() {
     fi
 }
 
+# $1 = scenario, $2 = a string the output must NOT contain, $3 = label.
+# The positive form cannot express this: the bug being guarded against made the
+# audit print a confident FALSE statement, and "does not contain" is the only
+# shape that catches a wrong answer rather than a missing one.
+refute() {
+    local scenario="$1" needle="$2" label="$3"
+    local out
+    out=$(PATH="$STUB_DIR:$PATH" STUB_SCENARIO="$scenario" \
+          OCI_CI_COMPARTMENT_ID="$COMPARTMENT_ID" "$AUDIT" 2>&1)
+    if printf '%s' "$out" | grep -qF "$needle"; then
+        echo "FAIL  $label — output must NOT contain '$needle':"
+        printf '%s\n' "$out" | sed 's/^/      /'
+        failures=$((failures + 1))
+    else
+        echo "PASS  $label"
+    fi
+}
+
 echo "── stub mode ──"
 check clean    0 "Audit clean"                       "a tenancy holding exactly this spec's resources passes"
 check leak     1 "kythira-build-cache-scratch"       "an unexpected tagged resource FAILS and is named"
 check blind    1 "the tag inventory is UNKNOWN"      "a leak query that errors FAILS rather than reporting clean"
 check garbage  1 "jq could not read"                 "unparseable leak output FAILS rather than reading as empty"
 check infofail 0 "UNKNOWN"                           "an informational query failing does not fail the audit"
+check infofail 0 "informational query/queries could not be read" \
+                                                     "a failed informational query is COUNTED, not merely printed"
+check stderrnoise 0 "tenancy id unavailable"         "a command that exits 0 while writing to stderr yields no value"
+refute stderrnoise "does not exist"                  "...and never reports a live credential as absent"
 
 if [ "$LIVE" -eq 1 ]; then
     echo
