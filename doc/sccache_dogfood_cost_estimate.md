@@ -208,6 +208,45 @@ month of the AWS egress line it replaces.
 - **Not included:** taxes, any support plan, and Object Storage, which this
   deployment does not use.
 
+## The plain-object-storage baseline this is measured against
+
+`.kiro/specs/oci-build-cache/` built the cheap version of the same idea —
+sccache and vcpkg archives in an OCI Object Storage bucket, no cluster — and it
+is now running. This document estimates the *Redis-gateway* deployment at about
+$55 per month; that spec is the floor it should be compared with, and this
+section exists so the two are not read as alternatives priced the same way.
+
+**A correction first.** `.kiro/specs/oci-build-cache/requirements.md` attributes
+its "about $0.50 per month" to *this* document, quoting a storage line of $0.26
+and roughly $0.24 of requests. **Those figures are not in here**, and never
+were: this document prices compute, block volume and egress, and says in as many
+words that Object Storage is not included. The $0.50 is a pre-registration made
+in that spec, not a number carried over — it should be read as the weaker of
+the two claims until a bill lands.
+
+**Measured storage, September 9, 2026**, one day after the caches went live on
+`main` (`scripts/oci-build-cache/audit.sh`):
+
+| prefix | objects | size |
+|---|---:|---:|
+| `vcpkg/x64-linux/` | 267 | 3.60 GiB |
+| `vcpkg/arm64-linux/` | 131 | 1.34 GiB |
+| `sccache/` | 4,521 | 2.11 GiB |
+| `sccache-measure-3/` (throwaway; expires at 30 days) | 4,421 | 2.04 GiB |
+
+About **9.2 GB**, of which 2.04 GB is a measurement prefix that cannot be
+deleted — `OBJECT_DELETE` is granted to nobody by design — and will age out on
+its lifecycle rule. Steady state should therefore settle nearer 7 GB, against
+the 10 GB the $0.50 estimate assumed, so the storage half looks slightly
+conservative rather than optimistic.
+
+**The request and egress halves are not yet measured.** OCI's usage API reports
+no Object Storage line for the month so far, which is billing lag rather than
+zero usage. `.kiro/specs/oci-build-cache/` task 11 is where the first month's
+bill is read and compared with the $0.50 and the 1–5 TB egress
+pre-registration — and Requirement 6.5 says exceeding either is a falsified
+estimate to investigate, not a number to absorb.
+
 ## Why not the others
 
 ### AWS, Azure, GCP

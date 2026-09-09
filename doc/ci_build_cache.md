@@ -161,6 +161,43 @@ scripts/oci-build-cache/test-audit.sh
 scripts/oci-build-cache/test-audit.sh --live
 ```
 
+### Seeding the prefix from another one
+
+Occasionally a leg needs objects it cannot produce itself — see the
+writer-policy corner in `.kiro/specs/oci-build-cache/design.md`: a leg that
+only ever passes on pull requests never writes, because PR runs hold the
+read-only key. Objects can be copied between prefixes with the read-write key
+alone; **no delete rights are involved**, so this does not weaken the
+no-`OBJECT_DELETE` rule.
+
+```bash
+export AWS_ACCESS_KEY_ID=...            # the kythira-build-cache-rw key
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_REGION=us-phoenix-1
+export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+export AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+EP=https://<namespace>.compat.objectstorage.<region>.oraclecloud.com
+
+aws s3 cp s3://kythira-build-cache/<source-prefix>/ \
+          s3://kythira-build-cache/sccache/ \
+          --recursive --copy-props none --endpoint-url "$EP"
+```
+
+**`--copy-props none` is required.** Without it the CLI's multipart-copy path
+calls `GetObjectTagging`, which OCI answers with
+`NotImplemented: S3 Get Object tagging operation is not supported` — small
+objects copy and large ones fail, leaving a partial seed that looks like a
+successful one. Verify with a key-set difference rather than a count, since the
+prefixes usually overlap:
+
+```bash
+aws s3 ls s3://kythira-build-cache/<source-prefix>/ --recursive --endpoint-url "$EP" \
+  | awk '{print $4}' | sed 's#^<source-prefix>/##' | sort > /tmp/src.keys
+aws s3 ls s3://kythira-build-cache/sccache/ --recursive --endpoint-url "$EP" \
+  | awk '{print $4}' | sed 's#^sccache/##' | sort > /tmp/dst.keys
+comm -23 /tmp/src.keys /tmp/dst.keys | wc -l     # must be 0
+```
+
 ### Rotating a key
 
 ```bash
