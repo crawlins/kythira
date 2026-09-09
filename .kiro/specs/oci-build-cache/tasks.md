@@ -685,6 +685,20 @@ bucket does.
     build — a compiler bump, a new `-D`, anything that moves the hash — will
     hit it again. **The fix is adding those TUs to the pool, as its own change
     with its own measurement**, not folded into the caching work.
+    **CORRECTION, September 9, 2026, from the measurement this bullet asked
+    for: the two targets named here are the wrong ones.** Ninja's `[N/M]`
+    counter on a non-smart-terminal is a *completion* index — it buffers an
+    edge's output and prints the status line when the edge finishes — so 226
+    and 227 are the last TUs to FINISH before the machine stopped, not the
+    ones that stopped it. That also explains the stability across `-j2` and
+    `-j3` that this bullet read as evidence for a single TU: what finishes
+    last is fixed by declaration order, not by parallelism. Differencing every
+    `tests/` object against the ones job `102095938462` actually completed
+    leaves exactly two — `multi_raft_http_benchmark_test.cpp.o` and
+    `multi_raft_performance_report.cpp.o`, which never completed at all, and
+    which peak at **21,114 and 16,640 MiB** under stdexec — 36.9 GiB together,
+    against a runner's 16 GiB plus the 24 GiB swapfile that leg adds. All four are now in the
+    pool; see `doc/TODO.md` and the top-level `CMakeLists.txt`.
   - The `-j2` experiment that led here was **refuted** and its PR
     ([#323](https://github.com/crawlins/kythira/pull/323)) closed unmerged
     rather than landed, so `main` keeps `-j3`.

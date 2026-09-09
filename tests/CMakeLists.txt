@@ -216,6 +216,17 @@ endfunction()
 # This is a scheduling hint by position, not a mechanism: a Ninja that
 # schedules by critical path (1.12 and later, given a .ninja_log) ignores it,
 # and the worst case is then today's tail, not a failure.
+#
+# FOUR POOL MEMBERS ARE DELIBERATELY NOT IN THIS SECTION: multi_raft_scale_test
+# and the three kythira_wire_multi_raft_bench() targets, all declared with the
+# rest of the multi-Raft suite around a third of the way down this file. They
+# were left where they are because moving them means moving that function and
+# its three call sites past every `if(TARGET ...)` they depend on, which is a
+# larger and riskier edit than the scheduling it would buy -- and the two
+# 20-plus-GiB members among them are why the pool matters at all, so a mistake
+# there costs more than a tail. Position is an optimisation; membership is the
+# fix. If the pooled chain ever does become the critical path of a cold
+# stdexec build, moving them is the first thing to try.
 
 # ── boost-beast-http-transport (.kiro/specs/boost-beast-http-transport/) ─────
 # One-file-per-concern layout, one-to-one with tests/http_client_*/
@@ -964,6 +975,15 @@ add_raft_completion_test(multi_raft_invariant_property_test
 # default run with `ctest -LE scale` — a slow test that runs on every commit
 # gets ignored, and an ignored test is worse than none.
 add_raft_completion_test(multi_raft_scale_test multi_raft_scale_test.cpp)
+# In the `heavy_tu` pool, and pooled here rather than by a helper because
+# add_raft_completion_test() has ~200 other callers and almost all of them are
+# cheap. MEASURED at 4,044 MiB under stdexec on reliant (g++-14, Release, no
+# launcher) -- between beast_ssl_test's 3,473 and
+# http_implementation_interop_test's 4,649 on the same box, i.e. squarely
+# inside the range the pool already bounds. Under the default folly backend it
+# is 1,593 MiB; the property is unconditional anyway, matching every other
+# member. See the top-level CMakeLists.txt for the pool and the table.
+set_target_properties(multi_raft_scale_test PROPERTIES JOB_POOL_COMPILE heavy_tu)
 set_tests_properties(multi_raft_scale_test PROPERTIES LABELS "scale;multi-raft" TIMEOUT 1800)
 
 # Tier B of .kiro/specs/multi-raft-performance/: `multi_raft` carrying the
@@ -997,6 +1017,69 @@ set_tests_properties(multi_raft_scale_test PROPERTIES LABELS "scale;multi-raft" 
 # Each `else()` names the target so the skip messages stay attributable once
 # there is more than one caller.
 function(kythira_wire_multi_raft_bench target)
+    # Every target this function wires is a `heavy_tu` pool member, and the
+    # assignment lives HERE rather than at the three call sites because this
+    # function is what makes them heavy: it links Beast, Proxygen, cpp-httplib,
+    # Folly and protobuf into a translation unit that already instantiates the
+    # whole multi-Raft stack. That is the shape of
+    # three_way_http_transport_equivalence_test, the top-level table's previous
+    # worst case at 5,967 MiB -- and two of these are three times that. A
+    # fourth caller added tomorrow is
+    # pooled without anyone remembering to, which is the same reason
+    # add_beast_test() carries the property instead of its call sites.
+    #
+    # MEASURED under the stdexec backend on reliant (g++-14 14.2.0, Release,
+    # -DKYTHIRA_COMPILER_LAUNCHER=none, one TU at a time), September 9 2026.
+    # Peak footprint is max(VmRSS + VmSwap) sampled from /proc, NOT
+    # `time -v`'s ru_maxrss: that box has 7.6 GiB of RAM, so once a compile's
+    # working set passes it the kernel evicts pages and ru_maxrss reports the
+    # machine's ceiling (~6.6 GiB) rather than the TU's demand. ALL THREE
+    # figures below are above that ceiling, and ru_maxrss reported them as
+    # 6,599, 6,757 and 6,594 MiB -- three numbers within 3% of each other and
+    # of an ordinary heavy TU, describing translation units that differ by a
+    # factor of three. That is why this gap stayed invisible for as long as it
+    # did.
+    #
+    #                                              stdexec     folly
+    #     multi_raft_http_benchmark_test.cpp       21,114 MiB  6,247 MiB
+    #     multi_raft_performance_report.cpp        16,640 MiB  6,057 MiB
+    #     multi_raft_driver_agreement_test.cpp      7,254 MiB  3,857 MiB
+    #
+    # For calibration, the top-level table's own members re-measured on the
+    # same box and compiler (its figures are g++-13 and are given in
+    # parentheses) -- g++-14 reads within 6% either way, so these are directly
+    # comparable and the gap above is not a compiler artefact:
+    #
+    #     three_way_http_transport_equivalence_test    5,955 MiB  (5,649)
+    #     http_implementation_interop_test             4,649 MiB  (4,422)
+    #     beast_ssl_test                               3,473 MiB  (3,501)
+    #
+    # STDEXEC MULTIPLIES THE COST BY 1.9-3.4x, AND THE PROPERTY IS STILL
+    # UNCONDITIONAL -- BECAUSE THE FOLLY COLUMN EARNS IT ON ITS OWN. Both
+    # benchmark TUs are above 5,967 MiB under folly too, which is the figure
+    # the heaviest previously-pooled TU in the whole tree measures. There is no
+    # backend on which they are cheap; stdexec is only where they stop fitting.
+    #
+    # That is what settles the question a conditional would otherwise raise.
+    # Gating membership on KYTHIRA_DEFAULT_FUTURE_BACKEND would exclude, from a
+    # pool built to bound the worst single compile, the two largest compiles in
+    # the tree on the very legs where they are merely large rather than fatal.
+    # It would also add a way for the pool to be silently absent on the one
+    # configuration that needs it most.
+    #
+    # For the record, the folly legs are not in distress today: on run
+    # 34350454484 the `Coverage (clang++-18)` leg ran with its sccache
+    # credentials deliberately withheld, so it compiled all 542 TUs cold with
+    # no compiler cache, on a 16 GiB runner whose swapfile that job deletes --
+    # and all four of these targets went through within 90 seconds of each
+    # other (12:33:48 to 12:35:14). Pooling costs such a leg a couple of
+    # minutes of serialisation, at the front of a build where the pooled chain
+    # overlaps a thousand other steps.
+    #
+    # See the top-level CMakeLists.txt for the pool itself, and for what these
+    # TUs did to the `Full suite (stdexec)` leg before they were in it.
+    set_target_properties(${target} PROPERTIES JOB_POOL_COMPILE heavy_tu)
+
     # Requirement 6.4 asks the result to state the build type and flags. Neither
     # is recoverable from a predefined macro -- `NDEBUG` and `__OPTIMIZE__` are
     # proxies that a hand-edited flag list can make wrong -- so the build states

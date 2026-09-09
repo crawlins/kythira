@@ -1586,6 +1586,9 @@ endif()
 # `-DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`), one translation unit at a time:
 #
 #     POOLED
+#       tests/multi_raft_http_benchmark_test.cpp          21,114 MiB       **
+#       tests/multi_raft_performance_report.cpp           16,640 MiB       **
+#       tests/multi_raft_driver_agreement_test.cpp         7,254 MiB   359 s **
 #       cmd/multi_raft_node/run_beast_cbor.cpp             5,967 MiB   280 s
 #       cmd/multi_raft_node/run_beast_json.cpp             5,965 MiB   305 s
 #       three_way_http_transport_equivalence_test          5,649 MiB          *
@@ -1593,6 +1596,7 @@ endif()
 #       cmd/multi_raft_node/run_httplib_json.cpp           5,407 MiB   204 s
 #       tests/http_implementation_interop_test.cpp         4,422 MiB   174 s
 #       tests/beast_cross_transport_equivalence_test.cpp   4,420 MiB   176 s
+#       tests/multi_raft_scale_test.cpp                    4,044 MiB   136 s **
 #       tests/proxygen_negotiation_integration_test.cpp    3,280 MiB    84 s
 #       tests/beast_negotiation_retry_test.cpp             4,373 MiB   180 s
 #       tests/beast_server_test.cpp                        3,843 MiB   141 s
@@ -1610,6 +1614,12 @@ endif()
 #
 #     * carried from this pool's original comment, not re-measured here. Every
 #       other figure was taken this way in this configuration.
+#
+#     ** measured September 9 2026 on reliant (g++-14 14.2.0, not CI's g++-13,
+#       same Release + stdexec configuration, no compiler launcher) as peak
+#       max(VmRSS + VmSwap) sampled from /proc rather than `time -v`'s
+#       ru_maxrss -- see "The four that were never in the table" below for
+#       why the distinction matters and for the cross-compiler calibration.
 #
 # A GitHub runner has 16 GiB, and the `Full suite` job builds with `-j3`. Three
 # of the 5-plus-GiB class at once does not fit. That is the whole design: this
@@ -1662,6 +1672,90 @@ endif()
 # The members are expensive for a legible reason: each instantiates a whole
 # transport stack -- or, in the tests' case, Beast, Proxygen and cpp-httplib
 # together -- and stdexec's sender types multiply what that costs.
+#
+# ── The four that were never in the table (September 9, 2026) ────────────────
+#
+# multi_raft_http_benchmark_test, multi_raft_performance_report and
+# multi_raft_driver_agreement_test joined the pool here, together with
+# multi_raft_scale_test. The first three are the callers of
+# tests/CMakeLists.txt's kythira_wire_multi_raft_bench(), which is where their
+# pool membership is now set, and which is what makes them the heaviest
+# translation units in this tree by a wide margin -- it links Beast, Proxygen,
+# cpp-httplib, Folly and protobuf into a TU that already instantiates the whole
+# multi-Raft stack. Under stdexec they peak at 21,114 and 16,640 MiB, against
+# 5,967 MiB for the previous worst case in the table above.
+#
+# That pair is the whole failure, in one line of arithmetic: 21,114 + 16,640 is
+# 36.9 GiB, and a runner has 16 GiB plus the 24 GiB swapfile this leg's Build
+# step adds -- 40 GiB. They are declared consecutively, so `-j3` starts them
+# together, and they fit only if nothing else needs memory. On the last green
+# cold run they did fit, and each took over an hour of thrashing to do it; on
+# the runs that died, the third `-j3` slot is what pushed them over.
+#
+# THE RECORDED DIAGNOSIS OF WHY THE STDEXEC LEG DIED WAS WRONG, AND THE WAY IT
+# WAS WRONG IS WORTH KEEPING. It was recorded as
+# `multi_raft_scale_test`/`multi_raft_driver_agreement_test`, because those are
+# the targets ninja named at the objects the leg died at -- 226, 236, 226, 226
+# (`-j3`) and 227 (`-j2`) of 1115 -- and because a death point that holds
+# steady across a changed parallelism setting looks like one translation unit
+# rather than aggregate pressure. NINJA'S `[N/M]` COUNTER ON A
+# NON-SMART-TERMINAL IS A COMPLETION INDEX, NOT A START INDEX: it buffers an
+# edge's output and prints the status line when the edge finishes. So those
+# were the last TUs to FINISH before the machine stopped making progress -- not
+# the ones that killed it. The stability across `-j2` and `-j3` is exactly what
+# a completion index does, since what finishes last is fixed by declaration
+# order rather than by parallelism, and it was read as evidence for the
+# opposite conclusion.
+#
+# What the logs say once read that way (job 102095938462, run 34236640491):
+# `[226] multi_raft_scale_test` completed at 14:56:54 and the runner took a
+# shutdown signal at 16:03:21 -- 66 minutes later, with not one further edge
+# completing. Differencing every `tests/` object in a configured tree against
+# the ones that job actually completed leaves EXACTLY TWO:
+# multi_raft_http_benchmark_test.cpp.o and multi_raft_performance_report.cpp.o.
+# Job 102104469816 (run 34239130419) has the same signature: 523 edges done,
+# the same two missing, then 94 minutes of nothing. And on the last green cold
+# run (job 101157909873) they did finish -- 61 and 70 minutes after
+# multi_raft_driver_agreement_test, while 56 and 99 other edges came and went
+# around them.
+#
+# Three consequences for whoever changes this next:
+#
+#   - `time -v`'s ru_maxrss cannot measure these on a machine smaller than they
+#     are. reliant has 7.6 GiB, and the three TUs above it -- 21,114, 16,640
+#     and 7,254 MiB -- report 6,599, 6,757 and 6,594 through it, the box's
+#     resident ceiling rather than their demand, and indistinguishable from an
+#     ordinary heavy TU. The figures marked **
+#     are peak max(VmRSS + VmSwap) sampled from /proc, which counts the pages
+#     the kernel pushed to swap instead of pretending they were never asked
+#     for.
+#   - The compiler difference does not explain the gap. Re-measuring three
+#     existing members on the same box and compiler gives 5,955 / 4,649 / 3,473
+#     MiB against the table's g++-13 figures of 5,649 / 4,422 / 3,501 -- within
+#     6% in both directions. g++-14 is not what makes these TUs large. Those
+#     three all sit under the ceiling, and three_way reads 5,955 sampled
+#     against 5,979 by ru_maxrss -- the two methods agree to 0.4% whenever
+#     nothing is being evicted, which is what makes the gap above real rather
+#     than an artefact of measuring two ways.
+#   - "A cold build OOMs" is the wrong framing, and the evidence against it is
+#     already on file: on run 34350454484 the `Coverage (clang++-18)` leg ran
+#     with its sccache credentials deliberately withheld and compiled all 542
+#     TUs cold, with no compiler cache, on a 16 GiB runner whose swapfile that
+#     job deletes -- and went green, with all four of these targets compiling
+#     within 90 seconds of each other. The backend is the variable, not the
+#     cache: that leg is folly, where the same TUs measure 6,247 / 6,057 /
+#     3,857 / 1,593 MiB. Stdexec multiplies them by 1.9 to 3.4x. Note the
+#     first two are above 5,967 even there, so pool membership is earned on
+#     every backend and is not conditional on one -- see
+#     tests/CMakeLists.txt's kythira_wire_multi_raft_bench().
+#
+# Pooling them is the bounded fix, not the whole fix: serialising them means
+# each gets the runner to itself rather than sharing it with the other, which
+# is what they were doing on the green run -- overlapping for most of an hour
+# apiece. The unbounded part -- three TUs that each
+# instantiate the multi-Raft stack against three transports under stdexec --
+# is filed in doc/TODO.md's "Known Follow-ups" and is deliberately not
+# addressed here.
 #
 # `JOB_POOL_COMPILE` is a Ninja feature and is ignored by other generators,
 # which is harmless: CI configures every affected job with `-G Ninja`, and a
