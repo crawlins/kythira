@@ -218,12 +218,7 @@ jobs:
       - name: Start sccache
         id: sccache
         if: steps.buildcache.outputs.enabled == 'true'
-        run: |
-          if sccache --start-server 2>/dev/null || sccache --show-stats >/dev/null 2>&1; then
-            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::sccache could not reach the bucket; building with no compiler cache"
-          fi
+        run: scripts/oci-build-cache/start-sccache.sh
 
       # Release and the folly future backend, because those are what the
       # local rows in .kiro/specs/multi-raft-performance/tasks.md were taken
