@@ -157,6 +157,18 @@ triplet" step does today. The action also downloads the pinned sccache
 release for `runner.arch`, verifies its SHA-256 against a table in the
 action, and installs it to `/usr/local/bin`.
 
+**A leg that only ever succeeds on a pull request can never warm its own
+cache.** PR runs hold the read-only key, so a green PR build banks nothing; and
+when a runner is killed at VM level, sccache's pending uploads die with it, so
+a failed `main` build banks nothing either. A leg fragile enough to fail on
+`main` while passing on PRs is therefore *deadlocked*: it is fragile because it
+compiles cold, and it compiles cold because it never completes on `main`. This
+is not hypothetical — `Full suite (stdexec)` hit it, and the escape was to copy
+that leg's objects into the prefix out of band (read + create only, no delete
+rights). Any future leg in that position needs the same treatment, and the
+lesson is that "only main writes" has a corner: **the first successful build
+must happen on `main`, or be seeded there.**
+
 Read-only on `pull_request` means sccache's write attempts fail with 403 and
 are counted as `cache write errors`; the compile result is still returned
 (`sccache/src/server.rs`, the same property `.kiro/specs/redis-compatible-kv/`

@@ -4,18 +4,45 @@
 
 # Prune GitHub Actions caches that can no longer be restored by anything.
 #
-# This repository sits at GitHub's 10 GB per-repository cache ceiling (measured
-# 10.37 GB across 41 entries), so GitHub is continuously evicting entries LRU
-# and the victim is arbitrary — a job that should have hit a warm ccache starts
-# cold instead.
+# ACCOUNTING, re-measured September 9, 2026 after the OCI build cache landed
+# (.kiro/specs/oci-build-cache/ task 8). The rules below are unchanged; what
+# changed is what they have left to do.
 #
-# The cause is not cache *size*, it is cache *accumulation*. Every ccache key in
-# ci.yml ends in `-${{ github.ref_name }}-${{ github.run_id }}`, so every run
-# mints a brand new entry and nothing ever removes the one it superseded. Only
-# the newest generation per key family is reachable (the older ones can only be
-# reached through restore-keys prefixes, which always resolve to the newest
-# match), so every older generation is pure dead weight. Measured: four
-# retained generations per family, of which one is useful.
+#                        Aug 2026     8 Sep (before)   9 Sep (after)
+#     total              10.37 GB     10.00 GiB / 12    8.67 GiB / 11
+#     vcpkg trees         4.49 GB      9.40 GiB /  7    8.17 GiB /  6
+#     ccache families        —         0.60 GiB /  5    0.50 GiB /  5
+#
+# Read that carefully, because the obvious reading is wrong twice over.
+#
+# FIRST: moving the compiler cache to OCI did not relieve the ceiling. ccache
+# was 0.60 GiB, not the "eight families at 2 GB each" the spec's introduction
+# assumed; it was small precisely BECAUSE it was being evicted constantly. Most
+# of the 1.33 GiB drop above is one vcpkg tree entry expiring, not the move.
+# The dominant occupant is, and remains, the vcpkg_installed/ tree caches --
+# which .kiro/specs/oci-build-cache/ Requirement 3.3 deliberately KEEPS as the
+# L1 in front of the OCI binary cache.
+#
+# SECOND: the ccache entries above still exist even though nothing writes them
+# any more. GitHub keeps a cache until it is evicted or goes unused for its
+# retention window, so they age out rather than disappear. A reading taken
+# within a week of the move is transitional by construction.
+#
+# What actually changed is that EVICTION STOPPED MATTERING. A tree-cache miss
+# used to cost a full dependency rebuild -- 69 to 163 minutes, measured across
+# nine legs -- and now costs a 4 to 7 minute download from OCI. The ceiling is
+# still there and the repository still sits near it; being evicted is simply no
+# longer expensive. That is a better outcome than the one originally argued
+# for, and it is a different one.
+#
+# The accumulation problem this script was written for is now mostly historical.
+# Every ccache key in ci.yml ended in `-${{ github.ref_name }}-${{ github.run_id }}`,
+# so every run minted a brand new entry and nothing removed the one it
+# superseded; only the newest generation per family was reachable, making every
+# older generation dead weight (measured: four retained generations per family,
+# of which one was useful). Those keys are gone from ci.yml. The rules stay
+# because the pattern can return -- any future actions/cache key carrying a run
+# id recreates it -- and because --closed-prs is about refs, not families.
 #
 # Two rules, both deliberately conservative:
 #
@@ -29,8 +56,11 @@
 # vcpkg caches are deliberately NEVER touched by either rule. Their keys are
 # content-addressed by hashFiles(vcpkg.json, vcpkg-overlays/**) rather than by
 # run id, so each one is the only entry for its inputs and deleting it forces
-# an expensive cold dependency rebuild. They are 4.49 GB of the total and every
-# one of them is currently live.
+# an expensive cold dependency rebuild. They are 8.17 GiB of the 8.67 GiB total
+# as of September 9, 2026 -- 94% of it -- and every one of them is currently
+# live. Deleting one is no longer catastrophic now that the OCI binary cache
+# backs it (the rebuild becomes a download), but it is still waste, so the rule
+# stands.
 #
 # Usage:
 #   scripts/prune-actions-caches.sh [--repo OWNER/REPO] [--closed-prs] [--superseded] [--apply]
