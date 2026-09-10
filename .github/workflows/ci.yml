@@ -1484,10 +1484,30 @@ jobs:
     # three times in Build, never reaching a single test.
     #
     # 300 matches the GCC 14 leg's budget and is sized for the genuinely bad
-    # case: cold vcpkg *and* cold ccache, which is the normal state on a branch
-    # that touches dependencies, since ccache keys are scoped per ref. This is
-    # a ceiling, not a target -- a warm run still finishes in well under half
-    # of it.
+    # case: cold vcpkg *and* a cold compiler cache. Measured on run
+    # 33997439418, the leg this budget was raised for: 95 minutes installing
+    # dependencies, 114 building, 8 testing -- 218 minutes, which 180 kills
+    # and 300 does not.
+    #
+    # Re-measured September 10, 2026, after the OCI build cache landed, and
+    # HALF THE SENTENCE ABOVE USED TO BE WRONG. It read "cold ccache ... is
+    # the normal state on a branch that touches dependencies, since ccache
+    # keys are scoped per ref". This job has no ccache Restore/Save steps any
+    # more: its compiler cache is sccache against the OCI bucket, keyed by the
+    # compilation and not by the ref, so a branch does not start cold. The
+    # first run of a brand-new ref (PR #331, run 34416241108) built in 3
+    # minutes. Five consecutive main runs since both caches went live finish
+    # the whole leg in 12-13 minutes.
+    #
+    # 300 is kept anyway, and the reason is narrower than it was. The 218
+    # minute case is still reachable -- it needs a change that actually misses
+    # the vcpkg *binary* cache (a real dependency bump, not merely a new ref)
+    # together with header churn that misses sccache -- but it is no longer
+    # what an ordinary branch does. A ceiling costs nothing when unused. What
+    # it does cost is the window a wedged job burns before it is killed, which
+    # is now ~23x the normal run time; if that becomes the failing mode worth
+    # optimising, lower this, do not lower it to reclaim minutes that warm
+    # runs were never spending.
     timeout-minutes: 300
     strategy:
       fail-fast: false
