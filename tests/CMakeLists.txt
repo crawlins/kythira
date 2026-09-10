@@ -217,16 +217,25 @@ endfunction()
 # schedules by critical path (1.12 and later, given a .ninja_log) ignores it,
 # and the worst case is then today's tail, not a failure.
 #
-# FOUR POOL MEMBERS ARE DELIBERATELY NOT IN THIS SECTION: multi_raft_scale_test
-# and the three kythira_wire_multi_raft_bench() targets, all declared with the
-# rest of the multi-Raft suite around a third of the way down this file. They
-# were left where they are because moving them means moving that function and
-# its three call sites past every `if(TARGET ...)` they depend on, which is a
-# larger and riskier edit than the scheduling it would buy -- and the two
-# 20-plus-GiB members among them are why the pool matters at all, so a mistake
-# there costs more than a tail. Position is an optimisation; membership is the
-# fix. If the pooled chain ever does become the critical path of a cold
-# stdexec build, moving them is the first thing to try.
+# ELEVEN POOL MEMBERS ARE DELIBERATELY NOT IN THIS SECTION: multi_raft_scale_test,
+# multi_raft_driver_agreement_test, and the nine bench_rows/ translation units
+# in multi_raft_bench_rows -- all declared with the rest of the multi-Raft suite
+# around a third of the way down this file. They were left where they are
+# because moving them means moving kythira_wire_multi_raft_bench() and its call
+# sites past every `if(TARGET ...)` they depend on, which is a larger and
+# riskier edit than the scheduling it would buy. Position is an optimisation;
+# membership is the fix. If the pooled chain ever does become the critical path
+# of a cold stdexec build, moving them is the first thing to try.
+#
+# This used to read FOUR, and to say that "the two 20-plus-GiB members among
+# them are why the pool matters at all, so a mistake there costs more than a
+# tail". THERE ARE NO 20-GiB MEMBERS ANY MORE. Those two were
+# multi_raft_http_benchmark_test and multi_raft_performance_report, split one
+# (transport x wire serializer) pair per file on September 10, 2026; they cost
+# 2,570 and 2,557 MiB now and are not pool members at all. The count went up
+# because nine files replaced two, and the stake went down: the heaviest thing
+# out of position is 3,807 MiB, which is less than what was already in this
+# section.
 
 # ── boost-beast-http-transport (.kiro/specs/boost-beast-http-transport/) ─────
 # One-file-per-concern layout, one-to-one with tests/http_client_*/
@@ -1040,16 +1049,30 @@ endif()
 # Each `else()` names the target so the skip messages stay attributable once
 # there is more than one caller.
 function(kythira_wire_multi_raft_bench target)
+    # Link scope, defaulting to PRIVATE. `multi_raft_bench_rows` passes PUBLIC:
+    # it is a library, and the two binaries that link it need both the
+    # transports at link time and the KYTHIRA_BENCH_HAS_* definitions at
+    # compile time, because those are what decide which `rows::` runners
+    # exist to be called.
+    set(_wire_scope PRIVATE)
+    if(ARGC GREATER 1)
+        set(_wire_scope "${ARGV1}")
+    endif()
+
     # Every target this function wires is a `heavy_tu` pool member, and the
-    # assignment lives HERE rather than at the three call sites because this
-    # function is what makes them heavy: it links Beast, Proxygen, cpp-httplib,
-    # Folly and protobuf into a translation unit that already instantiates the
-    # whole multi-Raft stack. That is the shape of
-    # three_way_http_transport_equivalence_test, the top-level table's previous
-    # worst case at 5,967 MiB -- and two of these are three times that. A
-    # fourth caller added tomorrow is
-    # pooled without anyone remembering to, which is the same reason
-    # add_beast_test() carries the property instead of its call sites.
+    # assignment lives HERE rather than at the call sites because this function
+    # is what makes them heavy: it links Beast, Proxygen, cpp-httplib, Folly
+    # and protobuf alongside whatever multi-Raft stack the translation unit
+    # instantiates. A caller added tomorrow is pooled without anyone
+    # remembering to, which is the same reason add_beast_test() carries the
+    # property instead of its call sites.
+    #
+    # IT HAS TWO CALLERS NOW, NOT THREE. `multi_raft_bench_rows` (below, PUBLIC)
+    # and `multi_raft_driver_agreement_test`. The two binaries that used to call
+    # it -- multi_raft_http_benchmark_test and multi_raft_performance_report --
+    # link that library instead, and inherit everything this function grants
+    # through its PUBLIC scope. They are no longer pool members, because they
+    # are no longer heavy: see the measurement below.
     #
     # MEASURED under the stdexec backend on reliant (g++-14 14.2.0, Release,
     # -DKYTHIRA_COMPILER_LAUNCHER=none, one TU at a time), September 9 2026.
@@ -1064,9 +1087,26 @@ function(kythira_wire_multi_raft_bench target)
     # did.
     #
     #                                              stdexec     folly
-    #     multi_raft_http_benchmark_test.cpp       21,114 MiB  6,247 MiB
-    #     multi_raft_performance_report.cpp        16,640 MiB  6,057 MiB
+    #     multi_raft_http_benchmark_test.cpp       21,114 MiB  6,247 MiB   +
+    #     multi_raft_performance_report.cpp        16,640 MiB  6,057 MiB   +
     #     multi_raft_driver_agreement_test.cpp      7,254 MiB  3,857 MiB
+    #
+    #   + HISTORICAL. Those two translation units were split on September 10,
+    #     2026 and no longer instantiate a stack at all -- see
+    #     `multi_raft_bench_rows` below. Re-measured on the same box, the same
+    #     compiler and the same session, before and after:
+    #
+    #                                                  before      after
+    #         multi_raft_http_benchmark_test.cpp      6,285 MiB   2,570 MiB
+    #         multi_raft_performance_report.cpp       6,032 MiB   2,557 MiB
+    #
+    #     The "before" column re-derives the two folly figures above to within
+    #     0.6% and 0.4%, which is what makes the "after" column comparable to
+    #     them rather than to a differently-measured thing. 2,557 is the FLOOR:
+    #     bench_rows/beast_ion.cpp compiles to nothing in a build without the
+    #     ion feature and still costs 2,555 MiB in precompiled header and
+    #     includes, so those two are now as cheap as a translation unit in this
+    #     directory gets.
     #
     # For calibration, the top-level table's own members re-measured on the
     # same box and compiler (its figures are g++-13 and are given in
@@ -1108,29 +1148,29 @@ function(kythira_wire_multi_raft_bench target)
     # proxies that a hand-edited flag list can make wrong -- so the build states
     # them.
     string(TOUPPER "${CMAKE_BUILD_TYPE}" _bench_config)
-    target_compile_definitions(${target} PRIVATE
+    target_compile_definitions(${target} ${_wire_scope}
         KYTHIRA_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
         KYTHIRA_BENCH_CXX_FLAGS="${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_bench_config}}"
     )
 
     if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
-        target_compile_definitions(${target} PRIVATE KYTHIRA_BENCH_HAS_BEAST)
-        target_link_libraries(${target} PRIVATE Boost::beast)
+        target_compile_definitions(${target} ${_wire_scope} KYTHIRA_BENCH_HAS_BEAST)
+        target_link_libraries(${target} ${_wire_scope} Boost::beast)
     else()
         message(STATUS "${target}: beast rows skipped "
                        "(requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
     endif()
     if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
-        target_compile_definitions(${target} PRIVATE KYTHIRA_BENCH_HAS_PROXYGEN)
-        target_link_libraries(${target} PRIVATE
+        target_compile_definitions(${target} ${_wire_scope} KYTHIRA_BENCH_HAS_PROXYGEN)
+        target_link_libraries(${target} ${_wire_scope}
             proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
     else()
         message(STATUS "${target}: proxygen rows skipped "
                        "(requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
     endif()
     if(PROTOBUF_SERIALIZER_FOUND)
-        target_compile_definitions(${target} PRIVATE KYTHIRA_BENCH_HAS_PROTOBUF)
-        target_link_libraries(${target} PRIVATE raft_protobuf_serializer)
+        target_compile_definitions(${target} ${_wire_scope} KYTHIRA_BENCH_HAS_PROTOBUF)
+        target_link_libraries(${target} ${_wire_scope} raft_protobuf_serializer)
     else()
         message(STATUS "${target}: protobuf row skipped "
                        "(requires PROTOBUF_SERIALIZER_FOUND)")
@@ -1142,26 +1182,106 @@ function(kythira_wire_multi_raft_bench target)
     # configured with that symbol selected against a vcpkg tree installed with
     # the `ion` feature. See .kiro/specs/multi-raft-performance/ task 7.
     if(TARGET raft_ion_serializer)
-        target_compile_definitions(${target} PRIVATE KYTHIRA_BENCH_HAS_ION)
-        target_link_libraries(${target} PRIVATE raft_ion_serializer)
+        target_compile_definitions(${target} ${_wire_scope} KYTHIRA_BENCH_HAS_ION)
+        target_link_libraries(${target} ${_wire_scope} raft_ion_serializer)
     else()
         message(STATUS "${target}: ion row skipped "
                        "(requires CONFIG_ION_SERIALIZER and ion-c)")
     endif()
     if(TARGET OpenSSL::SSL)
-        target_link_libraries(${target} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        target_link_libraries(${target} ${_wire_scope} OpenSSL::SSL OpenSSL::Crypto)
     endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_link_libraries(${target} PRIVATE atomic)
+        target_link_libraries(${target} ${_wire_scope} atomic)
     endif()
 endfunction()
+
+# ── the nine stack instantiations, one translation unit each ─────────────────
+#
+# `.kiro/specs/multi-raft-performance/` gives this project two consumers of one
+# measurement: the CTest-registered suite (`multi_raft_http_benchmark_test`) and
+# the report generator (`multi_raft_performance_report`). Each of them used to
+# name every `(transport x wire serializer)` pair it measured *in its own
+# translation unit*, and `throughput_row<Transport>` instantiates the whole
+# multi-Raft stack per pair. That made them the two most expensive compiles in
+# the tree by a factor of three -- 21,114 and 16,640 MiB under stdexec against
+# 5,967 for the heaviest previously-pooled TU -- and a 36.9 GiB pair killed the
+# `Full suite (stdexec)` leg twice on a 16 GiB runner.
+#
+# `heavy_tu` bounds them; it cannot shrink them, so a serialised chain holding
+# both stayed the critical path of any cold stdexec build. This library is the
+# other half, and it is the move `cmd/multi_raft_node` already made: its
+# `main.cpp` named four pairs and peaked at 10,974 MiB, and one `run_*.cpp` per
+# pair behind `host_runners.hpp` took it to 1,509.
+#
+# It is a library rather than sources compiled into each binary because the two
+# consumers name an OVERLAPPING set: seven of the nine pairs are named by both,
+# and only cpp-httplib/cbor and cpp-httplib/protobuf are the suite's alone. As
+# separate sources each pair would be compiled twice.
+#
+# PUBLIC, so both consumers inherit the transports to link against and the
+# KYTHIRA_BENCH_HAS_* definitions that tell them which runners exist.
+#
+# MEASURED, folly backend, g++-14 14.2.0, Release, ci_full_defconfig,
+# -DKYTHIRA_COMPILER_LAUNCHER=none, one translation unit at a time, peak
+# max(VmRSS + VmSwap) sampled from /proc:
+#
+#     bench_rows/beast_json.cpp        3,807 MiB     (write + read + smoke)
+#     bench_rows/beast_cbor.cpp        3,807 MiB
+#     bench_rows/beast_protobuf.cpp    3,795 MiB
+#     bench_rows/httplib_protobuf.cpp  3,642 MiB
+#     bench_rows/httplib_cbor.cpp      3,535 MiB
+#     bench_rows/proxygen_json.cpp     3,527 MiB
+#     bench_rows/httplib_json.cpp      3,511 MiB
+#     bench_rows/fabric.cpp            3,478 MiB
+#     bench_rows/beast_ion.cpp         2,555 MiB     (compiles to nothing
+#                                                     without the ion feature;
+#                                                     this is the floor a TU
+#                                                     in this directory costs
+#                                                     in PCH and includes)
+#
+# and the two consumers, which now instantiate nothing, fell to 2,570 and
+# 2,557 MiB -- the floor. THE HEAVIEST THING LEFT IS 3,807, which is below
+# three_way_http_transport_equivalence_test at 5,955, so after this the pool's
+# worst member is no longer one of these files.
+#
+# Note what this does NOT claim. It does not reduce total compiler work: nine
+# stack instantiations still happen. It replaces two serialised multi-gigabyte
+# compiles on the critical path with nine that are each smaller than the pool's
+# existing worst case and, sharing aside, could run concurrently if the pool
+# allowed it. Under stdexec the same 1.9-3.4x multiplier applies, to ~3.8 GiB
+# rather than to ~6.
+#
+# ADDING A PAIR: a new file here, a declaration in
+# multi_raft_bench_row_runners.hpp, and a line below. Never a second pair in an
+# existing file -- the file boundary is the only thing enforcing that no
+# translation unit instantiates the stack twice.
+add_library(multi_raft_bench_rows STATIC
+    bench_rows/fabric.cpp
+    bench_rows/httplib_json.cpp
+    bench_rows/httplib_cbor.cpp
+    bench_rows/httplib_protobuf.cpp
+    bench_rows/beast_json.cpp
+    bench_rows/beast_cbor.cpp
+    bench_rows/beast_protobuf.cpp
+    bench_rows/beast_ion.cpp
+    bench_rows/proxygen_json.cpp
+)
+target_link_libraries(multi_raft_bench_rows PUBLIC kythira_test_pch)
+target_precompile_headers(multi_raft_bench_rows REUSE_FROM kythira_test_pch)
+target_include_directories(multi_raft_bench_rows PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+kythira_wire_multi_raft_bench(multi_raft_bench_rows PUBLIC)
 
 add_raft_completion_test(multi_raft_http_benchmark_test multi_raft_http_benchmark_test.cpp)
 set_tests_properties(multi_raft_http_benchmark_test PROPERTIES
     LABELS "performance;benchmark;multi-raft;http"
     TIMEOUT 10800
 )
-kythira_wire_multi_raft_bench(multi_raft_http_benchmark_test)
+# Not kythira_wire_multi_raft_bench() any more: everything that call gave this
+# target now arrives PUBLIC through the row library, and this translation unit
+# no longer instantiates a stack of its own. Its pool membership goes with it --
+# see the measurement in the top-level CMakeLists.txt.
+target_link_libraries(multi_raft_http_benchmark_test PRIVATE multi_raft_bench_rows)
 
 # .kiro/specs/multi-raft-performance/ Requirement 12: the CI regression tier.
 #
@@ -1243,7 +1363,7 @@ set_tests_properties(multi_raft_regression_tier PROPERTIES
 add_executable(multi_raft_performance_report multi_raft_performance_report.cpp)
 target_link_libraries(multi_raft_performance_report PRIVATE kythira_test_pch)
 target_precompile_headers(multi_raft_performance_report REUSE_FROM kythira_test_pch)
-kythira_wire_multi_raft_bench(multi_raft_performance_report)
+target_link_libraries(multi_raft_performance_report PRIVATE multi_raft_bench_rows)
 
 # A smoke entry, NOT a measurement. `--axis smoke` is one Tier A row of 40
 # operations, which exercises everything about this program that can break
