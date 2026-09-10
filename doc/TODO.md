@@ -2261,12 +2261,64 @@ unverified completion claim.
   The `heavy_tu` pool stops them running concurrently, which is what they were
   doing on the last green cold run — overlapping for most of an hour apiece —
   but a serialised chain that now contains a 20-GiB and a 16-GiB compile is
-  still the critical path of any cold stdexec build. Worth considering: splitting the
-  transport matrix across translation units the way `cmd/multi_raft_node`
-  already was (its `main.cpp` went from 10,974 MiB to 1,509 by exactly that
-  move), or building the two
+  still the critical path of any cold stdexec build.
+
+  **Checked September 10, 2026, and one of the two directions this entry
+  proposed does not survive the check.** It offered "building the two
   benchmark/report targets — which CI's label filter excludes from `ctest`
-  anyway — only on the legs that run them.
+  anyway — only on the legs that run them", and that parenthesis is **false
+  for the heavier of the two**. `multi_raft_http_benchmark_test` has a
+  *second* `add_test` entry, `multi_raft_regression_tier`, carrying
+  `multi-raft;regression` — neither label matches
+  `^(slow|performance|verbose|benchmark|docker)$` — added by
+  `.kiro/specs/multi-raft-performance/` Requirement 12 for exactly this
+  reason, because "correctly excluded" had quietly become "never checked".
+  It runs on **every** leg: run
+  [34372263368](https://github.com/crawlins/kythira/actions/runs/34372263368),
+  test #204, passed in 15.15 s on `Full suite (stdexec)` and 15.83 s on
+  `Build & Test (g++-13, x64)`. The 21,114 MiB TU is not droppable from any
+  leg.
+
+  The parenthesis **is** true of `multi_raft_performance_report`. Its only
+  entry, `multi_raft_performance_report_smoke`, carries
+  `performance;benchmark`, and `ci.yml` has no `-L` include filter anywhere
+  to opt it back in — six `-LE` exclusions and nothing else — so no CI leg
+  ever runs that binary. But that is the whole difficulty rather than the
+  opening: **compiling it is the only check CI has on it**, so "build it
+  only where it runs" means "never build it in CI", and a 658-line binary
+  stops being compile-checked to save a compile. The narrower version worth
+  weighing instead is to build it on the folly legs, where it measures
+  6,057 MiB, and not on the stdexec leg, where it measures 16,640 — the
+  stdexec-specific exposure being small because
+  `multi_raft_http_benchmark_test` still compiles under stdexec through the
+  same `kythira_wire_multi_raft_bench()` wiring and the same workload
+  header.
+
+  **That leaves splitting the transport matrix as the only direction that
+  helps the target which cannot be dropped**, the way `cmd/multi_raft_node`
+  already was: its `main.cpp` went from 10,974 MiB to 1,509 by moving each
+  `(transport × wire serializer)` instantiation into its own translation
+  unit behind the non-template declarations in `host_runners.hpp`. The
+  benchmark test has **eight** distinct instantiations to that host's four
+  — `beast_http_transport<json>` (15 call sites),
+  `beast_http_transport<cbor>` (2), `cpp_httplib_transport<json>` (2), and
+  one each of `proxygen_http_transport<json>`,
+  `beast_http_transport<protobuf_serializer>`,
+  `beast_http_transport<ion>`, `cpp_httplib_transport<protobuf_serializer>`
+  and `cpp_httplib_transport<cbor>` — plus `smoke_test<Transport>`. The
+  seam already exists: every call goes through `measure<Transport>(spec)`,
+  a two-line wrapper over `kythira::testing::throughput_row<Transport>` /
+  `read_row<Transport>`.
+
+  **Read the value against the build cache before spending the effort, and
+  note it has fallen since this entry was filed.** "The critical path of
+  any cold stdexec build" is still accurate, but a cold stdexec build is no
+  longer what an ordinary branch does — sccache's objects live in the OCI
+  bucket keyed by the compilation rather than by the ref, so a brand-new
+  ref inherits `main`'s. That Build step is 3–4 minutes warm against
+  114–170 cold, and reaching the cold figure now takes a change that
+  genuinely misses the binary cache. This is a real cost on a rare path,
+  not a recurring one.
 
 
 ---
