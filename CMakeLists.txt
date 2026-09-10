@@ -1602,9 +1602,28 @@ endif()
 # `-DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`), one translation unit at a time:
 #
 #     POOLED
-#       tests/multi_raft_http_benchmark_test.cpp          21,114 MiB       **
-#       tests/multi_raft_performance_report.cpp           16,640 MiB       **
+#       tests/bench_rows/beast_json.cpp                    3,807 MiB       ++
+#       tests/bench_rows/beast_cbor.cpp                    3,807 MiB       ++
+#       tests/bench_rows/beast_protobuf.cpp                3,795 MiB       ++
+#       tests/bench_rows/httplib_protobuf.cpp              3,642 MiB       ++
+#       tests/bench_rows/httplib_cbor.cpp                  3,535 MiB       ++
+#       tests/bench_rows/proxygen_json.cpp                 3,527 MiB       ++
+#       tests/bench_rows/httplib_json.cpp                  3,511 MiB       ++
+#       tests/bench_rows/fabric.cpp                        3,478 MiB       ++
+#       tests/bench_rows/beast_ion.cpp                     2,555 MiB       ++
 #       tests/multi_raft_driver_agreement_test.cpp         7,254 MiB   359 s **
+#
+#       ++ folly, September 10, 2026, on the box the ** rows were taken on.
+#          These nine files REPLACED the two rows that used to head this table:
+#          multi_raft_http_benchmark_test.cpp at 21,114 MiB and
+#          multi_raft_performance_report.cpp at 16,640 (stdexec; 6,285 and
+#          6,032 re-measured under folly). Each of those named every
+#          (transport x wire serializer) pair it measured in one translation
+#          unit; each pair now has a file of its own, and the two binaries fell
+#          to 2,570 and 2,557 MiB -- the floor, and out of this pool. See
+#          tests/CMakeLists.txt's multi_raft_bench_rows for the full before and
+#          after, and note the two columns are NOT the same backend: only the
+#          ++ rows and the folly figures are comparable to each other.
 #       cmd/multi_raft_node/run_beast_cbor.cpp             5,967 MiB   280 s
 #       cmd/multi_raft_node/run_beast_json.cpp             5,965 MiB   305 s
 #       three_way_http_transport_equivalence_test          5,649 MiB          *
@@ -1701,6 +1720,16 @@ endif()
 # multi-Raft stack. Under stdexec they peak at 21,114 and 16,640 MiB, against
 # 5,967 MiB for the previous worst case in the table above.
 #
+# TWO OF THOSE THREE HAVE SINCE LEFT THE POOL (September 10, 2026), and this
+# section is kept because it is the diagnosis rather than the current state.
+# multi_raft_http_benchmark_test and multi_raft_performance_report no longer
+# instantiate anything: their pairs moved to tests/bench_rows/, one file each,
+# and the nine files that resulted are the pool members now.
+# multi_raft_driver_agreement_test still calls the wiring function and is still
+# a member -- it instantiates its own stack, it was never one of the two that
+# killed the leg, and splitting it is a separate question nobody has needed to
+# ask.
+#
 # That pair is the whole failure, in one line of arithmetic: 21,114 + 16,640 is
 # 36.9 GiB, and a runner has 16 GiB plus the 24 GiB swapfile this leg's Build
 # step adds -- 40 GiB. They are declared consecutively, so `-j3` starts them
@@ -1765,13 +1794,15 @@ endif()
 #     every backend and is not conditional on one -- see
 #     tests/CMakeLists.txt's kythira_wire_multi_raft_bench().
 #
-# Pooling them is the bounded fix, not the whole fix: serialising them means
+# Pooling them was the bounded fix, not the whole fix: serialising them means
 # each gets the runner to itself rather than sharing it with the other, which
 # is what they were doing on the green run -- overlapping for most of an hour
-# apiece. The unbounded part -- three TUs that each
-# instantiate the multi-Raft stack against three transports under stdexec --
-# is filed in doc/TODO.md's "Known Follow-ups" and is deliberately not
-# addressed here.
+# apiece. THE UNBOUNDED PART IS NOW FIXED TOO, on September 10, 2026: the two
+# translation units that each instantiated the multi-Raft stack against every
+# transport were split one pair per file into tests/bench_rows/, and fell from
+# 6,285 and 6,032 MiB to 2,570 and 2,557 under folly. The pool's worst member
+# is 3,807 MiB again -- below three_way_http_transport_equivalence_test, where
+# it was before these two were ever added.
 #
 # `JOB_POOL_COMPILE` is a Ninja feature and is ignored by other generators,
 # which is harmless: CI configures every affected job with `-G Ninja`, and a

@@ -46,19 +46,9 @@
 /// With no selector every runnable row in the catalog runs, which is the full
 /// matrix and is measured in hours.
 
+#include "multi_raft_bench_row_runners.hpp"
 #include "multi_raft_benchmark_rows.hpp"
 #include "multi_raft_report_artifacts.hpp"
-
-#include <raft/cbor_serializer.hpp>
-#include <raft/json_serializer.hpp>
-
-#if defined(KYTHIRA_BENCH_HAS_PROTOBUF)
-#include <raft/protobuf_serializer.hpp>
-#endif
-
-#if defined(KYTHIRA_BENCH_HAS_ION)
-#include <raft/ion_serializer.hpp>
-#endif
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
@@ -81,7 +71,6 @@ namespace {
 using kythira::testing::deployment_tier;
 using kythira::testing::describe_machine;
 using kythira::testing::dropped_row;
-using kythira::testing::fabric_transport;
 using kythira::testing::k_required_repetitions;
 using kythira::testing::key_distribution;
 using kythira::testing::load_mode;
@@ -99,8 +88,12 @@ using kythira::testing::write_csv;
 using kythira::testing::write_json;
 using kythira::testing::write_row_spec;
 
-using json = kythira::json_serializer;
-using cbor = kythira::cbor_serializer;
+// The rows live in `tests/bench_rows/`, one translation unit per
+// `(transport x wire serializer)` pair, and the catalog names them through
+// `rows::` rather than naming their types. Both this binary and the CTest
+// suite link the same objects, so a pair either consumer names is compiled
+// once for both.
+namespace rows = kythira::testing::rows;
 
 /// @brief One entry in the catalog: what to measure, and the two labels a
 ///        selector matches on.
@@ -232,74 +225,55 @@ auto build_catalog(const selection& sel) -> catalog {
     };
 
     const auto add_write = [&](std::string axis, std::string scenario, deployment_tier tier,
-                               auto transport_tag, write_row_spec spec) {
-        using transport_type = typename decltype(transport_tag)::type;
+                               rows::write_runner run, write_row_spec spec) {
         spec._operations = scaled(spec._operations, spec._in_flight, scale);
         out._entries.push_back(catalog_entry{
             ._axis = std::move(axis),
             ._scenario = std::move(scenario),
             ._tier = tier,
-            ._run = [spec](const row_observer& observer) {
-                return kythira::testing::throughput_row<transport_type>(spec, observer);
-            }});
+            ._run = [spec, run](const row_observer& observer) { return run(spec, observer); }});
     };
-    const auto add_read = [&](std::string axis, std::string scenario, auto transport_tag,
+    const auto add_read = [&](std::string axis, std::string scenario, rows::read_runner run,
                               read_row_spec spec) {
-        using transport_type = typename decltype(transport_tag)::type;
         spec._operations = scaled(spec._operations, spec._in_flight, scale);
-        out._entries.push_back(catalog_entry{._axis = std::move(axis),
-                                             ._scenario = std::move(scenario),
-                                             ._tier = deployment_tier::b_loopback,
-                                             ._run = [spec](const row_observer& observer) {
-                                                 return kythira::testing::read_row<transport_type>(
-                                                     spec, observer);
-                                             }});
+        out._entries.push_back(catalog_entry{
+            ._axis = std::move(axis),
+            ._scenario = std::move(scenario),
+            ._tier = deployment_tier::b_loopback,
+            ._run = [spec, run](const row_observer& observer) { return run(spec, observer); }});
     };
-
-    // A tag type, because a lambda cannot take a template parameter and a
-    // function template cannot be stored in the catalog. `std::type_identity`
-    // carries the transport into the lambda's body where the call needs it.
-    const auto tag = []<typename T>() { return std::type_identity<T>{}; };
 
     // `smoke` is not an axis of the matrix. It is the one row the CTest entry
     // runs: the cheapest possible instantiation of this whole program, so that
     // a broken catalog, selector or artifact writer fails a build rather than a
     // developer's report run two hours in.
-    add_write("smoke", "fabric/none/128B/4", deployment_tier::a_fabric,
-              tag.operator()<fabric_transport>(),
+    add_write("smoke", "fabric/none/128B/4", deployment_tier::a_fabric, rows::write_fabric,
               write_row_spec{._operations = 40, ._in_flight = 4});
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
-    using beast_json = kythira::testing::beast_http_transport<json>;
-    using beast_cbor = kythira::testing::beast_http_transport<cbor>;
-
     add_write("transport", "cpp-httplib/json/128B/4", deployment_tier::b_loopback,
-              tag.operator()<kythira::testing::cpp_httplib_transport<json>>(),
-              write_row_spec{._operations = 24, ._in_flight = 4});
+              rows::write_httplib_json, write_row_spec{._operations = 24, ._in_flight = 4});
     add_write("transport", "beast/json/128B/16", deployment_tier::b_loopback,
-              tag.operator()<beast_json>(), write_row_spec{});
+              rows::write_beast_json, write_row_spec{});
 #if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
     add_write("transport", "proxygen/json/128B/16", deployment_tier::b_loopback,
-              tag.operator()<kythira::testing::proxygen_http_transport<json>>(), write_row_spec{});
+              rows::write_proxygen_json, write_row_spec{});
 #else
     drop("transport", "proxygen/json/128B/16",
          "KYTHIRA_BENCH_HAS_PROXYGEN undefined (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)");
 #endif
 
     add_write("serializer", "beast/cbor/128B/16", deployment_tier::b_loopback,
-              tag.operator()<beast_cbor>(), write_row_spec{});
+              rows::write_beast_cbor, write_row_spec{});
 #if defined(KYTHIRA_BENCH_HAS_PROTOBUF)
-    add_write(
-        "serializer", "beast/protobuf/128B/16", deployment_tier::b_loopback,
-        tag.operator()<kythira::testing::beast_http_transport<kythira::protobuf_serializer>>(),
-        write_row_spec{});
+    add_write("serializer", "beast/protobuf/128B/16", deployment_tier::b_loopback,
+              rows::write_beast_protobuf, write_row_spec{});
 #else
     drop("serializer", "beast/protobuf/128B/16",
          "KYTHIRA_BENCH_HAS_PROTOBUF undefined (requires PROTOBUF_SERIALIZER_FOUND)");
 #endif
 #if defined(KYTHIRA_BENCH_HAS_ION)
-    add_write("serializer", "beast/ion/128B/16", deployment_tier::b_loopback,
-              tag.operator()<kythira::testing::beast_http_transport<kythira::ion_serializer>>(),
+    add_write("serializer", "beast/ion/128B/16", deployment_tier::b_loopback, rows::write_beast_ion,
               write_row_spec{});
 #else
     drop("serializer", "beast/ion/128B/16",
@@ -311,7 +285,7 @@ auto build_catalog(const selection& sel) -> catalog {
     for (std::size_t bytes :
          {std::size_t{16}, std::size_t{128}, std::size_t{1024}, std::size_t{4096}}) {
         add_write("value-size", "beast/json/" + std::to_string(bytes) + "B/16",
-                  deployment_tier::b_loopback, tag.operator()<beast_json>(),
+                  deployment_tier::b_loopback, rows::write_beast_json,
                   write_row_spec{._operations = 400, ._value_bytes = bytes});
     }
 
@@ -324,7 +298,7 @@ auto build_catalog(const selection& sel) -> catalog {
              {std::size_t{1}, std::size_t{8}, std::size_t{64}, std::size_t{512}}) {
             add_write(
                 "concurrency", "beast/json/128B/" + arm + "/" + std::to_string(in_flight),
-                deployment_tier::b_loopback, tag.operator()<beast_json>(),
+                deployment_tier::b_loopback, rows::write_beast_json,
                 write_row_spec{._operations = in_flight <= 8 ? std::size_t{200} : std::size_t{600},
                                ._in_flight = in_flight,
                                ._distribution = distribution});
@@ -337,7 +311,7 @@ auto build_catalog(const selection& sel) -> catalog {
         auto cluster = standard_cluster_options();
         cluster._tick_interval = tick;
         add_write("tick-cadence", "beast/json/128B/16/tick" + std::to_string(tick.count()) + "ms",
-                  deployment_tier::b_loopback, tag.operator()<beast_json>(),
+                  deployment_tier::b_loopback, rows::write_beast_json,
                   write_row_spec{._cluster = cluster});
     }
 
@@ -367,8 +341,7 @@ auto build_catalog(const selection& sel) -> catalog {
                                      ? "file-buffered"
                                      : "file-barrier";
         add_write("durability", "beast/json/128B/16/" + name, deployment_tier::b_loopback,
-                  tag.operator()<beast_json>(),
-                  write_row_spec{._operations = 400, ._cluster = cluster});
+                  rows::write_beast_json, write_row_spec{._operations = 400, ._cluster = cluster});
     }
 
     // Requirement 8.1–8.3's four cells.
@@ -377,12 +350,11 @@ auto build_catalog(const selection& sel) -> catalog {
         const std::string how =
             routing == kythira::testing::routing_mode::attributed_group ? "by-group" : "by-key";
         add_write("cost-attribution", "beast/json/128B/16/" + how, deployment_tier::b_loopback,
-                  tag.operator()<beast_json>(), write_row_spec{._routing = routing});
+                  rows::write_beast_json, write_row_spec{._routing = routing});
         add_write("cost-attribution", "fabric/none/128B/16/" + how, deployment_tier::a_fabric,
-                  tag.operator()<fabric_transport>(), write_row_spec{._routing = routing});
+                  rows::write_fabric, write_row_spec{._routing = routing});
         add_write("cost-attribution", "beast/json/128B/1/" + how, deployment_tier::b_loopback,
-                  tag.operator()<beast_json>(),
-                  write_row_spec{._in_flight = 1, ._routing = routing});
+                  rows::write_beast_json, write_row_spec{._in_flight = 1, ._routing = routing});
     }
 
     // Requirement 4.1 and 4.2's open loop. Not in the CTest suite because the
@@ -394,20 +366,20 @@ auto build_catalog(const selection& sel) -> catalog {
     // has to be typed against.
     add_write("open-loop",
               "beast/json/128B/16/rate" + std::to_string(static_cast<long long>(sel._rate)),
-              deployment_tier::b_loopback, tag.operator()<beast_json>(),
+              deployment_tier::b_loopback, rows::write_beast_json,
               write_row_spec{._load = load_mode::open_loop, ._offered_rate_per_second = sel._rate});
 
     // Requirement 2.1's three read kinds, and 2.4's shard-size curve.
     for (auto kind : {read_kind::read_state, read_kind::log_get, read_kind::local_stale}) {
         add_read("read-taxonomy", "beast/json/" + std::string{to_string(kind)},
-                 tag.operator()<beast_json>(),
+                 rows::read_beast_json,
                  read_row_spec{._kind = kind,
                                ._operations = kind == read_kind::local_stale ? std::size_t{200000}
                                                                              : std::size_t{400}});
     }
     for (std::uint64_t keys : {std::uint64_t{100}, std::uint64_t{1000}, std::uint64_t{5000}}) {
         add_read("shard-size", "beast/json/read_state/" + std::to_string(keys) + "keys",
-                 tag.operator()<beast_json>(),
+                 rows::read_beast_json,
                  read_row_spec{._kind = read_kind::read_state,
                                ._distinct_keys = keys,
                                ._stride = 1,

@@ -105,19 +105,9 @@
 #define BOOST_TEST_MODULE multi_raft_http_benchmark_test
 #include <boost/test/unit_test.hpp>
 
+#include "multi_raft_bench_row_runners.hpp"
 #include "multi_raft_benchmark_rows.hpp"
 #include "multi_raft_row_report.hpp"
-
-#include <raft/cbor_serializer.hpp>
-#include <raft/json_serializer.hpp>
-
-#if defined(KYTHIRA_BENCH_HAS_PROTOBUF)
-#include <raft/protobuf_serializer.hpp>
-#endif
-
-#if defined(KYTHIRA_BENCH_HAS_ION)
-#include <raft/ion_serializer.hpp>
-#endif
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
@@ -153,23 +143,13 @@ namespace {
 
 using kythira::testing::benchmark_result;
 using kythira::testing::consistency_of;
-using kythira::testing::cpp_httplib_transport;
 using kythira::testing::deployment_tier;
 using kythira::testing::describe_machine;
 using kythira::testing::describe_row;
-using kythira::testing::fabric_transport;
-using kythira::testing::k_election_budget;
-using kythira::testing::k_operation_timeout;
 using kythira::testing::k_required_repetitions;
 using kythira::testing::key_distribution;
-using kythira::testing::kv_cluster;
 using kythira::testing::kv_cluster_options;
-using kythira::testing::kv_get;
-using kythira::testing::kv_key;
-using kythira::testing::kv_put;
-using kythira::testing::kv_value;
 using kythira::testing::machine_description;
-using kythira::testing::operation_tally;
 using kythira::testing::publishable_as_like_for_like;
 using kythira::testing::read_kind;
 using kythira::testing::read_row_spec;
@@ -180,16 +160,12 @@ using kythira::testing::to_string;
 using kythira::testing::us;
 using kythira::testing::write_row_spec;
 
-using json = kythira::json_serializer;
-using cbor = kythira::cbor_serializer;
-#if defined(KYTHIRA_BENCH_HAS_ION)
-// Ion's `media_type()` is the one in this suite that depends on instance state
-// -- binary and text are different media types off the same class -- so the row
-// is deliberately left to the default-constructed encoding (binary) rather than
-// naming a media type here. `run_put_workload` reads the label off the
-// serializer, so the row says which one actually went on the wire.
-using ion = kythira::ion_serializer;
-#endif
+// The rows themselves live in `tests/bench_rows/`, one translation unit per
+// `(transport x wire serializer)` pair, and this file names them through
+// `rows::` rather than naming their types. That is what keeps the multi-Raft
+// stack from being instantiated here; see the runners header for the
+// measurement that made it necessary.
+namespace rows = kythira::testing::rows;
 
 /// @brief The machine every number in this process was taken on.
 ///
@@ -235,54 +211,6 @@ auto report(const repeated_result& row) -> void {
     BOOST_TEST_MESSAGE(describe_row(row, machine()._quiet_at_start));
 }
 
-/// @brief Elect, commit a PUT on every shard, read each one back through the
-/// log, and confirm the routing table still tiles.
-///
-/// The read is a `GET` command rather than `read_state`: it returns one value
-/// rather than the whole store, so a value that landed in the wrong shard is
-/// visible as a wrong answer instead of being averaged into a blob.
-template<typename Transport> auto smoke_test() -> void {
-    kv_cluster<Transport> cluster{standard_cluster_options()};
-    BOOST_REQUIRE_MESSAGE(cluster.await_all_leaders(k_election_budget),
-                          Transport::name() << ": no leader on every shard within budget");
-
-    operation_tally tally;
-    const auto options = cluster.options();
-
-    // One key per shard, taken from the middle of each shard's own range so a
-    // boundary bug cannot make the choice accidentally correct.
-    for (std::size_t g = 0; g < options._groups; ++g) {
-        const auto n = options._key_count * (2 * g + 1) / (2 * options._groups);
-        const auto key = kv_key(n);
-        const auto value = kv_value(n, 64);
-
-        auto put_latency = cluster.run_command(key, kv_put(key, value), k_operation_timeout, tally);
-        BOOST_REQUIRE_MESSAGE(put_latency.has_value(),
-                              Transport::name() << ": PUT of '" << key << "' did not commit");
-
-        std::vector<std::byte> read_back;
-        auto get_latency =
-            cluster.run_command(key, kv_get(key), k_operation_timeout, tally, &read_back);
-        BOOST_REQUIRE_MESSAGE(get_latency.has_value(),
-                              Transport::name() << ": GET of '" << key << "' did not commit");
-
-        std::string observed;
-        observed.reserve(read_back.size());
-        for (auto b : read_back) {
-            observed.push_back(static_cast<char>(b));
-        }
-        BOOST_CHECK_MESSAGE(observed == value,
-                            Transport::name() << ": '" << key << "' read back " << observed.size()
-                                              << " bytes, expected " << value.size());
-    }
-
-    const auto problem = cluster.tiling_problem();
-    BOOST_CHECK_MESSAGE(!problem.has_value(), Transport::name()
-                                                  << ": tiling broken: " << problem.value_or(""));
-    BOOST_TEST_MESSAGE("  " << Transport::name() << ": " << tally._completed << "/"
-                            << tally._offered << " operations committed over a real socket");
-}
-
 /// @brief Where this suite's rows send their output, and what a failed
 ///        precondition does here.
 ///
@@ -306,14 +234,20 @@ auto suite_observer() -> kythira::testing::row_observer {
 /// The measurement itself is `kythira::testing::throughput_row`, shared with
 /// the report binary so the two cannot describe different work; what this adds
 /// is Boost.Test's reporting and the printed row.
-template<typename Transport> auto measure(const write_row_spec& spec) -> repeated_result {
-    auto row = kythira::testing::throughput_row<Transport>(spec, suite_observer());
+///
+/// It takes the row as a **function pointer** rather than as a template
+/// argument, and that is the whole of the split: naming
+/// `throughput_row<Transport>` here would instantiate the multi-Raft stack in
+/// this translation unit, which is what took it to 21,114 MiB. Every runner
+/// `rows::` declares is defined in its own file under `tests/bench_rows/`.
+auto measure(rows::write_runner run, const write_row_spec& spec) -> repeated_result {
+    auto row = run(spec, suite_observer());
     report(row);
     return row;
 }
 
-template<typename Transport> auto measure(const read_row_spec& spec) -> repeated_result {
-    auto row = kythira::testing::read_row<Transport>(spec, suite_observer());
+auto measure(rows::read_runner run, const read_row_spec& spec) -> repeated_result {
+    auto row = run(spec, suite_observer());
     report(row);
     return row;
 }
@@ -337,20 +271,20 @@ BOOST_AUTO_TEST_SUITE(multi_raft_http_benchmark)
 
 BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_cpp_httplib,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(600))) {
-    smoke_test<cpp_httplib_transport<json>>();
+    rows::smoke_httplib_json(suite_observer());
 }
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
 BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_beast,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(600))) {
-    smoke_test<kythira::testing::beast_http_transport<json>>();
+    rows::smoke_beast_json(suite_observer());
 }
 #endif
 
 #if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
 BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_proxygen,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(600))) {
-    smoke_test<kythira::testing::proxygen_http_transport<json>>();
+    rows::smoke_proxygen_json(suite_observer());
 }
 #endif
 
@@ -376,15 +310,13 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_transport,
     // magnitude below the 369.4 measured here, which is what a floor is for —
     // it catches a cluster that elected and then committed almost nothing, and
     // nothing else.
-    std::ignore = measure<cpp_httplib_transport<json>>({._floor_ops_per_second = 20.0});
+    std::ignore = measure(rows::write_httplib_json, {._floor_ops_per_second = 20.0});
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
-    std::ignore =
-        measure<kythira::testing::beast_http_transport<json>>({._floor_ops_per_second = 5.0});
+    std::ignore = measure(rows::write_beast_json, {._floor_ops_per_second = 5.0});
 #endif
 #if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
-    std::ignore =
-        measure<kythira::testing::proxygen_http_transport<json>>({._floor_ops_per_second = 5.0});
+    std::ignore = measure(rows::write_proxygen_json, {._floor_ops_per_second = 5.0});
 #endif
 
 #if !defined(KYTHIRA_BENCH_HAS_BEAST)
@@ -415,8 +347,8 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer,
     // on one transport and not on another is a transport effect wearing an
     // encoding's name. Until now this axis could not tell those apart, because
     // it only ever had one transport to look at.
-    std::ignore = measure<cpp_httplib_transport<json>>({._floor_ops_per_second = 20.0});
-    std::ignore = measure<cpp_httplib_transport<cbor>>({._floor_ops_per_second = 20.0});
+    std::ignore = measure(rows::write_httplib_json, {._floor_ops_per_second = 20.0});
+    std::ignore = measure(rows::write_httplib_cbor, {._floor_ops_per_second = 20.0});
 #if defined(KYTHIRA_BENCH_HAS_PROTOBUF)
     // Nothing about protobuf is transport-specific — the fixture is templated
     // on the serializer exactly as Beast's is, and the harness gates protobuf
@@ -424,27 +356,22 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_rpc_serializer,
     // spread below be read as an encoding effect rather than a binary-versus-
     // text one: protobuf is the second binary encoding, and if the effect were
     // about binary framing it would show here too.
-    std::ignore = measure<cpp_httplib_transport<kythira::protobuf_serializer>>(
-        {._floor_ops_per_second = 20.0});
+    std::ignore = measure(rows::write_httplib_protobuf, {._floor_ops_per_second = 20.0});
 #else
     BOOST_TEST_MESSAGE(
         "  cpp-httplib protobuf row: NOT RUN (KYTHIRA_BENCH_HAS_PROTOBUF undefined)");
 #endif
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
-    std::ignore =
-        measure<kythira::testing::beast_http_transport<json>>({._floor_ops_per_second = 5.0});
-    std::ignore =
-        measure<kythira::testing::beast_http_transport<cbor>>({._floor_ops_per_second = 5.0});
+    std::ignore = measure(rows::write_beast_json, {._floor_ops_per_second = 5.0});
+    std::ignore = measure(rows::write_beast_cbor, {._floor_ops_per_second = 5.0});
 #if defined(KYTHIRA_BENCH_HAS_PROTOBUF)
-    std::ignore = measure<kythira::testing::beast_http_transport<kythira::protobuf_serializer>>(
-        {._floor_ops_per_second = 5.0});
+    std::ignore = measure(rows::write_beast_protobuf, {._floor_ops_per_second = 5.0});
 #else
     BOOST_TEST_MESSAGE("  protobuf row: NOT RUN (KYTHIRA_BENCH_HAS_PROTOBUF undefined)");
 #endif
 #if defined(KYTHIRA_BENCH_HAS_ION)
-    std::ignore =
-        measure<kythira::testing::beast_http_transport<ion>>({._floor_ops_per_second = 5.0});
+    std::ignore = measure(rows::write_beast_ion, {._floor_ops_per_second = 5.0});
 #else
     // Not the same "absent dependency" as protobuf's: ion-c is installed here,
     // but CONFIG_ION_SERIALIZER is unset in every checked-in defconfig, so this
@@ -609,8 +536,9 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_value_size,
     // and the sweep as specified brackets it only to within a factor of four.
     for (std::size_t bytes : {std::size_t{16}, std::size_t{128}, std::size_t{1024},
                               std::size_t{2048}, std::size_t{4096}}) {
-        rows.push_back(measure<kythira::testing::beast_http_transport<json>>(
-            {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
+        rows.push_back(
+            measure(rows::write_beast_json,
+                    {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
     }
     report_value_size_sweep(rows, "the value-size sweep (JSON on the wire)");
 #else
@@ -720,15 +648,17 @@ BOOST_AUTO_TEST_CASE(write_amplification_by_encoding,
 
     std::vector<repeated_result> json_rows;
     for (auto bytes : k_sizes) {
-        json_rows.push_back(measure<kythira::testing::beast_http_transport<json>>(
-            {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
+        json_rows.push_back(
+            measure(rows::write_beast_json,
+                    {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
     }
     report_value_size_sweep(json_rows, "JSON on the wire");
 
     std::vector<repeated_result> cbor_rows;
     for (auto bytes : k_sizes) {
-        cbor_rows.push_back(measure<kythira::testing::beast_http_transport<cbor>>(
-            {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
+        cbor_rows.push_back(
+            measure(rows::write_beast_cbor,
+                    {._operations = 400, ._value_bytes = bytes, ._floor_ops_per_second = 2.0}));
     }
     report_value_size_sweep(cbor_rows, "CBOR on the wire");
 
@@ -871,14 +801,14 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_durability,
         if (const char* dir = std::getenv("KYTHIRA_BENCH_DATA_DIR"); dir != nullptr) {
             cluster._data_dir = dir;
         }
-        rows.push_back(measure<kythira::testing::beast_http_transport<json>>(
-            {._operations = 400,
-             ._cluster = cluster,
-             // No floor. The barrier arm is bounded by a real device and this
-             // suite has never measured it, so a floor here would be a guess
-             // asserted as a requirement — which is the failure doctrine 98 is
-             // about, from the other direction.
-             ._floor_ops_per_second = 0.0}));
+        rows.push_back(measure(rows::write_beast_json,
+                               {._operations = 400,
+                                ._cluster = cluster,
+                                // No floor. The barrier arm is bounded by a real device and this
+                                // suite has never measured it, so a floor here would be a guess
+                                // asserted as a requirement — which is the failure doctrine 98 is
+                                // about, from the other direction.
+                                ._floor_ops_per_second = 0.0}));
     }
     report_durability_comparison(rows);
     // The claim the middle arm exists to make, asserted rather than left to a
@@ -975,11 +905,11 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_concurrency,
             // sixteen-way uniform row's floor would fail it for being what it
             // is, which is the opposite of what a sanity floor is for.
             const double floor = in_flight == 1 ? 1.0 : 3.0;
-            std::ignore = measure<kythira::testing::beast_http_transport<json>>(
-                {._operations = concurrency_budget(in_flight),
-                 ._in_flight = in_flight,
-                 ._distribution = distribution,
-                 ._floor_ops_per_second = floor});
+            std::ignore =
+                measure(rows::write_beast_json, {._operations = concurrency_budget(in_flight),
+                                                 ._in_flight = in_flight,
+                                                 ._distribution = distribution,
+                                                 ._floor_ops_per_second = floor});
         }
     }
 #else
@@ -1004,10 +934,10 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_key_distribution,
         "write throughput by key distribution, 128B values, 16 in flight, JSON on the wire:");
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
-    std::ignore = measure<kythira::testing::beast_http_transport<json>>(
-        {._distribution = key_distribution::uniform, ._floor_ops_per_second = 5.0});
-    std::ignore = measure<kythira::testing::beast_http_transport<json>>(
-        {._distribution = key_distribution::zipfian, ._floor_ops_per_second = 2.0});
+    std::ignore = measure(rows::write_beast_json, {._distribution = key_distribution::uniform,
+                                                   ._floor_ops_per_second = 5.0});
+    std::ignore = measure(rows::write_beast_json, {._distribution = key_distribution::zipfian,
+                                                   ._floor_ops_per_second = 2.0});
 #else
     BOOST_TEST_MESSAGE("  distribution sweep: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
 #endif
@@ -1055,8 +985,8 @@ BOOST_AUTO_TEST_CASE(read_taxonomy,
     // 1000 keys at stride 100 covers the 100000-key space evenly, so every
     // shard holds 250 of them and a uniform sampler hits all four.
     for (auto kind : {read_kind::read_state, read_kind::log_get, read_kind::local_stale}) {
-        std::ignore = measure<kythira::testing::beast_http_transport<json>>(
-            read_row_spec{._kind = kind, ._operations = read_budget(kind)});
+        std::ignore = measure(rows::read_beast_json,
+                              read_row_spec{._kind = kind, ._operations = read_budget(kind)});
     }
 #else
     BOOST_TEST_MESSAGE("  read taxonomy: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
@@ -1088,12 +1018,11 @@ BOOST_AUTO_TEST_CASE(read_state_by_shard_size,
         // row dominate the case's wall-clock without telling us anything the
         // rate does not.
         const std::size_t operations = keys >= 5000 ? 80 : 200;
-        std::ignore = measure<kythira::testing::beast_http_transport<json>>(
-            read_row_spec{._kind = read_kind::read_state,
-                          ._distinct_keys = keys,
-                          ._stride = 1,
-                          ._operations = operations,
-                          ._in_flight = 8});
+        std::ignore = measure(rows::read_beast_json, read_row_spec{._kind = read_kind::read_state,
+                                                                   ._distinct_keys = keys,
+                                                                   ._stride = 1,
+                                                                   ._operations = operations,
+                                                                   ._in_flight = 8});
     }
 #else
     BOOST_TEST_MESSAGE(
@@ -1242,8 +1171,8 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_tick_cadence,
         // No floor above 1.0. The whole point of the sweep is that a slower
         // clock is expected to cost throughput, and a floor set from the fast
         // arm would fail the slow one for being what it is.
-        rows.push_back(measure<kythira::testing::beast_http_transport<json>>(
-            {._cluster = options, ._floor_ops_per_second = 1.0}));
+        rows.push_back(
+            measure(rows::write_beast_json, {._cluster = options, ._floor_ops_per_second = 1.0}));
     }
     report_tick_sweep(rows);
 #else
@@ -1508,27 +1437,25 @@ BOOST_AUTO_TEST_CASE(cost_attribution_by_tier,
     constexpr std::size_t k_value_bytes = 128;
 
     BOOST_TEST_MESSAGE("  Tier B (beast/JSON over loopback), addressed by key:");
-    auto b_key = measure<kythira::testing::beast_http_transport<json>>(
-        {._operations = k_operations,
-         ._in_flight = k_in_flight,
-         ._value_bytes = k_value_bytes,
-         ._routing = routing_mode::attributed_key});
+    auto b_key = measure(rows::write_beast_json, {._operations = k_operations,
+                                                  ._in_flight = k_in_flight,
+                                                  ._value_bytes = k_value_bytes,
+                                                  ._routing = routing_mode::attributed_key});
     BOOST_TEST_MESSAGE("  Tier B (beast/JSON over loopback), addressed by group and epoch:");
-    auto b_group = measure<kythira::testing::beast_http_transport<json>>(
-        {._operations = k_operations,
-         ._in_flight = k_in_flight,
-         ._value_bytes = k_value_bytes,
-         ._routing = routing_mode::attributed_group});
+    auto b_group = measure(rows::write_beast_json, {._operations = k_operations,
+                                                    ._in_flight = k_in_flight,
+                                                    ._value_bytes = k_value_bytes,
+                                                    ._routing = routing_mode::attributed_group});
     BOOST_TEST_MESSAGE("  Tier A (in-process fabric), addressed by key:");
-    auto a_key = measure<fabric_transport>({._operations = k_operations,
-                                            ._in_flight = k_in_flight,
-                                            ._value_bytes = k_value_bytes,
-                                            ._routing = routing_mode::attributed_key});
-    BOOST_TEST_MESSAGE("  Tier A (in-process fabric), addressed by group and epoch:");
-    auto a_group = measure<fabric_transport>({._operations = k_operations,
+    auto a_key = measure(rows::write_fabric, {._operations = k_operations,
                                               ._in_flight = k_in_flight,
                                               ._value_bytes = k_value_bytes,
-                                              ._routing = routing_mode::attributed_group});
+                                              ._routing = routing_mode::attributed_key});
+    BOOST_TEST_MESSAGE("  Tier A (in-process fabric), addressed by group and epoch:");
+    auto a_group = measure(rows::write_fabric, {._operations = k_operations,
+                                                ._in_flight = k_in_flight,
+                                                ._value_bytes = k_value_bytes,
+                                                ._routing = routing_mode::attributed_group});
     // An epoch mismatch here would mean the descriptor cache went stale under a
     // window, which cannot happen with automatic split and merge off — and if
     // it ever did, every operation in the treatment arms would have failed and
@@ -1550,18 +1477,17 @@ BOOST_AUTO_TEST_CASE(cost_attribution_by_tier,
     // concurrency the routing question needs — and one measurement cannot be
     // both.
     BOOST_TEST_MESSAGE("  Tier B (beast/JSON over loopback), 1 in flight, addressed by key:");
-    auto routing_key = measure<kythira::testing::beast_http_transport<json>>(
-        {._operations = k_operations,
-         ._in_flight = 1,
-         ._value_bytes = k_value_bytes,
-         ._routing = routing_mode::attributed_key});
+    auto routing_key = measure(rows::write_beast_json, {._operations = k_operations,
+                                                        ._in_flight = 1,
+                                                        ._value_bytes = k_value_bytes,
+                                                        ._routing = routing_mode::attributed_key});
     BOOST_TEST_MESSAGE(
         "  Tier B (beast/JSON over loopback), 1 in flight, addressed by group and epoch:");
-    auto routing_group = measure<kythira::testing::beast_http_transport<json>>(
-        {._operations = k_operations,
-         ._in_flight = 1,
-         ._value_bytes = k_value_bytes,
-         ._routing = routing_mode::attributed_group});
+    auto routing_group =
+        measure(rows::write_beast_json, {._operations = k_operations,
+                                         ._in_flight = 1,
+                                         ._value_bytes = k_value_bytes,
+                                         ._routing = routing_mode::attributed_group});
     BOOST_CHECK_MESSAGE(routing_group.median_run()._tally._epoch_mismatch == 0,
                         "the one-in-flight group-addressed arm saw "
                             << routing_group.median_run()._tally._epoch_mismatch
@@ -1703,8 +1629,8 @@ BOOST_AUTO_TEST_CASE(ci_regression_tier,
                        << k_operations << " operations, " << k_in_flight
                        << " in flight, ratios and one floor:");
 
-    auto row = kythira::testing::throughput_row<fabric_transport>(
-        {._operations = k_operations, ._in_flight = k_in_flight}, suite_observer());
+    auto row = rows::write_fabric({._operations = k_operations, ._in_flight = k_in_flight},
+                                  suite_observer());
     report(row);
 
     BOOST_REQUIRE_MESSAGE(row.runs() == k_required_repetitions, "REGRESSION: repetitions measured "

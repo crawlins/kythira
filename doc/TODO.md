@@ -2240,7 +2240,13 @@ unverified completion claim.
   to 0.4%. The compiler is not the explanation either: three existing
   pool members re-measured on the same box and compiler come out within 6% of
   the table's g++-13 figures in both directions.
-- **Two translation units in `tests/` cost 21,114 and 16,640 MiB, and over an
+- **FIXED September 10, 2026: the two translation units that cost 21,114 and
+  16,640 MiB are split one `(transport × serializer)` pair per file, and now
+  cost 2,570 and 2,557 MiB — the floor.** The entry below is kept as written,
+  because the half of it that was wrong is worth more than the half that was
+  right; what actually happened is at the end.
+
+  **Two translation units in `tests/` cost 21,114 and 16,640 MiB, and over an
   hour each, to compile under the stdexec backend; pooling only bounds them.**
   `multi_raft_http_benchmark_test`, `multi_raft_performance_report` and
   `multi_raft_driver_agreement_test` each instantiate the multi-Raft stack
@@ -2320,6 +2326,48 @@ unverified completion claim.
   genuinely misses the binary cache. This is a real cost on a rare path,
   not a recurring one.
 
+  **Done, and the sizing above was one short — there are nine pairs, not
+  eight, because the report binary names `fabric_transport` and the suite
+  reaches it too.** `tests/bench_rows/` holds one file per pair, declared in
+  `tests/multi_raft_bench_row_runners.hpp` exactly as `host_runners.hpp`
+  declares the host's four. Both consumers link one static library rather
+  than compiling the sources twice, which is a gain `cmd/multi_raft_node` did
+  not have to make: **seven of the nine pairs are named by both**, and only
+  cpp-httplib/CBOR and cpp-httplib/protobuf belong to the suite alone.
+
+  Measured before and after in one session, on one box, one compiler, folly,
+  `-DKYTHIRA_COMPILER_LAUNCHER=none`, peak `max(VmRSS + VmSwap)` from
+  `/proc`:
+
+  | Translation unit | before | after |
+  | --- | --- | --- |
+  | `multi_raft_http_benchmark_test.cpp` | 6,285 MiB | **2,570 MiB** |
+  | `multi_raft_performance_report.cpp` | 6,032 MiB | **2,557 MiB** |
+
+  The "before" column re-derives September 9's 6,247 and 6,057 to within
+  0.6% and 0.4%, which is what licenses reading the two columns against each
+  other. **2,557 is the floor, not merely an improvement**:
+  `bench_rows/beast_ion.cpp` compiles to *nothing* in a build without the ion
+  feature and still costs 2,555 MiB in precompiled header and includes, so
+  those two files are now as cheap as a translation unit in `tests/` gets.
+  The nine new files land at 2,555–3,807 MiB, so **the pool's worst member is
+  3,807 again** — below `three_way_http_transport_equivalence_test` at 5,955,
+  which is where it sat before these two were ever added to the pool. Both
+  binaries have left the pool; they no longer qualify.
+
+  **What this does not claim.** Total compiler work is not reduced — nine
+  stack instantiations still happen, and sharing the library is what keeps it
+  from being sixteen. What changes is that a serialised chain containing a
+  21-GiB and a 16-GiB compile is no longer the critical path of a cold
+  stdexec build, because neither compile exists. And per
+  [#332](https://github.com/crawlins/kythira/pull/332)'s re-pricing, a cold
+  stdexec build is itself now a rare path rather than what an ordinary branch
+  does.
+
+  The other direction this entry weighed — building the report binary only on
+  the folly legs — is **not** taken and is no longer worth taking: at 2,557
+  MiB it is an ordinary translation unit, and dropping it from a leg would
+  trade its only compile check for nothing worth having.
 
 ---
 
