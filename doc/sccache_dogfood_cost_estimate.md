@@ -32,6 +32,55 @@ speaks to bill that traffic at roughly $0.09/GB. OCI's 10 TB and Hetzner's
 20 TB monthly egress allowances make that line zero; nothing else does short
 of moving the runners.
 
+## Measured against this estimate (September 10, 2026)
+
+`.kiro/specs/oci-build-cache/` task 11's cross-reference. **Read the first
+sentence before the numbers: what shipped is not what this document priced.**
+This estimate prices `redis_gateway_node` on three nodes. What was actually
+adopted is OCI Object Storage reached through its S3 Compatibility API — no
+cluster, no instances, no `redis_gateway_node`. So the ~$55/month headline
+was never incurred, and nothing below falsifies it; it prices a deployment
+that did not happen.
+
+What *is* comparable is the workload, because it is the same workload: the
+same legs, the same objects, the same cadence. Month-to-date for the tenancy,
+`oci usage-api`, September 1–11, 2026:
+
+| Object Storage line | quantity | cost |
+|---|---:|---:|
+| Requests | 202,831 | **$0.051963** |
+| Outbound Data Transfer Zone 1 | 130.11 GB | $0.000000 |
+| Storage | 0.902 GB-months | $0.000000 |
+| | | **$0.051963** |
+
+**The central thesis of this document survives, and it is the egress one.**
+"The cluster is not the expensive part anywhere. The expensive part is …
+egress" — 130 GB of it in eleven days, billed at **zero**, exactly because
+OCI's 10 TB allowance covers it. On AWS at $0.087–0.12/GB the same bytes are
+$11–16 already, and this window is not a month and not yet at full cadence.
+
+**What this document does not contain is the line that turned out to be the
+whole bill.** There is no request-count row anywhere above, and requests are
+**100% of the cost** — storage and egress both round to zero at this scale
+(10 GB always-free, 10 TB egress). The lever on this bill is therefore the
+number of round trips sccache makes, not the number of bytes it moves or
+keeps, and the bucket's 30-day lifecycle rule — which exists to bound storage
+— does not touch it. An estimate written around GB was measuring the two
+lines that are free.
+
+**Not yet established: the 1–5 TB/month egress band.** 130 GB in eleven days
+is not 1/30th of a month's traffic — the caches only went live on `main` on
+September 9, and September 10 alone carried six pull requests at roughly
+fifteen jobs each. The window is short and unrepresentative in both
+directions, so it neither confirms nor refutes the band. That is what task
+11's October 9 re-run is for, and it is the only part of this cross-reference
+still owed.
+
+**One caveat on the source.** Until September 10 the audit reported
+"no Object Storage line yet this month", and that was false — the query asked
+the Usage API for an ungrouped total and then filtered it by `service`, a
+field the API only populates when asked to group. See task 11.
+
 ## What the deployment is
 
 One `redis_gateway_node` daemon per voter, three voters, one shard cut

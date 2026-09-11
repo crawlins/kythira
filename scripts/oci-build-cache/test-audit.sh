@@ -127,7 +127,35 @@ JSON
   *"customer-secret-key list"*)
       echo '{"data":[{"id":"ocid1.credential.oc1..key0001","time-created":"2026-09-05T00:00:00Z","lifecycle-state":"ACTIVE"}]}' ;;
   *"usage-api"*)
-      echo '{"data":{"items":[{"service":"Object Storage","computed-amount":0.26,"currency":"USD","computed-quantity":10,"unit":"GB_MONTHS"}]}}' ;;
+      # MODELS --group-by, because that is the whole bug. The real Usage API
+      # returns ONE row for the entire tenancy with `service` ABSENT when the
+      # caller does not group, and only populates `service` when it does. A
+      # stub that answers with a service-labelled row either way cannot
+      # reproduce what shipped -- it is the `iam user list` lesson again: a
+      # stub more permissive than the service it stands in for tests nothing.
+      grouped=0
+      for a in "$@"; do case "$a" in *'"service"'*) grouped=1 ;; esac; done
+      case "${STUB_SCENARIO:-clean}" in
+        nousage)
+            # The API answers, with nothing in it. Distinct from "this service
+            # has no line", and the audit must not print the same sentence for
+            # both.
+            echo '{"data":{"items":[]}}' ;;
+        otherservices)
+            # Rows come back, none of them Object Storage. THIS is the case
+            # that legitimately has no line, and the only one where saying so
+            # is an answer rather than a guess.
+            echo '{"data":{"items":[{"service":"Compute","sku-name":"Compute - Standard","computed-amount":0.01,"currency":"USD","computed-quantity":1}]}}' ;;
+        *)
+            if [ "$grouped" -eq 1 ]; then
+                echo '{"data":{"items":[
+                  {"service":"Object Storage","sku-name":"Object Storage - Requests","computed-amount":0.05,"currency":"USD","computed-quantity":20.3},
+                  {"service":"Object Storage","sku-name":"Object Storage - Storage","computed-amount":0,"currency":"USD","computed-quantity":0.9},
+                  {"service":"Compute","sku-name":"Compute - Standard","computed-amount":0.01,"currency":"USD","computed-quantity":1}]}}'
+            else
+                echo '{"data":{"items":[{"computed-amount":0.06,"currency":"USD","computed-quantity":21.2}]}}'
+            fi ;;
+      esac ;;
   *) echo '{"data":[]}' ;;
 esac
 STUB
@@ -179,6 +207,20 @@ check infofail 0 "UNKNOWN"                           "an informational query fai
 check infofail 0 "informational query/queries could not be read" \
                                                      "a failed informational query is COUNTED, not merely printed"
 check stderrnoise 0 "tenancy id unavailable"         "a command that exits 0 while writing to stderr yields no value"
+
+# The month-one bill. All three fail against the version before this one, which
+# asked the Usage API for an ungrouped total and then filtered it by a field
+# that only exists when you group -- and printed the empty result as
+# "no Object Storage line yet this month" for a month, about a line that was
+# there the whole time.
+check clean 0 "Object Storage, month to date" \
+      "the Object Storage line is READ, not filtered away by a missing --group-by"
+refute clean "no Object Storage line yet this month" \
+      "a readable Object Storage line is never reported as absent"
+check nousage 0 "the usage API returned no rows at all" \
+      "a usage API that answers with nothing is UNKNOWN, not a zero bill"
+check otherservices 0 "the query works and the subject is genuinely absent" \
+      "no Object Storage line is only claimed when other services DID come back"
 refute stderrnoise "does not exist"                  "...and never reports a live credential as absent"
 
 if [ "$LIVE" -eq 1 ]; then

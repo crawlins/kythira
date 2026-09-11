@@ -215,14 +215,37 @@ if [ -n "$tenancy_id" ]; then
     # is what fails.
     month_start=$(date -u +%Y-%m-01T00:00:00Z)
     now=$(date -u -d 'tomorrow' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -u -v+1d +%Y-%m-%dT00:00:00Z)
+    # --group-by IS LOAD-BEARING, and leaving it out is how this block spent a
+    # month reporting "no Object Storage line yet this month" about a line that
+    # was there the whole time. Without it the Usage API returns ONE row for
+    # the entire tenancy with `service` absent, so the filter below matched
+    # nothing and the empty result was printed as an answer. On 2026-09-10 the
+    # ungrouped query returned a single item -- service null, $0.052629 -- and
+    # the same window grouped by service returned six, of which Object Storage
+    # was $0.051963. Same API, same window, same credentials.
+    #
+    # THAT IS THE FOURTH TIME THIS SPEC HAS SHIPPED THE SAME BUG: something
+    # that could not answer, read as an answer. The first two were empty read
+    # as zero, the third a diagnostic read as a value (see try() above), and
+    # this one an ungrouped aggregate read as "no such service". The rule that
+    # would have caught all four: when a query comes back empty, say whether
+    # the QUERY failed or the SUBJECT is absent, and never let those print the
+    # same sentence.
     if out=$(try "usage summary" oci usage-api usage-summary request-summarized-usages \
                  --tenant-id "$tenancy_id" --granularity MONTHLY --query-type COST \
+                 --group-by '["service","skuName"]' \
                  --time-usage-started "$month_start" --time-usage-ended "$now"); then
         printf '%s' "$out" | jq -r '
-            (.data.items // [])
-            | map(select((.service // "") | test("Object Storage"; "i")))
-            | if length == 0 then "  no Object Storage line yet this month"
-              else .[] | "  \(.service): \(."computed-amount" // 0) \(.currency // "") (\(."computed-quantity" // 0) \(.unit // ""))"
+            (.data.items // []) as $all
+            | ($all | map(select((.service // "") | test("Object Storage"; "i")))) as $os
+            | if ($all | length) == 0 then
+                "  UNKNOWN: the usage API returned no rows at all for this window -- this is not the same as a zero bill, and it is not evidence that the cache is free"
+              elif ($os | length) == 0 then
+                "  no Object Storage line this month (the API returned \($all | length) rows for other services, so the query works and the subject is genuinely absent)"
+              else
+                ($os | map(."computed-amount" // 0) | add) as $total
+                | "  Object Storage, month to date: \($total) \(($os[0].currency) // "USD")",
+                  ($os[] | "    \(."sku-name" // "?"): \(."computed-amount" // 0) (\(."computed-quantity" // 0))")
               end'
     fi
 else

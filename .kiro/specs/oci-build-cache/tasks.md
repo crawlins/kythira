@@ -36,14 +36,33 @@ and, as a by-product, is the first controlled measurement of what the vcpkg
 cache is worth: ten legs installing in **4.41–6.51 minutes** beside one at
 **95.01**, same commit, same L1 miss, cache reachable or not.
 
-**Task 11** is all that is left, and it needs a month to pass before there is
-a bill to read. Its non-billing half is already done: `audit.sh` run against
-the real tenancy on September 9 reports the leak check clean, both lifecycle
-rules enabled, both keys ACTIVE, and storage at **7.2 GiB** — vcpkg/x64-linux
-3,691 MiB, vcpkg/arm64-linux 1,373 MiB, sccache 2,282 MiB. That run also found
-the audit reporting both credentials as "does not exist" while CI was
-authenticating with them, fixed in PR
-[#329](https://github.com/crawlins/kythira/pull/329).
+**Task 11** is all that is left, and what remains of it is one full month of
+cadence, not a missing bill. **The bill is readable and always was**: the
+September 9 run reported "no Object Storage line yet this month" because
+`audit.sh` asked the Usage API for an ungrouped total and then filtered it by
+`service`, a field that API only populates when asked to group. Fixed
+September 10, 2026, and month-to-date then read **$0.051963** — of which
+requests are **100%**, storage and egress both zero under the 10 GB
+always-free and 10 TB egress allowances. Against the **$0.50/month**
+pre-registered that is comfortable, and for a reason the pre-registration did
+not contain: this bill scales with round trips, not with bytes. Storage the
+same day was **7.8 GiB** (sccache 4,721 objects / 2,781 MiB, up from 4,535 /
+2,282 the day before; vcpkg unchanged), leak check clean, both lifecycle rules
+enabled, both keys ACTIVE.
+
+That makes **four** separate defects in this spec with one shape — something
+that could not answer being read as an answer — the earlier three being PRs
+[#326](https://github.com/crawlins/kythira/pull/326),
+[#328](https://github.com/crawlins/kythira/pull/328) and
+[#329](https://github.com/crawlins/kythira/pull/329), the last of which was
+also found by an `audit.sh` run and also reported a false negative about a
+credential CI was authenticating with at that moment. The rule now written at
+the site: **when a query comes back empty, say whether the QUERY failed or the
+SUBJECT is absent, and never let those two print the same sentence.**
+
+What is still owed is the October 9 re-run against the **1 to 5 TB** egress
+band, which 130 GB over an eleven-day window that was neither a full month nor
+a representative one cannot settle.
 
 **What this spec got wrong, kept here because it is the useful part.** Two
 premises did not survive contact. `x-gha` — the backend every workflow was
@@ -957,8 +976,12 @@ bucket does.
     property of that translation unit rather than of the key.
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
-- [ ] 11. Month-one audit and the cost cross-reference — **the non-billing
-      half is done; the bill genuinely has to wait for a month to exist**
+- [ ] 11. Month-one audit and the cost cross-reference — **the cross-reference
+      is done and the bill is READABLE; only the full-month window is still
+      owed.** "The bill genuinely has to wait for a month to exist", which is
+      what this line said until September 10, was **half wrong, and wrong for
+      this spec's signature reason**: the bill existed and the audit could not
+      see it. See "The fourth variant" below.
   - **September 9, 2026 baseline**, `audit.sh` against the real tenancy,
     exit 0:
 
@@ -972,9 +995,23 @@ bucket does.
     Both lifecycle rules present and enabled (sccache/ 30 days, vcpkg/ 90).
     Both customer secret keys ACTIVE, created 2026-09-06T10:25:52Z (rw) and
     10:25:56Z (ro) — matching what Task 2 recorded. Leak check clean.
-  - **The usage API has no line yet**: "no Object Storage line yet this month".
-    That is the honest month-one answer on September 9 and the reason this
-    task stays open rather than being closed on a guess.
+  - ~~**The usage API has no line yet**: "no Object Storage line yet this
+    month". That is the honest month-one answer on September 9 and the reason
+    this task stays open rather than being closed on a guess.~~
+    **FALSE, and found on September 10, 2026.** The reasoning was sound and
+    the input was wrong: there was an Object Storage line, and `audit.sh`
+    could not see it. Run the same window two ways and the API answers
+    differently —
+
+        ungrouped:            1 item,  service null,      $0.052629
+        --group-by service:   6 items, Object Storage     $0.051963
+
+    The Usage API returns **one aggregate row for the whole tenancy with
+    `service` absent** unless the caller groups by it, and the audit filtered
+    on `select((.service // "") | test("Object Storage"))`. So the row came
+    back, the filter dropped it, and `length == 0` printed as
+    "no Object Storage line yet this month". Same credentials, same window,
+    same API — the only variable was `--group-by`.
   - **That run also found the audit lying.** It reported
     `kythira-build-cache-rw: does not exist` about the credential CI was
     authenticating with at that moment, and answered the usage query with a
@@ -993,11 +1030,78 @@ bucket does.
     had to be tightened first: its `iam user list` answered with a valid user
     id whatever compartment it was handed, so it could not reproduce the bug
     at all.
-  - **Still owed:** re-run `audit.sh` on or after October 9, 2026 — one month
-    after Task 7 — for the request count, egress and bill line, and paste them
-    here beside the $0.50 and 1 to 5 TB pre-registered.
-  - Add the one-paragraph cross-reference to
-    `doc/sccache_dogfood_cost_estimate.md` with the measured figure.
+  - **September 10, 2026, month-to-date (September 1–11), after the fix.**
+    `audit.sh` exit 0, leak check clean:
+
+    | Object Storage line | quantity | cost |
+    | --- | ---: | ---: |
+    | Requests | 202,831 | **$0.051963** |
+    | Outbound Data Transfer Zone 1 | 130.11 GB | $0.000000 |
+    | Storage | 0.902 GB-months | $0.000000 |
+    | | | **$0.051963** |
+
+    Bucket the same day: `vcpkg/` 267 + 131 objects at 3,691 + 1,373 MiB
+    unchanged, `sccache/` **4,721 objects / 2,781 MiB**, up from 4,535 /
+    2,282 on September 9. Both lifecycle rules enabled, both keys ACTIVE and
+    unmoved.
+
+    **Against the $0.50/month pre-registered: comfortable, and for a reason
+    the pre-registration did not anticipate.** Requests are **100% of the
+    cost**; storage and egress both round to zero (10 GB always-free, 10 TB
+    egress). The bill scales with how many round trips sccache makes, not
+    with bytes stored or moved — so the 30-day lifecycle rule, which bounds
+    storage, does not touch the only line that costs anything.
+
+    **The storage figure is self-checking**: 0.902 GB-months against ~7.5 GB
+    held for roughly 3.6 of 30 days is 0.90. The independent agreement is
+    what says the reading is the right quantity and not a coincidence.
+
+  - **Still owed, and it is now only this:** re-run on or after **October 9,
+    2026** for a *full month* at steady cadence, and set the egress against
+    the **1 to 5 TB** pre-registered. 130 GB in eleven days is not 1/30th of a
+    month — the caches went live on `main` on September 9, and September 10
+    alone carried six pull requests at ~15 jobs each. The window is short and
+    unrepresentative in both directions; it neither confirms nor refutes the
+    band.
+  - ~~Add the one-paragraph cross-reference to
+    `doc/sccache_dogfood_cost_estimate.md` with the measured figure.~~
+    **Done September 10, 2026**, as "Measured against this estimate". It
+    leads with the fact that the document prices a three-node
+    `redis_gateway_node` deployment that was never built, so its ~$55/month
+    headline is not falsified by anything here; what is comparable is the
+    workload. The estimate's central thesis — that egress is the expensive
+    part and OCI's allowance zeroes it — **holds**: 130 GB billed at zero,
+    which on AWS is $11–16 for this partial window alone. What the estimate
+    lacks is any request-count row, which is the entire bill.
+
+  - **THE FOURTH VARIANT of this spec's one failure mode**, and the most
+    expensive, because it is the one that held this task open. The pattern in
+    all four is *something that could not answer being read as an answer*:
+
+    | | read as |
+    | --- | --- |
+    | 1. `--show-stats` exits 0 over a dead server | a healthy server ([#326](https://github.com/crawlins/kythira/pull/326)) |
+    | 2. `RUSTC_WRAPPER` set before any guard could run | a guarded wrapper ([#328](https://github.com/crawlins/kythira/pull/328)) |
+    | 3. a stderr diagnostic captured as stdout | an OCID ([#329](https://github.com/crawlins/kythira/pull/329)) |
+    | 4. an **ungrouped aggregate** with no `service` field | "no Object Storage line" |
+
+    The rule that would have caught all four, now written at the site: **when
+    a query comes back empty, say whether the QUERY failed or the SUBJECT is
+    absent, and never let those two print the same sentence.** `audit.sh` now
+    distinguishes three outcomes — no rows at all (UNKNOWN, and explicitly
+    "not the same as a zero bill"), rows for other services but not this one
+    (genuinely absent, and it says how many others came back), and a real
+    line.
+
+    **Four checks added to `test-audit.sh`, and all four fail against the
+    previous `audit.sh`** — verified by running the new suite against
+    `git show HEAD:scripts/oci-build-cache/audit.sh`. The stub had to be
+    fixed first, the same way task 9's did: it answered with a
+    service-labelled row whether or not the caller grouped, so it could not
+    reproduce the bug at all. It now models `--group-by` as the real API
+    does. *A stub more permissive than the service it stands in for tests
+    nothing* — that sentence was already in this file, about `iam user list`,
+    and it was true a second time.
   - _Requirements: 6.5, 7.4, 8.3_
 
 - [x] 12. TODO row and close-out — **September 9, 2026** (the row and the
