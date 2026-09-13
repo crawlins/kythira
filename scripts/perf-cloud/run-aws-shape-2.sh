@@ -41,13 +41,34 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NODE_BINARY=""
 BENCH_BINARY=""
 NODES=3
-INSTANCE_TYPE="c5.2xlarge"
+# c6i, not c5, and this default is load-bearing rather than cosmetic.
+# `c5.2xlarge` draws a MIX of Xeon 8124M and 8275CL, varying between runs and
+# within a run, and a Raft commit waits on a majority -- so a mixed cluster is
+# gated by its slowest member and two runs of the identical configuration are
+# not comparable. Measured: the single-AZ row repeated with nothing changed
+# returned 573.0 ops/sec against 1037.9, both judged "stable", and even the
+# Tier C arm moved 17%. No placement delta this sweep can detect is smaller
+# than that swing, so on c5 none of them is a finding. `c6i.2xlarge` drew four
+# identical 8375C in two provisionings out of two and is the same $0.34/hr.
+#
+# doc/TODO.md's "Shape 2 on c6i.2xlarge" entry retired c5 from this shape on
+# September 3, 2026; the default stayed c5 until September 13. Anyone who
+# retook the sweep without passing --instance-type got the retired part back,
+# and that entry's own rule 4 -- never set a c6i row beside a c5 row -- made
+# the result unusable rather than merely noisy.
+INSTANCE_TYPE="c6i.2xlarge"
 DRIVER_INSTANCE_TYPE=""
 REGION="${AWS_REGION:-us-east-1}"
 RUN_TAG=""
 PLACEMENT="single-az"
 GROUP_COUNT=4
 OPERATIONS=400
+# multi_raft_bench's default, restated here rather than left implicit. It has
+# to match run-tier-c-row.sh's: this script runs a Tier C arm through that
+# script on one of the same instances, and Requirement 1.4 asks that the only
+# difference between the two rows be WHERE the processes are. Two different
+# warm-ups would quietly make it two.
+WARMUP=50
 IN_FLIGHT=16
 VALUE_BYTES=128
 REPETITIONS=5
@@ -96,7 +117,12 @@ delta the tier exists to isolate.
 Cluster and placement:
   --nodes N                 Host instances (default 3). One more is
                              launched for the driver.
-  --instance-type TYPE      Host instance type (default c5.2xlarge).
+  --instance-type TYPE      Host instance type (default c6i.2xlarge).
+                            c5.2xlarge is RETIRED from this shape -- it draws
+                            a mix of Xeon 8124M and 8275CL, which made two
+                            identical runs differ by 45%. Passing it back is
+                            allowed, but a c6i row and a c5 row must never be
+                            set beside each other.
                              Burstable types are refused.
   --driver-instance-type T  Driver instance type. Defaults to
                              --instance-type. Recorded separately on the
@@ -117,6 +143,17 @@ Workload -- the same axes a Tier C row takes, so that the only difference
 between the two rows is where the processes are (Requirement 1.4):
   --groups N                (default 4)
   --operations N            (default 400)
+  --warmup N                Operations discarded before EACH repetition
+                            (default 50, multi_raft_bench's own default).
+                            This was not passed through until September 13,
+                            2026, so every Shape 2 row taken before then ran
+                            at the binary's default by accident rather than
+                            by choice -- which is fine, except that the c5
+                            durable Tier E row (217.6 ops/sec, UNSTABLE at
+                            13.4%) reads as a first-window effect: 247, then
+                            214-225. Raising this is how that gets tested.
+                            0 disables the warm-up, which reproduces such an
+                            effect rather than hiding it.
   --in-flight N             (default 16)
   --value-bytes N           (default 128)
   --repetitions N           (default 5; fewer yields no headline at all)
@@ -166,6 +203,7 @@ while [[ $# -gt 0 ]]; do
         --run-tag) RUN_TAG="$2"; shift 2 ;;
         --groups) GROUP_COUNT="$2"; shift 2 ;;
         --operations) OPERATIONS="$2"; shift 2 ;;
+        --warmup) WARMUP="$2"; shift 2 ;;
         --in-flight) IN_FLIGHT="$2"; shift 2 ;;
         --value-bytes) VALUE_BYTES="$2"; shift 2 ;;
         --repetitions) REPETITIONS="$2"; shift 2 ;;
@@ -363,6 +401,7 @@ EOF
 [dry-run]     --placement "<recorded verbatim, with every AZ>" \\
 [dry-run]     --transport ${TRANSPORT} --durability ${PERSISTENCE} \\
 [dry-run]     --tick-interval ${TICK_INTERVAL} --operations ${OPERATIONS} \\
+[dry-run]     --warmup ${WARMUP} \\
 [dry-run]     --in-flight ${IN_FLIGHT} --value-bytes ${VALUE_BYTES} \\
 [dry-run]     --repetitions ${REPETITIONS} --scenario ${SCENARIO} \\
 [dry-run]     --axis tier-e --out-dir <collected>
@@ -924,6 +963,7 @@ ssh_to "${NODES}" "cd /tmp && mkdir -p /tmp/results && \
       --tier e --placement $(printf '%q' "${PLACEMENT_TEXT}") \
       --transport ${TRANSPORT} --durability ${PERSISTENCE} \
       --tick-interval ${TICK_INTERVAL} --operations ${OPERATIONS} \
+      --warmup ${WARMUP} \
       --in-flight ${IN_FLIGHT} --value-bytes ${VALUE_BYTES} \
       --repetitions ${REPETITIONS} --scenario ${SCENARIO} \
       --axis tier-e --out-dir /tmp/results \
@@ -991,7 +1031,8 @@ if [[ "${ALSO_TIER_C}" == "1" ]]; then
         cp /tmp/${BENCH_BIN_NAME} /tmp/bin/multi_raft_bench && \
         timeout --signal=KILL ${CEILING_MINUTES}m /tmp/run-tier-c-row.sh \
           --build-dir /tmp/bin --nodes ${NODES} --groups ${GROUP_COUNT} \
-          --operations ${OPERATIONS} --in-flight ${IN_FLIGHT} \
+          --operations ${OPERATIONS} --warmup ${WARMUP} \
+          --in-flight ${IN_FLIGHT} \
           --value-bytes ${VALUE_BYTES} --repetitions ${REPETITIONS} \
           --scenario ${SCENARIO} --tick-interval ${TICK_INTERVAL} \
           --transport ${TRANSPORT} --persistence ${PERSISTENCE} \

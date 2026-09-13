@@ -27,6 +27,11 @@ Usage: run-tier-c-row.sh [options]
   --nodes N              Host processes to start (default 3).
   --groups N             Shards, pre-split (default 4).
   --operations N         Measured operations per repetition (default 400).
+  --warmup N             Operations discarded before EACH repetition
+                         (default 50, which is multi_raft_bench's own
+                         default). 0 disables the warm-up entirely, which is
+                         a way to reproduce a first-window effect rather than
+                         a way to go faster.
   --in-flight N          Concurrency (default 16).
   --value-bytes N        (default 128)
   --repetitions N        (default 5)
@@ -56,6 +61,11 @@ NODES=3
 # reached a leader.
 GROUP_COUNT=4
 OPERATIONS=400
+# multi_raft_bench's own default, restated rather than left implicit: this
+# script and run-aws-shape-2.sh must agree on it, because a Tier C arm and a
+# Tier E row that warm up differently differ by more than placement, which is
+# the one thing the arm exists to rule out.
+WARMUP=50
 IN_FLIGHT=16
 VALUE_BYTES=128
 REPETITIONS=5
@@ -74,6 +84,7 @@ while [[ $# -gt 0 ]]; do
         --nodes) NODES="$2"; shift 2 ;;
         --groups) GROUP_COUNT="$2"; shift 2 ;;
         --operations) OPERATIONS="$2"; shift 2 ;;
+        --warmup) WARMUP="$2"; shift 2 ;;
         --in-flight) IN_FLIGHT="$2"; shift 2 ;;
         --value-bytes) VALUE_BYTES="$2"; shift 2 ;;
         --repetitions) REPETITIONS="$2"; shift 2 ;;
@@ -185,6 +196,7 @@ mkdir -p "${OUT_DIR}"
     --durability "${PERSISTENCE}" \
     --tick-interval "${TICK_INTERVAL}" \
     --operations "${OPERATIONS}" \
+    --warmup "${WARMUP}" \
     --in-flight "${IN_FLIGHT}" \
     --value-bytes "${VALUE_BYTES}" \
     --repetitions "${REPETITIONS}" \
