@@ -1,6 +1,42 @@
 # Implementation Plan — Alibaba Cloud Services
 
-## Status: Wave 1 complete (August 13, 2026)
+## Status: THIS CHECKLIST IS STALE — read this first (September 12, 2026)
+
+The heading below says "Wave 1 complete" and the boxes say 3 of 12. **The tree
+disagrees, and the tree is newer.** Found while auditing `doc/TODO.md`, which
+had been carrying "at wave 1 with its vendor-fact spike open" as a result.
+
+What is on `main` that this list shows unchecked:
+
+| Task | Shown | Actually |
+| --- | --- | --- |
+| 3. `alibaba_ess_quorum_manager` | `[ ]` | `include/raft/alibaba_ess_quorum_manager.hpp`, **1,049 lines**, landed as `5fd8f14` |
+| 5. `alibaba_oss_persistence_engine` | `[ ]` | `include/raft/alibaba_oss_persistence.hpp`, same commit |
+| 6. Mock server + mock-tier tests | `[ ]` | `tests/alibaba_mock_server.hpp` plus `*_mock_test.cpp` for persistence and the quorum manager |
+| 7. Real-tier suites | `[ ]` | `alibaba_*_real_test.cpp` and `alibaba_real_test_support.hpp` |
+| 8. CI wiring + credential scripts | `[ ]` | **70** references in `.github/workflows/real-cloud-tests.yml`; `scripts/ci-cloud-credentials/alibaba/` |
+| 9. Docs, example config | `[ ]` | `docker/alibaba_quorum_manager/` |
+
+`5fd8f14`'s subject is "feat(alibaba): ESS quorum manager and OSS persistence
+engine" — tasks 3 and 5 by name. **Seven alibaba tests are registered CTest
+entries in a configured tree**, which is why this says "built" and not merely
+"present": file existence is not evidence, and this project has been caught by
+that distinction before.
+
+**The boxes are deliberately NOT ticked here.** Ticking six on the strength of
+"the files exist and build" is the shape of failure this repo keeps a
+Known Follow-ups section about — machinery reporting success while nobody
+checked the work. Each task carries acceptance criteria; someone who can check
+them against the implementation owes it a pass, and until then the honest
+record is that the checklist and the tree disagree.
+
+**What looks genuinely outstanding** after that pass, and it is small: spike
+sub-items **0.2, 0.3 and 0.5** (0.1 and 0.4 are CONFIRMED in
+`spike-notes.md`); task **10**, marked `[operator]`, which needs a real
+Alibaba Cloud account provisioned by a human; and task **11**, live
+verification, which 10 blocks.
+
+## Status: Wave 1 complete (August 13, 2026) — superseded, see above
 
 Tasks 0 (partially — see spike-notes.md for what is documentation-deep vs
 live-verified), 1 and 2 are done: the shared control-plane foundation
