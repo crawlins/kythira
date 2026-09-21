@@ -22,6 +22,7 @@ re-read from the OCI price list before this estimate is treated as binding.
 | **OCI, three preemptible A1 Flex nodes (2 OCPU, 16 GB), one region** | **~$55** |
 | OCI, the same three nodes on-demand | ~$103 |
 | Hetzner, three CAX31 (4 vCPU, 8 GB) | ~€47 |
+| Home, three Raspberry Pi 5 (8 GB) on Quantum Fiber, see below | ~$2 plus the fiber delta; ~$320 once |
 | AWS, three m7g.xlarge on-demand, one AZ | $373 **plus $100 to $450 egress** |
 | AWS, the same three on spot | ~$110 to $180 **plus $100 to $450 egress** |
 
@@ -347,6 +348,73 @@ live OCI tenancy, keyless OCI CI, and provisioning that has been exercised
 (PR #229), and Hetzner would need new provenance and leak-audit scripts. It
 is the fallback if A1 capacity proves unreliable.
 
+### Home hosting, on fiber (added September 21, 2026)
+
+Cable made the home option a non-starter for CI traffic, for three reasons
+that are all Xfinity's: a 1.2 TB monthly cap counted against 1 to 5 TB of
+upload, 10 to 35 Mbps of upload on a legacy-market plan against the ~50 Mbps
+sustained that eight warm legs need, and a residential acceptable-use policy
+that names file-sharing servers and "mechanized or commercial use" as
+prohibited. Comcast Business lifts the policy and the cap for roughly $100 to
+$150 a month more than residential, still on cable's upload asymmetry.
+
+**Quantum Fiber is available at the home address** (confirmed September 21,
+2026 on the provider's availability checker; ZIP-level FCC data has it at
+about 36% of 80015). It removes all three objections at once:
+
+| | Xfinity residential | Quantum Fiber residential |
+|---|---|---|
+| Upload | 10 to 35 Mbps (legacy) or 100 to 200 (mid-split) | 500 or 940 Mbps, symmetric |
+| Data cap | 1.2 TB, then $10 per 50 GB or $30 unlimited | none |
+| Servers | prohibited on residential | **permitted**: the subscriber agreement allows hosting a server, personal or commercial, provided it is not used for malicious purposes; business use of the residential service is what it prohibits |
+| Public address | dynamic, behind the gateway's Advanced Security | public IPv4 to the router with the SmartNID in transparent bridge mode; static IP available on request |
+| Contract | none, or a 5-year price lock | none |
+| Price | $45 to $100 | $50 (500/500), $80 (940/940), promo $55 |
+
+Costed as the gateway dogfood, three Raspberry Pi 5 8 GB boards with PSU,
+cooler and card:
+
+| Line | Monthly | Once |
+|---|---:|---:|
+| Fiber, incremental over the Xfinity plan it replaces | $0 to $30 | |
+| Electricity, ~5 W per board | ~$2 | |
+| Hardware | | ~$320 |
+| Egress, requests, storage | $0 | |
+| **Total, over a two-year amortisation** | **~$15 to $45** | |
+
+Against the ~$55 preemptible OCI cluster this is comparable to cheaper, and
+it carries the two things a cloud deployment cannot: local builds hit the
+cache over the LAN at gigabit with no meter, and a node can be unplugged with
+no two-minute warning, which is a harsher test than preemption. The measured
+bill in the section above sharpens the case: requests turned out to be the
+whole cost of the object-storage version, and on owned hardware a request is
+free.
+
+What it does not change:
+
+- **8 GB and no log compaction.** With the eviction budget at 2 GiB of state
+  across two shards, an uncompacted in-memory log fills the remaining
+  memory in weeks of main-branch writes. The compaction trigger in *Known
+  gaps* is a prerequisite here, not a nice-to-have, or a rolling restart is
+  the manual compaction.
+- **Correlated failure.** One power blip takes all three nodes down and, on
+  memory persistence, the cache with them. A UPS covers it; without one,
+  accept a cold rebuild a few times a year. A miss is a recompile, never a
+  broken build, so CI is unaffected either way.
+- **Exposure.** Only the TLS listener, the ACL, the read-only role for PR
+  runners, and the rate-limited `AUTH`; GitHub's runner ranges are too large
+  to firewall. The public address goes in DNS, not in the workflow.
+- **Do not build on the Pi.** The daemon's image packages a host-built
+  binary, and CI already produces the arm64 build.
+- **The x64 test legs need x86 runners** if the self-hosted-runner option
+  below is ever taken; that is unchanged by the uplink.
+
+Recommendation, revised from the OCI one above: with fiber at the address,
+run the gateway dogfood at home, wire local builds and the Rust feed first,
+then measure bytes per warm leg with `sccache --show-stats` before pointing
+the C++ legs at it. The OCI cluster estimate stands as the number to fall
+back to if the home line proves unreliable.
+
 ## What removes the egress line entirely
 
 Independent of provider, in ascending order of effort:
@@ -425,7 +493,7 @@ survives.
 
 ## Sources
 
-Read September 4, 2026.
+Read September 4, 2026, except the Quantum Fiber and Xfinity entries, read September 21, 2026.
 
 - [OCI Price List, Oracle](https://www.oracle.com/cloud/price-list/)
 - [Preemptible instances at a 50% discount, Oracle](https://blogs.oracle.com/cloud-infrastructure/post/announcing-preemptible-instances-a-new-kind-of-compute-instance-available-at-a-50-discount)
@@ -444,3 +512,10 @@ Read September 4, 2026.
 - [GitHub Actions pricing 2026 per-minute rates, CICDCalculator](https://cicdcalculator.com/github-actions)
 - [Google Cloud egress premium vs standard tier, EgressCost.com](https://egresscost.com/gcp/)
 - [Hetzner Cloud pricing after the April 2026 increase, bitdoze.com](https://www.bitdoze.com/hetzner-cloud-cost-optimized-plans/)
+- [Quantum Fiber in Aurora, CO](https://www.quantumfiber.com/local/co/aurora)
+- [Quantum Fiber internet subscriber agreement (October 1, 2025)](https://www.quantumfiber.com/on/demandware.static/Sites-QFCC-Site/Sites-QFCC-Library/-/legal/internet-subscriber-agreement-10-1-25.pdf)
+- [Quantum Fiber plans and deals 2026, HighSpeedInternet.com](https://www.highspeedinternet.com/providers/quantum-fiber/internet)
+- [Quantum Fiber SmartNID settings guide](https://www.quantumfiber.com/support/equipment/user-guides/smartnid-settings.html)
+- [Xfinity data caps 2026, InternetProviders.ai](https://www.internetproviders.ai/guides/xfinity-data-caps-explained/)
+- [Acceptable Use Policy for Xfinity Internet](https://www.xfinity.com/corporate/customers/policies/highspeedinternetaup)
+- [Comcast Business internet plans and pricing, CableTV.com](https://www.cabletv.com/comcast/business-internet)
