@@ -580,6 +580,49 @@ jobs:
           scripts/run-real-cloud-suite.sh 'real-ec2' '^ca_cluster_node_rpc_tls_real_ec2_test$' \
             "Check AWS_CI_ROLE_ARN's ca-cluster-node policy and that the resolved AMI has /usr/local/bin/ca_cluster_node installed."
 
+      # Post-run audit. Nothing else in this job verifies that teardown
+      # actually happened: the tests tear down their own resources, and a
+      # test that fails mid-case is exactly the one whose teardown did not
+      # finish. `if: always()` because the runs worth auditing are the failed
+      # ones.
+      #
+      # Written after the Alibaba job proved the cost of not having this. Its
+      # teardown had been failing since August 24, 2026 for want of one RAM
+      # permission, and five instances accrued -- the oldest 29 days old,
+      # found only when a human went looking. The audit that should have
+      # caught it existed but was itself broken, which is why every failure
+      # path below says THE AUDIT DID NOT RUN rather than exiting on a
+      # message that reads like a clean result.
+      - name: Audit for leaked instances
+        if: always()
+        env:
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+        run: |
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+            echo "No AWS credentials in the environment (the credentials step failed or never ran) — nothing to audit with."
+            exit 0
+          fi
+          audit_failed() {
+            echo "::error::THE AUDIT DID NOT RUN ($1). This is not a clean result: instances may have outlived teardown and be billing now. Check EC2 in ${AWS_DEFAULT_REGION} for instances tagged kythira:managed-by=ec2_quorum_manager." >&2
+            exit 1
+          }
+          # Scoped by the tag the manager itself applies, not by name: a name
+          # prefix would also match anything an operator created by hand.
+          leaked=$(aws ec2 describe-instances \
+            --filters 'Name=tag:kythira:managed-by,Values=ec2_quorum_manager' \
+                      'Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped' \
+            --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,cluster:Tags[?Key==`kythira:cluster`]|[0].Value}' \
+            --output json) || audit_failed "the DescribeInstances call failed"
+          count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
+            || audit_failed "DescribeInstances returned a response this step could not parse"
+          [ -n "${count}" ] || audit_failed "the parsed instance count was empty"
+          if [ "${count}" -ne 0 ]; then
+            echo "::error::Post-run audit found ${count} non-terminated instance(s) tagged kythira:managed-by=ec2_quorum_manager — teardown did not complete. They are being billed." >&2
+            printf '%s' "${leaked}" | jq . >&2
+            exit 1
+          fi
+          echo "Post-run audit clean: no non-terminated ec2_quorum_manager instances in ${AWS_DEFAULT_REGION}."
+
   # ── AWS: ca_cluster_node AMI build (Packer) ─────────────────────────────
   # Independent of the `aws` job above: builds a new AMI (and its backing
   # snapshot) on every run, which persists and accrues storage cost until an
@@ -1032,6 +1075,51 @@ jobs:
             scripts/run-real-cloud-suite.sh 'real-azure' '^azure_key_vault_ca_provider_real_test$' \
               "Check the AZURE_CI_* federated-credential variables, that AZURE_TEST_KEY_VAULT_URL resolves, and that AZURE_TEST_KEY_VAULT_CA_CERT_PEM is set."
 
+      # Post-run audit. Nothing else in this job verifies that teardown
+      # actually happened: the tests tear down their own resources, and a
+      # test that fails mid-case is exactly the one whose teardown did not
+      # finish. `if: always()` because the runs worth auditing are the failed
+      # ones.
+      #
+      # Written after the Alibaba job proved the cost of not having this. Its
+      # teardown had been failing since August 24, 2026 for want of one RAM
+      # permission, and five instances accrued -- the oldest 29 days old,
+      # found only when a human went looking. The audit that should have
+      # caught it existed but was itself broken, which is why every failure
+      # path below says THE AUDIT DID NOT RUN rather than exiting on a
+      # message that reads like a clean result.
+      - name: Audit for leaked VMs
+        if: always()
+        run: |
+          if ! az account show >/dev/null 2>&1; then
+            echo "Not logged in to Azure (the login step failed or never ran) — nothing to audit with."
+            exit 0
+          fi
+          RG='${{ vars.AZURE_TEST_RESOURCE_GROUP }}'
+          if [ -z "${RG}" ]; then
+            echo "AZURE_TEST_RESOURCE_GROUP is unset — nothing to audit."
+            exit 0
+          fi
+          audit_failed() {
+            echo "::error::THE AUDIT DID NOT RUN ($1). This is not a clean result: VMs may have outlived teardown and be billing now. Check resource group ${RG} in the portal." >&2
+            exit 1
+          }
+          # The whole resource group, not a name prefix: it is dedicated to
+          # these tests, so anything of this kind left in it is a leak, and a
+          # prefix would miss a VM whose name the manager never got to set.
+          leaked=$(az vm list --resource-group "${RG}" \
+            --query '[].{name:name,location:location,size:hardwareProfile.vmSize}' \
+            -o json) || audit_failed "the vm list call failed"
+          count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
+            || audit_failed "az vm list returned a response this step could not parse"
+          [ -n "${count}" ] || audit_failed "the parsed VM count was empty"
+          if [ "${count}" -ne 0 ]; then
+            echo "::error::Post-run audit found ${count} VM(s) still in ${RG} — teardown did not complete. They are being billed." >&2
+            printf '%s' "${leaked}" | jq . >&2
+            exit 1
+          fi
+          echo "Post-run audit clean: no VMs left in ${RG}."
+
   gcp:
     name: Real Cloud Tests (GCP)
     runs-on: ubuntu-24.04
@@ -1306,6 +1394,52 @@ jobs:
         run: |
           scripts/run-real-cloud-suite.sh 'real-privateca' '^gcp_privateca_provider_real_test$' \
             "The fixture provisions its own CA pool when GCP_TEST_CA_POOL is unset, so a skip means the preflight could not reach CAS — check the service account's privateca roles and that the Certificate Authority Service API is enabled."
+
+      # Post-run audit. Nothing else in this job verifies that teardown
+      # actually happened: the tests tear down their own resources, and a
+      # test that fails mid-case is exactly the one whose teardown did not
+      # finish. `if: always()` because the runs worth auditing are the failed
+      # ones.
+      #
+      # Written after the Alibaba job proved the cost of not having this. Its
+      # teardown had been failing since August 24, 2026 for want of one RAM
+      # permission, and five instances accrued -- the oldest 29 days old,
+      # found only when a human went looking. The audit that should have
+      # caught it existed but was itself broken, which is why every failure
+      # path below says THE AUDIT DID NOT RUN rather than exiting on a
+      # message that reads like a clean result.
+      - name: Audit for leaked instances
+        if: always()
+        run: |
+          PROJECT='${{ vars.GCP_REAL_CLOUD_TESTS_PROJECT }}'
+          if [ -z "${PROJECT}" ]; then
+            echo "GCP_REAL_CLOUD_TESTS_PROJECT is unset — nothing to audit."
+            exit 0
+          fi
+          if ! command -v gcloud >/dev/null 2>&1; then
+            echo "gcloud is not on this runner — nothing to audit with."
+            exit 0
+          fi
+          audit_failed() {
+            echo "::error::THE AUDIT DID NOT RUN ($1). This is not a clean result: instances may have outlived teardown and be billing now. Check Compute Engine in project ${PROJECT} for instances named kythira-kythira-it-*." >&2
+            exit 1
+          }
+          # `kythira-it` is the cluster name every case in
+          # gcp_quorum_manager_real_gce_test uses, and the manager names
+          # instances kythira-{cluster}-{node}, so this prefix is exactly the
+          # set those tests create and nothing else.
+          leaked=$(gcloud compute instances list --project "${PROJECT}" \
+            --filter='name ~ ^kythira-kythira-it-' \
+            --format=json) || audit_failed "the instances list call failed"
+          count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
+            || audit_failed "gcloud returned a response this step could not parse"
+          [ -n "${count}" ] || audit_failed "the parsed instance count was empty"
+          if [ "${count}" -ne 0 ]; then
+            echo "::error::Post-run audit found ${count} instance(s) named kythira-kythira-it-* in ${PROJECT} — teardown did not complete. They are being billed." >&2
+            printf '%s' "${leaked}" | jq '[.[] | {name, status, zone, machineType}]' >&2
+            exit 1
+          fi
+          echo "Post-run audit clean: no kythira-kythira-it-* instances in ${PROJECT}."
 
   # ── OCI ──────────────────────────────────────────────────────────────────
   # Single x64 leg, unlike the AWS job's x64+arm64 matrix: nothing in
