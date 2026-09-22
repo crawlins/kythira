@@ -55,6 +55,13 @@ LOW_PRIORITY_TARGET=10
 FAMILY=""
 FAMILY_TARGET=20
 DRY_RUN=0
+# Bounds each submit. Microsoft.Quota throttles quota *writes* with a 429
+# carrying `Retry-After: 3600`, and the CLI honours that by sleeping for the
+# full hour rather than returning -- so an unbounded call is indistinguishable
+# from a hang. Measured on 2026-09-22: a second write minutes after a
+# successful one was throttled, and `--no-wait` did not help because the 429
+# precedes the long-running operation it would have skipped waiting on.
+SUBMIT_TIMEOUT=180
 
 usage() {
     cat <<'EOF'
@@ -78,6 +85,10 @@ Optional:
                           quotas, not a family one. Raise it only if a run
                           fails citing the family by name.
   --family-target N      target for --family (default: 20)
+  --submit-timeout N     seconds to allow each submit (default: 180). A
+                          throttled write returns 429 with Retry-After 3600
+                          and the CLI sleeps it off, so an unbounded call
+                          looks like a hang; this bounds it and says so.
   --dry-run              print the calls without submitting them
   -h, --help             this message
 EOF
@@ -91,6 +102,7 @@ while [[ $# -gt 0 ]]; do
         --low-priority) LOW_PRIORITY_TARGET="$2"; shift 2 ;;
         --family) FAMILY="$2"; shift 2 ;;
         --family-target) FAMILY_TARGET="$2"; shift 2 ;;
+        --submit-timeout) SUBMIT_TIMEOUT="$2"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 1 ;;
@@ -184,8 +196,21 @@ request_increase() {
     # A rejected request is not a script failure: Microsoft declines quota
     # for reasons this script cannot see (payment method, region capacity,
     # account age). Report it and carry on to the next quota.
-    local out
-    if ! out="$("${cmd[@]}" -o json 2>&1)"; then
+    local out rc=0
+    out="$(timeout "${SUBMIT_TIMEOUT}" "${cmd[@]}" -o json 2>&1)" || rc=$?
+    if (( rc == 124 )); then
+        cat <<EOF
+    NO RESPONSE within ${SUBMIT_TIMEOUT}s — almost certainly throttled.
+      Microsoft.Quota answers a too-frequent quota write with
+        429 RequestThrottled "please retry after 3600 seconds"
+      and the CLI obeys that Retry-After by sleeping, so a throttled call
+      looks like a hang rather than a refusal. Nothing was submitted; the
+      limit is unchanged. Wait an hour and re-run — already-satisfied
+      quotas are skipped, so a re-run only retries what is still short.
+EOF
+        return 1
+    fi
+    if (( rc != 0 )); then
         echo "    REQUEST FAILED:"
         printf '      %s\n' "${out}" | head -20
         return 1
