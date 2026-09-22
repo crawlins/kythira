@@ -1757,6 +1757,22 @@ jobs:
         # place: the pool bounds the worst single allocation, -j3 bounds the
         # aggregate. Note also that the pool's headline speedup came from
         # ending the thrashing, not from restored parallelism.
+        #
+        # If a stall like this recurs and is visible only on the runner,
+        # instrument rather than guess. Every local hypothesis about this leg
+        # was falsified by measurement on the failing tree -- the heaviest TU
+        # and the TU it stalled on both compiled fine alone, and two runs
+        # stalled at the same step NUMBER on DIFFERENT translation units,
+        # which is what told us the step index was incidental and the binding
+        # constraint was runner-side. What settles it is sampling memory,
+        # swap, disk, load and the live compiler count every 30s, plus
+        # wrapping the build in `timeout` inside the job budget.
+        #
+        # Sample into the job LOG, never an uploaded artifact: an artifact
+        # does not survive a platform timeout kill, which is how earlier
+        # diagnoses of this leg were lost. A build that times out on its own
+        # terms also leaves the `always()` reporting steps to run, instead of
+        # being skipped by the platform killing the job.
         run: cmake --build build-${{ matrix.backend }} -j3
 
       # `always()`, because the interesting case is the one where Build died:
