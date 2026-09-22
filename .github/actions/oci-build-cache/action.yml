@@ -103,12 +103,24 @@ runs:
         done
         [ "$missing" -eq 0 ] || exit 1
 
-        # The exact match on push:main is the whole writer policy. A push to
-        # any other branch, and every pull_request, falls to the read-only
-        # key: `*` is deliberately the last pattern and deliberately not a
-        # prefix match on refs/heads/main, which would also match main-foo.
+        # The writer policy is "only code that is on main may write", and it
+        # is expressed as exact matches on both halves. Every pattern below
+        # pins the ref to `main`: `*` is deliberately the last pattern and
+        # deliberately not a prefix match on refs/heads/main, which would
+        # also match main-foo.
+        #
+        # schedule and workflow_dispatch were added on 2026-09-22. They are
+        # how real-cloud-tests.yml runs, and pinning the ref is what keeps
+        # them safe to trust: a scheduled run is always on the default
+        # branch, and a dispatch names its own ref, so a dispatch from a
+        # feature branch still falls through to read-only. Before this they
+        # fell to `*` and each of the five provider jobs compiled ~558
+        # translation units it could never store -- sccache attempted every
+        # upload and was refused every time, which is what the paired
+        # SCCACHE_S3_RW_MODE below now prevents.
         case "${GITHUB_EVENT_NAME}:${GITHUB_REF_NAME}" in
-          push:main) key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write" ;;
+          push:main|schedule:main|workflow_dispatch:main)
+                     key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write" ;;
           *)         key_id="$RO_ID"; secret="$RO_SECRET"; mode="read";      which="read-only" ;;
         esac
 
@@ -151,13 +163,25 @@ runs:
           echo "SCCACHE_REGION=${REGION}"
           echo "SCCACHE_S3_KEY_PREFIX=sccache/"
           echo "SCCACHE_S3_USE_SSL=true"
+          # Tell sccache what the key it was handed can actually do. Without
+          # this it defaults to attempting writes, and a read-only key turns
+          # every cache miss into a refused upload: measured at 558 misses
+          # and 558 write errors on the 2026-09-14 real-cloud run, with
+          # `Cache errors 0` printed two lines below them. READ_ONLY makes it
+          # read the cache and stop there. Values are sccache 0.17.0's own
+          # (READ_ONLY / READ_WRITE), confirmed against the pinned binary.
+          if [ "${mode}" = "readwrite" ]; then
+            echo "SCCACHE_S3_RW_MODE=READ_WRITE"
+          else
+            echo "SCCACHE_S3_RW_MODE=READ_ONLY"
+          fi
           # RUSTC_WRAPPER is deliberately NOT exported here. It is exported
           # by the probe step below, and only if a compile really does
           # round-trip through sccache -- see that step for why.
           # vcpkg scrubs the environment of port builds. Without this the
           # lakers port's cargo build sees no RUSTC_WRAPPER and no
           # credentials, which is the rustc coverage ccache never had.
-          echo "VCPKG_KEEP_ENV_VARS=RUSTC_WRAPPER;SCCACHE_BUCKET;SCCACHE_ENDPOINT;SCCACHE_REGION;SCCACHE_S3_KEY_PREFIX;SCCACHE_S3_USE_SSL;AWS_ENDPOINT_URL;AWS_REGION;AWS_ACCESS_KEY_ID;AWS_SECRET_ACCESS_KEY;AWS_REQUEST_CHECKSUM_CALCULATION;AWS_RESPONSE_CHECKSUM_VALIDATION"
+          echo "VCPKG_KEEP_ENV_VARS=RUSTC_WRAPPER;SCCACHE_BUCKET;SCCACHE_ENDPOINT;SCCACHE_REGION;SCCACHE_S3_KEY_PREFIX;SCCACHE_S3_USE_SSL;SCCACHE_S3_RW_MODE;AWS_ENDPOINT_URL;AWS_REGION;AWS_ACCESS_KEY_ID;AWS_SECRET_ACCESS_KEY;AWS_REQUEST_CHECKSUM_CALCULATION;AWS_RESPONSE_CHECKSUM_VALIDATION"
         } >> "$GITHUB_ENV"
         echo "enabled=true" >> "$GITHUB_OUTPUT"
 
