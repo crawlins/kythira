@@ -1200,6 +1200,40 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           sccache --show-stats
+
+      # Re-authenticate after the build, for the same reason the aws job
+      # re-assumes its role here: the credentials minted at the top of the
+      # job are stale by the time any test runs.
+      #
+      # google-github-actions/auth writes a credentials file whose
+      # `credential_source` carries the runner's ID-token request token, and
+      # google-cloud-cpp's external-account provider exchanges it for a GCP
+      # access token at the moment of use. On the September 14, 2026 run
+      # auth completed at 11:59:52 and the build finished around 13:08, so
+      # the exchange was being attempted with a token minted 85 minutes
+      # earlier. It worked for `gcp_quorum_manager_real_gce_test`, which
+      # started at ~13:09 and ran 923s on the token it took at the start,
+      # then failed for `gcp_privateca_provider_real_test` at 13:24:55:
+      #
+      #   external_account_credentials.cc:394] Fetch external account
+      #   credentials access token: UNAVAILABLE: ... status 403
+      #   {"source":"actions-run-service","errorMessage":
+      #    "runner does not have permissions to generate id token"}
+      #
+      # That message reads like the job is missing `id-token: write`. It is
+      # not -- this job grants it, and the same credentials had just worked
+      # twice. What the test then did with the failure is the part worth
+      # noting: it *skipped*, and the ctest summary said "100% tests passed"
+      # before the bundle's fail-closed guard caught that nothing had run.
+      #
+      # Re-running auth here closes the window rather than diagnosing the
+      # exact lifetime, which is not documented and not ours to rely on.
+      - name: Re-authenticate to Google Cloud for the test steps
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+
       # Mirror the aws job's fail-closed guard: if google-cloud-cpp did not
       # resolve (wrong vcpkg feature, stale cache) then KYTHIRA_HAS_GCP_SDK is
       # false, the real-test targets are never add_subdirectory'd, and the
