@@ -156,9 +156,14 @@ print(value, p.get("resourceType", ""))
 ' 2>/dev/null || return 1
 }
 
-# Returns 0 if it submitted, 1 if it skipped. Never lowers a limit: a target
-# at or below the current value is a no-op, so an accidental small --cores
-# cannot shrink the subscription.
+# Exit codes are distinguished so the closing summary cannot claim success
+# for a quota that failed: 0 submitted, 2 skipped because already satisfied,
+# 1 anything else (unreadable, throttled, refused). An earlier version
+# returned 1 for both "skipped" and "failed" and then printed "every quota
+# already meets its target" under a throttle notice reporting the opposite --
+# the summary contradicting the detail three lines above it.
+# Never lowers a limit: a target at or below the current value is a no-op, so
+# an accidental small --cores cannot shrink the subscription.
 request_increase() {
     local name="$1" target="$2" label="$3"
 
@@ -177,7 +182,7 @@ request_increase() {
 
     if (( current >= target )); then
         echo "  ${label} (${name}): limit is already ${current} (>= ${target}) — nothing to do."
-        return 1
+        return 2
     fi
 
     echo "  ${label} (${name}): ${current} -> ${target}"
@@ -233,10 +238,20 @@ if d.get("id"):
 
 echo "Current limits and requested targets:"
 submitted=0
-request_increase cores "${CORES_TARGET}" "Total Regional Cores" && submitted=1
-request_increase lowPriorityCores "${LOW_PRIORITY_TARGET}" "LowPriorityCores (spot)" && submitted=1
+failed=0
+attempt() {
+    local rc=0
+    request_increase "$@" || rc=$?
+    case "${rc}" in
+        0) submitted=1 ;;
+        2) ;;                 # already satisfied; not a failure
+        *) failed=1 ;;
+    esac
+}
+attempt cores "${CORES_TARGET}" "Total Regional Cores"
+attempt lowPriorityCores "${LOW_PRIORITY_TARGET}" "LowPriorityCores (spot)"
 if [[ -n "${FAMILY}" ]]; then
-    request_increase "${FAMILY}" "${FAMILY_TARGET}" "VM family" && submitted=1
+    attempt "${FAMILY}" "${FAMILY_TARGET}" "VM family"
 fi
 
 echo
@@ -252,6 +267,13 @@ human reviews; both are normal. Poll with:
 The azure real-cloud job stays red until the new limits are live. Re-run this
 script with no arguments to see the current limits at any time.
 EOF
+elif [[ "${failed}" == "1" ]]; then
+    echo "Nothing was submitted, and at least one quota is still short of its"
+    echo "target — see the message above it for which, and why."
+    exit 1
 else
     echo "Nothing was submitted — every quota already meets its target."
+fi
+if [[ "${failed}" == "1" ]]; then
+    exit 1
 fi
