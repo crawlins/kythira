@@ -1,0 +1,25 @@
+{
+  "schema": "kythira.perf.provenance/1",
+  "captured_at": "2026-09-22T12:43:11Z",
+  "provider": "aws",
+  "region": "us-east-1",
+  "availability_zone": "us-east-1a",
+  "instance_type": "c6i.2xlarge",
+  "instance_id": "i-09aecfc7a69816e0b",
+  "image": "ami-025d99823a4caad37",
+  "tenancy": "default",
+  "placement": "kythira-perf-local-1790080929-1706843",
+  "guest_observed": {
+    "vcpu": 8,
+    "cpu_model": "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz",
+    "memory_mib": 15700,
+    "kernel": "7.0.0-1012-aws",
+    "arch": "x86_64"
+  },
+  "provider_stated": {
+    "network_performance": "Up to 12.5 Gigabit",
+    "storage_class": null,
+    "storage_iops": null
+  },
+  "burstable": false
+}

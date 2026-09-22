@@ -1,0 +1,1 @@
+{"node_id":1,"peers":[{"peer":2,"rtt_samples":11,"rtt_median_us":694.626,"probe_bytes":1048576,"bandwidth_mib_per_sec":274.094},{"peer":3,"rtt_samples":11,"rtt_median_us":930.662,"probe_bytes":1048576,"bandwidth_mib_per_sec":237.192}]}

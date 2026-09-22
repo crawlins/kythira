@@ -318,7 +318,14 @@ unverified completion claim.
 
 ## Known Follow-ups
 
-- **Shape 2 on `c6i.2xlarge` — the placement sweep has to be retaken, and
+- **RETAKEN, September 21-22, 2026 — seven c6i runs, and the sweep now says
+  one thing it could never say before.** Data in
+  `doc/data/tier-e-shape-2/sweep-c6i-retake-*`. Results and what they do and
+  do not license are at the end of this entry; the original statement of the
+  problem follows first, because the reasoning in it is what the retake was
+  designed against.
+
+  **Shape 2 on `c6i.2xlarge` — the placement sweep has to be retaken, and
   repeated (September 3, 2026).** Everything in
   `doc/data/tier-e-shape-2/` on `c5.2xlarge` compares provisionings: the
   single-AZ row repeated with nothing changed returned 573.0 ops/sec against
@@ -345,6 +352,109 @@ unverified completion claim.
   The task-11 response-driven-pacing reading (4.39/4.18 round trips) is
   withdrawn, not refuted: restoring it needs this sweep, with repeats, and an
   origin that does not share CPU with the hosts.
+
+  ### What the retake found (September 22, 2026)
+
+  Seven runs, `c6i.2xlarge`, us-east-1, identical workload throughout (400
+  operations, 4 in flight, 11 repetitions, 4 groups, 128 B, 2 ms tick,
+  cpp-httplib) so that placement and durability are the only swept axes. Every
+  run carries a **Tier C arm** — all processes on one instance over loopback —
+  which is what makes the rest of this readable.
+
+  | condition | n | Tier E | Tier C | E/C | RTT |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | cluster | 2 | 1815.2, 1480.1 | 1647.0, 1637.9 | **0.904-1.102** | 101-125 us |
+  | single-az | 1* | 994.3 | 1295.0 | 0.768 | 136 us |
+  | multi-az | 2 | 1014.2, 940.3 | 1460.5, 1462.0 | **0.643-0.694** | 427-468 us |
+  | durable (file-barrier) | 1 | 225.1 | 227.1 | 0.991 | — |
+
+  \* a second single-AZ observation exists (1618.9, September 21) but has no
+  Tier C arm and cannot enter the normalised column. See "the flag that is not
+  in `run.json`" below.
+
+  **1. The machine is not the variable, and that is established rather than
+  assumed.** Across repeats the Tier C arm holds to **0.10%** (multi-az) and
+  **0.55%** (cluster) while Tier E moves **7.3%** and **18.5%**. Every "we
+  drew a slower box" explanation for this sweep's irreproducibility is
+  therefore dead. That is what the arm buys.
+
+  **2. E/C localises the variance; it does NOT cancel it.** Because Tier C is
+  nearly constant, the ratio inherits Tier E's swing almost exactly (cluster
+  E/C moved 18.0% while its machine moved 0.55%). Do not treat E/C as a
+  correction factor — it is a diagnostic that says *where* the noise is, and
+  the answer is the network/multi-machine layer.
+
+  **3. THE ONE PLACEMENT CLAIM THIS SWEEP SUPPORTS: a cluster placement group
+  beats three availability zones, and the ranges do not overlap.** Cluster's
+  worst normalised row (0.904) still exceeds multi-AZ's best (0.694) by 30%,
+  across two repeats each with the machine controlled. RTT agrees in
+  direction, 101-125 us against 427-468. **This is the first placement
+  statement in this project's history that is not confounded by hardware
+  draw**, and it is the claim c5 could never support.
+
+  **4. What it does NOT support: anything finer.** Single-AZ sits between the
+  two at 0.768, but with one normalised sample and a within-condition swing of
+  up to 18.5%, a band around it reaches both cluster's floor and multi-AZ's
+  ceiling. **Single-AZ is unresolved against either.** Note also that its raw
+  Tier E across three runs is 1461.0 / 1618.9 / 994.3 — a 63% spread — so the
+  September 3 -> 21 repeat's failure to reproduce (+10.81%) is unremarkable
+  next to the condition's own variability. A plausible mechanism, offered as a
+  hypothesis and not a finding: a cluster placement group *constrains*
+  proximity and its RTT is correspondingly tight, while plain single-AZ
+  constrains nothing inside the zone. RTT does **not** predict throughput
+  within single-AZ (194 us gave 1461, 136 us gave 994), so the mechanism is
+  unproven.
+
+  **5. Tier C tracks placement type: 1295 (single-az), ~1461 (multi-az), ~1640
+  (cluster), a 27% range.** The arm runs entirely on one instance, so this says
+  the placement strategy influences *which hardware you are given*, not merely
+  how far apart it is. Worth knowing before reading any raw Tier E number
+  across placements.
+
+  **6. The durable row's instability WAS a first-window effect, in the
+  predicted direction.** Item 3 above asked for the `--warmup` pass-through
+  before anything was read into the c5 row (217.6 ops/sec, UNSTABLE at 13.44%
+  spread, warm-up 50). With a full window discarded (`--warmup 400`) the same
+  configuration is **225.1 ops/sec, stable, spread 3.14%** — the spread
+  collapses 4.3x while the headline moves 3.4%. The caveat rule 4 demands: the
+  hardware changed too, so the stabilisation is not attributable to the
+  warm-up *alone*; what makes it more than suggestive is that only the spread
+  moved. Its **E/C is 0.991** — the durable row performs the same whether the
+  hosts are on three machines or one, because it is fsync-bound and the
+  network is irrelevant to it. Tier C durable 227.1 against Tier C memory
+  1295-1647 puts the fsync cost at roughly **6x**.
+
+  **7. Requirement 4.5's ratio constant is wrong, now with three more
+  witnesses.** Genuinely separate machines read 2.19x, 2.40x and 4.51x their
+  own loopback and are labelled "container-shaped"; only the three-AZ runs
+  (10.17x) trip "multi-machine". The instrument is good and the constant is
+  mis-set, exactly as `multi-machine-placement` already recorded.
+
+  **The task-11 pacing reading is still withdrawn.** A differential estimate
+  (delta-p50 / delta-RTT) looked clean on the two single-AZ c6i rows at 2.00
+  round trips, and it does not survive contact with the rest: across all rows
+  p50 and RTT are not monotonically related at all.
+
+  ### Two method notes that cost real runs
+
+  - **The SSH CIDR must be derived per run, not once.** This box's egress
+    moved mid-sweep from an AirVPN exit to the WAN, the security group still
+    admitted the old address, and two runs died with "sshd never answered
+    within 300s". Both tore down clean; the cost was ~$0.30 and the wall
+    clock. Derive it before every run.
+  - **`run.json`'s workload block does not capture every flag that shaped the
+    row.** The September 3 rows were taken with `--also-tier-c`; that flag
+    appears in the output only as `tier_c_comparison_taken: true`, outside the
+    workload block, and reconstructing the invocation from the workload block
+    alone silently drops the Tier C arm. The September 21 run lost its arm
+    exactly that way and cannot enter the normalised comparison. **Read
+    `tier_c_comparison_taken` when reproducing a row.**
+
+  ### Still owed
+
+  A second single-AZ run **with** the arm, which is the only thing standing
+  between this sweep and a three-way placement ordering. Everything else in
+  items 1 to 4 above is done.
 
 - **CI has never built warning-free, and the "no warnings" claim in Current
   Status is now settled — measured, attributed, and *not* fixed (September 5,
