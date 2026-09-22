@@ -1,0 +1,22 @@
+    run 1/11: 1619.3 ops/sec
+    run 2/11: 1625.5 ops/sec
+    run 3/11: 1618.9 ops/sec
+    run 4/11: 1575.2 ops/sec
+    run 5/11: 1602.5 ops/sec
+    run 6/11: 1665.1 ops/sec
+    run 7/11: 1638.6 ops/sec
+    run 8/11: 1606.9 ops/sec
+    run 9/11: 1603.9 ops/sec
+    run 10/11: 1542.7 ops/sec
+    run 11/11: 1620.6 ops/sec
+  httplib / application/json / write: nodes=3 groups=4 value=128B in_flight=4 tick=2ms
+      tier:     Tier E (one host per machine or container) — a like-for-like comparison with an external number is permitted at this tier (Requirement 3.3)
+      routing:  submit_command(key, ...), leader resolved by key
+      headline: 1618.9 ops/sec (median of 11 runs) | min 1542.7 max 1665.1 | spread 4.7% of median (p50 spread 6.7%)
+      verdict:  stable (judged on the throughput spread)
+      median run: p50=2394.6us p95=3583.8us p99=n/a (400 samples)
+      counts:   50 warm-up operations discarded per run, 400 offered per measured run (Requirement 6.1)
+      replication: NOT MEASURED at this tier — the host process is deliberately uninstrumented (Requirement 8.2 keeps measurement counters out of the measured process), so these columns are absent rather than zero
+      placement: single-az; region us-east-1; hosts 1=us-east-1a 2=us-east-1a 3=us-east-1a | driver c6i.2xlarge in us-east-1a; inter-node RTT 92.0 us vs loopback 42.0 us (container-shaped)
+      elections: 0 of 11 measured windows contained one. Reported, never asserted — a window that contained an election is not a window measuring a workload, and a row that cannot say whether it did cannot be read at all.
+      artifacts: /tmp/results/multi_raft_bench_20260921_235827.{csv,json}

@@ -1,0 +1,26 @@
+run-tier-c-row.sh: 3 host processes started; logs under /tmp/kythira-tier-c-KcmEo2
+  network probe from node 1: {"node_id":1,"peers":[{"peer":2,"rtt_samples":11,"rtt_median_us":267.878,"probe_bytes":1048576,"bandwidth_mib_per_sec":593.131},{"peer":3,"rtt_samples":11,"rtt_median_us":272.396,"probe_bytes":1048576,"bandwidth_mib_per_sec":592.363}]}
+  network probe from node 2: {"node_id":2,"peers":[{"peer":1,"rtt_samples":11,"rtt_median_us":260.709,"probe_bytes":1048576,"bandwidth_mib_per_sec":659.995},{"peer":3,"rtt_samples":11,"rtt_median_us":273.82,"probe_bytes":1048576,"bandwidth_mib_per_sec":912.948}]}
+  network probe from node 3: {"node_id":3,"peers":[{"peer":1,"rtt_samples":11,"rtt_median_us":260.242,"probe_bytes":1048576,"bandwidth_mib_per_sec":665.24},{"peer":2,"rtt_samples":11,"rtt_median_us":298.306,"probe_bytes":1048576,"bandwidth_mib_per_sec":893.482}]}
+    run 1/11: 228.0 ops/sec
+    run 2/11: 226.4 ops/sec
+    run 3/11: 228.5 ops/sec
+    run 4/11: 227.6 ops/sec
+    run 5/11: 230.4 ops/sec
+    run 6/11: 228.7 ops/sec
+    run 7/11: 225.4 ops/sec
+    run 8/11: 226.4 ops/sec
+    run 9/11: 227.1 ops/sec
+    run 10/11: 225.7 ops/sec
+    run 11/11: 226.2 ops/sec
+  httplib / application/json / write: nodes=3 groups=4 value=128B in_flight=4 tick=2ms
+      tier:     Tier C (one host process per node, one machine, driver in its own process) — a like-for-like comparison with an external number is permitted at this tier (Requirement 3.3)
+      routing:  submit_command(key, ...), leader resolved by key
+      headline: 227.1 ops/sec (median of 11 runs) | min 225.4 max 230.4 | spread 1.4% of median (p50 spread 4.4%)
+      verdict:  stable (judged on the throughput spread); machine was not quiet at start
+      median run: p50=17000.2us p95=24649.5us p99=n/a (400 samples)
+      counts:   400 warm-up operations discarded per run, 400 offered per measured run (Requirement 6.1)
+      replication: NOT MEASURED at this tier — the host process is deliberately uninstrumented (Requirement 8.2 keeps measurement counters out of the measured process), so these columns are absent rather than zero
+      placement: all host processes and the driver on ip-172-31-15-220, loopback
+      elections: 0 of 11 measured windows contained one. Reported, never asserted — a window that contained an election is not a window measuring a workload, and a row that cannot say whether it did cannot be read at all.
+      artifacts: /tmp/tierc/multi_raft_bench_20260922_125640.{csv,json}
