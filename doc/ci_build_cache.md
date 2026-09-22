@@ -44,14 +44,21 @@ seconds and there are tens of thousands.
 
 ## Who may write
 
-**Only a push to `main`.** Everything else — every pull request, every push to
-every other branch — reads.
+**Only code that is on `main`.** Concretely: a `push` to `main`, a `schedule`
+run (which always runs on the default branch), and a `workflow_dispatch`
+whose ref *is* `main`. Everything else — every pull request, every push to
+every other branch, and a dispatch aimed at a feature branch — reads.
+
+The ref is pinned in every writer pattern, which is what makes the two added
+events safe: a dispatch names its own ref, so trusting the event alone would
+let any branch write.
 
 This is enforced twice, and the second one is the one that matters:
 
 1. `.github/actions/oci-build-cache/` picks the read-write key for
-   `push:main` and the read-only key for everything else. The match on `main`
-   is exact; `main-experiment` gets the read-only key.
+   `push:main`, `schedule:main` and `workflow_dispatch:main`, and the
+   read-only key for everything else. The match on `main` is exact;
+   `main-experiment` gets the read-only key.
 2. IAM refuses the rest. `kythira-build-cache-ro` holds `OBJECT_READ` and
    `OBJECT_INSPECT` and nothing else, so a bug in that case statement is
    answered with a 403 by the service rather than by poisoning a cache other
@@ -128,8 +135,14 @@ into the job summary. What to look at:
 - **Non-cacheable requests, with sccache's own reason string.** A count equal
   to the number of `kythira_test_pch` users means the precompiled header is
   defeating the cache and the compiler cache is covering nothing that matters.
-- **Cache write errors.** Expected and harmless on a pull request: that is the
-  read-only key being refused. On a `push` to `main` they are a real problem.
+- **Cache write errors.** Should now be **zero everywhere**, and are worth
+  investigating wherever they are not. The action sets
+  `SCCACHE_S3_RW_MODE=READ_ONLY` alongside the read-only key, so a job that
+  cannot write no longer tries: previously a read-only leg logged one write
+  error per cache miss (558 of them on the 2026-09-14 real-cloud run) and
+  that noise was written off as expected, which left nothing to read the
+  number against. On a writer leg they were always a real problem; now they
+  are on every leg.
 - **Cache read/write bytes.** These are the egress figures the cost estimate
   in `doc/sccache_dogfood_cost_estimate.md` says to falsify first.
 
