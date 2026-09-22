@@ -6,6 +6,7 @@
       "ess:DescribeScalingActivities",
       "ess:DescribeScalingConfigurations",
       "ess:ModifyScalingGroup",
+      "ess:DetachInstances",
       "ess:RemoveInstances"
     ],
     "Resource": "*",
