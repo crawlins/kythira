@@ -109,6 +109,33 @@ Backends") reuses the same federated CI identity but has its own toggle,
 Cost per run is effectively zero (one custom metric datapoint); ingestion
 into the resource is billed by volume, and nothing needs teardown.
 
+## vCPU quota
+
+`request-quota-increase.sh` raises the two Compute quotas the `azure` job
+needs in `eastus`, and reports what Microsoft did with the request.
+
+```sh
+scripts/ci-cloud-credentials/azure/request-quota-increase.sh [--dry-run]
+```
+
+**Why it exists.** `azure_vm_quorum_manager_real_test` failed on every
+scheduled run from August 24, 2026 on quota, not on code. Measured on run
+34841010171 (September 14, 2026), one test case hit both ceilings in turn:
+the spot attempt was refused by `LowPriorityCores` (limit 3, usage 2,
+required +2), and the on-demand escalation it correctly fell back to was
+refused by `Total Regional Cores` (limit 10, usage 10, required +2). The
+suite provisions five 2-vCPU VMs per cluster, so a run consumes the entire
+regional allowance before it asks for anything else.
+
+The defaults ask for 20 and 10 rather than the 12 and 4 the 409s cite,
+because `zone_outage_during_rolling_deployment` provisions replacements
+while the originals are still being deleted — a run's peak is above its
+steady state, and each request is a round trip through Microsoft.
+
+Safe to re-run: a target at or below the current limit is reported and never
+submitted, so running it with no arguments is also how to read the current
+limits.
+
 ## Object-persistence container (cloud key-object persistence spec)
 
 `provision-object-persistence-container.sh` creates the storage account and
