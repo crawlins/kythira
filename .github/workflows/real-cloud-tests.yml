@@ -2214,7 +2214,16 @@ jobs:
 
           # The scaling group must be back at zero. A non-zero TotalCapacity
           # means an instance outlived teardown and is being billed.
-          raw=$(aliyun ess DescribeScalingGroups --RegionId "${{ vars.ALIBABA_CI_REGION }}" \
+          # `--region` is the CLI's own configuration and is separate from
+          # the `--RegionId` API parameter: without it the CLI refuses with
+          # "region can't be empty" before issuing any call, because CI
+          # supplies credentials through the environment and has no profile
+          # to take a region from. Reproduced locally with an empty HOME and
+          # env-only credentials, which fails exactly as CI did and succeeds
+          # with this flag.
+          raw=$(aliyun ess DescribeScalingGroups \
+            --region "${{ vars.ALIBABA_CI_REGION }}" \
+            --RegionId "${{ vars.ALIBABA_CI_REGION }}" \
             --ScalingGroupId.1 "${{ vars.ALIBABA_SCALING_GROUP_ID }}") \
             || audit_failed "the DescribeScalingGroups call failed"
           capacity=$(printf '%s' "${raw}" \
