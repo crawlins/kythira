@@ -616,12 +616,71 @@ jobs:
           count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
             || audit_failed "DescribeInstances returned a response this step could not parse"
           [ -n "${count}" ] || audit_failed "the parsed instance count was empty"
+          found=0
           if [ "${count}" -ne 0 ]; then
             echo "::error::Post-run audit found ${count} non-terminated instance(s) tagged kythira:managed-by=ec2_quorum_manager — teardown did not complete. They are being billed." >&2
             printf '%s' "${leaked}" | jq . >&2
-            exit 1
+            found=1
+          else
+            echo "instances: clean (no non-terminated ec2_quorum_manager instances)."
           fi
-          echo "Post-run audit clean: no non-terminated ec2_quorum_manager instances in ${AWS_DEFAULT_REGION}."
+
+          # Instances are not the only thing these tests create, and were not
+          # the thing that actually leaked. The real-EC2 fixture builds a
+          # whole network per case -- VPC, subnets, internet and NAT
+          # gateways, route tables, NACLs -- each tagged Name=kyt-<uuid>-*,
+          # and tears them down in-process. A case that dies partway, or a
+          # delete that fails on a lingering dependency, orphans the network
+          # with nothing left that can find it again: until this commit the
+          # bundle's IAM policy granted Create/Delete for all of it and no
+          # Describe at all, so neither teardown nor any audit could
+          # enumerate what it had lost track of.
+          #
+          # Measured on 2026-09-22: 19 `kyt-*-vpc` VPCs had accumulated in
+          # us-east-1 and the run failed with "CreateVpc: The maximum number
+          # of VPCs has been reached", while the instance audit above --
+          # truthfully -- reported clean.
+          #
+          # NAT gateways are checked separately and first among the network
+          # resources because they are the ones that cost money by the hour;
+          # a leaked VPC is free and merely exhausts a quota.
+          nat=$(aws ec2 describe-nat-gateways \
+            --filter 'Name=tag:Name,Values=kyt-*' 'Name=state,Values=available,pending' \
+            --query 'NatGateways[].{id:NatGatewayId,state:State,vpc:VpcId,created:CreateTime}' \
+            --output json) || audit_failed "the DescribeNatGateways call failed"
+          nat_count=$(printf '%s' "${nat}" | jq 'if . == null then 0 else length end') \
+            || audit_failed "DescribeNatGateways returned a response this step could not parse"
+          [ -n "${nat_count}" ] || audit_failed "the parsed NAT gateway count was empty"
+          if [ "${nat_count}" -ne 0 ]; then
+            echo "::error::Post-run audit found ${nat_count} NAT gateway(s) tagged kyt-* — these bill hourly." >&2
+            printf '%s' "${nat}" | jq . >&2
+            found=1
+          else
+            echo "nat gateways: clean."
+          fi
+
+          # A denial here means the role predates this bundle's
+          # ec2:DescribeVpcs grant; re-run
+          # scripts/ci-cloud-credentials/aws/provision-oidc-role.sh. It is
+          # reported as the audit not running rather than as clean, because
+          # that is what it is.
+          vpcs=$(aws ec2 describe-vpcs \
+            --filters 'Name=tag:Name,Values=kyt-*-vpc' \
+            --query 'Vpcs[].{id:VpcId,cidr:CidrBlock,name:Tags[?Key==`Name`]|[0].Value}' \
+            --output json) || audit_failed "the DescribeVpcs call failed — if this is an authorization error, re-run provision-oidc-role.sh to pick up the ec2:DescribeVpcs grant"
+          vpc_count=$(printf '%s' "${vpcs}" | jq 'if . == null then 0 else length end') \
+            || audit_failed "DescribeVpcs returned a response this step could not parse"
+          [ -n "${vpc_count}" ] || audit_failed "the parsed VPC count was empty"
+          if [ "${vpc_count}" -ne 0 ]; then
+            echo "::error::Post-run audit found ${vpc_count} kyt-*-vpc VPC(s) — teardown did not complete. These do not bill, but the per-region VPC quota is finite and CreateVpc fails for every later run once it is reached." >&2
+            printf '%s' "${vpcs}" | jq . >&2
+            found=1
+          else
+            echo "vpcs: clean."
+          fi
+
+          [ "${found}" -eq 0 ] || exit 1
+          echo "Post-run audit clean: no leaked instances, NAT gateways or VPCs in ${AWS_DEFAULT_REGION}."
 
   # ── AWS: ca_cluster_node AMI build (Packer) ─────────────────────────────
   # Independent of the `aws` job above: builds a new AMI (and its backing
