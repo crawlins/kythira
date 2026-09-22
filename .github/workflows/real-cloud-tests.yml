@@ -1968,14 +1968,49 @@ jobs:
             echo "ess-quorum bundle did not run; no instances could have been created."
             exit 0
           fi
-          timeout 300 curl -sSL -o /tmp/aliyun.tgz \
-            https://github.com/aliyun/aliyun-cli/releases/latest/download/aliyun-cli-linux-latest-amd64.tgz
-          tar -xzf /tmp/aliyun.tgz -C /tmp && sudo mv /tmp/aliyun /usr/local/bin/
+          # Everything below distinguishes "the audit could not run" from
+          # "the audit found instances", and fails loudly for both. On
+          # 2026-09-14 it failed in the one way that matters: the download
+          # 404'd, `tar` unpacked nothing, `aliyun` was not found, and the
+          # capacity check surfaced as a JSONDecodeError traceback. The step
+          # went red without ever confirming OR ruling out a leak -- and a
+          # broken probe is indistinguishable at a glance from the leak
+          # report it exists to produce. A leak here bills indefinitely, so
+          # the two outcomes must never again look the same.
+          audit_failed() {
+            echo "::error::THE AUDIT DID NOT RUN ($1). This is not a clean result: instances may have outlived teardown and be billing now. Check scaling group ${{ vars.ALIBABA_SCALING_GROUP_ID }} in the ESS console for ${{ vars.ALIBABA_CI_REGION }} by hand." >&2
+            exit 1
+          }
+
+          # Upstream dropped the `aliyun-cli-linux-latest-amd64.tgz` alias
+          # this step used to fetch; release assets are versioned now
+          # (`aliyun-cli-linux-3.5.1-amd64.tgz`), so the tag is resolved
+          # rather than guessed. `-f` matters as much as the URL: without it
+          # curl wrote 9 bytes of "Not Found" into the tarball and returned
+          # success, which is how a 404 became a Python traceback four steps
+          # later instead of a failed download here.
+          tag=$(timeout 60 curl -fsSL https://api.github.com/repos/aliyun/aliyun-cli/releases/latest \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))') \
+            || audit_failed "could not resolve the aliyun-cli release tag"
+          [ -n "${tag}" ] || audit_failed "the resolved aliyun-cli release tag was empty"
+
+          timeout 300 curl -fsSL -o /tmp/aliyun.tgz \
+            "https://github.com/aliyun/aliyun-cli/releases/download/v${tag}/aliyun-cli-linux-${tag}-amd64.tgz" \
+            || audit_failed "could not download aliyun-cli ${tag}"
+          tar -xzf /tmp/aliyun.tgz -C /tmp || audit_failed "the aliyun-cli tarball did not unpack"
+          [ -x /tmp/aliyun ] || audit_failed "the aliyun-cli tarball contained no aliyun binary"
+          sudo mv /tmp/aliyun /usr/local/bin/
+          command -v aliyun >/dev/null || audit_failed "aliyun is not on PATH after install"
+
           # The scaling group must be back at zero. A non-zero TotalCapacity
           # means an instance outlived teardown and is being billed.
-          capacity=$(aliyun ess DescribeScalingGroups --RegionId "${{ vars.ALIBABA_CI_REGION }}" \
-            --ScalingGroupId.1 "${{ vars.ALIBABA_SCALING_GROUP_ID }}" \
-            | python3 -c 'import json,sys; g=json.load(sys.stdin)["ScalingGroups"]["ScalingGroup"]; print(g[0]["TotalCapacity"] if g else 0)')
+          raw=$(aliyun ess DescribeScalingGroups --RegionId "${{ vars.ALIBABA_CI_REGION }}" \
+            --ScalingGroupId.1 "${{ vars.ALIBABA_SCALING_GROUP_ID }}") \
+            || audit_failed "the DescribeScalingGroups call failed"
+          capacity=$(printf '%s' "${raw}" \
+            | python3 -c 'import json,sys; g=json.load(sys.stdin)["ScalingGroups"]["ScalingGroup"]; print(g[0]["TotalCapacity"] if g else 0)') \
+            || audit_failed "DescribeScalingGroups returned a response this step could not parse"
+          [ -n "${capacity}" ] || audit_failed "the parsed TotalCapacity was empty"
           echo "scaling group TotalCapacity after the run: ${capacity}"
           if [ "${capacity}" != "0" ]; then
             echo "::error::Post-run audit found ${capacity} instance(s) still in the scaling group — teardown did not complete. They are being billed; remove them via the ESS console." >&2
