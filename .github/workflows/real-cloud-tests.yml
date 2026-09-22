@@ -398,6 +398,48 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           sccache --show-stats
 
+      # Hand this job's AWS identity back to AWS before any test runs.
+      #
+      # `.github/actions/oci-build-cache` writes AWS_ACCESS_KEY_ID,
+      # AWS_SECRET_ACCESS_KEY, AWS_REGION and AWS_ENDPOINT_URL into
+      # $GITHUB_ENV so vcpkg's x-aws backend and sccache can reach Oracle's
+      # S3-compatible API. $GITHUB_ENV is job-wide, so from that step onward
+      # this job carried Oracle's access key beside the AWS_SESSION_TOKEN the
+      # OIDC step set near the top -- a credential pair belonging to two
+      # different clouds. The AWS SDK's default chain reads all three from
+      # the environment, so `aws_s3_object_persistence_real_test`'s
+      # reachability preflight could not authenticate, the suite skipped with
+      # 77, and the bundle's fail-closed guard reported it as the red seen on
+      # the September 14, 2026 scheduled run.
+      #
+      # Both halves below were measured rather than assumed:
+      #
+      # - The endpoint matters only to the AWS CLI, not to the C++ tests.
+      #   The aws-sdk-cpp build this repo links carries no AWS_ENDPOINT_URL
+      #   string at all (`strings libaws-cpp-sdk-core.a`), and the tests set
+      #   `aws_client_config::region` explicitly rather than reading
+      #   AWS_REGION. But the AMI-resolution steps further down *are* the
+      #   CLI, and on aws-cli/2.35.11 an AWS_ENDPOINT_URL of
+      #   `https://oracle.example.com` sends DescribeImages to
+      #   `https://oracle.example.com/`. They would have broken next.
+      # - Clearing it to empty is enough: the same CLI with
+      #   AWS_ENDPOINT_URL='' resolves DescribeImages to
+      #   `https://ec2.us-east-1.amazonaws.com/`, i.e. empty is read as
+      #   unset rather than as an empty endpoint.
+      - name: Clear the build cache's Oracle endpoint
+        run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
+
+      # Re-assume the CI role, which rewrites AWS_ACCESS_KEY_ID,
+      # AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN and AWS_REGION as one
+      # consistent set. Nothing after this point uses the build cache, so
+      # trading Oracle's credentials away here costs nothing.
+      - name: Re-configure AWS credentials for the test steps (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-real-cloud-tests
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
       - name: Fail closed if a real-EC2 test binary is missing
         run: |
           for t in aws_quorum_manager_real_ec2_test ca_cluster_node_real_ec2_test ca_cluster_node_rpc_tls_real_ec2_test; do
