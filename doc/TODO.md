@@ -318,6 +318,39 @@ unverified completion claim.
 
 ## Known Follow-ups
 
+- **`membership_change_leader_crash_property_test` failed on `main` under
+  the boost backend, three times in a row, and the red is masked
+  (September 22, 2026 — open).** Run
+  [35669336095](https://github.com/crawlins/kythira/actions/runs/35669336095),
+  job `Full suite (boost future backend)`, commit `3315822`, test 178.
+  - **Three consecutive failures, not a blip.** That job runs `ctest
+    --repeat until-pass:3`, so the test was attempted three times and failed
+    every time before the step reported it. Anything describing this as an
+    occasional flake has to account for that.
+  - **It is masked, which is why it needs an entry rather than a re-run.**
+    The failure was never retried on `3315822`; the next commit, `eb777c2`,
+    went green on its own run, so the workflow history reads as recovered
+    and nothing points at the failing commit any more. It was found by
+    reading logs during an unrelated investigation, which is the same way
+    the Alibaba leak surfaced, and is not a repeatable process.
+  - **Not previously tracked.** The name appears once in this file, inside
+    the July 2026 Folly-decoupling entry, where boost was recorded as
+    245/247 with this test "confirmed flaky rather than a regression by 4
+    clean standalone reruns immediately after". That was an aside in an
+    entry about something else; two months later it is still failing and
+    still has no owner.
+  - **It is the second boost-leg instability, and that matters more than
+    either alone.** `raft_commit_implies_replication_property_test` is
+    already tracked below as 13/25 to 19/25 clean under boost depending on
+    machine load. Two independent flaky tests on one leg is what makes a red
+    there cheap to wave through, which is the condition under which a real
+    regression gets absorbed.
+  - **What would settle it**, in order: reproduce on `3315822` under boost
+    rather than on `main`, since the tree has moved; then determine whether
+    the failure is the same assertion each time or several, which decides
+    whether this is one bug or a suite-level timing sensitivity like the
+    entry below.
+
 - **RETAKEN, September 21-22, 2026 — seven c6i runs, and the sweep now says
   one thing it could never say before.** Data in
   `doc/data/tier-e-shape-2/sweep-c6i-retake-*`. Results and what they do and
