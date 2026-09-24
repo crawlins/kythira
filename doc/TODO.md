@@ -318,6 +318,62 @@ unverified completion claim.
 
 ## Known Follow-ups
 
+- **`gcp_privateca_provider_real_test` fails 85 minutes into the job on a 403
+  whose message names the wrong cause (September 2026 — open, now
+  instrumented).** Every scheduled real-cloud run since the September 14, 2026
+  one has died here, seconds into the step, with:
+
+        external_account_credentials.cc:394] Fetch external account
+        credentials access token: UNAVAILABLE: ... status 403
+        {"source":"actions-run-service",
+         "errorMessage":"runner does not have permissions to generate id token"}
+
+  - **The message invites a fix that is already in place.** It reads as a
+    missing `permissions: id-token: write`; the `gcp` job grants it, and the
+    same credentials had succeeded twice in the preceding minutes of the same
+    job. Two fixes derived from reading this line have now failed, which is
+    why the next step is a measurement and not a third one.
+  - **What the step timings measure.** Both failures land ~85 minutes after
+    *job start*, not after the `auth` step:
+
+    | run | job start | privateca failed | offset |
+    |---|---|---|---|
+    | [34841010171](https://github.com/crawlins/kythira/actions/runs/34841010171) | 11:59:46Z | 13:24:55Z | 85m09s |
+    | [35762998560](https://github.com/crawlins/kythira/actions/runs/35762998560) | 17:49:13Z | 19:14:12Z | 84m59s |
+
+    The successes bound it from below in the same two runs: the GCS bundle
+    exchanged at 68m50s and passed, and the quorum-manager bundle exchanged at
+    ~69m40s and passed. **Treat the ten-second agreement with care** — the
+    build is sccache-warm and took nearly the same time in both runs, so these
+    are not two independent samples of a boundary. They are two samples that
+    the boundary lies between ~70 and ~85 minutes.
+  - **Why re-authenticating did not help.** `google-github-actions/auth`
+    rewrites the credential file, but that file's `credential_source` carries
+    `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, which the runner sets once at job start
+    and which no action can refresh. The re-auth step added for this took one
+    second and never exchanged anything, so its success was never evidence.
+  - **The hypothesis, stated as one.** `ACTIONS_ID_TOKEN_REQUEST_TOKEN` has a
+    lifetime measured from job start, and the privateca bundle is simply the
+    last thing in the longest job. It fits every observation, including the
+    otherwise-awkward September 14 exchange that worked 68 minutes after auth.
+    It is unconfirmed.
+  - **Now instrumented rather than argued.**
+    `scripts/ci-cloud-credentials/gcp/probe-id-token.sh` runs at three points
+    in the `gcp` job — job start, after the build, and between the two bundles
+    — and prints the request token's own `iat`/`exp` claims and the live HTTP
+    status of an exchange. It never prints a token, and never exits non-zero:
+    a diagnostic that can redden a run is the failure mode this file already
+    records three times. The next run of the suite answers the question with
+    numbers.
+  - **What each outcome would mean.** A probe reporting an expired or
+    near-expired request token before the privateca step confirms the
+    lifetime, and the fix is then to stop the tests depending on a job-start
+    token that old — mint at the moment of use, or run the bundle earlier.
+    A probe reporting a *working* exchange immediately before a step that
+    fails two seconds later exonerates the token entirely and moves the
+    investigation inside `gcp_privateca_provider_real_test`. Either way the
+    third guess is not needed.
+
 - **`membership_change_leader_crash_property_test` failed on `main` under
   the boost backend, three times in a row, and the red is masked
   (September 22, 2026 — open).** Run
