@@ -171,4 +171,46 @@ else
     echo
 fi
 
+# ── Control: the same request with NO Authorization header ────────────────
+#
+# Added after run 36035268163 refuted the lifetime hypothesis this script was
+# written to test. That run measured, in the same second (epoch 1790276266):
+#
+#   this probe's exchange             HTTP 200, ID token minted, 286 minutes
+#                                     of request-token life remaining
+#   gcp_privateca_provider_real_test  403 "runner does not have permissions
+#                                     to generate id token"
+#
+# Same runner, same request token, same instant. Whatever separates them, it
+# is not the token's validity. The surviving difference is the caller: the
+# bundles that pass (GCS, Compute) go over google-cloud-cpp's REST path, and
+# the one that fails is gRPC-backed, failing inside gRPC C-core's own
+# `external_account_credentials.cc`.
+#
+# So the question becomes what gRPC's fetcher sends that curl does not, and
+# the cheapest discriminator is this: an UNAUTHENTICATED request to the
+# Actions token endpoint is refused with exactly the wording under
+# investigation. If the line below reports 403 with the same errorMessage,
+# then "runner does not have permissions" means "this request arrived with no
+# credential" -- and a fetcher that drops `credential_source.headers` would
+# produce precisely the observed failure while every REST client succeeds.
+#
+# It is a CONTROL, not a conclusion. It establishes what an unauthenticated
+# request looks like. It does not prove that is what gRPC sends.
+nobody="$(mktemp)"
+trap 'rm -f "${body}" "${nobody}"' EXIT
+
+nocode="$(curl -sS -o "${nobody}" -w '%{http_code}' --max-time 30 \
+    -H "Accept: application/json; api-version=2.0" \
+    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" 2>&1)" || nocode="curl-failed"
+
+say "CONTROL - same request with NO Authorization header: HTTP ${nocode}"
+if [[ "${nocode}" != "200" ]]; then
+    say "CONTROL body (first 400 bytes):"
+    head -c 400 "${nobody}" | sed "s/^/[id-token-probe: ${LABEL}] control: /"
+    echo
+fi
+say "Compare that body with the privateca failure's. Identical wording means"
+say "the 403 under investigation is what an unauthenticated request looks like."
+
 exit 0

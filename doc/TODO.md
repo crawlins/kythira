@@ -318,9 +318,9 @@ unverified completion claim.
 
 ## Known Follow-ups
 
-- **`gcp_privateca_provider_real_test` fails 85 minutes into the job on a 403
-  whose message names the wrong cause (September 2026 — open, now
-  instrumented).** Every scheduled real-cloud run since the September 14, 2026
+- **`gcp_privateca_provider_real_test` fails on a 403 whose message names the
+  wrong cause — token-lifetime theory REFUTED September 24, 2026; the split is
+  gRPC vs REST (open).** Every scheduled real-cloud run since the September 14, 2026
   one has died here, seconds into the step, with:
 
         external_account_credentials.cc:394] Fetch external account
@@ -352,11 +352,58 @@ unverified completion claim.
     `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, which the runner sets once at job start
     and which no action can refresh. The re-auth step added for this took one
     second and never exchanged anything, so its success was never evidence.
-  - **The hypothesis, stated as one.** `ACTIONS_ID_TOKEN_REQUEST_TOKEN` has a
-    lifetime measured from job start, and the privateca bundle is simply the
-    last thing in the longest job. It fits every observation, including the
-    otherwise-awkward September 14 exchange that worked 68 minutes after auth.
-    It is unconfirmed.
+  - **That hypothesis is now REFUTED — measured, September 24, 2026, run
+    [36035268163](https://github.com/crawlins/kythira/actions/runs/36035268163).**
+    It was that `ACTIONS_ID_TOKEN_REQUEST_TOKEN` has a lifetime measured from
+    job start. The probes killed it outright. In the **same second**
+    (epoch 1790276266 = 18:57:46Z):
+
+    | caller | result |
+    |---|---|
+    | `probe-id-token.sh` | **HTTP 200**, ID token minted |
+    | `gcp_privateca_provider_real_test` | **403**, same wording as always |
+
+    And the request token was nowhere near death: `iat` 17:34:40Z, `exp`
+    23:44:40Z — a **370-minute** total lifetime with **286 minutes
+    remaining**. Not 85 minutes, and not expiring. Three sessions of
+    time-based reasoning are closed: **the clock has nothing to do with it.**
+
+  - **What the same run shows instead: the split is by TRANSPORT.** Three
+    bundles, one job, one credential file, minutes apart:
+
+    | bundle | transport | result |
+    |---|---|---|
+    | object-persistence (GCS) | REST | passed |
+    | quorum-manager (Compute) | REST | passed |
+    | **privateca (CAS)** | **gRPC** | **failed** |
+
+    The error surfaces in `external_account_credentials.cc` preceded by an
+    `absl::InitializeLog` warning — that is **gRPC C-core's own** external-
+    account implementation, a different code path from the one
+    google-cloud-cpp's REST clients use. `doc/TODO.md` already recorded that
+    "PrivateCA is gRPC-backed"; nobody had connected it to this.
+
+  - **The live hypothesis, stated as one.** gRPC's fetcher does not send the
+    `credential_source.headers` that `google-github-actions/auth` writes into
+    the credential file — the `Authorization: Bearer <request token>` line.
+    An unauthenticated request to that endpoint is refused with exactly
+    "runner does not have permissions to generate id token", which is why the
+    message has misled three times: it *is* a permissions problem, just not
+    the job's. The request arrives carrying nothing.
+
+    **Unconfirmed.** `probe-id-token.sh` now issues the same request with the
+    header removed, as a control. If its body matches the privateca failure's
+    word for word, the mechanism is settled.
+
+  - **If confirmed, the fix is not a permission change.** Mint the ID token
+    in the job (curl, as the probe already does), write it to a file, and
+    point the external-account config's `credential_source` at that **file**
+    rather than a URL — gRPC handles file sources. Do not re-grant
+    `id-token: write`; it has been granted the whole time.
+
+  - **Note also: the minted ID token lives 300 seconds.** Short, and
+    previously unrecorded. It is not the cause here, but any future caching
+    of that token must respect five minutes.
   - **Now instrumented rather than argued.**
     `scripts/ci-cloud-credentials/gcp/probe-id-token.sh` runs at three points
     in the `gcp` job — job start, after the build, and between the two bundles
@@ -365,14 +412,11 @@ unverified completion claim.
     a diagnostic that can redden a run is the failure mode this file already
     records three times. The next run of the suite answers the question with
     numbers.
-  - **What each outcome would mean.** A probe reporting an expired or
-    near-expired request token before the privateca step confirms the
-    lifetime, and the fix is then to stop the tests depending on a job-start
-    token that old — mint at the moment of use, or run the bundle earlier.
-    A probe reporting a *working* exchange immediately before a step that
-    fails two seconds later exonerates the token entirely and moves the
-    investigation inside `gcp_privateca_provider_real_test`. Either way the
-    third guess is not needed.
+  - **The decision tree written here in advance resolved to its second
+    branch**, which is the reason to write one: "a probe reporting a *working*
+    exchange immediately before a step that fails two seconds later exonerates
+    the token entirely and moves the investigation inside the test." That is
+    exactly what happened, and no fourth guess was needed to get there.
 
 - **Alibaba Cloud refuses every ECS launch with `Forbidden.RiskControl`, and
   the account has a $0.00 balance (September 22, 2026 — open, needs an
