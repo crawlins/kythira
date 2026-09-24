@@ -1237,6 +1237,29 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
 
+      # ── Instrumenting the privateca 403 ──────────────────────────────────
+      #
+      # Three probes, at the job's start, after the build, and between the two
+      # bundles. Together they answer with numbers what two rounds of reading
+      # this job's logs could not: how long the runner's ID-token request token
+      # lives, and at which minute of the job an exchange stops working.
+      #
+      # The failure they exist for is documented in the script header and in
+      # the comment on "Re-authenticate" below. In short: the privateca bundle
+      # has died 85 minutes into the job twice, to within ten seconds, on a 403
+      # whose text names the wrong cause, while exchanges at 69 minutes passed
+      # in both runs. A lifetime on ACTIONS_ID_TOKEN_REQUEST_TOKEN would
+      # explain every observation, including why re-authenticating did not help
+      # -- but it is a hypothesis, and this repo has already spent two fixes on
+      # hypotheses derived from that log line.
+      #
+      # `continue-on-error` as well as the script's own unconditional exit 0:
+      # a diagnostic must not be able to redden a run, and belt-and-braces is
+      # cheap next to the cost of a real-cloud run lost to its own probe.
+      - name: Probe the Actions ID-token exchange (job start)
+        continue-on-error: true
+        run: scripts/ci-cloud-credentials/gcp/probe-id-token.sh 'job start'
+
       # ── System dependencies (identical to the aws job) ────────────────────
       - name: Install system dependencies
         run: |
@@ -1373,13 +1396,38 @@ jobs:
       # noting: it *skipped*, and the ctest summary said "100% tests passed"
       # before the bundle's fail-closed guard caught that nothing had run.
       #
-      # Re-running auth here closes the window rather than diagnosing the
-      # exact lifetime, which is not documented and not ours to rely on.
+      # CORRECTION (September 23, 2026). This step was added believing it
+      # closed the window. It does not, and the run that followed failed
+      # identically: `auth` rewrites the credential file, but the
+      # `credential_source` in that file carries the runner's
+      # ACTIONS_ID_TOKEN_REQUEST_TOKEN, which the runner sets once when the job
+      # starts and which no action can refresh. Re-running it re-writes a
+      # pointer to the same token. The step took one second and exchanged
+      # nothing, so its green tick was never evidence either.
+      #
+      # The offsets above are also measured from the wrong origin. Both
+      # failures are ~85 minutes after JOB START (85m09s and 84m59s), and the
+      # exchanges that worked were at 68m50s and ~69m40s of their jobs. That
+      # points at a lifetime on the request token rather than on anything
+      # `auth` writes -- a hypothesis, which the probes around this step exist
+      # to settle. See doc/TODO.md, Known Follow-ups.
+      #
+      # It is left in place: it costs a second, and it is the right thing to do
+      # for the parts of the credential chain it genuinely does refresh.
       - name: Re-authenticate to Google Cloud for the test steps
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+
+      # The point of comparison for the probe below. The bundles that pass do
+      # their exchange at roughly this minute of the job; the one that fails
+      # does its own a quarter of an hour later. If both probes report a
+      # working exchange and privateca still fails, the request token's
+      # lifetime is exonerated and the cause is inside the test.
+      - name: Probe the Actions ID-token exchange (after build, before tests)
+        continue-on-error: true
+        run: scripts/ci-cloud-credentials/gcp/probe-id-token.sh 'after build'
 
       # Mirror the aws job's fail-closed guard: if google-cloud-cpp did not
       # resolve (wrong vcpkg feature, stale cache) then KYTHIRA_HAS_GCP_SDK is
@@ -1443,6 +1491,14 @@ jobs:
         run: |
           scripts/run-real-cloud-suite.sh 'real-gce' '^gcp_quorum_manager_real_gce_test$' \
             "Check the workload-identity credentials, the service account's compute roles, and that GCP_REAL_CLOUD_TESTS_PROJECT names a project with the Compute Engine API enabled."
+
+      # Deliberately unconditional, and deliberately not inside the privateca
+      # step: this probe must run at this minute of the job whether or not the
+      # bundle is enabled, so a run that skips privateca still contributes a
+      # sample of when the exchange stops working.
+      - name: Probe the Actions ID-token exchange (before privateca)
+        continue-on-error: true
+        run: scripts/ci-cloud-credentials/gcp/probe-id-token.sh 'before privateca'
 
       - name: Run privateca bundle (Certificate Authority Service)
         if: ${{ env.BUNDLE_PRIVATECA == 'true' }}

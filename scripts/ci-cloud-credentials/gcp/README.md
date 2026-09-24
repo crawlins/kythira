@@ -174,3 +174,45 @@ shortest suite goes first while the WIF credentials are freshest.
 the identical pattern unthrottled. The suite's latency case already spaces its
 samples for this; it is recorded here because it is a GCS fact, not a
 Kythira one, and the next person to write a GCS test will meet it again.
+
+## Diagnosing the `privateca` 403 (`probe-id-token.sh`)
+
+`gcp_privateca_provider_real_test` has failed on every scheduled run since
+September 14, 2026, seconds into its step, with an `actions-run-service` 403
+reading `runner does not have permissions to generate id token`. **The message
+names the wrong cause.** The `gcp` job does grant `permissions: id-token:
+write`, and the same credentials succeed twice in the minutes before the
+failure. Two fixes written from that line have already failed; do not write a
+third from it.
+
+What the step timings show is that both failures land ~85 minutes after **job
+start**, while the exchanges that succeeded were at ~69 minutes of the same
+jobs. Nothing there is measured from the `auth` step — which is the point,
+because re-authenticating before the tests did not help. `auth` rewrites the
+credential file, but the `credential_source` inside it carries
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, set by the runner once at job start and
+refreshable by nothing.
+
+`probe-id-token.sh` runs at three points in the `gcp` job — job start, after
+the build, and between the two bundles — and prints, for each:
+
+- the request token's own `iat`/`exp` claims, its total lifetime and its
+  remaining lifetime;
+- the live HTTP status of an ID-token exchange made right then, with the error
+  body when it fails.
+
+It never prints a token, and it never exits non-zero — a probe that can redden
+an otherwise-green real-cloud run would be the fourth piece of machinery in
+this repo to report a failure it did not find. When it cannot measure it says
+`PROBE DID NOT RUN` rather than staying quiet, for the same reason the audits
+do.
+
+Read the three probes together. An expired or near-expired request token before
+the privateca step confirms the lifetime hypothesis; a *working* exchange
+immediately before a step that fails two seconds later refutes it and moves the
+investigation into the test itself. Full write-up in `doc/TODO.md`, Known
+Follow-ups.
+
+Run it by hand only inside a job that grants `id-token: write`; there is no
+local equivalent, because the two environment variables it reads exist only on
+a runner.
