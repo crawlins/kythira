@@ -122,6 +122,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -453,6 +454,22 @@ public:
     auto set_auto_launch(bool enabled) -> void {
         const std::lock_guard lock(_mutex);
         _auto_launch = enabled;
+    }
+
+    /// Makes ESS **refuse** every launch, recording a Failed scaling activity
+    /// carrying this error, and materialising no instance.
+    ///
+    /// Distinct from `set_auto_launch(false)`, and the distinction is the
+    /// point: that one models a control plane that accepts the capacity change
+    /// and quietly never delivers, this one models one that rejects it and
+    /// says why. Until the manager read scaling activities the two were
+    /// indistinguishable from the client side, and the real failure --
+    /// `Forbidden.RiskControl` on September 22, 2026, ten refusals in ten
+    /// minutes -- was the second wearing the first's clothes.
+    auto set_launch_error(std::string code, std::string message) -> void {
+        const std::lock_guard lock(_mutex);
+        _launch_error_code = std::move(code);
+        _launch_error_message = std::move(message);
     }
 
     /// The zone ESS actually places new instances in. Set it away from a
@@ -1073,12 +1090,55 @@ private:
     /// DesiredCapacity by launching, which is what terminates
     /// `provision_node`'s poll.
     auto reconcile_capacity_locked() -> void {
+        const auto held = static_cast<std::int64_t>(_instances.size());
+        if (_desired_capacity <= held) {
+            // A change that needs no launch. Real ESS still records it, as a
+            // Successful "The Desired Capacity is changed" -- which is what
+            // the manager's rollback produces, and it must not read as a
+            // failed scale-out.
+            record_activity_locked(
+                "Successful",
+                "The Desired Capacity is changed to \"" + std::to_string(_desired_capacity) + "\"",
+                "", "");
+            return;
+        }
+
+        const auto wanted = _desired_capacity - held;
+        const auto add = "Add \"" + std::to_string(wanted) + "\" ECS instance";
+
+        if (!_launch_error_code.empty()) {
+            // Refused: the activity fails, no instance appears, and the
+            // capacity stays where the caller set it -- exactly what
+            // Forbidden.RiskControl looked like from the client.
+            record_activity_locked("Failed", add, _launch_error_code, _launch_error_message);
+            return;
+        }
+        // `_auto_launch == false` models the other shape: ESS accepts the
+        // scale-out and simply never delivers, so the activity is Successful
+        // and membership never changes.
+        record_activity_locked("Successful", add, "", "");
         if (!_auto_launch) {
             return;
         }
         while (static_cast<std::int64_t>(_instances.size()) < _desired_capacity) {
             (void)launch_locked(_launch_tags, "InService", _launch_status, _launch_zone);
         }
+    }
+
+    /// Caller holds `_mutex`. Newest activities are pushed to the back and
+    /// served from the back, the order the real API answers in.
+    auto record_activity_locked(std::string status, std::string description, std::string error_code,
+                                std::string error_message) -> void {
+        const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::tm tm{};
+        std::string stamp(sizeof("2026-09-22T17:51:19Z"), '\0');
+        if (gmtime_r(&now, &tm) != nullptr) {
+            stamp.resize(std::strftime(stamp.data(), stamp.size(), "%Y-%m-%dT%H:%M:%SZ", &tm));
+        } else {
+            stamp.clear();
+        }
+        _activities.push_back({std::move(stamp), std::move(status), std::move(description),
+                               std::move(error_code), std::move(error_message)});
     }
 
     [[nodiscard]] static auto to_int(const std::string& raw, std::int64_t fallback)
@@ -1289,6 +1349,30 @@ private:
                     req.get_param_value("Tag." + std::to_string(n) + ".Key"),
                     req.get_param_value("Tag." + std::to_string(n) + ".Value"));
             }
+        } else if (action == "DescribeScalingActivities") {
+            if (req.get_param_value("ScalingGroupId") != _group_id) {
+                rpc_error(res, 404, "InvalidScalingGroupId.NotFound",
+                          "the specified scaling group does not exist");
+                return;
+            }
+            boost::json::array activities;
+            for (auto it = _activities.rbegin(); it != _activities.rend(); ++it) {
+                boost::json::object entry;
+                entry["StartTime"] = it->start_time;
+                entry["EndTime"] = it->start_time;
+                entry["StatusCode"] = it->status_code;
+                entry["Description"] = it->description;
+                entry["ScalingGroupId"] = _group_id;
+                if (!it->error_code.empty()) {
+                    entry["ErrorCode"] = it->error_code;
+                    entry["ErrorMessage"] = it->error_message;
+                }
+                activities.push_back(entry);
+            }
+            boost::json::object wrapper;
+            wrapper["ScalingActivity"] = activities;
+            out["ScalingActivities"] = wrapper;
+            out["TotalCount"] = static_cast<std::int64_t>(activities.size());
         } else if (action == "DescribeRegions") {
             // The read-only pre-flight the real tier uses; free to model and it
             // keeps this server usable by a smoke test.
@@ -1580,6 +1664,21 @@ private:
     std::map<std::string, std::string> _launch_tags{{"owner", "platform-team"}};
     std::vector<instance_state> _instances;
     int _instance_counter{0};
+
+    /// One `DescribeScalingActivities` record. Modelled because the manager's
+    /// provision timeout now reads them: membership alone cannot distinguish a
+    /// launch ESS refused from one it accepted and is slow to finish, and the
+    /// real control plane says which in this list.
+    struct scaling_activity {
+        std::string start_time;   ///< ISO-8601 UTC, the shape ESS stamps.
+        std::string status_code;  ///< `Successful` or `Failed`.
+        std::string description;
+        std::string error_code;
+        std::string error_message;
+    };
+    std::vector<scaling_activity> _activities;
+    std::string _launch_error_code;
+    std::string _launch_error_message;
 
     std::map<std::string, std::string> _objects;
     std::size_t _oss_page_size{1000};
