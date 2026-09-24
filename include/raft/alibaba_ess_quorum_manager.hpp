@@ -64,6 +64,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <exception>
 #include <iostream>
 #include <map>
@@ -99,6 +100,11 @@ inline constexpr const char* ecs_version = "2014-05-26";
 /// `DescribeScalingInstances` page size. 50 is the documented maximum; asking
 /// for it minimises the number of signed round trips a large group costs.
 inline constexpr int scaling_instance_page_size = 50;
+/// `DescribeScalingActivities` page size, used only on the timeout diagnostic
+/// path. One page is deliberate: a scale-out that is failing retries every few
+/// tens of seconds, so the newest page always holds the current cause, and
+/// paginating an error path only adds ways for it to fail.
+inline constexpr int scaling_activity_page_size = 50;
 /// `DescribeInstances` accepts at most 100 IDs in its `InstanceIds` array.
 /// Batching to that limit is why this manager needs no concurrent fan-out
 /// helper like `oci_detail::parallel_for` — ECS answers for 100 instances in
@@ -215,6 +221,28 @@ inline constexpr std::size_t ecs_describe_batch = 100;
         }
         out.insert_or_assign(std::move(key), json_string(entry, "TagValue"));
     }
+    return out;
+}
+
+/// @brief `2026-09-22T17:51:19Z` — the exact shape ESS stamps on a scaling
+///        activity's `StartTime`.
+///
+/// Rendered so a caller can select activities by plain string comparison
+/// against an API-supplied `StartTime`: both are UTC, fixed-width and
+/// zero-padded, which makes lexicographic order chronological order. That is
+/// the whole reason this formats rather than parsing the API's side.
+///
+/// `gmtime_r`/`strftime` rather than `std::format`'s chrono support, which is
+/// uneven across the compilers this header is built with.
+[[nodiscard]] inline auto iso8601_utc(std::chrono::system_clock::time_point tp) -> std::string {
+    const auto secs = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm{};
+    if (gmtime_r(&secs, &tm) == nullptr) {
+        return {};
+    }
+    std::string out(sizeof("2026-09-22T17:51:19Z"), '\0');
+    const auto written = std::strftime(out.data(), out.size(), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    out.resize(written);
     return out;
 }
 
@@ -483,6 +511,10 @@ public:
     auto provision_node(std::string target_group, std::optional<NodeId> replacing)
         -> kythira::future_default<peer_info<NodeId, Address>> {
         const auto started = std::chrono::steady_clock::now();
+        // A second clock, for the diagnosis alone. `started` is steady (it must
+        // be: it measures a duration across a sleep loop), and a steady clock
+        // has no calendar to compare an API timestamp against.
+        const auto started_iso = alibaba_ess_detail::iso8601_utc(std::chrono::system_clock::now());
         try {
             fiu_do_on("raft/alibaba/ess/modify_capacity",
                       throw std::runtime_error("fault: raft/alibaba/ess/modify_capacity"););
@@ -550,11 +582,54 @@ public:
                         << "[alibaba_ess_quorum_manager::provision_node] capacity rollback to "
                         << original_capacity << " failed: " << ex.what() << "\n";
                 }
+                // Everything below turns "it did not happen" into "here is
+                // what happened instead". The bare timeout this replaced was
+                // accurate and useless: it could not distinguish a refused
+                // launch from a slow one, and a real run burned ten minutes
+                // and a human's afternoon proving the difference by hand.
+                // Only the instances this call could have adopted are worth
+                // printing: a group may legitimately hold another cluster's
+                // members, and listing those makes a long message that answers
+                // nothing. The two shapes below need different responses.
+                std::vector<const alibaba_ess_detail::instance_view*> fresh;
+                for (const auto& inst : members) {
+                    if (std::ranges::find(known, inst.id) == known.end()) {
+                        fresh.push_back(&inst);
+                    }
+                }
+
+                std::string seen;
+                if (fresh.empty()) {
+                    seen = "no new instance ever appeared (the group held " +
+                           std::to_string(members.size()) +
+                           " pre-existing member(s) on the final poll)";
+                } else {
+                    // The other shape: ESS did deliver, and the instance was
+                    // rejected by the adoption bar. Printing the state it was
+                    // rejected on is the difference between "why did it hang"
+                    // and "it never left Starting".
+                    seen = std::to_string(fresh.size()) +
+                           " new instance(s) appeared but none became adoptable (";
+                    bool first = true;
+                    for (const auto* inst : fresh) {
+                        if (!first) {
+                            seen += ", ";
+                        }
+                        first = false;
+                        seen += inst->id + " lifecycle=" + inst->lifecycle_state +
+                                " status=" + inst->status +
+                                (inst->private_ip.empty() ? " ip=(none)" : " ip=set");
+                    }
+                    seen += ")";
+                }
+
                 throw std::runtime_error(
                     "timed out after " + std::to_string(elapsed.count()) + "s (limit " +
                     std::to_string(_cfg.provision_timeout.count()) +
                     "s) waiting for a new InService/Running instance in scaling group " +
-                    _cfg.scaling_group_id + " for zone " + target_group);
+                    _cfg.scaling_group_id +
+                    (target_group.empty() ? std::string{} : " for zone " + target_group) + "; " +
+                    seen + "; " + scaling_activity_diagnosis(started_iso));
             }
 
             if (launched->zone_id != target_group) {
@@ -787,6 +862,96 @@ private:
     auto set_desired_capacity(std::int64_t capacity) const -> void {
         (void)ess("ModifyScalingGroup", {{"ScalingGroupId", _cfg.scaling_group_id},
                                          {"DesiredCapacity", std::to_string(capacity)}});
+    }
+
+    /// @brief What ESS itself says about the scale-out, for a timeout message.
+    ///
+    /// `provision_node` polls membership, and membership is blind to the one
+    /// thing worth knowing when nothing appears: whether ESS **tried and was
+    /// refused**, or accepted the launch and is merely slow. Those need
+    /// opposite responses, and until this existed the timeout could not tell
+    /// them apart -- it waited out the full ten minutes and reported only that
+    /// ten minutes had passed.
+    ///
+    /// The September 22, 2026 real-cloud run is the case in point. ESS
+    /// attempted the launch **ten times**, each failing in about nineteen
+    /// seconds with `Forbidden.RiskControl` ("This operation is forbidden by
+    /// Aliyun RiskControl system") -- an account-level block, nothing to do
+    /// with this code or with the CI role's permissions. The manager saw an
+    /// empty group ten times and said "timed out after 604s". Finding the real
+    /// cause needed a human with console credentials calling
+    /// `DescribeScalingActivities` by hand. That is the call this makes.
+    ///
+    /// @param since Activities that started before this ISO-8601 UTC instant
+    ///        are ignored, so a previous run's failure is never reported as
+    ///        this one's.
+    ///
+    /// @return A human-readable clause for the timeout message. **Never
+    ///         throws**: this runs on a path that is already failing, and a
+    ///         diagnostic that replaces the error it was called to explain is
+    ///         worse than no diagnostic. A failure to fetch says so.
+    [[nodiscard]] auto scaling_activity_diagnosis(std::string_view since) const -> std::string {
+        try {
+            const auto response =
+                ess("DescribeScalingActivities",
+                    {{"ScalingGroupId", _cfg.scaling_group_id},
+                     {"PageSize", std::to_string(alibaba_ess_detail::scaling_activity_page_size)}});
+            const auto* arr =
+                alibaba_ess_detail::nested_array(response, "ScalingActivities", "ScalingActivity");
+            if (arr == nullptr || arr->empty()) {
+                return "ESS reports no scaling activities for this group at all, which is "
+                       "unexpected after a ModifyScalingGroup succeeded";
+            }
+
+            std::size_t in_window = 0;
+            std::size_t failed = 0;
+            std::string newest_start;
+            std::string newest_code;
+            std::string newest_message;
+            for (const auto& activity : *arr) {
+                const auto start = alibaba_ess_detail::json_string(activity, "StartTime");
+                if (start < since) {
+                    continue;
+                }
+                ++in_window;
+                if (alibaba_ess_detail::json_string(activity, "StatusCode") != "Failed") {
+                    continue;
+                }
+                ++failed;
+                if (start >= newest_start) {
+                    newest_start = start;
+                    newest_code = alibaba_ess_detail::json_string(activity, "ErrorCode");
+                    newest_message = alibaba_ess_detail::json_string(activity, "ErrorMessage");
+                }
+            }
+
+            if (in_window == 0) {
+                // Not "no failures". The window is empty, which also happens
+                // when this host's clock disagrees with the API's, so say
+                // which instant was used rather than imply a clean result.
+                return "ESS recorded no scaling activity at or after " + std::string{since} + " (" +
+                       std::to_string(arr->size()) +
+                       " older activities were returned); if that instant looks wrong, this "
+                       "host's clock and the ESS control plane's disagree";
+            }
+            if (failed == 0) {
+                return "ESS recorded " + std::to_string(in_window) +
+                       " scaling activit(y/ies) since " + std::string{since} +
+                       " and none FAILED, so the launch was accepted and the instance simply "
+                       "never became live in time -- look at the image, user data and boot, "
+                       "not at ESS";
+            }
+            return "ESS FAILED " + std::to_string(failed) + " of " + std::to_string(in_window) +
+                   " scaling activit(y/ies) since " + std::string{since} + "; the most recent (" +
+                   newest_start + ") gives ErrorCode=" +
+                   (newest_code.empty() ? std::string{"(none)"} : newest_code) + " ErrorMessage=" +
+                   (newest_message.empty() ? std::string{"(none)"} : newest_message);
+        } catch (const std::exception& ex) {
+            return std::string{
+                       "the DescribeScalingActivities call that would explain this "
+                       "timeout itself failed: "} +
+                   ex.what();
+        }
     }
 
     /// `DescribeScalingInstances`, paginated to exhaustion (Requirement 6.1).

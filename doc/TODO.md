@@ -374,6 +374,54 @@ unverified completion claim.
     investigation inside `gcp_privateca_provider_real_test`. Either way the
     third guess is not needed.
 
+- **Alibaba Cloud refuses every ECS launch with `Forbidden.RiskControl`, and
+  the account has a $0.00 balance (September 22, 2026 — open, needs an
+  account-side action a human must take).** This is what the
+  `alibaba_quorum_manager_real_test` timeout was hiding. Not a code fault, not
+  a RAM permission — the code and the CI role are exonerated by the evidence
+  below.
+  - **What the run reported.** `provision_then_decommission_a_real_instance`
+    ran 607s and threw `timed out after 604s (limit 600s) waiting for a new
+    InService/Running instance`. Nothing more; the manager watched membership,
+    and membership was empty every time it looked.
+  - **What ESS was actually doing.** `DescribeScalingActivities` on
+    `asg-t4ne1kbdhc5xbzskizxm` shows **ten** scaling activities between
+    17:51:48Z and 17:59:57Z, every one `StatusCode: Failed`, each finishing in
+    about nineteen seconds:
+
+        ErrorCode:    Forbidden.RiskControl
+        ErrorMessage: This operation is forbidden by Aliyun RiskControl system.
+        Detail:       Fail to create Instances into scaling group(...)
+
+    ESS was not slow. It was refused, ten times, and retried until the
+    manager's deadline expired.
+  - **When it started.** The most recent *successful* `Add` activity on that
+    group is `2026-09-21T13:52:14Z`. The block began between then and
+    `2026-09-22T17:51Z`.
+  - **The likely trigger, measured but not proven.** `QueryAccountBalance`
+    returns `AvailableAmount 0.00`, `AvailableCashAmount 0.00`,
+    `CreditAmount 0.00`, `QuotaLimit 0.00` (USD), while the 2026-09 bill shows
+    `PretaxAmount 37.21` accrued. An account with nothing to pay with is a
+    standard RiskControl trigger. **RiskControl does not expose its reason
+    through the API**, so confirming this needs the console or a ticket — do
+    not record it as proven until someone has looked.
+  - **The leak and this are probably the same event.** The five leaked ECS
+    instances (oldest 29 days, ~75 instance-days) are the obvious source of
+    that $37.21. If so the August teardown bug did not merely cost money — it
+    drained the account and thereby disabled the Alibaba suite, which is a
+    considerably more expensive consequence than the bill.
+  - **What to do.** A human with console access must settle the balance and/or
+    clear the RiskControl flag on the Alibaba Cloud account, the same shape of
+    blocker as the Azure `lowPriorityCores` quota and the Alibaba Managed
+    Service for Prometheus activation. Until then the `ess-quorum` bundle
+    cannot pass, and its failure is not a regression in this repository.
+  - **The blindness is fixed even if the account is not.** `provision_node`
+    now calls `DescribeScalingActivities` on timeout and puts the ESS
+    `ErrorCode`/`ErrorMessage` in the exception, alongside whether any *new*
+    instance appeared at all. A refused launch and a slow one need opposite
+    responses and used to be indistinguishable — which is how this took a
+    month and a manual API call to find.
+
 - **`membership_change_leader_crash_property_test` failed on `main` under
   the boost backend, three times in a row, and the red is masked
   (September 22, 2026 — open).** Run

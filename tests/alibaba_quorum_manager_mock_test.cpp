@@ -552,6 +552,75 @@ BOOST_AUTO_TEST_CASE(a_launch_that_never_happens_times_out_and_rolls_capacity_ba
     BOOST_CHECK_EQUAL(fixture.server.signature_failures(), 0U);
 }
 
+/// A refused launch must say *why* in the timeout, not merely that time
+/// passed.
+///
+/// This is the September 22, 2026 real-cloud failure reduced to a test. ESS
+/// refused the scale-out ten times with `Forbidden.RiskControl` -- an
+/// account-level block, unrelated to this code or the CI role -- and the
+/// manager, which watched only membership, reported "timed out after 604s"
+/// and nothing else. The cause took a human with console credentials calling
+/// `DescribeScalingActivities` by hand to find. The message must carry it.
+BOOST_AUTO_TEST_CASE(a_refused_launch_reports_the_ess_error_code_in_the_timeout,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    fixture.seed_node(1);
+    fixture.server.set_launch_error("Forbidden.RiskControl",
+                                    "This operation is forbidden by Aliyun RiskControl system.");
+    auto cfg = fixture.config();
+    cfg.provision_timeout = 1s;
+
+    alibaba_ess_quorum_manager<> mgr{cfg};
+    BOOST_CHECK_EXCEPTION(
+        (void)std::move(mgr.provision_node(k_zone, std::nullopt)).get(), std::runtime_error,
+        [](const std::runtime_error& ex) {
+            const std::string what{ex.what()};
+            BOOST_TEST_MESSAGE("provision_node threw: " << what);
+            // The ESS verdict, which is the whole point.
+            BOOST_CHECK(what.find("Forbidden.RiskControl") != std::string::npos);
+            BOOST_CHECK(what.find("RiskControl system") != std::string::npos);
+            // And the fact that ESS refused rather than dawdled.
+            BOOST_CHECK(what.find("FAILED") != std::string::npos);
+            // The original message is still there; this adds to it.
+            BOOST_CHECK(what.find("timed out after") != std::string::npos);
+            // Nothing launched, and the message says so rather than leaving
+            // the reader to infer it from a member count that includes the
+            // instances the group already had.
+            BOOST_CHECK(what.find("no new instance ever appeared") != std::string::npos);
+            return true;
+        });
+
+    // Requirement 7.4 still holds on this path: the bump is rolled back.
+    BOOST_CHECK_EQUAL(fixture.server.instance_count(), 1U);
+    BOOST_CHECK_EQUAL(fixture.server.desired_capacity(), 1);
+}
+
+/// The opposite verdict, and it must not read like the one above. A launch ESS
+/// *accepted* and never finished points at the image and boot, not at ESS, and
+/// a timeout that cannot tell the two apart sends the next reader to the wrong
+/// place -- which is precisely what happened for a month.
+BOOST_AUTO_TEST_CASE(an_accepted_but_undelivered_launch_says_ess_did_not_refuse,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    fixture.seed_node(1);
+    fixture.server.set_auto_launch(false);
+    auto cfg = fixture.config();
+    cfg.provision_timeout = 1s;
+
+    alibaba_ess_quorum_manager<> mgr{cfg};
+    BOOST_CHECK_EXCEPTION(
+        (void)std::move(mgr.provision_node(k_zone, std::nullopt)).get(), std::runtime_error,
+        [](const std::runtime_error& ex) {
+            const std::string what{ex.what()};
+            BOOST_TEST_MESSAGE("provision_node threw: " << what);
+            BOOST_CHECK(what.find("none FAILED") != std::string::npos);
+            BOOST_CHECK(what.find("never became live in time") != std::string::npos);
+            // Must NOT accuse ESS of refusing.
+            BOOST_CHECK(what.find("ESS FAILED") == std::string::npos);
+            return true;
+        });
+}
+
 /// Requirement 7.1's idempotency argument, made observable: the manager writes
 /// an *absolute* DesiredCapacity, so two provisions from a two-node group leave
 /// four instances, not five — and the second call's capacity write is 4, not a
