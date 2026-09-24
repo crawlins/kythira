@@ -422,9 +422,12 @@ unverified completion claim.
     responses and used to be indistinguishable — which is how this took a
     month and a manual API call to find.
 
-- **`membership_change_leader_crash_property_test` failed on `main` under
-  the boost backend, three times in a row, and the red is masked
-  (September 22, 2026 — open).** Run
+- **`membership_change_leader_crash_property_test` fails under CPU
+  contention on the boost leg — REPRODUCED and diagnosed September 24, 2026;
+  the fix is unwritten.** A hardcoded wall-clock margin in
+  `cluster_survives_leader_crash_during_add`, not a consensus defect; details
+  and the reproduction recipe below. Originally filed September 22 as a
+  masked three-in-a-row red. Run
   [35669336095](https://github.com/crawlins/kythira/actions/runs/35669336095),
   job `Full suite (boost future backend)`, commit `3315822`, test 178.
   - **Three consecutive failures, not a blip.** That job runs `ctest
@@ -449,11 +452,61 @@ unverified completion claim.
     machine load. Two independent flaky tests on one leg is what makes a red
     there cheap to wave through, which is the condition under which a real
     regression gets absorbed.
-  - **What would settle it**, in order: reproduce on `3315822` under boost
-    rather than on `main`, since the tree has moved; then determine whether
-    the failure is the same assertion each time or several, which decides
-    whether this is one bug or a suite-level timing sensitivity like the
-    entry below.
+  - **REPRODUCED September 24, 2026, and it is a timing sensitivity, not a
+    Raft defect.** Built `3315822` in a worktree under the CI boost
+    configuration (`g++-13`, Release, `ci_full_defconfig`,
+    `KYTHIRA_TEST_TIMEOUT_SCALE=4`), backend confirmed both from
+    `CMakeCache.txt` and from the binary itself (11,472 boost future/fiber
+    symbols, zero folly).
+
+    | condition | result |
+    |---|---|
+    | 12 runs, serial, idle machine | **12 passed, 0 failed** |
+    | 12 runs, 4 concurrent on a 4-core box | **8 passed, 4 failed** |
+
+    **Contention is the missing variable**, which is why every earlier
+    standalone rerun looked clean and why the CI red was waved through.
+
+  - **The failure signature matches CI exactly.** All four local failures and
+    all three of CI's `--repeat until-pass:3` attempts (run
+    [35669336095](https://github.com/crawlins/kythira/actions/runs/35669336095),
+    job `Full suite (boost future backend)`) fail the same two assertions in
+    the same case:
+
+        cpp(248): ... "cluster_survives_leader_crash_during_add":
+                  no new leader elected after L1 crash
+        cpp(282): ... "cluster_survives_leader_crash_during_add":
+                  surviving cluster could not commit a command after leader crash
+
+    One bug, not several. The 282 failure is a consequence of the 248 one.
+
+  - **The mechanism is a hardcoded wall-clock margin.** The case sleeps
+    `cfg._election_timeout_max + 20ms` and, per its own comment, "250ms after
+    each drive call to let the callback run and become_leader()". Under CPU
+    contention the election callback does not get scheduled inside those
+    margins, no leader is elected, and the commit assertion falls over
+    behind it. **Fix the margins or make the wait adaptive** — do not go
+    looking for a consensus bug.
+
+  - **Separately, and worth its own look: the test absorbs ~355 retries per
+    run, every one the same boost error.** `The associated promise has been
+    destructed prior to the associated state becoming ready` — a boost
+    `broken_promise` — 97% of them on `append_entries`. Correlating the
+    logged attempt number against the backoff delay shows the genuine ladder
+    reaches **attempt 4 against a cap of 5** (`error_handler.hpp`
+    `append_entries` policy), roughly 47 times per run. That is one retry of
+    headroom, routinely. It is not the proximate cause of the two assertions
+    above, but a backend that manufactures a `broken_promise` on nearly every
+    `append_entries` is its own finding. Related: the `_stop_flag` pattern
+    narrows the async-callback use-after-free window without closing it.
+
+  - **Beware log-derived statistics from this test.** Its threads write to
+    stderr unsynchronised, so lines splice: the raw logs appear to contain
+    `Retry attempt 13` and `Retry attempt 2026`. Both are corruption — the
+    "13" carried a 105ms delay, which is attempt *1* plus jitter, and "2026"
+    is a spliced timestamp. Any count taken from these logs must be
+    cross-checked against something internally consistent, as the delay
+    column was used here.
 
 - **RETAKEN, September 21-22, 2026 — seven c6i runs, and the sweep now says
   one thing it could never say before.** Data in
