@@ -593,6 +593,36 @@ jobs:
       # caught it existed but was itself broken, which is why every failure
       # path below says THE AUDIT DID NOT RUN rather than exiting on a
       # message that reads like a clean result.
+      # Fresh credentials for the audit, because the ones the tests ran on
+      # have expired by the time it starts.
+      #
+      # The assumed-role session is 3600s (provision-oidc-role.sh's
+      # --session-duration-seconds default) and the audit is the last step of
+      # a job whose bundles take longer than that between them. Measured on
+      # run 36035268163: credentials were re-configured at 18:43:16, the
+      # audit started at 19:48:09 -- 64m53s later -- and every call failed
+      # with `RequestExpired: Request has expired`. The audit correctly
+      # reported THE AUDIT DID NOT RUN, so it has never yet produced a real
+      # answer for AWS on a full run.
+      #
+      # `if: always()` on this step as well as the audit, and that pairing is
+      # the point: a failing bundle is exactly when teardown is most likely
+      # to have been skipped, so the audit must still run -- and it cannot
+      # run on credentials nobody refreshed. Without `always()` here the
+      # refresh would be skipped precisely on the runs that need auditing.
+      #
+      # Raising --session-duration-seconds was the alternative and was not
+      # taken: it needs a number chosen to outlast a job whose length is not
+      # bounded by anything, and it would be silently wrong again the first
+      # time the suite grew.
+      - name: Re-configure AWS credentials for the audit (OIDC)
+        if: always()
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-real-cloud-tests-audit
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
       - name: Audit for leaked instances
         if: always()
         env:
@@ -1166,14 +1196,33 @@ jobs:
           # The whole resource group, not a name prefix: it is dedicated to
           # these tests, so anything of this kind left in it is a leak, and a
           # prefix would miss a VM whose name the manager never got to set.
-          leaked=$(az vm list --resource-group "${RG}" \
-            --query '[].{name:name,location:location,size:hardwareProfile.vmSize}' \
-            -o json) || audit_failed "the vm list call failed"
-          count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
-            || audit_failed "az vm list returned a response this step could not parse"
-          [ -n "${count}" ] || audit_failed "the parsed VM count was empty"
+          # Azure deletes VMs asynchronously, so a teardown that has issued
+          # every delete and is simply waiting on ARM still lists VMs. Sampling
+          # once turns that into a leak report: this audit claimed 6 VMs on run
+          # 35762998560 and 5 on run 36035268163, and both resource groups read
+          # 0 when checked by hand afterwards. Two false alarms is already
+          # enough to teach a reader to ignore the alarm, which costs more than
+          # the audit is worth.
+          #
+          # So a non-zero count starts a bounded wait rather than a verdict.
+          # Only VMs that outlive it are reported, and the message says they
+          # survived the wait so the next reader knows it was not a snapshot.
+          # The wait is capped because a genuine leak must still fail the run.
+          deadline=$(( SECONDS + 300 ))
+          while :; do
+            leaked=$(az vm list --resource-group "${RG}" \
+              --query '[].{name:name,location:location,size:hardwareProfile.vmSize}' \
+              -o json) || audit_failed "the vm list call failed"
+            count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
+              || audit_failed "az vm list returned a response this step could not parse"
+            [ -n "${count}" ] || audit_failed "the parsed VM count was empty"
+            [ "${count}" -eq 0 ] && break
+            [ "${SECONDS}" -ge "${deadline}" ] && break
+            echo "  ${count} VM(s) still listed; waiting for in-flight deletes (up to $(( deadline - SECONDS ))s more)"
+            sleep 30
+          done
           if [ "${count}" -ne 0 ]; then
-            echo "::error::Post-run audit found ${count} VM(s) still in ${RG} — teardown did not complete. They are being billed." >&2
+            echo "::error::Post-run audit found ${count} VM(s) still in ${RG} after waiting 300s for in-flight deletions — teardown did not complete. They are being billed." >&2
             printf '%s' "${leaked}" | jq . >&2
             exit 1
           fi
