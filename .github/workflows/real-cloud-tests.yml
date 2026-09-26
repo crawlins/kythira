@@ -694,10 +694,33 @@ jobs:
           # scripts/ci-cloud-credentials/aws/provision-oidc-role.sh. It is
           # reported as the audit not running rather than as clean, because
           # that is what it is.
+          # Two filters, because the real-EC2 fixture is not the only thing
+          # here that builds a VPC and it is the only one that tags what it
+          # builds.
+          #
+          # `ca_cluster_node_real_ec2_test` and
+          # `ca_cluster_node_rpc_tls_real_ec2_test` create their own VPCs at
+          # the hardcoded 10.220.0.0/16 and 10.221.0.0/16 and apply **no tags
+          # at all**, so a Name filter cannot see them. Found on 2026-09-25:
+          # two such VPCs were sitting in the account while the tagged audit
+          # reported on five others and, truthfully, never mentioned these.
+          #
+          # Matching them by CIDR works because those blocks are compile-time
+          # constants in the tests rather than anything the run chooses. The
+          # better fix is for those tests to tag what they create, the way
+          # aws_ec2_quorum_manager does; until then this filter is what
+          # notices, and it is deliberately exact rather than a 10.22x
+          # wildcard so it can never claim a VPC these tests did not make.
           vpcs=$(aws ec2 describe-vpcs \
             --filters 'Name=tag:Name,Values=kyt-*-vpc' \
             --query 'Vpcs[].{id:VpcId,cidr:CidrBlock,name:Tags[?Key==`Name`]|[0].Value}' \
             --output json) || audit_failed "the DescribeVpcs call failed — if this is an authorization error, re-run provision-oidc-role.sh to pick up the ec2:DescribeVpcs grant"
+          ca_vpcs=$(aws ec2 describe-vpcs \
+            --filters 'Name=cidr,Values=10.220.0.0/16,10.221.0.0/16' \
+            --query 'Vpcs[?IsDefault==`false`].{id:VpcId,cidr:CidrBlock,name:`ca-cluster-node (untagged)`}' \
+            --output json) || audit_failed "the DescribeVpcs call for the ca-cluster-node CIDRs failed"
+          vpcs=$(printf '%s\n%s' "${vpcs}" "${ca_vpcs}" \
+            | jq -s 'add // []') || audit_failed "the two VPC listings could not be combined"
           vpc_count=$(printf '%s' "${vpcs}" | jq 'if . == null then 0 else length end') \
             || audit_failed "DescribeVpcs returned a response this step could not parse"
           [ -n "${vpc_count}" ] || audit_failed "the parsed VPC count was empty"
