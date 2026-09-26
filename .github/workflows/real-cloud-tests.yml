@@ -1231,7 +1231,12 @@ jobs:
           # Only VMs that outlive it are reported, and the message says they
           # survived the wait so the next reader knows it was not a snapshot.
           # The wait is capped because a genuine leak must still fail the run.
-          deadline=$(( SECONDS + 300 ))
+          # 900s, not 300s. Session 53 measured the window directly after run
+          # 36035268163: at 19:02Z the group held a VM in `Deleting` plus its
+          # NIC and disk, and by 19:12Z it held nothing, with nothing done to
+          # it. Ten minutes observed once is not a bound, so the wait is set
+          # half again beyond it rather than at it.
+          deadline=$(( SECONDS + 900 ))
           while :; do
             leaked=$(az vm list --resource-group "${RG}" \
               --query '[].{name:name,location:location,size:hardwareProfile.vmSize}' \
@@ -1245,7 +1250,7 @@ jobs:
             sleep 30
           done
           if [ "${count}" -ne 0 ]; then
-            echo "::error::Post-run audit found ${count} VM(s) still in ${RG} after waiting 300s for in-flight deletions — teardown did not complete. They are being billed." >&2
+            echo "::error::Post-run audit found ${count} VM(s) still in ${RG} after waiting 900s for in-flight deletions — teardown did not complete. They are being billed." >&2
             printf '%s' "${leaked}" | jq . >&2
             exit 1
           fi
