@@ -564,6 +564,28 @@ jobs:
           fi
           echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
 
+      # The OIDC session assumed at "Re-configure AWS credentials for the test
+      # steps" lasts one hour, and the bundles above it are not bounded by
+      # anything: on run 36337979088 the ec2-quorum-manager bundle alone ran
+      # 53m43s, so the rpc-tls bundle below started 60m12s after that refresh
+      # and every one of its cases failed in the fixture ctor with
+      # `ExpiredToken: The security token included in the request is expired`.
+      # It read as an rpc-tls defect and was not one.
+      #
+      # Refresh per bundle rather than raising --session-duration-seconds, for
+      # the same reason the audit's refresh below gives: a duration long enough
+      # today is silently wrong the first time the suite grows. Re-assuming
+      # mid-job works for AWS (the audit step has always done it); note this is
+      # NOT true of google-github-actions/auth, whose ID token is fixed at job
+      # start.
+      - name: Re-configure AWS credentials for the ca-cluster-node bundles (OIDC)
+        if: ${{ env.BUNDLE_CA_CLUSTER == 'true' || env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-real-cloud-tests-ca-cluster
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
       - name: Run ca-cluster-node bundle
         if: ${{ env.BUNDLE_CA_CLUSTER == 'true' }}
         env:
@@ -571,6 +593,14 @@ jobs:
         run: |
           scripts/run-real-cloud-suite.sh 'real-ec2' '^ca_cluster_node_real_ec2_test$' \
             "Check AWS_CI_ROLE_ARN's ca-cluster-node policy and that the resolved AMI has /usr/local/bin/ca_cluster_node installed."
+
+      - name: Re-configure AWS credentials for the rpc-tls bundle (OIDC)
+        if: ${{ env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-real-cloud-tests-rpc-tls
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
 
       - name: Run ca-cluster-node-rpc-tls bundle
         if: ${{ env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
