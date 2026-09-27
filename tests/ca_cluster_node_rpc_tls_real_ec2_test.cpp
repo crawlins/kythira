@@ -40,6 +40,7 @@
 #include <raft/certificate_provider.hpp>
 
 #include <aws/core/Aws.h>
+#include <aws/core/utils/UUID.h>
 #include <aws/ec2/EC2Client.h>
 #include <aws/ec2/model/AllocateAddressRequest.h>
 #include <aws/ec2/model/AssociateAddressRequest.h>
@@ -54,6 +55,7 @@
 #include <aws/ec2/model/CreateRouteTableRequest.h>
 #include <aws/ec2/model/CreateSecurityGroupRequest.h>
 #include <aws/ec2/model/CreateSubnetRequest.h>
+#include <aws/ec2/model/CreateTagsRequest.h>
 #include <aws/ec2/model/CreateVpcRequest.h>
 #include <aws/ec2/model/DeleteInternetGatewayRequest.h>
 #include <aws/ec2/model/DeleteKeyPairRequest.h>
@@ -71,6 +73,7 @@
 #include <aws/ec2/model/ModifySubnetAttributeRequest.h>
 #include <aws/ec2/model/ReleaseAddressRequest.h>
 #include <aws/ec2/model/ReplaceNetworkAclAssociationRequest.h>
+#include <aws/ec2/model/Tag.h>
 #include <aws/sts/STSClient.h>
 #include <aws/sts/model/GetCallerIdentityRequest.h>
 
@@ -240,6 +243,18 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
 
 // Public-subnet-per-AZ VPC (Internet Gateway + route table, no NAT/bastion
 // complexity), plus a deny-all NACL for Requirement 5's isolation test —
+// Tag helper mirroring aws_quorum_manager_real_ec2_test.cpp's. The post-run
+// leak audit in .github/workflows/real-cloud-tests.yml attributes a leaked
+// network by its `kyt-*-vpc` Name tag; until this fixture tagged anything that
+// filter was blind to every VPC the test leaked, and the audit had to carry a
+// duplicate of the hardcoded CIDR below to see them at all.
+auto make_tag(const std::string& k, const std::string& v) -> Aws::EC2::Model::Tag {
+    Aws::EC2::Model::Tag t;
+    t.SetKey(k);
+    t.SetValue(v);
+    return t;
+}
+
 // otherwise structurally identical to ca_cluster_node_real_ec2_test.cpp's
 // three_az_network_fixture. Network isolation here uses the same
 // subnet-level deny-all-NACL-swap technique aws_quorum_manager_real_ec2_test.cpp
@@ -252,6 +267,8 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
 struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal_cleanup_target {
     std::shared_ptr<Aws::EC2::EC2Client> ec2;
     std::string vpc_id, igw_id, route_table_id, sg_id, key_name;
+    // `kyt-` prefix is what the post-run leak audit's Name filter matches.
+    std::string uuid;
     std::string private_key_pem;
     std::map<std::string, std::string> subnet_by_az;
 
@@ -273,6 +290,17 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
             {label, kythira::testing::aws_real_ec2::ec2_hourly_rate(instance_type)});
     }
 
+    // Tag every network resource as it is created, so a leak the audit finds
+    // names the test that produced it instead of an anonymous VPC. Best-effort:
+    // a CreateTags failure must not fail the test, and the audit's CIDR filter
+    // remains the backstop for a VPC that dies between CreateVpc and CreateTags.
+    void tag(const std::string& resource_id, const std::string& k, const std::string& v) {
+        Aws::EC2::Model::CreateTagsRequest req;
+        req.AddResources(resource_id);
+        req.AddTags(make_tag(k, v));
+        ec2->CreateTags(req);
+    }
+
     rpc_tls_three_az_network_fixture() {
         Aws::Client::ClientConfiguration cli_cfg;
         cli_cfg.region = region();
@@ -287,6 +315,9 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
         if (env("KYTHIRA_EC2_TEST_AMI").empty()) {
             throw std::runtime_error("KYTHIRA_EC2_TEST_AMI not set (skip)");
         }
+
+        const Aws::String random_uuid = Aws::Utils::UUID::RandomUUID();
+        uuid = "kyt-" + std::string(random_uuid.c_str());
 
         // Register as the signal-cleanup target before any AWS resource is
         // created so a signal arriving mid-setup still invokes teardown().
@@ -306,10 +337,13 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
             BOOST_REQUIRE_MESSAGE(vpc_out.IsSuccess(),
                                   "CreateVpc: " + std::string(vpc_out.GetError().GetMessage()));
             vpc_id = std::string(vpc_out.GetResult().GetVpc().GetVpcId());
+            tag(vpc_id, "Name", uuid + "-vpc");
+            tag(vpc_id, "kythira:managed-by", "ca_cluster_node_rpc_tls_real_ec2_test");
 
             auto igw_out = ec2->CreateInternetGateway({});
             BOOST_REQUIRE(igw_out.IsSuccess());
             igw_id = std::string(igw_out.GetResult().GetInternetGateway().GetInternetGatewayId());
+            tag(igw_id, "Name", uuid + "-igw");
             Aws::EC2::Model::AttachInternetGatewayRequest attach_req;
             attach_req.SetVpcId(vpc_id);
             attach_req.SetInternetGatewayId(igw_id);
@@ -320,6 +354,7 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
             auto rt_out = ec2->CreateRouteTable(rt_req);
             BOOST_REQUIRE(rt_out.IsSuccess());
             route_table_id = std::string(rt_out.GetResult().GetRouteTable().GetRouteTableId());
+            tag(route_table_id, "Name", uuid + "-rtb");
             Aws::EC2::Model::CreateRouteRequest route_req;
             route_req.SetRouteTableId(route_table_id);
             route_req.SetDestinationCidrBlock("0.0.0.0/0");
@@ -336,6 +371,7 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
                 BOOST_REQUIRE_MESSAGE(sn_out.IsSuccess(), "CreateSubnet(" + az + ")");
                 std::string subnet_id = std::string(sn_out.GetResult().GetSubnet().GetSubnetId());
                 subnet_by_az[az] = subnet_id;
+                tag(subnet_id, "Name", uuid + "-" + az);
 
                 Aws::EC2::Model::ModifySubnetAttributeRequest map_public;
                 map_public.SetSubnetId(subnet_id);
@@ -357,6 +393,7 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
             auto sg_out = ec2->CreateSecurityGroup(sg_req);
             BOOST_REQUIRE(sg_out.IsSuccess());
             sg_id = std::string(sg_out.GetResult().GetGroupId());
+            tag(sg_id, "Name", uuid + "-sg");
 
             for (int port : {22, 7000, 8443}) {
                 Aws::EC2::Model::AuthorizeSecurityGroupIngressRequest ing_req;
@@ -529,6 +566,7 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
         auto out = ec2->CreateNetworkAcl(req);
         BOOST_REQUIRE(out.IsSuccess());
         deny_all_nacl_id = std::string(out.GetResult().GetNetworkAcl().GetNetworkAclId());
+        tag(deny_all_nacl_id, "Name", uuid + "-deny-nacl");
 
         auto add_deny = [&](bool egress) {
             Aws::EC2::Model::CreateNetworkAclEntryRequest e;
