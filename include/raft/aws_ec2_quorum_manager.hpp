@@ -20,9 +20,11 @@
 #include <aws/ec2/model/InstanceMarketOptionsRequest.h>
 #include <aws/ec2/model/InstanceType.h>
 #include <aws/ec2/model/Placement.h>
+#include <aws/ec2/model/ResourceType.h>
 #include <aws/ec2/model/RunInstancesRequest.h>
 #include <aws/ec2/model/SpotMarketOptions.h>
 #include <aws/ec2/model/Tag.h>
+#include <aws/ec2/model/TagSpecification.h>
 #include <aws/ec2/model/TerminateInstancesRequest.h>
 #include <aws/core/utils/Array.h>
 #include <aws/core/utils/HashingUtils.h>
@@ -353,6 +355,23 @@ public:
                 run_req.SetInstanceMarketOptions(market_opts);
             }
 
+            // Tag in the launch request, so every tag that can be known before
+            // the instance exists is applied atomically with it. RunInstances
+            // and CreateTags are two round trips, and an instance orphaned
+            // between them carries no tags at all -- invisible to the post-run
+            // leak audit, which filters on kythira:managed-by. That is how a
+            // t4g.micro bastion (the same shape of gap, in the real-EC2 fixture)
+            // billed ~44h on 2026-09-27 while the audit reported clean.
+            //
+            // Name and kythira:node-id cannot come along: this manager's node
+            // identity IS the instance ID, so neither value exists until
+            // RunInstances has answered. They are applied afterwards by
+            // apply_identity_tags and are cosmetic for leak detection -- the
+            // tags the audit actually reads are all in here. Same constraint the
+            // user_data block above documents for {NODE_ID}.
+            const std::string market_tag = _cfg.spot_options ? "spot" : "on-demand";
+            run_req.AddTagSpecifications(launch_tag_specification(target_group, market_tag));
+
             auto outcome = _ec2->RunInstances(run_req);
             if (!outcome.IsSuccess()) {
                 throw std::runtime_error("ec2 RunInstances: " +
@@ -367,8 +386,7 @@ public:
             // Node identity is the numeric value of the EC2 instance ID.
             NodeId new_id = ec2_id_to_node_id(ec2_id);
 
-            std::string market_tag = _cfg.spot_options ? "spot" : "on-demand";
-            apply_tags(ec2_id, new_id, target_group, market_tag);
+            apply_identity_tags(ec2_id, new_id);
 
             // Poll until running or timeout — DescribeInstances is used here for
             // provisioning state (not liveness determination).
@@ -608,16 +626,24 @@ private:
         return quorum_status::healthy;
     }
 
-    /// Applies standard kythira:* tags plus extra_tags to a newly provisioned instance.
-    void apply_tags(const std::string& ec2_id, const NodeId& nid, const std::string& group,
-                    const std::string& market) {
-        auto make_tag = [](const std::string& k, const std::string& v) {
-            Aws::EC2::Model::Tag t;
-            t.SetKey(k);
-            t.SetValue(v);
-            return t;
-        };
+    [[nodiscard]] static auto make_ec2_tag(const std::string& k, const std::string& v)
+        -> Aws::EC2::Model::Tag {
+        Aws::EC2::Model::Tag t;
+        t.SetKey(k);
+        t.SetValue(v);
+        return t;
+    }
 
+    /// The kythira:* tags and extra_tags that are known before the instance
+    /// exists, as a TagSpecification for RunInstances so they are applied
+    /// atomically with the launch.
+    ///
+    /// kythira:managed-by is the one that matters most for being here: the
+    /// post-run leak audit filters instances on that key alone, so an instance
+    /// orphaned before a follow-up CreateTags could run would be invisible to it.
+    [[nodiscard]] auto launch_tag_specification(const std::string& group,
+                                                const std::string& market) const
+        -> Aws::EC2::Model::TagSpecification {
         std::string placement_strategy_val = "none";
         if (auto pit = _cfg.placement_by_group.find(group); pit != _cfg.placement_by_group.end()) {
             switch (pit->second.strategy) {
@@ -635,19 +661,37 @@ private:
             }
         }
 
+        Aws::EC2::Model::TagSpecification spec;
+        spec.SetResourceType(Aws::EC2::Model::ResourceType::instance);
+        spec.AddTags(make_ec2_tag("kythira:cluster", _cfg.cluster_name));
+        spec.AddTags(make_ec2_tag("kythira:group", group));
+        spec.AddTags(make_ec2_tag("kythira:managed-by", "ec2_quorum_manager"));
+        spec.AddTags(make_ec2_tag("kythira:placement-strategy", placement_strategy_val));
+        spec.AddTags(make_ec2_tag("kythira:market", market));
+        for (const auto& [k, v] : _cfg.extra_tags) {
+            spec.AddTags(make_ec2_tag(k, v));
+        }
+        return spec;
+    }
+
+    /// Applies the two tags that cannot be set at launch, because both derive
+    /// from the instance ID this manager uses as the node identity.
+    ///
+    /// Best-effort, but no longer silently so: losing these leaves an instance
+    /// the audit can still find by kythira:managed-by, so a failure here is a
+    /// legibility problem rather than an invisible leak, and worth a line.
+    void apply_identity_tags(const std::string& ec2_id, const NodeId& nid) {
         Aws::EC2::Model::CreateTagsRequest req;
         req.AddResources(ec2_id);
-        req.AddTags(make_tag("Name", "kythira-" + _cfg.cluster_name + "-" + node_id_str(nid)));
-        req.AddTags(make_tag("kythira:cluster", _cfg.cluster_name));
-        req.AddTags(make_tag("kythira:node-id", node_id_str(nid)));
-        req.AddTags(make_tag("kythira:group", group));
-        req.AddTags(make_tag("kythira:managed-by", "ec2_quorum_manager"));
-        req.AddTags(make_tag("kythira:placement-strategy", placement_strategy_val));
-        req.AddTags(make_tag("kythira:market", market));
-        for (const auto& [k, v] : _cfg.extra_tags) {
-            req.AddTags(make_tag(k, v));
+        req.AddTags(make_ec2_tag("Name", "kythira-" + _cfg.cluster_name + "-" + node_id_str(nid)));
+        req.AddTags(make_ec2_tag("kythira:node-id", node_id_str(nid)));
+        auto outcome = _ec2->CreateTags(req);
+        if (!outcome.IsSuccess()) {
+            std::cerr << "[aws_ec2_quorum_manager] Name/kythira:node-id tags for " << ec2_id
+                      << " failed: " << outcome.GetError().GetMessage()
+                      << " (the instance still carries kythira:managed-by, so the leak audit "
+                         "can find it)\n";
         }
-        _ec2->CreateTags(req);
     }
 
     /// Substitutes {NODE_ID}, {NODE_PORT}, {CLUSTER}, {AZ} placeholders in user_data_template.
