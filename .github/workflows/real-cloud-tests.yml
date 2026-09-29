@@ -762,8 +762,69 @@ jobs:
             echo "vpcs: clean."
           fi
 
+          # The instance check at the top of this step is scoped by tag, which
+          # is the same blind spot the VPC filter had: an instance the fixture
+          # never tagged is invisible to it. Measured on 2026-09-29 --
+          # i-0c7193ec59f352ab2, a t4g.micro with no tags and no key pair, ran
+          # ~44h inside a leaked kyt-* VPC while BOTH legs of run 36426191450
+          # printed "instances: clean". Unlike a leaked VPC, which only costs
+          # quota, an instance bills for every hour it survives, so this is the
+          # blind spot that costs money.
+          #
+          # Scoped by the leaked VPCs just found, not by "untagged anywhere":
+          # an instance inside a network this audit already believes is an
+          # orphaned test VPC is certainly a test leak, whereas an
+          # untagged-instance-anywhere filter would fire on anything an
+          # operator launched by hand -- and a false alarm here trains the
+          # reader to ignore the one alarm that guards spend. The narrowing
+          # costs no coverage: a running instance keeps its VPC alive, so a
+          # test VPC that tore down successfully cannot still hold one.
+          leaked_vpc_ids=$(printf '%s' "${vpcs}" | jq -r '.[].id' | tr '\n' ' ') \
+            || audit_failed "the leaked-VPC id list could not be extracted"
+          if [ -n "${leaked_vpc_ids// /}" ]; then
+            vpc_csv=$(printf '%s' "${leaked_vpc_ids}" | tr -s ' ' ',' | sed 's/^,//; s/,$//')
+            stragglers=$(aws ec2 describe-instances \
+              --filters "Name=vpc-id,Values=${vpc_csv}" \
+                        'Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped' \
+              --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,vpc:VpcId,managedBy:Tags[?Key==`kythira:managed-by`]|[0].Value}' \
+              --output json) || audit_failed "the DescribeInstances call scoped to leaked VPCs failed"
+            straggler_count=$(printf '%s' "${stragglers}" | jq 'if . == null then 0 else length end') \
+              || audit_failed "the leaked-VPC instance listing could not be parsed"
+            [ -n "${straggler_count}" ] || audit_failed "the parsed leaked-VPC instance count was empty"
+            if [ "${straggler_count}" -ne 0 ]; then
+              echo "::error::Post-run audit found ${straggler_count} non-terminated instance(s) inside leaked VPC(s) — including any the kythira:managed-by filter above cannot see. They are being billed." >&2
+              printf '%s' "${stragglers}" | jq . >&2
+              found=1
+            else
+              echo "instances inside leaked VPCs: none."
+            fi
+
+            # What is actually holding each leaked VPC. A non-default network
+            # ACL blocks DeleteVpc even with no subnets attached, and nothing
+            # else here looks for one: on 2026-09-29 four of eleven leaked VPCs
+            # failed DeleteVpc with DependencyViolation for exactly that, and
+            # the API never names the dependency. Printing the inventory means
+            # the next cleanup does not have to rediscover it.
+            #
+            # A denied Describe is reported as denied, never as an empty list —
+            # an inventory that cannot see is not an inventory that found
+            # nothing. If these read "(denied)", the role is missing the grant;
+            # re-run scripts/ci-cloud-credentials/aws/provision-oidc-role.sh.
+            for vid in ${leaked_vpc_ids}; do
+              acls=$(aws ec2 describe-network-acls --filters "Name=vpc-id,Values=${vid}" \
+                --query 'NetworkAcls[?IsDefault==`false`].NetworkAclId' --output text) || acls="(denied)"
+              subs=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${vid}" \
+                --query 'Subnets[].SubnetId' --output text) || subs="(denied)"
+              igws=$(aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=${vid}" \
+                --query 'InternetGateways[].InternetGatewayId' --output text) || igws="(denied)"
+              sgs=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=${vid}" \
+                --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text) || sgs="(denied)"
+              echo "  ${vid} holds: nacls=[${acls:-none}] subnets=[${subs:-none}] igws=[${igws:-none}] sgs=[${sgs:-none}]"
+            done
+          fi
+
           [ "${found}" -eq 0 ] || exit 1
-          echo "Post-run audit clean: no leaked instances, NAT gateways or VPCs in ${AWS_DEFAULT_REGION}."
+          echo "Post-run audit clean: no leaked instances (tagged or not), NAT gateways or VPCs in ${AWS_DEFAULT_REGION}."
 
   # ── AWS: ca_cluster_node AMI build (Packer) ─────────────────────────────
   # Independent of the `aws` job above: builds a new AMI (and its backing
