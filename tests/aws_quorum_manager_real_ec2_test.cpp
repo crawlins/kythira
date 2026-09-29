@@ -56,6 +56,8 @@
 #include <aws/ec2/model/ReleaseAddressRequest.h>
 #include <aws/ec2/model/ReplaceNetworkAclAssociationRequest.h>
 #include <aws/ec2/model/RunInstancesRequest.h>
+#include <aws/ec2/model/ResourceType.h>
+#include <aws/ec2/model/TagSpecification.h>
 #include <aws/ec2/model/Tag.h>
 #include <aws/ec2/model/TerminateInstancesRequest.h>
 #include <aws/sts/STSClient.h>
@@ -961,6 +963,27 @@ struct RealEc2Fixture : signal_cleanup_target {
         for (const auto& opt : bastion_options) {
             Aws::EC2::Model::RunInstancesRequest req;
             req.SetImageId(ami_id);
+            // Tagged in the launch request, not by a CreateTags call after it.
+            // RunInstances and CreateTags are two round trips, and a case that
+            // dies between them leaves an instance with no tags at all -- which
+            // is how i-0c7193ec59f352ab2, a t4g.micro bastion from this fixture's
+            // arm64 leg, ran untagged for ~44h on 2026-09-27 while the audit
+            // reported "instances: clean".
+            //
+            // kythira:managed-by matters as much as the Name. The post-run audit
+            // filters instances on that key alone, so before this the bastion was
+            // invisible to it even when CreateTags had succeeded -- a Name tag the
+            // audit never reads is not coverage. The value names this fixture
+            // rather than the manager, because the manager did not create it.
+            {
+                Aws::EC2::Model::TagSpecification tag_spec;
+                tag_spec.SetResourceType(Aws::EC2::Model::ResourceType::instance);
+                tag_spec.AddTags(make_tag("Name", uuid + "-bastion"));
+                tag_spec.AddTags(
+                    make_tag("kythira:managed-by", "aws_quorum_manager_real_ec2_test"));
+                tag_spec.AddTags(make_tag("kythira:role", "bastion"));
+                req.AddTagSpecifications(tag_spec);
+            }
             req.SetInstanceType(
                 Aws::EC2::Model::InstanceTypeMapper::GetInstanceTypeForName(opt.instance_type));
             req.SetMinCount(1);
@@ -1010,7 +1033,6 @@ struct RealEc2Fixture : signal_cleanup_target {
             std::chrono::steady_clock::now(),
             std::nullopt,
         });
-        tag(bastion_ec2_id, "Name", uuid + "-bastion");
 
         // Wait for running + public IP.
         auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{5};

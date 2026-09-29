@@ -666,10 +666,17 @@ jobs:
             echo "::error::THE AUDIT DID NOT RUN ($1). This is not a clean result: instances may have outlived teardown and be billing now. Check EC2 in ${AWS_DEFAULT_REGION} for instances tagged kythira:managed-by=ec2_quorum_manager." >&2
             exit 1
           }
-          # Scoped by the tag the manager itself applies, not by name: a name
+          # Scoped by the tag the producer itself applies, not by name: a name
           # prefix would also match anything an operator created by hand.
+          #
+          # Two values, because the manager is not the only thing here that
+          # launches an instance. aws_quorum_manager_real_ec2_test's fixture
+          # builds a bastion of its own, and it carried only a Name tag until
+          # 2026-09-29 -- so this filter could not see it even when tagging had
+          # succeeded, and i-0c7193ec59f352ab2 ran ~44h while this step printed
+          # "instances: clean". A tag the audit never reads is not coverage.
           leaked=$(aws ec2 describe-instances \
-            --filters 'Name=tag:kythira:managed-by,Values=ec2_quorum_manager' \
+            --filters 'Name=tag:kythira:managed-by,Values=ec2_quorum_manager,aws_quorum_manager_real_ec2_test' \
                       'Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped' \
             --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,cluster:Tags[?Key==`kythira:cluster`]|[0].Value}' \
             --output json) || audit_failed "the DescribeInstances call failed"
@@ -678,11 +685,11 @@ jobs:
           [ -n "${count}" ] || audit_failed "the parsed instance count was empty"
           found=0
           if [ "${count}" -ne 0 ]; then
-            echo "::error::Post-run audit found ${count} non-terminated instance(s) tagged kythira:managed-by=ec2_quorum_manager — teardown did not complete. They are being billed." >&2
+            echo "::error::Post-run audit found ${count} non-terminated instance(s) carrying kythira:managed-by — teardown did not complete. They are being billed." >&2
             printf '%s' "${leaked}" | jq . >&2
             found=1
           else
-            echo "instances: clean (no non-terminated ec2_quorum_manager instances)."
+            echo "instances: clean (nothing non-terminated carrying kythira:managed-by)."
           fi
 
           # Instances are not the only thing these tests create, and were not
