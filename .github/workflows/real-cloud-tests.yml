@@ -991,6 +991,18 @@ jobs:
   # the AWS job's OIDC approach. See
   # scripts/ci-cloud-credentials/azure/README.md for one-time setup.
   azure:
+    # Serialises this job across runs. Two reasons, and the sweep below depends
+    # on the first: a blanket tag-scoped delete is only safe while no second
+    # run has live VMs carrying the same tag. The second is that two concurrent
+    # runs compete for the same regional vCPU quota, and losing that race is
+    # what pushes the spot ladder onto on-demand -- 5.4x the price for the same
+    # VM (measured: $0.132/hr vs $0.02439/hr for D2s_v7 Linux in eastus).
+    #
+    # cancel-in-progress is false on purpose: a run already provisioning real
+    # VMs must reach its own teardown, not be killed partway and leak them.
+    concurrency:
+      group: real-cloud-azure-${{ github.repository }}
+      cancel-in-progress: false
     name: Real Cloud Tests (Azure)
     runs-on: ubuntu-24.04
     # 60 minutes was not enough: a real run of this job (PR #125) was killed
@@ -1346,6 +1358,60 @@ jobs:
             exit 1
           fi
           echo "Post-run audit clean: no VMs left in ${RG}."
+
+      # Remediation, deliberately AFTER the audit so detection stays loud: the
+      # audit still fails the job and names what leaked, and this then stops the
+      # billing instead of hiding it. Sweeping first would turn every leak back
+      # into silence, which is the failure mode this file has spent months
+      # fighting.
+      #
+      # It exists because in-process teardown structurally cannot cover every
+      # case. ctest kills on timeout with SIGKILL, which runs no destructor and
+      # which azure_real_test_support.hpp's handler cannot catch (it covers
+      # SIGTERM/SIGINT/SIGHUP/SIGQUIT and more, but SIGKILL is uncatchable).
+      # The per-case boost::unit_test::timeout values in tests/CMakeLists.txt
+      # make that rare rather than impossible: a case that outruns its own bound
+      # ends inside the process and tears down, but anything that outruns the
+      # whole binary's budget is still killed from outside. On run 36426191450
+      # three VMs survived exactly that and billed 25.5 hours on demand.
+      #
+      # Scoped by kythira:managed-by, which azure_vm_quorum_manager puts in the
+      # VM's own create body -- set atomically with the VM, so a tag filter has
+      # no blind spot here, unlike AWS where CreateVpc and CreateTags are two
+      # calls and a VM can exist untagged. It therefore cannot touch the vnet,
+      # NSG, Key Vault or storage account sharing this resource group, nor
+      # anything an operator created by hand.
+      - name: Sweep VMs that outlived teardown
+        if: always()
+        run: |
+          if ! az account show >/dev/null 2>&1; then
+            echo "Not logged in to Azure (the login step failed or never ran) — nothing to sweep with."
+            exit 0
+          fi
+          RG='${{ vars.AZURE_TEST_RESOURCE_GROUP }}'
+          if [ -z "${RG}" ]; then
+            echo "AZURE_TEST_RESOURCE_GROUP is unset — nothing to sweep."
+            exit 0
+          fi
+          if ! ids=$(az vm list --resource-group "${RG}" \
+              --query "[?tags.\"kythira:managed-by\"=='kythira-azure-vm-quorum-manager'].id" \
+              --output tsv); then
+            echo "::error::The sweep could not list VMs, so it cleaned nothing. Anything left in ${RG} is still billing — check the portal." >&2
+            exit 1
+          fi
+          if [ -z "${ids}" ]; then
+            echo "sweep: no VMs tagged kythira:managed-by left in ${RG}."
+            exit 0
+          fi
+          echo "::warning::Sweeping $(printf '%s\n' "${ids}" | grep -c .) VM(s) that outlived teardown in ${RG} — the audit above says which. This stops them billing; it does not make the run green." >&2
+          # Word-splitting on the tsv newlines is intended here.
+          # shellcheck disable=SC2086
+          if az vm delete --yes --ids ${ids}; then
+            echo "sweep: deleted. Deleting the VM reclaims its NIC and OS disk, which carry deleteOption: Delete."
+          else
+            echo "::error::The sweep could not delete every VM — they are STILL BILLING. Delete them by hand in ${RG}." >&2
+            exit 1
+          fi
 
   gcp:
     name: Real Cloud Tests (GCP)
