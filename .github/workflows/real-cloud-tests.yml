@@ -1299,6 +1299,37 @@ jobs:
           scripts/run-real-cloud-suite.sh 'real-azure' '^azure_quorum_manager_real_test$' \
             "Check the AZURE_CI_* federated-credential variables and that AZURE_TEST_RESOURCE_GROUP still exists in the subscription."
 
+      # Re-login with a fresh assertion before this bundle, because it is
+      # the only one that needs a token for a scope no earlier step has
+      # already fetched.
+      #
+      # Measured, run 36612317090: the quorum-manager bundle above passed off
+      # the ARM token `az` cached at login, ran 731s, and then this suite
+      # failed in 0.91s with
+      #   AADSTS700024: Client assertion is not within its valid time range.
+      #   Current time: 2026-09-29T18:48:39Z, assertion valid from
+      #   18:35:49Z, expiry time of assertion 18:40:49Z
+      # -- a five-minute assertion window, redeemed thirteen minutes after
+      # the login. Key Vault's data plane is a different scope
+      # (https://vault.azure.net/.default) than ARM, so AzureCliCredential
+      # cannot serve it from that cache and has to present the client
+      # assertion again; EnvironmentCredential has no client secret under
+      # federation, so the whole ChainedTokenCredential then fails. This is
+      # the same AADSTS700024 mechanism the login step's own comment
+      # describes, reached by a new scope rather than by elapsed time.
+      #
+      # azure/login@v2 fetches its OIDC token at its own execution time, so
+      # invoking it again here mints a live assertion. Reordering this bundle
+      # ahead of quorum-manager would also work today, but would break again
+      # silently the moment anything long-running is ordered before it.
+      - name: Azure re-login before key-vault (fresh federated assertion)
+        if: ${{ env.BUNDLE_KEY_VAULT == 'true' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_CI_SUBSCRIPTION_ID }}
+
       - name: Run key-vault bundle
         if: ${{ env.BUNDLE_KEY_VAULT == 'true' }}
         env:
