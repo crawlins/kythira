@@ -47,9 +47,12 @@
 # Env: ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN, both
 #      set by the runner in any job granting `permissions: id-token: write`.
 #      PROBE_AUDIENCE overrides the audience requested (default
-#      `kythira-id-token-probe`); the value is immaterial, because the 403
-#      under investigation comes from the Actions service before any audience
-#      is looked at.
+#      `kythira-id-token-probe`). This header used to claim the value was
+#      immaterial because the 403 arrives before any audience is looked at --
+#      an assertion nothing had tested, and the reason every measurement here
+#      compared a request the failing caller never makes. Control C below now
+#      replays the credential file's own audience and URL, so the claim is
+#      measured rather than assumed.
 #
 # This script NEVER exits non-zero for a probe result. It is a diagnostic, and
 # a diagnostic that can redden an otherwise-green run would be the third piece
@@ -212,5 +215,98 @@ if [[ "${nocode}" != "200" ]]; then
 fi
 say "Compare that body with the privateca failure's. Identical wording means"
 say "the 403 under investigation is what an unauthenticated request looks like."
+say "It does NOT: that control returns 401, and the failure under investigation"
+say "is 403. Whatever gRPC sends, it is not nothing. The two controls below"
+say "narrow what else differs."
+
+# ── Control B: authenticated, but without the api-version Accept header ───
+#
+# The surviving difference between the bundles is the caller, not the token:
+# GCS and Compute go over google-cloud-cpp's REST path and pass; privateca is
+# gRPC-backed and fails inside gRPC C-core's own external_account_credentials.
+# Both hold the same request token, which the claims above show good for hours.
+#
+# So the question is what gRPC's fetcher puts on the wire that curl does not,
+# and the first candidate is the header curl sends and gRPC has no reason to:
+# `Accept: application/json; api-version=2.0`. The Actions token service is
+# version-negotiated, and a request that does not ask for a version is not
+# obviously the same request. If dropping it turns 200 into the 403 under
+# investigation, the cause is identified and the fix is a header, not a
+# credential.
+#
+# Still a control, not a conclusion: it says what omitting that header does,
+# not that gRPC omits it.
+noaccept="$(mktemp)"
+trap 'rm -f "${body}" "${nobody}" "${noaccept}" "${filebody}"' EXIT
+
+nacode="$(curl -sS -o "${noaccept}" -w '%{http_code}' --max-time 30 \
+    -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" 2>&1)" || nacode="curl-failed"
+
+say "CONTROL B - authenticated, NO 'Accept: api-version=2.0' header: HTTP ${nacode}"
+if [[ "${nacode}" != "200" ]]; then
+    say "CONTROL B body (first 400 bytes):"
+    head -c 400 "${noaccept}" | sed "s/^/[id-token-probe: ${LABEL}] controlB: /"
+    echo
+    say "^^ If that is 403 with the same wording as the privateca failure, the"
+    say "api-version header is the difference and no credential is at fault."
+fi
+
+# ── Control C: replay what the SDK is actually configured to send ──────────
+#
+# Every measurement above uses this script's own audience and the env vars
+# directly. The failing caller uses neither: it reads the external-account
+# credential file google-github-actions/auth wrote, and takes the URL, the
+# audience and the headers from there. Until now nothing has exercised that
+# file, so "the probe works and the test does not" has been comparing two
+# different requests and calling the difference a mystery.
+#
+# This replays the file's own credential_source with curl. If the file's
+# request fails where this script's own succeeds, the difference is in the
+# file -- its audience or its URL -- and not in gRPC at all.
+#
+# Prints no secret: the header NAMES are listed, never their values, and the
+# audience query parameter is shown because it is not one.
+filebody="$(mktemp)"
+creds="${GOOGLE_APPLICATION_CREDENTIALS:-}"
+if [[ -z "${creds}" ]]; then
+    say "CONTROL C skipped: GOOGLE_APPLICATION_CREDENTIALS is unset, so the"
+    say "  SDK's own configuration is not visible from here. That is itself"
+    say "  worth knowing -- a caller with no credential file would explain the"
+    say "  failure without any of the above mattering."
+elif [[ ! -r "${creds}" ]]; then
+    say "CONTROL C skipped: GOOGLE_APPLICATION_CREDENTIALS=${creds} is not readable."
+else
+    say "CONTROL C: credential file present, type=$(jq -r '.type // "?"' < "${creds}" 2>/dev/null)"
+    say "CONTROL C: credential_source header names: $(jq -r '(.credential_source.headers // {}) | keys | join(",") // "(none)"' < "${creds}" 2>/dev/null)"
+    say "CONTROL C: subject_token_type=$(jq -r '.subject_token_type // "?"' < "${creds}" 2>/dev/null)"
+    file_url="$(jq -r '.credential_source.url // empty' < "${creds}" 2>/dev/null)"
+    if [[ -z "${file_url}" ]]; then
+        say "CONTROL C: the file has no credential_source.url -- it sources its"
+        say "  subject token some other way, so this replay does not apply."
+    else
+        # The audience is in the URL's query string, not a secret.
+        say "CONTROL C: file audience=$(printf '%s' "${file_url}" | sed -n 's/.*[?&]audience=\([^&]*\).*/\1/p')"
+        # Replay with the file's own headers, rebuilt from the file itself.
+        mapfile -t hdrs < <(jq -r '(.credential_source.headers // {}) | to_entries[] | "\(.key): \(.value)"' < "${creds}" 2>/dev/null)
+        args=()
+        for h in "${hdrs[@]}"; do
+            args+=(-H "${h}")
+        done
+        fcode="$(curl -sS -o "${filebody}" -w '%{http_code}' --max-time 30 \
+            "${args[@]}" "${file_url}" 2>&1)" || fcode="curl-failed"
+        say "CONTROL C - replay of the credential file's own request: HTTP ${fcode}"
+        if [[ "${fcode}" != "200" ]]; then
+            say "CONTROL C body (first 400 bytes):"
+            head -c 400 "${filebody}" | sed "s/^/[id-token-probe: ${LABEL}] controlC: /"
+            echo
+            say "^^ The file's own request fails where this script's succeeds."
+            say "That localises the fault to the credential file, not the caller."
+        else
+            say "^^ The file's own request SUCCEEDS with curl. The configuration is"
+            say "sound, so the difference is in how the caller sends it."
+        fi
+    fi
+fi
 
 exit 0
