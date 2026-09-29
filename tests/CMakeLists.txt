@@ -5125,7 +5125,37 @@ if(KYTHIRA_AZURE_REAL_TESTS)
     target_compile_definitions(azure_quorum_manager_real_test PRIVATE KYTHIRA_AZURE_REAL_TESTS)
     add_test(NAME azure_quorum_manager_real_test COMMAND azure_quorum_manager_real_test)
     set_tests_properties(azure_quorum_manager_real_test PROPERTIES
-        TIMEOUT 600
+        # Derived, the way aws_quorum_manager_real_ec2_test's is: the sum of
+        # every case's own boost::unit_test::timeout plus fixture overhead.
+        # The 15 cases declare 11700s between them (195 min); 12600s adds 15
+        # min for binary start, preflight and per-case fixture setup/teardown
+        # (measured at 46s from process start to the first case's output on run
+        # 36426191450). It sits inside the azure job's timeout-minutes: 360,
+        # which the build and the key-vault and object-persistence bundles
+        # share.
+        #
+        # This value only has to exceed that sum. It must never sit below it:
+        # ctest kills on timeout with SIGKILL, which no handler can catch, so
+        # the fixture destructor never runs and every VM the in-flight case
+        # created is stranded and billing. That is exactly what happened under
+        # the previous TIMEOUT 600 — which could not even cover the first few
+        # of 15 cases, the same mistake aws_quorum_manager_real_ec2_test's
+        # comment above records having made and fixed.
+        #
+        # Measured on run 36426191450: start 13:18:01Z, three completed cases
+        # swept their own VMs correctly at 13:18:47/13:18:55/13:21:58 — the
+        # teardown was never the defect — then ctest killed the binary at
+        # 600.08s with a case mid-flight, and its three VMs billed 25.5h
+        # on-demand ($10.70 via Cost Management) before anyone looked.
+        #
+        # The per-case timeouts are the real fix. Boost raises them via SIGALRM
+        # inside the process, so the case ends through Boost's own path and the
+        # fixture destructor still runs; the support header's signal handler
+        # deliberately covers SIGTERM/SIGINT/SIGHUP/SIGQUIT for the same reason
+        # but cannot cover SIGKILL. One slow case can now fail alone instead of
+        # taking the whole binary, and the leak needs a case to outrun its own
+        # bound rather than merely to be slow.
+        TIMEOUT 12600
         LABELS "integration;azure;real-azure;slow"
     )
 endif()

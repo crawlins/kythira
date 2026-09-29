@@ -772,7 +772,8 @@ BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
 
 BOOST_AUTO_TEST_SUITE(azure_vm_quorum_manager_real)
 
-BOOST_FIXTURE_TEST_CASE(provision_and_assess_single_zone, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(provision_and_assess_single_zone, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(600)) {
     if (!preflight_ok) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
         return;
@@ -815,7 +816,8 @@ BOOST_FIXTURE_TEST_CASE(provision_and_assess_single_zone, AzureIntegrationFixtur
     g_cost_accumulator.add(std::move(cost));
 }
 
-BOOST_FIXTURE_TEST_CASE(decommission_idempotent, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(decommission_idempotent, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(300)) {
     if (!preflight_ok) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
         return;
@@ -827,7 +829,8 @@ BOOST_FIXTURE_TEST_CASE(decommission_idempotent, AzureIntegrationFixture) {
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(999999999)).get());
 }
 
-BOOST_FIXTURE_TEST_CASE(provision_timeout_cleanup, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(provision_timeout_cleanup, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(600)) {
     if (!preflight_ok) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
         return;
@@ -842,7 +845,8 @@ BOOST_FIXTURE_TEST_CASE(provision_timeout_cleanup, AzureIntegrationFixture) {
     BOOST_CHECK_THROW(std::move(mgr.provision_node("1", std::nullopt)).get(), std::exception);
 }
 
-BOOST_FIXTURE_TEST_CASE(provision_multi_zone_topology, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(provision_multi_zone_topology, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(900)) {
     if (!preflight_ok) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
         return;
@@ -874,7 +878,8 @@ BOOST_FIXTURE_TEST_CASE(provision_multi_zone_topology, AzureIntegrationFixture) 
     g_cost_accumulator.add(std::move(cost));
 }
 
-BOOST_FIXTURE_TEST_CASE(deallocate_one_node_degraded, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(deallocate_one_node_degraded, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(900)) {
     if (!preflight_ok) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
         return;
@@ -914,7 +919,8 @@ BOOST_FIXTURE_TEST_CASE(deallocate_one_node_degraded, AzureIntegrationFixture) {
 // with design.md's "one test per azure_placement_kind" enumeration, and
 // checks the `kythira:placement` tag's value specifically rather than
 // re-testing provisioning mechanics already covered above.
-BOOST_FIXTURE_TEST_CASE(placement_availability_zone, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(placement_availability_zone, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(600)) {
     if (!preflight_ok) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
         return;
@@ -937,7 +943,8 @@ BOOST_FIXTURE_TEST_CASE(placement_availability_zone, AzureIntegrationFixture) {
     g_cost_accumulator.add(std::move(cost));
 }
 
-BOOST_FIXTURE_TEST_CASE(placement_proximity_placement_group, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(placement_proximity_placement_group, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(300)) {
     auto ppg_id = env_opt("AZURE_TEST_PPG_ID");
     if (!preflight_ok || !ppg_id) {
         BOOST_TEST_MESSAGE(
@@ -966,7 +973,8 @@ BOOST_FIXTURE_TEST_CASE(placement_proximity_placement_group, AzureIntegrationFix
     g_cost_accumulator.add(std::move(cost));
 }
 
-BOOST_FIXTURE_TEST_CASE(placement_availability_set, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(placement_availability_set, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(300)) {
     auto avset_id = env_opt("AZURE_TEST_AVAILABILITY_SET_ID");
     if (!preflight_ok || !avset_id) {
         BOOST_TEST_MESSAGE(
@@ -995,7 +1003,8 @@ BOOST_FIXTURE_TEST_CASE(placement_availability_set, AzureIntegrationFixture) {
     g_cost_accumulator.add(std::move(cost));
 }
 
-BOOST_FIXTURE_TEST_CASE(spot_provision_and_decommission, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(spot_provision_and_decommission, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(1800)) {
     if (!preflight_ok) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
         return;
@@ -1022,7 +1031,8 @@ BOOST_FIXTURE_TEST_CASE(spot_provision_and_decommission, AzureIntegrationFixture
     g_cost_accumulator.add(std::move(cost));
 }
 
-BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(1800)) {
     if (!preflight_ok) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
         return;
@@ -1089,7 +1099,8 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(azure_vmss_quorum_manager_real)
 
-BOOST_FIXTURE_TEST_CASE(vmss_provision_increments_capacity, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(vmss_provision_increments_capacity, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(900)) {
     if (!preflight_ok || vmss_config().scale_set_by_group.empty()) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed or AZURE_TEST_VMSS_NAME unset (see stderr)");
         return;
@@ -1112,7 +1123,8 @@ BOOST_FIXTURE_TEST_CASE(vmss_provision_increments_capacity, AzureIntegrationFixt
     g_cost_accumulator.add(std::move(cost));
 }
 
-BOOST_FIXTURE_TEST_CASE(vmss_assess_detects_not_running, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(vmss_assess_detects_not_running, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(900)) {
     auto scale_set = env_opt("AZURE_TEST_VMSS_NAME");
     if (!preflight_ok || !scale_set) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed or AZURE_TEST_VMSS_NAME unset (see stderr)");
@@ -1140,7 +1152,8 @@ BOOST_FIXTURE_TEST_CASE(vmss_assess_detects_not_running, AzureIntegrationFixture
     g_cost_accumulator.add(std::move(cost));
 }
 
-BOOST_FIXTURE_TEST_CASE(vmss_decommission_removes_instance, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(vmss_decommission_removes_instance, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(900)) {
     auto scale_set = env_opt("AZURE_TEST_VMSS_NAME");
     if (!preflight_ok || !scale_set) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed or AZURE_TEST_VMSS_NAME unset (see stderr)");
@@ -1168,7 +1181,8 @@ BOOST_FIXTURE_TEST_CASE(vmss_decommission_removes_instance, AzureIntegrationFixt
     g_cost_accumulator.add(std::move(cost));
 }
 
-BOOST_FIXTURE_TEST_CASE(vmss_decommission_idempotent, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(vmss_decommission_idempotent, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(600)) {
     if (!preflight_ok || vmss_config().scale_set_by_group.empty()) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed or AZURE_TEST_VMSS_NAME unset (see stderr)");
         return;
@@ -1178,7 +1192,8 @@ BOOST_FIXTURE_TEST_CASE(vmss_decommission_idempotent, AzureIntegrationFixture) {
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(999999999)).get());
 }
 
-BOOST_FIXTURE_TEST_CASE(vmss_rejects_automatic_upgrade_mode, AzureIntegrationFixture) {
+BOOST_FIXTURE_TEST_CASE(vmss_rejects_automatic_upgrade_mode, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(300)) {
     auto automatic_scale_set = env_opt("AZURE_TEST_VMSS_AUTOMATIC_UPGRADE_NAME");
     if (!preflight_ok || !automatic_scale_set) {
         BOOST_TEST_MESSAGE(
