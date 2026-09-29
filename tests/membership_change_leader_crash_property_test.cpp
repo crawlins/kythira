@@ -8,6 +8,8 @@
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
 
+#include "test_timeout_scale.hpp"
+
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
@@ -124,7 +126,8 @@ kythira::raft_configuration make_fast_config() {
 }
 
 template<typename Pred>
-bool wait_until(Pred pred, std::chrono::milliseconds deadline = std::chrono::milliseconds{5000}) {
+bool wait_until(Pred pred,
+                std::chrono::milliseconds deadline = kythira::testing::scaled_deadline(5000)) {
     auto start = std::chrono::steady_clock::now();
     while (!pred()) {
         if (std::chrono::steady_clock::now() - start > deadline) {
@@ -168,7 +171,11 @@ BOOST_AUTO_TEST_SUITE(leader_crash_properties)
  * Either way the remaining cluster must be able to commit a normal command
  * after node1 crashes — this verifies liveness.
  */
-BOOST_AUTO_TEST_CASE(cluster_survives_leader_crash_during_add, *boost::unit_test::timeout(30)) {
+// The in-test deadlines below are scaled, so this has to be too: leaving it at a
+// flat 30 would just move the failure from an assertion to a case timeout on the
+// very build the scaling exists for.
+BOOST_AUTO_TEST_CASE(cluster_survives_leader_crash_during_add,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     for (int iteration = 0; iteration < 3; ++iteration) {
         sim_t sim;
         sim.start();
@@ -213,7 +220,19 @@ BOOST_AUTO_TEST_CASE(cluster_survives_leader_crash_during_add, *boost::unit_test
         std::this_thread::sleep_for(std::chrono::milliseconds{200});
 
         BOOST_REQUIRE_MESSAGE(
-            wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{4000}),
+            wait_until(
+                [&] {
+                    // Drive inside the predicate. The simulator has no timer
+                    // thread -- the comment further down says so -- so the single
+                    // check_election_timeout() above is the only chance this wait
+                    // used to get. If that one call's vote responses were still in
+                    // flight, the 4s that followed advanced nothing and the wait
+                    // failed having done no work. The post-crash wait below always
+                    // drove; these did not.
+                    node1.check_election_timeout();
+                    return node1.is_leader();
+                },
+                kythira::testing::scaled_deadline(4000)),
             "iteration " + std::to_string(iteration) + ": node1 did not become leader");
 
         // Trigger add_server — this appends the joint config entry to node1's log
@@ -251,7 +270,7 @@ BOOST_AUTO_TEST_CASE(cluster_survives_leader_crash_during_add, *boost::unit_test
                     node2.check_election_timeout();
                     return node2.is_leader() || node3.is_leader();
                 },
-                std::chrono::milliseconds{4000}),
+                kythira::testing::scaled_deadline(4000)),
             "iteration " + std::to_string(iteration) + ": no new leader elected after L1 crash");
 
         // node2 is always the new leader (it has the most up-to-date log)
@@ -266,7 +285,7 @@ BOOST_AUTO_TEST_CASE(cluster_survives_leader_crash_during_add, *boost::unit_test
         // Property: a normal command commits successfully on the surviving cluster
         using sm_t = kythira::test_key_value_state_machine<test_types::log_index_type>;
         auto cmd = sm_t::make_put_command("k", "v");
-        auto cmd_fut = new_leader->submit_command(cmd, std::chrono::milliseconds{3000});
+        auto cmd_fut = new_leader->submit_command(cmd, kythira::testing::scaled_deadline(3000));
 
         bool cmd_applied = false;
         std::move(cmd_fut)
@@ -280,7 +299,17 @@ BOOST_AUTO_TEST_CASE(cluster_survives_leader_crash_during_add, *boost::unit_test
         }
 
         BOOST_CHECK_MESSAGE(
-            wait_until([&] { return cmd_applied; }, std::chrono::milliseconds{4000}),
+            wait_until(
+                [&] {
+                    // Same omission as the leader wait above, and this is the one
+                    // doc/TODO.md records failing as "a consequence": nothing
+                    // replicates unless the leader is driven, so polling
+                    // cmd_applied for 4s while the fixed 15-iteration drive loop
+                    // above has already finished is 4s of no progress.
+                    new_leader->check_heartbeat_timeout();
+                    return cmd_applied;
+                },
+                kythira::testing::scaled_deadline(4000)),
             "iteration " + std::to_string(iteration) +
                 ": surviving cluster could not commit a command after leader crash");
 
@@ -297,7 +326,7 @@ BOOST_AUTO_TEST_CASE(cluster_survives_leader_crash_during_add, *boost::unit_test
         // this scope (keeping the nodes alive) until all chains have finished, otherwise
         // the next iteration's stack-allocated nodes land at the same addresses and the
         // dangling callbacks corrupt their state.
-        std::this_thread::sleep_for(std::chrono::milliseconds{2500});
+        std::this_thread::sleep_for(kythira::testing::scaled_deadline(2500));
     }
 }
 
