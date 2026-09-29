@@ -832,8 +832,51 @@ private:
         while (std::chrono::steady_clock::now() < deadline) {
             Azure::Core::Url url(async_operation_url);
             Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get, url);
-            Azure::Core::Context context;
-            auto response = _pipeline->Send(request, context);
+
+            // Bound the individual poll, not just the loop. `deadline` above is
+            // only tested between iterations, so with an unbounded Context a
+            // single Send that never returned made `timeout` unreachable and
+            // this function hung forever. That is how a stalled ARM call
+            // outlives the whole test binary's budget and gets it SIGKILLed by
+            // ctest -- which runs no destructor, so every VM the in-flight case
+            // created is stranded and billing (three of them, 25.5h on demand,
+            // on run 36426191450).
+            //
+            // Two bounds measuring different things, the same split
+            // gcp_client_config::operation_timeout's comment describes: the
+            // request gets `api_timeout` ("a single ARM call"), the loop keeps
+            // `timeout`. The smaller of the two wins, so a poll is never waited
+            // on past the loop's own deadline -- and that clamp still applies
+            // when `api_timeout` is 0, the value do_send reads as "no per-call
+            // bound", so disabling per-call timeouts cannot reintroduce a hang.
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            auto per_call =
+                std::chrono::duration_cast<std::chrono::milliseconds>(_cfg.azure.api_timeout);
+            if (per_call.count() <= 0 || per_call > remaining) {
+                per_call = remaining;
+            }
+            auto context = Azure::Core::Context{}.WithDeadline(
+                Azure::DateTime(std::chrono::system_clock::now() + per_call));
+
+            std::unique_ptr<Azure::Core::Http::RawResponse> response;
+            try {
+                response = _pipeline->Send(request, context);
+            } catch (const std::exception& ex) {
+                // A poll that timed out, or failed at the transport, is not a
+                // verdict on the operation -- so it must not become one. The
+                // loop's deadline stays the only thing that ends this call, and
+                // reaching it returns quietly, which is the behaviour callers
+                // already depend on (see the note below this loop). Logged
+                // rather than swallowed: a run that spent its whole LRO budget
+                // on stalled polls should say so, and the count is bounded by
+                // the loop.
+                std::cerr << "[azure_vm_quorum_manager::poll_lro] poll of " << async_operation_url
+                          << " did not answer within " << per_call.count() << "ms: " << ex.what()
+                          << "\n";
+                std::this_thread::sleep_for(std::chrono::seconds{2});
+                continue;
+            }
             auto body = parse_response(*response);
             if (body.is_object() && body.as_object().contains("status")) {
                 std::string status(body.at("status").as_string());
