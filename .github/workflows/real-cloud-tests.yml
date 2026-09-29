@@ -756,8 +756,21 @@ jobs:
             --filters 'Name=cidr,Values=10.220.0.0/16,10.221.0.0/16' \
             --query 'Vpcs[?IsDefault==`false`].{id:VpcId,cidr:CidrBlock,name:`ca-cluster-node (untagged)`}' \
             --output json) || audit_failed "the DescribeVpcs call for the ca-cluster-node CIDRs failed"
+          # unique_by(.id), because the two filters now overlap. Before the
+          # ca-cluster-node fixtures tagged what they create they matched only the
+          # CIDR query; now they carry kyt-*-vpc Name tags too, so every one of
+          # them matches BOTH and a plain `add` counts it twice. Measured on run
+          # 36612317090: 7 leaked VPCs reported as 11, with half the dependency
+          # inventory printed twice.
+          #
+          # The CIDR query still earns its place -- CreateVpc and CreateTags are
+          # two calls, so a fixture that dies between them leaks a VPC with no
+          # Name tag at all -- but overlap is now the normal case rather than the
+          # exception, and an audit that inflates its own count is one nobody
+          # will trust the next time it reports a real number.
           vpcs=$(printf '%s\n%s' "${vpcs}" "${ca_vpcs}" \
-            | jq -s 'add // []') || audit_failed "the two VPC listings could not be combined"
+            | jq -s 'add // [] | unique_by(.id)') \
+            || audit_failed "the two VPC listings could not be combined"
           vpc_count=$(printf '%s' "${vpcs}" | jq 'if . == null then 0 else length end') \
             || audit_failed "DescribeVpcs returned a response this step could not parse"
           [ -n "${vpc_count}" ] || audit_failed "the parsed VPC count was empty"
