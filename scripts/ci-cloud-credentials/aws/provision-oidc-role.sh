@@ -50,9 +50,18 @@ again with a different --bundles value replaces the role's policy content
 Required:
   --github-org ORG        e.g. crawlins
   --github-repo REPO      e.g. kythira
-  --bundles LIST          Comma-separated: ec2-quorum-manager,ca-cluster-node,
-                           ca-cluster-node-rpc-tls,ami-build,object-persistence
+  --bundles LIST          Comma-separated, one per policies/*.json:
+                           ec2-quorum-manager,ca-cluster-node,
+                           ca-cluster-node-rpc-tls,ami-build,object-persistence,
+                           cloudwatch-monitoring,perf-cloud
                            (any non-empty subset)
+                          WARNING: this rebuilds the inline policy WHOLESALE, so
+                           a bundle you leave out loses its permissions. To add
+                           one permission, pass all seven, not just the bundle
+                           you edited. This list omitted cloudwatch-monitoring
+                           and perf-cloud until 2026-09-29, so anyone following
+                           it silently revoked both -- and perf-cloud.yml
+                           assumes this same role.
 
 Optional:
   --bucket NAME                  S3 bucket the object-persistence bundle is
