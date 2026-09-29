@@ -1,0 +1,57 @@
+From: Kythira <noreply@bit63.org>
+Subject: [PATCH] fix: preserve the query string in url-sourced external account credentials
+
+UrlExternalAccountCredentials folds the credential source URL's query string
+into what it then hands URI::Create as the *path*, with query parameters
+explicitly empty:
+
+    url_full_path_ = absl::StrCat("/", v[3]);   // still contains "?a=b&c=d"
+    ...
+    URI::Create(url_.scheme(), url_.authority(), url_full_path_,
+                {} /* query params */, "" /* fragment */);
+
+The wire request takes its target from that URI -- httpcli.cc uses
+uri.EncodedPathAndQueryParams(), not request.path -- so the '?', '&' and '%'
+inside the "path" are percent-encoded and the server receives one mangled path
+segment carrying no query parameters at all.
+
+Against GitHub Actions' OIDC token endpoint that means `audience` and
+`api-version` never arrive, and the request is refused with
+
+    403 {"source":"actions-run-service",
+         "errorMessage":"runner does not have permissions to generate id token"}
+
+which reads as a credential fault and is not one. The Authorization header is
+sent and is valid, which is exactly why the answer is 403 and not 401; replaying
+the same URL and headers with curl returns 200. Callers reaching the same
+endpoint through libcurl (google-cloud-cpp's REST path) are unaffected, so only
+the gRPC-backed clients fail -- which is what made this look like a
+service-specific permissions problem for months.
+
+url_ is already URI::Parse of the same string, so its path and query parameters
+are available and correctly split. Use those, and let URI encode each query
+value once instead of encoding the delimiters of an already-assembled query.
+
+request.path deliberately keeps url_full_path_: that is the raw path-and-query,
+and it is what the HTTP layer wants on the occasions it does consult it.
+
+Still present in v1.78.1. Reported upstream.
+
+--- a/src/core/lib/security/credentials/external/url_external_account_credentials.cc
++++ b/src/core/lib/security/credentials/external/url_external_account_credentials.cc
+@@ -144,9 +144,13 @@
+ UrlExternalAccountCredentials::RetrieveSubjectToken(
+     Timestamp deadline,
+     absl::AnyInvocable<void(absl::StatusOr<std::string>)> on_done) {
++  // Take the path and the query from the parsed URL rather than passing a path
++  // that still has the query string inside it: the request target is built with
++  // URI::EncodedPathAndQueryParams(), so a query smuggled through the path
++  // argument has its delimiters percent-encoded and never arrives.
+   auto url_for_request =
+-      URI::Create(url_.scheme(), url_.authority(), url_full_path_,
+-                  {} /* query params */, "" /* fragment */);
++      URI::Create(url_.scheme(), url_.authority(), url_.path(),
++                  url_.query_parameter_pairs(), "" /* fragment */);
+   if (!url_for_request.ok()) {
+     return MakeOrphanable<NoOpFetchBody>(
+         event_engine(), std::move(on_done),

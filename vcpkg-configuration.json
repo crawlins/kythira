@@ -4,6 +4,7 @@
     "./vcpkg-overlays/lakers",
     "./vcpkg-overlays/stdexec",
     "./vcpkg-overlays/ion-c",
-    "./vcpkg-overlays/mvfst"
+    "./vcpkg-overlays/mvfst",
+    "./vcpkg-overlays/grpc"
   ]
 }
