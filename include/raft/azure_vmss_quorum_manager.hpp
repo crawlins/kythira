@@ -143,6 +143,9 @@ public:
 
         Azure::Core::_internal::ClientOptions client_options;
         client_options.Retry.MaxRetries = 3;
+        if (_cfg.azure.transport) {
+            client_options.Transport.Transport = _cfg.azure.transport;
+        }
         _pipeline = std::make_shared<Azure::Core::Http::_internal::HttpPipeline>(
             client_options, "kythira-azure-vmss-quorum-manager", "1.0.0",
             std::move(per_retry_policies),

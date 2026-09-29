@@ -12,6 +12,7 @@
 
 #ifdef KYTHIRA_HAS_AZURE_SDK
 #include <azure/core/credentials/credentials.hpp>
+#include <azure/core/http/transport.hpp>
 #include <azure/identity/azure_cli_credential.hpp>
 #include <azure/identity/chained_token_credential.hpp>
 #include <azure/identity/environment_credential.hpp>
@@ -47,6 +48,26 @@ struct azure_client_config {
     /// Token credential used to authenticate every request. When `nullptr`,
     /// `make_default_credential_chain()` is used instead.
     std::shared_ptr<Azure::Core::Credentials::TokenCredential> credential;
+
+    /// Transport the ARM pipeline sends through. When `nullptr`, the SDK picks
+    /// its own default, which is what production uses.
+    ///
+    /// Exists so a test can point a quorum manager at a local HTTPS test
+    /// double. The managers authenticate with the SDK's
+    /// `BearerTokenAuthenticationPolicy`, which refuses a non-HTTPS endpoint
+    /// outright ("Bearer token authentication is not permitted for non TLS
+    /// protected (https) endpoints"), so the plain-HTTP mock idiom that
+    /// `azure_blob_client`'s tests use does not work here — that client sets its
+    /// own Authorization header and never installs the policy. Without this hook
+    /// there is no way to exercise a manager against a stand-in at all, which is
+    /// why `poll_lro`'s unbounded poll went unnoticed until it stranded billing
+    /// VMs in CI.
+    ///
+    /// Supply a `CurlTransport` whose `CurlTransportOptions::CAInfo` names the
+    /// test CA's root certificate. That keeps peer verification and the real
+    /// bearer-token path in play; prefer it to setting `SslVerifyPeer = false`,
+    /// which would let a test pass against a connection production would refuse.
+    std::shared_ptr<Azure::Core::Http::HttpTransport> transport;
 #endif
 };
 

@@ -4940,6 +4940,47 @@ set_tests_properties(azure_quorum_manager_unit_test PROPERTIES
     LABELS "unit;raft;quorum;azure"
 )
 
+# Regression test for azure_vm_quorum_manager::poll_lro's per-request deadline.
+#
+# Its own target rather than a case inside azure_quorum_manager_unit_test because
+# it drives a local httplib::SSLServer as an ARM test double and needs the
+# certificate_authority fixture to issue its certificate -- neither of which that
+# target links. TLS rather than plain HTTP because the managers authenticate with
+# the SDK's BearerTokenAuthenticationPolicy, which refuses a non-HTTPS endpoint.
+if(TARGET httplib::httplib AND TARGET OpenSSL::SSL AND TARGET certificate_authority)
+    add_executable(azure_vm_quorum_manager_lro_timeout_test
+        azure_vm_quorum_manager_lro_timeout_test.cpp)
+    target_link_libraries(azure_vm_quorum_manager_lro_timeout_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        Azure::azure-core
+        Azure::azure-identity
+        httplib::httplib
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        certificate_authority
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(azure_vm_quorum_manager_lro_timeout_test PRIVATE Folly::folly)
+    endif()
+    if(TARGET boost_json)
+        target_link_libraries(azure_vm_quorum_manager_lro_timeout_test PRIVATE boost_json)
+    endif()
+    target_compile_features(azure_vm_quorum_manager_lro_timeout_test PRIVATE cxx_std_23)
+    add_test(NAME azure_vm_quorum_manager_lro_timeout_test
+        COMMAND azure_vm_quorum_manager_lro_timeout_test)
+    # Above the case's own 120s boost timeout, which is what must end the run if
+    # the bound regresses -- a ctest kill here would prove nothing and leave no
+    # failure to read.
+    set_tests_properties(azure_vm_quorum_manager_lro_timeout_test PROPERTIES
+        TIMEOUT 180
+        LABELS "unit;raft;quorum;azure;ssl"
+    )
+else()
+    message(STATUS "azure_vm_quorum_manager_lro_timeout_test: skipped "
+        "(requires cpp-httplib, OpenSSL and certificate_authority)")
+endif()
+
 else()
     message(STATUS "Azure SDK not found — azure_quorum_manager_unit_test will not be built")
 endif()
