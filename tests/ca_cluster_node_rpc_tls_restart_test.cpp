@@ -338,7 +338,32 @@ BOOST_AUTO_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
     std::string peers_arg = peers.str();
 
     std::vector<std::unique_ptr<rpc_tls_node_process>> nodes;
-    for (std::size_t i = 0; i < infos.size(); ++i) {
+    // Two nodes first; the third only once the CA exists.
+    //
+    // Starting all three together is what made this test flaky. The
+    // --bootstrap-ca node cannot win an election on its own -- its pre-vote has
+    // no quorum, logged directly as "Pre-vote round did not reach quorum" -- so
+    // the 6000ms head start below buys it nothing until a peer is reachable.
+    // Under CPU contention both peers finish starting at about the same moment,
+    // by which point every node's election timer has long since expired, and
+    // they all campaign at once.
+    //
+    // Measured on 2026-09-29: node2 campaigned 17ms after node1 and took term 2,
+    // node1 lost leadership at term 1 *before committing bootstrap_ca*, and the
+    // CA was then never established at all. The cluster stayed perfectly healthy
+    // afterwards -- thousands of successful AppendEntries and reads under node2 --
+    // but certificate issuance had become permanently impossible. That is why
+    // widening the issuance wait below from 30s to 120s changed nothing: there
+    // was nothing left to wait for. A passing run logs "bootstrap_ca committed";
+    // a failing one never logs it at all.
+    //
+    // With a single peer the race has one other candidate, whose own timer has
+    // not expired yet, and the issuance check below then proves the CA is
+    // committed before a third voter exists to change the outcome. This is the
+    // staged startup ca_cluster_node_rpc_tls_test.cpp already uses, for the same
+    // reason it gives: show the bootstrap credential alone establishes the CA
+    // before the late node joins.
+    for (std::size_t i = 0; i < 2; ++i) {
         nodes.push_back(std::make_unique<rpc_tls_node_process>(
             infos[i].id, infos[i].rpc_port, infos[i].http_port,
             tmp_root + "/node" + std::to_string(infos[i].id), unseal_key_file, k_auth_token,
@@ -356,7 +381,7 @@ BOOST_AUTO_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
         std::all_of(
             nodes.begin(), nodes.end(),
             [](const auto& n) { return wait_healthy(n->http_port, std::chrono::seconds(60)); }),
-        "not every node became healthy");
+        "the first two nodes never became healthy");
 
     // Wait for the cluster to reach a stable, issuance-capable state
     // (bootstrap_ca committed, at least this far along toward cutover).
@@ -369,7 +394,20 @@ BOOST_AUTO_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
-    BOOST_REQUIRE_MESSAGE(ready, "cluster never reached an issuance-capable state");
+    BOOST_REQUIRE_MESSAGE(ready,
+                          "cluster never reached an issuance-capable state with the first two "
+                          "nodes up (bootstrap_ca not committed -- check whether the "
+                          "--bootstrap-ca node lost the initial election)");
+
+    // The third node joins only now. Before the CA is committed its vote could
+    // hand the first election to a non-bootstrap node, which is the failure this
+    // ordering removes.
+    nodes.push_back(std::make_unique<rpc_tls_node_process>(
+        infos[2].id, infos[2].rpc_port, infos[2].http_port,
+        tmp_root + "/node" + std::to_string(infos[2].id), unseal_key_file, k_auth_token, peers_arg,
+        bootstrap_cert_path, bootstrap_key_path, /*bootstrap=*/false));
+    BOOST_REQUIRE_MESSAGE(wait_healthy(nodes[2]->http_port, std::chrono::seconds(60)),
+                          "the third node never became healthy");
 
     // Pick a non-leader node to restart (restarting the leader would also
     // trigger a failover, an orthogonal concern already covered by
