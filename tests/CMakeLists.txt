@@ -5186,7 +5186,21 @@ if(KYTHIRA_AZURE_REAL_TESTS)
     target_compile_definitions(azure_key_vault_ca_provider_real_test PRIVATE KYTHIRA_AZURE_REAL_TESTS)
     add_test(NAME azure_key_vault_ca_provider_real_test COMMAND azure_key_vault_ca_provider_real_test)
     set_tests_properties(azure_key_vault_ca_provider_real_test PROPERTIES
-        TIMEOUT 600
+        # Derived, like azure_quorum_manager_real_test's and for the same
+        # reason: ctest kills on timeout with SIGKILL, which runs no destructor,
+        # so a bound below the sum of the cases it has to cover turns a slow run
+        # into a killed one. The flat 600 it replaces could not even cover the
+        # single network case plus the binary's own start-up.
+        #
+        # Two cases compile in the real-Azure configuration:
+        # sign_csr_against_real_vault (600s, the only one that reaches Key
+        # Vault) and fault_points_short_circuit_before_network_call (60s, which
+        # short-circuits before any network call and is FIU-gated). 660s
+        # between them; 900 leaves 4 minutes for start-up and the provider's
+        # credential chain. The two remaining cases are mutually exclusive
+        # fallback guards for when the SDK or the real-test switch is absent —
+        # neither compiles here and neither does any work.
+        TIMEOUT 900
         LABELS "integration;azure;real-azure;slow"
     )
 endif()

@@ -90,7 +90,7 @@ auto make_real_config() -> std::optional<raft::testing::azure_key_vault_ca_provi
 
 BOOST_AUTO_TEST_SUITE(azure_key_vault_ca_provider_real)
 
-BOOST_AUTO_TEST_CASE(sign_csr_against_real_vault) {
+BOOST_AUTO_TEST_CASE(sign_csr_against_real_vault, *boost::unit_test::timeout(600)) {
     auto cfg = make_real_config();
     if (!cfg) {
         BOOST_TEST_MESSAGE(
@@ -134,7 +134,8 @@ BOOST_AUTO_TEST_CASE(sign_csr_against_real_vault) {
 
 #ifdef FIU_ENABLE
 
-BOOST_AUTO_TEST_CASE(fault_points_short_circuit_before_network_call) {
+BOOST_AUTO_TEST_CASE(fault_points_short_circuit_before_network_call,
+                     *boost::unit_test::timeout(60)) {
     // Deliberately does NOT check make_real_config()/skip: the whole point of
     // this case is that enabling the fault point rejects the Future without
     // ever reaching the vault, so it should pass even with no real Key Vault
