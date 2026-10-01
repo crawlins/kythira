@@ -43,10 +43,14 @@
 
 #include <folly/init/Init.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 #include <atomic>
 #include <condition_variable>
 #include <csignal>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <iostream>
 #include <mutex>
@@ -77,6 +81,19 @@ void wait_for_stop() {
 }  // namespace kythira::bench::host
 
 namespace {
+
+// True for an IPv4 address in 127.0.0.0/8 or the IPv6 address ::1.
+auto is_loopback_address(const std::string& address) -> bool {
+    in_addr v4{};
+    if (::inet_pton(AF_INET, address.c_str(), &v4) == 1) {
+        return (ntohl(v4.s_addr) >> 24) == 127;
+    }
+    in6_addr v6{};
+    if (::inet_pton(AF_INET6, address.c_str(), &v6) == 1) {
+        return std::memcmp(&v6, &in6addr_loopback, sizeof(v6)) == 0;
+    }
+    return false;
+}
 
 using kythira::bench::node_options;
 using kythira::bench::node_transport;
@@ -278,6 +295,15 @@ auto main(int argc, char** argv) -> int {
 
     std::signal(SIGINT, kythira::bench::host::on_signal);
     std::signal(SIGTERM, kythira::bench::host::on_signal);
+
+    // A measurement host, so no opt-in is required (it is never installed and
+    // may be built without OpenSSL), but its Raft RPC has no TLS at all.
+    if (!is_loopback_address(opt._bind_address)) {
+        std::cerr << "multi_raft_node: WARNING: Raft RPC is PLAINTEXT and UNAUTHENTICATED on "
+                  << opt._bind_address << ":" << opt._raft_port
+                  << "; any process that can reach this port can drive Raft. Run it only on a "
+                     "network you trust.\n";
+    }
 
     try {
         return dispatch(opt);
