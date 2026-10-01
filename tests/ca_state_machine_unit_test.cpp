@@ -8,6 +8,8 @@
 #include <raft/ca_state_machine.hpp>
 
 #include <chrono>
+#include <cstring>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
@@ -266,12 +268,118 @@ BOOST_AUTO_TEST_CASE(snapshot_round_trip_preserves_state) {
                "round-trip-key");
 }
 
-BOOST_AUTO_TEST_CASE(empty_snapshot_resets_to_fresh_state) {
+BOOST_AUTO_TEST_CASE(empty_snapshot_resets_unbootstrapped_state) {
     ca_state_machine sm;
-    sm.apply(encode_bootstrap_ca_command("root", encrypt_ca_private_key("key", "pass")), 1);
-    BOOST_TEST(sm.has_root_material());
+    sm.apply(encode_record_issuance_command(make_ledger_entry(3, "pre-bootstrap")), 1);
+    BOOST_REQUIRE(!sm.has_root_material());
 
     sm.restore_from_snapshot({}, 0);
     BOOST_TEST(!sm.has_root_material());
     BOOST_TEST(sm.ledger().empty());
+}
+
+// ── restore_from_snapshot() treats snapshot bytes as untrusted ──────────────
+//
+// A snapshot arrives over Raft RPC and bypasses apply()'s checks, so once a
+// replica is bootstrapped it must only accept a legitimate successor of its
+// current state — never a swapped root/key or an erased revocation (the
+// OpenBao/Vault snapshot-restore pattern). A rejected snapshot must leave the
+// state untouched.
+
+namespace {
+
+auto bootstrapped_with_revoked_serial() -> ca_state_machine {
+    ca_state_machine sm;
+    sm.apply(encode_bootstrap_ca_command("root-A", encrypt_ca_private_key("key-A", "pass")), 1);
+    sm.apply(encode_record_issuance_command(make_ledger_entry(10, "client-a")), 2);
+    sm.apply(encode_record_revocation_command(10, std::chrono::system_clock::now()), 3);
+    sm.apply(encode_record_rpc_tls_ready_command(1), 4);
+    return sm;
+}
+
+auto forged_snapshot(const ca_state_machine& base,
+                     const std::function<void(boost::json::object&)>& mutate)
+    -> std::vector<std::byte> {
+    auto bytes = base.get_state();
+    std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    auto obj = boost::json::parse(text).as_object();
+    mutate(obj);
+    auto out = boost::json::serialize(obj);
+    std::vector<std::byte> result(out.size());
+    std::memcpy(result.data(), out.data(), out.size());
+    return result;
+}
+
+void require_unchanged(const ca_state_machine& sm) {
+    BOOST_TEST(sm.root_certificate_pem() == "root-A");
+    BOOST_REQUIRE(sm.ledger().size() == 1);
+    BOOST_TEST(sm.ledger()[0].revoked_at.has_value());
+    BOOST_TEST(sm.rpc_tls_ready_node_ids().contains(1));
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(bootstrapped_rejects_empty_snapshot) {
+    auto sm = bootstrapped_with_revoked_serial();
+    BOOST_CHECK_THROW(sm.restore_from_snapshot({}, 9), std::invalid_argument);
+    require_unchanged(sm);
+}
+
+BOOST_AUTO_TEST_CASE(bootstrapped_rejects_root_swap) {
+    auto sm = bootstrapped_with_revoked_serial();
+    auto snap = forged_snapshot(sm, [](auto& o) { o["root_cert_pem"] = "attacker-root"; });
+    BOOST_CHECK_THROW(sm.restore_from_snapshot(snap, 9), std::invalid_argument);
+    require_unchanged(sm);
+}
+
+BOOST_AUTO_TEST_CASE(bootstrapped_rejects_key_swap) {
+    auto sm = bootstrapped_with_revoked_serial();
+    auto snap = forged_snapshot(sm, [](auto& o) { o["encrypted_ca_key_pem"] = "garbage"; });
+    BOOST_CHECK_THROW(sm.restore_from_snapshot(snap, 9), std::invalid_argument);
+    require_unchanged(sm);
+}
+
+BOOST_AUTO_TEST_CASE(bootstrapped_rejects_unrevocation) {
+    auto sm = bootstrapped_with_revoked_serial();
+    auto snap = forged_snapshot(
+        sm, [](auto& o) { o["ledger"].as_array()[0].as_object().erase("revoked_at"); });
+    BOOST_CHECK_THROW(sm.restore_from_snapshot(snap, 9), std::invalid_argument);
+    require_unchanged(sm);
+}
+
+BOOST_AUTO_TEST_CASE(bootstrapped_rejects_dropped_ledger_entry) {
+    auto sm = bootstrapped_with_revoked_serial();
+    auto snap = forged_snapshot(sm, [](auto& o) { o["ledger"] = boost::json::array{}; });
+    BOOST_CHECK_THROW(sm.restore_from_snapshot(snap, 9), std::invalid_argument);
+    require_unchanged(sm);
+}
+
+BOOST_AUTO_TEST_CASE(bootstrapped_rejects_dropped_rpc_tls_ready) {
+    auto sm = bootstrapped_with_revoked_serial();
+    auto snap = forged_snapshot(sm, [](auto& o) { o["rpc_tls_ready"] = boost::json::array{}; });
+    BOOST_CHECK_THROW(sm.restore_from_snapshot(snap, 9), std::invalid_argument);
+    require_unchanged(sm);
+}
+
+BOOST_AUTO_TEST_CASE(bootstrapped_accepts_legitimate_successor) {
+    auto sm = bootstrapped_with_revoked_serial();
+    auto leader = sm;  // same root/key: the leader is ahead by two entries
+    leader.apply(encode_record_issuance_command(make_ledger_entry(11, "client-b")), 5);
+    leader.apply(encode_record_rpc_tls_ready_command(2), 6);
+
+    sm.restore_from_snapshot(leader.get_state(), 6);
+    BOOST_TEST(sm.ledger().size() == 2);
+    BOOST_TEST(sm.rpc_tls_ready_node_ids().contains(2));
+    BOOST_TEST(sm.last_applied_index() == 6);
+}
+
+BOOST_AUTO_TEST_CASE(malformed_snapshot_leaves_state_untouched) {
+    ca_state_machine sm;
+    sm.apply(encode_record_issuance_command(make_ledger_entry(5, "kept")), 1);
+    std::string bad = R"({"bootstrapped":true,"encrypted_ca_key_pem":"k","root_cert_pem":"r"})";
+    std::vector<std::byte> bytes(bad.size());
+    std::memcpy(bytes.data(), bad.data(), bad.size());
+    BOOST_CHECK_THROW(sm.restore_from_snapshot(bytes, 9), std::exception);
+    BOOST_TEST(sm.ledger().size() == 1);
+    BOOST_TEST(!sm.has_root_material());
 }
