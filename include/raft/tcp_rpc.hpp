@@ -11,8 +11,11 @@
 #include <raft/types.hpp>
 
 #include <arpa/inet.h>
+#include <cctype>
 #include <cerrno>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -20,12 +23,18 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -102,28 +111,17 @@ inline auto frame_recv(int fd) -> std::optional<std::string> {
 // over time. Using a non-blocking connect + select()-with-timeout for just
 // the connect phase makes this function's own `timeout` parameter an
 // actual, enforced upper bound instead of a documented-but-unenforced one.
-inline auto connect_to(const std::string& host, std::uint16_t port,
-                       std::chrono::milliseconds timeout) -> int {
-    addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    addrinfo* res{};
-    if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) {
-        return -1;
-    }
-
-    int fd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+// One connect attempt to an already-resolved address, bounded by `timeout`.
+inline auto connect_one(const addrinfo& ai, std::chrono::milliseconds timeout) -> int {
+    int fd = ::socket(ai.ai_family, ai.ai_socktype, ai.ai_protocol);
     if (fd < 0) {
-        ::freeaddrinfo(res);
         return -1;
     }
 
     int flags = ::fcntl(fd, F_GETFL, 0);
     ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
-    int rc = ::connect(fd, res->ai_addr, res->ai_addrlen);
-    ::freeaddrinfo(res);
+    int rc = ::connect(fd, ai.ai_addr, ai.ai_addrlen);
 
     if (rc != 0 && errno != EINPROGRESS) {
         ::close(fd);
@@ -147,6 +145,43 @@ inline auto connect_to(const std::string& host, std::uint16_t port,
     }
 
     ::fcntl(fd, F_SETFL, flags);  // restore blocking mode for send()/recv()
+    return fd;
+}
+
+// Tries every address `host` resolves to, in getaddrinfo() order, until one
+// connects. Trying only the first broke a peer named "localhost": it
+// usually resolves to ::1 first, and a server listening on 127.0.0.1 alone
+// was then unreachable. `timeout` bounds the whole call; each attempt gets
+// an equal share of what is left, so one address that silently drops SYNs
+// cannot use up the budget before the others are tried.
+inline auto connect_to(const std::string& host, std::uint16_t port,
+                       std::chrono::milliseconds timeout) -> int {
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    addrinfo* res{};
+    if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) {
+        return -1;
+    }
+
+    long candidates = 0;
+    for (addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) ++candidates;
+
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    int fd = -1;
+    for (addrinfo* ai = res; ai != nullptr && fd < 0; ai = ai->ai_next, --candidates) {
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) {
+            break;
+        }
+        fd = connect_one(*ai, std::max(remaining / candidates, std::chrono::milliseconds(1)));
+    }
+    ::freeaddrinfo(res);
+    if (fd < 0) {
+        return -1;
+    }
 
     timeval tv{};
     tv.tv_sec = static_cast<long>(timeout.count() / 1000);
@@ -219,6 +254,254 @@ private:
     mutable std::mutex _mu;
     std::unordered_map<NodeId, std::pair<std::string, std::uint16_t>> _peers;
 };
+
+// One address an RPC server listens on.
+struct bind_endpoint {
+    sockaddr_storage addr{};
+    socklen_t len{0};
+};
+
+inline auto endpoint_is_loopback(const bind_endpoint& ep) -> bool {
+    if (ep.addr.ss_family == AF_INET) {
+        const auto& a = reinterpret_cast<const sockaddr_in&>(ep.addr);
+        return (ntohl(a.sin_addr.s_addr) >> 24) == 127;
+    }
+    if (ep.addr.ss_family == AF_INET6) {
+        const auto& a = reinterpret_cast<const sockaddr_in6&>(ep.addr);
+        return IN6_IS_ADDR_LOOPBACK(&a.sin6_addr);
+    }
+    return false;
+}
+
+// The wildcard IPv4 address: what both RPC servers bound before they took a
+// bind address at all.
+inline auto ipv4_any_endpoint() -> std::vector<bind_endpoint> {
+    bind_endpoint ep;
+    auto& a = reinterpret_cast<sockaddr_in&>(ep.addr);
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_ANY);
+    ep.len = sizeof(sockaddr_in);
+    return {ep};
+}
+
+// Every IPv4/IPv6 address assigned to an interface on this host.
+inline auto local_interface_addresses() -> std::vector<bind_endpoint> {
+    std::vector<bind_endpoint> out;
+    ifaddrs* ifs = nullptr;
+    if (::getifaddrs(&ifs) != 0) return out;
+    for (ifaddrs* i = ifs; i != nullptr; i = i->ifa_next) {
+        if (i->ifa_addr == nullptr) continue;
+        bind_endpoint ep;
+        if (i->ifa_addr->sa_family == AF_INET) {
+            ep.len = sizeof(sockaddr_in);
+        } else if (i->ifa_addr->sa_family == AF_INET6) {
+            ep.len = sizeof(sockaddr_in6);
+        } else {
+            continue;
+        }
+        std::memcpy(&ep.addr, i->ifa_addr, ep.len);
+        out.push_back(ep);
+    }
+    ::freeifaddrs(ifs);
+    return out;
+}
+
+// Checks that every endpoint a host name resolved to is an address of this
+// host: loopback, or assigned to one of `locals`. A link-local IPv6 match
+// with no zone takes the interface's scope id, which bind() needs. Throws std::invalid_argument
+// naming the first address that belongs to some other host.
+inline auto require_local_endpoints(std::vector<bind_endpoint>& eps,
+                                    const std::vector<bind_endpoint>& locals,
+                                    const std::string& address, const char* who) -> void {
+    for (auto& ep : eps) {
+        if (endpoint_is_loopback(ep)) continue;
+        bool found = false;
+        for (const auto& l : locals) {
+            if (l.addr.ss_family != ep.addr.ss_family) continue;
+            if (ep.addr.ss_family == AF_INET) {
+                found = reinterpret_cast<const sockaddr_in&>(l.addr).sin_addr.s_addr ==
+                        reinterpret_cast<const sockaddr_in&>(ep.addr).sin_addr.s_addr;
+            } else {
+                const auto& la = reinterpret_cast<const sockaddr_in6&>(l.addr);
+                auto& ea = reinterpret_cast<sockaddr_in6&>(ep.addr);
+                found = std::memcmp(&la.sin6_addr, &ea.sin6_addr, sizeof(in6_addr)) == 0;
+                if (found && ea.sin6_scope_id == 0) ea.sin6_scope_id = la.sin6_scope_id;
+            }
+            if (found) break;
+        }
+        if (!found) {
+            char buf[INET6_ADDRSTRLEN] = {};
+            const void* raw = ep.addr.ss_family == AF_INET
+                                  ? static_cast<const void*>(
+                                        &reinterpret_cast<const sockaddr_in&>(ep.addr).sin_addr)
+                                  : static_cast<const void*>(
+                                        &reinterpret_cast<const sockaddr_in6&>(ep.addr).sin6_addr);
+            ::inet_ntop(ep.addr.ss_family, raw, buf, sizeof(buf));
+            throw std::invalid_argument(std::string(who) + ": bind address '" + address +
+                                        "' resolves to " + buf +
+                                        ", which is not an address of this host");
+        }
+    }
+}
+
+// Parses one address from a hosts file: an IPv4 or IPv6 literal, where an
+// IPv6 one may carry a %zone (interface name or index).
+inline auto parse_hosts_address(const std::string& text) -> std::optional<bind_endpoint> {
+    bind_endpoint ep;
+    auto& v4 = reinterpret_cast<sockaddr_in&>(ep.addr);
+    if (::inet_pton(AF_INET, text.c_str(), &v4.sin_addr) == 1) {
+        v4.sin_family = AF_INET;
+        ep.len = sizeof(sockaddr_in);
+        return ep;
+    }
+    ep = bind_endpoint{};
+    auto& v6 = reinterpret_cast<sockaddr_in6&>(ep.addr);
+    auto pct = text.find('%');
+    if (::inet_pton(AF_INET6, text.substr(0, pct).c_str(), &v6.sin6_addr) != 1) {
+        return std::nullopt;
+    }
+    if (pct != std::string::npos) {
+        auto zone = text.substr(pct + 1);
+        unsigned idx = ::if_nametoindex(zone.c_str());
+        if (idx == 0 && !zone.empty() && std::all_of(zone.begin(), zone.end(), [](unsigned char c) {
+                return std::isdigit(c);
+            })) {
+            idx = static_cast<unsigned>(std::stoul(zone));
+        }
+        if (idx == 0) return std::nullopt;
+        v6.sin6_scope_id = idx;
+    }
+    v6.sin6_family = AF_INET6;
+    ep.len = sizeof(sockaddr_in6);
+    return ep;
+}
+
+// Every address `name` is listed under in the hosts file at `path`, in file
+// order, without duplicates. Names match case-insensitively, a trailing dot
+// is ignored, and anything after '#' is a comment. A missing or unreadable
+// file yields no addresses.
+inline auto hosts_file_addresses(std::string name, const std::string& path)
+    -> std::vector<bind_endpoint> {
+    auto lower = [](std::string v) {
+        std::transform(v.begin(), v.end(), v.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (!v.empty() && v.back() == '.') v.pop_back();
+        return v;
+    };
+    name = lower(std::move(name));
+    std::vector<bind_endpoint> out;
+    std::ifstream in(path);
+    std::string line;
+    while (std::getline(in, line)) {
+        line = line.substr(0, line.find('#'));
+        std::istringstream fields(line);
+        std::string addr;
+        if (!(fields >> addr)) continue;
+        bool listed = false;
+        for (std::string alias; fields >> alias;) {
+            listed = listed || lower(alias) == name;
+        }
+        if (!listed) continue;
+        auto ep = parse_hosts_address(addr);
+        if (!ep) continue;
+        bool duplicate = false;
+        for (const auto& o : out) {
+            duplicate =
+                duplicate || (o.len == ep->len && std::memcmp(&o.addr, &ep->addr, ep->len) == 0);
+        }
+        if (!duplicate) out.push_back(*ep);
+    }
+    return out;
+}
+
+// Resolves the address an RPC server listens on. An IPv4 or IPv6 literal is
+// used as given (an IPv6 one may carry a %zone). A host name is looked up only in the local hosts
+// file
+// (`hosts_path`, normally /etc/hosts), never in DNS, so whoever controls a
+// resolver cannot choose what the listener binds. The server binds every
+// address the name is listed under (one listener each, so "localhost"
+// usually covers both 127.0.0.1 and ::1). "localhost" falls back to
+// 127.0.0.1 and ::1 when the file does not list it (RFC 6761). Every
+// address must be loopback or assigned to an interface on this host; an
+// entry pointing anywhere else is refused.
+inline auto resolve_bind_addresses(const std::string& address, const char* who,
+                                   const std::string& hosts_path = "/etc/hosts")
+    -> std::vector<bind_endpoint> {
+    if (address.empty()) {
+        throw std::invalid_argument(std::string(who) + ": empty bind address");
+    }
+    if (auto literal = parse_hosts_address(address)) return {*literal};
+
+    auto out = hosts_file_addresses(address, hosts_path);
+    if (out.empty()) {
+        std::string lowered(address);
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowered == "localhost" || lowered == "localhost.") {
+            out.push_back(*parse_hosts_address("127.0.0.1"));
+            out.push_back(*parse_hosts_address("::1"));
+        }
+    }
+    if (out.empty()) {
+        throw std::invalid_argument(std::string(who) + ": bind address '" + address +
+                                    "' is not an IP address and is not listed in " + hosts_path +
+                                    " (DNS is not consulted for bind addresses)");
+    }
+    require_local_endpoints(out, local_interface_addresses(), address, who);
+    return out;
+}
+
+// True when `address` is accepted by resolve_bind_addresses() and every
+// address it binds is loopback.
+inline auto is_loopback_bind_address(const std::string& address) -> bool {
+    try {
+        auto eps = resolve_bind_addresses(address, "is_loopback_bind_address");
+        for (const auto& e : eps) {
+            if (!endpoint_is_loopback(e)) return false;
+        }
+        return true;
+    } catch (const std::invalid_argument&) {
+        return false;
+    }
+}
+
+// Opens one listening socket per endpoint on `port`. IPv6 sockets are
+// IPV6_V6ONLY so "::" means IPv6 only and never also claims IPv4. When there
+// are several endpoints (a host name), one whose address family the kernel
+// does not support (IPv6 disabled while /etc/hosts still lists ::1) is
+// skipped, as long as at least one listener opens. Any other failure closes
+// the sockets already opened and throws std::runtime_error.
+inline auto open_listeners(const std::vector<bind_endpoint>& endpoints, std::uint16_t port,
+                           const char* who) -> std::vector<int> {
+    std::vector<int> fds;
+    auto fail = [&](const std::string& what) {
+        for (int fd : fds) ::close(fd);
+        throw std::runtime_error(std::string(who) + ": " + what + " on port " +
+                                 std::to_string(port));
+    };
+    for (const auto& ep : endpoints) {
+        int fd = ::socket(ep.addr.ss_family, SOCK_STREAM, 0);
+        if (fd < 0 && errno == EAFNOSUPPORT && endpoints.size() > 1) continue;
+        if (fd < 0) fail("socket()");
+        int opt = 1;
+        ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        bind_endpoint at = ep;
+        if (at.addr.ss_family == AF_INET6) {
+            ::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt));
+            reinterpret_cast<sockaddr_in6&>(at.addr).sin6_port = htons(port);
+        } else {
+            reinterpret_cast<sockaddr_in&>(at.addr).sin_port = htons(port);
+        }
+        if (::bind(fd, reinterpret_cast<const sockaddr*>(&at.addr), at.len) < 0) {
+            ::close(fd);
+            fail("bind()");
+        }
+        ::listen(fd, 256);
+        fds.push_back(fd);
+    }
+    if (fds.empty()) fail("no usable address family");
+    return fds;
+}
 
 }  // namespace tcp_detail
 
@@ -405,6 +688,13 @@ public:
 
     explicit tcp_rpc_server(std::uint16_t port) : _port(port) {}
 
+    // Listens on `bind_address` only instead of every IPv4 interface: an IPv4
+    // or IPv6 literal, or a host name whose addresses all belong to this host
+    // (see tcp_detail::resolve_bind_addresses). Throws std::invalid_argument
+    // otherwise.
+    tcp_rpc_server(std::uint16_t port, const std::string& bind_address)
+        : _port(port), _binds(tcp_detail::resolve_bind_addresses(bind_address, "tcp_rpc_server")) {}
+
     ~tcp_rpc_server() { stop(); }
 
     tcp_rpc_server(const tcp_rpc_server&) = delete;
@@ -414,15 +704,15 @@ public:
     // Move-only before start() is called (not safe to move a running server).
     tcp_rpc_server(tcp_rpc_server&& other) noexcept
         : _port(other._port),
-          _listen_fd(other._listen_fd.load()),
+          _binds(std::move(other._binds)),
+          _listen_fds(std::move(other._listen_fds)),
           _running(other._running.load()),
-          _accept_thread(std::move(other._accept_thread)),
+          _accept_threads(std::move(other._accept_threads)),
           _rv(std::move(other._rv)),
           _pv(std::move(other._pv)),
           _ae(std::move(other._ae)),
           _is(std::move(other._is)),
           _ser(std::move(other._ser)) {
-        other._listen_fd = -1;
         other._running = false;
     }
 
@@ -438,51 +728,40 @@ public:
         if (_running.exchange(true)) {
             return;
         }
-
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) {
+        std::lock_guard lock(_listen_mu);
+        try {
+            _listen_fds = tcp_detail::open_listeners(_binds, _port, "tcp_rpc_server");
+        } catch (...) {
             _running = false;
-            throw std::runtime_error("tcp_rpc_server: socket()");
+            throw;
         }
-
-        int opt = 1;
-        ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = INADDR_ANY;
-        addr.sin_port = htons(_port);
-
-        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            ::close(fd);
-            _running = false;
-            throw std::runtime_error("tcp_rpc_server: bind() on port " + std::to_string(_port));
+        for (int fd : _listen_fds) {
+            _accept_threads.emplace_back([this, fd] { accept_loop(fd); });
         }
-        ::listen(fd, 256);
-        _listen_fd = fd;
-        _accept_thread = std::thread([this] { accept_loop(); });
     }
 
     void stop() {
         if (!_running.exchange(false)) {
             return;
         }
-        int fd = _listen_fd.exchange(-1);
-        if (fd >= 0) {
+        std::lock_guard lock(_listen_mu);
+        for (int fd : _listen_fds) {
             ::shutdown(fd, SHUT_RDWR);
             ::close(fd);
         }
-        if (_accept_thread.joinable()) {
-            _accept_thread.join();
+        _listen_fds.clear();
+        for (auto& t : _accept_threads) {
+            if (t.joinable()) t.join();
         }
+        _accept_threads.clear();
     }
 
     [[nodiscard]] bool is_running() const noexcept { return _running.load(); }
 
 private:
-    void accept_loop() {
+    void accept_loop(int listen_fd) {
         while (_running) {
-            int client = ::accept(_listen_fd.load(), nullptr, nullptr);
+            int client = ::accept(listen_fd, nullptr, nullptr);
             if (client < 0) {
                 break;
             }
@@ -523,9 +802,11 @@ private:
     }
 
     std::uint16_t _port;
-    std::atomic<int> _listen_fd{-1};
+    std::vector<tcp_detail::bind_endpoint> _binds{tcp_detail::ipv4_any_endpoint()};
+    std::mutex _listen_mu;  // guards _listen_fds/_accept_threads across start()/stop()
+    std::vector<int> _listen_fds;
     std::atomic<bool> _running{false};
-    std::thread _accept_thread;
+    std::vector<std::thread> _accept_threads;
 
     rv_fn _rv;
     pv_fn _pv;
