@@ -36,6 +36,7 @@
 #ifdef KYTHIRA_HAS_AZURE_SDK
 
 #include "azure_real_test_support.hpp"
+#include "azure_sdk_log_fixture.hpp"
 
 #include <raft/azure_vm_quorum_manager.hpp>
 #include <raft/azure_vmss_quorum_manager.hpp>
@@ -964,6 +965,7 @@ void external_vmss_deallocate(const kythira::azure_client_config& azure,
 
 }  // namespace
 
+BOOST_GLOBAL_FIXTURE(AzureSdkLogFixture);
 BOOST_GLOBAL_FIXTURE(AzureSignalHandlerFixture);
 BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
 

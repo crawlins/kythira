@@ -95,6 +95,56 @@ The script prints the exact `gh variable set` commands to run — set
   written to a file the workflow points
   `AZURE_TEST_KEY_VAULT_CA_CERT_FILE` at — `key-vault` bundle.
 
+## Token scopes and the five-minute client assertion
+
+Under workload identity federation there is no client secret, so `az` presents
+the GitHub-issued **client assertion** to AAD — and it must present it again for
+every token **scope** it has not already cached. That assertion lives **five
+minutes**, `azure/login@v2` fetches its OIDC token once at its own execution
+time, and nothing refreshes it.
+
+The consequence is counter-intuitive and cost a run: a bundle can fail to
+authenticate *because it is the first to need a particular scope*, no matter how
+recently another bundle succeeded. In run `36612317090` the quorum-manager
+bundle passed off the ARM token cached at login, ran 731s, and the key-vault
+suite then failed in **0.91s** with
+
+```text
+AADSTS700024: Client assertion is not within its valid time range.
+```
+
+thirteen minutes after a five-minute assertion. Key Vault's data plane is a
+different scope (`https://vault.azure.net/.default`) than ARM, so
+`AzureCliCredential` could not serve it from that cache;
+`EnvironmentCredential` is always unavailable here, so the chain had nothing
+left.
+
+The job therefore **pre-warms every scope it can need**, immediately after
+login, while the assertion is seconds old:
+
+| Scope | Needed by |
+|---|---|
+| `https://management.azure.com/.default` | both quorum managers |
+| `https://vault.azure.net/.default` | `azure_key_vault_ca_provider` |
+| `https://storage.azure.com/.default` | `azure_blob_object_persistence` |
+
+A bundle that needs a fourth scope adds a line to that step and nothing else.
+The step fails the job if any scope cannot be cached, because a scope that
+cannot be obtained seconds after login will not start working later, and finding
+that out after a 700-second bundle is how this was discovered.
+
+The targeted re-login before the key-vault bundle is kept as belt-and-braces —
+it still helps if a token outlives its own one-hour lifetime rather than merely
+being a scope nothing cached — but it is no longer the primary protection.
+
+**Diagnosing the next one.** `ChainedTokenCredential`'s exception says only
+`Failed to get token from ChainedTokenCredential.`, naming neither the
+credential that failed nor why; the AADSTS code was only ever in `az`'s stderr.
+Both real-Azure binaries now install an Azure SDK log listener at `Verbose`
+(`tests/azure_sdk_log_fixture.hpp`), which is the level at which the chain
+records a reason per source, so that reason reaches the test log instead of
+being discarded.
+
 ## Monitoring-config test
 
 The Azure Monitor monitoring-config test (`azure-monitoring` job;

@@ -22,6 +22,8 @@
 #ifdef KYTHIRA_AZURE_REAL_TESTS
 #ifdef KYTHIRA_HAS_AZURE_KEY_VAULT
 
+#include "azure_sdk_log_fixture.hpp"
+
 #include <raft/azure_key_vault_ca_provider_impl.hpp>
 #include <raft/certificate_provider.hpp>
 
@@ -39,6 +41,15 @@ struct FiuInitFixture {
     FiuInitFixture() { fiu_init(0); }
 };
 BOOST_GLOBAL_FIXTURE(FiuInitFixture);
+#endif
+
+#ifdef KYTHIRA_HAS_AZURE_SDK
+// The binary whose ChainedTokenCredential failure was undiagnosable: the C++
+// error read only "Failed to get token from ChainedTokenCredential." while the
+// real cause (AADSTS700024, with both timestamps) sat in `az`'s stderr. See the
+// fixture's own comment.
+using kythira::testing::azure_real::AzureSdkLogFixture;
+BOOST_GLOBAL_FIXTURE(AzureSdkLogFixture);
 #endif
 
 namespace {

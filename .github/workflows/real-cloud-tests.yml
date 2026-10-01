@@ -1276,6 +1276,56 @@ jobs:
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_CI_SUBSCRIPTION_ID }}
 
+      # Redeem the federated client assertion once per scope, now, while it is
+      # seconds old.
+      #
+      # The failure this prevents is not elapsed time, which the login step's
+      # comment above already addresses. It is a **new scope**. Under workload
+      # identity federation `az` must present the client assertion again for
+      # every token scope it has not already cached, and that assertion lives
+      # **five minutes** -- `azure/login@v2` fetches its OIDC token once, at its
+      # own execution time, and nothing refreshes it. So a bundle that is the
+      # first to need a given scope redeems a long-dead assertion and fails with
+      #   AADSTS700024: Client assertion is not within its valid time range.
+      # however healthy the session looks, and however recently another bundle
+      # succeeded.
+      #
+      # Measured in run 36612317090: the quorum-manager bundle passed off the
+      # ARM token cached at login, ran 731s, and the key-vault suite then failed
+      # in 0.91s on this exact code -- thirteen minutes after a five-minute
+      # assertion. `EnvironmentCredential` is always unavailable here (no client
+      # secret under federation), so `ChainedTokenCredential` had nothing left.
+      #
+      # #364 fixed that one case with a second `azure/login@v2` before the
+      # key-vault bundle. This generalises it: every scope the job can possibly
+      # need is cached up front, so the order of the bundles, and how long any
+      # of them runs, stops mattering. A fourth scope added later needs a line
+      # here and nothing else -- whereas the targeted re-login only ever
+      # protected the bundle it preceded.
+      #
+      # Failures are fatal. A scope that cannot be cached now will not
+      # mysteriously work later, and discovering that after a 700-second bundle
+      # is how this cost a run in the first place. Each token is discarded
+      # immediately -- only `az`'s own cache is wanted, never the token in a log
+      # or an env var.
+      - name: Pre-warm every Azure token scope this job needs
+        run: |
+          # ARM for the quorum managers, the vault data plane for the key-vault
+          # CA provider, storage for the blob persistence suite. The data-plane
+          # scopes are the ones that bite: they are never a side effect of
+          # anything the management plane does.
+          for scope in \
+              "https://management.azure.com/.default" \
+              "https://vault.azure.net/.default" \
+              "https://storage.azure.com/.default"; do
+            if az account get-access-token --scope "${scope}" --query expiresOn -o tsv >/dev/null; then
+              echo "cached: ${scope}"
+            else
+              echo "::error::Could not obtain a token for ${scope} immediately after login. The federated client assertion lives five minutes and is redeemed per scope, so a bundle needing this scope later would fail with AADSTS700024. See scripts/ci-cloud-credentials/azure/README.md." >&2
+              exit 1
+            fi
+          done
+
       # First of the three, immediately after the login, for the reason the
       # login step's own comment gives: the AAD session this job mints is
       # short-lived, and this suite finishes in under a minute where the
@@ -1374,6 +1424,13 @@ jobs:
       # invoking it again here mints a live assertion. Reordering this bundle
       # ahead of quorum-manager would also work today, but would break again
       # silently the moment anything long-running is ordered before it.
+      #
+      # Kept, though the scope pre-warm after the first login now covers this
+      # case generally: this step is cheap, and it is the only thing that still
+      # helps if the vault token outlives its own lifetime (an hour) rather than
+      # merely being a scope nothing had cached. Belt-and-braces, not the
+      # primary protection -- which is why a new bundle needing a new scope adds
+      # a line to the pre-warm and does not need a re-login of its own.
       - name: Azure re-login before key-vault (fresh federated assertion)
         if: ${{ env.BUNDLE_KEY_VAULT == 'true' }}
         uses: azure/login@v2
