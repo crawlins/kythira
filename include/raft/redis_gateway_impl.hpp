@@ -40,9 +40,11 @@ public:
         socket.set_option(tcp::no_delay(true), ec);
         auto remote = socket.remote_endpoint(ec);
         if (!ec) {
-            _session._source = remote.address().to_string() + ":" + std::to_string(remote.port());
+            _session._rate_key = remote.address().to_string();
+            _session._source = _session._rate_key + ":" + std::to_string(remote.port());
         } else {
             _session._source = "unknown";
+            _session._rate_key = "unknown";
         }
         if (ssl_ctx) {
             _ssl.emplace(std::move(socket), *ssl_ctx);
@@ -718,10 +720,28 @@ auto redis_gateway<Host, Logger, Metrics>::note_auth_failure(const std::string& 
         f._count = 0;
     }
     ++f._count;
-    // Keep the table bounded: an attacker cycling source ports must not grow
-    // it without limit.
-    if (_auth_failures.size() > 65536) {
-        _auth_failures.clear();
+    // Keep the table bounded: an attacker cycling source addresses must not
+    // grow it without limit. This used to clear() the whole table, which let
+    // that same attacker reset every other source's counter — including its
+    // own — on demand. Drop expired windows first; if still full, evict only
+    // the oldest window (never the entry just updated).
+    constexpr std::size_t k_max_tracked_sources = 65536;
+    if (_auth_failures.size() > k_max_tracked_sources) {
+        std::erase_if(_auth_failures, [&](const auto& kv) {
+            return now - kv.second._window_start > _config._auth_failure_window;
+        });
+    }
+    if (_auth_failures.size() > k_max_tracked_sources) {
+        auto oldest = _auth_failures.end();
+        for (auto it = _auth_failures.begin(); it != _auth_failures.end(); ++it) {
+            if (it->first != source && (oldest == _auth_failures.end() ||
+                                        it->second._window_start < oldest->second._window_start)) {
+                oldest = it;
+            }
+        }
+        if (oldest != _auth_failures.end()) {
+            _auth_failures.erase(oldest);
+        }
     }
 }
 
@@ -1019,6 +1039,7 @@ auto redis_gateway<Host, Logger, Metrics>::execute_for_test(
     s._identity = identity;
     s._internal = internal;
     s._source = "test";
+    s._rate_key = "test";
     return execute(s, cmd);
 }
 
@@ -1195,7 +1216,7 @@ auto redis_gateway<Host, Logger, Metrics>::handle_auth(session& s, const resp_co
     // `AUTH password` is the pre-ACL form; it authenticates the `default` user.
     std::string user = cmd._argv.size() == 3 ? cmd._argv[1] : "default";
     const auto& secret = cmd._argv.back();
-    if (auth_rate_limited(s._source)) {
+    if (auth_rate_limited(s._rate_key)) {
         ++_stats._auth_failures;
         emit("redis.auth.failures", "AUTH");
         audit(s, "AUTH", "rate limited");
@@ -1205,7 +1226,7 @@ auto redis_gateway<Host, Logger, Metrics>::handle_auth(session& s, const resp_co
     auto id = _acl.authenticate(user, secret);
     if (!id) {
         ++_stats._auth_failures;
-        note_auth_failure(s._source);
+        note_auth_failure(s._rate_key);
         emit("redis.auth.failures", "AUTH");
         audit(s, "AUTH", "rejected user '" + user + "'");
         // Identical for unknown user and wrong password (Requirement 10.4).

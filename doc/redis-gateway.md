@@ -130,8 +130,10 @@ user ops       pbkdf2-sha256$600000$...$...  admin      *  cert=CN=ops.example
 A refused command answers `-NOPERM ...` and the daemon logs one audit line
 per refusal (`redis audit`, tagged `stream=audit`) naming the user, the source
 address, the command and the reason, and never the secret or the value.
-Failed `AUTH`s are rate-limited per source address, because each one costs a
-PBKDF2 derivation.
+Failed `AUTH`s are rate-limited per source IP address (not per connection, so
+reconnecting does not reset the count), because each one costs a PBKDF2
+derivation. Clients behind one NAT share a budget; size
+`_auth_failure_limit` accordingly.
 
 ## Configuring sccache
 

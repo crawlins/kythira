@@ -216,6 +216,11 @@ private:
         /// Authenticated as `_internal_user`: never forward again.
         bool _internal = false;
         std::string _source;
+        /// Remote IP address alone — the AUTH rate-limit key. `_source` keeps
+        /// the port for logs, but keying the limit on ip:port made it a
+        /// no-op: every reconnect gets a fresh source port, so a guesser just
+        /// opened a new connection per attempt.
+        std::string _rate_key;
         std::string _client_name;
         std::string _lib_name;
         std::string _lib_version;

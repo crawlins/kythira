@@ -453,6 +453,9 @@ BOOST_AUTO_TEST_CASE(hello_3_switches_the_reply_encoding, *boost::unit_test::tim
 BOOST_AUTO_TEST_CASE(authentication_and_authorization, *boost::unit_test::timeout(120)) {
     redis_gateway_config cfg;
     cfg._auth_failure_limit = 3;
+    // Short enough to wait out below, long enough that the four failures and
+    // the reconnect check comfortably land inside one window.
+    cfg._auth_failure_window = std::chrono::seconds{3};
     cluster c(cfg);
     BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
     auto port = c.port(c.leader_of(1));
@@ -474,8 +477,16 @@ BOOST_AUTO_TEST_CASE(authentication_and_authorization, *boost::unit_test::timeou
         BOOST_CHECK_GE(c.gateway(c.leader_of(1)).stats()._auth_failures.load(), 4u);
     }
     {
-        // Rate limit is per source address, which for loopback tests is per
-        // port, so a fresh socket is a fresh source.
+        // The limit is per source ADDRESS, not per connection: reconnecting
+        // (a fresh source port) must not reset it, or a password guesser just
+        // opens one connection per attempt.
+        resp_client reconnect(port);
+        auto limited = reconnect.auth("farm", "farm-secret");
+        BOOST_CHECK(limited.rfind("-ERR too many authentication failures", 0) == 0);
+    }
+    // Once the window lapses the address may authenticate again.
+    std::this_thread::sleep_for(cfg._auth_failure_window + std::chrono::milliseconds{500});
+    {
         resp_client reader(port);
         BOOST_CHECK_EQUAL(reader.auth("reader", "reader-secret"), "+OK\r\n");
         BOOST_CHECK_EQUAL(reader.call({"GET", "sccache/x"}), "$-1\r\n");
