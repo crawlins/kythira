@@ -2587,6 +2587,18 @@ target_compile_features(prometheus_metrics_test PRIVATE cxx_std_23)
 add_test(NAME prometheus_metrics_test COMMAND prometheus_metrics_test)
 set_tests_properties(prometheus_metrics_test PROPERTIES TIMEOUT 60 LABELS "unit")
 
+# httplib_listeners: one cpp-httplib server per resolved bind address
+# ("*", "localhost"), all on one port. httplib comes in through
+# network_simulator, as for prometheus_metrics_test above.
+add_executable(httplib_listeners_unit_test httplib_listeners_unit_test.cpp)
+target_link_libraries(httplib_listeners_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(httplib_listeners_unit_test PRIVATE cxx_std_23)
+add_test(NAME httplib_listeners_unit_test COMMAND httplib_listeners_unit_test)
+set_tests_properties(httplib_listeners_unit_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
 # metrics_line_exporter: payload packing under max_payload_bytes, drop-oldest
 # overflow, send-failure accounting, final-flush-on-destruction — all with an
 # injected sender, no real sockets.
