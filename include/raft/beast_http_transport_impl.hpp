@@ -4,6 +4,7 @@
 #pragma once
 
 #include <raft/beast_http_transport.hpp>
+#include <raft/asio_listeners.hpp>
 #include <raft/coap_utils.hpp>
 
 #include <openssl/ssl.h>
@@ -282,13 +283,17 @@ namespace beast_detail {
 // this closes. The raw completion handlers below stay the simple direct
 // setValue()/setException() form; via() is what makes that safe regardless
 // of which thread ends up calling it.
-inline auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint ep,
+// Tries each endpoint in order and stops at the first that connects
+// (Asio's range connect), so a peer name with IPv4 and IPv6 addresses is
+// reachable through whichever one its server actually listens on.
+inline auto async_connect_kf(beast::tcp_stream& stream, std::vector<net::ip::tcp::endpoint> eps,
                              asio_strand_executor* executor)
     -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
     stream.async_connect(
-        ep, [promise = std::move(promise)](const boost::system::error_code& ec) mutable {
+        eps, [promise = std::move(promise)](const boost::system::error_code& ec,
+                                            const net::ip::tcp::endpoint&) mutable {
             if (ec) {
                 promise.setException(std::make_exception_ptr(boost::system::system_error(ec)));
             } else {
@@ -407,11 +412,11 @@ inline auto plain_beast_connection::set_timeout(std::chrono::milliseconds timeou
     _stream.expires_after(timeout);
 }
 
-inline auto plain_beast_connection::connect(const net::ip::tcp::endpoint& ep,
+inline auto plain_beast_connection::connect(const std::vector<net::ip::tcp::endpoint>& eps,
                                             const std::string& /*host*/)
     -> kythira::future_default<kythira::unit> {
     // Keeps this connection alive until the connect completes; see send().
-    return async_connect_kf(_stream, ep, _executor.get())
+    return async_connect_kf(_stream, eps, _executor.get())
         .thenValue([self = shared_from_this()](kythira::unit u) { return u; });
 }
 
@@ -472,7 +477,8 @@ inline auto tls_beast_connection::set_timeout(std::chrono::milliseconds timeout)
     beast::get_lowest_layer(_stream).expires_after(timeout);
 }
 
-inline auto tls_beast_connection::connect(const net::ip::tcp::endpoint& ep, const std::string& host)
+inline auto tls_beast_connection::connect(const std::vector<net::ip::tcp::endpoint>& eps,
+                                          const std::string& host)
     -> kythira::future_default<kythira::unit> {
     if (!host.empty() && (SSL_set_tlsext_host_name(_stream.native_handle(), host.c_str()) == 0)) {
         return beast_exceptional_future<kythira::unit>(
@@ -480,7 +486,7 @@ inline auto tls_beast_connection::connect(const net::ip::tcp::endpoint& ep, cons
                 std::format("Failed to set SNI host name: {}", host))));
     }
     // Keeps this connection alive across connect and handshake; see send().
-    return async_connect_kf(beast::get_lowest_layer(_stream), ep, _executor.get())
+    return async_connect_kf(beast::get_lowest_layer(_stream), eps, _executor.get())
         .thenValue([self = shared_from_this(), this](kythira::unit) {
             return async_client_handshake_kf(_stream, _executor.get());
         });
@@ -687,14 +693,24 @@ auto boost_beast_client<Types>::resolve_target(std::uint64_t target) -> const re
     const std::string& url = url_it->second;
     bool is_https = url.starts_with("https://");
     std::string authority = url.substr(is_https ? 8 : 7);
-    auto colon = authority.find(':');
-    auto slash = authority.find('/');
-    std::string host = authority.substr(0, std::min(colon, slash));
-    std::string port_str =
-        (colon != std::string::npos)
-            ? authority.substr(
-                  colon + 1, (slash == std::string::npos ? authority.size() : slash) - (colon + 1))
-            : (is_https ? "443" : "80");
+    authority = authority.substr(0, authority.find('/'));
+    // An IPv6 literal is bracketed ("[::1]:7000"); its own colons are not
+    // the port separator.
+    std::string host;
+    std::string port_str = is_https ? "443" : "80";
+    if (authority.starts_with('[') && authority.find(']') != std::string::npos) {
+        auto close = authority.find(']');
+        host = authority.substr(1, close - 1);
+        if (close + 1 < authority.size() && authority[close + 1] == ':') {
+            port_str = authority.substr(close + 2);
+        }
+    } else {
+        auto colon = authority.find(':');
+        host = authority.substr(0, colon);
+        if (colon != std::string::npos) {
+            port_str = authority.substr(colon + 1);
+        }
+    }
 
     // Synchronous DNS resolution on the calling thread, once per target rather
     // than once per connection. Not spiked, not required by requirements.md (a
@@ -706,8 +722,14 @@ auto boost_beast_client<Types>::resolve_target(std::uint64_t target) -> const re
         throw std::runtime_error(std::format("Failed to resolve {}:{}", host, port_str));
     }
 
+    // Every address, not just the first: connect() tries them in order, so a
+    // name such as "localhost" reaches a server on either 127.0.0.1 or ::1.
+    std::vector<net::ip::tcp::endpoint> endpoints;
+    for (const auto& entry : results) {
+        endpoints.push_back(entry.endpoint());
+    }
     auto [it, ok] =
-        _resolved_targets.emplace(target, resolved_target{*results.begin(), std::move(host)});
+        _resolved_targets.emplace(target, resolved_target{std::move(endpoints), std::move(host)});
     return it->second;
 }
 
@@ -743,7 +765,7 @@ auto boost_beast_client<Types>::make_connection(std::uint64_t target) -> pooled_
     metric.add_one();
     metric.emit();
 
-    return pooled_connection{std::move(connection), where.endpoint, where.host_header,
+    return pooled_connection{std::move(connection), where.endpoints, where.host_header,
                              std::chrono::steady_clock::now(), _tls_generation};
 }
 
@@ -918,7 +940,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
             if (already_open) {
                 return beast_ready_unit_future().thenValue(std::move(proceed));
             }
-            return connection->connect(lease->endpoint(), lease->host_header())
+            return connection->connect(lease->endpoints(), lease->host_header())
                 .thenValue(std::move(proceed));
         }();
 
@@ -1399,8 +1421,7 @@ boost_beast_server<Types>::boost_beast_server(net::io_context& ioc, std::string 
       _bind_address(std::move(bind_address)),
       _bind_port(bind_port),
       _config(std::move(config)),
-      _metrics(std::move(metrics)),
-      _acceptor(ioc) {
+      _metrics(std::move(metrics)) {
     validate_certificate_files();
 }
 
@@ -1553,11 +1574,10 @@ auto boost_beast_server<Types>::start() -> void {
         _ssl_ctx = std::make_shared<net::ssl::context>(build_ssl_context());
     }
 
-    net::ip::tcp::endpoint endpoint(net::ip::make_address(_bind_address), _bind_port);
-    _acceptor.open(endpoint.protocol());
-    _acceptor.set_option(net::socket_base::reuse_address(true));
-    _acceptor.bind(endpoint);
-    _acceptor.listen(net::socket_base::max_listen_connections);
+    // One acceptor per resolved address, so "*" or "localhost" listens on
+    // IPv4 and IPv6 alike.
+    _acceptors = kythira::net_bind::open_asio_acceptors(_ioc, _bind_address, _bind_port,
+                                                        "boost_beast_server");
 
     _running.store(true);
 
@@ -1566,7 +1586,9 @@ auto boost_beast_server<Types>::start() -> void {
     metric.add_one();
     metric.emit();
 
-    do_accept();
+    for (const auto& acceptor : _acceptors) {
+        do_accept(acceptor);
+    }
 }
 
 template<typename Types>
@@ -1592,7 +1614,10 @@ auto boost_beast_server<Types>::stop() -> void {
     // write). Never touch _ioc itself (Requirement 8.3); that stays the
     // caller's own, separate responsibility.
     boost::system::error_code ec;
-    _acceptor.close(ec);
+    for (const auto& acceptor : _acceptors) {
+        acceptor->close(ec);
+    }
+    _acceptors.clear();
     _running.store(false);
 
     {
@@ -1768,11 +1793,14 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::do_accept() -> void {
-    _acceptor.async_accept(net::make_strand(_ioc), [this](const boost::system::error_code& ec,
-                                                          net::ip::tcp::socket socket) {
+auto boost_beast_server<Types>::do_accept(std::shared_ptr<net::ip::tcp::acceptor> acceptor)
+    -> void {
+    auto& a = *acceptor;
+    a.async_accept(net::make_strand(_ioc), [this, acceptor = std::move(acceptor)](
+                                               const boost::system::error_code& ec,
+                                               net::ip::tcp::socket socket) mutable {
         if (ec == net::error::operation_aborted || !_running.load()) {
-            return;  // stop() closed the acceptor -- do not recurse.
+            return;  // stop() closed the acceptors -- do not recurse.
         }
         if (!ec) {
             if (_config.enable_ssl) {
@@ -1791,7 +1819,7 @@ auto boost_beast_server<Types>::do_accept() -> void {
                 session->run();
             }
         }
-        do_accept();
+        do_accept(std::move(acceptor));
     });
 }
 

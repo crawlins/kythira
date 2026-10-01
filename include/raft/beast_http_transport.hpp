@@ -196,7 +196,7 @@ class asio_strand_executor;
 ///     onto `executor` (the calling connection/session's own
 ///     `asio_strand_executor`, below) before returning -- see that class's
 ///     doc comment for why every async_*_kf helper takes one.
-auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint ep,
+auto async_connect_kf(beast::tcp_stream& stream, std::vector<net::ip::tcp::endpoint> eps,
                       asio_strand_executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief TLS client handshake, bridged to a future. Only meaningful on a
@@ -544,7 +544,7 @@ public:
 
     [[nodiscard]] virtual auto is_open() const -> bool = 0;
     virtual auto set_timeout(std::chrono::milliseconds timeout) -> void = 0;
-    virtual auto connect(const net::ip::tcp::endpoint& ep, const std::string& host)
+    virtual auto connect(const std::vector<net::ip::tcp::endpoint>& eps, const std::string& host)
         -> kythira::future_default<kythira::unit> = 0;
     virtual auto send(beast_http::request<beast_http::string_body> request)
         -> kythira::future_default<beast_http::response<beast_http::string_body>> = 0;
@@ -562,7 +562,7 @@ public:
 
     [[nodiscard]] auto is_open() const -> bool override;
     auto set_timeout(std::chrono::milliseconds timeout) -> void override;
-    auto connect(const net::ip::tcp::endpoint& ep, const std::string& host)
+    auto connect(const std::vector<net::ip::tcp::endpoint>& eps, const std::string& host)
         -> kythira::future_default<kythira::unit> override;
     auto send(beast_http::request<beast_http::string_body> request)
         -> kythira::future_default<beast_http::response<beast_http::string_body>> override;
@@ -598,7 +598,7 @@ public:
 
     [[nodiscard]] auto is_open() const -> bool override;
     auto set_timeout(std::chrono::milliseconds timeout) -> void override;
-    auto connect(const net::ip::tcp::endpoint& ep, const std::string& host)
+    auto connect(const std::vector<net::ip::tcp::endpoint>& eps, const std::string& host)
         -> kythira::future_default<kythira::unit> override;
     auto send(beast_http::request<beast_http::string_body> request)
         -> kythira::future_default<beast_http::response<beast_http::string_body>> override;
@@ -736,7 +736,8 @@ private:
     /// exclusive checkout a burst of concurrent RPCs to a cold target would
     /// otherwise each resolve it, serialized behind the lock.
     struct resolved_target {
-        net::ip::tcp::endpoint endpoint;
+        /// Every address the target's host resolved to, tried in order.
+        std::vector<net::ip::tcp::endpoint> endpoints;
         std::string host_header;
     };
 
@@ -748,7 +749,7 @@ private:
     /// obtained here from ownership instead of from a side list.
     struct pooled_connection {
         std::shared_ptr<beast_detail::beast_connection> connection;
-        net::ip::tcp::endpoint endpoint;
+        std::vector<net::ip::tcp::endpoint> endpoints;
         std::string host_header;
         std::chrono::steady_clock::time_point last_used;
         /// The TLS generation this connection was built under. A reload bumps
@@ -789,8 +790,8 @@ private:
         [[nodiscard]] auto connection() const -> beast_detail::beast_connection* {
             return _conn.connection.get();
         }
-        [[nodiscard]] auto endpoint() const -> const net::ip::tcp::endpoint& {
-            return _conn.endpoint;
+        [[nodiscard]] auto endpoints() const -> const std::vector<net::ip::tcp::endpoint>& {
+            return _conn.endpoints;
         }
         [[nodiscard]] auto host_header() const -> const std::string& { return _conn.host_header; }
 
@@ -1032,7 +1033,8 @@ private:
     boost_beast_server_config _config;
     metrics_type _metrics;
     std::shared_ptr<net::ssl::context> _ssl_ctx;
-    net::ip::tcp::acceptor _acceptor;
+    /// One per address `_bind_address` resolves to (see net_bind.hpp).
+    std::vector<std::shared_ptr<net::ip::tcp::acceptor>> _acceptors;
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
     std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
@@ -1052,7 +1054,7 @@ private:
     auto validate_certificate_files() const -> void;
     auto load_server_certificates() -> void;
     auto build_ssl_context() -> net::ssl::context;
-    auto do_accept() -> void;
+    auto do_accept(std::shared_ptr<net::ip::tcp::acceptor> acceptor) -> void;
 };
 
 }  // namespace kythira
