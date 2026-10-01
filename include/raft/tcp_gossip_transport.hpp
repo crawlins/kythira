@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -146,6 +147,11 @@ template<typename NodeId, typename Address> struct tcp_gossip_config {
     std::size_t fanout{3};                                 ///< Peers contacted per round.
     std::chrono::milliseconds gossip_round_interval{500};  ///< Cadence between rounds.
     std::chrono::seconds freshness_interval{5};            ///< TTL for a digest since last refresh.
+    /// Where the listener binds: an IP literal, "*" (IPv4 and IPv6), or a
+    /// name from /etc/hosts such as "localhost" (see
+    /// net_bind::resolve_bind_addresses()). Every address it names gets its
+    /// own listener on `listen_port`.
+    std::string listen_address{"0.0.0.0"};
 };
 
 namespace gossip_detail {
@@ -159,6 +165,17 @@ inline auto epoch_seconds_now() -> std::int64_t {
 template<typename Address>
 auto split_host_port(const Address& address) -> std::pair<std::string, std::uint16_t> {
     std::string addr(address);
+    if (addr.starts_with('[')) {
+        // "[v6-literal]:port"
+        auto close = addr.find(']');
+        if (close != std::string::npos) {
+            std::uint16_t port = 0;
+            if (close + 2 <= addr.size() && addr[close + 1] == ':') {
+                port = static_cast<std::uint16_t>(std::stoi(addr.substr(close + 2)));
+            }
+            return {addr.substr(1, close - 1), port};
+        }
+    }
     auto pos = addr.rfind(':');
     if (pos == std::string::npos) {
         return {addr, std::uint16_t{0}};
@@ -244,7 +261,12 @@ public:
         if (_started.exchange(true)) {
             return;
         }
-        start_listener();
+        try {
+            start_listener();
+        } catch (...) {
+            _started = false;  // a failed start leaves nothing to stop.
+            throw;
+        }
         start_gossip_thread();
     }
 
@@ -484,48 +506,44 @@ private:
     // ── TCP listener (Requirement 3) ─────────────────────────────────────────
 
     auto start_listener() -> void {
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) {
-            throw std::runtime_error("tcp_gossip_peer2peer_replicator: socket()");
-        }
-
-        int opt = 1;
-        ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = INADDR_ANY;
-        addr.sin_port = htons(_cfg.listen_port);
-
-        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            ::close(fd);
-            throw std::runtime_error("tcp_gossip_peer2peer_replicator: bind() on port " +
-                                     std::to_string(_cfg.listen_port));
-        }
-        ::listen(fd, 256);
-        _listen_fd = fd;
+        const char* who = "tcp_gossip_peer2peer_replicator";
+        _listen_fds = net_bind::open_listeners(
+            net_bind::resolve_bind_addresses(_cfg.listen_address, who), _cfg.listen_port, who);
         _listener_running = true;
-        _listener_thread = std::thread([this] { accept_loop(); });
+        for (int fd : _listen_fds) {
+            _listener_threads.emplace_back([this, fd] { accept_loop(fd); });
+        }
     }
 
     auto stop_listener() -> void {
         if (!_listener_running.exchange(false)) {
             return;
         }
-        int fd = _listen_fd.exchange(-1);
-        if (fd >= 0) {
+        // shutdown() wakes a thread blocked in accept(); the descriptors are
+        // closed only after the threads are joined so none can be reused
+        // under a running accept().
+        for (int fd : _listen_fds) {
             ::shutdown(fd, SHUT_RDWR);
+        }
+        for (auto& t : _listener_threads) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+        _listener_threads.clear();
+        for (int fd : _listen_fds) {
             ::close(fd);
         }
-        if (_listener_thread.joinable()) {
-            _listener_thread.join();
-        }
+        _listen_fds.clear();
     }
 
-    auto accept_loop() -> void {
+    auto accept_loop(int listen_fd) -> void {
         while (_listener_running) {
-            int client = ::accept(_listen_fd.load(), nullptr, nullptr);
+            int client = ::accept(listen_fd, nullptr, nullptr);
             if (client < 0) {
+                if (errno == EINTR && _listener_running) {
+                    continue;
+                }
                 break;
             }
             std::thread([this, client] {
@@ -578,8 +596,8 @@ private:
     std::thread _gossip_thread;
 
     std::atomic<bool> _listener_running{false};
-    std::atomic<int> _listen_fd{-1};
-    std::thread _listener_thread;
+    std::vector<int> _listen_fds;  // one per bind address; set before the threads start.
+    std::vector<std::thread> _listener_threads;
 
     std::atomic<bool> _started{false};
 };
