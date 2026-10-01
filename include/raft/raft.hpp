@@ -26,6 +26,8 @@
 #include <raft/config_entry.hpp>
 #include <raft/quorum_management.hpp>
 
+#include <algorithm>
+#include <iterator>
 #include <vector>
 #include <optional>
 #include <unordered_map>
@@ -4332,7 +4334,16 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     // entry)
     if (request.leader_commit() > _commit_index) {
         auto old_commit_index = _commit_index;
-        _commit_index = std::min(request.leader_commit(), get_last_log_index());
+        // "index of last NEW entry" (Figure 2), i.e. the last index this
+        // RPC actually verified against the leader — NOT get_last_log_index().
+        // A follower can hold stale entries from an older term beyond that
+        // point (the consistency check only proves the prefix through
+        // prev_log_index + entries.size()); using the whole log committed and
+        // applied those unverified entries whenever leader_commit reached
+        // past them, diverging this replica's state machine.
+        auto last_new_index =
+            request.prev_log_index() + static_cast<log_index_type>(request.entries().size());
+        _commit_index = std::max(_commit_index, std::min(request.leader_commit(), last_new_index));
 
         _logger.debug("Updated commit index",
                       {{"node_id", node_id_to_string(_node_id)},
@@ -4437,6 +4448,18 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
         if (entry_index <= get_last_log_index()) {
             auto existing_entry = get_log_entry(entry_index);
             if (existing_entry.has_value() && existing_entry->term() != new_entry.term()) {
+                // A committed entry can never conflict with a legitimate
+                // leader's log (Leader Completeness, §5.4). Only a forged or
+                // buggy sender can get here, and truncating would rewrite
+                // history this node already applied — refuse instead.
+                if (entry_index <= _commit_index) {
+                    _logger.error("Rejecting AppendEntries that conflicts with a committed entry",
+                                  {{"node_id", node_id_to_string(_node_id)},
+                                   {"conflict_index", std::to_string(entry_index)},
+                                   {"commit_index", std::to_string(_commit_index)}});
+                    return append_entries_response_type{_current_term, false, std::nullopt,
+                                                        std::nullopt};
+                }
                 // Conflict detected - delete this entry and all that follow
                 _logger.info("Detected log conflict, truncating log",
                              {{"node_id", node_id_to_string(_node_id)},
@@ -4444,8 +4467,16 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
                               {"existing_term", std::to_string(existing_entry->term())},
                               {"new_term", std::to_string(new_entry.term())}});
 
-                // Truncate log from conflict point
-                _log.erase(_log.begin() + (entry_index - 1), _log.end());
+                // Truncate log from conflict point. The vector position is
+                // relative to the first retained entry, not to index 1: after
+                // a snapshot/compaction `_log.front().index()` is > 1, and the
+                // old `begin() + (entry_index - 1)` then pointed past end()
+                // (undefined behaviour) or at the wrong entry.
+                // existing_entry.has_value() guarantees entry_index lies
+                // within [front().index(), back().index()].
+                _log.erase(
+                    _log.begin() + static_cast<std::ptrdiff_t>(entry_index - _log.front().index()),
+                    _log.end());
                 log_modified = true;
 
                 // Persist truncation
@@ -4643,6 +4674,28 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         return install_snapshot_response_type{_current_term};
     }
 
+    // A snapshot that does not reach past what this node has already
+    // committed carries nothing new — and installing it would roll the state
+    // machine BACK to an older point (a delayed or duplicated InstallSnapshot
+    // from a legitimate leader, or a replayed one). Drop it.
+    if (request.last_included_index() <= _commit_index) {
+        _logger.info("Ignoring stale InstallSnapshot at or below commit index",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"last_included_index", std::to_string(request.last_included_index())},
+                      {"commit_index", std::to_string(_commit_index)}});
+        _snapshot_buffer.clear();
+        _snapshot_buffer.shrink_to_fit();
+        _snapshot_buffer_open = false;
+
+        _metrics.set_metric_name("raft_install_snapshot_rejected");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("reason", "stale_snapshot");
+        _metrics.add_one();
+        _metrics.emit();
+
+        return install_snapshot_response_type{_current_term};
+    }
+
     // Rule 5: Save snapshot file, discard any existing or partial snapshot with smaller index
     auto& complete_snapshot_data = _snapshot_buffer;
 
@@ -4675,6 +4728,15 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         }
     }
 
+    // Rule 8: Reset state machine using snapshot contents. Done BEFORE the log
+    // is touched: a state machine may reject snapshot contents it cannot
+    // trust (restore_from_snapshot throws — e.g. ca_state_machine refusing to
+    // replace an already-bootstrapped root), and that rejection must leave
+    // this node exactly as it was. Truncating first used to destroy the log
+    // even when the restore then failed. install_snapshot() also drops the
+    // in-memory entries the snapshot covers (index <= last_included_index).
+    install_snapshot(snap);
+
     // Rule 7: Discard the entire log if no matching entry exists
     if (!retain_log) {
         _logger.info("Discarding entire log for snapshot installation",
@@ -4685,17 +4747,13 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         _log.clear();
         _persistence.truncate_log(1);  // Clear all log entries
     } else {
-        // Retain entries after snapshot index
-        auto entries_to_remove = request.last_included_index();
-        if (entries_to_remove > 0 && entries_to_remove <= _log.size()) {
-            _log.erase(_log.begin(), _log.begin() + entries_to_remove);
-            _persistence.truncate_log(request.last_included_index() + 1);
-        }
+        // Retain entries after the snapshot index: drop only the persisted
+        // prefix the snapshot now covers. (This used to call
+        // truncate_log(last_included_index + 1), which deletes entries >= that
+        // index — i.e. exactly the entries being retained — so they vanished
+        // from disk and were lost on the next restart.)
+        _persistence.delete_log_entries_before(request.last_included_index() + 1);
     }
-
-    // Rule 8: Reset state machine using snapshot contents
-    // Call install_snapshot method which will handle state machine restoration
-    install_snapshot(snap);
 
     // Update commit index and last applied to snapshot's last included index
     _commit_index = std::max(_commit_index, request.last_included_index());
@@ -7289,12 +7347,19 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
 
         // Truncate log based on snapshot's last_included_index
         // Remove all entries up to and including the snapshot's last_included_index
+        // Compared by each entry's own index, not by vector position: the
+        // log need not start at index 1 (an earlier snapshot/compaction may
+        // already have dropped a prefix), and position-based erasure then
+        // removed entries the snapshot does not cover.
         if (!_log.empty() && snap.last_included_index() > 0) {
+            auto covered_end = std::find_if(_log.begin(), _log.end(), [&](const auto& e) {
+                return e.index() > snap.last_included_index();
+            });
             auto entries_to_remove =
-                std::min(static_cast<std::size_t>(snap.last_included_index()), _log.size());
+                static_cast<std::size_t>(std::distance(_log.begin(), covered_end));
 
             if (entries_to_remove > 0) {
-                _log.erase(_log.begin(), _log.begin() + entries_to_remove);
+                _log.erase(_log.begin(), covered_end);
 
                 _logger.debug("Truncated log after snapshot installation",
                               {{"node_id", node_id_to_string(_node_id)},
