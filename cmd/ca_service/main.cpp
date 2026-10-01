@@ -54,6 +54,8 @@
 #include <raft/azure_key_vault_ca_provider_impl.hpp>
 #endif
 
+#include <raft/httplib_listeners.hpp>
+
 #include <httplib.h>
 #include <boost/json.hpp>
 
@@ -74,6 +76,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -405,26 +408,26 @@ serve_options parse_serve_args(int argc, char** argv, int start) {
     return opts;
 }
 
-// Parses "host:port", where host may itself contain no colons (IPv6 literals
-// are out of scope for this CLI convenience parser).
+// Parses "host:port", where host may be "*" (IPv4 and IPv6), a bracketed
+// IPv6 literal ("[::1]:8443"), an IPv4 literal, or an /etc/hosts name.
 std::pair<std::string, int> split_bind_address(const std::string& bind) {
-    auto colon = bind.rfind(':');
-    if (colon == std::string::npos) usage_error("--serve requires <bind-address>:<port>");
-    std::string host = bind.substr(0, colon);
-    int port = 0;
+    if (bind.find(':') == std::string::npos) {
+        usage_error("--serve requires <bind-address>:<port>");
+    }
     try {
-        port = std::stoi(bind.substr(colon + 1));
-    } catch (const std::exception&) {
+        auto [host, port] = kythira::net_bind::split_host_port(bind, -1);
+        if (port < 0 || port > 65535) usage_error("--serve: invalid port in " + bind);
+        return {host, port};
+    } catch (const std::invalid_argument&) {
         usage_error("--serve: invalid port in " + bind);
     }
-    return {host, port};
 }
 
-std::atomic<httplib::Server*> g_server{nullptr};
+std::atomic<kythira::net_bind::httplib_listeners<>*> g_listeners{nullptr};
 
 void on_signal(int) {
-    auto* srv = g_server.load();
-    if (srv != nullptr) srv->stop();
+    auto* listeners = g_listeners.load();
+    if (listeners != nullptr) listeners->request_stop();
 }
 
 // Reads opts.tls_cert_path, finds its root certificate (self-signed member,
@@ -549,27 +552,28 @@ int run_serve(const serve_options& opts) {
 
     auto [host, port] = split_bind_address(opts.bind_address_and_port);
 
-    std::unique_ptr<httplib::Server> plain_server;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    std::unique_ptr<httplib::SSLServer> ssl_server;
-#endif
-    httplib::Server* server = nullptr;
+    // One httplib server per address the --serve host resolves to ("*" is
+    // IPv4 and IPv6; see net_bind::httplib_listeners), each built by
+    // make_server and given the same routes by configure_server.
+    std::function<std::unique_ptr<httplib::Server>()> make_server;
 
     if (!opts.tls_cert_path.empty()) {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-        ssl_server = std::make_unique<httplib::SSLServer>(opts.tls_cert_path.c_str(),
-                                                          opts.tls_key_path.c_str());
-        if (!ssl_server->is_valid()) {
-            std::cerr << "ca_service: failed to initialize TLS with cert " << opts.tls_cert_path
-                      << " / key " << opts.tls_key_path << "\n";
-            return 1;
-        }
-        // Request (not require) a client certificate: bearer-token-only routes
-        // keep working for callers presenting none; POST /v1/certificates/renew
-        // is the only route that actually needs one (Requirement 15.3).
-        SSL_CTX_set_verify(ssl_server->ssl_context(), SSL_VERIFY_PEER,
-                           raft::testing::accept_any_peer_certificate);
-        server = ssl_server.get();
+        make_server = [&]() -> std::unique_ptr<httplib::Server> {
+            auto ssl_server = std::make_unique<httplib::SSLServer>(opts.tls_cert_path.c_str(),
+                                                                   opts.tls_key_path.c_str());
+            if (!ssl_server->is_valid()) {
+                throw std::runtime_error("failed to initialize TLS with cert " +
+                                         opts.tls_cert_path + " / key " + opts.tls_key_path);
+            }
+            // Request (not require) a client certificate: bearer-token-only
+            // routes keep working for callers presenting none; POST
+            // /v1/certificates/renew is the only route that actually needs one
+            // (Requirement 15.3).
+            SSL_CTX_set_verify(ssl_server->ssl_context(), SSL_VERIFY_PEER,
+                               raft::testing::accept_any_peer_certificate);
+            return ssl_server;
+        };
         // Requirement 19.1: printed once at startup so an operator distributing
         // a bearer token out-of-band can pin this fingerprint for
         // ca_bootstrap_client's first-contact trust check without parsing logs
@@ -580,153 +584,161 @@ int run_serve(const serve_options& opts) {
         return 1;
 #endif
     } else {
-        plain_server = std::make_unique<httplib::Server>();
-        server = plain_server.get();
+        make_server = [] { return std::make_unique<httplib::Server>(); };
         std::cerr
             << "ca_service: WARNING: --serve running without TLS (no --tls-cert/--tls-key given) — "
                "suitable only for a private network (e.g. inside one docker-compose network)\n";
     }
 
-    g_server.store(server);
+    kythira::net_bind::httplib_listeners<> listeners;
+    g_listeners.store(&listeners);
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
 
+    // Captured by reference from every route, so it lives out here rather
+    // than inside configure_server.
     const std::string bearer_prefix = "Bearer ";
-    server->set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res) {
-        // POST /v1/certificates/renew authenticates via the caller's own mTLS
-        // client certificate instead of the bearer token (Requirement 15.3) —
-        // its own handler performs that check.
-        if (req.method == "POST" && req.path == "/v1/certificates/renew") {
+    auto configure_server = [&](httplib::Server& srv) {
+        auto* server = &srv;
+        server->set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res) {
+            // POST /v1/certificates/renew authenticates via the caller's own mTLS
+            // client certificate instead of the bearer token (Requirement 15.3) —
+            // its own handler performs that check.
+            if (req.method == "POST" && req.path == "/v1/certificates/renew") {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
+            auto auth = req.get_header_value("Authorization");
+            if (!raft::testing::constant_time_equals(auth, bearer_prefix + opts.auth_token)) {
+                res.status = 401;
+                res.set_content(R"({"error":"unauthorized"})", "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
             return httplib::Server::HandlerResponse::Unhandled;
-        }
-        auto auth = req.get_header_value("Authorization");
-        if (!raft::testing::constant_time_equals(auth, bearer_prefix + opts.auth_token)) {
-            res.status = 401;
-            res.set_content(R"({"error":"unauthorized"})", "application/json");
-            return httplib::Server::HandlerResponse::Handled;
-        }
-        return httplib::Server::HandlerResponse::Unhandled;
-    });
+        });
 
-    server->Get("/healthz",
-                [](const httplib::Request&, httplib::Response& res) { res.status = 200; });
+        server->Get("/healthz",
+                    [](const httplib::Request&, httplib::Response& res) { res.status = 200; });
 
-    server->Get("/v1/root-ca", [&](const httplib::Request&, httplib::Response& res) {
-        try {
-            auto pem = std::move(provider->root_certificate_pem()).get();
-            res.set_content(pem, "application/x-pem-file");
-        } catch (const std::exception& ex) {
-            res.status = 502;
-            res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
-                            "application/json");
-        }
-    });
-
-    server->Post("/v1/certificates", [&](const httplib::Request& req, httplib::Response& res) {
-        try {
-            auto body = boost::json::parse(req.body).as_object();
-            auto* csr_val = body.if_contains("csr_pem");
-            if (csr_val == nullptr || !csr_val->is_string()) {
-                res.status = 400;
-                res.set_content(R"({"error":"csr_pem is required"})", "application/json");
-                return;
+        server->Get("/v1/root-ca", [&](const httplib::Request&, httplib::Response& res) {
+            try {
+                auto pem = std::move(provider->root_certificate_pem()).get();
+                res.set_content(pem, "application/x-pem-file");
+            } catch (const std::exception& ex) {
+                res.status = 502;
+                res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
+                                "application/json");
             }
-            std::string csr_pem = std::string(csr_val->as_string());
-            auto options = raft::testing::parse_csr_signing_options(body);
+        });
 
-            auto material = std::move(provider->sign_csr(csr_pem, options)).get();
-            res.set_content(boost::json::serialize(raft::testing::pem_material_to_json(material)),
-                            "application/json");
-        } catch (const std::invalid_argument& ex) {
-            res.status = 400;
-            res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
-                            "application/json");
-        } catch (const std::exception& ex) {
-            res.status = 502;
-            res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
-                            "application/json");
-        }
-    });
+        server->Post("/v1/certificates", [&](const httplib::Request& req, httplib::Response& res) {
+            try {
+                auto body = boost::json::parse(req.body).as_object();
+                auto* csr_val = body.if_contains("csr_pem");
+                if (csr_val == nullptr || !csr_val->is_string()) {
+                    res.status = 400;
+                    res.set_content(R"({"error":"csr_pem is required"})", "application/json");
+                    return;
+                }
+                std::string csr_pem = std::string(csr_val->as_string());
+                auto options = raft::testing::parse_csr_signing_options(body);
 
-    server->Post("/v1/certificates/renew", [&](const httplib::Request& req,
-                                               httplib::Response& res) {
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-        if (req.ssl == nullptr) {
-            res.status = 401;
-            res.set_content(R"({"error":"renew requires an mTLS connection"})", "application/json");
-            return;
-        }
-        X509* peer_cert = SSL_get1_peer_certificate(req.ssl);
-        if (peer_cert == nullptr) {
-            res.status = 401;
-            res.set_content(R"({"error":"no client certificate presented"})", "application/json");
-            return;
-        }
-        raft::testing::x509_ptr_generic peer_cert_owner{peer_cert};
-
-        try {
-            auto root_pem = std::move(provider->root_certificate_pem()).get();
-            if (!raft::testing::cert_chains_to_root(peer_cert, root_pem)) {
-                res.status = 401;
+                auto material = std::move(provider->sign_csr(csr_pem, options)).get();
                 res.set_content(
-                    R"({"error":"presented certificate does not chain to this CA's root"})",
+                    boost::json::serialize(raft::testing::pem_material_to_json(material)),
                     "application/json");
-                return;
+            } catch (const std::invalid_argument& ex) {
+                res.status = 400;
+                res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
+                                "application/json");
+            } catch (const std::exception& ex) {
+                res.status = 502;
+                res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
+                                "application/json");
             }
+        });
 
-            // A revoked certificate must not renew itself into a fresh,
-            // unrevoked serial. Only the local provider tracks revocation
-            // here (/v1/certificates/revoke is local-only); an unparseable
-            // CRL fails closed inside cert_revoked_in_crl().
-            if (local_ca != nullptr &&
-                raft::testing::cert_revoked_in_crl(peer_cert, local_ca->crl_pem())) {
+        server->Post("/v1/certificates/renew", [&](const httplib::Request& req,
+                                                   httplib::Response& res) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            if (req.ssl == nullptr) {
                 res.status = 401;
-                res.set_content(R"({"error":"presented certificate has been revoked"})",
+                res.set_content(R"({"error":"renew requires an mTLS connection"})",
                                 "application/json");
                 return;
             }
-            auto options = raft::testing::options_from_presented_cert(peer_cert);
-
-            auto body = boost::json::parse(req.body).as_object();
-            auto* csr_val = body.if_contains("csr_pem");
-            if (csr_val == nullptr || !csr_val->is_string()) {
-                res.status = 400;
-                res.set_content(R"({"error":"csr_pem is required"})", "application/json");
+            X509* peer_cert = SSL_get1_peer_certificate(req.ssl);
+            if (peer_cert == nullptr) {
+                res.status = 401;
+                res.set_content(R"({"error":"no client certificate presented"})",
+                                "application/json");
                 return;
             }
-            std::string csr_pem = std::string(csr_val->as_string());
-            // Renewal keeps the presented subject: the CSR may not change it.
-            if (!raft::testing::csr_subject_matches_cert(peer_cert, csr_pem)) {
-                res.status = 400;
+            raft::testing::x509_ptr_generic peer_cert_owner{peer_cert};
+
+            try {
+                auto root_pem = std::move(provider->root_certificate_pem()).get();
+                if (!raft::testing::cert_chains_to_root(peer_cert, root_pem)) {
+                    res.status = 401;
+                    res.set_content(
+                        R"({"error":"presented certificate does not chain to this CA's root"})",
+                        "application/json");
+                    return;
+                }
+
+                // A revoked certificate must not renew itself into a fresh,
+                // unrevoked serial. Only the local provider tracks revocation
+                // here (/v1/certificates/revoke is local-only); an unparseable
+                // CRL fails closed inside cert_revoked_in_crl().
+                if (local_ca != nullptr &&
+                    raft::testing::cert_revoked_in_crl(peer_cert, local_ca->crl_pem())) {
+                    res.status = 401;
+                    res.set_content(R"({"error":"presented certificate has been revoked"})",
+                                    "application/json");
+                    return;
+                }
+                auto options = raft::testing::options_from_presented_cert(peer_cert);
+
+                auto body = boost::json::parse(req.body).as_object();
+                auto* csr_val = body.if_contains("csr_pem");
+                if (csr_val == nullptr || !csr_val->is_string()) {
+                    res.status = 400;
+                    res.set_content(R"({"error":"csr_pem is required"})", "application/json");
+                    return;
+                }
+                std::string csr_pem = std::string(csr_val->as_string());
+                // Renewal keeps the presented subject: the CSR may not change it.
+                if (!raft::testing::csr_subject_matches_cert(peer_cert, csr_pem)) {
+                    res.status = 400;
+                    res.set_content(
+                        R"({"error":"renewal CSR subject must match the presented certificate"})",
+                        "application/json");
+                    return;
+                }
+                if (auto validity = raft::testing::parse_validity_days(body)) {
+                    options.validity = *validity;
+                }
+
+                auto material = std::move(provider->sign_csr(csr_pem, options)).get();
                 res.set_content(
-                    R"({"error":"renewal CSR subject must match the presented certificate"})",
+                    boost::json::serialize(raft::testing::pem_material_to_json(material)),
                     "application/json");
-                return;
+            } catch (const std::invalid_argument& ex) {
+                res.status = 400;
+                res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
+                                "application/json");
+            } catch (const std::exception& ex) {
+                res.status = 502;
+                res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
+                                "application/json");
             }
-            if (auto validity = raft::testing::parse_validity_days(body)) {
-                options.validity = *validity;
-            }
-
-            auto material = std::move(provider->sign_csr(csr_pem, options)).get();
-            res.set_content(boost::json::serialize(raft::testing::pem_material_to_json(material)),
-                            "application/json");
-        } catch (const std::invalid_argument& ex) {
-            res.status = 400;
-            res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
-                            "application/json");
-        } catch (const std::exception& ex) {
-            res.status = 502;
-            res.set_content(boost::json::serialize(boost::json::object{{"error", ex.what()}}),
-                            "application/json");
-        }
 #else
         res.status = 401;
         res.set_content(R"({"error":"built without TLS support — renew is unavailable"})", "application/json");
 #endif
-    });
+        });
 
-    server->Post(
-        "/v1/certificates/revoke", [&](const httplib::Request& req, httplib::Response& res) {
+        server->Post("/v1/certificates/revoke", [&](const httplib::Request& req,
+                                                    httplib::Response& res) {
             if (opts.provider != "local") {
                 res.status = 501;
                 res.set_content(R"({"error":"not_implemented"})", "application/json");
@@ -762,20 +774,31 @@ int run_serve(const serve_options& opts) {
             }
         });
 
-    server->Get("/v1/crl", [&](const httplib::Request&, httplib::Response& res) {
-        if (opts.provider != "local") {
-            res.status = 501;
-            res.set_content(R"({"error":"not_implemented"})", "application/json");
-            return;
-        }
-        res.set_content(local_ca->crl_pem(), "application/x-pem-file");
-    });
+        server->Get("/v1/crl", [&](const httplib::Request&, httplib::Response& res) {
+            if (opts.provider != "local") {
+                res.status = 501;
+                res.set_content(R"({"error":"not_implemented"})", "application/json");
+                return;
+            }
+            res.set_content(local_ca->crl_pem(), "application/x-pem-file");
+        });
+    };
 
-    std::cout << "ca_service: serving on " << host << ":" << port << " (provider=" << opts.provider
-              << ")\n";
-    server->listen(host, port);
+    try {
+        listeners.bind(host, static_cast<std::uint16_t>(port), configure_server, "ca_service",
+                       make_server);
+    } catch (const std::exception& ex) {
+        g_listeners.store(nullptr);
+        std::cerr << "ca_service: " << ex.what() << "\n";
+        return 1;
+    }
+    std::cout << "ca_service: serving on " << host << ":" << listeners.port()
+              << " (provider=" << opts.provider << ")\n";
+    listeners.start();
+    listeners.wait();
+    listeners.stop();
 
-    g_server.store(nullptr);
+    g_listeners.store(nullptr);
 #ifdef KYTHIRA_HAS_AWS_ACM_PCA
     if (opts.provider == "aws-acm-pca") {
         Aws::ShutdownAPI(aws_sdk_options);

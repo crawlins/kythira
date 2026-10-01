@@ -799,3 +799,31 @@ BOOST_AUTO_TEST_CASE(unusable_rpc_address_rejected, *boost::unit_test::timeout(3
     BOOST_REQUIRE(code.has_value());
     BOOST_TEST(*code == 1);
 }
+
+// --http-address picks what the client API listens on; "*" is both
+// wildcards, so the node still answers on 127.0.0.1.
+BOOST_AUTO_TEST_CASE(http_address_star_serves_ipv4, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("http_address_star");
+    int http_port = find_free_port();
+    cluster_node_process node(
+        1, find_free_port(), http_port, dir.tmp_root + "/node1", dir.unseal_key_file, k_auth_token,
+        dir.peers, /*bootstrap=*/false,
+        std::vector<std::string>{"--rpc-address", "127.0.0.1", "--http-address", "*"});
+    BOOST_TEST(wait_healthy(http_port, std::chrono::seconds(15)));
+    node.stop();
+}
+
+// A --http-address name /etc/hosts doesn't list is a startup error, not a
+// DNS lookup.
+BOOST_AUTO_TEST_CASE(unusable_http_address_rejected, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("http_address_invalid");
+    cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
+                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
+                              std::vector<std::string>{"--rpc-address", "127.0.0.1",
+                                                       "--http-address", "kythira-test.invalid"});
+    auto code = node.wait_for_own_exit(std::chrono::seconds(15));
+    BOOST_REQUIRE(code.has_value());
+    BOOST_TEST(*code == 1);
+}

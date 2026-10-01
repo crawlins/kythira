@@ -37,6 +37,9 @@ struct ca_cluster_node_config {
     std::string rpc_address{"0.0.0.0"};
     std::uint16_t rpc_port{7000};
     std::uint16_t http_port{8443};
+    // What the client HTTP API listens on: an IP literal, "*" (IPv4 and
+    // IPv6), or an /etc/hosts name of this host. See net_bind.hpp.
+    std::string http_bind_address{"0.0.0.0"};
     std::string data_dir{"/var/lib/ca_cluster_node"};
     std::vector<ca_cluster_peer_info> peers;
     std::string unseal_key_file;
@@ -163,7 +166,8 @@ namespace detail {
         << "Usage: ca_cluster_node --node-id <n> --rpc-port <n> --http-port <n>\n"
         << "                       --data-dir <path> --unseal-key-file <path>\n"
         << "                       --peers <id>:<rpc_host>:<rpc_port>@<http_address>[,...]\n"
-        << "                       [--rpc-address <addr>] [--bootstrap-ca]\n"
+        << "                       [--rpc-address <addr>] [--http-address <addr>]\n"
+        << "                       [--bootstrap-ca]\n"
         << "                       [--auth-token <token>] [--tls-cert <path> --tls-key <path>]\n"
         << "                       [--rpc-tls-cert <path> --rpc-tls-key <path>]\n"
         << "                       [--allow-plaintext-rpc]\n"
@@ -195,6 +199,8 @@ namespace detail {
             cfg.rpc_address = next();
         } else if (arg == "--rpc-port") {
             cfg.rpc_port = static_cast<std::uint16_t>(std::stoul(next()));
+        } else if (arg == "--http-address") {
+            cfg.http_bind_address = next();
         } else if (arg == "--http-port") {
             cfg.http_port = static_cast<std::uint16_t>(std::stoul(next()));
         } else if (arg == "--data-dir") {
@@ -257,6 +263,7 @@ namespace detail {
     if (!saw_node_id) usage_error("--node-id is required");
     try {
         (void)kythira::tcp_detail::resolve_bind_addresses(cfg.rpc_address, "--rpc-address");
+        (void)kythira::tcp_detail::resolve_bind_addresses(cfg.http_bind_address, "--http-address");
     } catch (const std::invalid_argument& e) {
         usage_error(e.what());
     }
