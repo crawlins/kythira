@@ -23,6 +23,8 @@
 #include <raft/shard_exceptions.hpp>
 #include <raft/shard_types.hpp>
 
+#include <raft/httplib_listeners.hpp>
+
 #include <httplib.h>
 
 #include <atomic>
@@ -59,41 +61,42 @@ public:
     auto operator=(const kv_data_server&) -> kv_data_server& = delete;
 
     auto start() -> void {
-        // See `kv_data_client`'s constructor: without this, Nagle plus the
-        // peer's delayed-ACK timer adds 40 ms to a small response.
-        _server.set_tcp_nodelay(true);
-        // A handler blocks for the whole commit, so this is the ceiling on
-        // client operations in flight against this host. See
-        // `node_options::_data_threads` for the measurement that made it a knob.
-        if (_threads > 0) {
-            _server.new_task_queue = [n = _threads] { return new httplib::ThreadPool(n); };
-        }
-        _server.Post(std::string(data_path_routes::k_put),
-                     [this](const httplib::Request& req, httplib::Response& res) {
-                         handle_write(req, res);
-                     });
-        _server.Post(std::string(data_path_routes::k_delete),
-                     [this](const httplib::Request& req, httplib::Response& res) {
-                         handle_write(req, res);
-                     });
-        _server.Post(
-            std::string(data_path_routes::k_get),
-            [this](const httplib::Request& req, httplib::Response& res) { handle_read(req, res); });
-        _thread = std::thread([this] { _server.listen(_bind.c_str(), _port); });
-        // `listen` binds on the new thread, so a client that connects the
-        // instant this returns would otherwise race the bind. Waiting on the
-        // library's own readiness flag is cheaper and more honest than a sleep.
-        _server.wait_until_ready();
+        // One server per address `_bind` resolves to ("*" is IPv4 and
+        // IPv6; see net_bind::httplib_listeners), each with the same routes.
+        auto configure = [this](httplib::Server& server) {
+            // See `kv_data_client`'s constructor: without this, Nagle plus the
+            // peer's delayed-ACK timer adds 40 ms to a small response.
+            server.set_tcp_nodelay(true);
+            // A handler blocks for the whole commit, so this is the ceiling on
+            // client operations in flight against this host. See
+            // `node_options::_data_threads` for the measurement that made it a knob.
+            // Each listening address gets its own pool, so "*" doubles it.
+            if (_threads > 0) {
+                server.new_task_queue = [n = _threads] { return new httplib::ThreadPool(n); };
+            }
+            server.Post(std::string(data_path_routes::k_put),
+                        [this](const httplib::Request& req, httplib::Response& res) {
+                            handle_write(req, res);
+                        });
+            server.Post(std::string(data_path_routes::k_delete),
+                        [this](const httplib::Request& req, httplib::Response& res) {
+                            handle_write(req, res);
+                        });
+            server.Post(std::string(data_path_routes::k_get),
+                        [this](const httplib::Request& req, httplib::Response& res) {
+                            handle_read(req, res);
+                        });
+        };
+        _port = _servers.bind(_bind, _port, configure, "kv_data_server");
+        _servers.start();
+        _servers.wait_until_ready();
     }
 
     auto stop() -> void {
         if (_stopped.exchange(true)) {
             return;
         }
-        _server.stop();
-        if (_thread.joinable()) {
-            _thread.join();
-        }
+        _servers.stop();
     }
 
     [[nodiscard]] auto port() const -> std::uint16_t { return _port; }
@@ -251,8 +254,7 @@ private:
     std::string _media_type;
     std::chrono::milliseconds _op_timeout;
     std::size_t _threads{0};
-    httplib::Server _server;
-    std::thread _thread;
+    kythira::net_bind::httplib_listeners<> _servers;
     std::atomic<bool> _stopped{false};
 };
 

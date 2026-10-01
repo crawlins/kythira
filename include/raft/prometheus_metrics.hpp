@@ -26,6 +26,7 @@
 /// move-only shape `otlp_metrics` uses — that one is unusable with the
 /// HTTP transports for exactly this reason.
 
+#include <raft/httplib_listeners.hpp>
 #include <raft/metrics.hpp>
 
 #include <httplib.h>
@@ -352,9 +353,9 @@ static_assert(metrics<prometheus_metrics>, "prometheus_metrics must satisfy metr
 // ── Scrape server ────────────────────────────────────────────────────────────
 
 /// Minimal HTTP server exposing `GET /metrics` (text exposition format) from
-/// a shared registry, on its own thread — the same httplib::Server-plus-
-/// std::thread shape as cmd/chaos_node/http_control.hpp. Pass port 0 to bind
-/// an ephemeral port (tests); `port()` reports the actual one.
+/// a shared registry, on its own thread per listening address (see
+/// net_bind::httplib_listeners: "*" listens on IPv4 and IPv6). Pass port 0 to
+/// bind an ephemeral port (tests); `port()` reports the actual one.
 class prometheus_scrape_server {
 public:
     prometheus_scrape_server(std::shared_ptr<prometheus_registry> registry,
@@ -363,26 +364,18 @@ public:
         if (!_registry) {
             throw std::invalid_argument("prometheus_scrape_server: registry must not be null");
         }
-        _server.Get("/metrics", [reg = _registry](const httplib::Request&, httplib::Response& res) {
-            res.set_content(reg->render_text(), "text/plain; version=0.0.4; charset=utf-8");
-        });
-        if (_port == 0) {
-            // Bind on the constructing thread so port() is correct as soon as
-            // the constructor returns; only the accept loop runs on _thread.
-            int bound = _server.bind_to_any_port(_bind_address);
-            if (bound <= 0) {
-                throw std::runtime_error("prometheus_scrape_server: failed to bind " +
-                                         _bind_address);
-            }
-            _port = static_cast<std::uint16_t>(bound);
-            _thread = std::thread([this] { _server.listen_after_bind(); });
-        } else {
-            if (!_server.bind_to_port(_bind_address, _port)) {
-                throw std::runtime_error("prometheus_scrape_server: failed to bind " +
-                                         _bind_address + ":" + std::to_string(_port));
-            }
-            _thread = std::thread([this] { _server.listen_after_bind(); });
-        }
+        // One server per address the bind address resolves to ("*" is IPv4
+        // and IPv6), bound on the constructing thread so port() is correct as
+        // soon as the constructor returns; only the accept loops run later.
+        _port = _servers.bind(
+            _bind_address, _port,
+            [reg = _registry](httplib::Server& server) {
+                server.Get("/metrics", [reg](const httplib::Request&, httplib::Response& res) {
+                    res.set_content(reg->render_text(), "text/plain; version=0.0.4; charset=utf-8");
+                });
+            },
+            "prometheus_scrape_server");
+        _servers.start();
     }
 
     ~prometheus_scrape_server() { stop(); }
@@ -392,10 +385,7 @@ public:
     prometheus_scrape_server(prometheus_scrape_server&&) = delete;
     auto operator=(prometheus_scrape_server&&) -> prometheus_scrape_server& = delete;
 
-    auto stop() -> void {
-        _server.stop();
-        if (_thread.joinable()) _thread.join();
-    }
+    auto stop() -> void { _servers.stop(); }
 
     [[nodiscard]] auto port() const -> std::uint16_t { return _port; }
 
@@ -403,8 +393,7 @@ private:
     std::shared_ptr<prometheus_registry> _registry;
     std::string _bind_address;
     std::uint16_t _port;
-    httplib::Server _server;
-    std::thread _thread;
+    net_bind::httplib_listeners<> _servers;
 };
 
 }  // namespace kythira
