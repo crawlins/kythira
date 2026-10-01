@@ -407,4 +407,30 @@ inline auto open_listeners(const std::vector<bind_endpoint>& endpoints, std::uin
     return fds;
 }
 
+// One endpoint as a numeric address string, with "%<scope>" on a scoped
+// IPv6 one: the host form libraries that bind by string (httplib, gRPC)
+// take.
+inline auto endpoint_host(const bind_endpoint& ep) -> std::string {
+    char buf[INET6_ADDRSTRLEN] = {};
+    if (ep.addr.ss_family == AF_INET6) {
+        const auto& a = reinterpret_cast<const sockaddr_in6&>(ep.addr);
+        ::inet_ntop(AF_INET6, &a.sin6_addr, buf, sizeof(buf));
+        std::string out(buf);
+        if (a.sin6_scope_id != 0) out += "%" + std::to_string(a.sin6_scope_id);
+        return out;
+    }
+    const auto& a = reinterpret_cast<const sockaddr_in&>(ep.addr);
+    ::inet_ntop(AF_INET, &a.sin_addr, buf, sizeof(buf));
+    return buf;
+}
+
+// False when the kernel has no support for `family` (IPv6 disabled). A
+// multi-address bind skips such an address rather than failing.
+inline auto family_supported(int family) -> bool {
+    int fd = ::socket(family, SOCK_STREAM, 0);
+    if (fd < 0) return errno != EAFNOSUPPORT;
+    ::close(fd);
+    return true;
+}
+
 }  // namespace kythira::net_bind
