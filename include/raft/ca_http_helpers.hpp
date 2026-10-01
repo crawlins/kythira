@@ -221,6 +221,19 @@ inline constexpr const char* k_peer_root_mac_header = "X-Kythira-Peer-Root-Mac";
     return hmac_sha256_hex(key, "enroll\n" + std::to_string(node_id) + "\n" + csr_pem);
 }
 
+/// Request header authenticating a peer's GET /v1/root-ca in place of the
+/// client bearer token (see peer_root_request_mac).
+inline constexpr const char* k_peer_request_mac_header = "X-Kythira-Peer-Request-Mac";
+
+/// MAC a peer attaches to GET /v1/root-ca so it need not send the client
+/// bearer token over an intra-cluster link whose TLS it does not verify. A
+/// replay only fetches the (public) root again, so binding to the request
+/// nonce alone suffices; the response is separately MAC'd (peer_root_mac).
+[[nodiscard]] inline auto peer_root_request_mac(const std::string& key, const std::string& nonce)
+    -> std::string {
+    return hmac_sha256_hex(key, "root-ca-request\n" + nonce);
+}
+
 /// MAC over a /v1/root-ca response body, bound to the requester's nonce so a
 /// stale or attacker-chosen root cannot be replayed into a later fetch.
 [[nodiscard]] inline auto peer_root_mac(const std::string& key, const std::string& nonce,

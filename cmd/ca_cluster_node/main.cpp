@@ -325,8 +325,13 @@ auto split_host_port(const std::string& url) -> std::pair<std::string, int> {
     client.set_connection_timeout(5, 0);
     client.set_read_timeout(10, 0);
     auto nonce = raft::testing::random_nonce_hex();
-    auto res = client.Get("/v1/root-ca", {{"Authorization", "Bearer " + cfg.auth_token},
-                                          {raft::testing::k_peer_nonce_header, nonce}});
+    // Authenticated by the peer-enrollment key, not the client bearer
+    // token: this link's TLS is unverified, so anything sent here may reach
+    // an impostor, and the bearer token would grant it client API access.
+    auto res = client.Get("/v1/root-ca",
+                          {{raft::testing::k_peer_nonce_header, nonce},
+                           {raft::testing::k_peer_request_mac_header,
+                            raft::testing::peer_root_request_mac(cfg.peer_enrollment_key, nonce)}});
     if (!res || res->status != 200 || res->body.empty()) return std::nullopt;
     auto mac = res->get_header_value(raft::testing::k_peer_root_mac_header);
     if (!raft::testing::constant_time_equals(
@@ -488,8 +493,9 @@ auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
 
     auto res = client.Post(
         "/v1/certificates",
-        {{"Authorization", "Bearer " + cfg.auth_token},
-         {raft::testing::k_peer_enrollment_header,
+        // No bearer token (see try_fetch_root_cert_pem_from): the
+        // enrollment MAC alone authenticates this request.
+        {{raft::testing::k_peer_enrollment_header,
           raft::testing::peer_enrollment_mac(cfg.peer_enrollment_key, cfg.node_id, csr_pem)}},
         boost::json::serialize(body), "application/json");
     if (!res) {
@@ -1089,6 +1095,26 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             return httplib::Server::HandlerResponse::Unhandled;  // health checks must work with no
                                                                  // credentials
         }
+        // Peer-to-peer calls authenticate with the peer-enrollment key
+        // instead of the client bearer token, which followers no longer send
+        // over the unverified intra-cluster link:
+        //  - GET /v1/root-ca with a valid request MAC over its nonce;
+        //  - POST /v1/certificates carrying an enrollment MAC — admitted here
+        //    only provisionally; the handler refuses it unless it verifies
+        //    as a complete peer enrollment (classify_peer_enrollment).
+        if (req.method == "GET" && req.path == "/v1/root-ca") {
+            auto nonce = req.get_header_value(raft::testing::k_peer_nonce_header);
+            if (raft::testing::is_well_formed_nonce(nonce) &&
+                raft::testing::constant_time_equals(
+                    req.get_header_value(raft::testing::k_peer_request_mac_header),
+                    raft::testing::peer_root_request_mac(cfg.peer_enrollment_key, nonce))) {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
+        }
+        if (req.method == "POST" && req.path == "/v1/certificates" &&
+            req.has_header(raft::testing::k_peer_enrollment_header)) {
+            return httplib::Server::HandlerResponse::Unhandled;
+        }
         auto auth = req.get_header_value("Authorization");
         if (!raft::testing::constant_time_equals(auth, bearer_prefix + cfg.auth_token)) {
             res.status = 401;
@@ -1147,6 +1173,11 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     });
 
     server->Post("/v1/certificates", [&](const httplib::Request& req, httplib::Response& res) {
+        // Pre-routing lets a request without the bearer token through only
+        // if it carries an enrollment MAC; such a request must then verify
+        // as a peer enrollment below, or it is refused.
+        const bool bearer_ok = raft::testing::constant_time_equals(
+            req.get_header_value("Authorization"), bearer_prefix + cfg.auth_token);
         if (!require_leader_or_redirect(req, res)) return;
         try {
             auto body = boost::json::parse(req.body).as_object();
@@ -1176,8 +1207,14 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 req.get_header_value(raft::testing::k_peer_enrollment_header),
                 std::set<std::uint64_t>(ids.begin(), ids.end()), cfg.peer_enrollment_key, csr_pem);
             if (!enrollment.allowed) {
-                res.status = 403;
-                res.set_content(json_error(enrollment.error), "application/json");
+                res.status = bearer_ok ? 403 : 401;
+                res.set_content(json_error(bearer_ok ? enrollment.error : "unauthorized"),
+                                "application/json");
+                return;
+            }
+            if (!bearer_ok && !enrollment.node_id.has_value()) {
+                res.status = 401;
+                res.set_content(json_error("unauthorized"), "application/json");
                 return;
             }
 

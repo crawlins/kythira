@@ -224,6 +224,13 @@ BOOST_AUTO_TEST_CASE(root_mac_binds_nonce_and_body, *boost::unit_test::timeout(3
     BOOST_TEST(nonce != random_nonce_hex());
     BOOST_TEST(!is_well_formed_nonce(""));
     BOOST_TEST(!is_well_formed_nonce("zz\nroot"));
+    // The request MAC (sent instead of the bearer token) is key- and
+    // nonce-bound, and distinct from the response MAC.
+    auto req_mac = peer_root_request_mac(key, nonce);
+    BOOST_TEST(constant_time_equals(req_mac, peer_root_request_mac(key, nonce)));
+    BOOST_TEST(!constant_time_equals(
+        req_mac, peer_root_request_mac(derive_peer_enrollment_key("other"), nonce)));
+    BOOST_TEST(!constant_time_equals(req_mac, peer_root_mac(key, nonce, "")));
     auto mac = peer_root_mac(key, nonce, "root-pem");
     BOOST_TEST(constant_time_equals(mac, peer_root_mac(key, nonce, "root-pem")));
     BOOST_TEST(!constant_time_equals(mac, peer_root_mac(key, nonce, "attacker-root")));
