@@ -75,3 +75,27 @@ if grep -qE '\*\*\*Skipped|tests did not run' "$LOG"; then
     echo "::error::${TEST_REGEX} was SKIPPED, not run — the suite's preflight could not reach the provider, so nothing was verified. ${HINT}" >&2
     exit 1
 fi
+
+# The same failure one level down, which the check above cannot see.
+#
+# The check above catches a suite that skips as a whole: exit 77, SKIP_RETURN_CODE,
+# "***Skipped". It cannot catch a case that skips *inside its own body* — an
+# `if (!cfg) { BOOST_TEST_MESSAGE("Skipping: ..."); return; }` guard returns
+# normally, so the binary exits 0, ctest prints "100% tests passed", and this
+# script has nothing to match on.
+#
+# That is not hypothetical. azure_vmss_quorum_manager_real's five cases took
+# exactly that path in every run up to and including 36641739288, because
+# AZURE_TEST_VMSS_NAME was never passed to the job, and the quorum-manager
+# bundle reported green off the VM cases alone for months. The "Skipping:" lines
+# were in the log the whole time; being printed is not being read.
+#
+# Boost.Test already names these precisely — "did not check any assertions" is
+# emitted per case — so the fix is to treat that as the failure it is. A
+# real-cloud case that spends money and asserts nothing is a misconfigured run
+# by the same argument the header makes about skips.
+if grep -q 'did not check any assertions' "$LOG"; then
+    echo "::error::${TEST_REGEX} ran but at least one case checked no assertions — it took an internal skip path and verified nothing, while the suite reported success. ${HINT}" >&2
+    grep -o '[Tt]est case [^ ]* did not check any assertions' "$LOG" | sort -u >&2
+    exit 1
+fi
