@@ -33,6 +33,9 @@ struct node_options {
     std::uint64_t _node_id{1};
     std::string _bind_address{"0.0.0.0"};
     std::uint16_t _raft_port{7000};
+    /// Raft RPC here is plain, unauthenticated HTTP. A non-loopback
+    /// `_bind_address` needs this explicit opt-in (KYTHIRA_ALLOW_PLAINTEXT_RAFT).
+    bool _allow_plaintext_raft{false};
     /// Every voter's Raft base URL, this node included: `id=http://host:port`.
     std::map<std::uint64_t, std::string> _peers;
     /// Every voter's gateway `host:port`, for forwarding. Defaults to the
@@ -62,6 +65,9 @@ struct node_options {
 /// Read every variable in design Component 9's table, plus the Raft ones.
 /// @throws std::invalid_argument naming the variable that is missing or malformed.
 [[nodiscard]] auto from_env() -> node_options;
+
+/// True for an IPv4 address in 127.0.0.0/8 or the IPv6 address ::1.
+[[nodiscard]] auto is_loopback_address(const std::string& address) -> bool;
 
 [[nodiscard]] auto usage() -> std::string;
 

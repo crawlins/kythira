@@ -1007,6 +1007,13 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
     add_raft_completion_test(redis_kv_state_machine_unit_test redis_kv_state_machine_unit_test.cpp)
     add_raft_completion_test(redis_acl_unit_test redis_acl_unit_test.cpp)
     target_link_libraries(redis_acl_unit_test PRIVATE OpenSSL::Crypto)
+    # redis_gateway_node's own environment parsing (the plaintext-Raft opt-in).
+    add_raft_completion_test(redis_gateway_node_config_unit_test
+                             redis_gateway_node_config_unit_test.cpp)
+    target_sources(redis_gateway_node_config_unit_test PRIVATE
+                   "${CMAKE_SOURCE_DIR}/cmd/redis_gateway_node/config.cpp")
+    target_include_directories(redis_gateway_node_config_unit_test PRIVATE
+                               "${CMAKE_SOURCE_DIR}/cmd/redis_gateway_node")
     if(folly_FOUND)
         add_raft_completion_test(redis_gateway_integration_test redis_gateway_integration_test.cpp)
         target_link_libraries(redis_gateway_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)

@@ -102,6 +102,12 @@ auto main(int argc, char** argv) -> int {
         std::cerr << e.what() << "\n";
         return 2;
     }
+    if (!kythira::redis_node::is_loopback_address(opt._bind_address)) {
+        std::cerr << "redis_gateway_node: WARNING: Raft RPC is PLAINTEXT and UNAUTHENTICATED on "
+                  << opt._bind_address << ":" << opt._raft_port
+                  << " (KYTHIRA_ALLOW_PLAINTEXT_RAFT); any process that can reach this port can "
+                     "drive Raft\n";
+    }
 
     std::signal(SIGINT, kythira::redis_node::on_signal);
     std::signal(SIGTERM, kythira::redis_node::on_signal);
