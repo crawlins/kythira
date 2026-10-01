@@ -600,7 +600,7 @@ int run_serve(const serve_options& opts) {
             return httplib::Server::HandlerResponse::Unhandled;
         }
         auto auth = req.get_header_value("Authorization");
-        if (auth != bearer_prefix + opts.auth_token) {
+        if (!raft::testing::constant_time_equals(auth, bearer_prefix + opts.auth_token)) {
             res.status = 401;
             res.set_content(R"({"error":"unauthorized"})", "application/json");
             return httplib::Server::HandlerResponse::Handled;
@@ -662,11 +662,11 @@ int run_serve(const serve_options& opts) {
             res.set_content(R"({"error":"no client certificate presented"})", "application/json");
             return;
         }
+        raft::testing::x509_ptr_generic peer_cert_owner{peer_cert};
 
         try {
             auto root_pem = std::move(provider->root_certificate_pem()).get();
             if (!raft::testing::cert_chains_to_root(peer_cert, root_pem)) {
-                X509_free(peer_cert);
                 res.status = 401;
                 res.set_content(
                     R"({"error":"presented certificate does not chain to this CA's root"})",
@@ -674,8 +674,18 @@ int run_serve(const serve_options& opts) {
                 return;
             }
 
+            // A revoked certificate must not renew itself into a fresh,
+            // unrevoked serial. Only the local provider tracks revocation
+            // here (/v1/certificates/revoke is local-only); an unparseable
+            // CRL fails closed inside cert_revoked_in_crl().
+            if (local_ca != nullptr &&
+                raft::testing::cert_revoked_in_crl(peer_cert, local_ca->crl_pem())) {
+                res.status = 401;
+                res.set_content(R"({"error":"presented certificate has been revoked"})",
+                                "application/json");
+                return;
+            }
             auto options = raft::testing::options_from_presented_cert(peer_cert);
-            X509_free(peer_cert);
 
             auto body = boost::json::parse(req.body).as_object();
             auto* csr_val = body.if_contains("csr_pem");
@@ -685,8 +695,16 @@ int run_serve(const serve_options& opts) {
                 return;
             }
             std::string csr_pem = std::string(csr_val->as_string());
-            if (auto* v = body.if_contains("validity_days"); v && v->is_number()) {
-                options.validity = std::chrono::hours(24 * v->to_number<int>());
+            // Renewal keeps the presented subject: the CSR may not change it.
+            if (!raft::testing::csr_subject_matches_cert(peer_cert, csr_pem)) {
+                res.status = 400;
+                res.set_content(
+                    R"({"error":"renewal CSR subject must match the presented certificate"})",
+                    "application/json");
+                return;
+            }
+            if (auto validity = raft::testing::parse_validity_days(body)) {
+                options.validity = *validity;
             }
 
             auto material = std::move(provider->sign_csr(csr_pem, options)).get();

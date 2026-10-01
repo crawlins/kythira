@@ -59,6 +59,10 @@ struct ca_cluster_node_config {
     kythira::tls_tcp_rpc_config rpc_tls_config;
 #endif
 
+    // Resolved (not CLI-facing): HMAC key derived from the unseal passphrase
+    // (raft::testing::derive_peer_enrollment_key), authenticating Raft peer
+    // enrollment and the root certificate followers fetch from the leader.
+    std::string peer_enrollment_key;
     std::chrono::milliseconds election_timeout_min{150};
     std::chrono::milliseconds election_timeout_max{300};
     std::chrono::milliseconds heartbeat_interval{50};

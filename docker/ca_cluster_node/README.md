@@ -72,6 +72,22 @@ trusted network boundary.
    restarted node rejoins using its own persisted certificate
    (`--data-dir`) — the bootstrap credential is never needed again.
 
+**Peer identity is separate from client identity.** The cluster root signs
+both Raft peer certificates and ordinary client certificates, so RPC TLS does
+not trust "any certificate chaining to the root": a CA-issued certificate is
+accepted as a Raft peer only if it carries a configured node's reserved DNS
+name, `ca-cluster-node-<node_id>`. Those names can only be obtained through
+peer enrollment, which is authenticated with an HMAC key derived from the
+unseal passphrase — `POST /v1/certificates` answers `403` to a request for a
+`ca-cluster-node-*` name (or one carrying `rpc_tls_ready_node_id`) that holds
+only the client bearer token. The same key authenticates the root certificate
+a follower fetches from the leader's `/v1/root-ca` before installing it as its
+RPC trust anchor. All nodes must therefore run a release with this check
+before any of them is restarted onto it: a follower on the new release rejects
+an older leader's unauthenticated `/v1/root-ca` answer, and a new leader
+rejects an older follower's unauthenticated peer enrollment (both retry
+harmlessly, staying on the bootstrap credential, until the peer is upgraded).
+
 If RPC TLS is enabled, consider raising the Raft timing flags beyond their
 plain-TCP defaults — every RPC call now pays a full TLS handshake, which is
 measurably slower under real host load:
@@ -169,9 +185,14 @@ is no root in the presented chain to pin against.
 
 ## Certificate renewal
 
-`POST /v1/certificates/renew` (bearer-token authenticated, leader-only —
-followers redirect like every other `/v1/*` route) re-issues a certificate
-for the same identifiers as an existing one, ahead of expiry. See
+`POST /v1/certificates/renew` (authenticated by the caller's own mTLS client
+certificate rather than the bearer token; leader-only — followers redirect
+like every other `/v1/*` route) re-issues a certificate for the same
+identifiers as an existing one, ahead of expiry. The new certificate copies
+its SANs and key usage from the presented certificate, and the CSR's subject
+must equal the presented certificate's subject (`400` otherwise). A revoked
+certificate cannot renew (`401`), and `validity_days` — here and on
+`POST /v1/certificates` — must be an integer from 1 to 825 (`400` otherwise). See
 `ca_test_fixture::renew()` (`tests/ca_test_fixture.hpp`) for the equivalent
 in-process pattern, and `reload_tls_material()`/`enable_auto_reload()`
 (`include/raft/http_transport.hpp`, `coap_transport.hpp`) for hot-reloading

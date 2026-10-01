@@ -22,6 +22,8 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include <arpa/inet.h>
+
 #include <algorithm>
 #include <chrono>
 #include <ctime>
@@ -30,6 +32,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -230,25 +233,117 @@ inline void add_extension(X509* cert, X509V3_CTX* ctx, int nid, const std::strin
     }
 }
 
-[[nodiscard]] inline auto build_san_value(const std::vector<std::string>& dns_names,
-                                          const std::vector<std::string>& ip_addresses)
-    -> std::string {
-    std::ostringstream out;
-    bool first = true;
-    auto append = [&](const char* prefix, const std::string& v) {
-        if (!first) {
-            out << ',';
-        }
-        out << prefix << v;
-        first = false;
+// Rejects any SAN value that is not a plain DNS name or a literal IP address.
+// SAN values reach this CA straight from callers (the `/v1/certificates` JSON
+// body's `dns_names`/`ip_addresses`), so they are untrusted input. They used to
+// be spliced into an OpenSSL config string ("DNS:a,IP:b") which
+// X509V3_EXT_conf_nid then re-parsed — a value like "x,URI:spiffe://admin"
+// smuggled an extra, never-requested URI (or email/otherName) SAN into a
+// CA-signed certificate. That is the same class of bug as OpenBao's ACME
+// "unvalidated SAN" issuance (GHSA-x8fg-h69x-p28f). Validating here and
+// building GENERAL_NAMEs directly (build_san_extension below) closes it twice.
+inline void validate_dns_san(const std::string& name) {
+    auto fail = [&](const char* why) {
+        throw std::invalid_argument("certificate_authority: invalid DNS SAN \"" + name +
+                                    "\": " + why);
     };
+    if (name.empty() || name.size() > 253) {
+        fail("length must be 1..253");
+    }
+    std::string_view rest{name};
+    if (rest.starts_with("*.")) {
+        rest.remove_prefix(2);  // a single leading wildcard label is allowed
+    }
+    std::size_t label_len = 0;
+    for (std::size_t i = 0; i <= rest.size(); ++i) {
+        if (i == rest.size() || rest[i] == '.') {
+            if (label_len == 0 || label_len > 63) {
+                fail("each label must be 1..63 characters");
+            }
+            if (rest[i - 1] == '-' || rest[i - label_len] == '-') {
+                fail("labels must not start or end with '-'");
+            }
+            label_len = 0;
+            continue;
+        }
+        char c = rest[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                  c == '-' || c == '_';
+        if (!ok) {
+            fail("only letters, digits, '-', '_' and '.' are allowed");
+        }
+        ++label_len;
+    }
+}
+
+// Parses `ip` as a literal IPv4/IPv6 address into its 4- or 16-byte network
+// form; throws std::invalid_argument for anything else.
+[[nodiscard]] inline auto parse_ip_san(const std::string& ip) -> std::vector<unsigned char> {
+    unsigned char buf[16] = {};
+    if (inet_pton(AF_INET, ip.c_str(), buf) == 1) {
+        return {buf, buf + 4};
+    }
+    if (inet_pton(AF_INET6, ip.c_str(), buf) == 1) {
+        return {buf, buf + 16};
+    }
+    throw std::invalid_argument("certificate_authority: invalid IP SAN \"" + ip +
+                                "\": not a literal IPv4/IPv6 address");
+}
+
+inline void validate_san_entries(const std::vector<std::string>& dns_names,
+                                 const std::vector<std::string>& ip_addresses) {
     for (const auto& d : dns_names) {
-        append("DNS:", d);
+        validate_dns_san(d);
     }
     for (const auto& ip : ip_addresses) {
-        append("IP:", ip);
+        (void)parse_ip_san(ip);
     }
-    return out.str();
+}
+
+// Builds a subjectAltName extension holding exactly the given DNS and IP
+// entries, as typed GENERAL_NAMEs — never via an OpenSSL config string, so no
+// value can introduce a SAN of any other type. Validates every entry first.
+[[nodiscard]] inline auto build_san_extension(const std::vector<std::string>& dns_names,
+                                              const std::vector<std::string>& ip_addresses)
+    -> x509_extension_ptr {
+    validate_san_entries(dns_names, ip_addresses);
+
+    GENERAL_NAMES* names = sk_GENERAL_NAME_new_null();
+    if (names == nullptr) {
+        throw_openssl_error("sk_GENERAL_NAME_new_null failed");
+    }
+    auto free_names = [&] { GENERAL_NAMES_free(names); };
+    auto push = [&](int type, const unsigned char* data, std::size_t len) {
+        GENERAL_NAME* gn = GENERAL_NAME_new();
+        ASN1_STRING* str = type == GEN_DNS ? ASN1_IA5STRING_new() : ASN1_OCTET_STRING_new();
+        if (gn == nullptr || str == nullptr ||
+            ASN1_STRING_set(str, data, static_cast<int>(len)) != 1) {
+            GENERAL_NAME_free(gn);
+            ASN1_STRING_free(str);
+            free_names();
+            throw_openssl_error("building GENERAL_NAME failed");
+        }
+        GENERAL_NAME_set0_value(gn, type, str);
+        if (sk_GENERAL_NAME_push(names, gn) == 0) {
+            GENERAL_NAME_free(gn);
+            free_names();
+            throw_openssl_error("sk_GENERAL_NAME_push failed");
+        }
+    };
+    for (const auto& d : dns_names) {
+        push(GEN_DNS, reinterpret_cast<const unsigned char*>(d.data()), d.size());
+    }
+    for (const auto& ip : ip_addresses) {
+        auto bytes = parse_ip_san(ip);
+        push(GEN_IPADD, bytes.data(), bytes.size());
+    }
+
+    X509_EXTENSION* raw = X509V3_EXT_i2d(NID_subject_alt_name, 0, names);
+    free_names();
+    if (raw == nullptr) {
+        throw_openssl_error("X509V3_EXT_i2d(subjectAltName) failed");
+    }
+    return x509_extension_ptr{raw};
 }
 
 /// Builds an unsigned leaf X509 (subject, validity, basicConstraints=CA:FALSE,
@@ -326,7 +421,10 @@ inline void add_extension(X509* cert, X509V3_CTX* ctx, int nid, const std::strin
     }
 
     add_extension(cert.get(), &ctx, NID_subject_key_identifier, "hash");
-    add_extension(cert.get(), &ctx, NID_subject_alt_name, build_san_value(dns_names, ip_addresses));
+    auto san = build_san_extension(dns_names, ip_addresses);
+    if (X509_add_ext(cert.get(), san.get(), -1) != 1) {
+        throw_openssl_error("X509_add_ext(subjectAltName) failed");
+    }
 
     if (X509_sign(cert.get(), issuer_key, EVP_sha256()) == 0) {
         throw_openssl_error("X509_sign(leaf) failed");

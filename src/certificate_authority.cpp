@@ -106,15 +106,8 @@ auto generate_key_and_csr(leaf_certificate_options options) -> csr_material {
         detail::throw_openssl_error("X509_REQ_set_pubkey failed");
     }
 
-    X509V3_CTX ctx;
-    X509V3_set_ctx_nodb(&ctx);
-    X509V3_set_ctx(&ctx, nullptr, nullptr, req.get(), nullptr, 0);
-    X509_EXTENSION* san_ext = X509V3_EXT_conf_nid(
-        nullptr, &ctx, NID_subject_alt_name,
-        detail::build_san_value(options.dns_names, options.ip_addresses).c_str());
-    if (san_ext == nullptr) {
-        detail::throw_openssl_error("X509V3_EXT_conf_nid(SAN) failed");
-    }
+    X509_EXTENSION* san_ext =
+        detail::build_san_extension(options.dns_names, options.ip_addresses).release();
 
     STACK_OF(X509_EXTENSION)* exts = sk_X509_EXTENSION_new_null();
     sk_X509_EXTENSION_push(exts, san_ext);
