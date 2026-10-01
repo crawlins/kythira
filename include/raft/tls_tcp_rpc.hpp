@@ -83,6 +83,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -99,6 +100,15 @@ namespace kythira {
 struct tls_rpc_trust_policy {
     std::optional<std::string> bootstrap_fingerprint_hex;  // Requirement 2.2
     std::optional<std::string> ca_root_pem;                // Requirement 6.2
+    // When set, a certificate accepted via `ca_root_pem` must ALSO carry a
+    // DNS SAN from this set. Chaining to the root alone is not enough when
+    // that root also signs ordinary client/service certificates (as
+    // ca_cluster_node's does): without this, any certificate the CA ever
+    // issued — to any API client — was a full Raft peer, able to send
+    // InstallSnapshot/AppendEntries. ca_cluster_node fills it with the
+    // reserved per-node peer names ("ca-cluster-node-<id>"), which only an
+    // authenticated peer enrollment can obtain.
+    std::optional<std::set<std::string>> required_peer_dns_names;
 
     // false for a null `presented` (no certificate at all — server-side
     // SSL_VERIFY_FAIL_IF_NO_PEER_CERT already rejects this case at the TLS
@@ -123,22 +133,32 @@ struct tls_rpc_trust_policy {
         }
         if (ca_root_pem.has_value() &&
             raft::testing::cert_chains_to_root(presented, *ca_root_pem)) {
-            return true;
+            return !required_peer_dns_names.has_value() ||
+                   raft::testing::cert_has_dns_san_in(presented, *required_peer_dns_names);
         }
         return false;
+    }
+
+    /// Returns a copy that additionally requires CA-chained certificates to
+    /// carry one of `names` as a DNS SAN (see `required_peer_dns_names`).
+    [[nodiscard]] auto requiring_peer_names(std::set<std::string> names) const
+        -> tls_rpc_trust_policy {
+        auto copy = *this;
+        copy.required_peer_dns_names = std::move(names);
+        return copy;
     }
 };
 
 [[nodiscard]] inline auto pinned_fingerprint(std::string hex) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::move(hex), std::nullopt};
+    return tls_rpc_trust_policy{std::move(hex), std::nullopt, std::nullopt};
 }
 
 [[nodiscard]] inline auto ca_root_only(std::string root_pem) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::nullopt, std::move(root_pem)};
+    return tls_rpc_trust_policy{std::nullopt, std::move(root_pem), std::nullopt};
 }
 
 [[nodiscard]] inline auto either(std::string hex, std::string root_pem) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::move(hex), std::move(root_pem)};
+    return tls_rpc_trust_policy{std::move(hex), std::move(root_pem), std::nullopt};
 }
 
 struct tls_tcp_rpc_config {

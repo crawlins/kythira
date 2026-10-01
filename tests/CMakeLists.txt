@@ -4379,6 +4379,21 @@ set_tests_properties(tls_tcp_rpc_integration_test PROPERTIES
     LABELS "integration;certificate_authority;ca;ca_cluster_node;rpc_tls"
 )
 
+add_executable(ca_issuance_hardening_unit_test ca_issuance_hardening_unit_test.cpp)
+target_link_libraries(ca_issuance_hardening_unit_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_features(ca_issuance_hardening_unit_test PRIVATE cxx_std_23)
+add_test(NAME ca_issuance_hardening_unit_test COMMAND ca_issuance_hardening_unit_test)
+set_tests_properties(ca_issuance_hardening_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;certificate_authority;ca;ca_cluster_node;rpc_tls"
+)
+
 if(TARGET ca_service)
 
 add_executable(ca_test_fixture_unit_test ca_test_fixture_unit_test.cpp)

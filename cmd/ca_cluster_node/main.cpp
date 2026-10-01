@@ -77,6 +77,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -243,12 +244,38 @@ auto persist_rpc_peer_identity(const std::string& data_dir, const std::string& c
 // verification and not intended for any external client-facing use.
 auto rpc_peer_identity_options(std::uint64_t node_id) -> raft::testing::leaf_certificate_options {
     raft::testing::leaf_certificate_options opts;
-    std::string name = "ca-cluster-node-" + std::to_string(node_id);
+    std::string name = raft::testing::peer_identity_dns_name(node_id);
     opts.subject.common_name = name;
     opts.dns_names = {name};
     opts.server_auth = true;
     opts.client_auth = true;
     return opts;
+}
+
+// Every configured node's reserved peer name — the only CA-chained
+// certificates RPC TLS accepts (tls_rpc_trust_policy::required_peer_dns_names).
+auto cluster_peer_dns_names(const ca_cluster_node::ca_cluster_node_config& cfg)
+    -> std::set<std::string> {
+    std::set<std::string> names;
+    for (auto id : cfg.all_node_ids()) names.insert(raft::testing::peer_identity_dns_name(id));
+    return names;
+}
+
+// Never present (or persist) a certificate this cluster's own peers would
+// reject: it must chain to the (MAC-verified) cluster root and carry this
+// node's reserved peer name. The leader's response arrives over an
+// unverified-TLS HTTP path, so it is not trusted on its own.
+auto issued_peer_cert_ok(const std::string& cert_pem, const std::string& root_pem,
+                         std::uint64_t node_id) -> bool {
+    BIO* bio = BIO_new_mem_buf(cert_pem.data(), static_cast<int>(cert_pem.size()));
+    X509* issued = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (issued == nullptr) return false;
+    bool ok = raft::testing::cert_chains_to_root(issued, root_pem) &&
+              raft::testing::cert_has_dns_san_in(issued,
+                                                 {raft::testing::peer_identity_dns_name(node_id)});
+    X509_free(issued);
+    return ok;
 }
 
 // "scheme://host:port" -> (host, port), for constructing an httplib client
@@ -285,16 +312,29 @@ auto split_host_port(const std::string& url) -> std::pair<std::string, int> {
 // below - a non-leader peer just answers 308/503 (require_leader_or_
 // redirect()) or refuses the connection outright, which this treats
 // identically to "not this one, try the next".
-[[nodiscard]] inline auto try_fetch_root_cert_pem_from(const std::string& http_address,
-                                                       const std::string& auth_token)
+// The response must carry a MAC over (fresh nonce, body) under the
+// peer-enrollment key: TLS verification is off on this path, so without it
+// any on-path attacker (or a fake "leader") could hand back its own root,
+// which this node then installs as its RPC trust anchor and persists.
+[[nodiscard]] inline auto try_fetch_root_cert_pem_from(
+    const std::string& http_address, const ca_cluster_node::ca_cluster_node_config& cfg)
     -> std::optional<std::string> {
     auto [host, port] = split_host_port(http_address);
     httplib::Client client(host, port);
     client.enable_server_certificate_verification(false);
     client.set_connection_timeout(5, 0);
     client.set_read_timeout(10, 0);
-    auto res = client.Get("/v1/root-ca", {{"Authorization", "Bearer " + auth_token}});
+    auto nonce = raft::testing::random_nonce_hex();
+    auto res = client.Get("/v1/root-ca", {{"Authorization", "Bearer " + cfg.auth_token},
+                                          {raft::testing::k_peer_nonce_header, nonce}});
     if (!res || res->status != 200 || res->body.empty()) return std::nullopt;
+    auto mac = res->get_header_value(raft::testing::k_peer_root_mac_header);
+    if (!raft::testing::constant_time_equals(
+            mac, raft::testing::peer_root_mac(cfg.peer_enrollment_key, nonce, res->body))) {
+        std::cerr << "[warn] ca_cluster_node: rejecting /v1/root-ca response from " << http_address
+                  << " — missing or invalid peer MAC\n";
+        return std::nullopt;
+    }
     return res->body;
 }
 
@@ -316,7 +356,7 @@ auto fetch_root_cert_pem(kythira::node<Types>& raft_node,
     // this function's original (leader-only) behavior.
     if (auto leader_id = raft_node.known_leader(); leader_id.has_value()) {
         if (auto leader_http = cfg.http_address_for(*leader_id); leader_http.has_value()) {
-            if (auto pem = try_fetch_root_cert_pem_from(*leader_http, cfg.auth_token)) {
+            if (auto pem = try_fetch_root_cert_pem_from(*leader_http, cfg)) {
                 return pem;
             }
         }
@@ -345,7 +385,7 @@ auto fetch_root_cert_pem(kythira::node<Types>& raft_node,
     // 200, every other peer answers 308/503 or refuses the connection and
     // is simply skipped.
     for (const auto& p : cfg.peers) {
-        if (auto pem = try_fetch_root_cert_pem_from(p.http_address, cfg.auth_token)) {
+        if (auto pem = try_fetch_root_cert_pem_from(p.http_address, cfg)) {
             return pem;
         }
     }
@@ -446,8 +486,12 @@ auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
     // call submit_command() successfully.
     body["rpc_tls_ready_node_id"] = cfg.node_id;
 
-    auto res = client.Post("/v1/certificates", {{"Authorization", "Bearer " + cfg.auth_token}},
-                           boost::json::serialize(body), "application/json");
+    auto res = client.Post(
+        "/v1/certificates",
+        {{"Authorization", "Bearer " + cfg.auth_token},
+         {raft::testing::k_peer_enrollment_header,
+          raft::testing::peer_enrollment_mac(cfg.peer_enrollment_key, cfg.node_id, csr_pem)}},
+        boost::json::serialize(body), "application/json");
     if (!res) {
         throw std::runtime_error("acquire_rpc_peer_certificate: request to leader failed: " +
                                  httplib::to_string(res.error()));
@@ -721,8 +765,11 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 root_first_seen_at = std::chrono::steady_clock::now();
             }
 
-            auto dual_policy = kythira::either(
-                cfg.rpc_tls_config.trust_policy.bootstrap_fingerprint_hex.value_or(""), *root_pem);
+            auto dual_policy =
+                kythira::either(
+                    cfg.rpc_tls_config.trust_policy.bootstrap_fingerprint_hex.value_or(""),
+                    *root_pem)
+                    .requiring_peer_names(cluster_peer_dns_names(cfg));
             if (!cfg.rpc_tls_config.trust_policy.bootstrap_fingerprint_hex.has_value()) {
                 dual_policy.bootstrap_fingerprint_hex.reset();
             }
@@ -761,6 +808,13 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 std::cerr << "[warn] ca_cluster_node: failed to acquire RPC peer identity, will "
                              "retry: "
                           << ex.what() << "\n";
+                return;
+            }
+
+            if (!issued_peer_cert_ok(material.certificate_pem, *root_pem, cfg.node_id)) {
+                std::cerr << "[warn] ca_cluster_node: issued RPC peer certificate does not chain "
+                             "to the cluster root or lacks this node's peer name — discarding, "
+                             "will retry\n";
                 return;
             }
 
@@ -825,7 +879,8 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             for (auto id : cfg.all_node_ids()) {
                 if (!ready.contains(id)) return;
             }
-            auto root_only_policy = kythira::ca_root_only(state.root_certificate_pem());
+            auto root_only_policy = kythira::ca_root_only(state.root_certificate_pem())
+                                        .requiring_peer_names(cluster_peer_dns_names(cfg));
             rpc_server_handle.reload_trust_policy(root_only_policy);
             rpc_client_handle.reload_trust_policy(root_only_policy);
             cutover_finalized = true;
@@ -890,6 +945,12 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             try {
                 auto parsed = boost::json::parse(res->body).as_object();
                 std::string new_cert_pem = std::string(parsed.at("certificate_pem").as_string());
+                if (!issued_peer_cert_ok(new_cert_pem, *root_pem, cfg.node_id)) {
+                    std::cerr << "[warn] ca_cluster_node: renewed RPC peer certificate does not "
+                                 "chain to the cluster root or lacks this node's peer name — "
+                                 "discarding, will retry\n";
+                    return;
+                }
                 persist_rpc_peer_identity(cfg.data_dir, new_cert_pem, csr.private_key_pem,
                                           *root_pem);
             } catch (const std::exception& ex) {
@@ -1029,7 +1090,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                                                                  // credentials
         }
         auto auth = req.get_header_value("Authorization");
-        if (auth != bearer_prefix + cfg.auth_token) {
+        if (!raft::testing::constant_time_equals(auth, bearer_prefix + cfg.auth_token)) {
             res.status = 401;
             res.set_content(json_error("unauthorized"), "application/json");
             return httplib::Server::HandlerResponse::Handled;
@@ -1070,6 +1131,14 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 res.set_content(json_error("not_bootstrapped"), "application/json");
                 return;
             }
+            // A peer fetching the root as its RPC trust anchor sends a nonce
+            // and verifies this MAC (try_fetch_root_cert_pem_from).
+            auto nonce = req.get_header_value(raft::testing::k_peer_nonce_header);
+            if (raft::testing::is_well_formed_nonce(nonce)) {
+                res.set_header(raft::testing::k_peer_root_mac_header,
+                               raft::testing::peer_root_mac(cfg.peer_enrollment_key, nonce,
+                                                            state.root_certificate_pem()));
+            }
             res.set_content(state.root_certificate_pem(), "application/x-pem-file");
         } catch (const std::exception& ex) {
             res.status = 503;
@@ -1089,6 +1158,28 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             }
             std::string csr_pem = std::string(csr_val->as_string());
             auto options = raft::testing::parse_csr_signing_options(body);
+
+            // Reserved "ca-cluster-node-*" names and rpc_tls_ready_node_id
+            // are Raft peer enrollment, not ordinary issuance: they need the
+            // peer-enrollment MAC, which the client bearer token alone
+            // cannot produce (see classify_peer_enrollment).
+            std::optional<std::uint64_t> ready_node_id;
+            if (auto* v = body.if_contains("rpc_tls_ready_node_id")) {
+                if (!v->is_number()) {
+                    throw std::invalid_argument("rpc_tls_ready_node_id must be a number");
+                }
+                ready_node_id = v->to_number<std::uint64_t>();
+            }
+            auto ids = cfg.all_node_ids();
+            auto enrollment = raft::testing::classify_peer_enrollment(
+                options, ready_node_id,
+                req.get_header_value(raft::testing::k_peer_enrollment_header),
+                std::set<std::uint64_t>(ids.begin(), ids.end()), cfg.peer_enrollment_key, csr_pem);
+            if (!enrollment.allowed) {
+                res.status = 403;
+                res.set_content(json_error(enrollment.error), "application/json");
+                return;
+            }
 
             std::unique_lock signer_lock(signer_mu);
             if (signer == nullptr) {
@@ -1128,12 +1219,12 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             // certificate issuance itself (the follower already has its
             // valid certificate either way) and is simply retried by the
             // follower's own next maintenance tick's request.
-            if (auto* ready_id = body.if_contains("rpc_tls_ready_node_id")) {
+            if (enrollment.node_id.has_value()) {
                 try {
                     raft_node
-                        .submit_command(raft::testing::encode_record_rpc_tls_ready_command(
-                                            ready_id->to_number<std::uint64_t>()),
-                                        k_command_timeout)
+                        .submit_command(
+                            raft::testing::encode_record_rpc_tls_ready_command(*enrollment.node_id),
+                            k_command_timeout)
                         .get();
                 } catch (const std::exception&) {
                     // Logged implicitly via the requester's own retry path
@@ -1170,18 +1261,33 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             res.set_content(json_error("no client certificate presented"), "application/json");
             return;
         }
+        raft::testing::x509_ptr_generic peer_cert_owner{peer_cert};
         try {
             auto state = read_ca_state(raft_node, k_command_timeout);
             if (!raft::testing::cert_chains_to_root(peer_cert, state.root_certificate_pem())) {
-                X509_free(peer_cert);
                 res.status = 401;
                 res.set_content(
                     json_error("presented certificate does not chain to this CA's root"),
                     "application/json");
                 return;
             }
+            // A revoked certificate must not be able to renew itself into a
+            // fresh, unrevoked serial — that would make revocation a no-op.
+            auto presented_serial = raft::testing::cert_serial_u64(peer_cert);
+            bool revoked = !presented_serial.has_value();
+            for (const auto& e : state.ledger()) {
+                if (presented_serial.has_value() && e.serial == *presented_serial &&
+                    e.revoked_at.has_value()) {
+                    revoked = true;
+                }
+            }
+            if (revoked) {
+                res.status = 401;
+                res.set_content(json_error("presented certificate has been revoked"),
+                                "application/json");
+                return;
+            }
             auto options = raft::testing::options_from_presented_cert(peer_cert);
-            X509_free(peer_cert);
 
             auto body = boost::json::parse(req.body).as_object();
             auto* csr_val = body.if_contains("csr_pem");
@@ -1191,8 +1297,17 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 return;
             }
             std::string csr_pem = std::string(csr_val->as_string());
-            if (auto* v = body.if_contains("validity_days"); v && v->is_number()) {
-                options.validity = std::chrono::hours(24 * v->to_number<int>());
+            // Renewal keeps the presented subject: the CSR may not change it.
+            bool same_subject = raft::testing::csr_subject_matches_cert(peer_cert, csr_pem);
+            if (!same_subject) {
+                res.status = 400;
+                res.set_content(
+                    json_error("renewal CSR subject must match the presented certificate"),
+                    "application/json");
+                return;
+            }
+            if (auto validity = raft::testing::parse_validity_days(body)) {
+                options.validity = *validity;
             }
 
             std::unique_lock signer_lock(signer_mu);
@@ -1376,6 +1491,7 @@ int main(int argc, char** argv) {
     std::string unseal_passphrase;
     try {
         unseal_passphrase = read_unseal_key(cfg.unseal_key_file);
+        cfg.peer_enrollment_key = raft::testing::derive_peer_enrollment_key(unseal_passphrase);
     } catch (const std::exception& e) {
         std::cerr << "ca_cluster_node: " << e.what() << "\n";
         return 1;
@@ -1408,6 +1524,7 @@ int main(int argc, char** argv) {
             auto root_pem = read_whole_file(rpc_peer_root_path(cfg.data_dir));
             kythira::tls_rpc_trust_policy policy;
             policy.ca_root_pem = root_pem;
+            policy.required_peer_dns_names = cluster_peer_dns_names(cfg);
             if (!cfg.rpc_tls_cert_path.empty()) {
                 try {
                     auto bundle = read_whole_file(cfg.rpc_tls_cert_path);
