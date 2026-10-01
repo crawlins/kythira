@@ -82,7 +82,9 @@ unseal passphrase — `POST /v1/certificates` answers `403` to a request for a
 `ca-cluster-node-*` name (or one carrying `rpc_tls_ready_node_id`) that holds
 only the client bearer token. The same key authenticates the root certificate
 a follower fetches from the leader's `/v1/root-ca` before installing it as its
-RPC trust anchor. All nodes must therefore run a release with this check
+RPC trust anchor. These node-to-node calls carry only peer MACs, never the
+client bearer token: the link's TLS is not verified, so the token must not
+cross it. All nodes must therefore run a release with this check
 before any of them is restarted onto it: a follower on the new release rejects
 an older leader's unauthenticated `/v1/root-ca` answer, and a new leader
 rejects an older follower's unauthenticated peer enrollment (both retry
