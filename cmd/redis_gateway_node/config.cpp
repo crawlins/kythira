@@ -3,6 +3,8 @@
 
 #include "config.hpp"
 
+#include <raft/net_bind.hpp>
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
@@ -113,15 +115,9 @@ auto port_of(const std::string& listen) -> std::string {
 }  // namespace
 
 auto is_loopback_address(const std::string& address) -> bool {
-    in_addr v4{};
-    if (::inet_pton(AF_INET, address.c_str(), &v4) == 1) {
-        return (ntohl(v4.s_addr) >> 24) == 127;
-    }
-    in6_addr v6{};
-    if (::inet_pton(AF_INET6, address.c_str(), &v6) == 1) {
-        return std::memcmp(&v6, &in6addr_loopback, sizeof(v6)) == 0;
-    }
-    return false;
+    // Same resolver the Raft listener binds with, so "localhost" counts and
+    // the check can't disagree with what is actually bound.
+    return kythira::net_bind::is_loopback_bind_address(address);
 }
 
 auto from_env() -> node_options {

@@ -5,6 +5,7 @@
 /// @file redis_gateway_impl.hpp
 /// @brief Definitions for redis_gateway.hpp.
 
+#include <raft/asio_listeners.hpp>
 #include <raft/redis_gateway.hpp>
 
 #include <openssl/ssl.h>
@@ -461,23 +462,16 @@ auto redis_gateway<Host, Logger, Metrics>::start() -> void {
     _work.emplace(boost::asio::make_work_guard(_io));
     _workers.emplace(std::max<std::size_t>(1, _config._worker_threads));
 
-    using tcp = boost::asio::ip::tcp;
-    auto bind = [&](const std::string& spec) -> tcp::acceptor {
+    auto bind = [&](const std::string& spec) {
         auto [host, port] = redis_gateway_detail::parse_listen(spec);
-        tcp::acceptor acceptor(_io);
-        tcp::endpoint endpoint(boost::asio::ip::make_address(host.empty() ? "0.0.0.0" : host),
-                               port);
-        acceptor.open(endpoint.protocol());
-        acceptor.set_option(tcp::acceptor::reuse_address(true));
-        acceptor.bind(endpoint);
-        acceptor.listen(boost::asio::socket_base::max_listen_connections);
-        return acceptor;
+        return kythira::net_bind::open_asio_acceptors(_io, host.empty() ? "0.0.0.0" : host, port,
+                                                      "redis gateway");
     };
 
     try {
         if (!_config._listen.empty()) {
-            _acceptor.emplace(bind(_config._listen));
-            _port = _acceptor->local_endpoint().port();
+            _acceptors = bind(_config._listen);
+            _port = _acceptors.front()->local_endpoint().port();
             // Requirement 12.6: a plaintext listener is announced once, loudly.
             _logger.log(log_level::warning,
                         "redis gateway: PLAINTEXT listener; AUTH secrets and values cross the "
@@ -486,8 +480,8 @@ auto redis_gateway<Host, Logger, Metrics>::start() -> void {
         }
         if (!_config._tls_listen.empty()) {
             _ssl_ctx = std::make_shared<boost::asio::ssl::context>(build_ssl_context());
-            _tls_acceptor.emplace(bind(_config._tls_listen));
-            _tls_port = _tls_acceptor->local_endpoint().port();
+            _tls_acceptors = bind(_config._tls_listen);
+            _tls_port = _tls_acceptors.front()->local_endpoint().port();
             _logger.log(log_level::info, "redis gateway: TLS listener",
                         {{"listen", _config._tls_listen},
                          {"port", std::to_string(_tls_port)},
@@ -497,17 +491,17 @@ auto redis_gateway<Host, Logger, Metrics>::start() -> void {
         _work.reset();
         _workers->join();
         _workers.reset();
-        _acceptor.reset();
-        _tls_acceptor.reset();
+        _acceptors.clear();
+        _tls_acceptors.clear();
         _running = false;
         throw;
     }
 
-    if (_acceptor) {
-        accept_loop(*_acceptor, false);
+    for (const auto& acceptor : _acceptors) {
+        accept_loop(acceptor, false);
     }
-    if (_tls_acceptor) {
-        accept_loop(*_tls_acceptor, true);
+    for (const auto& acceptor : _tls_acceptors) {
+        accept_loop(acceptor, true);
     }
     for (std::size_t i = 0; i < std::max<std::size_t>(1, _config._io_threads); ++i) {
         _io_threads.emplace_back([this] { _io.run(); });
@@ -520,11 +514,11 @@ auto redis_gateway<Host, Logger, Metrics>::stop() -> void {
         return;
     }
     boost::system::error_code ec;
-    if (_acceptor) {
-        _acceptor->close(ec);
+    for (const auto& acceptor : _acceptors) {
+        acceptor->close(ec);
     }
-    if (_tls_acceptor) {
-        _tls_acceptor->close(ec);
+    for (const auto& acceptor : _tls_acceptors) {
+        acceptor->close(ec);
     }
     std::vector<std::shared_ptr<connection>> live;
     {
@@ -554,8 +548,8 @@ auto redis_gateway<Host, Logger, Metrics>::stop() -> void {
         }
     }
     _io_threads.clear();
-    _acceptor.reset();
-    _tls_acceptor.reset();
+    _acceptors.clear();
+    _tls_acceptors.clear();
     {
         std::lock_guard<std::mutex> lock(_connections_mutex);
         _connections.clear();
@@ -596,10 +590,11 @@ auto redis_gateway<Host, Logger, Metrics>::build_ssl_context() -> boost::asio::s
 }
 
 template<typename Host, typename Logger, typename Metrics>
-auto redis_gateway<Host, Logger, Metrics>::accept_loop(boost::asio::ip::tcp::acceptor& acceptor,
-                                                       bool tls) -> void {
-    acceptor.async_accept([this, &acceptor, tls](const boost::system::error_code& ec,
-                                                 boost::asio::ip::tcp::socket socket) {
+auto redis_gateway<Host, Logger, Metrics>::accept_loop(
+    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor, bool tls) -> void {
+    auto& a = *acceptor;
+    a.async_accept([this, acceptor = std::move(acceptor), tls](
+                       const boost::system::error_code& ec, boost::asio::ip::tcp::socket socket) {
         if (ec) {
             if (ec != boost::asio::error::operation_aborted && _running.load()) {
                 _logger.log(log_level::warning, "redis gateway: accept failed",

@@ -83,6 +83,16 @@ The Redis front end:
 | `KYTHIRA_REDIS_WORKER_THREADS` | `8` | Command workers |
 | `KYTHIRA_REDIS_LOG_COMMANDS` | `false` | Log every command (keys, never values or secrets) at debug |
 
+`KYTHIRA_RAFT_BIND` and the host part of the two listen addresses accept:
+
+- An IPv4 or IPv6 literal. `0.0.0.0` is IPv4 only and `::` is IPv6 only.
+  In a listen address, write IPv6 in brackets, for example `[::1]:6379`.
+- `*`, which listens on both `0.0.0.0` and `::` with separate sockets.
+- A host name listed in `/etc/hosts`. DNS is never consulted. The daemon
+  listens on every address the name is listed under, so `localhost` covers
+  `127.0.0.1` and `::1`. Each address must belong to this host, or the
+  daemon refuses to start.
+
 ### Shard cuts
 
 Keys are plain byte strings ordered lexicographically, and a shard is a
