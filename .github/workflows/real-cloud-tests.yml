@@ -1099,6 +1099,32 @@ jobs:
           echo "Run scripts/ci-cloud-credentials/azure/provision-object-persistence-container.sh and set the variables it prints." >&2
           exit $fail
 
+      # The quorum-manager bundle covers two managers, and only one of them was
+      # ever being exercised. `azure_vmss_quorum_manager_real`'s five cases each
+      # open with `if (!preflight_ok || !scale_set) { BOOST_TEST_MESSAGE("Skipping:
+      # ... AZURE_TEST_VMSS_NAME unset"); return; }`, and this workflow has never
+      # passed that variable — `grep AZURE_TEST_VMSS_NAME` over this file returned
+      # nothing until the step below was written. So in runs 36612317090 and
+      # 36641739288, identically, all five printed `Skipping:` followed by `did
+      # not check any assertions`, the VM half passed, and the bundle reported a
+      # 615s green that was read as covering both managers.
+      #
+      # A skip that is printed is still not read: those lines were in logs people
+      # had gone through repeatedly. So this fails the job rather than warning.
+      # The scale sets cannot be created by the test — the scale-set model is an
+      # operator input by design (see azure_vmss_quorum_manager_config's header) —
+      # which is exactly why the missing variable had no self-correcting path.
+      - name: Fail closed if the placement-fixture variables are unset
+        if: ${{ env.BUNDLE_QUORUM_MANAGER == 'true' && (vars.AZURE_TEST_VMSS_NAME == '' || vars.AZURE_TEST_VMSS_AUTOMATIC_UPGRADE_NAME == '' || vars.AZURE_TEST_PPG_ID == '' || vars.AZURE_TEST_AVAILABILITY_SET_ID == '') }}
+        run: |
+          fail=0
+          [ -z "${{ vars.AZURE_TEST_VMSS_NAME }}" ] && { echo "::error::AZURE_TEST_VMSS_NAME repository variable is unset but the quorum-manager bundle is enabled, so azure_vmss_quorum_manager_real's four scaling cases would skip and the bundle would still report green." >&2; fail=1; }
+          [ -z "${{ vars.AZURE_TEST_VMSS_AUTOMATIC_UPGRADE_NAME }}" ] && { echo "::error::AZURE_TEST_VMSS_AUTOMATIC_UPGRADE_NAME repository variable is unset, so vmss_rejects_automatic_upgrade_mode would skip: proving the constructor rejects upgradePolicy.mode=Automatic needs a real scale set in that mode." >&2; fail=1; }
+          [ -z "${{ vars.AZURE_TEST_PPG_ID }}" ] && { echo "::error::AZURE_TEST_PPG_ID repository variable is unset, so placement_proximity_placement_group would skip. It was skipping in run 36718807855, inside the VM half of this bundle that was read as covered." >&2; fail=1; }
+          [ -z "${{ vars.AZURE_TEST_AVAILABILITY_SET_ID }}" ] && { echo "::error::AZURE_TEST_AVAILABILITY_SET_ID repository variable is unset, so placement_availability_set would skip, in the same way and in the same run." >&2; fail=1; }
+          echo "Run scripts/ci-cloud-credentials/azure/provision-quorum-manager-fixtures.sh and set the variables it prints. The scale sets sit at capacity 0, and a PPG and an availability set cost nothing to hold, so none of this bills between runs." >&2
+          exit $fail
+
       - name: Install system dependencies
         run: |
           # Drop runner-image apt sources this project never installs from; a
@@ -1290,11 +1316,37 @@ jobs:
           AZURE_TEST_SUBNET_ID_ZONE3: ${{ vars.AZURE_TEST_SUBNET_ID_ZONE3 }}
           # Standard_D2s_v5 (this test's own hardcoded default) hit
           # SkuNotAvailable ("Capacity Restrictions") in eastus on a real
-          # run. Standard_B2s is a much more broadly available burstable
-          # SKU, less prone to regional capacity exhaustion, and more than
-          # sufficient for a VM this test creates only to immediately probe
-          # power state and tear down.
+          # run, which is why this variable exists at all. It currently holds
+          # Standard_D2s_v7.
+          #
+          # This comment used to recommend Standard_B2s as "much more broadly
+          # available". Do not act on that: measured 2026-09-30 against this
+          # subscription, `az vm list-skus --location eastus` omits BOTH
+          # Standard_B2s and Standard_D2s_v5 unless `--all` is passed, meaning
+          # both are restricted here, while Standard_D2s_v7 is offered
+          # unrestricted in zones 1-3. Availability is a property of the
+          # subscription and region, not of how burstable the family is.
           AZURE_TEST_VM_SIZE: ${{ vars.AZURE_TEST_VM_SIZE }}
+          # The azure_vmss_quorum_manager_real half of this binary. Both scale
+          # sets are pre-provisioned operator fixtures at capacity 0 (see
+          # scripts/ci-cloud-credentials/azure/provision-quorum-manager-fixtures.sh): the manager's
+          # contract is that it only changes sku.capacity and tags the instance
+          # that appears, so it cannot create its own. The guard above fails the
+          # job when either is unset, because the cases skip silently otherwise.
+          AZURE_TEST_VMSS_NAME: ${{ vars.AZURE_TEST_VMSS_NAME }}
+          AZURE_TEST_VMSS_AUTOMATIC_UPGRADE_NAME: ${{ vars.AZURE_TEST_VMSS_AUTOMATIC_UPGRADE_NAME }}
+          # Cost-report label only. The scale set's real SKU lives on its model,
+          # which the test cannot see without an extra ARM call; passing the
+          # operator's own value keeps the reported hourly rate from being a
+          # different VM's price.
+          AZURE_TEST_VMSS_VM_SIZE: ${{ vars.AZURE_TEST_VMSS_VM_SIZE }}
+          # placement_proximity_placement_group and placement_availability_set.
+          # Both were skipping silently in the VM suite for the same reason the
+          # VMSS cases were, and were still doing it in run 36718807855 -- the
+          # run that first made the VMSS cases execute. Seven hollow cases, not
+          # five; these two were in the half nobody suspected.
+          AZURE_TEST_PPG_ID: ${{ vars.AZURE_TEST_PPG_ID }}
+          AZURE_TEST_AVAILABILITY_SET_ID: ${{ vars.AZURE_TEST_AVAILABILITY_SET_ID }}
         run: |
           scripts/run-real-cloud-suite.sh 'real-azure' '^azure_quorum_manager_real_test$' \
             "Check the AZURE_CI_* federated-credential variables and that AZURE_TEST_RESOURCE_GROUP still exists in the subscription."
@@ -1410,6 +1462,79 @@ jobs:
           fi
           echo "Post-run audit clean: no VMs left in ${RG}."
 
+      # A second audit, scoped to the scale sets.
+      #
+      # Under **Flexible** orchestration a scale-set member IS an ordinary
+      # `Microsoft.Compute/virtualMachines` resource, so the VM audit above does
+      # see a leaked member and will fail the run for it. That is deliberate and
+      # not redundant with this step: the VM audit cannot see a scale set left
+      # at non-zero `sku.capacity` with no member yet launched, which is a leak
+      # that has not started billing but will. This step is also what scopes a
+      # finding to the scale set it came from.
+      #
+      # (This rationale was the other way round while the manager targeted
+      # Uniform scale sets, whose members are not VM resources and were
+      # therefore invisible to `az vm list` entirely. Flexible inverted it.)
+      #
+      # Every member is a leak by the time this runs: each VMSS case ends in
+      # `decommission_node`, and the scale sets sit at capacity 0 between runs
+      # by construction. The scale sets themselves are operator fixtures and are
+      # never a finding.
+      #
+      # Same bounded wait as the VM audit, for the same reason: ARM deletes
+      # asynchronously, so a teardown that has issued every delete still lists
+      # instances for a while, and one sample would manufacture false leaks.
+      - name: Audit for leaked VMSS instances
+        if: always()
+        run: |
+          if ! az account show >/dev/null 2>&1; then
+            echo "Not logged in to Azure (the login step failed or never ran) — nothing to audit with."
+            exit 0
+          fi
+          RG='${{ vars.AZURE_TEST_RESOURCE_GROUP }}'
+          if [ -z "${RG}" ]; then
+            echo "AZURE_TEST_RESOURCE_GROUP is unset — nothing to audit."
+            exit 0
+          fi
+          audit_failed() {
+            echo "::error::THE VMSS AUDIT DID NOT RUN ($1). This is not a clean result: scale-set instances may have outlived teardown and be billing now. Check resource group ${RG} in the portal." >&2
+            exit 1
+          }
+          # Every scale set in the group, not just the two the variables name: a
+          # set added by hand without updating the variables is exactly the one
+          # nobody would think to check.
+          sets=$(az vmss list --resource-group "${RG}" --query '[].name' -o tsv) \
+            || audit_failed "the vmss list call failed"
+          if [ -z "${sets}" ]; then
+            echo "No scale sets in ${RG} — nothing to audit."
+            exit 0
+          fi
+          deadline=$(( SECONDS + 900 ))
+          while :; do
+            total=0
+            report=''
+            for s in ${sets}; do
+              inst=$(az vmss list-instances --resource-group "${RG}" --name "${s}" \
+                --query '[].{id:instanceId,name:name,state:provisioningState}' -o json) \
+                || audit_failed "list-instances failed for scale set ${s}"
+              n=$(printf '%s' "${inst}" | jq 'if . == null then 0 else length end') \
+                || audit_failed "az vmss list-instances returned a response this step could not parse"
+              [ -n "${n}" ] || audit_failed "the parsed instance count was empty for ${s}"
+              total=$(( total + n ))
+              [ "${n}" -ne 0 ] && report="${report}${s}: ${inst}"$'\n'
+            done
+            [ "${total}" -eq 0 ] && break
+            [ "${SECONDS}" -ge "${deadline}" ] && break
+            echo "  ${total} VMSS instance(s) still listed; waiting for in-flight deletes (up to $(( deadline - SECONDS ))s more)"
+            sleep 30
+          done
+          if [ "${total}" -ne 0 ]; then
+            echo "::error::Post-run audit found ${total} VMSS instance(s) still in ${RG} after waiting 900s for in-flight deletions — teardown did not complete. They are being billed." >&2
+            printf '%s' "${report}" >&2
+            exit 1
+          fi
+          echo "Post-run audit clean: every scale set in ${RG} is back to zero instances."
+
       # Remediation, deliberately AFTER the audit so detection stays loud: the
       # audit still fails the job and names what leaked, and this then stops the
       # billing instead of hiding it. Sweeping first would turn every leak back
@@ -1463,6 +1588,80 @@ jobs:
             echo "::error::The sweep could not delete every VM — they are STILL BILLING. Delete them by hand in ${RG}." >&2
             exit 1
           fi
+
+      # The VMSS counterpart of the sweep above, and the only cleanup that
+      # survives a ctest SIGKILL: the fixture's own teardown deletes tagged
+      # instances, but a killed process runs no destructor, and the per-instance
+      # delete is the only thing that stops an instance billing.
+      #
+      # Deletes instances; never the scale sets. They are operator fixtures that
+      # every future run needs, they cost nothing empty, and re-creating one
+      # needs the network wiring in provision-quorum-manager-fixtures.sh.
+      #
+      # The capacity reset afterwards is belt-and-braces rather than the
+      # correction it was under Uniform. Measured under Flexible: deleting a
+      # member decrements sku.capacity on its own. But a SIGKILL between
+      # provision_node's capacity increment and the member appearing leaves
+      # capacity raised with nothing to delete, and ARM then launches a member
+      # to close the gap -- a leak that starts after the job ends and which no
+      # instance-shaped sweep can see. So capacity is checked even when the set
+      # listed nothing.
+      - name: Sweep VMSS instances that outlived teardown
+        if: always()
+        run: |
+          if ! az account show >/dev/null 2>&1; then
+            echo "Not logged in to Azure (the login step failed or never ran) — nothing to sweep with."
+            exit 0
+          fi
+          RG='${{ vars.AZURE_TEST_RESOURCE_GROUP }}'
+          if [ -z "${RG}" ]; then
+            echo "AZURE_TEST_RESOURCE_GROUP is unset — nothing to sweep."
+            exit 0
+          fi
+          if ! sets=$(az vmss list --resource-group "${RG}" --query '[].name' -o tsv); then
+            echo "::error::The sweep could not list scale sets, so it cleaned nothing. Anything left in ${RG} is still billing — check the portal." >&2
+            exit 1
+          fi
+          rc=0
+          for s in ${sets}; do
+            if ! ids=$(az vmss list-instances --resource-group "${RG}" --name "${s}" \
+                --query '[].instanceId' -o tsv); then
+              echo "::error::The sweep could not list instances of ${s} — anything in it is STILL BILLING." >&2
+              rc=1
+              continue
+            fi
+            if [ -z "${ids}" ]; then
+              echo "sweep: ${s} has no instances."
+            else
+              echo "::warning::Sweeping $(printf '%s\n' "${ids}" | grep -c .) instance(s) of ${s} that outlived teardown — the audit above says which. This stops them billing; it does not make the run green." >&2
+              # Word-splitting on the tsv newlines is intended here.
+              # shellcheck disable=SC2086
+              if ! az vmss delete-instances --resource-group "${RG}" --name "${s}" --instance-ids ${ids}; then
+                echo "::error::The sweep could not delete every instance of ${s} — they are STILL BILLING. Delete them by hand in ${RG}." >&2
+                rc=1
+              fi
+            fi
+            # Capacity, not just instances, and checked even when the set listed
+            # none. A SIGKILL between provision_node's capacity increment and
+            # the instance appearing leaves sku.capacity at 1 with nothing in
+            # the set: no instance to sweep, and ARM launches one to close the
+            # gap the moment it reconciles — a leak that starts *after* the job
+            # ends, which no instance-shaped sweep can see. Deleting instances
+            # produces the same state by itself, since VMSS's per-instance
+            # delete has no capacity-decrement flag (the asymmetry
+            # azure_vmss_quorum_manager::decommission_node documents).
+            if ! cap=$(az vmss show --resource-group "${RG}" --name "${s}" --query 'sku.capacity' -o tsv); then
+              echo "::error::Could not read ${s}'s capacity, so the sweep cannot tell whether it will relaunch an instance. Check it by hand in ${RG}." >&2
+              rc=1
+            elif [ "${cap}" != "0" ]; then
+              echo "::warning::${s} is at capacity ${cap} with the sweep done — returning it to 0 so ARM does not launch a replacement." >&2
+              if ! az vmss scale --resource-group "${RG}" --name "${s}" --new-capacity 0 -o none; then
+                echo "::error::${s} could not be returned to capacity 0; it WILL relaunch an instance. Fix it by hand in ${RG}." >&2
+                rc=1
+              fi
+            fi
+          done
+          exit $rc
 
   gcp:
     name: Real Cloud Tests (GCP)

@@ -85,6 +85,11 @@ The script prints the exact `gh variable set` commands to run — set
 - `AZURE_TEST_RESOURCE_GROUP`, `AZURE_TEST_VNET_ID`, `AZURE_TEST_NSG_ID`,
   `AZURE_TEST_SUBNET_ID_ZONE1`/`2`/`3` (repository variables) —
   `quorum-manager` bundle.
+- `AZURE_TEST_VMSS_NAME`, `AZURE_TEST_VMSS_AUTOMATIC_UPGRADE_NAME`,
+  `AZURE_TEST_VMSS_VM_SIZE`, `AZURE_TEST_PPG_ID`,
+  `AZURE_TEST_AVAILABILITY_SET_ID` (repository variables) — the placement
+  fixtures the `quorum-manager` bundle's seven placement-dependent cases need. See [Placement fixtures](#placement-fixtures-quorum-manager-bundle);
+  the job now **fails closed** if the first two are unset.
 - `AZURE_TEST_KEY_VAULT_URL`, `AZURE_TEST_KEY_VAULT_KEY_NAME` (repository
   variables) and a repository secret holding the CA certificate PEM,
   written to a file the workflow points
@@ -135,6 +140,112 @@ steady state, and each request is a round trip through Microsoft.
 Safe to re-run: a target at or below the current limit is reported and never
 submitted, so running it with no arguments is also how to read the current
 limits.
+
+## Placement fixtures (quorum-manager bundle)
+
+`provision-quorum-manager-fixtures.sh` creates the four placement targets the
+`quorum-manager` bundle needs an operator to have made first: two Virtual
+Machine Scale Sets, a Proximity Placement Group and an Availability Set.
+
+```sh
+scripts/ci-cloud-credentials/azure/provision-quorum-manager-fixtures.sh [--vm-size SIZE] [--dry-run]
+```
+
+**Why the tests cannot create them.** The scale set's model — SKU, image,
+network, zones, spot priority, upgrade policy — is an operator input by
+design, mirroring the AWS spec's launch template/mixed-instances policy being
+out of scope for `aws_asg_quorum_manager_config`. `provision_node` only
+changes `sku.capacity` and tags the instance that appears; it never touches
+the model. So there is no code path that could have created these, and no
+self-correcting failure when they were missing.
+
+**Why this section exists.** Every real-cloud run up to and including
+`36641739288` printed, five times, `Skipping: preflight failed or
+AZURE_TEST_VMSS_NAME unset` followed by `did not check any assertions` — and
+reported the quorum-manager bundle green off the VM cases alone. The variable
+was never passed to the job. The workflow now fails closed instead, so the
+same gap cannot reappear as a silent green.
+
+It is **seven** cases, not five. Making the VMSS cases run (run `36718807855`)
+put their output in front of a reader for the first time, and the same log
+showed `placement_proximity_placement_group` and `placement_availability_set`
+also checking no assertions — in the VM half that everyone, including the
+handoff notes, treated as fully covered. `AZURE_TEST_PPG_ID` and
+`AZURE_TEST_AVAILABILITY_SET_ID` were likewise in no workflow and no repository
+variable. Fixing the visible instance of a fault is how you find out how many
+instances it had.
+
+**What the script creates**, both at capacity 0 in `AZURE_TEST_RESOURCE_GROUP`:
+
+| Resource | Shape | Used by |
+|---|---|---|
+| `kythira-realtest-vmss` | Flexible, `Manual`, capacity 0 | the four VMSS scaling cases |
+| `kythira-realtest-vmss-auto` | Flexible, `Automatic`, capacity 0 | `vmss_rejects_automatic_upgrade_mode`, which asserts the constructor refuses it (Requirement 10.3) |
+| `kythira-realtest-ppg` | Standard PPG | `placement_proximity_placement_group` |
+| `kythira-realtest-avset` | Aligned, 2 fault / 5 update domains | `placement_availability_set` |
+
+The PPG and the availability set are free to hold — neither carries a charge of
+its own, and only the VM a case places in them bills, for the length of that
+case. The availability set must be **Aligned** (managed): an unmanaged set
+cannot hold the managed-disk VMs this manager creates.
+
+Tags go on the PPG and availability set in a **second** `az resource tag` call
+rather than via `--tags` on the create. `az ppg create` parses `--tags` with the
+newer shorthand syntax, which reads the colon in `kythira:fixture` as its own
+separator and fails with `Shorthand Syntax Error: Redundant tail`, while
+`az vmss create` accepts the identical string. Renaming the key to suit one
+command's parser would have been the wrong fix.
+
+Both scale sets are **Flexible** orchestration, and that is a hard requirement
+of `azure_vmss_quorum_manager` rather than a preference. The manager identifies
+each node by a `kythira:node-id` tag written onto the instance, and a **Uniform**
+scale set's members cannot hold tags of their own — they only reflect the scale
+set's, and every write is accepted, reports success, and applies nothing.
+Measured against a real Uniform set: an ARM `PUT`, `az vmss update
+--instance-id --set tags` and `az resource tag` each returned success and left
+the tag absent, still absent 439 seconds later. Provisioning would look like it
+worked and every later `assess_quorum` and `decommission_node` would fail to
+find the node. The manager refuses a Uniform scale set at construction, and this
+script refuses to reuse one, because orchestration mode cannot be changed in
+place — a wrong one has to be deleted and recreated.
+
+`POST .../delete` and `.../deallocate` still work under Flexible; they take the
+member's VM *name* in `instanceIds`, since Flexible has no separate numeric
+instance id. No `--disable-overprovision`: overprovisioning is Uniform-only.
+No load balancer and no public IPs — the tests read the member's private IP off
+its NIC.
+
+**Cost.** Nothing between runs: an empty scale set is free, and only instances
+bill. A run launches one instance per case for a few minutes. The script's
+probe (scale to 1, wait for a running instance with a private IP, scale back to
+0) exists because creating a set at capacity 0 proves nothing about whether
+scaling it works — quota, SKU restrictions and zone capacity are only consulted
+when an instance is actually placed.
+
+**Quota.** Each VMSS case adds one instance of `AZURE_TEST_VMSS_VM_SIZE`
+(2 vCPU at the default `Standard_D2s_v7`) to `Total Regional Cores` usage while
+it runs. The cases are sequential and the VM cases have finished by then, so
+this does not raise the run's peak above what
+[vCPU quota](#vcpu-quota) already covers — but it does mean a run that was
+scraping the ceiling now has one more claimant.
+
+**Teardown.** Three layers, because none of them is sufficient alone: each case
+decommissions its own node; the fixture's teardown deletes *every* instance in
+the scale set and returns it to capacity 0 (a case that dies between the
+capacity increment and the tagging PATCH leaves an untagged instance that the
+next case's `provision_node` would adopt); and the job's `Audit for leaked VMSS
+instances` / `Sweep VMSS instances that outlived teardown` steps cover a ctest
+SIGKILL, which runs no destructor. The audit is separate from the VM one
+because it catches what the VM audit cannot: a scale set left at non-zero
+`sku.capacity` with no member launched yet — a leak that has not started billing
+but will. (Under Flexible a leaked *member* is an ordinary VM, so the VM audit
+sees that one too. This was the other way round under Uniform, whose members are
+invisible to `az vm list` entirely.)
+
+The sweep never deletes the scale sets themselves. They are tagged
+`kythira:fixture=vmss-quorum-manager`, not `kythira:managed-by`, which is what
+distinguishes an operator fixture that must survive from an instance that must
+not.
 
 ## Object-persistence container (cloud key-object persistence spec)
 
