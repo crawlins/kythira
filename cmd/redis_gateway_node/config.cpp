@@ -3,6 +3,10 @@
 
 #include "config.hpp"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
+#include <cstring>
 #include <cstdlib>
 #include <map>
 #include <sstream>
@@ -108,12 +112,36 @@ auto port_of(const std::string& listen) -> std::string {
 
 }  // namespace
 
+auto is_loopback_address(const std::string& address) -> bool {
+    in_addr v4{};
+    if (::inet_pton(AF_INET, address.c_str(), &v4) == 1) {
+        return (ntohl(v4.s_addr) >> 24) == 127;
+    }
+    in6_addr v6{};
+    if (::inet_pton(AF_INET6, address.c_str(), &v6) == 1) {
+        return std::memcmp(&v6, &in6addr_loopback, sizeof(v6)) == 0;
+    }
+    return false;
+}
+
 auto from_env() -> node_options {
     node_options o;
     o._node_id = to_u64("KYTHIRA_NODE_ID", get_required("KYTHIRA_NODE_ID"));
     o._bind_address = get_opt("KYTHIRA_RAFT_BIND", "0.0.0.0");
     o._raft_port = static_cast<std::uint16_t>(
         to_u64("KYTHIRA_RAFT_PORT", get_opt("KYTHIRA_RAFT_PORT", "7000")));
+    // Raft RPC has no TLS here, so anyone who can reach the port can drive
+    // every group. Off loopback that has to be asked for explicitly.
+    o._allow_plaintext_raft =
+        to_bool("KYTHIRA_ALLOW_PLAINTEXT_RAFT", get_opt("KYTHIRA_ALLOW_PLAINTEXT_RAFT", "false"));
+    if (!o._allow_plaintext_raft && !is_loopback_address(o._bind_address)) {
+        throw std::invalid_argument(
+            "redis_gateway_node: refusing to serve plaintext, unauthenticated Raft RPC on "
+            "KYTHIRA_RAFT_BIND=" +
+            o._bind_address +
+            " (set KYTHIRA_RAFT_BIND to a loopback address, or "
+            "KYTHIRA_ALLOW_PLAINTEXT_RAFT=true on a network you trust)");
+    }
     o._peers = parse_id_map("KYTHIRA_PEERS", get_required("KYTHIRA_PEERS"));
     if (!o._peers.contains(o._node_id)) {
         throw std::invalid_argument(
@@ -264,6 +292,8 @@ auto usage() -> std::string {
            "included (required)\n"
            "  KYTHIRA_RAFT_BIND                bind address for Raft RPCs             [0.0.0.0]\n"
            "  KYTHIRA_RAFT_PORT                Raft RPC port                          [7000]\n"
+           "  KYTHIRA_ALLOW_PLAINTEXT_RAFT     allow plaintext Raft RPC off loopback  [false]\n"
+           "                                   (required unless KYTHIRA_RAFT_BIND is loopback)\n"
            "  KYTHIRA_WIRE_SERIALIZER          cbor | json                            [cbor]\n"
            "  KYTHIRA_LOG_LEVEL                trace|debug|info|warning|error|critical [info]\n"
            "  KYTHIRA_SHARD_CUTS               comma-separated initial shard boundaries [none: one "
