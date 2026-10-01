@@ -43,6 +43,10 @@ class Request;
 class Response;
 }
 
+namespace kythira::net_bind {
+template<typename Server> class httplib_listeners;
+}
+
 namespace kythira {
 
 // Default HTTP transport types implementation using folly
@@ -287,10 +291,9 @@ private:
     /// Decoding and encoding both go through the registry, so the server can
     /// answer a peer in a format it did not itself pick.
     serializer_registry_type _registry;
-    std::unique_ptr<httplib::Server> _http_server;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    std::unique_ptr<httplib::SSLServer> _ssl_server;
-#endif
+    /// One httplib server (plain or SSLServer) per address `_bind_address`
+    /// resolves to; see net_bind::httplib_listeners. Built by start().
+    std::unique_ptr<kythira::net_bind::httplib_listeners<httplib::Server>> _listeners;
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
     std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
@@ -306,16 +309,15 @@ private:
     metrics_type _metrics;
     std::atomic<bool> _running{false};
     mutable std::mutex _mutex;
-    std::thread _server_thread;
     std::jthread _auto_reload_thread;
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
 
     // Helper methods
-    auto setup_endpoints() -> void;
-    auto configure_ssl_server() -> void;
+    auto setup_endpoints(httplib::Server& server) -> void;
+    auto make_listener() -> std::unique_ptr<httplib::Server>;
+    auto configure_ssl_server() -> std::unique_ptr<httplib::Server>;
     auto load_server_certificates() -> void;
     auto validate_certificate_files() const -> void;
-    auto active_server() -> httplib::Server*;
 
     template<typename Request, typename Response>
     auto handle_rpc_endpoint(const httplib::Request& http_req, httplib::Response& http_resp,
