@@ -7,6 +7,7 @@
 #include <raft/coap_utils.hpp>
 #include <raft/future_default.hpp>
 #include <httplib.h>
+#include <raft/httplib_listeners.hpp>
 #include <format>
 #include <stdexcept>
 #include <thread>
@@ -1412,7 +1413,7 @@ cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uin
                                               typename Types::metrics_type metrics)
     : _serializer{},
       _registry{},
-      _http_server{},
+      _listeners{std::make_unique<kythira::net_bind::httplib_listeners<httplib::Server>>()},
       _request_vote_handler{},
       _append_entries_handler{},
       _install_snapshot_handler{},
@@ -1433,21 +1434,8 @@ cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uin
             std::format("SSL configuration error during server construction: {}", e.what()));
     }
 
-    // The plain (non-TLS) listener can be constructed immediately; the TLS
-    // listener (httplib::SSLServer) is constructed later, in
-    // configure_ssl_server() (called from start()), since its constructor
-    // itself loads the certificate/key files — the same point where those
-    // files were already validated above.
-    if (!_config.enable_ssl) {
-        _http_server = std::make_unique<httplib::Server>();
-        _http_server->set_payload_max_length(_config.max_request_body_size);
-        _http_server->set_read_timeout(_config.request_timeout.count());
-        _http_server->set_write_timeout(_config.request_timeout.count());
-        // See the client's equivalent. A response is as small and as
-        // latency-bound as the request that provoked it, so setting this on
-        // one side only would leave half the round trip stalled.
-        _http_server->set_tcp_nodelay(_config.tcp_nodelay);
-    }
+    // The listeners themselves (plain or httplib::SSLServer, one per bind
+    // address) are built by start(), via make_listener().
 }
 
 // Server destructor implementation
@@ -1562,11 +1550,8 @@ auto cpp_httplib_server<Types>::load_server_certificates() -> void {
 // use, not a scratch context discarded after validation.
 template<typename Types>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::configure_ssl_server() -> void {
+auto cpp_httplib_server<Types>::configure_ssl_server() -> std::unique_ptr<httplib::Server> {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    if (!_config.enable_ssl) {
-        return;  // SSL not enabled
-    }
 
     if (_config.ssl_cert_path.empty() || _config.ssl_key_path.empty()) {
         throw kythira::ssl_configuration_error(
@@ -1578,15 +1563,15 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> void {
             "Client certificate authentication requires CA certificate path");
     }
 
-    _ssl_server = std::make_unique<httplib::SSLServer>(_config.ssl_cert_path.c_str(),
-                                                       _config.ssl_key_path.c_str());
-    if (!_ssl_server->is_valid()) {
+    auto ssl_server = std::make_unique<httplib::SSLServer>(_config.ssl_cert_path.c_str(),
+                                                           _config.ssl_key_path.c_str());
+    if (!ssl_server->is_valid()) {
         throw kythira::ssl_configuration_error(
             std::format("Failed to initialize SSL server with cert {} / key {}",
                         _config.ssl_cert_path, _config.ssl_key_path));
     }
 
-    SSL_CTX* ctx = _ssl_server->ssl_context();
+    SSL_CTX* ctx = ssl_server->ssl_context();
     configure_ssl_context(ctx, _config.cipher_suites, _config.min_tls_version,
                           _config.max_tls_version);
 
@@ -1598,31 +1583,44 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> void {
         SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
     }
 
-    _ssl_server->set_payload_max_length(_config.max_request_body_size);
-    _ssl_server->set_read_timeout(_config.request_timeout.count());
-    _ssl_server->set_write_timeout(_config.request_timeout.count());
+    ssl_server->set_payload_max_length(_config.max_request_body_size);
+    ssl_server->set_read_timeout(_config.request_timeout.count());
+    ssl_server->set_write_timeout(_config.request_timeout.count());
     // **The site that is easy to miss.** The SSL server is built in a
     // different function from the plain one, so a fix applied to the client
     // and the plain server leaves every TLS deployment on the old behaviour
     // with nothing to indicate it.
-    _ssl_server->set_tcp_nodelay(_config.tcp_nodelay);
+    ssl_server->set_tcp_nodelay(_config.tcp_nodelay);
+    return ssl_server;
 #else
     throw kythira::ssl_configuration_error("SSL support not available (OpenSSL not enabled)");
 #endif
 }
 
-// Returns whichever of _http_server/_ssl_server is actually in use; SSLServer
-// derives from Server, so route registration and listen()/stop() are
-// unaffected by which one is active.
+// Builds one listener: an httplib::SSLServer when enable_ssl, else a plain
+// httplib::Server. SSLServer derives from Server, so route registration and
+// listen()/stop() are unaffected by which one it is. start() calls this once
+// per address the bind address resolves to.
 template<typename Types>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::active_server() -> httplib::Server* {
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+auto cpp_httplib_server<Types>::make_listener() -> std::unique_ptr<httplib::Server> {
     if (_config.enable_ssl) {
-        return static_cast<httplib::Server*>(_ssl_server.get());
+        try {
+            return configure_ssl_server();
+        } catch (const std::exception& e) {
+            throw kythira::ssl_configuration_error(
+                std::format("Failed to configure SSL server: {}", e.what()));
+        }
     }
-#endif
-    return _http_server.get();
+    auto server = std::make_unique<httplib::Server>();
+    server->set_payload_max_length(_config.max_request_body_size);
+    server->set_read_timeout(_config.request_timeout.count());
+    server->set_write_timeout(_config.request_timeout.count());
+    // See the client's equivalent. A response is as small and as
+    // latency-bound as the request that provoked it, so setting this on
+    // one side only would leave half the round trip stalled.
+    server->set_tcp_nodelay(_config.tcp_nodelay);
+    return server;
 }
 
 // Re-reads ssl_cert_path/ssl_key_path/ca_cert_path from disk and applies them
@@ -1633,7 +1631,11 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::reload_tls_material() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    if (!_ssl_server) {
+    std::vector<httplib::SSLServer*> ssl_servers;
+    for (auto* server : _listeners->servers()) {
+        if (auto* ssl = dynamic_cast<httplib::SSLServer*>(server)) ssl_servers.push_back(ssl);
+    }
+    if (ssl_servers.empty()) {
         throw std::logic_error(
             "reload_tls_material() requires enable_ssl and a running SSL server");
     }
@@ -1642,15 +1644,18 @@ auto cpp_httplib_server<Types>::reload_tls_material() -> void {
         validate_certificate_file(_config.ca_cert_path);
     }
 
-    SSL_CTX* ctx = _ssl_server->ssl_context();
-    if (SSL_CTX_use_certificate_chain_file(ctx, _config.ssl_cert_path.c_str()) != 1 ||
-        SSL_CTX_use_PrivateKey_file(ctx, _config.ssl_key_path.c_str(), SSL_FILETYPE_PEM) != 1 ||
-        SSL_CTX_check_private_key(ctx) != 1) {
-        throw kythira::ssl_configuration_error("reload_tls_material: new cert/key rejected");
-    }
-    if (_config.require_client_cert &&
-        SSL_CTX_load_verify_locations(ctx, _config.ca_cert_path.c_str(), nullptr) != 1) {
-        throw kythira::ssl_configuration_error("reload_tls_material: new CA cert rejected");
+    // Every listener (one per bind address) has its own SSL_CTX.
+    for (auto* ssl_server : ssl_servers) {
+        SSL_CTX* ctx = ssl_server->ssl_context();
+        if (SSL_CTX_use_certificate_chain_file(ctx, _config.ssl_cert_path.c_str()) != 1 ||
+            SSL_CTX_use_PrivateKey_file(ctx, _config.ssl_key_path.c_str(), SSL_FILETYPE_PEM) != 1 ||
+            SSL_CTX_check_private_key(ctx) != 1) {
+            throw kythira::ssl_configuration_error("reload_tls_material: new cert/key rejected");
+        }
+        if (_config.require_client_cert &&
+            SSL_CTX_load_verify_locations(ctx, _config.ca_cert_path.c_str(), nullptr) != 1) {
+            throw kythira::ssl_configuration_error("reload_tls_material: new CA cert rejected");
+        }
     }
 #else
     throw kythira::ssl_configuration_error("SSL support not available (OpenSSL not enabled)");
@@ -1969,32 +1974,30 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
 // Setup endpoints
 template<typename Types>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::setup_endpoints() -> void {
-    auto* server = active_server();
-
+auto cpp_httplib_server<Types>::setup_endpoints(httplib::Server& server) -> void {
     // RequestVote endpoint
-    server->Post(endpoint_request_vote,
-                 [this](const httplib::Request& req, httplib::Response& resp) {
-                     this->handle_rpc_endpoint<kythira::request_vote_request<>,
-                                               kythira::request_vote_response<>>(
-                         req, resp, _request_vote_handler);
-                 });
+    server.Post(endpoint_request_vote,
+                [this](const httplib::Request& req, httplib::Response& resp) {
+                    this->handle_rpc_endpoint<kythira::request_vote_request<>,
+                                              kythira::request_vote_response<>>(
+                        req, resp, _request_vote_handler);
+                });
 
     // AppendEntries endpoint
-    server->Post(endpoint_append_entries,
-                 [this](const httplib::Request& req, httplib::Response& resp) {
-                     this->handle_rpc_endpoint<kythira::append_entries_request<>,
-                                               kythira::append_entries_response<>>(
-                         req, resp, _append_entries_handler);
-                 });
+    server.Post(endpoint_append_entries,
+                [this](const httplib::Request& req, httplib::Response& resp) {
+                    this->handle_rpc_endpoint<kythira::append_entries_request<>,
+                                              kythira::append_entries_response<>>(
+                        req, resp, _append_entries_handler);
+                });
 
     // InstallSnapshot endpoint
-    server->Post(endpoint_install_snapshot,
-                 [this](const httplib::Request& req, httplib::Response& resp) {
-                     this->handle_rpc_endpoint<kythira::install_snapshot_request<>,
-                                               kythira::install_snapshot_response<>>(
-                         req, resp, _install_snapshot_handler);
-                 });
+    server.Post(endpoint_install_snapshot,
+                [this](const httplib::Request& req, httplib::Response& resp) {
+                    this->handle_rpc_endpoint<kythira::install_snapshot_request<>,
+                                              kythira::install_snapshot_response<>>(
+                        req, resp, _install_snapshot_handler);
+                });
 }
 
 // Start server
@@ -2007,20 +2010,6 @@ auto cpp_httplib_server<Types>::start() -> void {
         return;  // Already running
     }
 
-    // Configure SSL first — it constructs _ssl_server, which setup_endpoints()
-    // (via active_server()) needs to already exist when enable_ssl is true.
-    if (_config.enable_ssl) {
-        try {
-            configure_ssl_server();
-        } catch (const std::exception& e) {
-            throw kythira::ssl_configuration_error(
-                std::format("Failed to configure SSL server: {}", e.what()));
-        }
-    }
-
-    setup_endpoints();
-
-    // Start server in a separate thread
     _running.store(true);
 
     // Emit server started metric
@@ -2029,36 +2018,29 @@ auto cpp_httplib_server<Types>::start() -> void {
     metric.add_one();
     metric.emit();
 
-    // Bind on this thread rather than inside the server thread, so that the
-    // chosen port is known before start() returns. listen() would do both at
-    // once, which makes a _bind_port of 0 useless -- the kernel picks a port and
-    // only the server thread could observe it. It also means a bind failure is
-    // now visible here instead of surfacing as _running silently going false.
-    int selected_port = 0;
-    if (_bind_port == 0) {
-        selected_port = active_server()->bind_to_any_port(_bind_address);
-    } else if (active_server()->bind_to_port(_bind_address, _bind_port)) {
-        selected_port = _bind_port;
-    }
-    if (selected_port <= 0) {
+    // One listener per address the bind address resolves to ("*" is IPv4 and
+    // IPv6; see net_bind::httplib_listeners). Binding happens here rather
+    // than on the server threads, so the chosen port is known before start()
+    // returns (a _bind_port of 0 is otherwise useless) and a bind failure is
+    // visible here instead of surfacing as _running silently going false.
+    std::uint16_t selected_port = 0;
+    try {
+        selected_port = _listeners->bind(
+            _bind_address, _bind_port, [this](httplib::Server& server) { setup_endpoints(server); },
+            "cpp_httplib_server", [this] { return make_listener(); });
+    } catch (const kythira::ssl_configuration_error&) {
         _running.store(false);
-        throw kythira::http_transport_error(
-            std::format("cpp_httplib_server: failed to bind {}:{}", _bind_address, _bind_port));
+        throw;
+    } catch (const std::exception& e) {
+        _running.store(false);
+        throw kythira::http_transport_error(std::format(
+            "cpp_httplib_server: failed to bind {}:{}: {}", _bind_address, _bind_port, e.what()));
     }
-    _bound_port.store(static_cast<std::uint16_t>(selected_port));
+    _bound_port.store(selected_port);
 
-    // Start the server in a separate thread. The socket is already listening at
-    // this point, so connections arriving before the accept loop spins up are
-    // held in the kernel backlog rather than refused.
-    _server_thread = std::thread([this]() {
-        try {
-            if (!active_server()->listen_after_bind()) {
-                _running.store(false);
-            }
-        } catch (const std::exception& e) {
-            _running.store(false);
-        }
-    });
+    // The sockets are already listening, so connections arriving before the
+    // accept loops spin up are held in the kernel backlog, not refused.
+    _listeners->start();
 
     // Give the server a moment to start up
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
@@ -2074,14 +2056,9 @@ auto cpp_httplib_server<Types>::stop() -> void {
         return;  // Already stopped
     }
 
-    // Stop the server
-    active_server()->stop();
+    // Stop every listener and join its thread.
+    _listeners->stop();
     _running.store(false);
-
-    // Wait for server thread to finish
-    if (_server_thread.joinable()) {
-        _server_thread.join();
-    }
 
     // Emit server stopped metric
     auto metric = _metrics;
