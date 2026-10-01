@@ -383,6 +383,34 @@ BOOST_AUTO_TEST_CASE(test_hosts_file_ipv6_zone, *boost::unit_test::timeout(5)) {
     BOOST_TEST(!kythira::tcp_detail::parse_hosts_address("fe80::1%no-such-if").has_value());
 }
 
+// "*" is both wildcards, two sockets, so dual-stack never depends on the
+// net.ipv6.bindv6only sysctl.
+BOOST_AUTO_TEST_CASE(test_star_binds_both_wildcards, *boost::unit_test::timeout(5)) {
+    auto eps = kythira::tcp_detail::resolve_bind_addresses("*", "test");
+    BOOST_REQUIRE_EQUAL(eps.size(), 2U);
+    BOOST_TEST(endpoint_text(eps[0]) == "0.0.0.0");
+    BOOST_TEST(endpoint_text(eps[1]) == "::");
+}
+
+// With port 0, every listener shares the one ephemeral port the kernel
+// picked for the first.
+BOOST_AUTO_TEST_CASE(test_ephemeral_port_shared_across_listeners, *boost::unit_test::timeout(5)) {
+    std::vector<kythira::tcp_detail::bind_endpoint> eps{v4_endpoint("127.0.0.1"),
+                                                        v4_endpoint("127.0.0.2")};
+    auto fds = kythira::tcp_detail::open_listeners(eps, 0, "test");
+    BOOST_REQUIRE_EQUAL(fds.size(), 2U);
+    std::uint16_t ports[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        sockaddr_in a{};
+        socklen_t len = sizeof(a);
+        BOOST_REQUIRE_EQUAL(::getsockname(fds[i], reinterpret_cast<sockaddr*>(&a), &len), 0);
+        ports[i] = ntohs(a.sin_port);
+        ::close(fds[i]);
+    }
+    BOOST_TEST(ports[0] != 0);
+    BOOST_TEST(ports[0] == ports[1]);
+}
+
 BOOST_AUTO_TEST_CASE(test_loopback_bind_address_classification, *boost::unit_test::timeout(5)) {
     using kythira::tcp_detail::is_loopback_bind_address;
     BOOST_TEST(is_loopback_bind_address("127.0.0.1"));
@@ -391,6 +419,7 @@ BOOST_AUTO_TEST_CASE(test_loopback_bind_address_classification, *boost::unit_tes
     BOOST_TEST(is_loopback_bind_address("localhost"));
     BOOST_TEST(!is_loopback_bind_address("0.0.0.0"));
     BOOST_TEST(!is_loopback_bind_address("::"));
+    BOOST_TEST(!is_loopback_bind_address("*"));
     BOOST_TEST(!is_loopback_bind_address("10.1.2.3"));
     BOOST_TEST(!is_loopback_bind_address("::ffff:127.0.0.1"));
     BOOST_TEST(!is_loopback_bind_address("kythira-test.invalid"));
