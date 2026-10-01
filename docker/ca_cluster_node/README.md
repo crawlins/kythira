@@ -43,10 +43,36 @@ becomes unrecoverable), and — if RPC TLS is enabled, see below —
 Separate from the client-facing HTTPS listener's own TLS
 (`--tls-cert`/`--tls-key`, fingerprint-pinned per the section below),
 `ca_cluster_node` also supports mutual TLS on the Raft-internal RPC channel
-between the three cluster peers themselves. This is optional
-(`--rpc-tls-cert`/`--rpc-tls-key`; omitting both falls back to plain,
-unauthenticated TCP with a startup warning) but recommended outside a fully
-trusted network boundary.
+between the three cluster peers themselves (`--rpc-tls-cert`/`--rpc-tls-key`).
+It is required unless you opt out explicitly.
+
+**Plaintext Raft RPC is opt-in.** Anyone who can reach a plaintext Raft port
+can send `AppendEntries` or `InstallSnapshot` and so rewrite the CA's
+replicated state. A node with neither the RPC TLS flags nor a persisted peer
+certificate under `--data-dir` therefore refuses to start, unless one of these
+holds:
+
+- `--rpc-address` is loopback (`127.0.0.0/8`, `::1`, or a name such as
+  `localhost` that `/etc/hosts` maps only to those), for single-host development and
+  tests. The RPC listener then binds loopback only.
+- `--allow-plaintext-rpc` is given, or `CA_CLUSTER_ALLOW_PLAINTEXT_RPC=1` is
+  set, for a network you trust end to end.
+
+Either way the node logs a warning that its Raft RPC is plaintext.
+`--rpc-address` (default `0.0.0.0`) now selects what the RPC listener binds,
+plaintext or TLS. It takes an IPv4 or IPv6 address, or a host name. A name is
+looked up once at startup in `/etc/hosts` only, never in DNS, so a resolver
+can't influence what the node listens on. The listener binds every address
+the name is listed under (so `localhost` usually covers both `127.0.0.1` and
+`::1`; if `/etc/hosts` doesn't list `localhost`, those two are used). Every
+one of those addresses must belong to this host, loopback or an interface
+address. A name missing from `/etc/hosts`, or listed with another host's
+address, stops the node at startup.
+
+**Upgrading a plaintext cluster:** a node that ran plaintext across hosts on
+an earlier release will exit at startup on this one. Either provision the RPC
+bootstrap credential below, or add `--allow-plaintext-rpc` to keep the
+previous behaviour.
 
 **Two-phase bootstrap, entirely automatic after initial setup:**
 
