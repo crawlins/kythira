@@ -530,33 +530,95 @@ public:
         return ca_state_machine_detail::bytes_from_json(obj);
     }
 
+    /// Replaces this state with a snapshot's contents.
+    ///
+    /// Snapshot bytes arrive over Raft RPC (InstallSnapshot) and are treated
+    /// as untrusted input: they bypass every check apply() performs (notably
+    /// the "already_bootstrapped" guard), so restoring them blindly let
+    /// whoever could deliver an InstallSnapshot swap the cluster's root
+    /// certificate (which /v1/root-ca serves and RPC TLS trusts), replace the
+    /// encrypted CA key (crashing every future leader), or erase revocations.
+    /// That is the same shape as the OpenBao/Vault snapshot-restore RCE
+    /// (GHSA-j6wc-jpvg-xfxq): restored state trusted as if it had been
+    /// validated when first written.
+    ///
+    /// Once this replica is bootstrapped, a snapshot is accepted only if it
+    /// is a legitimate successor of the current state — the replicated log
+    /// can never produce anything else:
+    ///   - same root certificate and encrypted key, still bootstrapped;
+    ///   - every current ledger entry still present with the same
+    ///     certificate, and no revocation cleared;
+    ///   - every recorded rpc_tls_ready node still recorded.
+    /// Anything else throws std::invalid_argument WITHOUT modifying state
+    /// (node<Types> restores before touching its log, so the rejection
+    /// leaves the replica exactly as it was). A fresh, unbootstrapped replica
+    /// accepts any well-formed snapshot — it has nothing to compare against.
     auto restore_from_snapshot(const std::vector<std::byte>& snapshot, log_index_t index) -> void {
-        _last_applied_index = index;
-        if (snapshot.empty()) {
-            _bootstrapped = false;
-            _encrypted_ca_key_pem.clear();
-            _root_cert_pem.clear();
-            _ledger.clear();
-            _rpc_tls_ready.clear();
-            return;
-        }
-        auto obj = ca_state_machine_detail::json_from_bytes(snapshot).as_object();
-        _bootstrapped = obj.at("bootstrapped").as_bool();
-        _encrypted_ca_key_pem = std::string(obj.at("encrypted_ca_key_pem").as_string());
-        _root_cert_pem = std::string(obj.at("root_cert_pem").as_string());
-        _ledger.clear();
-        for (const auto& v : obj.at("ledger").as_array()) {
-            _ledger.push_back(ca_state_machine_detail::json_to_ledger_entry(v.as_object()));
-        }
-        _rpc_tls_ready.clear();
-        // Snapshots taken before this field existed (older log entries)
-        // simply have no "rpc_tls_ready" key — treat that as an empty set
-        // rather than throwing, so restoring an old snapshot doesn't crash.
-        if (auto* v = obj.if_contains("rpc_tls_ready")) {
-            for (const auto& e : v->as_array()) {
-                _rpc_tls_ready.insert(e.to_number<std::uint64_t>());
+        bool bootstrapped = false;
+        std::string encrypted_ca_key_pem;
+        std::string root_cert_pem;
+        std::vector<ca_ledger_entry> ledger;
+        std::set<std::uint64_t> rpc_tls_ready;
+
+        if (!snapshot.empty()) {
+            auto obj = ca_state_machine_detail::json_from_bytes(snapshot).as_object();
+            bootstrapped = obj.at("bootstrapped").as_bool();
+            encrypted_ca_key_pem = std::string(obj.at("encrypted_ca_key_pem").as_string());
+            root_cert_pem = std::string(obj.at("root_cert_pem").as_string());
+            for (const auto& v : obj.at("ledger").as_array()) {
+                ledger.push_back(ca_state_machine_detail::json_to_ledger_entry(v.as_object()));
+            }
+            // Snapshots taken before this field existed (older log entries)
+            // simply have no "rpc_tls_ready" key — treat that as an empty set
+            // rather than throwing, so restoring an old snapshot doesn't crash.
+            if (auto* v = obj.if_contains("rpc_tls_ready")) {
+                for (const auto& e : v->as_array()) {
+                    rpc_tls_ready.insert(e.to_number<std::uint64_t>());
+                }
             }
         }
+
+        if (_bootstrapped) {
+            auto reject = [](const std::string& why) {
+                throw std::invalid_argument("ca_state_machine: refusing snapshot: " + why);
+            };
+            if (!bootstrapped) {
+                reject("it would un-bootstrap an already-bootstrapped CA");
+            }
+            if (root_cert_pem != _root_cert_pem) {
+                reject("it replaces the root certificate");
+            }
+            if (encrypted_ca_key_pem != _encrypted_ca_key_pem) {
+                reject("it replaces the encrypted CA key");
+            }
+            for (const auto& current : _ledger) {
+                auto it = std::find_if(ledger.begin(), ledger.end(), [&](const ca_ledger_entry& e) {
+                    return e.serial == current.serial;
+                });
+                if (it == ledger.end()) {
+                    reject("it drops issued serial " + std::to_string(current.serial));
+                }
+                if (it->certificate_pem != current.certificate_pem) {
+                    reject("it alters the certificate for serial " +
+                           std::to_string(current.serial));
+                }
+                if (current.revoked_at.has_value() && !it->revoked_at.has_value()) {
+                    reject("it un-revokes serial " + std::to_string(current.serial));
+                }
+            }
+            for (auto id : _rpc_tls_ready) {
+                if (!rpc_tls_ready.contains(id)) {
+                    reject("it drops rpc_tls_ready for node " + std::to_string(id));
+                }
+            }
+        }
+
+        _last_applied_index = index;
+        _bootstrapped = bootstrapped;
+        _encrypted_ca_key_pem = std::move(encrypted_ca_key_pem);
+        _root_cert_pem = std::move(root_cert_pem);
+        _ledger = std::move(ledger);
+        _rpc_tls_ready = std::move(rpc_tls_ready);
     }
 
     // Not part of the state_machine concept; used by ca_cluster_node's HTTP layer.
