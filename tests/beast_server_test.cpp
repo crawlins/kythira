@@ -12,6 +12,10 @@
 
 #include "beast_test_thread_pool.hpp"
 
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -276,6 +280,81 @@ BOOST_AUTO_TEST_CASE(server_reload_tls_material) {
     // actually exercises reload()'s own validation failure path.
     std::filesystem::remove(tls.cert_path);
     BOOST_CHECK_THROW(tls_server.reload_tls_material(), std::exception);
+}
+
+namespace {
+
+auto ipv6_loopback_available() -> bool {
+    int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return false;
+    }
+    sockaddr_in6 a{};
+    a.sin6_family = AF_INET6;
+    a.sin6_addr = in6addr_loopback;
+    bool ok = ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0;
+    ::close(fd);
+    return ok;
+}
+
+auto vote_via(boost::asio::io_context& ioc, const std::string& url) -> bool {
+    std::unordered_map<std::uint64_t, std::string> node_map{{test_node_id, url}};
+    kythira::boost_beast_client<test_transport_types> client(ioc, node_map, {},
+                                                             kythira::noop_metrics{});
+    kythira::request_vote_request<> req{};
+    req._term = 3;
+    return std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(5000)))
+        .get()
+        .vote_granted();
+}
+
+}  // namespace
+
+// A host name binds every address /etc/hosts lists it under, and the client
+// tries every address a peer name resolves to, so a server and peer both
+// named "localhost" meet whichever of 127.0.0.1 and ::1 each side lists
+// first.
+BOOST_AUTO_TEST_CASE(server_localhost_bind_round_trip) {
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+    auto port = static_cast<std::uint16_t>(test_bind_port_base + 5);
+    kythira::boost_beast_server<test_transport_types> server(ioc, "localhost", port, {},
+                                                             kythira::noop_metrics{});
+    register_echo_handlers(server);
+    server.start();
+    BOOST_TEST(vote_via(ioc, "http://localhost:" + std::to_string(port)));
+    BOOST_TEST(vote_via(ioc, "http://127.0.0.1:" + std::to_string(port)));
+    server.stop();
+}
+
+// "*" listens on both wildcards with separate sockets, so IPv4 and IPv6
+// clients both reach it whatever net.ipv6.bindv6only says.
+BOOST_AUTO_TEST_CASE(server_star_bind_serves_both_families) {
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+    auto port = static_cast<std::uint16_t>(test_bind_port_base + 6);
+    kythira::boost_beast_server<test_transport_types> server(ioc, "*", port, {},
+                                                             kythira::noop_metrics{});
+    register_echo_handlers(server);
+    server.start();
+    BOOST_TEST(vote_via(ioc, "http://127.0.0.1:" + std::to_string(port)));
+    if (ipv6_loopback_available()) {
+        BOOST_TEST(vote_via(ioc, "http://[::1]:" + std::to_string(port)));
+    } else {
+        BOOST_TEST_MESSAGE("no IPv6 loopback on this host; [::1] leg skipped");
+    }
+    server.stop();
+}
+
+// A bind name that /etc/hosts doesn't list is refused at start(), not
+// looked up in DNS.
+BOOST_AUTO_TEST_CASE(server_refuses_unlisted_bind_name) {
+    boost::asio::io_context ioc;
+    kythira::boost_beast_server<test_transport_types> server(
+        ioc, "kythira-test.invalid", static_cast<std::uint16_t>(test_bind_port_base + 7), {},
+        kythira::noop_metrics{});
+    BOOST_CHECK_THROW(server.start(), std::invalid_argument);
+    BOOST_TEST(!server.is_running());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
