@@ -338,6 +338,93 @@ auto random_suffix() -> std::string {
     return false;
 }
 
+/// Lists every instance ID currently in `scale_set_name`, or an empty vector if
+/// the scale set is absent or the call fails.
+///
+/// Deliberately assertion-free, unlike `find_vmss_instance_id`: this is called
+/// from the fixture's `noexcept` teardown, where a `BOOST_REQUIRE` failure
+/// would abandon the sweep it is part of.
+[[nodiscard]] auto vmss_instance_ids(Azure::Core::Http::_internal::HttpPipeline& pipeline,
+                                     const kythira::azure_client_config& azure,
+                                     const std::string& scale_set_name)
+    -> std::vector<std::string> {
+    std::vector<std::string> ids;
+    try {
+        Azure::Core::Url url(arm_base_url(azure) +
+                             "/providers/Microsoft.Compute/virtualMachineScaleSets/" +
+                             scale_set_name + "/virtualMachines?api-version=2024-07-01");
+        Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get, url);
+        Azure::Core::Context context;
+        auto response = pipeline.Send(request, context);
+        if (static_cast<int>(response->GetStatusCode()) / 100 != 2) {
+            return ids;
+        }
+        const auto& body = response->GetBody();
+        auto parsed = boost::json::parse(std::string(body.begin(), body.end()));
+        for (const auto& inst : parsed.at("value").as_array()) {
+            if (inst.is_object() && inst.as_object().contains("instanceId")) {
+                ids.emplace_back(inst.at("instanceId").as_string());
+            }
+        }
+    } catch (const std::exception&) {
+        // An unreadable list is reported by returning nothing; the workflow's
+        // own VMSS audit is the backstop that fails the run.
+    }
+    return ids;
+}
+
+/// Deletes `instance_ids` from `scale_set_name` and returns the scale set to
+/// capacity 0. Returns false if either half failed.
+///
+/// Both halves are needed. VMSS's per-instance delete has no
+/// capacity-decrement flag -- the same asymmetry `azure_vmss_quorum_manager::
+/// decommission_node` documents -- so deleting an instance leaves `sku.capacity`
+/// counting an empty slot. Left that way, the next case's `provision_node`
+/// increments from a capacity that is already too high, and ARM may reconcile
+/// the gap by launching an instance nothing is waiting for.
+[[nodiscard]] auto vmss_delete_instances_and_reset(
+    Azure::Core::Http::_internal::HttpPipeline& pipeline, const kythira::azure_client_config& azure,
+    const std::string& scale_set_name, const std::vector<std::string>& instance_ids) -> bool {
+    bool ok = true;
+    try {
+        boost::json::array arr;
+        for (const auto& id : instance_ids) {
+            arr.emplace_back(id);
+        }
+        boost::json::object body;
+        body["instanceIds"] = std::move(arr);
+        std::string serialized = boost::json::serialize(body);
+        Azure::Core::IO::MemoryBodyStream stream(
+            reinterpret_cast<const std::uint8_t*>(serialized.data()), serialized.size());
+        Azure::Core::Url url(arm_base_url(azure) +
+                             "/providers/Microsoft.Compute/virtualMachineScaleSets/" +
+                             scale_set_name + "/delete?api-version=2024-07-01");
+        Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Post, url, &stream);
+        request.SetHeader("Content-Type", "application/json");
+        Azure::Core::Context context;
+        auto response = pipeline.Send(request, context);
+        ok = static_cast<int>(response->GetStatusCode()) / 100 == 2;
+    } catch (const std::exception&) {
+        ok = false;
+    }
+    try {
+        std::string serialized = R"({"sku":{"capacity":0}})";
+        Azure::Core::IO::MemoryBodyStream stream(
+            reinterpret_cast<const std::uint8_t*>(serialized.data()), serialized.size());
+        Azure::Core::Url url(arm_base_url(azure) +
+                             "/providers/Microsoft.Compute/virtualMachineScaleSets/" +
+                             scale_set_name + "?api-version=2024-07-01");
+        Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Patch, url, &stream);
+        request.SetHeader("Content-Type", "application/json");
+        Azure::Core::Context context;
+        auto response = pipeline.Send(request, context);
+        ok = ok && static_cast<int>(response->GetStatusCode()) / 100 == 2;
+    } catch (const std::exception&) {
+        ok = false;
+    }
+    return ok;
+}
+
 /// RAII fixture: sets up a VNet/3 zonal subnets/NSG for one test run (unless
 /// env-var overrides point at pre-existing ones), tears everything it created
 /// down unconditionally on destruction (best-effort, errors to stderr),
@@ -472,6 +559,30 @@ public:
                               << vm_name << " — delete it manually\n";
                 }
             }
+            // The scale set cannot be swept by cluster tag the way VMs are: a
+            // case that dies between the capacity increment and the tagging
+            // PATCH leaves an instance carrying no `kythira:` tag at all, and
+            // that is precisely the instance the *next* case's provision_node
+            // would adopt as its own — it selects the first running untagged
+            // instance. So everything in the scale set goes, which is correct
+            // because the set is at capacity 0 between cases by construction.
+            //
+            // Unconditional rather than confined to the VMSS cases: the fixture
+            // is shared with the VM suite, and one list call per case is a
+            // cheap price for not depending on which case leaked.
+            if (auto scale_set = env_opt("AZURE_TEST_VMSS_NAME")) {
+                auto ids = vmss_instance_ids(pipeline, azure, *scale_set);
+                if (!ids.empty()) {
+                    std::cerr << "[azure_quorum_manager_real_test] teardown: deleting "
+                              << ids.size() << " leaked instance(s) from scale set " << *scale_set
+                              << " (cluster " << cluster_name << ")\n";
+                    if (!vmss_delete_instances_and_reset(pipeline, azure, *scale_set, ids)) {
+                        std::cerr << "[azure_quorum_manager_real_test] teardown: FAILED to clear "
+                                  << *scale_set << " — delete its instances and return it to "
+                                  << "capacity 0 manually\n";
+                    }
+                }
+            }
         } catch (const std::exception& ex) {
             std::cerr << "[azure_quorum_manager_real_test] teardown sweep failed: " << ex.what()
                       << "\n";
@@ -552,11 +663,31 @@ class escalating_vm_manager {
 public:
     using manager_type = kythira::azure_vm_quorum_manager<>;
 
+    /// Which rungs of the ladder this manager is allowed to use.
+    ///
+    /// `on_demand_only` is not a preference, it is a placement constraint:
+    /// Azure refuses a Spot VM in an Availability Set outright, with
+    /// `OperationNotAllowed: Azure Spot Virtual Machine is not supported in
+    /// Availability Set`. That is a 409 and not a capacity or quota refusal,
+    /// so `escalate_launch` rethrows it instead of walking to the on-demand
+    /// rung, and the case fails on the first attempt. Measured in run
+    /// 36732744311. An `az vm create --validate` of the same combination
+    /// passes, so template validation does not catch it -- the constraint is
+    /// enforced at placement.
+    enum class ladder_filter {
+        any,
+        spot_only,
+        on_demand_only
+    };
+
     escalating_vm_manager(kythira::azure_vm_quorum_manager_config cfg,
-                          std::vector<azure_vm_option> ladder, bool spot_only = false)
+                          std::vector<azure_vm_option> ladder,
+                          ladder_filter filter = ladder_filter::any)
         : _cfg(std::move(cfg)), _ladder(std::move(ladder)) {
-        if (spot_only) {
+        if (filter == ladder_filter::spot_only) {
             std::erase_if(_ladder, [](const azure_vm_option& o) { return !o.spot; });
+        } else if (filter == ladder_filter::on_demand_only) {
+            std::erase_if(_ladder, [](const azure_vm_option& o) { return o.spot; });
         }
         BOOST_REQUIRE_MESSAGE(!_ladder.empty(), "launch ladder is empty");
         rebuild();
@@ -714,13 +845,20 @@ void external_arm_post_action(const kythira::azure_client_config& azure, const s
 /// `kythira:node-id = node_id`, returning its VMSS-local instance ID.
 /// Duplicates `azure_vmss_quorum_manager::find_instance`'s tag-scan (private,
 /// not reusable from here) scoped to a single already-known scale set.
+///
+/// Reads the resource group's VM list rather than the scale set's own instance
+/// list: under Flexible orchestration a scale-set member is an ordinary
+/// `Microsoft.Compute/virtualMachines` resource and only that list carries
+/// `tags`. The scale set's `/virtualMachines` collection answers with bare
+/// `{id, instanceId, name, location}` entries. Membership comes from the VM's
+/// `properties.virtualMachineScaleSet.id` back-reference, and the returned id
+/// is the VM's name, which is what `instanceIds` takes under Flexible.
 [[nodiscard]] auto find_vmss_instance_id(const kythira::azure_client_config& azure,
                                          const std::string& scale_set_name, std::uint64_t node_id)
     -> std::optional<std::string> {
     auto pipeline = make_test_arm_pipeline(azure);
     Azure::Core::Url url(arm_base_url(azure) +
-                         "/providers/Microsoft.Compute/virtualMachineScaleSets/" + scale_set_name +
-                         "/virtualMachines?api-version=2024-07-01");
+                         "/providers/Microsoft.Compute/virtualMachines?api-version=2024-07-01");
     Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get, url);
     Azure::Core::Context context;
     auto response = pipeline.Send(request, context);
@@ -728,18 +866,77 @@ void external_arm_post_action(const kythira::azure_client_config& azure, const s
     const auto& body = response->GetBody();
     auto parsed = boost::json::parse(std::string(body.begin(), body.end()));
     std::string target = std::to_string(node_id);
-    for (const auto& inst : parsed.at("value").as_array()) {
-        if (!inst.is_object() || !inst.as_object().contains("tags")) {
+    for (const auto& vm : parsed.at("value").as_array()) {
+        if (!vm.is_object() || !vm.as_object().contains("name")) {
             continue;
         }
-        const auto& tags = inst.at("tags");
+        std::string owner;
+        try {
+            owner =
+                std::string(vm.at("properties").at("virtualMachineScaleSet").at("id").as_string());
+        } catch (const std::exception&) {
+            continue;
+        }
+        if (owner.size() < scale_set_name.size() + 1 ||
+            owner.compare(owner.size() - scale_set_name.size(), scale_set_name.size(),
+                          scale_set_name) != 0) {
+            continue;
+        }
+        const auto& tags = vm.at("tags");
         if (tags.is_object() && tags.as_object().contains("kythira:node-id") &&
-            std::string(tags.at("kythira:node-id").as_string()) == target &&
-            inst.as_object().contains("instanceId")) {
-            return std::string(inst.at("instanceId").as_string());
+            std::string(tags.at("kythira:node-id").as_string()) == target) {
+            return std::string(vm.at("name").as_string());
         }
     }
     return std::nullopt;
+}
+
+/// Blocks until `vm_name` stops reporting `PowerState/running`, or `timeout`
+/// elapses. Returns whether it left the running state.
+///
+/// `POST .../deallocate` returns as soon as ARM accepts the request, not when
+/// the member has stopped, so asserting on power state straight afterwards is a
+/// race the test loses more often than not -- `vmss_assess_detects_not_running`
+/// read `live_node_count == 1` for exactly that reason the first time it ran
+/// (run 36749754552). This waits on the condition the case is about to assert
+/// rather than sleeping a guessed interval, so it costs only as long as Azure
+/// actually takes and still fails if the deallocate never lands.
+[[nodiscard]] auto wait_until_not_running(const kythira::azure_client_config& azure,
+                                          const std::string& vm_name, std::chrono::seconds timeout)
+    -> bool {
+    auto pipeline = make_test_arm_pipeline(azure);
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        bool running = false;
+        try {
+            Azure::Core::Url url(arm_base_url(azure) +
+                                 "/providers/Microsoft.Compute/virtualMachines/" + vm_name +
+                                 "?$expand=instanceView&api-version=2024-07-01");
+            Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get, url);
+            Azure::Core::Context context;
+            auto response = pipeline.Send(request, context);
+            const auto& body = response->GetBody();
+            auto parsed = boost::json::parse(std::string(body.begin(), body.end()));
+            for (const auto& st :
+                 parsed.at("properties").at("instanceView").at("statuses").as_array()) {
+                if (st.is_object() && st.as_object().contains("code") &&
+                    st.at("code").as_string() == "PowerState/running") {
+                    running = true;
+                    break;
+                }
+            }
+        } catch (const std::exception&) {
+            // A read failure is not evidence either way; keep waiting.
+            running = true;
+        }
+        if (!running) {
+            return true;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds{5});
+    }
 }
 
 /// External deallocate for one VMSS instance, mirroring
@@ -987,7 +1184,11 @@ BOOST_FIXTURE_TEST_CASE(placement_availability_set, AzureIntegrationFixture,
     auto cfg = vm_config(1);
     cfg.placement_by_group["1"] = {.kind = kythira::azure_placement_kind::availability_set,
                                    .resource_id = *avset_id};
-    escalating_vm_manager mgr{cfg, launch_ladder(azure)};
+    // On-demand rungs only: Azure rejects a Spot VM in an Availability Set, and
+    // that rejection is not the capacity/quota shape escalate_launch walks past.
+    // See ladder_filter.
+    escalating_vm_manager mgr{cfg, launch_ladder(azure),
+                              escalating_vm_manager::ladder_filter::on_demand_only};
 
     auto peer = mgr.provision("1");
     cost.resources.push_back({.label = "VM (Availability Set, " + mgr.option().label() + ")",
@@ -1014,7 +1215,8 @@ BOOST_FIXTURE_TEST_CASE(spot_provision_and_decommission, AzureIntegrationFixture
     // spot_only: this case exists to assert spot VMs specifically work, so it
     // must never silently succeed by falling through to the on-demand rung the
     // way the other cases legitimately may.
-    escalating_vm_manager mgr{vm_config(1), launch_ladder(azure), /*spot_only=*/true};
+    escalating_vm_manager mgr{vm_config(1), launch_ladder(azure),
+                              escalating_vm_manager::ladder_filter::spot_only};
 
     auto peer = mgr.provision("1");
     BOOST_CHECK_MESSAGE(mgr.option().spot, "spot_only ladder yielded an on-demand rung");
@@ -1097,10 +1299,26 @@ BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationF
 
 BOOST_AUTO_TEST_SUITE_END()
 
+namespace {
+
+/// Hourly rate for one instance of the scale set under test.
+///
+/// The size is the operator's, set on the scale set's model at creation time
+/// and invisible to this binary without an extra ARM call, so it is passed in
+/// alongside the scale-set name. The literal this replaced said
+/// `Standard_D2s_v5` while the scale set provision-vmss.sh creates runs
+/// `Standard_D2s_v7` -- a cost report naming a different VM's price is worse
+/// than none, because it reads like a measurement.
+[[nodiscard]] auto vmss_instance_hourly_rate() -> double {
+    return azure_vm_hourly_rate(env_or("AZURE_TEST_VMSS_VM_SIZE", "Standard_D2s_v5"));
+}
+
+}  // namespace
+
 BOOST_AUTO_TEST_SUITE(azure_vmss_quorum_manager_real)
 
 BOOST_FIXTURE_TEST_CASE(vmss_provision_increments_capacity, AzureIntegrationFixture,
-                        *boost::unit_test::timeout(900)) {
+                        *boost::unit_test::timeout(1200)) {
     if (!preflight_ok || vmss_config().scale_set_by_group.empty()) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed or AZURE_TEST_VMSS_NAME unset (see stderr)");
         return;
@@ -1110,7 +1328,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_provision_increments_capacity, AzureIntegrationFixt
 
     auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
     cost.resources.push_back(
-        {.label = "VMSS instance", .hourly_rate = azure_vm_hourly_rate("Standard_D2s_v5")});
+        {.label = "VMSS instance", .hourly_rate = vmss_instance_hourly_rate()});
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
     auto health = std::move(mgr.assess_quorum(cluster)).get();
@@ -1124,7 +1342,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_provision_increments_capacity, AzureIntegrationFixt
 }
 
 BOOST_FIXTURE_TEST_CASE(vmss_assess_detects_not_running, AzureIntegrationFixture,
-                        *boost::unit_test::timeout(900)) {
+                        *boost::unit_test::timeout(1500)) {
     auto scale_set = env_opt("AZURE_TEST_VMSS_NAME");
     if (!preflight_ok || !scale_set) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed or AZURE_TEST_VMSS_NAME unset (see stderr)");
@@ -1135,12 +1353,16 @@ BOOST_FIXTURE_TEST_CASE(vmss_assess_detects_not_running, AzureIntegrationFixture
 
     auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
     cost.resources.push_back(
-        {.label = "VMSS instance", .hourly_rate = azure_vm_hourly_rate("Standard_D2s_v5")});
+        {.label = "VMSS instance", .hourly_rate = vmss_instance_hourly_rate()});
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
 
     auto instance_id = find_vmss_instance_id(azure, *scale_set, peer.node_id);
     BOOST_REQUIRE(instance_id.has_value());
     external_vmss_deallocate(azure, *scale_set, *instance_id);
+    BOOST_REQUIRE_MESSAGE(wait_until_not_running(azure, *instance_id, std::chrono::seconds{300}),
+                          "member " << *instance_id
+                                    << " was still PowerState/running 300s after deallocate; the "
+                                       "external deallocate, not assess_quorum, is what failed");
 
     auto health = std::move(mgr.assess_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 0u);
@@ -1153,7 +1375,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_assess_detects_not_running, AzureIntegrationFixture
 }
 
 BOOST_FIXTURE_TEST_CASE(vmss_decommission_removes_instance, AzureIntegrationFixture,
-                        *boost::unit_test::timeout(900)) {
+                        *boost::unit_test::timeout(1200)) {
     auto scale_set = env_opt("AZURE_TEST_VMSS_NAME");
     if (!preflight_ok || !scale_set) {
         BOOST_TEST_MESSAGE("Skipping: preflight failed or AZURE_TEST_VMSS_NAME unset (see stderr)");
@@ -1164,7 +1386,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_decommission_removes_instance, AzureIntegrationFixt
 
     auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
     cost.resources.push_back(
-        {.label = "VMSS instance", .hourly_rate = azure_vm_hourly_rate("Standard_D2s_v5")});
+        {.label = "VMSS instance", .hourly_rate = vmss_instance_hourly_rate()});
 
     BOOST_REQUIRE(find_vmss_instance_id(azure, *scale_set, peer.node_id).has_value());
 

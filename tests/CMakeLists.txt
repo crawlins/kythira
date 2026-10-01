@@ -5168,7 +5168,7 @@ if(KYTHIRA_AZURE_REAL_TESTS)
     set_tests_properties(azure_quorum_manager_real_test PROPERTIES
         # Derived, the way aws_quorum_manager_real_ec2_test's is: the sum of
         # every case's own boost::unit_test::timeout plus fixture overhead.
-        # The 15 cases declare 11700s between them (195 min); 12600s adds 15
+        # The 15 cases declare 12900s between them (215 min); 13800s adds 15
         # min for binary start, preflight and per-case fixture setup/teardown
         # (measured at 46s from process start to the first case's output on run
         # 36426191450). It sits inside the azure job's timeout-minutes: 360,
@@ -5196,7 +5196,7 @@ if(KYTHIRA_AZURE_REAL_TESTS)
         # but cannot cover SIGKILL. One slow case can now fail alone instead of
         # taking the whole binary, and the leak needs a case to outrun its own
         # bound rather than merely to be slow.
-        TIMEOUT 12600
+        TIMEOUT 13800
         LABELS "integration;azure;real-azure;slow"
     )
 endif()
