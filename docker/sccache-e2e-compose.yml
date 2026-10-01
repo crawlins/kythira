@@ -39,6 +39,9 @@ x-gateway: &gateway
 x-gateway-env: &gateway-env
   KYTHIRA_PEERS: "1=http://kv1:7000,2=http://kv2:7000,3=http://kv3:7000"
   KYTHIRA_RAFT_PORT: "7000"
+  # Raft RPC crosses containers in plaintext; the gateway refuses that
+  # without this opt-in. The compose network is private to the test.
+  KYTHIRA_ALLOW_PLAINTEXT_RAFT: "true"
   KYTHIRA_SHARD_CUTS: "sccache/8"
   KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "150"
   KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "300"
