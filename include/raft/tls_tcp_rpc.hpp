@@ -88,6 +88,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace kythira {
 
@@ -543,8 +544,9 @@ public:
     using is_fn = std::function<install_snapshot_response<>(const install_snapshot_request<>&)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
-    server_impl(std::uint16_t port, tls_tcp_rpc_config config)
-        : _port(port), _config(std::move(config)) {
+    server_impl(std::uint16_t port, tls_tcp_rpc_config config,
+                std::vector<tcp_detail::bind_endpoint> binds)
+        : _port(port), _binds(std::move(binds)), _config(std::move(config)) {
         ignore_sigpipe_once();
         _ctx = SSL_CTX_new(TLS_server_method());
         if (_ctx == nullptr) {
@@ -585,43 +587,32 @@ public:
         if (_running.exchange(true)) {
             return;
         }
-
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) {
+        std::lock_guard lock(_listen_mu);
+        try {
+            _listen_fds = tcp_detail::open_listeners(_binds, _port, "tls_tcp_rpc_server");
+        } catch (...) {
             _running = false;
-            throw std::runtime_error("tls_tcp_rpc_server: socket()");
+            throw;
         }
-
-        int opt = 1;
-        ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = INADDR_ANY;
-        addr.sin_port = htons(_port);
-
-        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            ::close(fd);
-            _running = false;
-            throw std::runtime_error("tls_tcp_rpc_server: bind() on port " + std::to_string(_port));
+        for (int fd : _listen_fds) {
+            _accept_threads.emplace_back([this, fd] { accept_loop(fd); });
         }
-        ::listen(fd, 256);
-        _listen_fd = fd;
-        _accept_thread = std::thread([this] { accept_loop(); });
     }
 
     void stop() {
         if (!_running.exchange(false)) {
             return;
         }
-        int fd = _listen_fd.exchange(-1);
-        if (fd >= 0) {
+        std::lock_guard lock(_listen_mu);
+        for (int fd : _listen_fds) {
             ::shutdown(fd, SHUT_RDWR);
             ::close(fd);
         }
-        if (_accept_thread.joinable()) {
-            _accept_thread.join();
+        _listen_fds.clear();
+        for (auto& t : _accept_threads) {
+            if (t.joinable()) t.join();
         }
+        _accept_threads.clear();
     }
 
     [[nodiscard]] bool is_running() const noexcept { return _running.load(); }
@@ -645,9 +636,9 @@ public:
     }
 
 private:
-    void accept_loop() {
+    void accept_loop(int listen_fd) {
         while (_running) {
-            int client = ::accept(_listen_fd.load(), nullptr, nullptr);
+            int client = ::accept(listen_fd, nullptr, nullptr);
             if (client < 0) {
                 break;
             }
@@ -754,9 +745,11 @@ private:
     }
 
     std::uint16_t _port;
-    std::atomic<int> _listen_fd{-1};
+    std::vector<tcp_detail::bind_endpoint> _binds;
+    std::mutex _listen_mu;  // guards _listen_fds/_accept_threads across start()/stop()
+    std::vector<int> _listen_fds;
     std::atomic<bool> _running{false};
-    std::thread _accept_thread;
+    std::vector<std::thread> _accept_threads;
 
     SSL_CTX* _ctx{nullptr};
     std::mutex _ctx_mu;  // guards _ctx's loaded identity AND _config
@@ -850,7 +843,18 @@ private:
 class tls_tcp_rpc_server {
 public:
     tls_tcp_rpc_server(std::uint16_t port, tls_tcp_rpc_config config)
-        : _impl(std::make_shared<tls_detail::server_impl>(port, std::move(config))) {}
+        : _impl(std::make_shared<tls_detail::server_impl>(port, std::move(config),
+                                                          tcp_detail::ipv4_any_endpoint())) {}
+
+    // Listens on `bind_address` only instead of every IPv4 interface: an IPv4
+    // or IPv6 literal, or a host name whose addresses all belong to this host
+    // (see tcp_detail::resolve_bind_addresses). Throws std::invalid_argument
+    // otherwise.
+    tls_tcp_rpc_server(std::uint16_t port, tls_tcp_rpc_config config,
+                       const std::string& bind_address)
+        : _impl(std::make_shared<tls_detail::server_impl>(
+              port, std::move(config),
+              tcp_detail::resolve_bind_addresses(bind_address, "tls_tcp_rpc_server"))) {}
 
     void register_request_vote_handler(tls_detail::server_impl::rv_fn h) {
         _impl->register_request_vote_handler(std::move(h));

@@ -16,6 +16,7 @@
 #include <raft/tls_tcp_rpc.hpp>
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -24,6 +25,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <stdexcept>
 #include <thread>
 
 using namespace raft::testing;
@@ -78,6 +81,35 @@ struct temp_pem_files {
     temp_pem_files(const temp_pem_files&) = delete;
     auto operator=(const temp_pem_files&) -> temp_pem_files& = delete;
 };
+
+// Whether a raw TCP connect to address:port succeeds (no TLS handshake).
+auto can_connect(const std::string& address, std::uint16_t port) -> bool {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    BOOST_REQUIRE(fd >= 0);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    BOOST_REQUIRE(::inet_pton(AF_INET, address.c_str(), &a.sin_addr) == 1);
+    bool ok = ::connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0;
+    ::close(fd);
+    return ok;
+}
+
+// The first IPv4 address of a non-loopback interface, if the host has one.
+auto non_loopback_ipv4() -> std::optional<std::string> {
+    ifaddrs* ifs = nullptr;
+    if (::getifaddrs(&ifs) != 0) return std::nullopt;
+    std::optional<std::string> found;
+    for (ifaddrs* i = ifs; i != nullptr && !found; i = i->ifa_next) {
+        if (i->ifa_addr == nullptr || i->ifa_addr->sa_family != AF_INET) continue;
+        auto* in = reinterpret_cast<sockaddr_in*>(i->ifa_addr);
+        if ((ntohl(in->sin_addr.s_addr) >> 24) == 127) continue;
+        char buf[INET_ADDRSTRLEN];
+        if (::inet_ntop(AF_INET, &in->sin_addr, buf, sizeof(buf)) != nullptr) found = buf;
+    }
+    ::freeifaddrs(ifs);
+    return found;
+}
 
 auto fingerprint_of_root(const std::string& root_pem) -> std::string {
     auto root = root_cert_from_pem_bundle(root_pem);
@@ -170,6 +202,54 @@ BOOST_AUTO_TEST_CASE(round_trip_under_pinned_fingerprint_policy, *boost::unit_te
     tls_tcp_rpc_config client_cfg{files.cert_path, files.key_path, pinned_fingerprint(fp)};
 
     BOOST_TEST(try_round_trip(std::move(server_cfg), std::move(client_cfg)));
+}
+
+BOOST_AUTO_TEST_CASE(server_rejects_unusable_bind_address, *boost::unit_test::timeout(30)) {
+    certificate_authority bootstrap_cred;
+    temp_pem_files files(bootstrap_cred.root_certificate_pem(),
+                         detail_testing::unsafe_extract_ca_private_key_pem(bootstrap_cred));
+    auto fp = fingerprint_of_root(bootstrap_cred.root_certificate_pem());
+    tls_tcp_rpc_config cfg{files.cert_path, files.key_path, pinned_fingerprint(fp)};
+    BOOST_CHECK_THROW(tls_tcp_rpc_server(find_free_port(), cfg, "kythira-test.invalid"),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(tls_tcp_rpc_server(find_free_port(), cfg, ""), std::invalid_argument);
+}
+
+// A loopback-bound TLS server still serves RPCs on 127.0.0.1 but is not
+// reachable through the host's other addresses.
+BOOST_AUTO_TEST_CASE(localhost_bound_server_round_trips_and_is_not_reachable_off_loopback,
+                     *boost::unit_test::timeout(30)) {
+    certificate_authority bootstrap_cred;
+    temp_pem_files files(bootstrap_cred.root_certificate_pem(),
+                         detail_testing::unsafe_extract_ca_private_key_pem(bootstrap_cred));
+    auto fp = fingerprint_of_root(bootstrap_cred.root_certificate_pem());
+
+    auto port = find_free_port();
+    // "localhost" exercises the multi-listener path: it binds every loopback
+    // address it resolves to.
+    tls_tcp_rpc_server server(
+        port, tls_tcp_rpc_config{files.cert_path, files.key_path, pinned_fingerprint(fp)},
+        "localhost");
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+        return kythira::request_vote_response<>{req.term(), true};
+    });
+    server.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    tls_tcp_rpc_client client(
+        tls_tcp_rpc_config{files.cert_path, files.key_path, pinned_fingerprint(fp)});
+    client.add_peer(1, "localhost", port);
+    kythira::request_vote_request<> req{7, 42, 0, 0};
+    auto resp = client.send_request_vote(1, req, std::chrono::milliseconds(5000)).get();
+    BOOST_TEST(resp.vote_granted());
+    BOOST_TEST(resp.term() == 7u);
+
+    if (auto other = non_loopback_ipv4()) {
+        BOOST_TEST(!can_connect(*other, port), "loopback-bound server reachable via " << *other);
+    } else {
+        BOOST_TEST_MESSAGE("no non-loopback IPv4 interface; off-loopback check skipped");
+    }
+    server.stop();
 }
 
 BOOST_AUTO_TEST_CASE(round_trip_under_either_policy_using_ca_issued_certs,
