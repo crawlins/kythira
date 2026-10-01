@@ -8,11 +8,17 @@
 #include <raft/types.hpp>
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <optional>
+#include <stdexcept>
+#include <string>
 #include <thread>
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -30,6 +36,58 @@ static std::uint16_t find_free_port() {
     std::uint16_t port = ntohs(a.sin_port);
     ::close(fd);
     return port;
+}
+
+// Whether a TCP connect to address:port succeeds (IPv4 or IPv6 literal).
+static bool can_connect(const std::string& address, std::uint16_t port) {
+    sockaddr_storage ss{};
+    socklen_t len = 0;
+    auto& v4 = reinterpret_cast<sockaddr_in&>(ss);
+    auto& v6 = reinterpret_cast<sockaddr_in6&>(ss);
+    if (::inet_pton(AF_INET, address.c_str(), &v4.sin_addr) == 1) {
+        v4.sin_family = AF_INET;
+        v4.sin_port = htons(port);
+        len = sizeof(sockaddr_in);
+    } else {
+        BOOST_REQUIRE_EQUAL(::inet_pton(AF_INET6, address.c_str(), &v6.sin6_addr), 1);
+        v6.sin6_family = AF_INET6;
+        v6.sin6_port = htons(port);
+        len = sizeof(sockaddr_in6);
+    }
+    int fd = ::socket(ss.ss_family, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    bool ok = ::connect(fd, reinterpret_cast<sockaddr*>(&ss), len) == 0;
+    ::close(fd);
+    return ok;
+}
+
+// Whether this host can open an IPv6 socket on ::1 at all; CI containers and
+// sandboxes often run with IPv6 disabled.
+static bool ipv6_loopback_available() {
+    int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    sockaddr_in6 a{};
+    a.sin6_family = AF_INET6;
+    a.sin6_addr = in6addr_loopback;
+    bool ok = ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0;
+    ::close(fd);
+    return ok;
+}
+
+// The first IPv4 address of an up, non-loopback interface, if the host has one.
+static std::optional<std::string> non_loopback_ipv4() {
+    ifaddrs* ifs = nullptr;
+    if (::getifaddrs(&ifs) != 0) return std::nullopt;
+    std::optional<std::string> found;
+    for (ifaddrs* i = ifs; i != nullptr && !found; i = i->ifa_next) {
+        if (i->ifa_addr == nullptr || i->ifa_addr->sa_family != AF_INET) continue;
+        auto* in = reinterpret_cast<sockaddr_in*>(i->ifa_addr);
+        if ((ntohl(in->sin_addr.s_addr) >> 24) == 127) continue;
+        char buf[INET_ADDRSTRLEN];
+        if (::inet_ntop(AF_INET, &in->sin_addr, buf, sizeof(buf)) != nullptr) found = buf;
+    }
+    ::freeifaddrs(ifs);
+    return found;
 }
 
 // Connected UNIX socket pair — used for framing tests without binding a TCP port.
@@ -178,6 +236,249 @@ BOOST_AUTO_TEST_CASE(test_server_move_before_start, *boost::unit_test::timeout(1
     s2.start();
     BOOST_TEST(s2.is_running());
     s2.stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_server_rejects_unusable_bind_address, *boost::unit_test::timeout(30)) {
+    std::uint16_t port = find_free_port();
+    // RFC 6761 reserves .invalid: it never resolves.
+    BOOST_CHECK_THROW(kythira::tcp_rpc_server(port, "kythira-test.invalid"), std::invalid_argument);
+    BOOST_CHECK_THROW(kythira::tcp_rpc_server(port, ""), std::invalid_argument);
+    BOOST_CHECK_THROW(kythira::tcp_rpc_server(port, "127.0.0.1:7000"), std::invalid_argument);
+}
+
+static kythira::tcp_detail::bind_endpoint v4_endpoint(const char* a) {
+    kythira::tcp_detail::bind_endpoint ep;
+    auto& sin = reinterpret_cast<sockaddr_in&>(ep.addr);
+    sin.sin_family = AF_INET;
+    BOOST_REQUIRE_EQUAL(::inet_pton(AF_INET, a, &sin.sin_addr), 1);
+    ep.len = sizeof(sockaddr_in);
+    return ep;
+}
+
+static kythira::tcp_detail::bind_endpoint v6_endpoint(const char* a, std::uint32_t scope) {
+    kythira::tcp_detail::bind_endpoint ep;
+    auto& sin6 = reinterpret_cast<sockaddr_in6&>(ep.addr);
+    sin6.sin6_family = AF_INET6;
+    sin6.sin6_scope_id = scope;
+    BOOST_REQUIRE_EQUAL(::inet_pton(AF_INET6, a, &sin6.sin6_addr), 1);
+    ep.len = sizeof(sockaddr_in6);
+    return ep;
+}
+
+// A host name may only resolve to this host's own addresses (or loopback).
+BOOST_AUTO_TEST_CASE(test_resolved_names_must_be_local, *boost::unit_test::timeout(5)) {
+    using kythira::tcp_detail::require_local_endpoints;
+    std::vector locals{v4_endpoint("192.0.2.10"), v6_endpoint("fe80::1", 3)};
+
+    std::vector ok{v4_endpoint("192.0.2.10"), v4_endpoint("127.0.0.1"), v6_endpoint("::1", 0)};
+    BOOST_CHECK_NO_THROW(require_local_endpoints(ok, locals, "node-a", "test"));
+
+    std::vector mixed{v4_endpoint("192.0.2.10"), v4_endpoint("198.51.100.7")};
+    BOOST_CHECK_THROW(require_local_endpoints(mixed, locals, "node-a", "test"),
+                      std::invalid_argument);
+
+    // getaddrinfo() leaves a link-local address's scope at zero; the match
+    // supplies the interface's, which bind() needs.
+    std::vector link_local{v6_endpoint("fe80::1", 0)};
+    require_local_endpoints(link_local, locals, "node-a", "test");
+    BOOST_TEST(reinterpret_cast<const sockaddr_in6&>(link_local[0].addr).sin6_scope_id == 3u);
+}
+
+// This host's own name must be accepted whenever /etc/hosts maps it to this
+// host.
+BOOST_AUTO_TEST_CASE(test_server_binds_own_hostname, *boost::unit_test::timeout(30)) {
+    char name[256] = {};
+    BOOST_REQUIRE_EQUAL(::gethostname(name, sizeof(name) - 1), 0);
+    std::vector<kythira::tcp_detail::bind_endpoint> eps;
+    try {
+        eps = kythira::tcp_detail::resolve_bind_addresses(name, "test");
+    } catch (const std::invalid_argument& e) {
+        BOOST_TEST_MESSAGE("own host name not usable here (" << e.what() << "); skipped");
+        return;
+    }
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port, name);
+    server.start();
+    BOOST_TEST(server.is_running());
+    server.stop();
+}
+
+// A scratch hosts file, removed when the test ends.
+struct temp_hosts_file {
+    std::string path;
+    explicit temp_hosts_file(const std::string& contents) {
+        char tmpl[] = "/tmp/kythira_hosts_XXXXXX";
+        int fd = ::mkstemp(tmpl);
+        BOOST_REQUIRE(fd >= 0);
+        ::close(fd);
+        path = tmpl;
+        std::ofstream(path) << contents;
+    }
+    ~temp_hosts_file() { ::unlink(path.c_str()); }
+};
+
+static std::string endpoint_text(const kythira::tcp_detail::bind_endpoint& ep) {
+    char buf[INET6_ADDRSTRLEN] = {};
+    const void* raw =
+        ep.addr.ss_family == AF_INET
+            ? static_cast<const void*>(&reinterpret_cast<const sockaddr_in&>(ep.addr).sin_addr)
+            : static_cast<const void*>(&reinterpret_cast<const sockaddr_in6&>(ep.addr).sin6_addr);
+    ::inet_ntop(ep.addr.ss_family, raw, buf, sizeof(buf));
+    return buf;
+}
+
+// Names come from the hosts file only: comments, aliases and case are
+// handled, a name the file doesn't list is refused without asking DNS, and
+// a listed address that isn't this host's is refused.
+BOOST_AUTO_TEST_CASE(test_bind_names_come_from_hosts_file_only, *boost::unit_test::timeout(5)) {
+    using kythira::tcp_detail::resolve_bind_addresses;
+    temp_hosts_file hosts(
+        "# scratch hosts file\n"
+        "127.0.0.1   localhost\n"
+        "127.0.1.1   rpc-node rpc-alias   # this host\n"
+        "127.0.1.1   rpc-node\n"
+        "192.0.2.10  elsewhere\n"
+        "not-an-ip   broken\n");
+
+    auto eps = resolve_bind_addresses("RPC-Alias.", "test", hosts.path);
+    BOOST_REQUIRE_EQUAL(eps.size(), 1U);
+    BOOST_TEST(endpoint_text(eps[0]) == "127.0.1.1");
+
+    BOOST_CHECK_THROW(resolve_bind_addresses("elsewhere", "test", hosts.path),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(resolve_bind_addresses("broken", "test", hosts.path), std::invalid_argument);
+    BOOST_CHECK_THROW(resolve_bind_addresses("this", "test", hosts.path), std::invalid_argument);
+    // A name DNS would resolve but the hosts file doesn't list.
+    BOOST_CHECK_THROW(resolve_bind_addresses("example.com", "test", hosts.path),
+                      std::invalid_argument);
+}
+
+// A non-loopback address of this host works when the hosts file lists it.
+BOOST_AUTO_TEST_CASE(test_bind_name_on_local_interface, *boost::unit_test::timeout(5)) {
+    auto ip = non_loopback_ipv4();
+    if (!ip) {
+        BOOST_TEST_MESSAGE("no non-loopback IPv4 address; skipped");
+        return;
+    }
+    temp_hosts_file hosts(*ip + " rpc-node\n");
+    auto eps = kythira::tcp_detail::resolve_bind_addresses("rpc-node", "test", hosts.path);
+    BOOST_REQUIRE_EQUAL(eps.size(), 1U);
+    BOOST_TEST(endpoint_text(eps[0]) == *ip);
+}
+
+// "localhost" still works when the hosts file doesn't list it (RFC 6761).
+BOOST_AUTO_TEST_CASE(test_localhost_without_hosts_entry, *boost::unit_test::timeout(5)) {
+    temp_hosts_file hosts("# empty\n");
+    auto eps = kythira::tcp_detail::resolve_bind_addresses("localhost", "test", hosts.path);
+    BOOST_REQUIRE_EQUAL(eps.size(), 2U);
+    BOOST_TEST(endpoint_text(eps[0]) == "127.0.0.1");
+    BOOST_TEST(endpoint_text(eps[1]) == "::1");
+}
+
+// An IPv6 hosts entry may carry a zone; the scope id is taken from it.
+BOOST_AUTO_TEST_CASE(test_hosts_file_ipv6_zone, *boost::unit_test::timeout(5)) {
+    auto ep = kythira::tcp_detail::parse_hosts_address("fe80::1%7");
+    BOOST_REQUIRE(ep.has_value());
+    BOOST_TEST(reinterpret_cast<const sockaddr_in6&>(ep->addr).sin6_scope_id == 7U);
+    BOOST_TEST(!kythira::tcp_detail::parse_hosts_address("fe80::1%no-such-if").has_value());
+}
+
+BOOST_AUTO_TEST_CASE(test_loopback_bind_address_classification, *boost::unit_test::timeout(5)) {
+    using kythira::tcp_detail::is_loopback_bind_address;
+    BOOST_TEST(is_loopback_bind_address("127.0.0.1"));
+    BOOST_TEST(is_loopback_bind_address("127.5.6.7"));
+    BOOST_TEST(is_loopback_bind_address("::1"));
+    BOOST_TEST(is_loopback_bind_address("localhost"));
+    BOOST_TEST(!is_loopback_bind_address("0.0.0.0"));
+    BOOST_TEST(!is_loopback_bind_address("::"));
+    BOOST_TEST(!is_loopback_bind_address("10.1.2.3"));
+    BOOST_TEST(!is_loopback_bind_address("::ffff:127.0.0.1"));
+    BOOST_TEST(!is_loopback_bind_address("kythira-test.invalid"));
+}
+
+BOOST_AUTO_TEST_CASE(test_localhost_resolves_to_loopback_only, *boost::unit_test::timeout(5)) {
+    auto eps = kythira::tcp_detail::resolve_bind_addresses("localhost", "test");
+    BOOST_REQUIRE(!eps.empty());
+    for (const auto& ep : eps) {
+        BOOST_TEST(kythira::tcp_detail::endpoint_is_loopback(ep));
+    }
+}
+
+// A loopback bind must not be reachable through the host's other addresses;
+// ca_cluster_node relies on this to allow plaintext RPC on loopback only.
+BOOST_AUTO_TEST_CASE(test_server_loopback_bind_not_reachable_off_loopback,
+                     *boost::unit_test::timeout(10)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server s1(port, "127.0.0.1");
+    // Moving before start() must keep the bind address.
+    kythira::tcp_rpc_server server(std::move(s1));
+    server.start();
+    BOOST_TEST(can_connect("127.0.0.1", port));
+    if (auto other = non_loopback_ipv4()) {
+        BOOST_TEST(!can_connect(*other, port), "loopback-bound server reachable via " << *other);
+    } else {
+        BOOST_TEST_MESSAGE("no non-loopback IPv4 interface; off-loopback check skipped");
+    }
+    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_server_ipv6_loopback_bind, *boost::unit_test::timeout(10)) {
+    if (!ipv6_loopback_available()) {
+        BOOST_TEST_MESSAGE("no IPv6 loopback on this host; skipped");
+        return;
+    }
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port, "::1");
+    server.start();
+    BOOST_TEST(can_connect("::1", port));
+    BOOST_TEST(!can_connect("127.0.0.1", port), "::1-bound server reachable over IPv4");
+    server.stop();
+}
+
+// "localhost" binds every loopback address it resolves to and nothing else.
+BOOST_AUTO_TEST_CASE(test_server_localhost_bind, *boost::unit_test::timeout(10)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port, "localhost");
+    server.start();
+    for (const auto& ep : kythira::tcp_detail::resolve_bind_addresses("localhost", "test")) {
+        bool v6 = ep.addr.ss_family == AF_INET6;
+        if (v6 && !ipv6_loopback_available()) continue;
+        BOOST_TEST(can_connect(v6 ? "::1" : "127.0.0.1", port),
+                   "localhost bind missed " << (v6 ? "::1" : "127.0.0.1"));
+    }
+    if (auto other = non_loopback_ipv4()) {
+        BOOST_TEST(!can_connect(*other, port), "localhost-bound server reachable via " << *other);
+    }
+    server.stop();
+    BOOST_TEST(!server.is_running());
+}
+
+// The client tries every address a peer name resolves to. "localhost" often
+// resolves to ::1 first; a server listening on 127.0.0.1 alone must still be
+// reachable through it.
+BOOST_AUTO_TEST_CASE(test_connect_to_falls_back_across_resolved_addresses,
+                     *boost::unit_test::timeout(10)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port, "127.0.0.1");
+    server.start();
+    int fd = kythira::tcp_detail::connect_to("localhost", port, std::chrono::milliseconds(2000));
+    BOOST_TEST(fd >= 0);
+    if (fd >= 0) ::close(fd);
+    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_server_default_bind_is_all_interfaces, *boost::unit_test::timeout(10)) {
+    auto other = non_loopback_ipv4();
+    if (!other) {
+        BOOST_TEST_MESSAGE("no non-loopback IPv4 interface; skipped");
+        return;
+    }
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    server.start();
+    BOOST_TEST(can_connect("127.0.0.1", port));
+    BOOST_TEST(can_connect(*other, port));
+    server.stop();
 }
 
 // ── Client unknown peer ───────────────────────────────────────────────────────
