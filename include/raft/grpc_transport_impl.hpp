@@ -26,6 +26,7 @@
 #include <raft/grpc_transport.hpp>
 #include <raft/grpc_exceptions.hpp>
 #include <raft/grpc_message_conversion.hpp>
+#include <raft/net_bind.hpp>
 #include <raft/network.hpp>
 #include <raft/future.hpp>
 
@@ -41,6 +42,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -649,14 +651,61 @@ public:
         }
 
         grpc::ServerBuilder builder;
+        // One listening port per address the bind address resolves to, so a
+        // name such as "localhost" serves both 127.0.0.1 and ::1 (net_bind.hpp:
+        // names come from /etc/hosts only and must be this host's). An IPv6
+        // address is bracketed; formatting "::1" as "::1:7000" was misparsed.
+        // "*" becomes gRPC's own "[::]", whose wildcard handling already listens
+        // on IPv4 and IPv6 alike.
+        //
         // The three-argument overload reports back which port was actually
         // bound. That matters when _bind_port is 0: gRPC then asks the kernel
         // for a free port, and this is the only way to learn which one. It also
-        // sharpens failure detection -- gRPC sets selected_port to 0 when a bind
-        // fails, which is checked below alongside BuildAndStart's result.
-        int selected_port = 0;
-        builder.AddListeningPort(std::format("{}:{}", _bind_address, _bind_port),
-                                 _server_credentials, &selected_port);
+        // sharpens failure detection -- gRPC sets a selected port to 0 when a
+        // bind fails, which is checked below alongside BuildAndStart's result.
+        std::vector<std::string> listen_addresses;
+        std::uint16_t port = _bind_port;
+        try {
+            if (_bind_address == "*") {
+                listen_addresses.push_back("[::]");
+            } else {
+                auto endpoints =
+                    kythira::net_bind::resolve_bind_addresses(_bind_address, "grpc_server");
+                for (const auto& ep : endpoints) {
+                    if (endpoints.size() > 1 &&
+                        !kythira::net_bind::family_supported(ep.addr.ss_family)) {
+                        continue;
+                    }
+                    auto host = kythira::net_bind::endpoint_host(ep);
+                    listen_addresses.push_back(ep.addr.ss_family == AF_INET6 ? "[" + host + "]"
+                                                                             : host);
+                }
+            }
+            // Several addresses on port 0 must still share one port, but gRPC picks
+            // an ephemeral port per address. Reserve one from the kernel first and
+            // ask gRPC for that.
+            if (port == 0 && listen_addresses.size() > 1) {
+                auto fds = kythira::net_bind::open_listeners(
+                    kythira::net_bind::resolve_bind_addresses(_bind_address, "grpc_server"), 0,
+                    "grpc_server");
+                sockaddr_storage bound{};
+                socklen_t bound_len = sizeof(bound);
+                ::getsockname(fds.front(), reinterpret_cast<sockaddr*>(&bound), &bound_len);
+                port = ntohs(bound.ss_family == AF_INET6
+                                 ? reinterpret_cast<const sockaddr_in6&>(bound).sin6_port
+                                 : reinterpret_cast<const sockaddr_in&>(bound).sin_port);
+                for (int fd : fds) ::close(fd);
+            }
+        } catch (const std::exception& e) {
+            throw grpc_transport_error(grpc::StatusCode::INVALID_ARGUMENT,
+                                       std::format("grpc_server: cannot bind {}:{}: {}",
+                                                   _bind_address, _bind_port, e.what()));
+        }
+        std::vector<int> selected_ports(listen_addresses.size(), 0);
+        for (std::size_t i = 0; i < listen_addresses.size(); ++i) {
+            builder.AddListeningPort(std::format("{}:{}", listen_addresses[i], port),
+                                     _server_credentials, &selected_ports[i]);
+        }
         builder.SetMaxSendMessageSize(static_cast<int>(_config.max_send_message_size));
         builder.SetMaxReceiveMessageSize(static_cast<int>(_config.max_receive_message_size));
         builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS,
@@ -689,13 +738,15 @@ public:
         }
 
         _server = builder.BuildAndStart();
-        if (!_server || selected_port == 0) {
+        bool every_port_bound = !selected_ports.empty() &&
+                                std::ranges::none_of(selected_ports, [](int p) { return p == 0; });
+        if (!_server || !every_port_bound) {
             _server.reset();
             throw grpc_transport_error(
                 grpc::StatusCode::INTERNAL,
                 std::format("grpc_server: failed to bind {}:{}", _bind_address, _bind_port));
         }
-        _bound_port.store(static_cast<std::uint16_t>(selected_port));
+        _bound_port.store(static_cast<std::uint16_t>(selected_ports.front()));
         _running.store(true);
         emit_lifecycle_metric("grpc.server.started");
     }

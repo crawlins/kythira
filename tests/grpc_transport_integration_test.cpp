@@ -255,3 +255,40 @@ BOOST_AUTO_TEST_CASE(tls_misconfiguration_fails_closed) {
     // client_key_pem intentionally empty
     BOOST_CHECK_THROW(make_client(0, exec, bad_client), kythira::grpc_tls_configuration_error);
 }
+
+// A bind name listens on every address /etc/hosts lists it under, all on
+// one port even when that port is ephemeral, and an IPv6 literal is
+// bracketed rather than run into the port.
+BOOST_AUTO_TEST_CASE(localhost_and_ipv6_binds_end_to_end) {
+    folly::CPUThreadPoolExecutor exec(4);
+    for (std::string bind : {"localhost", "*", "::1"}) {
+        kythira::grpc_server<types> server(bind, 0, {}, kythira::noop_metrics{}, exec);
+        server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+            return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
+        });
+        try {
+            server.start();
+        } catch (const kythira::grpc_transport_error& e) {
+            // "::1" needs IPv6, which some hosts don't have.
+            BOOST_TEST_MESSAGE("bind " << bind << " unavailable here: " << e.what());
+            BOOST_TEST(bind == "::1");
+            continue;
+        }
+        std::string target =
+            (bind == "::1" ? "[::1]:" : "127.0.0.1:") + std::to_string(server.bound_port());
+        std::unordered_map<std::uint64_t, std::string> book{{1, target}};
+        kythira::grpc_client<types> client(std::move(book), {}, kythira::noop_metrics{}, exec);
+        kythira::request_vote_request<> req{
+            ._term = 3, ._candidate_id = 2, ._last_log_index = 0, ._last_log_term = 0};
+        BOOST_TEST_INFO("bind " << bind);
+        BOOST_TEST(client.send_request_vote(1, req, 2000ms).get().vote_granted());
+        server.stop();
+    }
+}
+
+BOOST_AUTO_TEST_CASE(unlisted_bind_name_is_refused) {
+    folly::CPUThreadPoolExecutor exec(2);
+    kythira::grpc_server<types> server("kythira-test.invalid", 0, {}, kythira::noop_metrics{},
+                                       exec);
+    BOOST_CHECK_THROW(server.start(), kythira::grpc_transport_error);
+}

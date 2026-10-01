@@ -30,22 +30,6 @@
 
 namespace kythira::net_bind {
 
-// The host string httplib binds to for one endpoint: a numeric address,
-// with "%<scope>" on a scoped IPv6 one.
-inline auto endpoint_host(const bind_endpoint& ep) -> std::string {
-    char buf[INET6_ADDRSTRLEN] = {};
-    if (ep.addr.ss_family == AF_INET6) {
-        const auto& a = reinterpret_cast<const sockaddr_in6&>(ep.addr);
-        ::inet_ntop(AF_INET6, &a.sin6_addr, buf, sizeof(buf));
-        std::string out(buf);
-        if (a.sin6_scope_id != 0) out += "%" + std::to_string(a.sin6_scope_id);
-        return out;
-    }
-    const auto& a = reinterpret_cast<const sockaddr_in&>(ep.addr);
-    ::inet_ntop(AF_INET, &a.sin_addr, buf, sizeof(buf));
-    return buf;
-}
-
 // Splits "host:port" where host may be a bracketed IPv6 literal
 // ("[::1]:80") or "*". A missing port yields `default_port`.
 inline auto split_host_port(const std::string& spec, int default_port)
@@ -183,13 +167,6 @@ public:
 
 private:
     static constexpr std::size_t k_max_raw = 8;
-
-    static auto family_supported(int family) -> bool {
-        int fd = ::socket(family, SOCK_STREAM, 0);
-        if (fd < 0) return errno != EAFNOSUPPORT;
-        ::close(fd);
-        return true;
-    }
 
     [[noreturn]] static auto fail(const char* who, const std::string& host, std::uint16_t port)
         -> void {
