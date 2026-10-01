@@ -141,10 +141,68 @@ struct AwsSdkFixture {
     AwsSdkFixture() {
         Aws::SDKOptions opts;
         Aws::InitAPI(opts);
+        skip_unless_autoscaling_available();
     }
     ~AwsSdkFixture() {
         Aws::SDKOptions opts;
         Aws::ShutdownAPI(opts);
+    }
+
+    /// Skips the suite when LocalStack is up but its **autoscaling** service is
+    /// not licensed.
+    ///
+    /// `PreflightSkipFixture` can only open a TCP connection, because it has to
+    /// run before `Aws::InitAPI()`. That proves LocalStack is listening and
+    /// nothing more -- so with LocalStack actually running, every case in this
+    /// file died at setup instead: `ASGIntegrationFixture` calls
+    /// `CreateLaunchConfiguration`, and autoscaling is a Pro-only service in
+    /// the community edition. Three unexplained setup failures is the worst of
+    /// the three possible outcomes; the suite should say it cannot run here,
+    /// and why.
+    ///
+    /// Measured against `localstack/localstack:4.14.0`, the image pinned in
+    /// `docker/cloudwatch-localstack-compose.yml`:
+    ///
+    ///     InternalFailure: Sorry, the autoscaling service is not included
+    ///     within your LocalStack license, but is available in an upgraded
+    ///     license.
+    ///
+    /// Note `InternalFailure` -- not a 501 and not an authorization error -- so
+    /// the error *code* carries no signal and only the message identifies the
+    /// cause. Any autoscaling failure at all means this suite cannot run, so
+    /// the check does not try to match on either.
+    ///
+    /// `DescribeAutoScalingGroups` rather than the `CreateLaunchConfiguration`
+    /// the fixture actually needs: it fails identically on an unlicensed
+    /// service and creates nothing, so the probe leaves no state behind.
+    ///
+    /// Called from this constructor rather than from a global fixture of its
+    /// own, immediately after `Aws::InitAPI()`. A separate
+    /// `BOOST_GLOBAL_FIXTURE` registered after this one crashed in "Test
+    /// setup" with a memory access violation even though the registration
+    /// order was right, so the ordering is made structural here instead of
+    /// depending on Boost.Test's fixture sequencing.
+    static void skip_unless_autoscaling_available() {
+        Aws::Client::ClientConfiguration c;
+        c.region = DUMMY_REGION;
+        c.endpointOverride = LOCALSTACK_ENDPOINT;
+        c.requestTimeoutMs = 10000;
+        c.connectTimeoutMs = 10000;
+        Aws::AutoScaling::AutoScalingClient client{c};
+        auto out = client.DescribeAutoScalingGroups(
+            Aws::AutoScaling::Model::DescribeAutoScalingGroupsRequest{});
+        if (!out.IsSuccess()) {
+            // Deliberately does not name a cause. The same failure covers an
+            // unlicensed service and a LocalStack that stopped listening
+            // between the TCP preflight and here, and the SDK's message says
+            // which: asserting "not licensed" over a `curlCode: 7, Could not
+            // connect` would be the kind of confidently wrong diagnostic this
+            // check exists to remove.
+            std::cerr << "SKIP: the autoscaling service is unusable at " << LOCALSTACK_ENDPOINT
+                      << ", and every case in this suite needs it: " << out.GetError().GetMessage()
+                      << "\n";
+            std::exit(77);
+        }
     }
 };
 
