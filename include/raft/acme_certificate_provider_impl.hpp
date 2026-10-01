@@ -11,6 +11,7 @@
 
 #include <raft/acme_certificate_provider.hpp>
 #include <raft/future_default.hpp>
+#include <raft/httplib_listeners.hpp>
 
 #include <httplib.h>
 #include <boost/json.hpp>
@@ -140,45 +141,37 @@ public:
     http01_responder(const std::string& bind_address, std::string token,
                      std::string key_authorization)
         : _token(std::move(token)), _key_authorization(std::move(key_authorization)) {
-        auto colon = bind_address.rfind(':');
-        std::string host =
-            colon == std::string::npos ? bind_address : bind_address.substr(0, colon);
-        int port = colon == std::string::npos ? 0 : std::stoi(bind_address.substr(colon + 1));
-
-        _server.Get("/.well-known/acme-challenge/" + _token,
-                    [this](const httplib::Request&, httplib::Response& res) {
-                        res.set_content(_key_authorization, "text/plain");
-                    });
-        if (port > 0) {
-            // A specific port was requested (production ACME: 80; tests:
-            // whatever the CA is configured to validate against) — bind
-            // exactly that one, surfacing failure rather than silently
-            // listening somewhere the validating server will never check.
-            if (!_server.bind_to_port(host, port)) {
-                throw std::runtime_error(
-                    "acme_certificate_provider: http-01 responder failed to bind " + bind_address);
-            }
-            _actual_port = port;
-        } else {
-            _actual_port = _server.bind_to_any_port(host);
-            if (_actual_port <= 0) {
-                throw std::runtime_error(
-                    "acme_certificate_provider: http-01 responder failed to bind " + bind_address);
-            }
+        // "host:port", "[v6]:port" or "*:port". A CA may validate over IPv4
+        // or IPv6 (whichever of the identifier's A/AAAA records it picks), so
+        // the default "*:80" listens on both; see kythira::net_bind::httplib_listeners.
+        auto [host, port] = kythira::net_bind::split_host_port(bind_address, 0);
+        if (host.empty()) host = "*";
+        if (port < 0 || port > 65535) {
+            throw std::invalid_argument("acme_certificate_provider: bad http-01 port in " +
+                                        bind_address);
         }
-        _thread = std::jthread([this](std::stop_token) { _server.listen_after_bind(); });
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!_server.is_running() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // A specific port (production ACME: 80; tests: whatever the CA is
+        // configured to validate against) is bound exactly, surfacing failure
+        // rather than silently listening somewhere the validating server will
+        // never check; 0 picks an ephemeral port.
+        try {
+            _actual_port = _servers.bind(
+                host, static_cast<std::uint16_t>(port),
+                [this](httplib::Server& server) {
+                    server.Get("/.well-known/acme-challenge/" + _token,
+                               [this](const httplib::Request&, httplib::Response& res) {
+                                   res.set_content(_key_authorization, "text/plain");
+                               });
+                },
+                "acme_certificate_provider: http-01 responder");
+        } catch (const std::invalid_argument& e) {
+            throw std::runtime_error(e.what());
         }
+        _servers.start();
+        _servers.wait_until_ready();
     }
 
-    ~http01_responder() {
-        _server.stop();
-        if (_thread.joinable()) {
-            _thread.join();
-        }
-    }
+    ~http01_responder() { _servers.stop(); }
 
     http01_responder(const http01_responder&) = delete;
     http01_responder& operator=(const http01_responder&) = delete;
@@ -186,11 +179,10 @@ public:
     [[nodiscard]] auto port() const -> int { return _actual_port; }
 
 private:
-    httplib::Server _server;
-    std::jthread _thread;
-    int _actual_port{0};
     std::string _token;
     std::string _key_authorization;
+    kythira::net_bind::httplib_listeners<> _servers;
+    int _actual_port{0};
 };
 
 // ── dns-01 responder ─────────────────────────────────────────────────────────

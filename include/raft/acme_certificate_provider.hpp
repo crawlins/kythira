@@ -73,7 +73,13 @@ struct acme_certificate_provider_config {
     // requires port 80; tests SHOULD use ":0" (OS-assigned, non-privileged)
     // since the test CA (acme_test_server) is configured with a matching
     // `http01_validation_port` override rather than the RFC-mandated 80.
-    std::string http01_bind_address{"0.0.0.0:80"};
+    //
+    // The host takes "*" (IPv4 and IPv6, the default, and what an empty host
+    // means), an IP literal ("[::1]" bracketed), or an /etc/hosts name that
+    // maps to this host. A CA validates over whichever of the identifier's
+    // A/AAAA records it picks, so an IPv4-only responder fails validation
+    // for any identifier that has an AAAA record.
+    std::string http01_bind_address{"*:80"};
 
     acme_dns01_config dns01;
 
