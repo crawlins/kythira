@@ -20,6 +20,8 @@
 
 #include "config.hpp"
 
+#include <raft/httplib_listeners.hpp>
+
 #include <httplib.h>
 
 #include <algorithm>
@@ -51,132 +53,134 @@ public:
     auto operator=(const control_server&) -> control_server& = delete;
 
     auto start() -> void {
-        // As on the data port. The network probe below measures round trips,
-        // and a 40 ms Nagle stall would be reported as the network's.
-        _server.set_tcp_nodelay(true);
-        _server.Get("/health", [this](const httplib::Request&, httplib::Response& res) {
-            res.set_content(
-                _host.is_running() ? R"({"status":"running"})" : R"({"status":"stopped"})",
-                "application/json");
-            res.status = _host.is_running() ? 200 : 503;
-        });
+        // One server per address `_bind` resolves to ("*" is IPv4 and
+        // IPv6; see net_bind::httplib_listeners), each with the same routes.
+        auto configure = [this](httplib::Server& server) {
+            // As on the data port. The network probe below measures round trips,
+            // and a 40 ms Nagle stall would be reported as the network's.
+            server.set_tcp_nodelay(true);
+            server.Get("/health", [this](const httplib::Request&, httplib::Response& res) {
+                res.set_content(
+                    _host.is_running() ? R"({"status":"running"})" : R"({"status":"stopped"})",
+                    "application/json");
+                res.status = _host.is_running() ? 200 : 503;
+            });
 
-        // **Readiness is "every group has a leader", not "the process is up".**
-        // A driver that starts offering load before the cluster has elected
-        // measures the election, and this project has already learned that a
-        // window containing an election is not a window measuring a workload.
-        _server.Get("/ready", [this](const httplib::Request&, httplib::Response& res) {
-            const auto missing = groups_without_leader();
-            res.status = missing == 0 ? 200 : 503;
-            std::ostringstream out;
-            out << R"({"ready":)" << (missing == 0 ? "true" : "false")
-                << R"(,"groups_without_leader":)" << missing << R"(,"uptime_ms":)"
-                << std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::steady_clock::now() - _started)
-                       .count()
-                << '}';
-            res.set_content(out.str(), "application/json");
-        });
+            // **Readiness is "every group has a leader", not "the process is up".**
+            // A driver that starts offering load before the cluster has elected
+            // measures the election, and this project has already learned that a
+            // window containing an election is not a window measuring a workload.
+            server.Get("/ready", [this](const httplib::Request&, httplib::Response& res) {
+                const auto missing = groups_without_leader();
+                res.status = missing == 0 ? 200 : 503;
+                std::ostringstream out;
+                out << R"({"ready":)" << (missing == 0 ? "true" : "false")
+                    << R"(,"groups_without_leader":)" << missing << R"(,"uptime_ms":)"
+                    << std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - _started)
+                           .count()
+                    << '}';
+                res.set_content(out.str(), "application/json");
+            });
 
-        // Which groups this host leads, so a driver can build a routing cache
-        // out of band rather than by paying a not-leader round trip per key
-        // inside the window. The not-leader answer still exists and is still
-        // counted — this only keeps the *first* request of a window from being
-        // one.
-        _server.Get("/leaders", [this](const httplib::Request&, httplib::Response& res) {
-            std::ostringstream out;
-            out << '{' << R"("node_id":)" << _options._node_id << R"(,"leads":[)";
-            bool first = true;
-            for (auto group : _host.group_ids()) {
-                auto* node = _host.group_node(group);
-                if (node == nullptr || !node->is_leader()) {
-                    continue;
+            // Which groups this host leads, so a driver can build a routing cache
+            // out of band rather than by paying a not-leader round trip per key
+            // inside the window. The not-leader answer still exists and is still
+            // counted — this only keeps the *first* request of a window from being
+            // one.
+            server.Get("/leaders", [this](const httplib::Request&, httplib::Response& res) {
+                std::ostringstream out;
+                out << '{' << R"("node_id":)" << _options._node_id << R"(,"leads":[)";
+                bool first = true;
+                for (auto group : _host.group_ids()) {
+                    auto* node = _host.group_node(group);
+                    if (node == nullptr || !node->is_leader()) {
+                        continue;
+                    }
+                    if (!first) {
+                        out << ',';
+                    }
+                    first = false;
+                    out << group;
                 }
-                if (!first) {
-                    out << ',';
+                out << "]}";
+                res.set_content(out.str(), "application/json");
+            });
+
+            // What this host actually is, read off the running configuration
+            // rather than off the command line that started it. A row records this
+            // so that "the host was configured as X" is evidence rather than an
+            // assumption about how somebody launched it.
+            server.Get("/describe", [this](const httplib::Request&, httplib::Response& res) {
+                std::ostringstream out;
+                out << '{' << R"("node_id":)" << _options._node_id << R"(,"transport":")"
+                    << _transport << R"(","groups":)" << _options._groups << R"(,"key_count":)"
+                    << _options._key_count << R"(,"tick_interval_ms":)"
+                    << _options._tick_interval.count() << R"(,"persistence":")"
+                    << persistence_name() << R"(","durable":)" << (durable() ? "true" : "false")
+                    << R"(,"shard_split":"pre-split")"
+                    << R"(,"voters":)" << _options._voters.size() << '}';
+                res.set_content(out.str(), "application/json");
+            });
+
+            // ── Requirement 5.4: the network, measured BEFORE the window ─────
+            //
+            // `.kiro/specs/multi-raft-performance/` task 11 established that the
+            // per-stream inter-round interval tracks the RPC round trip, which
+            // makes the network between the nodes the axis most likely to explain
+            // a Tier E result. A cluster number without it is not reproducible, so
+            // the driver asks each host to measure its own peers before offering
+            // any load, and records the answer on the row.
+            //
+            // It is on the CONTROL port, and it is a host-to-host measurement
+            // rather than a driver-to-host one, because what the requirement is
+            // about is the network Raft runs over — not the one the client does.
+
+            // Echo: the far end of somebody else's bandwidth probe. Returns the
+            // body it was given, so the measured quantity is a real round trip of
+            // real bytes rather than a latency multiplied by an assumption.
+            server.Post("/echo", [](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(req.body, "application/octet-stream");
+            });
+
+            server.Get("/probe", [this](const httplib::Request&, httplib::Response& res) {
+                res.set_content(probe_peers(), "application/json");
+            });
+
+            // The sum of every group's current term, as a cheap "did anything
+            // re-elect" probe. The in-process harness has `kv_cluster::term_sum()`
+            // for exactly this and differences two samples around a window; an
+            // out-of-process driver cannot reach into the hosts, so the hosts
+            // offer it.
+            //
+            // **An election inside a measured window is reported, never asserted.**
+            // A window that contained one is not measuring a workload, and a row
+            // that cannot say whether it contained one cannot be read at all.
+            server.Get("/terms", [this](const httplib::Request&, httplib::Response& res) {
+                std::uint64_t total = 0;
+                std::size_t groups = 0;
+                for (auto group : _host.group_ids()) {
+                    if (auto* node = _host.group_node(group); node != nullptr) {
+                        total += node->get_current_term();
+                        ++groups;
+                    }
                 }
-                first = false;
-                out << group;
-            }
-            out << "]}";
-            res.set_content(out.str(), "application/json");
-        });
-
-        // What this host actually is, read off the running configuration
-        // rather than off the command line that started it. A row records this
-        // so that "the host was configured as X" is evidence rather than an
-        // assumption about how somebody launched it.
-        _server.Get("/describe", [this](const httplib::Request&, httplib::Response& res) {
-            std::ostringstream out;
-            out << '{' << R"("node_id":)" << _options._node_id << R"(,"transport":")" << _transport
-                << R"(","groups":)" << _options._groups << R"(,"key_count":)" << _options._key_count
-                << R"(,"tick_interval_ms":)" << _options._tick_interval.count()
-                << R"(,"persistence":")" << persistence_name() << R"(","durable":)"
-                << (durable() ? "true" : "false") << R"(,"shard_split":"pre-split")"
-                << R"(,"voters":)" << _options._voters.size() << '}';
-            res.set_content(out.str(), "application/json");
-        });
-
-        // ── Requirement 5.4: the network, measured BEFORE the window ─────
-        //
-        // `.kiro/specs/multi-raft-performance/` task 11 established that the
-        // per-stream inter-round interval tracks the RPC round trip, which
-        // makes the network between the nodes the axis most likely to explain
-        // a Tier E result. A cluster number without it is not reproducible, so
-        // the driver asks each host to measure its own peers before offering
-        // any load, and records the answer on the row.
-        //
-        // It is on the CONTROL port, and it is a host-to-host measurement
-        // rather than a driver-to-host one, because what the requirement is
-        // about is the network Raft runs over — not the one the client does.
-
-        // Echo: the far end of somebody else's bandwidth probe. Returns the
-        // body it was given, so the measured quantity is a real round trip of
-        // real bytes rather than a latency multiplied by an assumption.
-        _server.Post("/echo", [](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(req.body, "application/octet-stream");
-        });
-
-        _server.Get("/probe", [this](const httplib::Request&, httplib::Response& res) {
-            res.set_content(probe_peers(), "application/json");
-        });
-
-        // The sum of every group's current term, as a cheap "did anything
-        // re-elect" probe. The in-process harness has `kv_cluster::term_sum()`
-        // for exactly this and differences two samples around a window; an
-        // out-of-process driver cannot reach into the hosts, so the hosts
-        // offer it.
-        //
-        // **An election inside a measured window is reported, never asserted.**
-        // A window that contained one is not measuring a workload, and a row
-        // that cannot say whether it contained one cannot be read at all.
-        _server.Get("/terms", [this](const httplib::Request&, httplib::Response& res) {
-            std::uint64_t total = 0;
-            std::size_t groups = 0;
-            for (auto group : _host.group_ids()) {
-                if (auto* node = _host.group_node(group); node != nullptr) {
-                    total += node->get_current_term();
-                    ++groups;
-                }
-            }
-            std::ostringstream out;
-            out << R"({"node_id":)" << _options._node_id << R"(,"groups":)" << groups
-                << R"(,"term_sum":)" << total << '}';
-            res.set_content(out.str(), "application/json");
-        });
-
-        _thread = std::thread([this] { _server.listen(_bind.c_str(), _port); });
-        _server.wait_until_ready();
+                std::ostringstream out;
+                out << R"({"node_id":)" << _options._node_id << R"(,"groups":)" << groups
+                    << R"(,"term_sum":)" << total << '}';
+                res.set_content(out.str(), "application/json");
+            });
+        };
+        _port = _servers.bind(_bind, _port, configure, "control_server");
+        _servers.start();
+        _servers.wait_until_ready();
     }
 
     auto stop() -> void {
         if (_stopped.exchange(true)) {
             return;
         }
-        _server.stop();
-        if (_thread.joinable()) {
-            _thread.join();
-        }
+        _servers.stop();
     }
 
 private:
@@ -336,8 +340,7 @@ private:
     std::string _bind;
     std::uint16_t _port;
     std::chrono::steady_clock::time_point _started;
-    httplib::Server _server;
-    std::thread _thread;
+    kythira::net_bind::httplib_listeners<> _servers;
     std::atomic<bool> _stopped{false};
 };
 
