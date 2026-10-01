@@ -259,6 +259,28 @@ BOOST_AUTO_TEST_CASE(dns01_against_unreachable_server_fails_closed,
 }
 #endif
 
+// The http-01 responder defaults to "*:80": a CA validates over whichever
+// of the identifier's A/AAAA records it picks, so it must answer on IPv4 and
+// IPv6. "*:0" exercises the same path on an ephemeral port.
+BOOST_AUTO_TEST_CASE(http01_responder_star_bind_answers_on_ipv4) {
+    BOOST_TEST(raft::testing::acme_certificate_provider_config{}.http01_bind_address == "*:80");
+    raft::testing::acme_detail::http01_responder responder("*:0", "tok123", "tok123.thumb");
+    BOOST_REQUIRE(responder.port() > 0);
+    httplib::Client client("127.0.0.1", responder.port());
+    auto res = client.Get("/.well-known/acme-challenge/tok123");
+    BOOST_REQUIRE(res);
+    BOOST_TEST(res->status == 200);
+    BOOST_TEST(res->body == "tok123.thumb");
+}
+
+// A responder host that /etc/hosts doesn't list fails loudly rather than
+// being looked up in DNS.
+BOOST_AUTO_TEST_CASE(http01_responder_refuses_unlisted_host) {
+    BOOST_CHECK_THROW(
+        raft::testing::acme_detail::http01_responder("kythira-test.invalid:0", "t", "t.k"),
+        std::runtime_error);
+}
+
 // static_assert already lives in acme_certificate_provider.hpp; this
 // exercises it via the concept directly too, for a readable failure message
 // if it ever regresses.
