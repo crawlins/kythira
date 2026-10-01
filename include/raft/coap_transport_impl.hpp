@@ -5,6 +5,7 @@
 
 #include <raft/coap_transport.hpp>
 #include <raft/coap_security_impl.hpp>
+#include <raft/net_bind.hpp>
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -645,82 +646,117 @@ auto coap_server<Types>::start() -> void {
         throw coap_transport_error("CoAP context is null, cannot start server");
     }
 
-    // Create and configure libcoap endpoint for binding
-    coap_address_t bind_addr;
-    coap_address_init(&bind_addr);
+    // Resolve the bind address the same way every other listener does: an
+    // IP literal, "*" (IPv4 and IPv6), or a name from /etc/hosts such as
+    // "localhost", restricted to addresses on this host. Each address gets
+    // its own libcoap endpoint.
+    std::vector<kythira::net_bind::bind_endpoint> bind_endpoints;
+    try {
+        bind_endpoints = kythira::net_bind::resolve_bind_addresses(
+            _bind_address.empty() ? std::string("0.0.0.0") : _bind_address, "coap_server");
+    } catch (const std::exception& e) {
+        throw coap_network_error(std::string("Invalid bind address: ") + e.what());
+    }
 
-    // Set up bind address
-    if (_bind_address == "0.0.0.0" || _bind_address.empty()) {
-        // Bind to all interfaces (IPv4)
-        bind_addr.addr.sin.sin_family = AF_INET;
-        bind_addr.addr.sin.sin_addr.s_addr = INADDR_ANY;
-        bind_addr.addr.sin.sin_port = htons(_bind_port);
-        bind_addr.size = sizeof(struct sockaddr_in);
-
-        _logger.debug("Binding to all IPv4 interfaces", {{"port", std::to_string(_bind_port)}});
-    } else {
-        // Bind to specific address
-        bind_addr.addr.sin.sin_family = AF_INET;
-        bind_addr.addr.sin.sin_port = htons(_bind_port);
-
-        if (inet_pton(AF_INET, _bind_address.c_str(), &bind_addr.addr.sin.sin_addr) != 1) {
-            // Not a numeric IPv4 literal -- resolve it as a hostname (e.g.
-            // "localhost") via getaddrinfo() instead of failing outright.
-            struct addrinfo hints{};
-            hints.ai_family = AF_INET;
-            hints.ai_socktype = SOCK_DGRAM;
-            struct addrinfo* resolved = nullptr;
-            int gai_result = getaddrinfo(_bind_address.c_str(), nullptr, &hints, &resolved);
-            if (gai_result != 0 || !resolved) {
-                throw coap_network_error("Invalid bind address: " + _bind_address);
-            }
-            bind_addr.addr.sin.sin_addr =
-                reinterpret_cast<struct sockaddr_in*>(resolved->ai_addr)->sin_addr;
-            freeaddrinfo(resolved);
+    // libcoap may bind an IPv6 socket with IPV6_V6ONLY off, in which case
+    // "::" already receives IPv4 too and a later 0.0.0.0 bind on the same
+    // port can be refused. For "*" bind "::" first, then 0.0.0.0, and
+    // accept a refused 0.0.0.0 once "::" is up: whichever way libcoap set
+    // the option, IPv4 is then served. A host without IPv6 just gets
+    // 0.0.0.0.
+    auto is_unspecified = [](const kythira::net_bind::bind_endpoint& ep, int family) {
+        if (ep.addr.ss_family != family) return false;
+        if (family == AF_INET) {
+            return reinterpret_cast<const sockaddr_in&>(ep.addr).sin_addr.s_addr ==
+                   htonl(INADDR_ANY);
         }
-        bind_addr.size = sizeof(struct sockaddr_in);
-
-        _logger.debug("Binding to specific address",
-                      {{"address", _bind_address}, {"port", std::to_string(_bind_port)}});
+        return IN6_IS_ADDR_UNSPECIFIED(&reinterpret_cast<const sockaddr_in6&>(ep.addr).sin6_addr);
+    };
+    bool has_v6_any = std::any_of(bind_endpoints.begin(), bind_endpoints.end(),
+                                  [&](const auto& ep) { return is_unspecified(ep, AF_INET6); });
+    bool has_v4_any = std::any_of(bind_endpoints.begin(), bind_endpoints.end(),
+                                  [&](const auto& ep) { return is_unspecified(ep, AF_INET); });
+    if (has_v6_any && has_v4_any) {
+        std::stable_partition(bind_endpoints.begin(), bind_endpoints.end(),
+                              [](const auto& ep) { return ep.addr.ss_family == AF_INET6; });
     }
 
-    // Create endpoint with appropriate protocol
-    coap_endpoint_t* endpoint = nullptr;
-    if (_config.enable_dtls) {
-        endpoint = coap_new_endpoint(_coap_context, &bind_addr, COAP_PROTO_DTLS);
-        _logger.debug("Created DTLS endpoint");
-    } else {
-        endpoint = coap_new_endpoint(_coap_context, &bind_addr, COAP_PROTO_UDP);
-        _logger.debug("Created UDP endpoint");
-    }
-
-    if (!endpoint) {
-        throw coap_network_error("Failed to create CoAP endpoint on " + _bind_address + ":" +
-                                 std::to_string(_bind_port));
-    }
-
-    // Configure endpoint settings
-    coap_endpoint_set_default_mtu(endpoint, 1152);  // Standard CoAP MTU
-
-    // Recover the real bound port for bound_port() -- needed when
-    // _bind_port is 0 (ephemeral: the OS picks any free port). coap_endpoint_t
-    // is opaque and libcoap exposes no direct accessor for its bind
-    // address or underlying fd; coap_endpoint_str() is the only public API
-    // that surfaces it, as a formatted "<ip>:<port> <PROTO>" (or
-    // "[<ipv6>]:<port> <PROTO>") string built from the post-bind address
-    // coap_socket_bind_udp() itself fills in via getsockname(). The port
-    // is always the last ':'-delimited field: no colon appears in the
-    // trailing " UDP"/" DTLS"/" NONE" suffix, even for IPv6 addresses
-    // (whose own colons are inside the preceding "[...]").
-    if (const char* endpoint_str = coap_endpoint_str(endpoint)) {
-        if (const char* port_start = std::strrchr(endpoint_str, ':')) {
-            unsigned long parsed_port = 0;
-            auto [ptr, ec] =
-                std::from_chars(port_start + 1, port_start + std::strlen(port_start), parsed_port);
-            if (ec == std::errc{}) {
-                _actual_bound_port = static_cast<port_type>(parsed_port);
+    auto endpoint_port = [](coap_endpoint_t* endpoint) -> std::optional<port_type> {
+        // coap_endpoint_t is opaque and libcoap exposes no direct accessor
+        // for its bind address or underlying fd; coap_endpoint_str() is the
+        // only public API that surfaces it, as a formatted "<ip>:<port>
+        // <PROTO>" (or "[<ipv6>]:<port> <PROTO>") string built from the
+        // post-bind address coap_socket_bind_udp() itself fills in via
+        // getsockname(). The port is always the last ':'-delimited field:
+        // no colon appears in the trailing " UDP"/" DTLS"/" NONE" suffix,
+        // even for IPv6 addresses (whose own colons are inside the
+        // preceding "[...]").
+        if (const char* endpoint_str = coap_endpoint_str(endpoint)) {
+            if (const char* port_start = std::strrchr(endpoint_str, ':')) {
+                unsigned long parsed_port = 0;
+                auto [ptr, ec] = std::from_chars(port_start + 1,
+                                                 port_start + std::strlen(port_start), parsed_port);
+                if (ec == std::errc{}) {
+                    return static_cast<port_type>(parsed_port);
+                }
             }
         }
+        return std::nullopt;
+    };
+
+    // With port 0 the first endpoint takes an ephemeral port and every later
+    // one reuses it, so the server answers on a single port.
+    port_type port = _bind_port;
+    bool v6_any_bound = false;
+    std::size_t created = 0;
+    for (const auto& ep : bind_endpoints) {
+        coap_address_t bind_addr;
+        coap_address_init(&bind_addr);
+        std::memcpy(&bind_addr.addr, &ep.addr, ep.len);
+        bind_addr.size = ep.len;
+        if (ep.addr.ss_family == AF_INET6) {
+            bind_addr.addr.sin6.sin6_port = htons(port);
+        } else {
+            bind_addr.addr.sin.sin_port = htons(port);
+        }
+
+        coap_endpoint_t* endpoint = coap_new_endpoint(
+            _coap_context, &bind_addr, _config.enable_dtls ? COAP_PROTO_DTLS : COAP_PROTO_UDP);
+        auto host = kythira::net_bind::endpoint_host(ep);
+        if (!endpoint && v6_any_bound && is_unspecified(ep, AF_INET)) {
+            continue;  // "::" is dual-stack and already serves IPv4.
+        }
+        if (!endpoint) {
+            // An address family the kernel lacks (IPv6 disabled while
+            // /etc/hosts still lists ::1) is skipped when there are others.
+            if (bind_endpoints.size() > 1 &&
+                !kythira::net_bind::family_supported(ep.addr.ss_family)) {
+                continue;
+            }
+            throw coap_network_error("Failed to create CoAP endpoint on " + host + ":" +
+                                     std::to_string(port));
+        }
+        _logger.debug(_config.enable_dtls ? "Created DTLS endpoint" : "Created UDP endpoint",
+                      {{"address", host}, {"port", std::to_string(port)}});
+
+        // Configure endpoint settings
+        coap_endpoint_set_default_mtu(endpoint, 1152);  // Standard CoAP MTU
+
+        // Recover the real bound port for bound_port() -- needed when
+        // _bind_port is 0 (ephemeral: the OS picks any free port).
+        if (auto bound = endpoint_port(endpoint)) {
+            if (created == 0) {
+                _actual_bound_port = *bound;
+            }
+            port = *bound;
+        }
+        if (is_unspecified(ep, AF_INET6) && has_v4_any) {
+            v6_any_bound = true;
+        }
+        ++created;
+    }
+    if (created == 0) {
+        throw coap_network_error("No usable address family for CoAP bind address " + _bind_address);
     }
 
     // Set up resources for each RPC type
@@ -7496,27 +7532,46 @@ auto coap_server<Types>::send_multicast_response(const std::string& target_addre
     }
 
     try {
-        // Parse target address and port
+        // Parse target address and port: "v4:port", "[v6]:port" or a bare
+        // address. The address is the sender's own, as reported by the
+        // socket, so it is numeric; AI_NUMERICHOST keeps a malformed one
+        // from ever reaching DNS.
         std::string host = target_address;
         std::uint16_t port = 5683;  // Default CoAP port
 
-        auto colon_pos = target_address.find_last_of(':');
-        if (colon_pos != std::string::npos) {
+        if (target_address.starts_with('[')) {
+            auto close = target_address.find(']');
+            if (close == std::string::npos) {
+                _logger.error("Failed to parse target address", {{"address", target_address}});
+                return;
+            }
+            host = target_address.substr(1, close - 1);
+            if (close + 1 < target_address.size() && target_address[close + 1] == ':') {
+                port = static_cast<std::uint16_t>(std::stoi(target_address.substr(close + 2)));
+            }
+        } else if (auto colon_pos = target_address.find_last_of(':');
+                   colon_pos != std::string::npos && target_address.find(':') == colon_pos) {
+            // Exactly one colon: "v4:port". More than one is a bare IPv6
+            // literal with no port.
             host = target_address.substr(0, colon_pos);
             port = static_cast<std::uint16_t>(std::stoi(target_address.substr(colon_pos + 1)));
         }
 
-        // Set up target address
-        coap_address_t target_addr;
-        coap_address_init(&target_addr);
-        target_addr.addr.sin.sin_family = AF_INET;
-        target_addr.addr.sin.sin_port = htons(port);
-
-        if (inet_pton(AF_INET, host.c_str(), &target_addr.addr.sin.sin_addr) != 1) {
+        addrinfo hints{};
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_DGRAM;
+        hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
+        addrinfo* resolved = nullptr;
+        if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &resolved) != 0 ||
+            resolved == nullptr) {
             _logger.error("Failed to parse target address", {{"address", host}});
             return;
         }
-        target_addr.size = sizeof(struct sockaddr_in);
+        coap_address_t target_addr;
+        coap_address_init(&target_addr);
+        std::memcpy(&target_addr.addr, resolved->ai_addr, resolved->ai_addrlen);
+        target_addr.size = resolved->ai_addrlen;
+        ::freeaddrinfo(resolved);
 
         // Create client session for response
         coap_session_t* response_session =

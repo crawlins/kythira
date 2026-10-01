@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstring>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -420,6 +421,47 @@ BOOST_AUTO_TEST_CASE(test_server_restarts_cleanly_on_the_same_port,
         client.send_request_vote(peer_node_id, request, std::chrono::seconds{15}).get();
     BOOST_TEST(response.term() == 8U);
     second.stop();
+}
+
+// A name resolves to every address it has, not only the first, and repeats
+// (AI_ALL can list one address twice) are dropped.
+BOOST_AUTO_TEST_CASE(test_endpoint_resolves_every_address) {
+    const auto v6 = kythira::cantcoap_detail::resolve_endpoint("coap://[::1]:5683");
+    BOOST_REQUIRE_EQUAL(v6.size(), 1U);
+    BOOST_TEST(IN6_IS_ADDR_LOOPBACK(&v6.front().sin6_addr));
+    BOOST_TEST(ntohs(v6.front().sin6_port) == 5683U);
+
+    const auto v4 = kythira::cantcoap_detail::resolve_endpoint("127.0.0.1:9");
+    BOOST_REQUIRE_EQUAL(v4.size(), 1U);
+    BOOST_TEST(IN6_IS_ADDR_V4MAPPED(&v4.front().sin6_addr));
+
+    const auto local = kythira::cantcoap_detail::resolve_endpoint("coap://localhost:5683");
+    BOOST_TEST(!local.empty());
+    for (std::size_t i = 0; i < local.size(); ++i) {
+        for (std::size_t j = i + 1; j < local.size(); ++j) {
+            BOOST_TEST(std::memcmp(&local[i].sin6_addr, &local[j].sin6_addr, sizeof(in6_addr)) !=
+                       0);
+        }
+    }
+}
+
+// A peer named "localhost" is reached whichever of its addresses answers.
+BOOST_AUTO_TEST_CASE(test_localhost_endpoint_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& request) {
+        return kythira::request_vote_response<>{request.term(), true};
+    });
+    server.start();
+
+    test_client client{{{peer_node_id, "coap://localhost:" + std::to_string(server.bound_port())}},
+                       fast_client_config(),
+                       test_metrics{}};
+    const kythira::request_vote_request<> request{11, 1, 0, 0};
+    const auto response =
+        client.send_request_vote(peer_node_id, request, std::chrono::seconds{15}).get();
+    BOOST_TEST(response.term() == 11U);
+    server.stop();
 }
 
 // ── Requirement 6: OSCORE, inherited from the transport-neutral RFC 8613 ───

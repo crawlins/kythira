@@ -249,9 +249,11 @@ private:
     int _fd{-1};
 };
 
-/// Resolve "coap://host:port" (or "host:port") to a sockaddr this backend can
-/// sendto(). v4 results are mapped into the v6 socket's address family.
-[[nodiscard]] inline auto resolve_endpoint(const std::string& endpoint) -> sockaddr_in6 {
+/// Resolve "coap://host:port" (or "host:port") to every sockaddr this backend
+/// can sendto(), in getaddrinfo()'s preference order, duplicates dropped. v4
+/// results are mapped into the v6 socket's address family.
+[[nodiscard]] inline auto resolve_endpoint(const std::string& endpoint)
+    -> std::vector<sockaddr_in6> {
     std::string rest = endpoint;
     for (const auto* scheme : {"coaps://", "coap://"}) {
         if (rest.rfind(scheme, 0) == 0) {
@@ -291,9 +293,22 @@ private:
     if (::getaddrinfo(host.c_str(), port.c_str(), &hints, &results) != 0 || results == nullptr) {
         throw coap_network_error("failed to resolve CoAP endpoint: " + endpoint);
     }
-    sockaddr_in6 out{};
-    std::memcpy(&out, results->ai_addr, std::min<std::size_t>(sizeof(out), results->ai_addrlen));
+    std::vector<sockaddr_in6> out;
+    for (const addrinfo* ai = results; ai != nullptr; ai = ai->ai_next) {
+        sockaddr_in6 one{};
+        std::memcpy(&one, ai->ai_addr, std::min<std::size_t>(sizeof(one), ai->ai_addrlen));
+        const bool seen = std::any_of(out.begin(), out.end(), [&](const sockaddr_in6& prior) {
+            return std::memcmp(&prior.sin6_addr, &one.sin6_addr, sizeof(one.sin6_addr)) == 0 &&
+                   prior.sin6_port == one.sin6_port && prior.sin6_scope_id == one.sin6_scope_id;
+        });
+        if (!seen) {
+            out.push_back(one);
+        }
+    }
     ::freeaddrinfo(results);
+    if (out.empty()) {
+        throw coap_network_error("failed to resolve CoAP endpoint: " + endpoint);
+    }
     return out;
 }
 
@@ -510,7 +525,12 @@ private:
     struct pending_exchange {
         std::unique_ptr<pending_message> message;
         std::vector<std::byte> datagram;  //!< exactly what was sent, resent verbatim
-        sockaddr_in6 peer{};
+        /// Every address the endpoint resolved to. Sends go to
+        /// `peers[peer_index]`; a send the kernel refuses, or a
+        /// retransmission, moves on to the next one, so a name with an
+        /// unreachable first address still gets through.
+        std::vector<sockaddr_in6> peers;
+        std::size_t peer_index{0};
         std::chrono::steady_clock::time_point deadline;
         std::chrono::milliseconds backoff{0};
         std::size_t retransmissions{0};
@@ -552,7 +572,7 @@ private:
             }
 
             auto exchange = std::make_unique<pending_exchange>();
-            exchange->peer = cantcoap_detail::resolve_endpoint(endpoint->second);
+            exchange->peers = cantcoap_detail::resolve_endpoint(endpoint->second);
             exchange->resource_path = resource_path;
             exchange->request_media_type = media_type;
             exchange->full_request = _registry.encode_with(media_type, request);
@@ -708,7 +728,7 @@ private:
             }
             return;
         }
-        send_datagram(exchange.datagram, exchange.peer);
+        send_to_peer(exchange);
         exchange.retransmissions = 0;
         // RFC 7252 Section 4.2: the first retransmission waits ACK_TIMEOUT
         // scaled by a random factor in [1, ACK_RANDOM_FACTOR), and each
@@ -800,9 +820,22 @@ private:
         return {start, start + pdu.getPDULength()};
     }
 
-    auto send_datagram(const std::vector<std::byte>& bytes, const sockaddr_in6& peer) -> void {
-        ::sendto(_socket.fd(), bytes.data(), bytes.size(), 0,
-                 reinterpret_cast<const sockaddr*>(&peer), sizeof(peer));
+    auto send_datagram(const std::vector<std::byte>& bytes, const sockaddr_in6& peer) -> bool {
+        return ::sendto(_socket.fd(), bytes.data(), bytes.size(), 0,
+                        reinterpret_cast<const sockaddr*>(&peer), sizeof(peer)) >= 0;
+    }
+
+    /// Send the exchange's datagram to its current address, moving on
+    /// through the rest when the kernel refuses one outright (no route, as
+    /// for an IPv6 address on a host without IPv6). Lost datagrams are left
+    /// to the retransmission timer.
+    auto send_to_peer(pending_exchange& exchange) -> void {
+        for (std::size_t tried = 0; tried < exchange.peers.size(); ++tried) {
+            if (send_datagram(exchange.datagram, exchange.peers[exchange.peer_index])) {
+                return;
+            }
+            exchange.peer_index = (exchange.peer_index + 1) % exchange.peers.size();
+        }
     }
 
     [[nodiscard]] auto next_message_id() -> std::uint16_t {
@@ -972,7 +1005,10 @@ private:
                 exchange->message->retransmission_count = exchange->retransmissions;
                 exchange->backoff *= 2;
                 exchange->deadline = now + exchange->backoff;
-                send_datagram(exchange->datagram, exchange->peer);
+                // No reply yet: the current address may be unreachable, so
+                // the retransmission tries the next one.
+                exchange->peer_index = (exchange->peer_index + 1) % exchange->peers.size();
+                send_to_peer(*exchange);
             }
             for (auto& [token, error] : to_reject) {
                 if (const auto it = _pending.find(token); it != _pending.end()) {

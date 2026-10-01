@@ -180,4 +180,76 @@ BOOST_AUTO_TEST_CASE(test_cbor_install_snapshot_round_trip,
     server.stop();
 }
 
+#ifdef LIBCOAP_AVAILABLE
+// A server bound to "localhost" listens on every address /etc/hosts gives
+// it (127.0.0.1 and, where present, ::1) on one port, so a client that
+// resolves "localhost" to either one is answered.
+BOOST_AUTO_TEST_CASE(test_localhost_bind_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::coap_server_config server_config;
+    server_config.enable_dtls = false;
+    kythira::noop_metrics server_metrics;
+    coap_server<test_transport_types> server("localhost", 0, server_config, server_metrics);
+    server.register_request_vote_handler(
+        [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+            return kythira::request_vote_response<>{req.term(), true};
+        });
+    server.start();
+
+    kythira::coap_client_config client_config;
+    client_config.enable_dtls = false;
+    std::unordered_map<std::uint64_t, std::string> endpoints;
+    endpoints[test_node_id] = std::format("coap://localhost:{}", server.bound_port());
+    kythira::noop_metrics client_metrics;
+    coap_client<test_transport_types> client(std::move(endpoints), client_config, client_metrics);
+
+    kythira::request_vote_request<> request{9, 42, 3, 6};
+    auto future = client.send_request_vote(test_node_id, request, test_timeout);
+    BOOST_REQUIRE(future.wait(test_timeout));
+    BOOST_TEST(std::move(future).get().term() == 9);
+
+    server.stop();
+}
+
+// "*" binds "::" and 0.0.0.0 on one port (or 0.0.0.0 alone on a host with
+// no IPv6), so an IPv4 client is answered either way.
+BOOST_AUTO_TEST_CASE(test_star_bind_serves_ipv4,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::coap_server_config server_config;
+    server_config.enable_dtls = false;
+    kythira::noop_metrics server_metrics;
+    coap_server<test_transport_types> server("*", 0, server_config, server_metrics);
+    server.register_request_vote_handler(
+        [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+            return kythira::request_vote_response<>{req.term(), true};
+        });
+    server.start();
+
+    kythira::coap_client_config client_config;
+    client_config.enable_dtls = false;
+    std::unordered_map<std::uint64_t, std::string> endpoints;
+    endpoints[test_node_id] = std::format("coap://127.0.0.1:{}", server.bound_port());
+    kythira::noop_metrics client_metrics;
+    coap_client<test_transport_types> client(std::move(endpoints), client_config, client_metrics);
+
+    kythira::request_vote_request<> request{10, 42, 3, 6};
+    auto future = client.send_request_vote(test_node_id, request, test_timeout);
+    BOOST_REQUIRE(future.wait(test_timeout));
+    BOOST_TEST(std::move(future).get().term() == 10);
+
+    server.stop();
+}
+
+// A bind name missing from /etc/hosts is refused, never looked up in DNS.
+BOOST_AUTO_TEST_CASE(test_unlisted_bind_name_is_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::coap_server_config server_config;
+    server_config.enable_dtls = false;
+    kythira::noop_metrics server_metrics;
+    coap_server<test_transport_types> server("kythira-unlisted-bind-name.invalid", 0, server_config,
+                                             server_metrics);
+    BOOST_CHECK_THROW(server.start(), kythira::coap_network_error);
+}
+#endif  // LIBCOAP_AVAILABLE
+
 BOOST_AUTO_TEST_SUITE_END()
