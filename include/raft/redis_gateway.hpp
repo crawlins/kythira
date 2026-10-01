@@ -273,7 +273,7 @@ private:
     auto forget_lru(group_id_type group, const std::string& key) -> void;
 
     // ---- networking ------------------------------------------------------------
-    auto accept_loop(boost::asio::ip::tcp::acceptor& acceptor, bool tls) -> void;
+    auto accept_loop(std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor, bool tls) -> void;
     auto build_ssl_context() -> boost::asio::ssl::context;
     auto register_connection(const std::shared_ptr<connection>& c) -> void;
     auto unregister_connection(connection* c) -> void;
@@ -298,8 +298,10 @@ private:
 
     boost::asio::io_context _io;
     std::optional<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>> _work;
-    std::optional<boost::asio::ip::tcp::acceptor> _acceptor;
-    std::optional<boost::asio::ip::tcp::acceptor> _tls_acceptor;
+    // One acceptor per address the listen host resolves to (net_bind.hpp),
+    // all on the same port.
+    std::vector<std::shared_ptr<boost::asio::ip::tcp::acceptor>> _acceptors;
+    std::vector<std::shared_ptr<boost::asio::ip::tcp::acceptor>> _tls_acceptors;
     std::shared_ptr<boost::asio::ssl::context> _ssl_ctx;
     std::vector<std::thread> _io_threads;
     std::optional<boost::asio::thread_pool> _workers;

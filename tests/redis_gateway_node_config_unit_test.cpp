@@ -49,7 +49,8 @@ BOOST_AUTO_TEST_CASE(loopback_addresses) {
     BOOST_TEST(!is_loopback_address("::"));
     BOOST_TEST(!is_loopback_address("10.0.0.1"));
     BOOST_TEST(!is_loopback_address("128.0.0.1"));
-    BOOST_TEST(!is_loopback_address("localhost"));
+    BOOST_TEST(is_loopback_address("localhost"));
+    BOOST_TEST(!is_loopback_address("*"));
     BOOST_TEST(!is_loopback_address(""));
 }
 
@@ -85,4 +86,12 @@ BOOST_AUTO_TEST_CASE(loopback_bind_needs_no_opt_in) {
     auto opt = from_env();
     BOOST_TEST(!opt._allow_plaintext_raft);
     BOOST_TEST(opt._bind_address == "127.0.0.1");
+}
+
+BOOST_AUTO_TEST_CASE(localhost_bind_needs_no_opt_in) {
+    gateway_env env;
+    ::setenv("KYTHIRA_RAFT_BIND", "localhost", 1);
+    auto opt = from_env();
+    BOOST_TEST(!opt._allow_plaintext_raft);
+    BOOST_TEST(opt._bind_address == "localhost");
 }

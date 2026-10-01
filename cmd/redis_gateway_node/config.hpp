@@ -66,7 +66,8 @@ struct node_options {
 /// @throws std::invalid_argument naming the variable that is missing or malformed.
 [[nodiscard]] auto from_env() -> node_options;
 
-/// True for an IPv4 address in 127.0.0.0/8 or the IPv6 address ::1.
+/// True when every address `address` binds is loopback: 127.0.0.0/8, ::1, or a
+/// name such as "localhost" that /etc/hosts maps only to those.
 [[nodiscard]] auto is_loopback_address(const std::string& address) -> bool;
 
 [[nodiscard]] auto usage() -> std::string;

@@ -41,6 +41,8 @@
 #include "host_runners.hpp"
 #include "stop_signal.hpp"
 
+#include <raft/net_bind.hpp>
+
 #include <folly/init/Init.h>
 
 #include <arpa/inet.h>
@@ -82,17 +84,12 @@ void wait_for_stop() {
 
 namespace {
 
-// True for an IPv4 address in 127.0.0.0/8 or the IPv6 address ::1.
+// True when every address `address` binds is loopback (127.0.0.0/8, ::1, or
+// a name such as "localhost" that /etc/hosts maps only to those).
 auto is_loopback_address(const std::string& address) -> bool {
-    in_addr v4{};
-    if (::inet_pton(AF_INET, address.c_str(), &v4) == 1) {
-        return (ntohl(v4.s_addr) >> 24) == 127;
-    }
-    in6_addr v6{};
-    if (::inet_pton(AF_INET6, address.c_str(), &v6) == 1) {
-        return std::memcmp(&v6, &in6addr_loopback, sizeof(v6)) == 0;
-    }
-    return false;
+    // Same resolver the Raft listener binds with, so "localhost" counts and
+    // the check can't disagree with what is actually bound.
+    return kythira::net_bind::is_loopback_bind_address(address);
 }
 
 using kythira::bench::node_options;
