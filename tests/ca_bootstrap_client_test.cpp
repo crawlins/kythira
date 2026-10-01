@@ -107,6 +107,37 @@ BOOST_AUTO_TEST_CASE(wrong_fingerprint_rejected_with_mismatch_error,
                           });
 }
 
+// The pinned root is public. A listener presenting [its OWN leaf, the
+// genuine pinned root] used to pass, because only the root's fingerprint was
+// compared — the handshake then proved possession of the impostor's key, not
+// the genuine CA's, and the impostor received the bearer token and chose the
+// "trusted" root. The leaf must actually chain to the pinned root.
+BOOST_AUTO_TEST_CASE(impostor_leaf_with_genuine_root_is_rejected, *boost::unit_test::timeout(30)) {
+    certificate_authority genuine_ca;
+    certificate_authority impostor_ca;
+    leaf_certificate_options opts;
+    opts.subject.common_name = "ca-bootstrap-impostor";
+    opts.dns_names = {"localhost"};
+    opts.ip_addresses = {"127.0.0.1"};
+    auto impostor = impostor_ca.issue(opts);
+    // Splice the genuine root in after the impostor's leaf.
+    impostor.chain_pem = impostor.certificate_pem + genuine_ca.root_certificate_pem();
+    temp_cert_files listener_files(impostor);
+    ca_test_fixture fixture{network_options_with_tls(listener_files)};
+
+    BIO* bio = BIO_new_mem_buf(genuine_ca.root_certificate_pem().data(),
+                               static_cast<int>(genuine_ca.root_certificate_pem().size()));
+    X509* raw_root = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    BOOST_REQUIRE(raw_root != nullptr);
+    std::string genuine_fingerprint = sha256_fingerprint_hex(raw_root);
+    X509_free(raw_root);
+
+    BOOST_CHECK_THROW(fetch_trusted_root(fixture.service_base_url(), genuine_fingerprint,
+                                         fixture.service_auth_token()),
+                      std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(malformed_expected_fingerprint_is_a_usage_error,
                      *boost::unit_test::timeout(15)) {
     BOOST_CHECK_THROW(

@@ -97,6 +97,28 @@ namespace ca_bootstrap_detail {
     return count > 0 ? sk_X509_value(chain, count - 1) : nullptr;
 }
 
+// True iff the server's leaf certificate verifies up to `pinned_root`, using
+// the rest of the presented chain only as untrusted intermediates. A
+// self-signed leaf that IS the pinned root also verifies.
+[[nodiscard]] inline auto leaf_chains_to(SSL* ssl, X509* pinned_root, STACK_OF(X509) * presented)
+    -> bool {
+    X509* leaf = SSL_get0_peer_certificate(ssl);
+    if (leaf == nullptr) {
+        // OpenSSL's client-side chain starts with the leaf.
+        leaf = sk_X509_num(presented) > 0 ? sk_X509_value(presented, 0) : nullptr;
+    }
+    if (leaf == nullptr) {
+        return false;
+    }
+    X509_STORE* store = X509_STORE_new();
+    X509_STORE_CTX* ctx = X509_STORE_CTX_new();
+    bool ok = store != nullptr && ctx != nullptr && X509_STORE_add_cert(store, pinned_root) == 1 &&
+              X509_STORE_CTX_init(ctx, store, leaf, presented) == 1 && X509_verify_cert(ctx) == 1;
+    X509_STORE_CTX_free(ctx);
+    X509_STORE_free(store);
+    return ok;
+}
+
 }  // namespace ca_bootstrap_detail
 
 /// Connects to `base_url` over TLS WITHOUT chain verification, checks the
@@ -153,7 +175,15 @@ namespace ca_bootstrap_detail {
         } catch (const std::exception&) {
             return httplib::SSLVerifierResponse::CertificateRejected;
         }
-        return observed_fingerprint == normalized_expected
+        if (observed_fingerprint != normalized_expected) {
+            return httplib::SSLVerifierResponse::CertificateRejected;
+        }
+        // The pinned root is public, so a matching root in the presented
+        // list proves nothing by itself: an on-path attacker can send
+        // [its own leaf, the genuine root], and the handshake then only
+        // proves possession of the ATTACKER's leaf key. Accept only if the
+        // leaf actually chains to the pinned root.
+        return ca_bootstrap_detail::leaf_chains_to(ssl, root, chain)
                    ? httplib::SSLVerifierResponse::CertificateAccepted
                    : httplib::SSLVerifierResponse::CertificateRejected;
     });
