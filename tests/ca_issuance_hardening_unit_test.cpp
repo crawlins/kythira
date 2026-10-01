@@ -12,6 +12,7 @@
 #include <raft/ca_http_helpers.hpp>
 #include <raft/certificate_authority.hpp>
 #include <raft/certificate_provider.hpp>
+#include <raft/csr_policy.hpp>
 #include <raft/tls_tcp_rpc.hpp>
 
 #include <boost/json.hpp>
@@ -22,6 +23,7 @@
 #include <openssl/x509v3.h>
 
 #include <memory>
+#include <utility>
 #include <set>
 #include <string>
 #include <vector>
@@ -248,4 +250,85 @@ BOOST_AUTO_TEST_CASE(rpc_trust_requires_peer_name_for_ca_certs, *boost::unit_tes
     certificate_authority other_ca;
     auto foreign_peer = load(other_ca.issue(peer_opts).certificate_pem);
     BOOST_TEST(!restricted.accepts(foreign_peer.get()));
+}
+
+// ── CSR policy for CSR-authoritative providers (AWS/GCP/OCI) ────────────────
+
+namespace {
+
+// A CSR requesting exactly `exts` (OpenSSL config-syntax values; test input
+// only), signed with a fresh P-256 key.
+auto csr_with_extensions(const std::vector<std::pair<int, std::string>>& exts) -> std::string {
+    EVP_PKEY* key = EVP_EC_gen("P-256");
+    BOOST_REQUIRE(key != nullptr);
+    X509_REQ* req = X509_REQ_new();
+    X509_NAME* name = X509_NAME_new();
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                               reinterpret_cast<const unsigned char*>("csr-policy"), -1, -1, 0);
+    X509_REQ_set_subject_name(req, name);
+    X509_NAME_free(name);
+    X509_REQ_set_pubkey(req, key);
+    if (!exts.empty()) {
+        STACK_OF(X509_EXTENSION)* stack = sk_X509_EXTENSION_new_null();
+        X509V3_CTX ctx;
+        X509V3_set_ctx_nodb(&ctx);
+        X509V3_set_ctx(&ctx, nullptr, nullptr, req, nullptr, 0);
+        for (const auto& [nid, value] : exts) {
+            X509_EXTENSION* ext = X509V3_EXT_conf_nid(nullptr, &ctx, nid, value.c_str());
+            BOOST_REQUIRE(ext != nullptr);
+            sk_X509_EXTENSION_push(stack, ext);
+        }
+        X509_REQ_add_extensions(req, stack);
+        sk_X509_EXTENSION_pop_free(stack, X509_EXTENSION_free);
+    }
+    X509_REQ_sign(req, key, EVP_sha256());
+    BIO* bio = BIO_new(BIO_s_mem());
+    PEM_write_bio_X509_REQ(bio, req);
+    char* data = nullptr;
+    long len = BIO_get_mem_data(bio, &data);  // NOLINT(google-runtime-int)
+    std::string pem(data, static_cast<std::size_t>(len));
+    BIO_free(bio);
+    X509_REQ_free(req);
+    EVP_PKEY_free(key);
+    return pem;
+}
+
+auto approved() -> csr_signing_options {
+    csr_signing_options o;
+    o.dns_names = {"svc.example.com", "alt.example.com"};
+    o.ip_addresses = {"10.0.0.7"};
+    o.server_auth = true;
+    o.client_auth = false;
+    return o;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(csr_policy_accepts_approved_requests, *boost::unit_test::timeout(30)) {
+    BOOST_CHECK_NO_THROW(enforce_csr_matches_options(csr_with_extensions({}), approved()));
+    BOOST_CHECK_NO_THROW(enforce_csr_matches_options(
+        csr_with_extensions({{NID_subject_alt_name, "DNS:SVC.example.com,IP:10.0.0.7"},
+                             {NID_basic_constraints, "CA:FALSE"},
+                             {NID_key_usage, "digitalSignature,keyEncipherment"},
+                             {NID_ext_key_usage, "serverAuth"}}),
+        approved()));
+}
+
+BOOST_AUTO_TEST_CASE(csr_policy_rejects_unapproved_requests, *boost::unit_test::timeout(30)) {
+    const std::vector<std::vector<std::pair<int, std::string>>> bad = {
+        {{NID_subject_alt_name, "DNS:svc.example.com,DNS:admin.example.com"}},
+        {{NID_subject_alt_name, "URI:spiffe://prod/admin"}},
+        {{NID_subject_alt_name, "email:root@example.com"}},
+        {{NID_subject_alt_name, "IP:10.0.0.8"}},
+        {{NID_basic_constraints, "critical,CA:TRUE"}},
+        {{NID_key_usage, "keyCertSign"}},
+        {{NID_ext_key_usage, "clientAuth"}},  // not approved: client_auth=false
+        {{NID_ext_key_usage, "codeSigning"}},
+        {{NID_name_constraints, "permitted;DNS:example.com"}},
+    };
+    for (const auto& exts : bad) {
+        BOOST_CHECK_THROW(enforce_csr_matches_options(csr_with_extensions(exts), approved()),
+                          std::invalid_argument);
+    }
+    BOOST_CHECK_THROW(enforce_csr_matches_options("not a csr", approved()), std::invalid_argument);
 }

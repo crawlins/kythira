@@ -50,11 +50,20 @@ using raft::testing::oci_certificates_provider_config;
 
 constexpr std::uint16_t test_port = 18323;
 
-/// A CSR-shaped string. This tier never parses it — `CreateCertificate` forwards
-/// the bytes and OCI's CA is what would reject a malformed one — so a real CSR
-/// would buy nothing here but an RSA keygen per case.
+/// A real but minimal CSR (P-256 key, CN=mock-csr, no requested extensions),
+/// generated once and embedded so no case pays for a keygen. It has to be a
+/// real CSR because `sign_csr` now parses it: OCI signs the names IN the CSR,
+/// so the provider refuses one requesting anything `options` did not approve
+/// (`enforce_csr_matches_options`). Requesting no extensions passes for any
+/// `options`.
 constexpr const char* fake_csr_pem =
-    "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr-bytes\n-----END CERTIFICATE REQUEST-----\n";
+    "-----BEGIN CERTIFICATE REQUEST-----\n"
+    "MIHNMHUCAQAwEzERMA8GA1UEAwwIbW9jay1jc3IwWTATBgcqhkjOPQIBBggqhkjO\n"
+    "PQMBBwNCAASOUg3w3LdVssyFm8aYbwl12G3GUYREOc3C6d9W10E9Z6hlml8wRVoe\n"
+    "bmn03ZQmzvccffHsZ+chFM+ip8jj26S6oAAwCgYIKoZIzj0EAwIDSAAwRQIgfvra\n"
+    "4DPY6ZFCoHeBBk6SgLqJrWO8OqsDiJvo6ryT4UMCIQC/QbCXiH69rCaA+ugSaP85\n"
+    "Aq2RbIgtIMzPS+yL0mdfiA==\n"
+    "-----END CERTIFICATE REQUEST-----\n";
 
 auto generate_rsa_key_pem() -> std::string {
     EVP_PKEY* raw = nullptr;
@@ -198,6 +207,33 @@ BOOST_AUTO_TEST_CASE(sign_csr_forwards_the_callers_csr_and_returns_no_private_ke
     // reading the OCI console can tell the certificates apart.
     BOOST_CHECK_MESSAGE(certificates.front().name.starts_with("node-1-cluster-local-"),
                         "unexpected certificate name: " << certificates.front().name);
+}
+
+/// OCI issues from the CSR's own names, so a CSR asking for a name the caller
+/// was not approved for must be refused before anything reaches OCI — the
+/// mock must see no CreateCertificate at all.
+BOOST_AUTO_TEST_CASE(sign_csr_refuses_a_csr_requesting_unapproved_names,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    oci_certificates_provider provider{fixture.config()};
+
+    // CN=smuggler, SAN DNS:node-1.cluster.local + DNS:admin.cluster.local.
+    const std::string smuggling_csr_pem =
+        "-----BEGIN CERTIFICATE REQUEST-----\n"
+        "MIIBFTCBvAIBADATMREwDwYDVQQDDAhzbXVnZ2xlcjBZMBMGByqGSM49AgEGCCqG\n"
+        "SM49AwEHA0IABP5SNoOQjCSJFVZ24Rx92qCpl74UepFqqabzYONSEVLCJI0isSpR\n"
+        "k44L1DPJEk/CAqXXI0RAlONLEn/Suk4Aak2gRzBFBgkqhkiG9w0BCQ4xODA2MDQG\n"
+        "A1UdEQQtMCuCFG5vZGUtMS5jbHVzdGVyLmxvY2FsghNhZG1pbi5jbHVzdGVyLmxv\n"
+        "Y2FsMAoGCCqGSM49BAMCA0gAMEUCID/yjZlr4tXmyRVWLp8O5PEg7D84ZaHe/u+I\n"
+        "ztipHnq6AiEA9ruH3pqZ6ZwSpYJQz+QPYIWsfamyzvsRn3TRT53uUcE=\n"
+        "-----END CERTIFICATE REQUEST-----\n";
+
+    csr_signing_options options;
+    options.dns_names = {"node-1.cluster.local"};
+
+    BOOST_CHECK_THROW(std::move(provider.sign_csr(smuggling_csr_pem, options)).get(),
+                      std::invalid_argument);
+    BOOST_CHECK(fixture.server.certificates().empty());
 }
 
 /// Requirement 12.2's poll: issuance is not instantaneous on real OCI, and the

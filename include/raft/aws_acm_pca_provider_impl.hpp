@@ -13,6 +13,8 @@
 
 #ifdef KYTHIRA_HAS_AWS_ACM_PCA
 
+#include <raft/csr_policy.hpp>
+
 #include <aws/acm-pca/model/GetCertificateAuthorityCertificateRequest.h>
 #include <aws/acm-pca/model/GetCertificateRequest.h>
 #include <aws/acm-pca/model/IssueCertificateRequest.h>
@@ -106,6 +108,10 @@ inline auto aws_acm_pca_provider::sign_csr(std::string csr_pem, csr_signing_opti
         fiu_do_on("raft/aws/acm_pca/issue_certificate",
                   throw std::runtime_error("fault: raft/aws/acm_pca/issue_certificate"););
 
+        // CSR-authoritative CA: it signs the names in the CSR, not
+        // `options`, so refuse a CSR asking for anything unapproved.
+        enforce_csr_matches_options(csr_pem, options);
+
         Aws::ACMPCA::Model::IssueCertificateRequest issue_req;
         issue_req.SetCertificateAuthorityArn(_config.certificate_authority_arn);
         issue_req.SetCsr(Aws::Utils::ByteBuffer(
@@ -160,6 +166,11 @@ inline auto aws_acm_pca_provider::sign_csr(std::string csr_pem, csr_signing_opti
             std::this_thread::sleep_for(backoff);
             backoff = std::min(backoff * 2, std::chrono::milliseconds(5000));
         }
+    } catch (const std::invalid_argument&) {
+        // A rejected request (e.g. by enforce_csr_matches_options) stays an
+        // invalid_argument so HTTP callers answer 400, not 502.
+        return kythira::future_factory_default::makeExceptionalFuture<pem_material>(
+            std::current_exception());
     } catch (const std::exception& ex) {
         return kythira::future_factory_default::makeExceptionalFuture<pem_material>(
             std::make_exception_ptr(
