@@ -69,6 +69,11 @@ one of those addresses must belong to this host, loopback or an interface
 address. A name missing from `/etc/hosts`, or listed with another host's
 address, stops the node at startup.
 
+`--http-address` (default `0.0.0.0`) selects what the client HTTP API listens
+on, and takes the same forms as `--rpc-address`, plus `*`. `*` listens on
+both `0.0.0.0` and `::`, on separate sockets. `0.0.0.0` on its own stays IPv4
+only, so an upgrade never opens an IPv6 port unless you ask for one.
+
 **Upgrading a plaintext cluster:** a node that ran plaintext across hosts on
 an earlier release will exit at startup on this one. Either provision the RPC
 bootstrap credential below, or add `--allow-plaintext-rpc` to keep the

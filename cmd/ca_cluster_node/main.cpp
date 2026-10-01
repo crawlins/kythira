@@ -50,6 +50,7 @@
 #include <raft/certificate_provider.hpp>
 #include <raft/console_logger.hpp>
 #include <raft/file_persistence.hpp>
+#include <raft/httplib_listeners.hpp>
 #include <raft/membership.hpp>
 #include <raft/metrics.hpp>
 #include <raft/raft.hpp>
@@ -77,6 +78,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -128,10 +130,10 @@ void sigterm_handler(int) {
     g_stop_cv.notify_all();
 }
 
-std::atomic<httplib::Server*> g_http_server{nullptr};
+std::atomic<kythira::net_bind::httplib_listeners<>*> g_http_listeners{nullptr};
 void on_http_signal(int) {
-    auto* srv = g_http_server.load();
-    if (srv != nullptr) srv->stop();
+    auto* listeners = g_http_listeners.load();
+    if (listeners != nullptr) listeners->request_stop();
 }
 
 auto read_unseal_key(const std::string& path) -> std::string {
@@ -1038,24 +1040,24 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     });
 
     // ── Client-facing HTTP API ───────────────────────────────────────────────
-    std::unique_ptr<httplib::Server> plain_server;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    std::unique_ptr<httplib::SSLServer> ssl_server;
-#endif
-    httplib::Server* server = nullptr;
+    // One httplib server per address --http-address resolves to ("*" is IPv4
+    // and IPv6; see net_bind::httplib_listeners), each built by
+    // make_http_server and given the same routes by configure_http_server.
+    std::function<std::unique_ptr<httplib::Server>()> make_http_server;
 
     if (!cfg.tls_cert_path.empty()) {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-        ssl_server = std::make_unique<httplib::SSLServer>(cfg.tls_cert_path.c_str(),
-                                                          cfg.tls_key_path.c_str());
-        if (!ssl_server->is_valid()) {
-            std::cerr << "ca_cluster_node: failed to initialize TLS with cert " << cfg.tls_cert_path
-                      << " / key " << cfg.tls_key_path << "\n";
-            return 1;
-        }
-        SSL_CTX_set_verify(ssl_server->ssl_context(), SSL_VERIFY_PEER,
-                           raft::testing::accept_any_peer_certificate);
-        server = ssl_server.get();
+        make_http_server = [&]() -> std::unique_ptr<httplib::Server> {
+            auto ssl_server = std::make_unique<httplib::SSLServer>(cfg.tls_cert_path.c_str(),
+                                                                   cfg.tls_key_path.c_str());
+            if (!ssl_server->is_valid()) {
+                throw std::runtime_error("failed to initialize TLS with cert " + cfg.tls_cert_path +
+                                         " / key " + cfg.tls_key_path);
+            }
+            SSL_CTX_set_verify(ssl_server->ssl_context(), SSL_VERIFY_PEER,
+                               raft::testing::accept_any_peer_certificate);
+            return ssl_server;
+        };
         // Requirement 19.1: printed once at startup — see ca_service's
         // identical rationale for why this matters for ca_bootstrap_client's
         // first-contact trust check.
@@ -1078,59 +1080,23 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         return 1;
 #endif
     } else {
-        plain_server = std::make_unique<httplib::Server>();
-        server = plain_server.get();
+        make_http_server = [] { return std::make_unique<httplib::Server>(); };
         std::cerr << "ca_cluster_node: WARNING: running without TLS (no --tls-cert/--tls-key "
                      "given) — suitable "
                      "only for a private network\n";
     }
 
-    g_http_server.store(server);
+    kythira::net_bind::httplib_listeners<> http_listeners;
+    g_http_listeners.store(&http_listeners);
     std::signal(SIGINT, on_http_signal);
     std::signal(SIGTERM, sigterm_handler);
     // SIGTERM triggers both: sigterm_handler() wakes the main wait below, and
     // that same shutdown path stops the HTTP server explicitly (see below) —
     // SIGINT is wired to stop the HTTP server directly for interactive use.
 
+    // Everything the route handlers capture by reference lives out here, not
+    // inside configure_http_server, so it outlives every server it configures.
     const std::string bearer_prefix = "Bearer ";
-    server->set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res) {
-        if (req.method == "POST" && req.path == "/v1/certificates/renew") {
-            return httplib::Server::HandlerResponse::Unhandled;  // authenticates via mTLS in its
-                                                                 // own handler
-        }
-        if (req.path == "/healthz") {
-            return httplib::Server::HandlerResponse::Unhandled;  // health checks must work with no
-                                                                 // credentials
-        }
-        // Peer-to-peer calls authenticate with the peer-enrollment key
-        // instead of the client bearer token, which followers no longer send
-        // over the unverified intra-cluster link:
-        //  - GET /v1/root-ca with a valid request MAC over its nonce;
-        //  - POST /v1/certificates carrying an enrollment MAC — admitted here
-        //    only provisionally; the handler refuses it unless it verifies
-        //    as a complete peer enrollment (classify_peer_enrollment).
-        if (req.method == "GET" && req.path == "/v1/root-ca") {
-            auto nonce = req.get_header_value(raft::testing::k_peer_nonce_header);
-            if (raft::testing::is_well_formed_nonce(nonce) &&
-                raft::testing::constant_time_equals(
-                    req.get_header_value(raft::testing::k_peer_request_mac_header),
-                    raft::testing::peer_root_request_mac(cfg.peer_enrollment_key, nonce))) {
-                return httplib::Server::HandlerResponse::Unhandled;
-            }
-        }
-        if (req.method == "POST" && req.path == "/v1/certificates" &&
-            req.has_header(raft::testing::k_peer_enrollment_header)) {
-            return httplib::Server::HandlerResponse::Unhandled;
-        }
-        auto auth = req.get_header_value("Authorization");
-        if (!raft::testing::constant_time_equals(auth, bearer_prefix + cfg.auth_token)) {
-            res.status = 401;
-            res.set_content(json_error("unauthorized"), "application/json");
-            return httplib::Server::HandlerResponse::Handled;
-        }
-        return httplib::Server::HandlerResponse::Unhandled;
-    });
-
     // Returns true iff this node should proceed to handle the request as
     // leader. Otherwise `res` has already been populated with a 308 redirect
     // or 503 no_known_leader per Requirement 17.7, and the caller must return.
@@ -1151,304 +1117,363 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         return false;
     };
 
-    server->Get("/healthz", [&](const httplib::Request&, httplib::Response& res) {
-        res.status = raft_node.is_running() ? 200 : 503;
-    });
-
-    server->Get("/v1/root-ca", [&](const httplib::Request& req, httplib::Response& res) {
-        if (!require_leader_or_redirect(req, res)) return;
-        try {
-            auto state = read_ca_state(raft_node, k_command_timeout);
-            if (!state.has_root_material()) {
-                res.status = 503;
-                res.set_content(json_error("not_bootstrapped"), "application/json");
-                return;
+    auto configure_http_server = [&](httplib::Server& srv) {
+        auto* server = &srv;
+        server->set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res) {
+            if (req.method == "POST" && req.path == "/v1/certificates/renew") {
+                return httplib::Server::HandlerResponse::Unhandled;  // authenticates via mTLS in
+                                                                     // its own handler
             }
-            // A peer fetching the root as its RPC trust anchor sends a nonce
-            // and verifies this MAC (try_fetch_root_cert_pem_from).
-            auto nonce = req.get_header_value(raft::testing::k_peer_nonce_header);
-            if (raft::testing::is_well_formed_nonce(nonce)) {
-                res.set_header(raft::testing::k_peer_root_mac_header,
-                               raft::testing::peer_root_mac(cfg.peer_enrollment_key, nonce,
-                                                            state.root_certificate_pem()));
+            if (req.path == "/healthz") {
+                return httplib::Server::HandlerResponse::Unhandled;  // health checks must work with
+                                                                     // no credentials
             }
-            res.set_content(state.root_certificate_pem(), "application/x-pem-file");
-        } catch (const std::exception& ex) {
-            res.status = 503;
-            res.set_content(json_error(ex.what()), "application/json");
-        }
-    });
-
-    server->Post("/v1/certificates", [&](const httplib::Request& req, httplib::Response& res) {
-        // Pre-routing lets a request without the bearer token through only
-        // if it carries an enrollment MAC; such a request must then verify
-        // as a peer enrollment below, or it is refused.
-        const bool bearer_ok = raft::testing::constant_time_equals(
-            req.get_header_value("Authorization"), bearer_prefix + cfg.auth_token);
-        if (!require_leader_or_redirect(req, res)) return;
-        try {
-            auto body = boost::json::parse(req.body).as_object();
-            auto* csr_val = body.if_contains("csr_pem");
-            if (csr_val == nullptr || !csr_val->is_string()) {
-                res.status = 400;
-                res.set_content(json_error("csr_pem is required"), "application/json");
-                return;
-            }
-            std::string csr_pem = std::string(csr_val->as_string());
-            auto options = raft::testing::parse_csr_signing_options(body);
-
-            // Reserved "ca-cluster-node-*" names and rpc_tls_ready_node_id
-            // are Raft peer enrollment, not ordinary issuance: they need the
-            // peer-enrollment MAC, which the client bearer token alone
-            // cannot produce (see classify_peer_enrollment).
-            std::optional<std::uint64_t> ready_node_id;
-            if (auto* v = body.if_contains("rpc_tls_ready_node_id")) {
-                if (!v->is_number()) {
-                    throw std::invalid_argument("rpc_tls_ready_node_id must be a number");
+            // Peer-to-peer calls authenticate with the peer-enrollment key
+            // instead of the client bearer token, which followers no longer send
+            // over the unverified intra-cluster link:
+            //  - GET /v1/root-ca with a valid request MAC over its nonce;
+            //  - POST /v1/certificates carrying an enrollment MAC — admitted here
+            //    only provisionally; the handler refuses it unless it verifies
+            //    as a complete peer enrollment (classify_peer_enrollment).
+            if (req.method == "GET" && req.path == "/v1/root-ca") {
+                auto nonce = req.get_header_value(raft::testing::k_peer_nonce_header);
+                if (raft::testing::is_well_formed_nonce(nonce) &&
+                    raft::testing::constant_time_equals(
+                        req.get_header_value(raft::testing::k_peer_request_mac_header),
+                        raft::testing::peer_root_request_mac(cfg.peer_enrollment_key, nonce))) {
+                    return httplib::Server::HandlerResponse::Unhandled;
                 }
-                ready_node_id = v->to_number<std::uint64_t>();
             }
-            auto ids = cfg.all_node_ids();
-            auto enrollment = raft::testing::classify_peer_enrollment(
-                options, ready_node_id,
-                req.get_header_value(raft::testing::k_peer_enrollment_header),
-                std::set<std::uint64_t>(ids.begin(), ids.end()), cfg.peer_enrollment_key, csr_pem);
-            if (!enrollment.allowed) {
-                res.status = bearer_ok ? 403 : 401;
-                res.set_content(json_error(bearer_ok ? enrollment.error : "unauthorized"),
-                                "application/json");
-                return;
+            if (req.method == "POST" && req.path == "/v1/certificates" &&
+                req.has_header(raft::testing::k_peer_enrollment_header)) {
+                return httplib::Server::HandlerResponse::Unhandled;
             }
-            if (!bearer_ok && !enrollment.node_id.has_value()) {
+            auto auth = req.get_header_value("Authorization");
+            if (!raft::testing::constant_time_equals(auth, bearer_prefix + cfg.auth_token)) {
                 res.status = 401;
                 res.set_content(json_error("unauthorized"), "application/json");
-                return;
+                return httplib::Server::HandlerResponse::Handled;
             }
+            return httplib::Server::HandlerResponse::Unhandled;
+        });
 
-            std::unique_lock signer_lock(signer_mu);
-            if (signer == nullptr) {
+        server->Get("/healthz", [&](const httplib::Request&, httplib::Response& res) {
+            res.status = raft_node.is_running() ? 200 : 503;
+        });
+
+        server->Get("/v1/root-ca", [&](const httplib::Request& req, httplib::Response& res) {
+            if (!require_leader_or_redirect(req, res)) return;
+            try {
+                auto state = read_ca_state(raft_node, k_command_timeout);
+                if (!state.has_root_material()) {
+                    res.status = 503;
+                    res.set_content(json_error("not_bootstrapped"), "application/json");
+                    return;
+                }
+                // A peer fetching the root as its RPC trust anchor sends a nonce
+                // and verifies this MAC (try_fetch_root_cert_pem_from).
+                auto nonce = req.get_header_value(raft::testing::k_peer_nonce_header);
+                if (raft::testing::is_well_formed_nonce(nonce)) {
+                    res.set_header(raft::testing::k_peer_root_mac_header,
+                                   raft::testing::peer_root_mac(cfg.peer_enrollment_key, nonce,
+                                                                state.root_certificate_pem()));
+                }
+                res.set_content(state.root_certificate_pem(), "application/x-pem-file");
+            } catch (const std::exception& ex) {
                 res.status = 503;
-                res.set_content(json_error("not_ready"), "application/json");
-                return;
+                res.set_content(json_error(ex.what()), "application/json");
             }
-            // sign_csr() performs the non-deterministic OpenSSL signing here,
-            // outside apply() — the state machine only ever commits the
-            // already-computed result (Requirement 17.1/17.8).
-            auto material = signer->sign_csr(csr_pem, options);
-            signer_lock.unlock();
+        });
 
-            raft::testing::ca_ledger_entry entry;
-            entry.serial = material.serial;
-            entry.subject = extract_subject_cn(material.certificate_pem);
-            entry.dns_names = options.dns_names;
-            entry.ip_addresses = options.ip_addresses;
-            entry.certificate_pem = material.certificate_pem;
-            entry.not_before = std::chrono::system_clock::now();
-            entry.not_after = entry.not_before + options.validity;
-
-            // HTTP response SHALL NOT be sent until submit_command()'s future
-            // resolves (Requirement 17.8) — so a client never observes an
-            // issuance a subsequent leader failover could "forget."
-            raft_node
-                .submit_command(raft::testing::encode_record_issuance_command(entry),
-                                k_command_timeout)
-                .get();
-
-            // Requirement 5.3 (.kiro/specs/ca-cluster-rpc-mtls/): a follower
-            // acquiring its own RPC peer identity (acquire_rpc_peer_certificate,
-            // above) has no way to commit its own record_rpc_tls_ready(self)
-            // — submit_command() only works when called on the actual
-            // leader, which is exactly where THIS handler is already
-            // running. Best-effort: a failure here doesn't fail the
-            // certificate issuance itself (the follower already has its
-            // valid certificate either way) and is simply retried by the
-            // follower's own next maintenance tick's request.
-            if (enrollment.node_id.has_value()) {
-                try {
-                    raft_node
-                        .submit_command(
-                            raft::testing::encode_record_rpc_tls_ready_command(*enrollment.node_id),
-                            k_command_timeout)
-                        .get();
-                } catch (const std::exception&) {
-                    // Logged implicitly via the requester's own retry path
-                    // (maybe_acquire_rpc_identity's HTTP call will simply
-                    // repeat the whole request, including this field, on
-                    // its next tick) — not surfaced to this response since
-                    // the certificate itself was issued successfully.
+        server->Post("/v1/certificates", [&](const httplib::Request& req, httplib::Response& res) {
+            // Pre-routing lets a request without the bearer token through only
+            // if it carries an enrollment MAC; such a request must then verify
+            // as a peer enrollment below, or it is refused.
+            const bool bearer_ok = raft::testing::constant_time_equals(
+                req.get_header_value("Authorization"), bearer_prefix + cfg.auth_token);
+            if (!require_leader_or_redirect(req, res)) return;
+            try {
+                auto body = boost::json::parse(req.body).as_object();
+                auto* csr_val = body.if_contains("csr_pem");
+                if (csr_val == nullptr || !csr_val->is_string()) {
+                    res.status = 400;
+                    res.set_content(json_error("csr_pem is required"), "application/json");
+                    return;
                 }
-            }
+                std::string csr_pem = std::string(csr_val->as_string());
+                auto options = raft::testing::parse_csr_signing_options(body);
 
-            res.set_content(boost::json::serialize(raft::testing::pem_material_to_json(material)),
-                            "application/json");
-        } catch (const std::invalid_argument& ex) {
-            res.status = 400;
-            res.set_content(json_error(ex.what()), "application/json");
-        } catch (const std::exception& ex) {
-            res.status = 503;
-            res.set_content(json_error(ex.what()), "application/json");
-        }
-    });
+                // Reserved "ca-cluster-node-*" names and rpc_tls_ready_node_id
+                // are Raft peer enrollment, not ordinary issuance: they need the
+                // peer-enrollment MAC, which the client bearer token alone
+                // cannot produce (see classify_peer_enrollment).
+                std::optional<std::uint64_t> ready_node_id;
+                if (auto* v = body.if_contains("rpc_tls_ready_node_id")) {
+                    if (!v->is_number()) {
+                        throw std::invalid_argument("rpc_tls_ready_node_id must be a number");
+                    }
+                    ready_node_id = v->to_number<std::uint64_t>();
+                }
+                auto ids = cfg.all_node_ids();
+                auto enrollment = raft::testing::classify_peer_enrollment(
+                    options, ready_node_id,
+                    req.get_header_value(raft::testing::k_peer_enrollment_header),
+                    std::set<std::uint64_t>(ids.begin(), ids.end()), cfg.peer_enrollment_key,
+                    csr_pem);
+                if (!enrollment.allowed) {
+                    res.status = bearer_ok ? 403 : 401;
+                    res.set_content(json_error(bearer_ok ? enrollment.error : "unauthorized"),
+                                    "application/json");
+                    return;
+                }
+                if (!bearer_ok && !enrollment.node_id.has_value()) {
+                    res.status = 401;
+                    res.set_content(json_error("unauthorized"), "application/json");
+                    return;
+                }
 
-    server->Post("/v1/certificates/renew", [&](const httplib::Request& req,
-                                               httplib::Response& res) {
-        if (!require_leader_or_redirect(req, res)) return;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-        if (req.ssl == nullptr) {
-            res.status = 401;
-            res.set_content(json_error("renew requires an mTLS connection"), "application/json");
-            return;
-        }
-        X509* peer_cert = SSL_get1_peer_certificate(req.ssl);
-        if (peer_cert == nullptr) {
-            res.status = 401;
-            res.set_content(json_error("no client certificate presented"), "application/json");
-            return;
-        }
-        raft::testing::x509_ptr_generic peer_cert_owner{peer_cert};
-        try {
-            auto state = read_ca_state(raft_node, k_command_timeout);
-            if (!raft::testing::cert_chains_to_root(peer_cert, state.root_certificate_pem())) {
-                res.status = 401;
+                std::unique_lock signer_lock(signer_mu);
+                if (signer == nullptr) {
+                    res.status = 503;
+                    res.set_content(json_error("not_ready"), "application/json");
+                    return;
+                }
+                // sign_csr() performs the non-deterministic OpenSSL signing here,
+                // outside apply() — the state machine only ever commits the
+                // already-computed result (Requirement 17.1/17.8).
+                auto material = signer->sign_csr(csr_pem, options);
+                signer_lock.unlock();
+
+                raft::testing::ca_ledger_entry entry;
+                entry.serial = material.serial;
+                entry.subject = extract_subject_cn(material.certificate_pem);
+                entry.dns_names = options.dns_names;
+                entry.ip_addresses = options.ip_addresses;
+                entry.certificate_pem = material.certificate_pem;
+                entry.not_before = std::chrono::system_clock::now();
+                entry.not_after = entry.not_before + options.validity;
+
+                // HTTP response SHALL NOT be sent until submit_command()'s future
+                // resolves (Requirement 17.8) — so a client never observes an
+                // issuance a subsequent leader failover could "forget."
+                raft_node
+                    .submit_command(raft::testing::encode_record_issuance_command(entry),
+                                    k_command_timeout)
+                    .get();
+
+                // Requirement 5.3 (.kiro/specs/ca-cluster-rpc-mtls/): a follower
+                // acquiring its own RPC peer identity (acquire_rpc_peer_certificate,
+                // above) has no way to commit its own record_rpc_tls_ready(self)
+                // — submit_command() only works when called on the actual
+                // leader, which is exactly where THIS handler is already
+                // running. Best-effort: a failure here doesn't fail the
+                // certificate issuance itself (the follower already has its
+                // valid certificate either way) and is simply retried by the
+                // follower's own next maintenance tick's request.
+                if (enrollment.node_id.has_value()) {
+                    try {
+                        raft_node
+                            .submit_command(raft::testing::encode_record_rpc_tls_ready_command(
+                                                *enrollment.node_id),
+                                            k_command_timeout)
+                            .get();
+                    } catch (const std::exception&) {
+                        // Logged implicitly via the requester's own retry path
+                        // (maybe_acquire_rpc_identity's HTTP call will simply
+                        // repeat the whole request, including this field, on
+                        // its next tick) — not surfaced to this response since
+                        // the certificate itself was issued successfully.
+                    }
+                }
+
                 res.set_content(
-                    json_error("presented certificate does not chain to this CA's root"),
+                    boost::json::serialize(raft::testing::pem_material_to_json(material)),
                     "application/json");
-                return;
+            } catch (const std::invalid_argument& ex) {
+                res.status = 400;
+                res.set_content(json_error(ex.what()), "application/json");
+            } catch (const std::exception& ex) {
+                res.status = 503;
+                res.set_content(json_error(ex.what()), "application/json");
             }
-            // A revoked certificate must not be able to renew itself into a
-            // fresh, unrevoked serial — that would make revocation a no-op.
-            auto presented_serial = raft::testing::cert_serial_u64(peer_cert);
-            bool revoked = !presented_serial.has_value();
-            for (const auto& e : state.ledger()) {
-                if (presented_serial.has_value() && e.serial == *presented_serial &&
-                    e.revoked_at.has_value()) {
-                    revoked = true;
-                }
-            }
-            if (revoked) {
+        });
+
+        server->Post("/v1/certificates/renew", [&](const httplib::Request& req,
+                                                   httplib::Response& res) {
+            if (!require_leader_or_redirect(req, res)) return;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            if (req.ssl == nullptr) {
                 res.status = 401;
-                res.set_content(json_error("presented certificate has been revoked"),
+                res.set_content(json_error("renew requires an mTLS connection"),
                                 "application/json");
                 return;
             }
-            auto options = raft::testing::options_from_presented_cert(peer_cert);
-
-            auto body = boost::json::parse(req.body).as_object();
-            auto* csr_val = body.if_contains("csr_pem");
-            if (csr_val == nullptr || !csr_val->is_string()) {
-                res.status = 400;
-                res.set_content(json_error("csr_pem is required"), "application/json");
+            X509* peer_cert = SSL_get1_peer_certificate(req.ssl);
+            if (peer_cert == nullptr) {
+                res.status = 401;
+                res.set_content(json_error("no client certificate presented"), "application/json");
                 return;
             }
-            std::string csr_pem = std::string(csr_val->as_string());
-            // Renewal keeps the presented subject: the CSR may not change it.
-            bool same_subject = raft::testing::csr_subject_matches_cert(peer_cert, csr_pem);
-            if (!same_subject) {
-                res.status = 400;
+            raft::testing::x509_ptr_generic peer_cert_owner{peer_cert};
+            try {
+                auto state = read_ca_state(raft_node, k_command_timeout);
+                if (!raft::testing::cert_chains_to_root(peer_cert, state.root_certificate_pem())) {
+                    res.status = 401;
+                    res.set_content(
+                        json_error("presented certificate does not chain to this CA's root"),
+                        "application/json");
+                    return;
+                }
+                // A revoked certificate must not be able to renew itself into a
+                // fresh, unrevoked serial — that would make revocation a no-op.
+                auto presented_serial = raft::testing::cert_serial_u64(peer_cert);
+                bool revoked = !presented_serial.has_value();
+                for (const auto& e : state.ledger()) {
+                    if (presented_serial.has_value() && e.serial == *presented_serial &&
+                        e.revoked_at.has_value()) {
+                        revoked = true;
+                    }
+                }
+                if (revoked) {
+                    res.status = 401;
+                    res.set_content(json_error("presented certificate has been revoked"),
+                                    "application/json");
+                    return;
+                }
+                auto options = raft::testing::options_from_presented_cert(peer_cert);
+
+                auto body = boost::json::parse(req.body).as_object();
+                auto* csr_val = body.if_contains("csr_pem");
+                if (csr_val == nullptr || !csr_val->is_string()) {
+                    res.status = 400;
+                    res.set_content(json_error("csr_pem is required"), "application/json");
+                    return;
+                }
+                std::string csr_pem = std::string(csr_val->as_string());
+                // Renewal keeps the presented subject: the CSR may not change it.
+                bool same_subject = raft::testing::csr_subject_matches_cert(peer_cert, csr_pem);
+                if (!same_subject) {
+                    res.status = 400;
+                    res.set_content(
+                        json_error("renewal CSR subject must match the presented certificate"),
+                        "application/json");
+                    return;
+                }
+                if (auto validity = raft::testing::parse_validity_days(body)) {
+                    options.validity = *validity;
+                }
+
+                std::unique_lock signer_lock(signer_mu);
+                if (signer == nullptr) {
+                    res.status = 503;
+                    res.set_content(json_error("not_ready"), "application/json");
+                    return;
+                }
+                auto material = signer->sign_csr(csr_pem, options);
+                signer_lock.unlock();
+
+                raft::testing::ca_ledger_entry entry;
+                entry.serial = material.serial;
+                entry.subject = extract_subject_cn(material.certificate_pem);
+                entry.dns_names = options.dns_names;
+                entry.ip_addresses = options.ip_addresses;
+                entry.certificate_pem = material.certificate_pem;
+                entry.not_before = std::chrono::system_clock::now();
+                entry.not_after = entry.not_before + options.validity;
+
+                raft_node
+                    .submit_command(raft::testing::encode_record_issuance_command(entry),
+                                    k_command_timeout)
+                    .get();
+
                 res.set_content(
-                    json_error("renewal CSR subject must match the presented certificate"),
+                    boost::json::serialize(raft::testing::pem_material_to_json(material)),
                     "application/json");
-                return;
-            }
-            if (auto validity = raft::testing::parse_validity_days(body)) {
-                options.validity = *validity;
-            }
-
-            std::unique_lock signer_lock(signer_mu);
-            if (signer == nullptr) {
+            } catch (const std::invalid_argument& ex) {
+                res.status = 400;
+                res.set_content(json_error(ex.what()), "application/json");
+            } catch (const std::exception& ex) {
                 res.status = 503;
-                res.set_content(json_error("not_ready"), "application/json");
-                return;
+                res.set_content(json_error(ex.what()), "application/json");
             }
-            auto material = signer->sign_csr(csr_pem, options);
-            signer_lock.unlock();
-
-            raft::testing::ca_ledger_entry entry;
-            entry.serial = material.serial;
-            entry.subject = extract_subject_cn(material.certificate_pem);
-            entry.dns_names = options.dns_names;
-            entry.ip_addresses = options.ip_addresses;
-            entry.certificate_pem = material.certificate_pem;
-            entry.not_before = std::chrono::system_clock::now();
-            entry.not_after = entry.not_before + options.validity;
-
-            raft_node
-                .submit_command(raft::testing::encode_record_issuance_command(entry),
-                                k_command_timeout)
-                .get();
-
-            res.set_content(boost::json::serialize(raft::testing::pem_material_to_json(material)),
-                            "application/json");
-        } catch (const std::invalid_argument& ex) {
-            res.status = 400;
-            res.set_content(json_error(ex.what()), "application/json");
-        } catch (const std::exception& ex) {
-            res.status = 503;
-            res.set_content(json_error(ex.what()), "application/json");
-        }
 #else
         res.status = 401;
         res.set_content(json_error("built without TLS support — renew is unavailable"), "application/json");
 #endif
-    });
+        });
 
-    server->Post("/v1/certificates/revoke", [&](const httplib::Request& req,
-                                                httplib::Response& res) {
-        if (!require_leader_or_redirect(req, res)) return;
-        try {
-            auto body = boost::json::parse(req.body).as_object();
-            auto* serial_val = body.if_contains("serial");
-            if (serial_val == nullptr) {
-                res.status = 400;
-                res.set_content(json_error("serial is required"), "application/json");
-                return;
-            }
-            std::uint64_t serial = serial_val->is_string()
-                                       ? std::stoull(std::string(serial_val->as_string()))
-                                       : serial_val->to_number<std::uint64_t>();
-            auto revoked_at = std::chrono::system_clock::now();
+        server->Post(
+            "/v1/certificates/revoke", [&](const httplib::Request& req, httplib::Response& res) {
+                if (!require_leader_or_redirect(req, res)) return;
+                try {
+                    auto body = boost::json::parse(req.body).as_object();
+                    auto* serial_val = body.if_contains("serial");
+                    if (serial_val == nullptr) {
+                        res.status = 400;
+                        res.set_content(json_error("serial is required"), "application/json");
+                        return;
+                    }
+                    std::uint64_t serial = serial_val->is_string()
+                                               ? std::stoull(std::string(serial_val->as_string()))
+                                               : serial_val->to_number<std::uint64_t>();
+                    auto revoked_at = std::chrono::system_clock::now();
 
-            auto result = raft_node
-                              .submit_command(raft::testing::encode_record_revocation_command(
-                                                  serial, revoked_at),
-                                              k_command_timeout)
-                              .get();
-            if (!result.empty()) {
-                std::string result_str(reinterpret_cast<const char*>(result.data()), result.size());
-                res.status = 404;
-                res.set_content(result_str, "application/json");
-                return;
-            }
+                    auto result =
+                        raft_node
+                            .submit_command(
+                                raft::testing::encode_record_revocation_command(serial, revoked_at),
+                                k_command_timeout)
+                            .get();
+                    if (!result.empty()) {
+                        std::string result_str(reinterpret_cast<const char*>(result.data()),
+                                               result.size());
+                        res.status = 404;
+                        res.set_content(result_str, "application/json");
+                        return;
+                    }
 
+                    std::lock_guard signer_lock(signer_mu);
+                    if (signer != nullptr) signer->mark_revoked_externally(serial, revoked_at);
+
+                    res.status = 200;
+                    res.set_content(R"({"revoked":true})", "application/json");
+                } catch (const std::invalid_argument& ex) {
+                    res.status = 400;
+                    res.set_content(json_error(ex.what()), "application/json");
+                } catch (const std::exception& ex) {
+                    res.status = 503;
+                    res.set_content(json_error(ex.what()), "application/json");
+                }
+            });
+
+        server->Get("/v1/crl", [&](const httplib::Request& req, httplib::Response& res) {
+            if (!require_leader_or_redirect(req, res)) return;
             std::lock_guard signer_lock(signer_mu);
-            if (signer != nullptr) signer->mark_revoked_externally(serial, revoked_at);
+            if (signer == nullptr) {
+                res.status = 503;
+                res.set_content(json_error("not_ready"), "application/json");
+                return;
+            }
+            res.set_content(signer->crl_pem(), "application/x-pem-file");
+        });
+    };
 
-            res.status = 200;
-            res.set_content(R"({"revoked":true})", "application/json");
-        } catch (const std::invalid_argument& ex) {
-            res.status = 400;
-            res.set_content(json_error(ex.what()), "application/json");
-        } catch (const std::exception& ex) {
-            res.status = 503;
-            res.set_content(json_error(ex.what()), "application/json");
-        }
-    });
-
-    server->Get("/v1/crl", [&](const httplib::Request& req, httplib::Response& res) {
-        if (!require_leader_or_redirect(req, res)) return;
-        std::lock_guard signer_lock(signer_mu);
-        if (signer == nullptr) {
-            res.status = 503;
-            res.set_content(json_error("not_ready"), "application/json");
-            return;
-        }
-        res.set_content(signer->crl_pem(), "application/x-pem-file");
-    });
-
-    std::thread http_thread([&] {
-        std::cerr << "[info] ca_cluster_node: HTTP API listening on :" << cfg.http_port << "\n";
-        server->listen("0.0.0.0", cfg.http_port);
-    });
+    try {
+        http_listeners.bind(cfg.http_bind_address, cfg.http_port, configure_http_server,
+                            "ca_cluster_node: --http-address", make_http_server);
+    } catch (const std::exception& ex) {
+        std::cerr << "ca_cluster_node: " << ex.what() << "\n";
+        g_stop = true;
+        raft_node.stop();
+        election_timer.join();
+        heartbeat_timer.join();
+        maintenance_thread.request_stop();
+        maintenance_thread.join();
+        return 1;
+    }
+    std::cerr << "[info] ca_cluster_node: HTTP API listening on " << cfg.http_bind_address << ":"
+              << cfg.http_port << "\n";
+    http_listeners.start();
 
     {
         std::unique_lock lock(g_stop_mu);
@@ -1457,7 +1482,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
 
     std::cerr << "[info] ca_cluster_node shutting down\n";
     g_stop = true;
-    server->stop();
+    // Stop accepting now; joining the accept loops waits for in-flight
+    // handlers, so that comes after raft_node.stop() below.
+    http_listeners.request_stop();
 
     // raft_node.stop() unconditionally rejects every pending submit_command()/
     // read_state() future (CommitWaiter::cancel_all_operations) and MUST run
@@ -1481,7 +1508,8 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     // timeout mechanism.
     raft_node.stop();
 
-    http_thread.join();
+    http_listeners.stop();
+    g_http_listeners.store(nullptr);
     election_timer.join();
     heartbeat_timer.join();
     maintenance_thread.request_stop();
