@@ -6,6 +6,7 @@
 #ifdef KYTHIRA_HAS_OPENSSL
 #include <raft/tls_tcp_rpc.hpp>
 #endif
+#include <raft/tcp_rpc.hpp>
 
 #include <chrono>
 #include <cstdint>
@@ -51,6 +52,10 @@ struct ca_cluster_node_config {
     // data_dir (Requirement 7.1) without ever touching these fields again.
     std::string rpc_tls_cert_path;
     std::string rpc_tls_key_path;
+    // Explicit opt-in to plain, unauthenticated TCP for Raft RPC on a
+    // non-loopback --rpc-address. Without it, a node that has no RPC TLS
+    // material refuses to start (see plaintext_rpc_permitted()).
+    bool allow_plaintext_rpc{false};
 #ifdef KYTHIRA_HAS_OPENSSL
     // Resolved (not CLI-facing) transport config main() actually constructs
     // tls_tcp_rpc_client/server with — populated from rpc_tls_cert_path/
@@ -141,6 +146,17 @@ namespace detail {
 
 }  // namespace detail
 
+// Whether a node with no RPC TLS material may fall back to plain TCP.
+// Plaintext Raft RPC lets anyone who can reach the port send AppendEntries
+// or InstallSnapshot, so it is allowed only when the operator asked for it
+// or when the listener is bound to loopback only (127.0.0.0/8, ::1, or a
+// name such as "localhost" that /etc/hosts maps only to those) and so unreachable
+// off-host.
+[[nodiscard]] inline auto plaintext_rpc_permitted(const ca_cluster_node_config& cfg) -> bool {
+    return cfg.allow_plaintext_rpc ||
+           kythira::tcp_detail::is_loopback_bind_address(cfg.rpc_address);
+}
+
 [[noreturn]] inline void usage_error(const std::string& message) {
     std::cerr
         << "ca_cluster_node: " << message << "\n\n"
@@ -150,6 +166,7 @@ namespace detail {
         << "                       [--rpc-address <addr>] [--bootstrap-ca]\n"
         << "                       [--auth-token <token>] [--tls-cert <path> --tls-key <path>]\n"
         << "                       [--rpc-tls-cert <path> --rpc-tls-key <path>]\n"
+        << "                       [--allow-plaintext-rpc]\n"
         << "                       [--print-root-fingerprint]\n";
     std::exit(1);
 }
@@ -200,6 +217,8 @@ namespace detail {
             cfg.rpc_tls_cert_path = next();
         } else if (arg == "--rpc-tls-key") {
             cfg.rpc_tls_key_path = next();
+        } else if (arg == "--allow-plaintext-rpc") {
+            cfg.allow_plaintext_rpc = true;
         } else if (arg == "--print-root-fingerprint") {
             cfg.print_root_fingerprint = true;
         } else if (arg == "--election-timeout-min-ms") {
@@ -236,6 +255,14 @@ namespace detail {
     }
 
     if (!saw_node_id) usage_error("--node-id is required");
+    try {
+        (void)kythira::tcp_detail::resolve_bind_addresses(cfg.rpc_address, "--rpc-address");
+    } catch (const std::invalid_argument& e) {
+        usage_error(e.what());
+    }
+    if (!cfg.allow_plaintext_rpc) {
+        cfg.allow_plaintext_rpc = env_or("CA_CLUSTER_ALLOW_PLAINTEXT_RPC", "") == "1";
+    }
     if (!saw_data_dir) cfg.data_dir = env_or("CA_CLUSTER_DATA_DIR", cfg.data_dir.c_str());
     if (!saw_unseal_key_file) {
         cfg.unseal_key_file = env_or("CA_CLUSTER_UNSEAL_KEY_FILE", "");
