@@ -321,7 +321,9 @@ struct session_pool {
     /// How to open another session for this target. Refreshed on every
     /// acquire, so a `reload_tls_material()` between two RPCs is picked up by
     /// the connect a later release starts on a waiter's behalf.
-    folly::SocketAddress addr;
+    /// Every address the target resolved to; a connect tries them in order
+    /// and stops at the first that connects.
+    std::vector<folly::SocketAddress> addrs;
     std::shared_ptr<folly::SSLContext> ssl_ctx;
     bool use_ssl{false};
     std::chrono::milliseconds connection_timeout{5000};
@@ -334,10 +336,16 @@ struct session_pool {
 /// already arranges that, because that is also the only thread allowed to
 /// touch a session.
 inline auto acquire_session(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
-                            const folly::SocketAddress& addr,
+                            const std::vector<folly::SocketAddress>& addrs,
                             std::shared_ptr<folly::SSLContext> ssl_ctx, bool use_ssl,
                             std::chrono::milliseconds connection_timeout)
     -> kythira::future_default<session_lease>;
+
+/// @brief Open a session to `pool->addrs[attempt]`, moving on to each later
+///     address if that one fails. Must be called on @p evb.
+inline auto start_connect(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
+                          kythira::promise_default<session_lease> promise, std::size_t attempt)
+    -> void;
 
 /// @brief Return @p slot to @p pool, handing it straight to the longest-waiting
 ///     RPC if there is one. Must be called on @p evb.
@@ -370,9 +378,10 @@ inline auto release_session(const std::shared_ptr<session_pool>& pool, folly::Ev
 /// on the one thread allowed to touch session lifetime state.
 class connect_bridge : public proxygen::HTTPConnector::Callback {
 public:
+    /// @param attempt Index into `pool->addrs` this bridge is connecting to.
     connect_bridge(folly::EventBase* evb, std::chrono::milliseconds txn_timeout,
                    std::shared_ptr<session_pool> pool,
-                   kythira::promise_default<session_lease> promise);
+                   kythira::promise_default<session_lease> promise, std::size_t attempt = 0);
 
     [[nodiscard]] auto connector() -> proxygen::HTTPConnector& { return _connector; }
 
@@ -385,6 +394,7 @@ private:
     proxygen::HTTPConnector _connector;
     std::shared_ptr<session_pool> _pool;
     kythira::promise_default<session_lease> _promise;
+    std::size_t _attempt;
 };
 
 /// @brief Bridges `proxygen::HTTPTransaction::Handler` into a
@@ -621,7 +631,7 @@ private:
     auto build_ssl_context() -> std::shared_ptr<folly::SSLContext>;
     auto get_or_create_slot(std::uint64_t target) -> proxygen_detail::pooled_connection&;
     auto resolve_target(std::uint64_t target) const
-        -> std::tuple<folly::SocketAddress, std::string, bool>;
+        -> std::tuple<std::vector<folly::SocketAddress>, std::string, bool>;
 
     /// @param attempted Media types this peer has already refused with 415 for
     ///        this call (Requirement 7.3). Empty on first entry; the retry path

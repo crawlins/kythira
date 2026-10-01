@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <raft/net_bind.hpp>
 #include <raft/proxygen_http_transport.hpp>
 
 #include <folly/io/IOBuf.h>
@@ -13,6 +14,10 @@
 #include <proxygen/lib/http/ProxygenErrorEnum.h>
 
 #include <wangle/acceptor/Acceptor.h>
+
+#include <netdb.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
@@ -316,12 +321,14 @@ struct session_probe {
 
 inline connect_bridge::connect_bridge(folly::EventBase* evb, std::chrono::milliseconds txn_timeout,
                                       std::shared_ptr<session_pool> pool,
-                                      kythira::promise_default<session_lease> promise)
+                                      kythira::promise_default<session_lease> promise,
+                                      std::size_t attempt)
     : _evb(evb),
       _wheel_timer(txn_timeout, evb),
       _connector(this, _wheel_timer),
       _pool(std::move(pool)),
-      _promise(std::move(promise)) {}
+      _promise(std::move(promise)),
+      _attempt(attempt) {}
 
 inline auto connect_bridge::connectSuccess(proxygen::HTTPUpstreamSession* session) -> void {
     // Runs on the pinned EventBase (HTTPConnector's contract), which is the
@@ -342,6 +349,18 @@ inline auto connect_bridge::connectSuccess(proxygen::HTTPUpstreamSession* sessio
 }
 
 inline auto connect_bridge::connectError(const folly::AsyncSocketException& ex) -> void {
+    // The target resolved to more than one address (a name with IPv4 and
+    // IPv6, say): try the next one before failing anybody. The headroom this
+    // connect holds carries over to the next attempt.
+    if (_attempt + 1 < _pool->addrs.size()) {
+        auto pool = std::move(_pool);
+        auto* evb = _evb;
+        auto promise = std::move(_promise);
+        auto next = _attempt + 1;
+        delete this;
+        start_connect(pool, evb, std::move(promise), next);
+        return;
+    }
     // The headroom this connect was holding goes back, and every RPC queued
     // behind it is failed with the same error rather than left waiting for a
     // session that is not coming. Failing them is not a regression on the old
@@ -393,16 +412,19 @@ inline session_checkout::~session_checkout() {
 }
 
 /// @brief Start one connect for @p pool, fulfilling @p promise with a lease on
-///     the session it produces. The caller must already have taken the
-///     headroom for it (`++established`).
+///     the session it produces, connecting to `pool->addrs[attempt]` (and, on
+///     failure, to each later address in turn). The caller must already have
+///     taken the headroom for it (`++established`).
 inline auto start_connect(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
-                          kythira::promise_default<session_lease> promise) -> void {
-    auto* bridge = new connect_bridge(evb, pool->connection_timeout, pool, std::move(promise));
+                          kythira::promise_default<session_lease> promise, std::size_t attempt)
+    -> void {
+    auto* bridge =
+        new connect_bridge(evb, pool->connection_timeout, pool, std::move(promise), attempt);
+    const auto& addr = pool->addrs.at(attempt);
     if (pool->use_ssl) {
-        bridge->connector().connectSSL(evb, pool->addr, pool->ssl_ctx, nullptr,
-                                       pool->connection_timeout);
+        bridge->connector().connectSSL(evb, addr, pool->ssl_ctx, nullptr, pool->connection_timeout);
     } else {
-        bridge->connector().connect(evb, pool->addr, pool->connection_timeout);
+        bridge->connector().connect(evb, addr, pool->connection_timeout);
     }
 }
 
@@ -453,20 +475,20 @@ inline auto serve_session_waiters(const std::shared_ptr<session_pool>& pool, fol
             waiter.setValue(std::move(lease));
         } else {
             ++pool->established;
-            start_connect(pool, evb, std::move(waiter));
+            start_connect(pool, evb, std::move(waiter), 0);
         }
     }
 }
 
 inline auto acquire_session(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
-                            const folly::SocketAddress& addr,
+                            const std::vector<folly::SocketAddress>& addrs,
                             std::shared_ptr<folly::SSLContext> ssl_ctx, bool use_ssl,
                             std::chrono::milliseconds connection_timeout)
     -> kythira::future_default<session_lease> {
     // Refreshed every time so a `reload_tls_material()` between two RPCs is
     // what a later connect uses, including one started on a waiter's behalf
     // from `serve_session_waiters`, which has no caller to take them from.
-    pool->addr = addr;
+    pool->addrs = addrs;
     pool->ssl_ctx = std::move(ssl_ctx);
     pool->use_ssl = use_ssl;
     pool->connection_timeout = connection_timeout;
@@ -479,7 +501,7 @@ inline auto acquire_session(const std::shared_ptr<session_pool>& pool, folly::Ev
     }
     if (pool->established < pool->capacity) {
         ++pool->established;
-        start_connect(pool, evb, std::move(promise));
+        start_connect(pool, evb, std::move(promise), 0);
         return future;
     }
     // Every session is checked out. Wait for one instead of failing: this is
@@ -977,7 +999,7 @@ auto proxygen_client<Types>::get_or_create_slot(std::uint64_t target)
 template<typename Types>
 requires kythira::proxygen_future_default_transport_types<Types>
 auto proxygen_client<Types>::resolve_target(std::uint64_t target) const
-    -> std::tuple<folly::SocketAddress, std::string, bool> {
+    -> std::tuple<std::vector<folly::SocketAddress>, std::string, bool> {
     auto url_it = _node_id_to_url.find(target);
     if (url_it == _node_id_to_url.end()) {
         throw std::runtime_error(std::format("No URL mapping found for node {}", target));
@@ -985,21 +1007,54 @@ auto proxygen_client<Types>::resolve_target(std::uint64_t target) const
     const std::string& url = url_it->second;
     bool is_https = url.starts_with("https://");
     std::string authority = url.substr(is_https ? 8 : 7);
-    auto colon = authority.find(':');
-    auto slash = authority.find('/');
-    std::string host = authority.substr(0, std::min(colon, slash));
-    std::string port_str =
-        (colon != std::string::npos)
-            ? authority.substr(
-                  colon + 1, (slash == std::string::npos ? authority.size() : slash) - (colon + 1))
-            : (is_https ? "443" : "80");
-    folly::SocketAddress addr;
+    authority = authority.substr(0, authority.find('/'));
+    // An IPv6 literal is bracketed ("[::1]:7000"); its own colons are not
+    // the port separator.
+    std::string host;
+    std::string port_str = is_https ? "443" : "80";
+    if (authority.starts_with('[') && authority.find(']') != std::string::npos) {
+        auto close = authority.find(']');
+        host = authority.substr(1, close - 1);
+        if (close + 1 < authority.size() && authority[close + 1] == ':') {
+            port_str = authority.substr(close + 2);
+        }
+    } else {
+        auto colon = authority.find(':');
+        host = authority.substr(0, colon);
+        if (colon != std::string::npos) {
+            port_str = authority.substr(colon + 1);
+        }
+    }
     // Synchronous DNS resolution on the calling thread, once per connect
     // attempt (not per RPC, since sessions are pooled/reused) -- the same
     // scope/tradeoff boost_beast_client::get_or_create_connection's own
-    // resolver.resolve() call documents.
-    addr.setFromHostPort(host, static_cast<std::uint16_t>(std::stoi(port_str)));
-    return {addr, host, is_https};
+    // resolver.resolve() call documents. Every address is kept, in
+    // getaddrinfo() order, and a connect tries each until one answers: a
+    // peer named "localhost" often resolves to ::1 first, and a server on
+    // 127.0.0.1 alone was unreachable when only the first was tried.
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* res = nullptr;
+    int rc = ::getaddrinfo(host.c_str(), port_str.c_str(), &hints, &res);
+    if (rc != 0 || res == nullptr) {
+        throw std::runtime_error(std::format("Failed to resolve {}:{}: {}", host, port_str,
+                                             rc != 0 ? ::gai_strerror(rc) : "no addresses"));
+    }
+    std::vector<folly::SocketAddress> addrs;
+    for (addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
+        if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6) continue;
+        folly::SocketAddress addr;
+        addr.setFromSockaddr(ai->ai_addr, ai->ai_addrlen);
+        if (std::find(addrs.begin(), addrs.end(), addr) == addrs.end()) {
+            addrs.push_back(addr);
+        }
+    }
+    ::freeaddrinfo(res);
+    if (addrs.empty()) {
+        throw std::runtime_error(std::format("Failed to resolve {}:{}", host, port_str));
+    }
+    return {std::move(addrs), host, is_https};
 }
 
 template<typename Types>
@@ -1829,14 +1884,41 @@ auto proxygen_server<Types>::start() -> void {
                                    .addThen<proxygen_detail::rpc_handler_factory<Types>>(this)
                                    .build();
 
-    _http_server = std::make_unique<proxygen::HTTPServer>(std::move(options));
-
-    proxygen::HTTPServer::IPConfig ip_config(folly::SocketAddress(_bind_address, _bind_port),
-                                             proxygen::HTTPServer::Protocol::HTTP);
-    if (_config.enable_ssl) {
-        ip_config.sslConfigs.push_back(build_ssl_context_config());
+    // One listener per address the bind address resolves to ("*" is 0.0.0.0
+    // and ::; a name is looked up in /etc/hosts only -- see net_bind.hpp).
+    // The sockets are opened here, bound and listening, and handed to
+    // proxygen pre-bound rather than bound by it: each IPv6 one needs
+    // IPV6_V6ONLY before bind() so "*" can hold 0.0.0.0 and :: on one port,
+    // and the proxygen release vcpkg resolves applies acceptor socket
+    // options only after bind. Port 0 gives every listener the same
+    // ephemeral port.
+    auto endpoints = kythira::net_bind::resolve_bind_addresses(_bind_address, "proxygen_server");
+    auto fds = kythira::net_bind::open_listeners(endpoints, _bind_port, "proxygen_server");
+    std::vector<proxygen::HTTPServer::IPConfig> ip_configs;
+    try {
+        for (int fd : fds) {
+            sockaddr_storage bound{};
+            socklen_t bound_len = sizeof(bound);
+            ::getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &bound_len);
+            folly::SocketAddress address;
+            address.setFromSockaddr(reinterpret_cast<const sockaddr*>(&bound), bound_len);
+            proxygen::HTTPServer::IPConfig ip_config(address, proxygen::HTTPServer::Protocol::HTTP);
+            if (_config.enable_ssl) {
+                ip_config.sslConfigs.push_back(build_ssl_context_config());
+            }
+            ip_configs.push_back(std::move(ip_config));
+        }
+    } catch (...) {
+        for (int fd : fds) ::close(fd);
+        throw;
     }
-    _http_server->bind({ip_config});
+    // preboundSockets_[i] pairs with ip_configs[i] in HTTPServer::start().
+    for (int fd : fds) {
+        options.useExistingSocket(fd);
+    }
+
+    _http_server = std::make_unique<proxygen::HTTPServer>(std::move(options));
+    _http_server->bind(ip_configs);
 
     // Requirement 5.1: HTTPServer::start() genuinely blocks the calling
     // thread until stop() (spike-notes.md Finding 1) -- own and join a
