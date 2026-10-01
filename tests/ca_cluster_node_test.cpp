@@ -98,10 +98,15 @@ struct cluster_node_process {
     std::string auth_token;
     std::string peers_arg;
     bool bootstrap;
+    // Appended to every spawn. These nodes have no RPC TLS material, so they
+    // bind Raft RPC to loopback, the one plaintext case ca_cluster_node
+    // allows without --allow-plaintext-rpc.
+    std::vector<std::string> extra_args{"--rpc-address", "127.0.0.1"};
 
     cluster_node_process(std::uint64_t id, int rpc_port_, int http_port_, std::string data_dir_,
                          std::string unseal_key_file_, std::string auth_token_,
-                         std::string peers_arg_, bool bootstrap_)
+                         std::string peers_arg_, bool bootstrap_,
+                         std::optional<std::vector<std::string>> extra_args_ = std::nullopt)
         : node_id(id),
           http_port(http_port_),
           rpc_port(rpc_port_),
@@ -110,6 +115,7 @@ struct cluster_node_process {
           auth_token(std::move(auth_token_)),
           peers_arg(std::move(peers_arg_)),
           bootstrap(bootstrap_) {
+        if (extra_args_) extra_args = std::move(*extra_args_);
         std::filesystem::create_directories(data_dir);
         spawn();
     }
@@ -142,6 +148,7 @@ struct cluster_node_process {
         if (bootstrap) {
             argv_strs.emplace_back("--bootstrap-ca");
         }
+        argv_strs.insert(argv_strs.end(), extra_args.begin(), extra_args.end());
 
         std::vector<char*> argv;
         argv.reserve(argv_strs.size() + 1);
@@ -212,6 +219,23 @@ struct cluster_node_process {
     }
 
     [[nodiscard]] auto is_running() const -> bool { return pid > 0; }
+
+    // Waits for the process to exit on its own and returns its exit code, or
+    // nullopt if it is still running at the deadline or died from a signal.
+    auto wait_for_own_exit(std::chrono::milliseconds timeout) -> std::optional<int> {
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (pid > 0 && std::chrono::steady_clock::now() < deadline) {
+            int status = 0;
+            pid_t r = ::waitpid(pid, &status, WNOHANG);
+            if (r == pid) {
+                pid = -1;
+                if (WIFEXITED(status)) return WEXITSTATUS(status);
+                return std::nullopt;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return std::nullopt;
+    }
 };
 
 auto wait_healthy(int http_port, std::chrono::seconds timeout) -> bool {
@@ -642,4 +666,136 @@ BOOST_AUTO_TEST_CASE(restarted_follower_recovers_and_can_become_leader,
                           "no new leader emerged among the two surviving nodes");
     BOOST_TEST(new_leader->node_index != leader->node_index);
     BOOST_TEST(new_leader->root_pem == leader->root_pem);
+}
+
+// ── Plaintext Raft RPC is opt-in ─────────────────────────────────────────────
+// A node with no RPC TLS material may only fall back to plain TCP when its
+// RPC listener is loopback-only (every test above) or the operator opted in.
+
+namespace {
+
+struct lone_node_env {
+    std::string tmp_root;
+    std::string unseal_key_file;
+    std::string peers;
+
+    explicit lone_node_env(const std::string& name) {
+        tmp_root = (std::filesystem::temp_directory_path() /
+                    ("ca_cluster_node_" + name + "_" + std::to_string(::getpid())))
+                       .string();
+        std::filesystem::create_directories(tmp_root);
+        unseal_key_file = tmp_root + "/unseal.key";
+        std::ofstream(unseal_key_file) << "plaintext-opt-in-test-passphrase\n";
+        std::ostringstream p;
+        p << "2:127.0.0.1:" << find_free_port() << "@http://127.0.0.1:1";
+        peers = p.str();
+    }
+    ~lone_node_env() {
+        std::error_code ec;
+        std::filesystem::remove_all(tmp_root, ec);
+    }
+    lone_node_env(const lone_node_env&) = delete;
+    auto operator=(const lone_node_env&) -> lone_node_env& = delete;
+};
+
+// Clears CA_CLUSTER_ALLOW_PLAINTEXT_RPC for the test's duration (the spawned
+// node inherits this process's environment), optionally setting it instead.
+struct scoped_plaintext_env {
+    explicit scoped_plaintext_env(const char* value) {
+        if (value != nullptr) {
+            ::setenv("CA_CLUSTER_ALLOW_PLAINTEXT_RPC", value, 1);
+        } else {
+            ::unsetenv("CA_CLUSTER_ALLOW_PLAINTEXT_RPC");
+        }
+    }
+    ~scoped_plaintext_env() { ::unsetenv("CA_CLUSTER_ALLOW_PLAINTEXT_RPC"); }
+    scoped_plaintext_env(const scoped_plaintext_env&) = delete;
+    auto operator=(const scoped_plaintext_env&) -> scoped_plaintext_env& = delete;
+};
+
+}  // namespace
+
+// The default --rpc-address is 0.0.0.0, so a node given no RPC TLS flags
+// and no opt-in must refuse to start rather than serve plaintext Raft RPC.
+BOOST_AUTO_TEST_CASE(plaintext_rpc_refused_by_default, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("plaintext_refused");
+    cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
+                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
+                              std::vector<std::string>{});
+    auto code = node.wait_for_own_exit(std::chrono::seconds(15));
+    BOOST_REQUIRE_MESSAGE(code.has_value(), "node did not exit; it started with plaintext RPC");
+    BOOST_TEST(*code == 1);
+}
+
+BOOST_AUTO_TEST_CASE(plaintext_rpc_refused_on_explicit_wildcard_bind,
+                     *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("plaintext_wildcard");
+    cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
+                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
+                              std::vector<std::string>{"--rpc-address", "0.0.0.0"});
+    auto code = node.wait_for_own_exit(std::chrono::seconds(15));
+    BOOST_REQUIRE(code.has_value());
+    BOOST_TEST(*code == 1);
+}
+
+// "0" is not an opt-in: only the exact value "1" enables plaintext.
+BOOST_AUTO_TEST_CASE(plaintext_rpc_env_zero_is_not_opt_in, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env("0");
+    lone_node_env dir("plaintext_env_zero");
+    cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
+                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
+                              std::vector<std::string>{});
+    auto code = node.wait_for_own_exit(std::chrono::seconds(15));
+    BOOST_REQUIRE(code.has_value());
+    BOOST_TEST(*code == 1);
+}
+
+BOOST_AUTO_TEST_CASE(plaintext_rpc_allowed_with_flag, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("plaintext_flag");
+    int http_port = find_free_port();
+    cluster_node_process node(1, find_free_port(), http_port, dir.tmp_root + "/node1",
+                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
+                              std::vector<std::string>{"--allow-plaintext-rpc"});
+    BOOST_TEST(wait_healthy(http_port, std::chrono::seconds(15)));
+    node.stop();
+}
+
+BOOST_AUTO_TEST_CASE(plaintext_rpc_allowed_with_env, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env("1");
+    lone_node_env dir("plaintext_env");
+    int http_port = find_free_port();
+    cluster_node_process node(1, find_free_port(), http_port, dir.tmp_root + "/node1",
+                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
+                              std::vector<std::string>{});
+    BOOST_TEST(wait_healthy(http_port, std::chrono::seconds(15)));
+    node.stop();
+}
+
+// "localhost" is loopback: it binds every loopback address it resolves to,
+// so no opt-in is needed.
+BOOST_AUTO_TEST_CASE(plaintext_rpc_allowed_on_localhost_bind, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("plaintext_localhost");
+    int http_port = find_free_port();
+    cluster_node_process node(1, find_free_port(), http_port, dir.tmp_root + "/node1",
+                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
+                              std::vector<std::string>{"--rpc-address", "localhost"});
+    BOOST_TEST(wait_healthy(http_port, std::chrono::seconds(15)));
+    node.stop();
+}
+
+// --rpc-address used to be parsed and ignored; it now picks the listener, so
+// a name that doesn't resolve to this host is a startup error.
+BOOST_AUTO_TEST_CASE(unusable_rpc_address_rejected, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("rpc_address_invalid");
+    cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
+                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
+                              std::vector<std::string>{"--rpc-address", "kythira-test.invalid"});
+    auto code = node.wait_for_own_exit(std::chrono::seconds(15));
+    BOOST_REQUIRE(code.has_value());
+    BOOST_TEST(*code == 1);
 }

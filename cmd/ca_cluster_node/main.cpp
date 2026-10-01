@@ -14,6 +14,7 @@
 //                    [--rpc-address <addr>] [--bootstrap-ca]
 //                    [--auth-token <token>] [--tls-cert <path> --tls-key <path>]
 //                    [--rpc-tls-cert <path> --rpc-tls-key <path>]
+//                    [--allow-plaintext-rpc]
 //
 // Every node in the cluster SHALL be started with the SAME --unseal-key-file
 // contents (Requirement 17.4) — losing it makes the persisted CA key
@@ -30,13 +31,16 @@
 // static, operator-provisioned credential (byte-identical across every
 // node, same distribution channel as --unseal-key-file) and automatically
 // cut over to the cluster's own CA root once it exists — see that spec's
-// design.md for the full two-phase bootstrap. Omitting both flags falls
-// back to plain, unauthenticated TCP for the RPC channel (this spec makes
-// RPC TLS available and recommended, not mandatory), UNLESS this node has
-// already completed that cutover in a prior run (a persisted peer
-// certificate exists under --data-dir), in which case it rejoins using
-// that identity directly — no bootstrap credential is needed at all after
-// the first successful cutover.
+// design.md for the full two-phase bootstrap. A node that has already
+// completed that cutover in a prior run (a persisted peer certificate
+// exists under --data-dir) rejoins using that identity directly — no
+// bootstrap credential is needed at all after the first successful cutover.
+//
+// With neither the flags nor a persisted certificate, the RPC channel would
+// be plain, unauthenticated TCP. The node refuses to start in that state
+// unless --rpc-address is loopback (127.0.0.0/8, ::1, or a name such as
+// "localhost" resolving only to those; single-host use) or the operator
+// passes --allow-plaintext-rpc / CA_CLUSTER_ALLOW_PLAINTEXT_RPC=1.
 
 #include "config.hpp"
 
@@ -544,9 +548,10 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
 
     typename Types::network_server_type rpc_server = [&] {
         if constexpr (k_rpc_tls) {
-            return typename Types::network_server_type(cfg.rpc_port, cfg.rpc_tls_config);
+            return typename Types::network_server_type(cfg.rpc_port, cfg.rpc_tls_config,
+                                                       cfg.rpc_address);
         } else {
-            return typename Types::network_server_type(cfg.rpc_port);
+            return typename Types::network_server_type(cfg.rpc_port, cfg.rpc_address);
         }
     }();
     typename Types::network_client_type rpc_client = [&] {
@@ -575,7 +580,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         if constexpr (k_rpc_tls) {
             return rpc_server;
         } else {
-            return typename Types::network_server_type(cfg.rpc_port);
+            return typename Types::network_server_type(cfg.rpc_port, cfg.rpc_address);
         }
     }();
     typename Types::network_client_type rpc_client_handle = [&] {
@@ -1541,8 +1546,8 @@ int main(int argc, char** argv) {
     // --rpc-tls-cert/--rpc-tls-key OR this node already has a persisted peer
     // certificate from a prior cutover (Property 5 — the bootstrap
     // credential flags are not required on every subsequent restart).
-    // Neither present: plain TCP (Requirement 3.3's documented, non-mandatory
-    // default). --rpc-tls-cert given but unreadable/invalid, with no
+    // Neither present: plain TCP, but only where plaintext_rpc_permitted()
+    // allows it (see below). --rpc-tls-cert given but unreadable/invalid, with no
     // persisted fallback: fail closed (Requirement 2.3), surfaced naturally
     // by tls_tcp_rpc_server's constructor throwing, caught below.
     bool have_persisted = have_valid_persisted_peer_cert(cfg.data_dir);
@@ -1612,10 +1617,26 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::cerr << "ca_cluster_node: WARNING: running without RPC TLS (no --rpc-tls-cert/"
-                 "--rpc-tls-key given, and no persisted peer certificate found under --data-dir) "
-                 "— suitable only for a private network\n";
 #endif  // KYTHIRA_HAS_OPENSSL
+
+    // No RPC TLS material: plain, unauthenticated TCP would let anyone who
+    // can reach --rpc-port drive Raft. Refuse unless the listener is
+    // loopback-only or the operator explicitly opted in.
+    if (!ca_cluster_node::plaintext_rpc_permitted(cfg)) {
+        std::cerr << "ca_cluster_node: refusing to start: Raft RPC would be plaintext on "
+                  << cfg.rpc_address << ":" << cfg.rpc_port
+                  << " (no --rpc-tls-cert/--rpc-tls-key given, and no persisted peer certificate "
+                     "found under --data-dir).\n"
+                     "  Provision the RPC bootstrap credential and pass --rpc-tls-cert/"
+                     "--rpc-tls-key, bind --rpc-address to loopback for single-host use, or pass "
+                     "--allow-plaintext-rpc (or set CA_CLUSTER_ALLOW_PLAINTEXT_RPC=1) to accept "
+                     "unauthenticated Raft RPC on a trusted network.\n";
+        return 1;
+    }
+    std::cerr << "ca_cluster_node: WARNING: Raft RPC is PLAINTEXT and UNAUTHENTICATED on "
+              << cfg.rpc_address << ":" << cfg.rpc_port
+              << (cfg.allow_plaintext_rpc ? " (plaintext opted in)" : " (loopback only)")
+              << "; any process that can reach this port can drive Raft\n";
 
     return run_ca_cluster_node<ca_cluster_raft_types_plain>(std::move(cfg),
                                                             std::move(unseal_passphrase));

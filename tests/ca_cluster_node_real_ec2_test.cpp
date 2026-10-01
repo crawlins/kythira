@@ -562,8 +562,11 @@ auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, boo
     cmd << "sudo setsid nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
         << " --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node"
         << " --unseal-key-file /etc/ca_cluster_node/unseal.key"
-        << " --peers " << peers_arg << " --auth-token " << TEST_AUTH_TOKEN
-        << (bootstrap ? " --bootstrap-ca" : "")
+        << " --peers " << peers_arg << " --auth-token "
+        << TEST_AUTH_TOKEN
+        // Plaintext across hosts needs the explicit opt-in; the RPC TLS
+        // variant of this deployment is ca_cluster_node_rpc_tls_real_ec2_test.
+        << " --allow-plaintext-rpc" << (bootstrap ? " --bootstrap-ca" : "")
         << " > /tmp/ca_cluster_node.log 2>&1 < /dev/null &\ndisown\n";
     return cmd.str();
 }
