@@ -893,4 +893,47 @@ BOOST_AUTO_TEST_CASE(generic_bridge_forced_matches_fast_path_result,
     server.stop();
 }
 
+// The server listens on every address a bind name resolves to, and the
+// client tries every address a peer name resolves to, so a server and peer
+// both named "localhost" meet whichever of 127.0.0.1 and ::1 each lists
+// first. "*" is 0.0.0.0 and :: on one port.
+BOOST_AUTO_TEST_CASE(localhost_and_star_binds_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    std::uint16_t port = 18250;
+    for (std::string bind : {"localhost", "*"}) {
+        // A fresh executor per server: proxygen_server::stop() stops the
+        // executor it was handed, so a second server on the same one would
+        // find no threads left.
+        folly::IOThreadPoolExecutor io_executor(2);
+        kythira::proxygen_server<test_transport_types> server(
+            bind, port, {}, recording_metrics{},
+            std::shared_ptr<folly::IOThreadPoolExecutorBase>(&io_executor, [](auto*) {}));
+        register_echo_handlers(server);
+        server.start();
+
+        std::unordered_map<std::uint64_t, std::string> node_map{
+            {test_node_id, std::string("http://localhost:") + std::to_string(port)}};
+        kythira::proxygen_client<test_transport_types> client(io_executor, node_map, {},
+                                                              recording_metrics{});
+        kythira::request_vote_request<> req{};
+        req._term = 1;
+        BOOST_TEST_INFO("bind " << bind);
+        BOOST_TEST(std::move(client.send_request_vote(test_node_id, req,
+                                                      kythira::testing::scaled_deadline(3000)))
+                       .get()
+                       .vote_granted());
+        server.stop();
+        ++port;
+    }
+}
+
+BOOST_AUTO_TEST_CASE(unlisted_bind_name_is_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    folly::IOThreadPoolExecutor io_executor(1);
+    kythira::proxygen_server<test_transport_types> server(
+        "kythira-test.invalid", 18252, {}, recording_metrics{},
+        std::shared_ptr<folly::IOThreadPoolExecutorBase>(&io_executor, [](auto*) {}));
+    BOOST_CHECK_THROW(server.start(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
