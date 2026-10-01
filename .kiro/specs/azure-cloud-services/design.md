@@ -115,9 +115,23 @@ per `provision_node` call.
 `NodeId` (unique only within one scale set, not across the several scale sets
 one Raft cluster's placement groups use), so it reuses the exact same
 cluster-wide tag-scan `next_node_id()` as `azure_vm_quorum_manager`, applying
-the resulting tag via a `PATCH` on the specific VMSS instance rather than
-encoding it into a resource name (VMSS instance names are Azure-assigned and
-not renameable).
+the resulting tag to the instance rather than encoding it into a resource name
+(scale-set member names are Azure-assigned and not renameable).
+
+That tag makes **Flexible orchestration a requirement**, not a deployment
+choice, and the manager rejects a Uniform scale set at construction. A Flexible
+member is an ordinary `Microsoft.Compute/virtualMachines` resource and carries
+its own tags; a Uniform member carries none and only reflects the scale set's.
+Writing a tag to a Uniform member is *silently* ineffective — an ARM `PUT`,
+`az vmss update --instance-id --set tags` and `az resource tag` each report
+success and change nothing — so provisioning would appear to succeed while
+every later `assess_quorum` and `decommission_node` failed to find the node.
+
+Under Flexible the tag is applied with a `PATCH` on the member's own VM
+resource. The scale-set-scoped route does not exist:
+`PATCH .../virtualMachineScaleSets/{name}/virtualMachines/{id}` is refused with
+`405`, because `VirtualMachineScaleSetVMs_Update` is a `PUT` rather than the
+`PATCH` that `VirtualMachines_Update` is.
 
 ## Components and Interfaces
 
@@ -316,8 +330,18 @@ group in a single call that returns power state, so `assess_quorum` issues
 one request per node, bounded by a small concurrency limit to avoid
 overwhelming ARM's per-subscription throttling budget. This is the one place
 where the Azure design is structurally less efficient than its AWS
-counterpart; `azure_vmss_quorum_manager::assess_quorum` does not have this
-limitation (VMSS's `?$expand=instanceView` list call *is* a batch read).
+counterpart, and `azure_vmss_quorum_manager::assess_quorum` shares it rather
+than escaping it.
+
+This previously claimed the VMSS manager escaped the limitation, because
+Uniform's `?$expand=instanceView` list call *is* a batch read. Flexible offers
+no equivalent: the scale set's own instance list refuses that expansion
+(`BadRequest: Operation 'VirtualMachineScaleSets.virtualMachines.GET' is not
+allowed`), and the resource group's VM list accepts it only alongside a
+`virtualMachineScaleSet/id` filter that ARM rejected in every encoding tried
+against api-version 2024-07-01. So the VMSS manager reads the resource group's
+VM list once for tags and membership, then one `instanceView` `GET` per node
+being assessed.
 
 #### `provision_node` sequence
 

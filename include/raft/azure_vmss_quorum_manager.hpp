@@ -39,6 +39,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -60,6 +61,9 @@ namespace kythira {
 /// `aws_asg_quorum_manager_config`. `provision_node` only changes
 /// `sku.capacity` and tags the resulting instance; it never touches the scale
 /// set's model.
+///
+/// Every scale set named here must use **Flexible** orchestration; the manager
+/// refuses Uniform at construction. See `azure_vmss_quorum_manager`.
 struct azure_vmss_quorum_manager_config {
     /// Azure subscription/resource-group/location/credential settings.
     azure_client_config azure{};
@@ -72,6 +76,17 @@ struct azure_vmss_quorum_manager_config {
     /// Maximum time to wait for a newly provisioned instance to reach
     /// PowerState/running and be found untagged.
     std::chrono::seconds provision_timeout{300};
+    /// Maximum time `decommission_node` waits for the deleted member to stop
+    /// being listed.
+    ///
+    /// 600s, not the 30s this was hardcoded to. Under Flexible orchestration a
+    /// member stays listed in `Deleting` for minutes -- the real-cloud
+    /// workflow's own VMSS audit allows 900s for the same drain, and was
+    /// measured needing most of it. The 30s was chosen when this manager
+    /// targeted Uniform scale sets and was never exercised against either mode,
+    /// so `vmss_decommission_removes_instance` failed the moment the case
+    /// actually ran (run 36749754552).
+    std::chrono::seconds decommission_timeout{600};
     /// Sleep interval between instance-list polls during provisioning.
     std::chrono::milliseconds poll_interval{5000};
     /// Target node counts per placement group.
@@ -89,9 +104,15 @@ struct azure_vmss_quorum_manager_config {
 /// NodeId (unique only within one scale set, not across the several scale
 /// sets one Raft cluster's placement groups may use), so it reuses the exact
 /// same cluster-wide tag-scan `next_node_id()` as `azure_vm_quorum_manager`,
-/// applying the resulting tag via a `PATCH` on the specific VMSS instance
-/// rather than encoding it into a resource name (VMSS instance names are
-/// Azure-assigned and not renameable).
+/// applying the resulting tag to the instance rather than encoding it into a
+/// resource name (scale-set member names are Azure-assigned and not
+/// renameable).
+///
+/// That tag is why every scale set this manager is given must use **Flexible**
+/// orchestration: a Flexible member is an ordinary
+/// `Microsoft.Compute/virtualMachines` resource with tags of its own, while a
+/// Uniform member has none and merely reflects the scale set's. The constructor
+/// enforces it.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires kythira::node_id<NodeId>
 class azure_vmss_quorum_manager {
@@ -100,11 +121,15 @@ public:
     using address_type = Address;
     using placement_group_id_type = std::string;
 
-    /// Constructs the manager, validates the configuration, and verifies that
-    /// every configured scale set is NOT in `upgradePolicy.mode == "Automatic"`
-    /// (Requirement 10.3): an Automatic-mode scale set can autonomously replace
+    /// Constructs the manager, validates the configuration, and verifies of
+    /// every configured scale set that it uses **Flexible** orchestration and
+    /// is NOT in `upgradePolicy.mode == "Automatic"`.
+    ///
+    /// Automatic mode (Requirement 10.3) lets a scale set autonomously replace
     /// instances outside this manager's control, violating Property 4 ("no
-    /// autonomous replacement outside the quorum manager's control").
+    /// autonomous replacement outside the quorum manager's control"). Uniform
+    /// orchestration cannot store the per-instance tag this manager identifies
+    /// nodes by, and fails to store it *silently*; see `tag_instance`.
     explicit azure_vmss_quorum_manager(azure_vmss_quorum_manager_config cfg)
         : _cfg(std::move(cfg)) {
         if (_cfg.cluster_name.empty()) {
@@ -125,10 +150,10 @@ public:
             }
         }
 
-        _arm_base = (_cfg.azure.arm_endpoint_override.empty() ? "https://management.azure.com"
-                                                              : _cfg.azure.arm_endpoint_override) +
-                    "/subscriptions/" + _cfg.azure.subscription_id + "/resourceGroups/" +
-                    _cfg.azure.resource_group;
+        _arm_endpoint = _cfg.azure.arm_endpoint_override.empty() ? "https://management.azure.com"
+                                                                 : _cfg.azure.arm_endpoint_override;
+        _arm_base = _arm_endpoint + "/subscriptions/" + _cfg.azure.subscription_id +
+                    "/resourceGroups/" + _cfg.azure.resource_group;
 
         auto credential =
             _cfg.azure.credential ? _cfg.azure.credential : make_default_credential_chain();
@@ -162,6 +187,31 @@ public:
             for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
                 auto body = arm_get("/providers/Microsoft.Compute/virtualMachineScaleSets/" +
                                     scale_set + "?api-version=" + compute_api_version);
+
+                // Orchestration mode first, because getting this wrong is
+                // silent. This manager identifies each node by a
+                // `kythira:node-id` tag on its instance, and a Uniform scale
+                // set's members cannot hold tags of their own -- every write is
+                // accepted, reports success, and changes nothing (see
+                // `tag_instance`). Provisioning would appear to work and every
+                // subsequent assess/decommission would fail to find the node.
+                // Refusing here turns that into one clear error at construction.
+                std::string orchestration;
+                try {
+                    orchestration =
+                        std::string(body.at("properties").at("orchestrationMode").as_string());
+                } catch (const std::exception&) {
+                    orchestration.clear();
+                }
+                if (orchestration == "Uniform") {
+                    throw std::invalid_argument(
+                        "azure_vmss_quorum_manager: scale set '" + scale_set + "' (group '" +
+                        group +
+                        "') uses Uniform orchestration; kythira requires Flexible, because "
+                        "Uniform scale-set members cannot carry the per-instance "
+                        "kythira:node-id tag this manager identifies nodes by");
+                }
+
                 std::string mode;
                 try {
                     mode = std::string(
@@ -180,10 +230,15 @@ public:
         }
     }
 
-    /// Assesses cluster health via one `?$expand=instanceView` list call per
-    /// scale set (a true batch read, unlike `azure_vm_quorum_manager`'s
-    /// per-node calls). Instances lacking a `kythira:node-id` tag are skipped —
-    /// they belong to no kythira cluster node yet.
+    /// Assesses cluster health from the resource group's VM list plus one power
+    /// state read per node in `cluster`. Instances lacking a `kythira:node-id`
+    /// tag are skipped — they belong to no kythira cluster node yet.
+    ///
+    /// This was one expanded list call per scale set while the manager targeted
+    /// Uniform scale sets. Flexible offers no equivalent: the scale set's own
+    /// instance list refuses `$expand=instanceView`, and the VM list only
+    /// accepts that expansion alongside a scale-set filter that ARM rejected in
+    /// every encoding tried. See `scale_set_vms` and `vm_is_ready`.
     auto assess_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
         -> kythira::future_default<quorum_health<NodeId, std::string>> {
         try {
@@ -194,41 +249,22 @@ public:
                 return build_health(cluster, {});
             }
 
+            // Only the node IDs this call was asked about, so an unrelated
+            // cluster sharing the scale set costs nothing to assess.
+            std::set<std::string> wanted;
+            for (const auto& np : cluster) {
+                wanted.insert(node_id_str(np.node_id));
+            }
+
             std::map<std::string, bool> live_map;
             for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
                 (void)group;
-                auto body = arm_get(
-                    "/providers/Microsoft.Compute/virtualMachineScaleSets/" + scale_set +
-                    "/virtualMachines?$expand=instanceView&api-version=" + compute_api_version);
-                if (!body.is_object() || !body.as_object().contains("value")) {
-                    continue;
-                }
-                for (const auto& inst : body.at("value").as_array()) {
-                    if (!inst.is_object()) {
+                for (const auto& [vm_name, vm] : scale_set_vms(scale_set)) {
+                    auto nid_tag = node_id_tag(vm);
+                    if (!nid_tag || !wanted.contains(*nid_tag)) {
                         continue;
                     }
-                    std::string nid_tag;
-                    if (inst.as_object().contains("tags") && inst.at("tags").is_object() &&
-                        inst.at("tags").as_object().contains("kythira:node-id")) {
-                        nid_tag = std::string(inst.at("tags").at("kythira:node-id").as_string());
-                    } else {
-                        continue;
-                    }
-                    bool running = false;
-                    try {
-                        const auto& statuses =
-                            inst.at("properties").at("instanceView").at("statuses").as_array();
-                        for (const auto& st : statuses) {
-                            if (st.is_object() && st.as_object().contains("code") &&
-                                st.at("code").as_string() == "PowerState/running") {
-                                running = true;
-                                break;
-                            }
-                        }
-                    } catch (const std::exception&) {
-                        running = false;
-                    }
-                    live_map[nid_tag] = running;
+                    live_map[*nid_tag] = vm_is_ready(vm_name);
                 }
             }
 
@@ -330,42 +366,22 @@ public:
                             patch_body);
 
             std::string found_instance_id;
+            boost::json::object found_vm;
             auto deadline = std::chrono::steady_clock::now() + _cfg.provision_timeout;
             while (found_instance_id.empty() && std::chrono::steady_clock::now() < deadline) {
                 std::this_thread::sleep_for(_cfg.poll_interval);
                 try {
-                    auto list_body = arm_get(
-                        "/providers/Microsoft.Compute/virtualMachineScaleSets/" + scale_set +
-                        "/virtualMachines?$expand=instanceView&api-version=" + compute_api_version);
-                    if (!list_body.is_object() || !list_body.as_object().contains("value")) {
-                        continue;
-                    }
-                    for (const auto& inst : list_body.at("value").as_array()) {
-                        if (!inst.is_object()) {
+                    for (const auto& [vm_name, vm] : scale_set_vms(scale_set)) {
+                        // Untagged, so not yet claimed by any node. Under
+                        // Flexible this is a real VM resource, so its absence
+                        // of a tag is durable state rather than an artifact of
+                        // a list that never returns tags.
+                        if (node_id_tag(vm)) {
                             continue;
                         }
-                        bool has_tag = inst.as_object().contains("tags") &&
-                                       inst.at("tags").is_object() &&
-                                       inst.at("tags").as_object().contains("kythira:node-id");
-                        if (has_tag) {
-                            continue;
-                        }
-                        bool running = false;
-                        try {
-                            const auto& statuses =
-                                inst.at("properties").at("instanceView").at("statuses").as_array();
-                            for (const auto& st : statuses) {
-                                if (st.is_object() && st.as_object().contains("code") &&
-                                    st.at("code").as_string() == "PowerState/running") {
-                                    running = true;
-                                    break;
-                                }
-                            }
-                        } catch (const std::exception&) {
-                            running = false;
-                        }
-                        if (running && inst.as_object().contains("instanceId")) {
-                            found_instance_id = std::string(inst.at("instanceId").as_string());
+                        if (vm_is_ready(vm_name)) {
+                            found_instance_id = vm_name;
+                            found_vm = vm;
                             break;
                         }
                     }
@@ -390,27 +406,27 @@ public:
             }
 
             NodeId new_id = next_node_id();
-            boost::json::object tag_patch;
-            tag_patch["tags"] = build_tags(new_id, target_group);
-            (void)arm_patch("/providers/Microsoft.Compute/virtualMachineScaleSets/" + scale_set +
-                                "/virtualMachines/" + found_instance_id +
-                                "?api-version=" + compute_api_version,
-                            tag_patch);
+            tag_instance(found_instance_id, found_vm, new_id, target_group);
 
             std::string private_ip;
             try {
-                auto instance_body =
-                    arm_get("/providers/Microsoft.Compute/virtualMachineScaleSets/" + scale_set +
-                            "/virtualMachines/" + found_instance_id +
-                            "?$expand=instanceView&api-version=" + compute_api_version);
-                const auto& nic_refs = instance_body.at("properties")
+                const auto& nic_refs = found_vm.at("properties")
                                            .at("networkProfile")
                                            .at("networkInterfaces")
                                            .as_array();
                 if (!nic_refs.empty()) {
+                    // `id` is an ARM *resource id* -- a path beginning
+                    // "/subscriptions/...", not a URL. Passing it to
+                    // arm_get_absolute unprefixed produced a request with no
+                    // scheme or host, which the Azure SDK refuses to
+                    // authenticate at all: "authentication is not permitted for
+                    // non TLS protected (https) endpoints", an error naming TLS
+                    // that reads like a transport misconfiguration rather than
+                    // a malformed URL. Measured in run 36732744311, where it
+                    // failed every provision.
                     std::string nic_id(nic_refs[0].at("id").as_string());
-                    auto nic_body =
-                        arm_get_absolute(nic_id + "?api-version=" + network_api_version);
+                    auto nic_body = arm_get_absolute(_arm_endpoint + nic_id +
+                                                     "?api-version=" + network_api_version);
                     const auto& ip_configs =
                         nic_body.at("properties").at("ipConfigurations").as_array();
                     if (!ip_configs.empty()) {
@@ -435,12 +451,16 @@ public:
         }
     }
 
-    /// Deletes the VMSS instance identified by `node_id`, idempotently.
-    /// Unlike AWS's `TerminateInstanceInAutoScalingGroup(ShouldDecrementDesiredCapacity=true)`,
-    /// VMSS's per-instance delete has no capacity-decrement flag: deleting an
-    /// instance leaves `sku.capacity` counting a now-empty slot, which the next
-    /// `provision_node` call's capacity increment fills with a genuinely new
-    /// instance. No corrective PATCH is needed here.
+    /// Deletes the scale-set member identified by `node_id`, idempotently.
+    ///
+    /// The scale set's own `POST .../delete` action, taking the member's VM
+    /// name in `instanceIds` -- under Flexible there is no separate numeric
+    /// instance id, the name is the id. Measured: this decrements
+    /// `sku.capacity` on its own, so no corrective PATCH is needed and the
+    /// scale set does not relaunch a replacement. Under Uniform it did not, and
+    /// the empty slot was filled by the next provision's increment -- worth
+    /// knowing when reading the AWS spec's comparison with
+    /// `TerminateInstanceInAutoScalingGroup(ShouldDecrementDesiredCapacity=true)`.
     auto decommission_node(const NodeId& node_id) -> kythira::future_default<void> {
         try {
             fiu_do_on("raft/azure/vmss/delete_instance",
@@ -476,15 +496,25 @@ public:
                 throw;
             }
 
-            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
-            while (std::chrono::steady_clock::now() < deadline) {
+            // Throws on expiry rather than returning. The previous version
+            // broke out of this loop and reported success, so a delete that had
+            // not landed looked identical to one that had -- the caller then
+            // asserted the member was gone and failed with nothing pointing at
+            // the wait. A decommission that cannot confirm the member is gone
+            // has not done its job, and says so.
+            auto deadline = std::chrono::steady_clock::now() + _cfg.decommission_timeout;
+            for (;;) {
                 if (!find_instance(node_id)) {
-                    break;
+                    return future_factory_default::makeFuture();
                 }
-                std::this_thread::sleep_for(std::chrono::seconds{2});
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    throw std::runtime_error("member for node " + node_id_str(node_id) +
+                                             " was still listed " +
+                                             std::to_string(_cfg.decommission_timeout.count()) +
+                                             "s after its delete was accepted");
+                }
+                std::this_thread::sleep_for(_cfg.poll_interval);
             }
-
-            return future_factory_default::makeFuture();
         } catch (const std::exception& ex) {
             return future_factory_default::makeExceptionalFuture<void>(
                 std::make_exception_ptr(std::runtime_error(
@@ -505,7 +535,155 @@ private:
 
     azure_vmss_quorum_manager_config _cfg;
     std::shared_ptr<Azure::Core::Http::_internal::HttpPipeline> _pipeline;
+    std::string _arm_endpoint;
     std::string _arm_base;
+
+    /// Every VM belonging to `scale_set`, as (vm_name, vm_object) pairs.
+    ///
+    /// This is the class's one source of instance identity, and it does NOT
+    /// use the scale set's own `/virtualMachines` collection, because under
+    /// **Flexible** orchestration that collection carries neither `tags` nor an
+    /// instance view: it answers with bare `{id, instanceId, name, location}`
+    /// entries, and asking it for `$expand=instanceView` is rejected outright
+    /// with `BadRequest: Operation 'VirtualMachineScaleSets.virtualMachines.GET'
+    /// is not allowed`.
+    ///
+    /// A Flexible scale set's members are ordinary
+    /// `Microsoft.Compute/virtualMachines` resources that carry a
+    /// `properties.virtualMachineScaleSet.id` back-reference, so the resource
+    /// group's VM list is the read that returns tags, and membership is
+    /// recovered from that back-reference rather than from the scale set.
+    ///
+    /// Flexible is a requirement of this manager rather than a preference. It
+    /// identifies nodes by a `kythira:node-id` tag written onto the instance,
+    /// and a **Uniform** scale set cannot store per-instance tags at all: its
+    /// instances only ever reflect the scale set's own tags, and every write
+    /// -- an ARM `PUT`, `az vmss update --instance-id --set tags`, and
+    /// `az resource tag` alike -- is accepted, reports success, and changes
+    /// nothing. The constructor rejects Uniform for exactly that reason; a
+    /// silent no-op is far worse here than a refusal.
+    [[nodiscard]] auto scale_set_vms(const std::string& scale_set) const
+        -> std::vector<std::pair<std::string, boost::json::object>> {
+        std::vector<std::pair<std::string, boost::json::object>> out;
+        auto body =
+            arm_get(std::string("/providers/Microsoft.Compute/virtualMachines?api-version=") +
+                    compute_api_version);
+        if (!body.is_object() || !body.as_object().contains("value")) {
+            return out;
+        }
+        for (const auto& vm : body.at("value").as_array()) {
+            if (!vm.is_object() || !vm.as_object().contains("name")) {
+                continue;
+            }
+            std::string owner;
+            try {
+                owner = std::string(
+                    vm.at("properties").at("virtualMachineScaleSet").at("id").as_string());
+            } catch (const std::exception&) {
+                continue;  // Not a scale-set member; an ordinary VM in the group.
+            }
+            if (!resource_id_names_scale_set(owner, scale_set)) {
+                continue;
+            }
+            out.emplace_back(std::string(vm.at("name").as_string()), vm.as_object());
+        }
+        return out;
+    }
+
+    /// True when `resource_id`'s final segment is `scale_set`.
+    ///
+    /// Compared case-insensitively on the last segment only: ARM echoes a
+    /// resource id with whatever casing the caller used for the resource group
+    /// and provider, so a whole-string comparison against a locally built id
+    /// mismatches on casing alone.
+    [[nodiscard]] static auto resource_id_names_scale_set(const std::string& resource_id,
+                                                          const std::string& scale_set) -> bool {
+        auto pos = resource_id.find_last_of('/');
+        if (pos == std::string::npos) {
+            return false;
+        }
+        std::string leaf = resource_id.substr(pos + 1);
+        if (leaf.size() != scale_set.size()) {
+            return false;
+        }
+        return std::equal(leaf.begin(), leaf.end(), scale_set.begin(), [](char a, char b) {
+            return std::tolower(static_cast<unsigned char>(a)) ==
+                   std::tolower(static_cast<unsigned char>(b));
+        });
+    }
+
+    /// Whether `vm_name` is fully provisioned **and** running.
+    ///
+    /// Both conditions, and the `provisioningState` half is not
+    /// belt-and-braces: a scale-set member reports `PowerState/running` while
+    /// its `provisioningState` is still `Creating`, because the capacity
+    /// `PATCH` that creates it is a long-running operation this manager does
+    /// not wait on. Treating such a member as provisioned meant
+    /// `decommission_node` deleted a VM whose create was still in flight, and
+    /// ARM unwinds that instead of performing a normal delete: measured at
+    /// **over nine minutes** in `Deleting`, against **24-37s** for a member
+    /// whose create had settled. That is what failed the 600s decommission
+    /// wait in `vmss_provision_increments_capacity` and
+    /// `vmss_decommission_removes_instance` in run 36791903874, while
+    /// `vmss_assess_detects_not_running` passed -- that case deallocates
+    /// first, and the deallocate forces the create to settle.
+    ///
+    /// Five cheaper explanations were measured against the live scale set and
+    /// refuted first: Flexible deletes being slow in general, only deallocated
+    /// members deleting quickly, the delete racing a freshly-running member,
+    /// the manager's own tagging blocking the delete, and the poll's read
+    /// pressure throttling ARM. Every one of those deletes in 24-37s by hand.
+    /// The difference was never the delete; it was what counted as ready.
+    ///
+    /// One call per VM, because the batch shapes do not work here: the scale
+    /// set's expanded list is refused under Flexible, the resource group's VM
+    /// list rejects `$expand=instanceView` without a scale-set filter, and that
+    /// filter (`virtualMachineScaleSet/id eq '...'`) was refused as
+    /// `BadRequest: The request URL is not valid.` in every encoding tried
+    /// against api-version 2024-07-01. `azure_vm_quorum_manager` reads power
+    /// state per VM for the same reason, and clusters here are small.
+    [[nodiscard]] auto vm_is_ready(const std::string& vm_name) const -> bool {
+        try {
+            auto body = arm_get("/providers/Microsoft.Compute/virtualMachines/" + vm_name +
+                                "?$expand=instanceView&api-version=" + compute_api_version);
+            std::string provisioning_state;
+            try {
+                provisioning_state =
+                    std::string(body.at("properties").at("provisioningState").as_string());
+            } catch (const std::exception&) {
+                return false;
+            }
+            if (provisioning_state != "Succeeded") {
+                return false;
+            }
+            const auto& statuses =
+                body.at("properties").at("instanceView").at("statuses").as_array();
+            for (const auto& st : statuses) {
+                if (st.is_object() && st.as_object().contains("code") &&
+                    st.at("code").as_string() == "PowerState/running") {
+                    return true;
+                }
+            }
+        } catch (const std::exception&) {
+            return false;
+        }
+        return false;
+    }
+
+    /// The `kythira:node-id` tag on `vm`, if it carries one.
+    [[nodiscard]] static auto node_id_tag(const boost::json::object& vm)
+        -> std::optional<std::string> {
+        auto it = vm.find("tags");
+        if (it == vm.end() || !it->value().is_object()) {
+            return std::nullopt;
+        }
+        const auto& tags = it->value().as_object();
+        auto tag = tags.find("kythira:node-id");
+        if (tag == tags.end() || !tag->value().is_string()) {
+            return std::nullopt;
+        }
+        return std::string(tag->value().as_string());
+    }
 
     /// Identical cluster-wide tag-scan bookkeeping as
     /// `azure_vm_quorum_manager::next_node_id` — deliberately copied, not
@@ -514,23 +692,14 @@ private:
         std::uint64_t max_id = 0;
         for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
             (void)group;
-            auto body = arm_get("/providers/Microsoft.Compute/virtualMachineScaleSets/" +
-                                scale_set + "/virtualMachines?api-version=" + compute_api_version);
-            if (!body.is_object() || !body.as_object().contains("value")) {
-                continue;
-            }
-            for (const auto& inst : body.at("value").as_array()) {
-                if (!inst.is_object() || !inst.as_object().contains("tags")) {
-                    continue;
-                }
-                const auto& tags = inst.at("tags");
-                if (!tags.is_object() || !tags.as_object().contains("kythira:node-id")) {
+            for (const auto& [vm_name, vm] : scale_set_vms(scale_set)) {
+                (void)vm_name;
+                auto tag = node_id_tag(vm);
+                if (!tag) {
                     continue;
                 }
                 try {
-                    auto v = static_cast<std::uint64_t>(
-                        std::stoull(std::string(tags.at("kythira:node-id").as_string())));
-                    max_id = std::max(max_id, v);
+                    max_id = std::max(max_id, static_cast<std::uint64_t>(std::stoull(*tag)));
                 } catch (const std::exception&) {
                     // Skip unparseable tag values.
                 }
@@ -551,26 +720,18 @@ private:
         std::string target = node_id_str(node_id);
         for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
             (void)group;
-            boost::json::value body;
+            std::vector<std::pair<std::string, boost::json::object>> vms;
             try {
-                body = arm_get("/providers/Microsoft.Compute/virtualMachineScaleSets/" + scale_set +
-                               "/virtualMachines?api-version=" + compute_api_version);
+                vms = scale_set_vms(scale_set);
             } catch (const std::exception&) {
                 continue;
             }
-            if (!body.is_object() || !body.as_object().contains("value")) {
-                continue;
-            }
-            for (const auto& inst : body.at("value").as_array()) {
-                if (!inst.is_object() || !inst.as_object().contains("tags")) {
-                    continue;
-                }
-                const auto& tags = inst.at("tags");
-                if (tags.is_object() && tags.as_object().contains("kythira:node-id") &&
-                    std::string(tags.at("kythira:node-id").as_string()) == target &&
-                    inst.as_object().contains("instanceId")) {
-                    return std::make_pair(scale_set,
-                                          std::string(inst.at("instanceId").as_string()));
+            for (const auto& [vm_name, vm] : vms) {
+                if (auto tag = node_id_tag(vm); tag && *tag == target) {
+                    // The VM's name, which is what the scale set's delete and
+                    // deallocate actions take as an `instanceIds` entry under
+                    // Flexible -- there is no separate numeric instance id.
+                    return std::make_pair(scale_set, vm_name);
                 }
             }
         }
@@ -660,6 +821,52 @@ private:
         } else {
             return std::to_string(id);
         }
+    }
+
+    /// Applies this manager's tags to one scale-set member.
+    ///
+    /// A `PATCH` on the member's own `Microsoft.Compute/virtualMachines`
+    /// resource, which under Flexible orchestration is what a scale-set member
+    /// actually is. It applies synchronously: the tag is readable in the very
+    /// next list call.
+    ///
+    /// None of the routes through the *scale set* work, and their failure modes
+    /// are worth recording because two of them are silent:
+    ///
+    ///   * `PATCH .../virtualMachineScaleSets/{n}/virtualMachines/{id}` is
+    ///     refused outright -- `405 The requested resource does not support
+    ///     http method 'PATCH'` -- even for an instance id that does not exist,
+    ///     so it is the method being rejected and not the resource missed.
+    ///     `VirtualMachineScaleSetVMs_Update` is a `PUT`, unlike the
+    ///     standalone `VirtualMachines_Update` this class was modelled on.
+    ///   * That `PUT`, against a **Uniform** set, is accepted, reports
+    ///     `provisioningState: Succeeded`, and does not apply the tag. So do
+    ///     `az vmss update --instance-id --set tags` and `az resource tag`.
+    ///     Uniform members cannot hold tags of their own at all; they only
+    ///     reflect the scale set's. The constructor therefore refuses a Uniform
+    ///     scale set rather than letting node identity quietly evaporate.
+    ///   * `Microsoft.Resources/tags/default` is rejected at scale-set-member
+    ///     scope with `HttpMethodIsNotSupported`.
+    ///
+    /// `PATCH` on a VM replaces the whole tags collection rather than merging
+    /// into it, so `vm`'s existing tags are carried over explicitly -- Azure
+    /// puts its own `VirtualMachineProfileTimeCreated` there, and an operator
+    /// may have added more.
+    void tag_instance(const std::string& vm_name, const boost::json::object& vm, const NodeId& nid,
+                      const std::string& group) const {
+        auto tags = build_tags(nid, group);
+        if (auto it = vm.find("tags"); it != vm.end() && it->value().is_object()) {
+            for (const auto& existing : it->value().as_object()) {
+                if (!tags.contains(existing.key())) {
+                    tags[existing.key()] = existing.value();
+                }
+            }
+        }
+        boost::json::object body;
+        body["tags"] = std::move(tags);
+        (void)arm_patch("/providers/Microsoft.Compute/virtualMachines/" + vm_name +
+                            "?api-version=" + compute_api_version,
+                        body);
     }
 
     [[nodiscard]] auto build_tags(const NodeId& nid, const std::string& group) const
