@@ -30,6 +30,7 @@
 /// exactly as `aws_acm_pca_provider` treats the ACM Private CA.
 
 #include <raft/certificate_provider.hpp>
+#include <raft/csr_policy.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/oci_client_config.hpp>
@@ -244,6 +245,9 @@ public:
             if (csr_pem.empty()) {
                 throw std::invalid_argument("sign_csr: csr_pem must be non-empty");
             }
+            // CSR-authoritative CA: OCI signs the names in the CSR, not
+            // `options`, so refuse a CSR asking for anything unapproved.
+            enforce_csr_matches_options(csr_pem, options);
 
             boost::json::object config_details;
             config_details["configType"] = "MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA";
@@ -295,6 +299,10 @@ public:
                 .serial =
                     parse_serial(oci_certificates_detail::json_string(bundle, "serialNumber")),
             });
+        } catch (const std::invalid_argument&) {
+            // A rejected request stays an invalid_argument (HTTP 400, not 502).
+            return kythira::future_factory_default::makeExceptionalFuture<pem_material>(
+                std::current_exception());
         } catch (const std::exception& ex) {
             return kythira::future_factory_default::makeExceptionalFuture<pem_material>(
                 std::make_exception_ptr(std::runtime_error(

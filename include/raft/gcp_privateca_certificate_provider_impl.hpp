@@ -15,6 +15,8 @@
 
 #ifdef KYTHIRA_HAS_GCP_PRIVATECA
 
+#include <raft/csr_policy.hpp>
+
 #include <google/cloud/credentials.h>
 #include <google/cloud/options.h>
 #include <google/cloud/polling_policy.h>
@@ -158,6 +160,10 @@ inline auto gcp_privateca_certificate_provider::sign_csr(std::string csr_pem,
         fiu_do_on("raft/gcp/privateca/create_certificate",
                   throw std::runtime_error("fault: raft/gcp/privateca/create_certificate"););
 
+        // CSR-authoritative CA: it signs the names in the CSR, not
+        // `options`, so refuse a CSR asking for anything unapproved.
+        enforce_csr_matches_options(csr_pem, options);
+
         google::cloud::security::privateca::v1::CreateCertificateRequest req;
         req.set_parent(gcp_privateca_detail::ca_pool_path(_config));
         if (!_config.certificate_authority_id.empty()) {
@@ -199,6 +205,11 @@ inline auto gcp_privateca_certificate_provider::sign_csr(std::string csr_pem,
         // serial left 0 — CAS identifies certificates by resource name, not the
         // local monotonic-counter scheme certificate_authority uses.
         return kythira::future_factory_default::makeReadyFuture(std::move(out));
+    } catch (const std::invalid_argument&) {
+        // A rejected request (e.g. by enforce_csr_matches_options) stays an
+        // invalid_argument so HTTP callers answer 400, not 502.
+        return kythira::future_factory_default::makeExceptionalFuture<pem_material>(
+            std::current_exception());
     } catch (const std::exception& ex) {
         return kythira::future_factory_default::makeExceptionalFuture<pem_material>(
             std::make_exception_ptr(std::runtime_error(
