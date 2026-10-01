@@ -76,7 +76,9 @@ trusted network boundary.
 both Raft peer certificates and ordinary client certificates, so RPC TLS does
 not trust "any certificate chaining to the root": a CA-issued certificate is
 accepted as a Raft peer only if it carries a configured node's reserved DNS
-name, `ca-cluster-node-<node_id>`. Those names can only be obtained through
+name, `ca-cluster-node-<node_id>`, and it may then act only as that node: an
+RPC claiming a different sender (`leader_id`/`candidate_id`) is dropped, and a
+node refuses a peer answering in place of the one it dialled. Those names can only be obtained through
 peer enrollment, which is authenticated with an HMAC key derived from the
 unseal passphrase — `POST /v1/certificates` answers `403` to a request for a
 `ca-cluster-node-*` name (or one carrying `rpc_tls_ready_node_id`) that holds

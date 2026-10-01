@@ -82,6 +82,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -109,6 +110,15 @@ struct tls_rpc_trust_policy {
     // reserved per-node peer names ("ca-cluster-node-<id>"), which only an
     // authenticated peer enrollment can obtain.
     std::optional<std::set<std::string>> required_peer_dns_names;
+    // When set, each peer name maps to the Raft node id it identifies, and a
+    // CA-chained peer is bound to that id: the server drops any RPC whose
+    // claimed sender (leader_id / candidate_id) is a different node, and the
+    // client refuses a server that is not the node it dialled. Without this,
+    // any one node's certificate could speak for every other node (forge a
+    // leader's AppendEntries/InstallSnapshot, vote as someone else). The
+    // shared bootstrap credential identifies no particular node, so a
+    // connection accepted through it is not bound.
+    std::optional<std::map<std::string, std::uint64_t>> peer_node_ids;
 
     // false for a null `presented` (no certificate at all — server-side
     // SSL_VERIFY_FAIL_IF_NO_PEER_CERT already rejects this case at the TLS
@@ -139,6 +149,68 @@ struct tls_rpc_trust_policy {
         return false;
     }
 
+    /// The Raft node id `presented` authenticates as, if it was accepted
+    /// through the CA path and carries exactly one mapped peer name;
+    /// std::nullopt when unbound (bootstrap credential, no map, or an
+    /// ambiguous certificate naming several nodes — which is then refused
+    /// by `binds()`).
+    [[nodiscard]] auto authenticated_node_id(X509* presented) const
+        -> std::optional<std::uint64_t> {
+        if (presented == nullptr || !peer_node_ids.has_value() || !ca_root_pem.has_value() ||
+            !raft::testing::cert_chains_to_root(presented, *ca_root_pem)) {
+            return std::nullopt;
+        }
+        std::optional<std::uint64_t> found;
+        for (const auto& [name, id] : *peer_node_ids) {
+            if (raft::testing::cert_has_dns_san_in(presented, {name})) {
+                if (found.has_value() && *found != id) {
+                    return std::nullopt;
+                }
+                found = id;
+            }
+        }
+        return found;
+    }
+
+    /// Whether a connection presenting `presented` may act as node
+    /// `claimed`: always true when this policy binds no identities or the
+    /// certificate was accepted through the bootstrap fingerprint; otherwise
+    /// the certificate must authenticate exactly as `claimed`.
+    [[nodiscard]] auto binds(X509* presented, std::uint64_t claimed) const -> bool {
+        if (!peer_node_ids.has_value()) {
+            return true;
+        }
+        if (auto id = authenticated_node_id(presented)) {
+            return *id == claimed;
+        }
+        // Not bound through the CA path: acceptable only if the certificate
+        // was let in by the (identity-less) bootstrap fingerprint.
+        if (bootstrap_fingerprint_hex.has_value() && presented != nullptr) {
+            try {
+                return raft::testing::ca_bootstrap_detail::sha256_fingerprint_hex_bare(presented) ==
+                       *bootstrap_fingerprint_hex;
+            } catch (const std::exception&) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /// Returns a copy that requires CA-chained certificates to carry one of
+    /// `ids`' names, and binds each such certificate to its node id (see
+    /// `peer_node_ids`).
+    [[nodiscard]] auto binding_peer_node_ids(std::map<std::string, std::uint64_t> ids) const
+        -> tls_rpc_trust_policy {
+        auto copy = *this;
+        std::set<std::string> names;
+        for (const auto& [name, id] : ids) {
+            names.insert(name);
+        }
+        copy.required_peer_dns_names = std::move(names);
+        copy.peer_node_ids = std::move(ids);
+        return copy;
+    }
+
     /// Returns a copy that additionally requires CA-chained certificates to
     /// carry one of `names` as a DNS SAN (see `required_peer_dns_names`).
     [[nodiscard]] auto requiring_peer_names(std::set<std::string> names) const
@@ -150,15 +222,15 @@ struct tls_rpc_trust_policy {
 };
 
 [[nodiscard]] inline auto pinned_fingerprint(std::string hex) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::move(hex), std::nullopt, std::nullopt};
+    return tls_rpc_trust_policy{std::move(hex), std::nullopt, std::nullopt, std::nullopt};
 }
 
 [[nodiscard]] inline auto ca_root_only(std::string root_pem) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::nullopt, std::move(root_pem), std::nullopt};
+    return tls_rpc_trust_policy{std::nullopt, std::move(root_pem), std::nullopt, std::nullopt};
 }
 
 [[nodiscard]] inline auto either(std::string hex, std::string root_pem) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::move(hex), std::move(root_pem), std::nullopt};
+    return tls_rpc_trust_policy{std::move(hex), std::move(root_pem), std::nullopt, std::nullopt};
 }
 
 struct tls_tcp_rpc_config {
@@ -255,6 +327,15 @@ struct ssl_conn_guard {
         if (ssl != nullptr) {
             SSL_shutdown(ssl);
             SSL_free(ssl);
+        }
+    }
+};
+
+struct x509_guard {
+    X509* cert;
+    ~x509_guard() {
+        if (cert != nullptr) {
+            X509_free(cert);
         }
     }
 };
@@ -382,7 +463,7 @@ public:
         std::uint16_t port = peer->second;
 
         _executor->submit([promise = std::move(promise), raw_ssl, host, port, payload, timeout,
-                           policy_snapshot, deser]() mutable {
+                           policy_snapshot, deser, target]() mutable {
             ssl_conn_guard sslg{raw_ssl};
 
             int fd = tcp_detail::connect_to(host, port, timeout);
@@ -402,7 +483,10 @@ public:
             }
 
             X509* presented = SSL_get1_peer_certificate(raw_ssl);
-            bool trusted = policy_snapshot.accepts(presented);
+            // The server must also BE the node we dialled, not merely some
+            // cluster member (an on-path node answering for another).
+            bool trusted =
+                policy_snapshot.accepts(presented) && policy_snapshot.binds(presented, target);
             if (presented != nullptr) {
                 X509_free(presented);
             }
@@ -620,9 +704,12 @@ private:
         // certificate at all" case during the handshake above.
         X509* presented = SSL_get1_peer_certificate(raw_ssl);
         bool trusted = policy_snapshot.accepts(presented);
-        if (presented != nullptr) {
-            X509_free(presented);
-        }
+        // Captured now, while the certificate is in hand: the node this
+        // connection may speak for (see tls_rpc_trust_policy::binds).
+        auto sender_ok = [&policy_snapshot, presented](std::uint64_t claimed) {
+            return policy_snapshot.binds(presented, claimed);
+        };
+        x509_guard presented_guard{presented};
         if (!trusted) {
             return;
         }
@@ -636,16 +723,28 @@ private:
         auto bytes = tcp_detail::str_to_bytes(*data);
         try {
             std::vector<std::byte> resp;
+            // Each RPC is dropped unless its claimed sender is the node this
+            // connection authenticated as.
             if (type == "request_vote_request" && _rv) {
-                resp = _ser.serialize(_rv(_ser.deserialize_request_vote_request(bytes)));
+                auto req = _ser.deserialize_request_vote_request(bytes);
+                if (!sender_ok(req.candidate_id())) return;
+                resp = _ser.serialize(_rv(req));
             } else if (type == "request_pre_vote_request" && _pv) {
-                resp = _ser.serialize(_pv(_ser.deserialize_request_pre_vote_request(bytes)));
+                auto req = _ser.deserialize_request_pre_vote_request(bytes);
+                if (!sender_ok(req.candidate_id())) return;
+                resp = _ser.serialize(_pv(req));
             } else if (type == "timeout_now_request" && _tn) {
-                resp = _ser.serialize(_tn(_ser.deserialize_timeout_now_request(bytes)));
+                auto req = _ser.deserialize_timeout_now_request(bytes);
+                if (!sender_ok(req.leader_id())) return;
+                resp = _ser.serialize(_tn(req));
             } else if (type == "append_entries_request" && _ae) {
-                resp = _ser.serialize(_ae(_ser.deserialize_append_entries_request(bytes)));
+                auto req = _ser.deserialize_append_entries_request(bytes);
+                if (!sender_ok(req.leader_id())) return;
+                resp = _ser.serialize(_ae(req));
             } else if (type == "install_snapshot_request" && _is) {
-                resp = _ser.serialize(_is(_ser.deserialize_install_snapshot_request(bytes)));
+                auto req = _ser.deserialize_install_snapshot_request(bytes);
+                if (!sender_ok(req.leader_id())) return;
+                resp = _ser.serialize(_is(req));
             } else {
                 return;
             }

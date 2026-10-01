@@ -76,6 +76,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -252,13 +253,14 @@ auto rpc_peer_identity_options(std::uint64_t node_id) -> raft::testing::leaf_cer
     return opts;
 }
 
-// Every configured node's reserved peer name — the only CA-chained
-// certificates RPC TLS accepts (tls_rpc_trust_policy::required_peer_dns_names).
-auto cluster_peer_dns_names(const ca_cluster_node::ca_cluster_node_config& cfg)
-    -> std::set<std::string> {
-    std::set<std::string> names;
-    for (auto id : cfg.all_node_ids()) names.insert(raft::testing::peer_identity_dns_name(id));
-    return names;
+// Every configured node's reserved peer name, mapped to its node id — the
+// only CA-chained certificates RPC TLS accepts, each bound to the node it
+// names (tls_rpc_trust_policy::peer_node_ids).
+auto cluster_peer_node_ids(const ca_cluster_node::ca_cluster_node_config& cfg)
+    -> std::map<std::string, std::uint64_t> {
+    std::map<std::string, std::uint64_t> ids;
+    for (auto id : cfg.all_node_ids()) ids[raft::testing::peer_identity_dns_name(id)] = id;
+    return ids;
 }
 
 // Never present (or persist) a certificate this cluster's own peers would
@@ -775,7 +777,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 kythira::either(
                     cfg.rpc_tls_config.trust_policy.bootstrap_fingerprint_hex.value_or(""),
                     *root_pem)
-                    .requiring_peer_names(cluster_peer_dns_names(cfg));
+                    .binding_peer_node_ids(cluster_peer_node_ids(cfg));
             if (!cfg.rpc_tls_config.trust_policy.bootstrap_fingerprint_hex.has_value()) {
                 dual_policy.bootstrap_fingerprint_hex.reset();
             }
@@ -886,7 +888,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 if (!ready.contains(id)) return;
             }
             auto root_only_policy = kythira::ca_root_only(state.root_certificate_pem())
-                                        .requiring_peer_names(cluster_peer_dns_names(cfg));
+                                        .binding_peer_node_ids(cluster_peer_node_ids(cfg));
             rpc_server_handle.reload_trust_policy(root_only_policy);
             rpc_client_handle.reload_trust_policy(root_only_policy);
             cutover_finalized = true;
@@ -1561,7 +1563,7 @@ int main(int argc, char** argv) {
             auto root_pem = read_whole_file(rpc_peer_root_path(cfg.data_dir));
             kythira::tls_rpc_trust_policy policy;
             policy.ca_root_pem = root_pem;
-            policy.required_peer_dns_names = cluster_peer_dns_names(cfg);
+            policy = policy.binding_peer_node_ids(cluster_peer_node_ids(cfg));
             if (!cfg.rpc_tls_cert_path.empty()) {
                 try {
                     auto bundle = read_whole_file(cfg.rpc_tls_cert_path);

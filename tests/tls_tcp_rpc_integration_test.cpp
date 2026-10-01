@@ -220,6 +220,67 @@ BOOST_AUTO_TEST_CASE(round_trip_under_ca_root_only_policy, *boost::unit_test::ti
     BOOST_TEST(try_round_trip(std::move(server_cfg), std::move(client_cfg)));
 }
 
+// Peer identity binding (binding_peer_node_ids): a CA-issued peer
+// certificate authenticates as exactly one node. The server drops RPCs whose
+// claimed sender is another node, and the client refuses a server that is
+// not the node it dialled — so one node's certificate cannot speak for, or
+// answer as, any other.
+namespace {
+
+auto bound_round_trip(std::uint64_t dial_as_target, std::uint64_t claimed_candidate) -> bool {
+    certificate_authority ca;
+    leaf_certificate_options server_opts;
+    server_opts.dns_names = {"ca-cluster-node-1"};
+    auto server_leaf = ca.issue(server_opts);
+    temp_pem_files server_files(server_leaf.certificate_pem, server_leaf.private_key_pem);
+    leaf_certificate_options client_opts;
+    client_opts.dns_names = {"ca-cluster-node-2"};
+    auto client_leaf = ca.issue(client_opts);
+    temp_pem_files client_files(client_leaf.certificate_pem, client_leaf.private_key_pem);
+
+    auto policy =
+        ca_root_only(ca.root_certificate_pem())
+            .binding_peer_node_ids(
+                {{"ca-cluster-node-1", 1}, {"ca-cluster-node-2", 2}, {"ca-cluster-node-3", 3}});
+
+    auto port = find_free_port();
+    tls_tcp_rpc_server server(port, {server_files.cert_path, server_files.key_path, policy});
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+        return kythira::request_vote_response<>{req.term(), true};
+    });
+    server.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    tls_tcp_rpc_client client({client_files.cert_path, client_files.key_path, policy});
+    client.add_peer(dial_as_target, "127.0.0.1", port);
+    kythira::request_vote_request<> req{7, claimed_candidate, 0, 0};
+    bool ok = false;
+    try {
+        ok = client.send_request_vote(dial_as_target, req, std::chrono::milliseconds(5000))
+                 .get()
+                 .vote_granted();
+    } catch (const std::exception&) {
+        ok = false;
+    }
+    server.stop();
+    return ok;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(bound_peer_may_speak_only_as_itself, *boost::unit_test::timeout(60)) {
+    BOOST_TEST(bound_round_trip(/*dial_as_target=*/1, /*claimed_candidate=*/2));
+    // Node 2's certificate claiming to be node 3: dropped by the server.
+    BOOST_TEST(!bound_round_trip(1, 3));
+}
+
+BOOST_AUTO_TEST_CASE(client_refuses_server_that_is_not_the_dialled_node,
+                     *boost::unit_test::timeout(60)) {
+    // The server holds node 1's certificate but answers where node 3 was
+    // expected: the client must refuse it.
+    BOOST_TEST(!bound_round_trip(/*dial_as_target=*/3, /*claimed_candidate=*/2));
+}
+
 // Requirement 1.2: a connection whose peer presents a certificate that
 // fails verification under the currently active trust policy is rejected
 // before any RPC payload is exchanged — here, the server only trusts
