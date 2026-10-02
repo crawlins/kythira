@@ -141,6 +141,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
   deregistration, `rfc2136_dns_sd_discovery` left its browse PTR, and the
   ACME dns-01 responder left its `_acme-challenge` TXT. All three now send
   RFC 2136 §2.5.4 CLASS NONE deletes.
+- **`acme_certificate_provider` no longer trusts what the ACME server sends.**
+  It ran with TLS verification off and published the last block of the
+  downloaded chain as the node's root, so an on-path attacker could make
+  their own CA a trusted mTLS anchor (and with no attacker, a public
+  intermediate became one). It now verifies the server's TLS certificate,
+  refuses plain http off loopback, requires `trust_anchors_pem`, and rejects
+  a certificate that does not chain to those anchors or whose key differs
+  from the CSR's. `root_certificate_pem()` returns the configured anchors.
 
 ### What Changed (August 19, 2026)
 
