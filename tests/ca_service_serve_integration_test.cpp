@@ -19,6 +19,7 @@
 #include <csignal>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <netinet/in.h>
 #include <spawn.h>
 #include <sys/socket.h>
@@ -430,4 +431,75 @@ BOOST_AUTO_TEST_CASE(clean_shutdown_on_sigterm, *boost::unit_test::timeout(30)) 
         BOOST_TEST(WEXITSTATUS(status) == 0);
     }
     svc->pid = -1;  // already reaped; don't let the destructor try again
+}
+
+namespace {
+
+// Spawns ca_service with `args`, the bearer token passed only through
+// $CA_SERVICE_AUTH_TOKEN, and returns its pid.
+auto spawn_with_env_token(const std::vector<std::string>& args, const std::string& token) -> pid_t {
+    std::vector<std::string> argv_strs = {CA_SERVICE_PATH};
+    argv_strs.insert(argv_strs.end(), args.begin(), args.end());
+    std::vector<char*> argv;
+    for (auto& s : argv_strs) {
+        argv.push_back(s.data());
+    }
+    argv.push_back(nullptr);
+    std::string token_env = "CA_SERVICE_AUTH_TOKEN=" + token;
+    std::vector<char*> envp = {token_env.data(), nullptr};
+    pid_t pid = -1;
+    int rc = posix_spawn(&pid, CA_SERVICE_PATH, nullptr, nullptr, argv.data(), envp.data());
+    BOOST_REQUIRE_MESSAGE(rc == 0, "posix_spawn(ca_service) failed: " << std::strerror(rc));
+    return pid;
+}
+
+// The child's exit code, or std::nullopt (after killing it) if it is still
+// running at the deadline.
+auto exit_code_within(pid_t pid, std::chrono::seconds timeout) -> std::optional<int> {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        int status = 0;
+        if (::waitpid(pid, &status, WNOHANG) == pid) {
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    ::kill(pid, SIGKILL);
+    ::waitpid(pid, nullptr, 0);
+    return std::nullopt;
+}
+
+}  // namespace
+
+// The bearer token and every issued certificate cross the --serve API, so a
+// plaintext listener reachable off-host is refused unless opted into.
+BOOST_AUTO_TEST_CASE(plaintext_serve_off_loopback_refused, *boost::unit_test::timeout(30)) {
+    auto pid = spawn_with_env_token(
+        {"--serve", "0.0.0.0:" + std::to_string(find_free_port()), "--provider", "local"},
+        "env-token-12345");
+    auto code = exit_code_within(pid, std::chrono::seconds(15));
+    BOOST_REQUIRE_MESSAGE(code.has_value(), "ca_service served plaintext HTTP off loopback");
+    BOOST_TEST(*code == 1);
+}
+
+// --allow-plaintext-http opts in; the token read from the environment alone
+// authenticates requests.
+BOOST_AUTO_TEST_CASE(plaintext_serve_allowed_with_flag_and_env_token,
+                     *boost::unit_test::timeout(30)) {
+    int port = find_free_port();
+    auto pid = spawn_with_env_token({"--serve", "0.0.0.0:" + std::to_string(port), "--provider",
+                                     "local", "--allow-plaintext-http"},
+                                    "env-token-12345");
+    httplib::Client client("127.0.0.1", port);
+    client.set_connection_timeout(1, 0);
+    bool healthy = false;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (!healthy && std::chrono::steady_clock::now() < deadline) {
+        auto res = client.Get("/healthz", {{"Authorization", "Bearer env-token-12345"}});
+        healthy = res && res->status == 200;
+        if (!healthy) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    BOOST_TEST(healthy);
+    ::kill(pid, SIGTERM);
+    BOOST_TEST(exit_code_within(pid, std::chrono::seconds(15)).value_or(-1) == 0);
 }
