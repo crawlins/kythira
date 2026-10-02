@@ -90,6 +90,53 @@ if you want to confirm). Then flip the corresponding
 `REAL_CLOUD_TESTS_AWS_<BUNDLE>_ENABLED` repository variable with
 `gh variable set`.
 
+## The `asg-quorum-manager` bundle
+
+Grants what `tests/aws_asg_quorum_manager_real_test.cpp` needs to drive
+`aws_asg_quorum_manager` against real Auto Scaling
+(`.kiro/specs/aws-asg-real-cloud-tests/`, Requirement 8). No other
+fragment grants any `autoscaling:*` action, which is why this is a bundle
+of its own rather than an addition to `ec2-quorum-manager`.
+
+```sh
+scripts/ci-cloud-credentials/aws/provision-oidc-role.sh \
+    --github-org <org> --github-repo <repo> \
+    --bundles <every bundle the role already has>,asg-quorum-manager
+gh variable set REAL_CLOUD_TESTS_AWS_ASG_QUORUM_ENABLED --body true
+```
+
+The bundle has **no `workflow_dispatch` input of its own**: the workflow is
+at GitHub's cap of 25 inputs, so a manual dispatch selects it through
+`aws_bundle_ec2_quorum` (which then runs both quorum-manager suites), and
+only the scheduled run controls it independently, through the variable
+above.
+
+Policy JSON cannot carry comments, so the reasoning behind each statement
+lives here. Each `Sid` names the rule it follows.
+
+| `Sid` | Resource | Why it is that wide |
+|---|---|---|
+| `…DescribeNoResourceLevelPermissions` | `*` | Auto Scaling and EC2 `Describe*` actions do not support resource-level permissions at all; a narrower `Resource` is not "tighter", it is a policy that never matches. |
+| `…MutateKythiraGroupsOnly` | ASGs named `kythira-asgtest-*` | Auto Scaling *does* support resource-level permissions for these actions, so the suite can only create, resize, terminate into, tag or delete groups under its own prefix. The test fixture MUST name its groups with that prefix. |
+| `…CreateFixtureResourcesNotYetTaggable` | `*` | The resource does not exist yet, so there is nothing to scope to. `ec2:RunInstances` is here because `CreateAutoScalingGroup` with a launch template is authorised against the **caller's** permission to launch from that template, across every resource type a launch touches (image, subnet, security group, network interface, volume). |
+| `…StopAndTearDownSuiteTaggedOnly` | `*`, conditioned on `kythira:suite=aws-asg-quorum-manager` | Destructive EC2 actions only reach resources the fixture tagged. The fixture MUST tag its VPC, subnets, security group, launch template and (via the launch template's tag specification and ASG tag propagation) its instances. The key is deliberately **not** `kythira:managed-by`: the manager itself overwrites that tag on every instance it provisions (`asg_quorum_manager`), which would put those instances outside the condition. |
+
+Not granted, on purpose:
+
+- **No internet gateway or route-table actions.** Whether an instance
+  needs egress to reach `running` is task 1c of the spec. Add them only if
+  that measurement says so.
+- **No `iam:CreateServiceLinkedRole`.** The first `CreateAutoScalingGroup`
+  in an account creates `AWSServiceRoleForAutoScaling`. Make that first call
+  as the admin operator (the spec's task 1 probe does), not as CI.
+- **No `iam:PassRole`.** The suite's instances run nothing, so the launch
+  template carries no instance profile.
+
+Verify as the CI principal, not as admin: a probe made with the admin
+credentials proves nothing about this role. After provisioning, assume
+`kythira-ci-real-cloud-tests` (or dispatch a run) and confirm one
+`DescribeAutoScalingGroups` call succeeds.
+
 ## Verifying setup worked
 
 Trigger `.github/workflows/real-cloud-tests.yml` manually via
@@ -117,6 +164,7 @@ prefers spot pricing where available):
 | `ca-cluster-node` (1 case, 3-node cluster + bastion, ~12 min) | ≈ $0.02 |
 | `ca-cluster-node-rpc-tls` (same shape + NACL setup, which AWS doesn't bill for) | ≈ $0.02 |
 | `ec2-quorum-manager` (10 cases, 3-9 node clusters + bastion, ~157 min total) | ≈ $0.10 - $0.30 |
+| `asg-quorum-manager` (one to three `t3.micro`s per case, every ASG at desired capacity 0 between cases) | ≈ cents; not yet measured |
 
 IAM itself (roles, policies, instance profiles, the OIDC provider) carries
 no AWS charge. At the weekly `schedule` trigger with all three bundles
