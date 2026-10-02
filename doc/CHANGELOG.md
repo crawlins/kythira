@@ -5,6 +5,15 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 2, 2026)
 
+- **A crashed kythira on a running VM is no longer live.** The cloud quorum
+  managers read instance state only, so a dead, hung or isolated process on
+  a `running` instance was never replaced, while the AWS and GCP specs
+  promised heartbeat tags nobody wrote. The Raft leader now counts a voter
+  unreachable once it has answered no RPC for the new
+  `quorum_peer_dead_after` (default 30 s, `0` disables) and replaces it
+  through the usual provision, remove and decommission flow
+  (quorum-management Req 13.7). The AWS and GCP specs drop the heartbeat tag
+  and guest attribute to match.
 - **CI cloud identities trust only the `real-cloud-tests` environment.**
   The AWS, GCP and Alibaba CI roles trusted any workflow in the repository
   (`repo:crawlins/kythira:*`), so a pushed branch could assume them without

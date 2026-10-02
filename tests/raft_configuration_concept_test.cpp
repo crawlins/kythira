@@ -141,6 +141,9 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, *boost::unit_test::timeout(
             return std::chrono::milliseconds{30000};
         }
         [[nodiscard]] auto quorum_heartbeat_failure_threshold() const -> std::size_t { return 3; }
+        [[nodiscard]] auto quorum_peer_dead_after() const -> std::chrono::milliseconds {
+            return std::chrono::milliseconds{30000};
+        }
 
         [[nodiscard]] auto validate() const -> bool { return get_validation_errors().empty(); }
 
