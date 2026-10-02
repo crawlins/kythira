@@ -1,5 +1,18 @@
 # Requirements Document
 
+> **Superseded (noted October 2, 2026).** This spec describes `network_client`
+> and `network_server` as two-parameter concepts (`<type, FutureType>`). They
+> no longer are: `include/raft/network.hpp` now declares both as
+> single-parameter concepts (`template<typename C>` / `template<typename S>`),
+> and each RPC's future type is checked inside the concept instead
+> (`-> kythira::future<kythira::request_vote_response<>>` and so on). The
+> "exactly two template parameters" criteria in Requirements 1–3 therefore no
+> longer describe the code. The namespace rule (`kythira::`) still holds. The
+> tasks below are kept as the record of the original fix and are not to be
+> re-applied. Only Property 2 has a test tagged for this feature
+> (`tests/namespace_consistency_property_test.cpp`); single-parameter
+> compliance is exercised, untagged, by `network_concept_compliance_property_test`.
+
 ## Introduction
 
 This document specifies the requirements for fixing template parameter mismatches in the network client and server concepts throughout the codebase. The network concepts are defined in the `kythira` namespace with two template parameters, but many usages throughout the codebase are using them with only one template parameter or referencing the wrong namespace, causing compilation errors.

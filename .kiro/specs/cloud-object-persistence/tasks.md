@@ -1,6 +1,16 @@
 # Implementation Plan — Cloud Object Persistence
 
-## Status: tasks 1-14, 15.4, 15.5 and 16 done; task 0 fully closed (0.7 decided NO)
+## Status: every task done except 15, which is terminal but left `[~]`
+
+**Last Updated**: October 2, 2026. Tasks 0-14 and 16-19 are `[x]`. Task 19
+closed on August 23, 2026, when OCI passed 3/3 dispatched least-privilege CI
+runs (Finding 27), so all five providers are green in CI. Task 15 stays `[~]`
+because 15.1 (LocalStack) and 15.2 (Azurite) are blocked upstream rather than
+refused. The status paragraphs below are kept as they were written during the
+August 15-19 build-out; where they list work as remaining, task 19's header
+and Finding 27 supersede them.
+
+### Build-out status (historical, August 15-19, 2026)
 
 **The client wave is complete, August 17, 2026.** Tasks 7, 8, 9 and 10
 (`aws_s3_client`, `azure_blob_client`, `gcp_gcs_client`,
@@ -2019,7 +2029,8 @@ Reference implementations to study before starting, in this order:
       retention. Read them with `read-object-storage-log.sh`; measure the
       decline rate with `probe-object-storage-decline-rate.py`.
 
-  - **DONE for four of five providers; OCI outstanding.** Run every
+  - **DONE for all five providers** (OCI on August 23, Finding 27; this
+    bullet read "four of five; OCI outstanding" until then). Run every
     provider's real suite against a real bucket; fold every live correction
     back into spike-notes.md/requirements/design **in place** (the OCI
     doctrine).
@@ -2039,10 +2050,11 @@ Reference implementations to study before starting, in this order:
     election-timeout row reading a real **≥122 ms**, and an explicit note
     that "p99" here is the slowest of 8 or 20 observations rather than a
     tail estimate.
-  - **DONE for four of five.** Flip the CI toggles; one green dispatched run
+  - **DONE for all five.** Flip the CI toggles; one green dispatched run
     per provider bundle. AWS (x64 and arm64), Azure Blob, Alibaba OSS and
-    GCS are green under the least-privilege grants; OCI's pre-flight was
-    declined `404 BucketNotFound` and **has not been re-run**.
+    GCS went green under the least-privilege grants on August 21. OCI's
+    pre-flight was declined `404 BucketNotFound` until August 22; it was
+    re-run and passed 3/3 on August 23 (Finding 27).
   - Verify: green run URLs recorded in spike-notes.md; leak audit clean;
     **the documentation's live-verified column now names more than one
     provider**, and any provider still documentation-derived says so.
@@ -2056,7 +2068,8 @@ Reference implementations to study before starting, in this order:
     least-privilege CI run** — its August runs authenticated as a principal
     already holding broad policies, so they are evidence the client works
     and no evidence about the grants. That distinction is the whole point of
-    this task and is why 19 stays `[~]`.
+    this task, and it is why 19 stayed `[~]` until OCI's least-privilege runs
+    went green on August 23 (Finding 27), when it was ticked.
   - _Requirements: 4.5, 17.8, 18.5, 19.3_
 
 ## Notes

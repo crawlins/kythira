@@ -1,15 +1,30 @@
 # Implementation Plan
 
-## Status: the Tier B substrate has landed; no number is quotable yet
+## Status: all 27 tasks checked; tiers A–E delivered
 
-Tasks 1–4, 6 and 10 are checked, and they are checked against the tree — the
-three files are in `tests/` and the suite runs. Everything else is open. A
+**Last Updated**: October 2, 2026. Every task, 1–24 plus 5a, 11a and 11b, is
+checked. Tier C landed August 31 2026 with `.kiro/specs/multi-raft-host-binary/`,
+Tier E on September 1, and the durable Tier D row (176.7 ops/sec, stable) on
+September 3 (task 19). `doc/multi_raft_performance_comparison.md` carries the
+tier table. Two things stay open inside ticked boxes and are stated there rather
+than glossed: task 5 is ticked for the connection storm, not for the Proxygen
+teardown SEGV, which is no longer reproducible but was never chased down; and
+task 5a's hypothesis for where that fault went is neither confirmed nor refuted.
+
+The section below is the status as it stood when the Tier B substrate first
+landed. It is kept as written because the later tasks refer back to it; its
+"everything else is open" no longer holds.
+
+### First milestone: the Tier B substrate (historical)
+
+Tasks 1–4, 6 and 10 were checked at this point, and they were checked against
+the tree — the three files are in `tests/` and the suite runs. A
 checked box in a spec whose code the reader cannot find is the exact drift
 `doc/TODO.md`'s own "how this table stays honest" note was added to stop, so a
 box gets ticked only after the code is on `main` and has been re-verified there,
 never from this prose.
 
-### What has landed
+#### What had landed
 
 `tests/multi_raft_kv_workload.hpp`, `tests/multi_raft_transport_harness.hpp`,
 `tests/multi_raft_http_benchmark_test.cpp` and their `tests/CMakeLists.txt`
@@ -30,7 +45,7 @@ registration:
   `main`; the teardown fault of task 5 is still open and is now pinned to
   Proxygen at a measured rate.
 
-### What the numbers are, and are not
+#### What the numbers were, and were not
 
 **No row here may be quoted.** Requirement 6.3 marks a row unstable above ±10%
 spread, and no row measured so far is below it — on a machine that was also not

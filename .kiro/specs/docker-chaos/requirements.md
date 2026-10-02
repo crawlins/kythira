@@ -13,7 +13,10 @@ crashes, network partitions at the kernel level, latency and packet loss via
 Fault injection at the Raft application layer is driven remotely via
 `fiu_rc_tcp` — a TCP listener embedded in the `chaos_node` binary that accepts
 `fiu-ctrl` commands from outside the container. OS-layer faults are applied via
-`docker exec` commands issued by a Python test harness running on the host.
+`docker exec` commands issued by a C++ (Boost.Test) harness running on the
+host. *(The requirements originally called for a Python/pytest harness; the
+design chose C++ instead — design.md, "C++ harness" row — and Requirements 3,
+7, 9 and 10 were updated on October 2, 2026 to match what was built.)*
 Container logs are collected and monitored in real time by the test harness,
 enabling assertions on Raft state transitions and fault responses as they occur.
 
@@ -104,7 +107,7 @@ packet loss, partition) are observable at the Raft layer.
 ### Requirement 3: HTTP Control Plane
 
 **User Story:** As a test author, I want to query each node's Raft state and
-submit commands over HTTP, so that the Python harness can assert cluster
+submit commands over HTTP, so that the C++ harness can assert cluster
 correctness without requiring a Raft-specific client library.
 
 #### Acceptance Criteria
@@ -205,34 +208,39 @@ behaviour under failures that are invisible to application-layer fault points.
    SHALL restart the container (`docker start`) and wait for `GET /health` to
    return 200 before returning.
 
-### Requirement 7: Python Orchestration Harness
+### Requirement 7: C++ Orchestration Harness
 
-**User Story:** As a test author, I want a Python API that wraps Docker,
-`fiu-ctrl`, and `curl` calls into a clean, pytest-friendly interface, so that
-I can write scenario tests in ~50 lines without shell scripting.
+**User Story:** As a test author, I want a C++ API
+(`tests/docker_chaos/harness.hpp`) that wraps the container runtime, the
+`fiu_rc_tcp` control port and the HTTP control plane in a Boost.Test-friendly
+interface, so that I can write scenario tests in ~50 lines without shell
+scripting.
 
 #### Acceptance Criteria
 
 1. WHEN `ChaosCluster(compose_file)` is constructed THEN it SHALL NOT start
    containers. Containers SHALL start only when `ChaosCluster.start()` is
    called.
-2. WHEN `ChaosCluster.start()` is called THEN it SHALL run `docker compose up
-   -d`, poll each node's `/health` endpoint, and raise `TimeoutError` if any
-   node does not become healthy within the configured timeout (default 30s).
+2. WHEN `ChaosCluster.start()` is called THEN it SHALL run `<compose> up -d`
+   (via `compose_prefix()`), poll each node's `/health` endpoint, and throw
+   `std::runtime_error` if any node does not become healthy within the
+   configured startup timeout.
 3. WHEN `ChaosCluster.wait_for_leader(timeout)` is called THEN it SHALL poll
    all nodes' `/status` endpoints and return the `ChaosNode` for the current
-   leader, or raise `TimeoutError` if no leader is elected within `timeout`.
+   leader, or throw `std::runtime_error` if no leader is elected within
+   `timeout`.
 4. WHEN `ChaosCluster.stop()` is called THEN it SHALL run
-   `docker compose down --remove-orphans`.
-5. WHEN any `ChaosNode` fault method is called THEN it SHALL raise
-   `subprocess.CalledProcessError` if the underlying command fails, so that
-   test failures surface clearly.
+   `<compose> down --remove-orphans`, best-effort; the cluster's destructor
+   SHALL do the same so that a failed test still cleans up.
+5. WHEN any `ChaosNode` fault method is called THEN it SHALL throw
+   `std::runtime_error` naming the failed command if the underlying command
+   fails, so that test failures surface clearly.
 6. WHEN `ChaosNode.enable_fault(name, mode, probability)` is called THEN it
-   SHALL invoke `fiu-ctrl` with the appropriate `-c "enable..."` command
-   targeting the node's mapped `FIU_PORT`. `mode` SHALL accept `"always"`,
-   `"random"`, and `"once"`.
-7. WHEN `ChaosNode.disable_all_faults()` is called THEN it SHALL invoke
-   `fiu-ctrl -c "disable_all"` targeting the node's `FIU_PORT`.
+   SHALL send the corresponding `enable...` command over the `fiu_rc_tcp`
+   protocol to the node's mapped `FIU_PORT` (the command `fiu-ctrl -c` would
+   send). `mode` SHALL accept `"always"`, `"random"`, and `"once"`.
+7. WHEN `ChaosNode.disable_all_faults()` is called THEN it SHALL send
+   `disable_all` to the node's `FIU_PORT`.
 
 ### Requirement 8: Chaos Scenario Tests
 
@@ -282,10 +290,11 @@ source, and CI can run docker-chaos tests without manual steps.
    SHALL print an actionable message and exit non-zero; the default `all` target
    SHALL be unaffected.
 3. WHEN `cmake --build build --target docker-chaos-tests` is run THEN it SHALL
-   build the image (if stale) and run `pytest tests/docker_chaos/` with the
-   cluster compose file set to `docker/docker-compose.yml`.
+   build the image (if stale) and run each Boost.Test scenario binary in
+   `tests/docker_chaos/` with the cluster compose file set to
+   `docker/docker-compose.yml`.
 4. WHEN the `docker-chaos-tests` target runs THEN it SHALL set the
-   `KYTHIRA_COMPOSE_FILE` environment variable so that `conftest.py` picks up
+   `KYTHIRA_COMPOSE_FILE` environment variable so that the harness picks up
    the correct compose file without hardcoding.
 5. WHEN `KYTHIRA_FAULT_INJECTION` is `OFF` THEN the Docker image target SHALL
    emit a warning that fiu_rc_tcp will be absent, but SHALL still build and
@@ -301,7 +310,7 @@ failures.
 
 1. WHEN the spec is implemented THEN `README.md` SHALL include a "Docker Chaos
    Testing" section explaining: Docker prerequisites, `docker compose up`,
-   `pytest tests/docker_chaos/`, and how to drive `fiu-ctrl` manually against a
+   `cmake --build build --target docker-chaos-tests`, and how to drive `fiu-ctrl` manually against a
    running cluster.
 2. WHEN the section is written THEN it SHALL document all environment variables
    accepted by `chaos_node`, and the mapping of host ports to container services

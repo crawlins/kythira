@@ -2,6 +2,15 @@
 
 ## Status: 7/7 tasks complete — Task 7's real re-measurement found and fixed a genuine bug (`CCACHE_DIR` mismatch meant ccache provided 0% benefit on every CI run since July 15)
 
+> **Partly superseded (noted October 2, 2026; status below is as of July 20).** The CI half of this spec was
+> replaced by `.kiro/specs/oci-build-cache/` task 7 (September 9, 2026):
+> every CI job that compiles this project now uses sccache against the OCI
+> bucket and passes `-DKYTHIRA_COMPILER_LAUNCHER` explicitly. The
+> `Restore ccache` / `ccache size limit` / `Save ccache` steps and the
+> `CCACHE_DIR` entries this spec added (tasks 4–6) no longer exist. The local
+> half still holds: `KYTHIRA_COMPILER_LAUNCHER=auto` picks ccache on a
+> developer machine when it is installed (`CMakeLists.txt`).
+
 **Last Updated**: July 20, 2026. Tasks 1-6 were implemented and merged
 July 15, 2026 via PR #52 `feat(build): adopt ccache for local builds and
 CI`, commit `5505df8`, stacked on PR #51's spec docs; this file was
@@ -135,7 +144,7 @@ Run 2 confirmed the fix — Run 3 (this commit) is the final re-measurement.
     matching design.md's Component 2 exactly.
   - _Requirements: 6.1, 6.2, 6.3_
 
-- [x] 4. CI wiring — `build-and-test` (both matrix legs)
+- [x] 4. CI wiring — `build-and-test` (both matrix legs) *(superseded: replaced by sccache, oci-build-cache task 7)*
   - Add `ccache` to "Install system dependencies"'s apt package list
     (`ci.yml` line ~32-40).
   - Add the `Restore ccache` / `ccache size limit` steps before "Configure
@@ -172,7 +181,7 @@ Run 2 confirmed the fix — Run 3 (this commit) is the final re-measurement.
     corruption once arm64 landed.
   - _Requirements: 3.1, 3.2, 4.1, 4.2, 4.3, 5.1_
 
-- [x] 5. CI wiring — `coverage`
+- [x] 5. CI wiring — `coverage` *(superseded: replaced by sccache, oci-build-cache task 7)*
   - Same shape as task 4, applied to `coverage`'s "Install system
     dependencies" (`ci.yml` line ~171) and around "Configure (Coverage)"/
     "Build (Coverage)" (lines ~204-213).
@@ -199,7 +208,7 @@ Run 2 confirmed the fix — Run 3 (this commit) is the final re-measurement.
     regardless of which CMake build type is active.
   - _Requirements: 3.1, 3.2, 4.1, 4.2, 4.4, 5.1, 5.2, 5.3_
 
-- [x] 6. CI wiring — `real-cloud-tests.yml`'s `aws` job
+- [x] 6. CI wiring — `real-cloud-tests.yml`'s `aws` job *(superseded: replaced by sccache, oci-build-cache task 7)*
   - Same shape as task 4, applied to the `aws` job's "Install system
     dependencies" step and around its "Configure (Release, real-cloud tests
     enabled)"/"Build" steps.

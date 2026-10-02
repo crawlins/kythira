@@ -76,7 +76,7 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 
 ### Testing & Quality
 - **393 Tests, 100% Pass Rate** — 0 failing, 0 disabled
-- **88.99%+ Line Coverage**, enforced by a non-decreasing ratchet (see [Code Coverage](#code-coverage))
+- **88.85%+ Function Coverage**, enforced by a non-decreasing floor (see [Code Coverage](#code-coverage))
 - **Property-Based Testing** using Boost.Test
 - **Integration, Chaos, and Docker-Chaos Tests** for end-to-end and fault-injected validation
 - **Zero Test Failures** across the full test suite
@@ -758,7 +758,7 @@ See [doc/RAFT_TESTS_FINAL_STATUS.md](https://github.com/crawlins/kythira/blob/ma
 - **Total Tests**: 393 (registered in CTest)
 - **Passing**: 393 (100%)
 - **Failing**: 0 (0%)
-- **Line Coverage**: 88.99%+ (non-decreasing ratchet, see [Code Coverage](#code-coverage))
+- **Function Coverage**: 88.85%+ (non-decreasing floor, see [Code Coverage](#code-coverage))
 
 ### Test Categories
 
@@ -1442,14 +1442,21 @@ cmake --build build-coverage --target coverage-html
 
 ### How the ratchet works
 
-`coverage_floor.txt` at the repo root stores the minimum acceptable line-coverage
-percentage. The pre-commit hook measures coverage after every commit and:
+`coverage_floor.txt` at the repo root stores the minimum acceptable
+**function**-coverage percentage (column 7 of the `TOTAL` row of
+`llvm-cov report`; line coverage is reported too but is not gated). Both the
+CI Coverage job and the pre-commit hook measure coverage and:
 
-- **Raises** the floor when coverage improves (and stages the updated file)
-- **Allows** the commit when coverage is unchanged
-- **Blocks** the commit when coverage would fall below the floor
+- **Allow** the change when coverage is at or above the floor
+- **Warn** when coverage is below the floor but within a 0.50-point band, which
+  absorbs run-to-run measurement noise
+- **Block** the change when coverage falls more than 0.50 points below the floor
 
-The floor only ever moves up. To skip the check on a WIP commit:
+Neither gate writes the floor. When CI's Coverage job reports a durable
+improvement, raise the floor by hand to CI's figure (`echo <ci-pct> >
+coverage_floor.txt`); the hook's local figure runs a few tenths above CI's, so
+it is never the one to use. The floor only ever moves up. To skip the hook on a
+WIP commit:
 
 ```bash
 SKIP_COVERAGE_CHECK=1 git commit -m "wip: ..."
@@ -1463,7 +1470,7 @@ bash scripts/install-hooks.sh
 
 Run this once after cloning. It symlinks `scripts/pre-commit-coverage.sh` to
 `.git/hooks/pre-commit`. The hook runs the format check first (fast, staged files only), then the
-coverage ratchet (slow, full build + tests).
+coverage check (slow, full build + tests).
 
 ### Property-Based Testing
 

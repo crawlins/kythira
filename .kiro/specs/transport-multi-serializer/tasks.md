@@ -1,15 +1,17 @@
 # Implementation Plan
 
-**Status (August 8, 2026): all 17 top-level tasks are ticked, over both HTTP and
+**Status (August 8, 2026; updated October 2, 2026): all 17 top-level tasks are ticked, over both HTTP and
 CoAP.** The wiring is complete across all four transports — cpp-httplib (9),
 Beast (10), Proxygen (10a) and CoAP (11) — and the four test suites (13-16) are
-in. One thing remains open inside a ticked task, stated rather than glossed: a
-**Requirement 7.3 interop violation** that Task 15 found and pinned rather than
-fixed, because fixing it is a design decision — see Task 15 and `doc/TODO.md`.
+in. Nothing remains open: the **Requirement 7.3 interop violation** that Task
+15 found was first pinned, then fixed the same day by a blind retry on 415/4.15
+in all four transports — see Task 15 and `doc/TODO.md`. `Accept-Post` was
+layered on top for HTTP on August 9 as an optimisation
+(`accept_post_negotiation_test`).
 
 Writing the test suites to the requirements rather than to the code found two
 defects, which is the main reason Tasks 13-16 were worth doing beyond the
-checkbox. One is the 7.3 violation above. The other — **CoAP's 4.06 branch was
+checkbox. One is the 7.3 violation above, fixed under Task 15. The other — **CoAP's 4.06 branch was
 unreachable**, so a peer that could read none of our formats got a success
 carrying a body it could not decode — was a local bug with no design question
 attached, and is fixed under Task 16.
@@ -380,10 +382,10 @@ separate work because it touches every `Types` bundle and all four transports.
     `request_vote_request` round-trip through JSON
   - _Requirements: 11.1, 11.2_
 
-**Tasks 13-16, August 8, 2026: the HTTP half is done; the CoAP half is not.**
+**Tasks 13-16, August 8, 2026: both the HTTP and CoAP halves are done.**
 All four suites are implemented, mutation-tested and green over cpp-httplib.
-Tasks 15 and 16 also name CoAP, and that remains open — see the note under Task
-16. The four share one rig, `tests/negotiation_test_harness.hpp`, whose whole
+Tasks 15 and 16 also name CoAP; that half landed later as
+`tests/coap_negotiation_failure_test.cpp` — see the note under Task 16. The four share one rig, `tests/negotiation_test_harness.hpp`, whose whole
 job is to make the negotiated media type *observable*: it carries a recording
 metrics backend and the suites read the `media_type` dimension back. A
 round-trip that merely succeeds proves the two sides agreed on something, not

@@ -7,12 +7,13 @@
 ## Overview
 
 Integrate fault injection chaos testing using libfiu. The work is divided into
-five phases: build integration, chaos wrapper infrastructure, fault profiles,
+five phases: build integration, fault points and type bundle, fault profiles,
 safety/liveness property tests, and documentation. Phases 1–3 establish the
 foundations; phases 4–5 are where correctness regressions are caught.
 
 Chaos tests are isolated in `tests/chaos/` and compiled only when libfiu is
-detected at configure time. No production code changes are required.
+detected at configure time. The fault points live in the production headers
+as `fiu_do_on` macros that compile to nothing without `FIU_ENABLE` (task 5).
 
 ## Task Dependency Graph
 
@@ -27,7 +28,7 @@ detected at configure time. No production code changes are required.
     {
       "wave": 2,
       "tasks": [5, 6, 7, 8, 9],
-      "description": "Chaos wrapper infrastructure: decorators, chaos_raft_types, fault profiles, safety assertions"
+      "description": "Fault points, chaos_raft_types, fault profiles, safety assertions"
     },
     {
       "wave": 3,
@@ -99,41 +100,47 @@ detected at configure time. No production code changes are required.
 
 ---
 
-## Phase 2: Chaos Wrapper Infrastructure (Tasks 5–9)
+## Phase 2: Fault Points and Chaos Type Bundle (Tasks 5–9)
 
-### Implement the decorator types and chaos_raft_types
+> **Updated October 2, 2026.** Tasks 5–7 originally described decorator
+> wrappers (`tests/chaos/chaos_wrappers.hpp`) and a wrapped type bundle
+> (`tests/chaos/chaos_types.hpp`). Neither file was ever written: the design
+> changed to `fiu_do_on` fault points embedded in the production headers (see
+> design.md, "Fault injection site" trade-off row), and the type bundle went
+> into `tests/chaos/chaos_test_types.hpp`. The three tasks below are rewritten
+> to describe what was built; the requirements they trace to are unchanged.
 
-- [x] 5. Write `tests/chaos/chaos_wrappers.hpp`
-  - `chaos_network_client<T>`: intercepts `send_request_vote`,
-    `send_append_entries`, `send_install_snapshot`; checks the corresponding
-    `fiu_fail()` before delegating
-  - `chaos_persistence_engine<T>`: intercepts all five write operations
-    (`save_current_term`, `save_voted_for`, `append_log_entry`, `truncate_log`,
-    `save_snapshot`); reads pass through without fault checks (see design
-    trade-offs)
-  - `chaos_state_machine<T>`: intercepts `apply`; `get_snapshot` and
-    `restore_from_snapshot` pass through without fault checks
-  - Each check: `if (fiu_fail("raft/<layer>/<op>")) { throw ...; }`
+### Embed the fault points and define chaos_raft_types
+
+- [x] 5. Embed `fiu_do_on` fault points in the production headers
+  - `include/raft/simulator_network.hpp`: `raft/network/send_request_vote`,
+    `send_append_entries`, `send_install_snapshot` (plus
+    `send_request_pre_vote` and `send_timeout_now`, added with those RPCs)
+  - `include/raft/persistence.hpp`: the five write operations
+    (`raft/persistence/save_current_term`, `save_voted_for`,
+    `append_log_entry`, `truncate_log`, `save_snapshot`); reads carry no fault
+    point (see design trade-offs)
+  - `include/raft/test_state_machine.hpp`: `raft/state_machine/apply`;
+    `get_snapshot` and `restore_from_snapshot` carry none
+  - Each point compiles to nothing unless the translation unit defines
+    `FIU_ENABLE`, so production builds carry no overhead
   - _Requirements: 2.1–2.5, 3.1–3.4_
 
-- [x] 6. Verify that the wrapped types satisfy the kythira concepts
-  - Add static assertions to `chaos_wrappers.hpp`:
-    ```cpp
-    static_assert(network_client<chaos_network_client<base_network_client>, ...>);
-    static_assert(persistence_engine<chaos_persistence_engine<base_persistence>, ...>);
-    ```
-  - Alternatively, compile a `static_assert` in the smoke test file
-  - If concept satisfaction fails, the wrapper is missing a required method —
-    add it as a pass-through following the pattern for reads
+- [x] 6. Verify the instrumented types still satisfy the kythira concepts
+  - No wrapper types exist, so there is nothing new to assert: the chaos
+    bundle uses the same `simulator_network_client`,
+    `memory_persistence_engine` and `test_key_value_state_machine` as every
+    other test, and `kythira::node<chaos_raft_types>` instantiating (task 7)
+    is the concept check
   - _Requirements: 2.6_
 
-- [x] 7. Write `tests/chaos/chaos_types.hpp`
-  - Defines `kythira::chaos::chaos_raft_types` by composing wrapped components
-    over `simulator_network_client`, `memory_persistence_engine`, and
-    `test_key_value_state_machine`
-  - `network_server_type` is the plain (unwrapped) `simulator_network_server` —
-    receive-side faults are out of scope (see design trade-offs)
-  - Verify: `kythira::node<chaos_raft_types>` compiles without errors
+- [x] 7. Write `tests/chaos/chaos_test_types.hpp`
+  - Defines `kythira::chaos::chaos_raft_types` over the unwrapped
+    `simulator_network_client` / `simulator_network_server`,
+    `memory_persistence_engine` and `test_key_value_state_machine`; every chaos
+    test executable is compiled with `-DFIU_ENABLE`, which makes the embedded
+    points live
+  - `using chaos_node = kythira::node<chaos_raft_types>;` compiles
   - _Requirements: 2.6_
 
 - [x] 8. Write `tests/chaos/fault_profiles.hpp`
@@ -151,9 +158,9 @@ detected at configure time. No production code changes are required.
     the same term by examining each node's `current_term()` and `is_leader()`
   - `assert_log_matching(nodes)`: iterates up to `min(last_applied)` across
     all nodes and asserts log entries at each index match across all nodes
-  - `assert_state_machine_safety(machines, up_to_index)`: compares the
-    `applied_commands` history of each `chaos_state_machine` wrapper up to
-    the given index
+  - `assert_state_machine_safety(nodes, up_to_index)`: compares applied log
+    entries across nodes up to the given index, derived from `debug_state()`
+    (no state-machine wrapper exists to record an `applied_commands` history)
   - Note: this task may require adding a `debug_state()` accessor to
     `kythira::node` that exposes `_current_term`, `_commit_index`,
     `_last_applied`, and `_log` read-only. Coordinate this as a minimal,

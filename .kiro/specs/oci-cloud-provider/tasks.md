@@ -1,18 +1,26 @@
 # Implementation Plan — OCI Cloud Provider Support
 
-## Status: Tasks 0-5 and 7 complete; Task 6 code-complete, pending one console-side step
+## Status: Complete — Tasks 0-7 all done (August 12, 2026)
 
-**Task 6's code is done and live-verified** — both real-OCI suites pass against
-a real tenancy (4/4 and 3/3), the shared harness encodes Findings 14/15's
-classifier and pricing, and the `oci` CI job body is written. **The checkbox
-stays open for one reason**: the job's credential step needs an OCI IAM
-identity-domain trust for this repository (Workload Identity Federation,
-Finding 17), which is console-side work, and until it exists the step fails by
-design rather than falling back to the long-lived key Requirement 14.2
-forbids. Task 6 — and with it `doc/TODO.md`'s bullet, per Requirement 15.3 —
-should be ticked after that trust exists and the job has produced one green
-run. A task whose CI job cannot yet execute is not complete, however finished
-its code is.
+**Last Updated**: October 2, 2026. Task 6, the last, closed on August 12, 2026
+with a green `oci` CI job running both real suites under keyless Workload
+Identity Federation (run 31564877239). The Instance Principal caveat recorded
+below ("not yet against a real instance") is also closed: on August 12 the
+on-instance heartbeat writer authenticated under Instance Principal and the
+real suite classified a node live off its heartbeat (`doc/TODO.md`, OCI
+entry). The paragraphs below are kept as written on August 11-12; where they
+call Task 6 pending or Instance Principal unverified, this note supersedes
+them.
+
+### Status as of August 11, 2026 (historical)
+
+Task 6's code was done and live-verified — both real-OCI suites passed against
+a real tenancy (4/4 and 3/3), the shared harness encoded Findings 14/15's
+classifier and pricing, and the `oci` CI job body was written. The checkbox
+stayed open until the job's credential step had an OCI IAM identity-domain
+trust for this repository (Workload Identity Federation, Finding 17), rather
+than falling back to the long-lived key Requirement 14.2 forbids. That trust
+was created and the job went green the next day.
 
 **August 11, 2026.** Both components, the mock server, the test tier and the
 documentation are on `main`, and every one of them has been exercised against a
@@ -34,10 +42,10 @@ addendum records), ephemeral session key, `v1/x509` exchange signed without
 `host`, `ST$` keyId, five-minute-buffer renewal with per-renewal key
 regeneration. `oci_http_client` selects it when `use_instance_principal` is
 set; `tests/oci_federation_unit_test.cpp` (11 cases) verifies both signatures
-cryptographically against the wire artifacts. The honest caveat: the contract
-is confirmed against `oci-go-sdk` source and the mock tier, **not yet against
-a real instance** — the metadata service exists nowhere else, so this is the
-one OCI component whose live tier does not exist yet.
+cryptographically against the wire artifacts. The honest caveat at the time: the
+contract was confirmed against `oci-go-sdk` source and the mock tier, **not yet
+against a real instance** — the metadata service exists nowhere else. *(Closed
+August 12, 2026: verified on a real instance; see the status note above.)*
 
 What landed for Tasks 2-5 and 7, August 11:
 

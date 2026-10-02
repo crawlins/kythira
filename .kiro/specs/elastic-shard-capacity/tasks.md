@@ -1,8 +1,17 @@
 # Implementation Plan — Elastic Shard Capacity
 
-## Status: 0/17 tasks complete — specification only, no implementation commits
+## Status: 17/17 tasks complete
 
-**Last Updated**: August 28, 2026. Written against the tree at
+**Last Updated**: October 2, 2026. Every task is checked and the
+implementation is on `main`; `doc/elastic_shard_capacity.md` is the operator
+document. Two things stay open inside ticked boxes, and each task says so
+itself: task 16's optional per-provider live legs were never run, and its
+Docker leg, `docker-elastic-capacity-tests`, runs only in the arm64 Docker
+smoke workflow, which is `workflow_dispatch`-only, so no PR or push runs it.
+Design §15 item 7 records that the cloud managers do not carry the
+idempotency key yet.
+
+The specification was first written on August 28, 2026, against the tree at
 `multi_raft_impl.hpp:1682` (children inherit the parent's voters),
 `multi_raft_impl.hpp:3083` (the heartbeat/operator channel),
 `multi_raft_impl.hpp:1240` (lazy replica creation), `quorum_management.hpp:172`

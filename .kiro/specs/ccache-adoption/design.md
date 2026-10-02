@@ -1,5 +1,14 @@
 # Design Document
 
+> **Partly superseded (noted October 2, 2026).** The CI half of this spec was
+> replaced by `.kiro/specs/oci-build-cache/` task 7 (September 9, 2026):
+> every CI job that compiles this project now uses sccache against the OCI
+> bucket and passes `-DKYTHIRA_COMPILER_LAUNCHER` explicitly. The
+> `Restore ccache` / `ccache size limit` / `Save ccache` steps and the
+> `CCACHE_DIR` entries this spec added (tasks 4–6) no longer exist. The local
+> half still holds: `KYTHIRA_COMPILER_LAUNCHER=auto` picks ccache on a
+> developer machine when it is installed (`CMakeLists.txt`).
+
 ## Overview
 
 This document describes the design for wiring [ccache](https://ccache.dev/)
