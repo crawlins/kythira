@@ -892,6 +892,92 @@ BOOST_AUTO_TEST_CASE(provision_timeout_cleanup) {
     BOOST_CHECK_EQUAL(after.size(), before.size());
 }
 
+/// Requirement 19: `maintain_quorum` replaces an unreachable node in its own
+/// zone, and the cluster assesses healthy afterwards. No other tier calls it:
+/// the unit tests only cover its fault point.
+///
+/// `maintain_quorum` returns the health it measured *before* remediating and
+/// none of the nodes it provisioned, so the replacement is read back from GCE
+/// by the cluster label rather than taken from the manager.
+BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_stopped_node) {
+    auto cfg = base_compute_config();
+    // Its own cluster name, not the shared "kythira-it": this case counts the
+    // cluster's instances, and every other case and concurrent run uses that
+    // name too. The teardown sweep still finds these by the run label.
+    cfg.cluster_name = "kythira-mq" + std::to_string(::getpid());
+    const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
+    cfg.topology.groups.push_back({.group_id = zone, .target_count = 3});
+    gcp_compute_quorum_manager<> mgr{cfg};
+    case_cost_recorder cost;
+
+    std::vector<node_placement<std::uint64_t, std::string>> cluster;
+    for (int i = 0; i < 3; ++i) {
+        auto peer = std::move(mgr.provision_node(zone, std::nullopt)).get();
+        cost.add_instance(cfg.machine_type, zone, cfg.spot);
+        cluster.push_back({.node_id = peer.node_id, .group_id = zone});
+    }
+
+    // Stop one directly via the SDK, as stopped_instance_marked_unreachable
+    // does, and wait until assess sees it.
+    const auto lost = cluster[2].node_id;
+    auto client = instances_client();
+    client
+        .Stop(cfg.gcp.project_id, zone,
+              gcp_compute_quorum_manager<>::node_id_to_instance_name(cfg.cluster_name, lost))
+        .get();
+    bool unreachable = false;
+    for (int i = 0; i < 30 && !unreachable; ++i) {
+        unreachable = !std::move(mgr.assess_quorum(cluster)).get().unreachable_nodes.empty();
+        if (!unreachable) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(unreachable, "the stopped instance never assessed as unreachable");
+
+    auto returned = std::move(mgr.maintain_quorum(cluster)).get();
+    BOOST_CHECK_EQUAL(returned.live_node_count, 2u);
+    BOOST_REQUIRE_EQUAL(returned.unreachable_nodes.size(), 1u);
+    BOOST_CHECK_EQUAL(returned.unreachable_nodes[0], lost);
+
+    // decommission_node waits on the delete operation, so the lost node should
+    // already be gone; the bounded retry only absorbs list eventual-consistency.
+    std::vector<node_placement<std::uint64_t, std::string>> after;
+    for (int i = 0; i < 15; ++i) {
+        after.clear();
+        for (const auto& name :
+             cluster_instance_names(cfg.gcp.project_id, zone, cfg.cluster_name)) {
+            if (auto nid = gcp_compute_quorum_manager<>::instance_name_to_node_id(cfg.cluster_name,
+                                                                                  name)) {
+                after.push_back({.node_id = *nid, .group_id = zone});
+            }
+        }
+        if (std::ranges::none_of(after, [&](const auto& np) { return np.node_id == lost; })) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    BOOST_CHECK_MESSAGE(
+        std::ranges::none_of(after, [&](const auto& np) { return np.node_id == lost; }),
+        "the stopped node was not decommissioned");
+    BOOST_CHECK_EQUAL(after.size(), 3u);
+    std::size_t replacements = 0;
+    for (const auto& np : after) {
+        if (std::ranges::none_of(cluster, [&](const auto& m) { return m.node_id == np.node_id; })) {
+            ++replacements;
+            cost.add_instance(cfg.machine_type, zone, cfg.spot);
+        }
+    }
+    BOOST_CHECK_EQUAL(replacements, 1u);
+
+    auto health = std::move(mgr.assess_quorum(after)).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 3u);
+    BOOST_CHECK_EQUAL(health.status, quorum_status::healthy);
+
+    for (const auto& np : after) {
+        std::move(mgr.decommission_node(np.node_id)).get();
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ── gcp_mig_quorum_manager real-GCE cases (Requirement 23 AC 19) ────────────
