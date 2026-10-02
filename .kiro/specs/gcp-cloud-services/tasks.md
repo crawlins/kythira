@@ -25,9 +25,10 @@ What exists, task by task, is marked ✅ below. Summary of the evidence:
   exercised by a dedicated `GCP SDK Build (clang++-18, x64)` CI job.
 - **`ca_service` integration**: `--provider gcp-privateca` (`cmd/ca_service/main.cpp`).
 - **Tests**: `gcp_quorum_manager_unit_test` builds and runs *unconditionally*
-  — its fake-client and pure-function suites give real coverage even without
-  google-cloud-cpp, with the SDK-dependent suites becoming skip-only — and is
-  present in the default CI build (run 30947491385's JUnit artifacts).
+  — its validator and name-qualifier suites give real coverage even without
+  google-cloud-cpp, while the fake-client suites (which derive from the SDK's
+  connection interfaces) become skip-only there and run in the GCP SDK Build
+  job — and is present in the default CI build (run 30947491385's JUnit artifacts).
   `gcp_privateca_provider_unit_test` is gated on `_KYTHIRA_GCP_PRIVATECA_FOUND`
   and so runs only in the GCP SDK Build job, not the default one.
 - **Live-GCP verification**: `gcp_quorum_manager_real_gce_test` 11/11 and
@@ -325,8 +326,9 @@ Reference implementations to study before starting:
   `Build & Test` legs.
 - **Two different unit-test gating rules**, which is easy to misread as an
   inconsistency: `gcp_quorum_manager_unit_test` is built unconditionally
-  (its fake-client and pure-function suites are real coverage without the
-  SDK; SDK-dependent suites become skip-only), whereas
+  (its validator and name-qualifier suites are real coverage without the
+  SDK; the fake-client and other SDK-dependent suites become skip-only),
+  whereas
   `gcp_privateca_provider_unit_test` is gated on `_KYTHIRA_GCP_PRIVATECA_FOUND`
   and therefore appears only in the GCP SDK Build job.
 - **Real-cloud tests cost money and are opt-in**

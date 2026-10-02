@@ -186,9 +186,29 @@ public:
     ///   group has no `subnetwork_by_group` entry, or the worst-case instance
     ///   name (`cluster_name` + max `NodeId`) is not a valid GCE resource name.
     explicit gcp_compute_quorum_manager(gcp_compute_quorum_manager_config<std::string> config)
+        // `config` is copied, not moved: the client factories below read
+        // `config.gcp` in the same argument list, and argument evaluation
+        // order is unspecified.
+        : gcp_compute_quorum_manager(config, gcp_compute_detail::make_instances_client(config.gcp),
+                                     gcp_compute_detail::make_zone_operations_client(config.gcp)) {}
+
+    /// @brief Constructs the manager over caller-supplied Compute Engine
+    ///        clients instead of ones built from `config.gcp`.
+    ///
+    /// The injection seam the unit tests use (Requirement 23 AC 3): a client
+    /// built over a hand-written `InstancesConnection`/`ZoneOperationsConnection`
+    /// test double exercises the manager's request and error handling without
+    /// a GCP project. `config.gcp`'s credentials, endpoint and retry settings
+    /// are ignored for the injected clients; `project_id`, `api_timeout` and
+    /// `operation_poll_interval` are still read. Validates exactly as the
+    /// production-config constructor does.
+    gcp_compute_quorum_manager(
+        gcp_compute_quorum_manager_config<std::string> config,
+        google::cloud::compute_instances_v1::InstancesClient instances,
+        google::cloud::compute_zone_operations_v1::ZoneOperationsClient zone_ops)
         : _config(std::move(config)),
-          _instances(gcp_compute_detail::make_instances_client(_config.gcp)),
-          _zone_ops(gcp_compute_detail::make_zone_operations_client(_config.gcp)) {
+          _instances(std::move(instances)),
+          _zone_ops(std::move(zone_ops)) {
         if (_config.gcp.project_id.empty()) {
             throw std::invalid_argument("gcp_compute_quorum_manager: project_id must be non-empty");
         }

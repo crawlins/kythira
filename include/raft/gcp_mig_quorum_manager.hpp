@@ -153,10 +153,33 @@ public:
     ///   `autoHealingPolicies` (Requirement 18 — an autohealer racing kythira's
     ///   own remediation loop would risk split-brain).
     explicit gcp_mig_quorum_manager(gcp_mig_quorum_manager_config<std::string> config)
+        // `config` is copied, not moved: the client factories below read
+        // `config.gcp` in the same argument list, and argument evaluation
+        // order is unspecified.
+        : gcp_mig_quorum_manager(config, gcp_mig_detail::make_migs_client(config.gcp),
+                                 gcp_mig_detail::make_instances_client(config.gcp),
+                                 gcp_mig_detail::make_zone_operations_client(config.gcp)) {}
+
+    /// @brief Constructs the manager over caller-supplied Compute Engine
+    ///        clients instead of ones built from `config.gcp`.
+    ///
+    /// The injection seam the unit tests use (Requirement 23 AC 3): clients
+    /// built over hand-written connection test doubles let the constructor's
+    /// autohealing-policy check and every API path run without a GCP project.
+    /// `config.gcp`'s credentials, endpoint and retry settings are ignored for
+    /// the injected clients; `project_id`, `api_timeout` and
+    /// `operation_poll_interval` are still read. Validates exactly as the
+    /// production-config constructor does, including the
+    /// `instanceGroupManagers.get` read of each MIG.
+    gcp_mig_quorum_manager(
+        gcp_mig_quorum_manager_config<std::string> config,
+        google::cloud::compute_instance_group_managers_v1::InstanceGroupManagersClient migs,
+        google::cloud::compute_instances_v1::InstancesClient instances,
+        google::cloud::compute_zone_operations_v1::ZoneOperationsClient zone_ops)
         : _config(std::move(config)),
-          _migs(gcp_mig_detail::make_migs_client(_config.gcp)),
-          _instances(gcp_mig_detail::make_instances_client(_config.gcp)),
-          _zone_ops(gcp_mig_detail::make_zone_operations_client(_config.gcp)) {
+          _migs(std::move(migs)),
+          _instances(std::move(instances)),
+          _zone_ops(std::move(zone_ops)) {
         if (_config.gcp.project_id.empty()) {
             throw std::invalid_argument("gcp_mig_quorum_manager: project_id must be non-empty");
         }
@@ -180,22 +203,18 @@ public:
             }
         }
         // Reject any MIG with an autohealing policy (Requirement 18 AC 1).
-        bool validate = true;
-        fiu_do_on("raft/gcp/mig/skip_autohealing_validation", validate = false;);
-        if (validate) {
-            for (const auto& [zone, mig_name] : _config.mig_by_group) {
-                auto mig = _migs.GetInstanceGroupManager(_config.gcp.project_id, zone, mig_name);
-                if (!mig) {
-                    throw std::invalid_argument(
-                        "gcp_mig_quorum_manager: instanceGroupManagers.get failed for '" +
-                        mig_name + "': " + mig.status().message());
-                }
-                if (mig->auto_healing_policies_size() > 0) {
-                    throw std::invalid_argument(
-                        "gcp_mig_quorum_manager: MIG '" + mig_name +
-                        "' has an autoHealingPolicies entry; kythira requires it be unset to avoid "
-                        "split-brain (see Requirement 18)");
-                }
+        for (const auto& [zone, mig_name] : _config.mig_by_group) {
+            auto mig = _migs.GetInstanceGroupManager(_config.gcp.project_id, zone, mig_name);
+            if (!mig) {
+                throw std::invalid_argument(
+                    "gcp_mig_quorum_manager: instanceGroupManagers.get failed for '" + mig_name +
+                    "': " + mig.status().message());
+            }
+            if (mig->auto_healing_policies_size() > 0) {
+                throw std::invalid_argument(
+                    "gcp_mig_quorum_manager: MIG '" + mig_name +
+                    "' has an autoHealingPolicies entry; kythira requires it be unset to avoid "
+                    "split-brain (see Requirement 18)");
             }
         }
     }
