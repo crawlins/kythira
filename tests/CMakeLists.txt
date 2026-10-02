@@ -987,6 +987,9 @@ add_raft_completion_test(capacity_policy_unit_test capacity_policy_unit_test.cpp
 # elastic-shard-capacity spec, task 5: the intent ledger, its transition
 # tables and its memory, file and replicated backends.
 add_raft_completion_test(capacity_ledger_unit_test capacity_ledger_unit_test.cpp)
+# elastic-shard-capacity spec, task 6: the leadership lease, over hooks and
+# over a real replicated coordination group.
+add_raft_completion_test(capacity_coordination_test capacity_coordination_test.cpp)
 add_raft_completion_test(multi_raft_invariant_property_test
                          multi_raft_invariant_property_test.cpp)
 # Task 34 of .kiro/specs/multi-raft/: 1000 groups across three simulated nodes.
