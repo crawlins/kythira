@@ -88,3 +88,6 @@ Thumbs.db
 # Python bytecode from the object-store probe scripts
 __pycache__/
 *.pyc
+
+# The aliyun CLI tarball the Alibaba spike downloaded into the tree root
+aliyun-cli-*.tgz
