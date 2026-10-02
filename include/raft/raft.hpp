@@ -5145,8 +5145,20 @@ auto node<Types>::initialize_from_storage() -> void {
                       {"last_included_index", std::to_string(snap.last_included_index())}});
     }
 
-    // Reload log entries from persistence (entries after the snapshot point)
-    log_index_type first_needed = (_last_applied > 0) ? _last_applied + 1 : log_index_type{1};
+    // Reload log entries from persistence (entries after the snapshot point).
+    //
+    // The store is the only source of truth here, so the in-memory log is
+    // rebuilt from it rather than appended to. A node restarted in-process by
+    // stop() + start() still holds its previous run's log, and appending the
+    // persisted entries onto it duplicated every index after the last applied
+    // one, which broke the log-matching check for any leader that later
+    // replicated to it. For the same reason the reload starts after the
+    // snapshot, not after `_last_applied`: on an in-process restart the latter
+    // survives from the previous run, and starting there would drop committed
+    // entries no snapshot covers. In a fresh process the two are equal.
+    _log.clear();
+    log_index_type first_needed =
+        snap_opt.has_value() ? snap_opt->last_included_index() + 1 : log_index_type{1};
     log_index_type last_persisted = _persistence.get_last_log_index();
     if (last_persisted >= first_needed) {
         auto entries = _persistence.get_log_entries(first_needed, last_persisted);
