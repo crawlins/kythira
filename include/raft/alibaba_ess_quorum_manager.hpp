@@ -61,17 +61,20 @@
 #include <boost/json.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -646,19 +649,23 @@ public:
             // Computed from the same listing the candidate came from rather
             // than a fresh one: two scans could disagree, and the one that
             // matters is the one that identified the instance.
-            const NodeId new_id = next_node_id_from(members);
-
-            std::map<std::string, std::string> tags = _cfg.extra_tags;
-            // Written last so an operator cannot redirect a managed instance by
-            // supplying its own `kythira-node-id` in `extra_tags`.
-            tags[alibaba_ess_detail::tag_cluster] = _cfg.cluster_name;
-            tags[alibaba_ess_detail::tag_node_id] = node_id_str(new_id);
+            NodeId new_id{};
             try {
+                new_id = next_node_id_from(members);
+
+                std::map<std::string, std::string> tags = _cfg.extra_tags;
+                // Written last so an operator cannot redirect a managed
+                // instance by supplying its own `kythira-node-id` in
+                // `extra_tags`.
+                tags[alibaba_ess_detail::tag_cluster] = _cfg.cluster_name;
+                tags[alibaba_ess_detail::tag_node_id] = node_id_str(new_id);
                 tag_instance(launched->id, tags);
             } catch (...) {
-                // We grew the group and cannot record who owns the result;
-                // leaving it running is how a provisioning bug becomes a bill
-                // (the OCI sibling's lesson, learned against live infra).
+                // We grew the group and cannot record who owns the result —
+                // whether the tag write failed or no NodeId was left to
+                // write. Leaving it running is how a provisioning bug becomes
+                // a bill (the OCI sibling's lesson, learned against live
+                // infra).
                 best_effort_remove(launched->id);
                 throw;
             }
@@ -1067,6 +1074,35 @@ private:
         return out;
     }
 
+    /// The highest NodeId this manager may assign. A tag at this value leaves
+    /// no max+1, and wrapping to 0 would hand every later provision the same
+    /// identity, so it is a refusal rather than an assignment.
+    static constexpr auto node_id_ceiling() -> std::uint64_t {
+        if constexpr (std::is_same_v<NodeId, std::string>) {
+            return std::numeric_limits<std::uint64_t>::max();
+        } else {
+            return static_cast<std::uint64_t>(std::numeric_limits<NodeId>::max());
+        }
+    }
+
+    /// Strict decimal: digits only, all of them consumed, no sign, no
+    /// whitespace. `std::stoull` is not that — it reads "-1" as the largest
+    /// uint64 and "7x" as 7 — so a tag nobody here wrote could otherwise
+    /// steer the numbering instead of being ignored.
+    [[nodiscard]] static auto parse_node_id_tag(std::string_view text)
+        -> std::optional<std::uint64_t> {
+        if (text.empty() ||
+            !std::ranges::all_of(text, [](char c) { return c >= '0' && c <= '9'; })) {
+            return std::nullopt;
+        }
+        std::uint64_t value = 0;
+        const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (ec != std::errc{} || end != text.data() + text.size()) {
+            return std::nullopt;
+        }
+        return value;
+    }
+
     [[nodiscard]] auto next_node_id_from(
         const std::vector<alibaba_ess_detail::instance_view>& instances) const -> NodeId {
         std::uint64_t highest = 0;
@@ -1079,15 +1115,26 @@ private:
             if (tag == inst.tags.end()) {
                 continue;
             }
-            try {
-                highest = std::max(highest, static_cast<std::uint64_t>(std::stoull(tag->second)));
-            } catch (const std::exception&) {
-                // A tag nobody here wrote. Ignoring it is right: it cannot
-                // collide with an id this manager assigns, because this
-                // manager only ever assigns parseable ones.
+            // A tag nobody here wrote is ignored: it cannot collide with an
+            // id this manager assigns, because this manager only ever
+            // assigns plain decimal ones. A value past NodeId's range is in
+            // the same class — this manager could never have written it.
+            const auto parsed = parse_node_id_tag(tag->second);
+            if (parsed.has_value() && *parsed <= node_id_ceiling()) {
+                highest = std::max(highest, *parsed);
             }
         }
-        return static_cast<NodeId>(highest + 1);
+        if (highest >= node_id_ceiling()) {
+            throw std::overflow_error(
+                "no NodeId left to assign: an instance in scaling group " + _cfg.scaling_group_id +
+                " already carries " + std::string(alibaba_ess_detail::tag_node_id) + "=" +
+                std::to_string(highest) + ", the largest this NodeId type can hold");
+        }
+        if constexpr (std::is_same_v<NodeId, std::string>) {
+            return std::to_string(highest + 1);
+        } else {
+            return static_cast<NodeId>(highest + 1);
+        }
     }
 
     [[nodiscard]] auto find_instance(const NodeId& node) const

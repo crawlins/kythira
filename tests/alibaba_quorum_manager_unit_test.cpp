@@ -48,6 +48,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -537,6 +538,49 @@ BOOST_AUTO_TEST_CASE(an_unparseable_node_id_tag_is_ignored,
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
 }
 
+/// The parse is strict decimal, not `std::stoull`: that reads "-1" as the
+/// largest uint64 — after which max+1 wraps every later provision to NodeId 0 —
+/// and "7x" as 7. Neither spelling is one this manager writes, so both are
+/// ignored like any other foreign tag.
+BOOST_AUTO_TEST_CASE(signed_or_trailing_garbage_node_id_tags_are_ignored,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    EssMock mock;
+    mock.add_instance({{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "-1"}});
+    mock.add_instance({{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "70x"}});
+    mock.add_instance({{"kythira-cluster", "test-cluster"}, {"kythira-node-id", " 50"}});
+    mock.add_instance({{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "+40"}});
+    mock.add_instance(ours(2));
+    mock.start();
+
+    const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
+}
+
+/// The top of the range. One below the ceiling still has a successor; at the
+/// ceiling there is none, and wrapping to 0 would give every later provision
+/// the same identity, so the scan refuses instead. A value too large to parse
+/// is out of range for anything this manager writes and is ignored.
+BOOST_AUTO_TEST_CASE(node_id_assignment_refuses_to_wrap_at_the_ceiling,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    constexpr auto top = std::numeric_limits<std::uint64_t>::max();
+    {
+        EssMock mock;
+        mock.add_instance(ours(top - 1));
+        mock.add_instance(
+            {{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "99999999999999999999999"}});
+        mock.start();
+        const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+        BOOST_CHECK_EQUAL(mgr.next_node_id(), top);
+    }
+    {
+        EssMock mock;
+        mock.add_instance(ours(top));
+        mock.start();
+        const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+        BOOST_CHECK_THROW((void)mgr.next_node_id(), std::overflow_error);
+    }
+}
+
 /// design.md Property 4, on the assignment path: a co-tenant cluster's high
 /// NodeId must not push this cluster's numbering, because NodeIds only need to
 /// be unique within a cluster and the isolation rule is the same one every
@@ -687,6 +731,25 @@ BOOST_AUTO_TEST_CASE(provision_grows_the_group_and_adopts_the_new_instance,
     BOOST_CHECK_EQUAL(mock.instance_count(), 2U);
     BOOST_CHECK_EQUAL(mock.capacity(), 2);
     BOOST_CHECK_EQUAL(mock.modify_calls.load(), 1);
+}
+
+/// A launch that cannot be given an identity is removed, not left running. The
+/// NodeId is computed after ESS has already delivered the instance, so a scan
+/// that refuses (here, the ceiling) must take the same cleanup path as a failed
+/// tag write — otherwise the group holds a billed, untagged instance nobody
+/// will ever adopt or retire.
+BOOST_AUTO_TEST_CASE(a_provision_with_no_node_id_left_removes_the_launched_instance,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    EssMock mock;
+    mock.add_instance(ours(std::numeric_limits<std::uint64_t>::max()));
+    mock.start();
+
+    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    BOOST_CHECK_THROW(std::move(mgr.provision_node(default_zone, std::nullopt)).get(),
+                      std::runtime_error);
+    BOOST_CHECK_EQUAL(mock.remove_calls.load(), 1);
+    BOOST_CHECK_EQUAL(mock.instance_count(), 1U);
+    BOOST_CHECK_EQUAL(mock.capacity(), 1);
 }
 
 /// Requirement 5.2 in the mock's mirror: `TagResources` is additive, so the
