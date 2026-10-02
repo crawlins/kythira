@@ -56,6 +56,8 @@
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -63,6 +65,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -304,6 +307,53 @@ auto random_suffix() -> std::string {
         }
     }
     return names;
+}
+
+/// One VM of a cluster as ARM lists it: its node ID and group, read back from
+/// the `kythira:node-id` and `kythira:group` tags the manager stamps at create.
+struct listed_vm {
+    std::uint64_t node_id{};
+    std::string group;
+};
+
+/// Every VM tagged with `cluster`, with its node ID and group. Same listing
+/// and tag filter as `cluster_vm_names`, for the cases that must see what
+/// `maintain_quorum` provisioned: it returns the health it measured before
+/// remediating and none of the nodes it created.
+[[nodiscard]] auto cluster_vms(Azure::Core::Http::_internal::HttpPipeline& pipeline,
+                               const kythira::azure_client_config& azure,
+                               const std::string& cluster) -> std::vector<listed_vm> {
+    Azure::Core::Url url(arm_base_url(azure) +
+                         "/providers/Microsoft.Compute/virtualMachines?api-version=2024-07-01");
+    Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get, url);
+    Azure::Core::Context context;
+    auto response = pipeline.Send(request, context);
+    BOOST_REQUIRE_MESSAGE(
+        static_cast<int>(response->GetStatusCode()) / 100 == 2,
+        "listing VMs returned HTTP " << static_cast<int>(response->GetStatusCode()));
+    const auto& body = response->GetBody();
+    auto parsed = boost::json::parse(std::string(body.begin(), body.end()));
+    std::vector<listed_vm> vms;
+    if (!parsed.is_object() || !parsed.as_object().contains("value")) {
+        return vms;
+    }
+    for (const auto& vm : parsed.at("value").as_array()) {
+        const auto* tags = vm.is_object() ? vm.as_object().if_contains("tags") : nullptr;
+        if (tags == nullptr || !tags->is_object()) {
+            continue;
+        }
+        const auto& t = tags->as_object();
+        const auto* owner = t.if_contains("kythira:cluster");
+        const auto* nid = t.if_contains("kythira:node-id");
+        const auto* group = t.if_contains("kythira:group");
+        if (owner == nullptr || !owner->is_string() || owner->as_string() != cluster ||
+            nid == nullptr || !nid->is_string() || group == nullptr || !group->is_string()) {
+            continue;
+        }
+        vms.push_back({.node_id = std::stoull(std::string(nid->as_string())),
+                       .group = std::string(group->as_string())});
+    }
+    return vms;
 }
 
 /// Deletes `vm_name`, retrying while ARM refuses because an operation is still
@@ -1283,15 +1333,65 @@ BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationF
     BOOST_CHECK(pre_health.status == kythira::quorum_status::critical);
     BOOST_CHECK_EQUAL(pre_health.live_node_count, 5u);
 
-    auto post_health = std::move(mgr->maintain_quorum(cluster)).get();
-    (void)post_health;
+    // maintain_quorum returns the health it measured before remediating: the
+    // same 5 live and 4 unreachable.
+    auto returned = std::move(mgr->maintain_quorum(cluster)).get();
+    BOOST_CHECK_EQUAL(returned.live_node_count, 5u);
+    BOOST_CHECK_EQUAL(returned.unreachable_nodes.size(), 4u);
+    std::set<std::uint64_t> lost(returned.unreachable_nodes.begin(),
+                                 returned.unreachable_nodes.end());
 
-    // maintain_quorum only replaces nodes it itself decommissioned (the
-    // unreachable set at the time of that call); deallocated-but-not-yet-
-    // decommissioned nodes from this test's direct ARM calls are cleaned up
-    // explicitly below regardless of what maintain_quorum did with them.
+    // Task 8: "verify topology-correct per-zone replacement and a subsequent
+    // healthy assessment". The replacements are read back from ARM by tag,
+    // since maintain_quorum hands none of them back.
+    auto pipeline = make_test_arm_pipeline(azure);
+    std::map<std::string, std::size_t> new_by_zone;
+    std::vector<kythira::node_placement<std::uint64_t, std::string>> after;
+    for (const auto& vm : cluster_vms(pipeline, azure, cluster_name)) {
+        if (lost.contains(vm.node_id)) {
+            continue;  // decommissioned; ARM may still be finishing the delete
+        }
+        if (std::ranges::none_of(cluster, [&](const auto& m) { return m.node_id == vm.node_id; })) {
+            ++new_by_zone[vm.group];
+            cost.resources.push_back(
+                {.label = "VM (zone " + vm.group + ", replacement, " + mgr.option().label() + ")",
+                 .hourly_rate = mgr.hourly_rate()});
+        }
+        after.push_back({vm.node_id, vm.group});
+    }
+    BOOST_CHECK_EQUAL(new_by_zone["1"], 0u);
+    BOOST_CHECK_EQUAL(new_by_zone["2"], 1u);
+    BOOST_CHECK_EQUAL(new_by_zone["3"], 3u);
+
+    auto post_health = std::move(mgr->assess_quorum(after)).get();
+    BOOST_CHECK_EQUAL(post_health.live_node_count, 9u);
+    BOOST_CHECK(post_health.status == kythira::quorum_status::healthy);
+    for (const auto& g : post_health.groups) {
+        BOOST_CHECK_EQUAL(g.live_count, 3u);
+    }
+
+    // The 4 lost nodes were deleted, not merely left deallocated. The
+    // manager waits only 30s on the delete, so allow ARM time to finish.
+    bool lost_gone = false;
+    for (int i = 0; i < 30 && !lost_gone; ++i) {
+        lost_gone = std::ranges::none_of(cluster_vms(pipeline, azure, cluster_name),
+                                         [&](const auto& vm) { return lost.contains(vm.node_id); });
+        if (!lost_gone) {
+            std::this_thread::sleep_for(std::chrono::seconds{10});
+        }
+    }
+    BOOST_CHECK_MESSAGE(lost_gone, "a decommissioned VM was still listed after 5 minutes");
+
+    // Everything this case created, replacements included: decommissioning
+    // only the original membership left the 4 replacements for the teardown
+    // sweep, which reports them as leaks.
     for (const auto& np : cluster) {
         std::move(mgr->decommission_node(np.node_id)).get();
+    }
+    for (const auto& np : after) {
+        if (std::ranges::none_of(cluster, [&](const auto& m) { return m.node_id == np.node_id; })) {
+            std::move(mgr->decommission_node(np.node_id)).get();
+        }
     }
     for (auto& r : cost.resources) {
         r.finalize();
