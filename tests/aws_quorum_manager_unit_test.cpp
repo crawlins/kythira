@@ -13,6 +13,8 @@
 
 #include <aws/core/Aws.h>
 
+#include <string>
+
 #ifdef FIU_ENABLE
 #include <fiu-control.h>
 #endif
@@ -391,6 +393,49 @@ BOOST_AUTO_TEST_CASE(asg_update_asg_fault_returns_exceptional_future) {
     fiu_enable("raft/aws/asg/update_asg", 1, nullptr, 0);
     auto fut = mgr.provision_node("AZ1", std::nullopt);
     fiu_disable("raft/aws/asg/update_asg");
+
+    BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(asg_terminate_instance_fault_returns_exceptional_future) {
+    kythira::aws_asg_quorum_manager_config cfg;
+    cfg.cluster_name = "test-cluster";
+    cfg.node_port = 7000;
+    cfg.topology.groups.push_back({.group_id = "AZ1", .target_count = 3});
+    cfg.asg_by_group["AZ1"] = "asg-az1";
+    cfg.aws.region = "us-east-1";
+    fiu_enable("raft/aws/asg/skip_health_check_validation", 1, nullptr, 0);
+    kythira::aws_asg_quorum_manager<> mgr{cfg};
+    fiu_disable("raft/aws/asg/skip_health_check_validation");
+
+    fiu_enable("raft/aws/asg/terminate_instance", 1, nullptr, 0);
+    auto fut = mgr.decommission_node(std::uint64_t{1});
+    fiu_disable("raft/aws/asg/terminate_instance");
+
+    // Matched on the fault's own text: with no reachable AWS endpoint the real
+    // TerminateInstanceInAutoScalingGroup call fails too, so a bare
+    // "something was thrown" would pass with the fault point deleted.
+    BOOST_CHECK_EXCEPTION(std::move(fut).get(), std::exception, [](const std::exception& ex) {
+        return std::string(ex.what()).find("fault: raft/aws/asg/terminate_instance") !=
+               std::string::npos;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(asg_maintain_quorum_fault_returns_exceptional_future) {
+    kythira::aws_asg_quorum_manager_config cfg;
+    cfg.cluster_name = "test-cluster";
+    cfg.node_port = 7000;
+    cfg.topology.groups.push_back({.group_id = "AZ1", .target_count = 3});
+    cfg.asg_by_group["AZ1"] = "asg-az1";
+    cfg.aws.region = "us-east-1";
+    fiu_enable("raft/aws/asg/skip_health_check_validation", 1, nullptr, 0);
+    kythira::aws_asg_quorum_manager<> mgr{cfg};
+    fiu_disable("raft/aws/asg/skip_health_check_validation");
+
+    fiu_enable("raft/aws/asg/maintain_quorum", 1, nullptr, 0);
+    std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
+    auto fut = mgr.maintain_quorum(cluster);
+    fiu_disable("raft/aws/asg/maintain_quorum");
 
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }
