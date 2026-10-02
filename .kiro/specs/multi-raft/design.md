@@ -744,16 +744,18 @@ once `merge_commit` is proposed the target refuses to abandon. Commit and
 abandon are mutually exclusive because both are decided by the same single
 log — the target's.
 
-**Escape hatch: `merge_lease_mode`.** A configuration option enabling the
-timing-based variant (source rolls back unilaterally after a deadline carried
-in `merge_prepare`). It is off by default and its documentation states the
-bounded-clock-skew assumption in the first line, because an operator who turns
-it on is taking on an assumption the rest of Kythira does not make.
+**No lease-based escape hatch.** An earlier draft offered `merge_lease_mode`:
+the source rolls back unilaterally after a deadline carried in
+`merge_prepare`. It was never wired, and it has been removed rather than
+built. It would make "two shards own one range" reachable whenever the clocks
+disagree, and nothing else in Kythira assumes bounded clock skew. Requirement
+15.5 permits such a variant; it does not require one. `abandon_merge` is the
+way out of a stuck merge.
 
 A stuck merge with the handshake unavailable (target leader unreachable) leaves
 the source frozen — unavailable but *correct*. That is the right trade, and it
-is surfaced as a `shard_merge_stalled` metric plus a warning log naming the
-target, so an operator can act rather than guess.
+is surfaced as a `merge.stalled{group, target}` metric plus a warning log
+naming the target, so an operator can act rather than guess.
 
 ---
 
@@ -1120,6 +1122,8 @@ struct merge_options {
     bool _wait_for_apply{true};
     bool _auto_align{false};           // let the PD colocate replicas first, then retry
     std::chrono::milliseconds _align_timeout{std::chrono::minutes{5}};
+    signal_channel _channel{signal_channel::admin};  // arbitrated as this channel
+    merge_reason _reason{merge_reason::admin};
 };
 ```
 
@@ -1140,6 +1144,12 @@ Design notes:
   operator asking for a merge should not silently trigger replica movement
   across the cluster; they should be told alignment is needed
   (`shard_alignment_required_exception`) and opt in.
+  With it on, the host passes both descriptors to
+  `multi_raft_config::request_merge_alignment`; the driver answers with
+  add/remove-replica operators on later heartbeats, and the host re-checks
+  colocation every tick, proposing as soon as it holds and failing after
+  `_align_timeout`. An admin merge waiting this way holds both shards against
+  the automatic channels for the whole wait.
 - **`pre_split(boundaries)`** requires every affected shard to be empty. It
   exists for the bulk-load case TiKV RFC 0082 names — "in the very beginning,
   writes will only happen in a single region, the problem can be solved by
@@ -1293,7 +1303,12 @@ Channel (c) never initiates; it only chooses and vetoes keys for an operation
 one of the three above started.
 
 A loser is logged with reason `preempted_by={channel}` and counted — never
-silently dropped (Requirement 17.6). An operator debugging "why didn't my
+silently dropped (Requirement 17.6). "Holds the shard" means an operation in
+flight whose holder outranks the newcomer, or an unresolved admin command
+(an `_auto_align` merge waiting for colocation). The reverse case, a higher
+channel arriving after a lower one was admitted, is refused with `state`:
+admit and propose are one step, and Requirement 17.4 forbids aborting a
+proposed operation to make room. An operator debugging "why didn't my
 policy fire" needs to see that the PD outranked it.
 
 **Gates applied to every channel:**

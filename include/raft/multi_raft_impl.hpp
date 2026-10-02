@@ -663,6 +663,11 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
         report._apply_duration = clock::now() - t0;
     }
 
+    // `_auto_align` merges waiting for colocation. Every tick, not every policy
+    // interval: the wait is an operator's command in progress, and the
+    // driver's alignment can land on any heartbeat.
+    drive_pending_alignments();
+
     // ── PHASE 4: policy ──────────────────────────────────────────────────────
     {
         const auto t0 = clock::now();
@@ -689,6 +694,11 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
                 }
                 if (now - frozen_at >= _cfg.merge_stall_warning_after) {
                     _stalled_merges.fetch_add(1, std::memory_order_relaxed);
+                    _cfg.metrics.set_metric_name("kythira.multiraft.merge.stalled");
+                    _cfg.metrics.add_dimension("group", detail::describe_value(g->_group_id));
+                    _cfg.metrics.add_dimension("target", detail::describe_value(merge_target));
+                    _cfg.metrics.add_count(1);
+                    _cfg.metrics.emit();
                     _cfg.logger.warning(
                         "Merge stalled: the source has been frozen past the warning threshold",
                         {{"source", detail::describe_value(g->_group_id)},
@@ -839,8 +849,17 @@ auto multi_raft<Types, Key, GroupId>::evaluate_policy(const std::vector<group_pt
         // The kill switch and the freeze are checked here as well as inside
         // `admit`, so a frozen shard is never even evaluated: an operator who
         // froze a shard should not see policy activity against it in the logs.
-        if (g->_frozen.load(std::memory_order_relaxed) ||
-            g->_operation.load(std::memory_order_relaxed) != shard_operation_state::stable) {
+        //
+        // A shard held by a HIGHER channel is the exception, and is evaluated:
+        // if the policy would have acted, the arbiter refuses it as preempted
+        // and logs which channel outranked it (Requirement 17.6). Skipping it
+        // here would discard the loser silently, and "why didn't my policy
+        // fire" would have no answer in the logs.
+        if (g->_frozen.load(std::memory_order_relaxed)) {
+            continue;
+        }
+        if (g->_operation.load(std::memory_order_relaxed) != shard_operation_state::stable &&
+            !preempting_channel(*g, signal_channel::policy).has_value()) {
             continue;
         }
 
@@ -906,8 +925,8 @@ auto multi_raft<Types, Key, GroupId>::evaluate_policy(const std::vector<group_pt
                 _cfg.metrics.add_dimension("policy", policy_label(decision.policy()));
                 _cfg.metrics.add_count(1);
                 _cfg.metrics.emit();
-                std::ignore =
-                    merge_shards(sibling->_group_id, g->_group_id, std::chrono::seconds{30});
+                std::ignore = merge_shards(sibling->_group_id, g->_group_id, options,
+                                           std::chrono::seconds{30});
             }
         }
     }
@@ -996,19 +1015,36 @@ auto multi_raft<Types, Key, GroupId>::defer_to_apply_phase(const GroupId& group,
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::note_rejection(const GroupId& group, arbiter_gate gate,
-                                                     signal_channel channel, const char* operation)
+                                                     signal_channel channel, const char* operation,
+                                                     std::optional<signal_channel> preempted_by)
     -> void {
     {
         std::lock_guard lock(_rejection_mutex);
         ++_rejections[static_cast<std::uint8_t>(gate)];
     }
-    // Every decision, accepted or rejected, gets a line with the reason as a
-    // dimension. Thresholds are untunable without this: an operator who cannot
-    // see `split.rejected{gate=cooldown}` will conclude the feature is broken.
-    _cfg.logger.info(std::string{operation} + ".rejected",
-                     {{"group", detail::describe_value(group)},
-                      {"gate", to_string(gate)},
-                      {"channel", to_string(channel)}});
+    // Every decision, accepted or rejected, gets a line AND a metric with the
+    // reason as a dimension (Requirement 17.7). Thresholds are untunable
+    // without this: an operator who cannot see `split.rejected{gate=cooldown}`
+    // will conclude the feature is broken.
+    //
+    // A preempted loser additionally names the channel that outranked it
+    // (Requirement 17.6): "why didn't my policy fire" is answered by seeing
+    // that the placement driver or an operator held the shard.
+    std::vector<std::pair<std::string, std::string>> fields{
+        {"group", detail::describe_value(group)},
+        {"gate", to_string(gate)},
+        {"channel", to_string(channel)}};
+    if (preempted_by.has_value()) {
+        fields.emplace_back("preempted_by", to_string(*preempted_by));
+    }
+    std::vector<std::pair<std::string_view, std::string_view>> view(fields.begin(), fields.end());
+    _cfg.logger.info(std::string{operation} + ".rejected", view);
+    _cfg.metrics.set_metric_name(std::string{"kythira.multiraft."} + operation + ".rejected");
+    for (const auto& [name, value] : fields) {
+        _cfg.metrics.add_dimension(name, value);
+    }
+    _cfg.metrics.add_count(1);
+    _cfg.metrics.emit();
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -1029,6 +1065,34 @@ auto multi_raft<Types, Key, GroupId>::operations_in_flight() const -> std::size_
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::preempting_channel(const group_state& g,
+                                                         signal_channel channel) const
+    -> std::optional<signal_channel> {
+    // An admin command that has been accepted and has not resolved suspends
+    // the automatic channels for the shards it affects (Requirement 17.3),
+    // even while it is not yet itself holding the operation state — an
+    // `_auto_align` merge spends its whole alignment wait in exactly that
+    // position, and a policy split landing in the middle of it would move the
+    // epoch the merge is waiting to propose against.
+    if (channel != signal_channel::admin && g._admin_holds.load(std::memory_order_acquire) > 0) {
+        return signal_channel::admin;
+    }
+    switch (g._operation.load(std::memory_order_acquire)) {
+        case shard_operation_state::splitting:
+        case shard_operation_state::merging_source:
+        case shard_operation_state::merging_target: {
+            const auto holder = g._holder.load(std::memory_order_acquire);
+            if (outranks(holder, channel)) {
+                return holder;
+            }
+            return std::nullopt;
+        }
+        default:
+            return std::nullopt;
+    }
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::admit(group_state& g, signal_channel channel,
                                             shard_operation_state to, bool override_cooldown)
     -> arbiter_decision<GroupId> {
@@ -1046,6 +1110,16 @@ auto multi_raft<Types, Key, GroupId>::admit(group_state& g, signal_channel chann
     // reason.
     if (channel != signal_channel::admin && g._frozen.load(std::memory_order_relaxed)) {
         return decision{._admitted = false, ._gate = arbiter_gate::state, ._channel = channel};
+    }
+
+    // Precedence, ahead of every gate that is about timing or load: a loser to
+    // a higher-precedence channel is told so by name, not by whichever
+    // incidental gate it would also have tripped (Requirement 17.6).
+    if (auto by = preempting_channel(g, channel)) {
+        return decision{._admitted = false,
+                        ._gate = arbiter_gate::preempted,
+                        ._channel = channel,
+                        ._preempted_by = by};
     }
 
     // The cooldown. Enforced HERE, by the host, so that a custom policy which
@@ -1085,8 +1159,14 @@ auto multi_raft<Types, Key, GroupId>::admit(group_state& g, signal_channel chann
     // same interval cannot both proceed, because only one compare-exchange can
     // win — conflicting operations are impossible by construction rather than
     // by check-then-act.
+    //
+    // The holder is published right after the transition. A reader landing
+    // between the two sees the previous holder, which can only cost it a
+    // `state` refusal where `preempted` would have been more precise — never
+    // an admission.
     auto expected = shard_operation_state::stable;
     if (g._operation.compare_exchange_strong(expected, to)) {
+        g._holder.store(channel, std::memory_order_release);
         return decision{._admitted = true, ._gate = arbiter_gate::admitted, ._channel = channel};
     }
 
@@ -1096,14 +1176,23 @@ auto multi_raft<Types, Key, GroupId>::admit(group_state& g, signal_channel chann
     if (channel == signal_channel::admin) {
         auto frozen = shard_operation_state::frozen;
         if (g._operation.compare_exchange_strong(frozen, to)) {
+            g._holder.store(channel, std::memory_order_release);
             return decision{
                 ._admitted = true, ._gate = arbiter_gate::admitted, ._channel = channel};
         }
     }
-    return decision{._admitted = false,
-                    ._gate = arbiter_gate::state,
-                    ._channel = channel,
-                    ._preempted_by = std::nullopt};
+
+    // Lost the transition. If the winner outranks this channel, that is a
+    // preemption and is reported as one; otherwise the winner was an equal or
+    // lower channel that got there first, and a proposed operation is never
+    // aborted to make room (Requirement 17.4) — the plain state gate.
+    if (auto by = preempting_channel(g, channel)) {
+        return decision{._admitted = false,
+                        ._gate = arbiter_gate::preempted,
+                        ._channel = channel,
+                        ._preempted_by = by};
+    }
+    return decision{._admitted = false, ._gate = arbiter_gate::state, ._channel = channel};
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -1158,6 +1247,12 @@ auto multi_raft<Types, Key, GroupId>::would_admit(const GroupId& group,
     }
     if (channel != signal_channel::admin && g->_frozen.load(std::memory_order_relaxed)) {
         return decision{._admitted = false, ._gate = arbiter_gate::state, ._channel = channel};
+    }
+    if (auto by = preempting_channel(*g, channel)) {
+        return decision{._admitted = false,
+                        ._gate = arbiter_gate::preempted,
+                        ._channel = channel,
+                        ._preempted_by = by};
     }
     const auto state = g->_operation.load(std::memory_order_relaxed);
     const bool startable =
@@ -1605,7 +1700,7 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     const auto admitted =
         admit(*g, options._channel, shard_operation_state::splitting, options._override_cooldown);
     if (!admitted) {
-        note_rejection(group, admitted._gate, options._channel, "split");
+        note_rejection(group, admitted._gate, options._channel, "split", admitted._preempted_by);
         return failed_future(std::make_exception_ptr(
             shard_busy_exception<GroupId>{group, to_string(admitted._gate)}));
     }
@@ -1911,6 +2006,7 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
     }
 
     // ── C: freeze ────────────────────────────────────────────────────────────
+    parent._holder.store(channel_of(cmd._reason), std::memory_order_release);
     parent._operation.store(shard_operation_state::splitting);
 
     // ── D: cut ───────────────────────────────────────────────────────────────
@@ -2181,30 +2277,71 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const GroupId& target,
                                                    std::chrono::milliseconds timeout)
     -> future_type {
+    return merge_shards(source, target, merge_options{}, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const GroupId& target,
+                                                   merge_options options,
+                                                   std::chrono::milliseconds timeout)
+    -> future_type {
+    const auto channel = options._channel;
     auto source_state = find_group(source);
     auto target_state = find_group(target);
     if (!source_state) {
         return failed_future(std::make_exception_ptr(
             unknown_shard_exception<GroupId>{source, "no local replica of the source"}));
     }
-    if (!target_state) {
-        // Colocation is a precondition, so a host that leads the source and has
-        // no target replica is telling us the sets are not aligned.
-        return failed_future(
-            std::make_exception_ptr(shard_alignment_required_exception<GroupId, node_id_type>{
-                source, target, source_state->_descriptor._voters, {}}));
-    }
     if (!source_state->_node->is_leader()) {
+        note_rejection(source, arbiter_gate::not_leader, channel, "merge");
         return failed_future(
             std::make_exception_ptr(shard_not_leader_exception<GroupId, node_id_type>{
                 source, source_state->_node->known_leader()}));
     }
 
+    // Precedence first, on BOTH shards: a merge touches the target too, so an
+    // operator holding either one outranks an automatic merge of the pair.
+    for (const auto* g : {source_state.get(), target_state.get()}) {
+        if (g == nullptr) {
+            continue;
+        }
+        if (auto by = preempting_channel(*g, channel)) {
+            note_rejection(source, arbiter_gate::preempted, channel, "merge", by);
+            return failed_future(std::make_exception_ptr(
+                shard_busy_exception<GroupId>{g->_group_id, "preempted_by=" + to_string(*by)}));
+        }
+    }
+
     const auto source_desc = source_state->_descriptor;
-    const auto target_desc = target_state->_descriptor;
-    if (auto problem =
-            check_merge_preconditions(source_desc, target_desc, source_state, target_state)) {
-        note_rejection(source, arbiter_gate::alignment_required, signal_channel::admin, "merge");
+    std::exception_ptr problem;
+    std::optional<descriptor_type> target_desc;
+    if (!target_state) {
+        // Colocation is a precondition, so a host that leads the source and has
+        // no target replica is telling us the sets are not aligned.
+        target_desc = shard_map_snapshot().find(target);
+        problem = std::make_exception_ptr(shard_alignment_required_exception<GroupId, node_id_type>{
+            source, target, source_desc._voters,
+            target_desc.has_value() ? target_desc->_voters : std::vector<node_id_type>{}});
+    } else {
+        target_desc = target_state->_descriptor;
+        problem = check_merge_preconditions(source_desc, *target_desc, source_state, target_state);
+    }
+    if (problem) {
+        bool alignment = false;
+        try {
+            std::rethrow_exception(problem);
+        } catch (const shard_alignment_required_exception<GroupId, node_id_type>&) {
+            alignment = true;
+        } catch (...) {
+        }
+        // Only an alignment refusal is worth waiting on: no amount of replica
+        // movement makes two shards adjacent or ends a split in flight.
+        if (alignment && options._auto_align && target_desc.has_value()) {
+            return await_alignment(source_desc, *target_desc, source_state, target_state, options,
+                                   timeout, problem);
+        }
+        note_rejection(source, alignment ? arbiter_gate::alignment_required : arbiter_gate::state,
+                       channel, "merge");
         return failed_future(problem);
     }
 
@@ -2232,17 +2369,17 @@ auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const 
     // the same interval cannot both proceed. Apply sets it again, idempotently,
     // on every replica.
     const auto admitted =
-        admit(*source_state, signal_channel::admin, shard_operation_state::merging_source, false);
+        admit(*source_state, channel, shard_operation_state::merging_source, false);
     if (!admitted) {
-        note_rejection(source, admitted._gate, signal_channel::admin, "merge");
+        note_rejection(source, admitted._gate, channel, "merge", admitted._preempted_by);
         return failed_future(std::make_exception_ptr(
             shard_busy_exception<GroupId>{source, to_string(admitted._gate)}));
     }
 
     merge_prepare_command_type cmd{._source = source_desc,
-                                   ._target = target_desc,
+                                   ._target = *target_desc,
                                    ._min_index = static_cast<std::uint64_t>(min_index),
-                                   ._reason = merge_reason::admin};
+                                   ._reason = options._reason};
 
     _cfg.logger.info("Proposing merge_prepare", {{"source", detail::describe_value(source)},
                                                  {"target", detail::describe_value(target)},
@@ -2262,6 +2399,145 @@ auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const 
         }
         return std::forward<decltype(result)>(result).value();
     });
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::await_alignment(
+    const descriptor_type& source, const descriptor_type& target, const group_ptr& source_state,
+    const group_ptr& target_state, merge_options options, std::chrono::milliseconds timeout,
+    std::exception_ptr refusal) -> future_type {
+    // Asking is the opt-in `_auto_align` stands for: the driver moves replicas,
+    // which moves data, and nothing else in the merge path ever does. A driver
+    // that cannot or will not align fails the merge now rather than leaving the
+    // caller to wait out `_align_timeout` for operators that are never coming.
+    bool asked = false;
+    if (_cfg.request_merge_alignment) {
+        try {
+            asked = _cfg.request_merge_alignment(source, target);
+        } catch (const std::exception& e) {
+            _cfg.logger.warning(std::string("multi_raft: alignment request failed: ") + e.what());
+        }
+    }
+    if (!asked) {
+        note_rejection(source._group_id, arbiter_gate::alignment_required, options._channel,
+                       "merge");
+        return failed_future(std::move(refusal));
+    }
+
+    auto pending = std::make_shared<pending_alignment>();
+    pending->_source = source._group_id;
+    pending->_target = target._group_id;
+    pending->_options = options;
+    pending->_options._auto_align = false;  // the retry is a plain merge
+    pending->_timeout = timeout;
+    pending->_deadline = std::chrono::steady_clock::now() + options._align_timeout;
+    // An admin merge is "accepted" from here, and it suspends the automatic
+    // channels on both shards until it resolves (Requirement 17.3). Without
+    // that, a policy split landing mid-wait would move the source's epoch and
+    // turn a merge the operator explicitly asked for into a refusal.
+    if (options._channel == signal_channel::admin) {
+        for (const auto& g : {source_state, target_state}) {
+            if (g) {
+                g->_admin_holds.fetch_add(1, std::memory_order_acq_rel);
+                pending->_held.push_back(g);
+            }
+        }
+    }
+    auto future = pending->_promise.getFuture();
+    {
+        std::lock_guard lock(_alignment_mutex);
+        _pending_alignments.push_back(pending);
+    }
+    _cfg.logger.info("Merge waiting for the placement driver to colocate the replica sets",
+                     {{"source", detail::describe_value(source._group_id)},
+                      {"target", detail::describe_value(target._group_id)},
+                      {"channel", to_string(options._channel)},
+                      {"align_timeout_ms", std::to_string(options._align_timeout.count())}});
+    return future;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::drop_admin_holds(const std::vector<group_ptr>& held) -> void {
+    for (const auto& g : held) {
+        g->_admin_holds.fetch_sub(1, std::memory_order_acq_rel);
+    }
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::pending_alignment_count() const -> std::size_t {
+    std::lock_guard lock(_alignment_mutex);
+    return _pending_alignments.size();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::drive_pending_alignments() -> void {
+    std::vector<std::shared_ptr<pending_alignment>> work;
+    {
+        std::lock_guard lock(_alignment_mutex);
+        if (_pending_alignments.empty()) {
+            return;
+        }
+        work = _pending_alignments;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<std::shared_ptr<pending_alignment>> done;
+    for (auto& p : work) {
+        // Phase two: the merge was proposed on an earlier tick. Settle the
+        // caller from it, and only THEN drop the holds — "until it resolves"
+        // means the proposal's outcome, not the moment it was sent.
+        if (p->_proposed.has_value()) {
+            if (!p->_proposed->isReady()) {
+                continue;
+            }
+            try {
+                p->_promise.setValue(std::move(*p->_proposed).get());
+            } catch (...) {
+                p->_promise.setException(std::current_exception());
+            }
+            drop_admin_holds(p->_held);
+            done.push_back(p);
+            continue;
+        }
+
+        auto source = find_group(p->_source);
+        auto target = find_group(p->_target);
+        const bool aligned =
+            source && target && is_colocated(source->_descriptor, target->_descriptor);
+        if (aligned) {
+            _cfg.logger.info("Replica sets colocated; proposing the waiting merge",
+                             {{"source", detail::describe_value(p->_source)},
+                              {"target", detail::describe_value(p->_target)}});
+            // The holds stay up across the proposal: `merge_shards` on the
+            // admin channel is not stopped by them, and the automatic channels
+            // still are.
+            p->_proposed.emplace(merge_shards(p->_source, p->_target, p->_options, p->_timeout));
+            continue;
+        }
+        if (now >= p->_deadline || !source) {
+            const auto source_voters =
+                source ? source->_descriptor._voters : std::vector<node_id_type>{};
+            const auto target_voters =
+                target ? target->_descriptor._voters : std::vector<node_id_type>{};
+            note_rejection(p->_source, arbiter_gate::alignment_required, p->_options._channel,
+                           "merge");
+            _cfg.logger.warning("Merge abandoned: replica sets not colocated within _align_timeout",
+                                {{"source", detail::describe_value(p->_source)},
+                                 {"target", detail::describe_value(p->_target)}});
+            p->_promise.setException(
+                std::make_exception_ptr(shard_alignment_required_exception<GroupId, node_id_type>{
+                    p->_source, p->_target, source_voters, target_voters}));
+            drop_admin_holds(p->_held);
+            done.push_back(p);
+        }
+    }
+
+    if (!done.empty()) {
+        std::lock_guard lock(_alignment_mutex);
+        std::erase_if(_pending_alignments, [&](const auto& p) {
+            return std::find(done.begin(), done.end(), p) != done.end();
+        });
+    }
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -2287,8 +2563,9 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_prepare(group_state& source,
         source._merge_frozen_at = std::chrono::steady_clock::now();
     }
     // From here the source rejects proposals and reads. It is released ONLY by
-    // a `merge_rollback` in its own log — never by a timer, unless the operator
-    // has explicitly taken on `merge_lease_mode`'s clock assumption.
+    // a `merge_rollback` in its own log — never by a timer. There is no
+    // lease-based variant; see `multi_raft_config`'s merge section for why.
+    source._holder.store(channel_of(cmd._reason), std::memory_order_release);
     source._operation.store(shard_operation_state::merging_source);
 
     fiu_do_on("raft/multiraft/merge/after_prepare",
@@ -2337,6 +2614,7 @@ auto multi_raft<Types, Key, GroupId>::maybe_propose_merge_commit(
         target->_merge_commit_proposed = true;
         target->_merge_source = cmd._source._group_id;
     }
+    target->_holder.store(channel_of(cmd._reason), std::memory_order_release);
     target->_operation.store(shard_operation_state::merging_target);
 
     auto source = find_group(cmd._source._group_id);
@@ -3226,6 +3504,11 @@ auto multi_raft<Types, Key, GroupId>::apply_operator(const shard_operation_type&
                 options._reason = split_reason::placement_driver;
                 auto would = would_admit(op.group_id(), signal_channel::placement_driver);
                 if (!would) {
+                    if (would._gate == arbiter_gate::preempted) {
+                        note_rejection(op.group_id(), arbiter_gate::preempted,
+                                       signal_channel::placement_driver, "split",
+                                       would._preempted_by);
+                    }
                     return note_skipped_operator(op, skipped_operator_reason::shard_busy);
                 }
                 split_shard(op.group_id(), concrete._at_keys, options, timeout);
@@ -3233,9 +3516,17 @@ auto multi_raft<Types, Key, GroupId>::apply_operator(const shard_operation_type&
             } else if constexpr (std::same_as<Op, merge_operator<GroupId>>) {
                 auto would = would_admit(op.group_id(), signal_channel::placement_driver);
                 if (!would) {
+                    if (would._gate == arbiter_gate::preempted) {
+                        note_rejection(op.group_id(), arbiter_gate::preempted,
+                                       signal_channel::placement_driver, "merge",
+                                       would._preempted_by);
+                    }
                     return note_skipped_operator(op, skipped_operator_reason::shard_busy);
                 }
-                merge_shards(op.group_id(), concrete._into, timeout);
+                merge_options options{};
+                options._channel = signal_channel::placement_driver;
+                options._reason = merge_reason::placement_driver;
+                merge_shards(op.group_id(), concrete._into, options, timeout);
                 return accept();
             } else {
                 if constexpr (!network_client_with_timeout_now<
