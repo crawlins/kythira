@@ -2,13 +2,37 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Real-EC2 coverage for the 3-AZ ca_cluster_node AWS deployment
-// (Requirement 17.12(b)). Unlike ca_cluster_node_localstack_test.cpp (which
-// can only verify the provisioning topology, since LocalStack's EC2 API is a
-// control-plane mock that never boots real software), this launches three
-// REAL EC2 instances running the real ca_cluster_node binary and verifies,
-// over SSH, that they actually form a working Raft-replicated CA cluster:
-// one node bootstraps, the other two converge, and the resulting cluster
-// issues a certificate through whichever node ends up leader.
+// (Requirement 17.12(b), certificate-authority task 31). Unlike
+// ca_cluster_node_localstack_test.cpp (which can only verify the
+// provisioning API, since LocalStack's EC2 API is a control-plane mock that
+// never boots real software), this launches three REAL EC2 instances
+// running the real ca_cluster_node binary and drives them over SSH through
+// the failure the 3-AZ layout exists for:
+//
+//   1. the three nodes form a cluster and bootstrap one CA root;
+//   2. the leader issues a certificate;
+//   3. the leader's instance is terminated outside the manager;
+//   4. the two survivors keep quorum: a new leader with the same root, and
+//      a second issuance that can only commit with both of them;
+//   5. aws_ec2_quorum_manager::maintain_quorum() replaces the lost instance
+//      in the same AZ (subnet and kythira:group tag checked);
+//   6. the replacement takes over the lost node's Raft id with an empty
+//      data dir and catches up by ordinary Raft replication — it is never
+//      bootstrapped, so a root it serves can only have come from its peers;
+//   7. every node, the replacement included, is made leader in turn and
+//      must still hold both issuances in its own ledger and serve the
+//      original root (Property 17 on real infrastructure).
+//
+// ca_cluster_node takes a static --peers list and the replacement comes up
+// on a new address, so step 6 restarts each survivor (one at a time, from
+// its own data dir) with the updated list. That is the operator action
+// docker/ca_cluster_node/README.md's Path 3 needs after a replacement too.
+//
+// Ledger presence is read through POST /v1/certificates/revoke, the same
+// probe ca_cluster_node_test.cpp uses: the leader answers 404
+// serial_not_found iff its ledger lacks the serial, and revoking an
+// already-revoked serial is a no-op success. The routes are leader-only, so
+// reading a given node's ledger means making it leader first.
 //
 // Requires (all via environment variables, following the convention already
 // established by aws_quorum_manager_real_ec2_test.cpp):
@@ -16,13 +40,12 @@
 //                               installed — build one with
 //                               packer/ca_cluster_node/scripts/build.sh
 //                               (see packer/ca_cluster_node/README.md)
-//   KYTHIRA_EC2_TEST_KEY_NAME   (optional) existing EC2 key pair name to reuse;
-//                               a fresh one is created/destroyed per test otherwise
 //   AWS credentials via the standard provider chain; AWS_REGION or a default
 //   region configured in aws_client_config
 //
 // Not run by default (LABELS real-ec2;slow) — same gating as the existing
-// aws_quorum_manager_real_ec2_test.cpp.
+// aws_quorum_manager_real_ec2_test.cpp. Real per-run AWS cost: four
+// t3.micro/t4g.micro instances for roughly twenty minutes.
 
 #define BOOST_TEST_MODULE ca_cluster_node_real_ec2_test
 #include <boost/test/unit_test.hpp>
@@ -54,6 +77,7 @@
 #include <aws/ec2/model/DeleteSecurityGroupRequest.h>
 #include <aws/ec2/model/DeleteSubnetRequest.h>
 #include <aws/ec2/model/DeleteVpcRequest.h>
+#include <aws/ec2/model/DescribeInstanceStatusRequest.h>
 #include <aws/ec2/model/DescribeInstancesRequest.h>
 #include <aws/ec2/model/DetachInternetGatewayRequest.h>
 #include <aws/ec2/model/DisassociateAddressRequest.h>
@@ -75,11 +99,22 @@
 #endif
 #include "aws_real_ec2_test_support.hpp"
 
+#include <raft/certificate_authority.hpp>
+#include <raft/certificate_provider.hpp>
+
+#include <boost/json.hpp>
+
+#include <openssl/bio.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -571,15 +606,192 @@ auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, boo
     return cmd.str();
 }
 
+// Builds the shared --peers list. Raft node ids are 1-based positions in
+// `public_ips`, so a replacement that takes over id k only changes entry k.
+//
+// start_node_command() passes no --tls-cert/--tls-key, so ca_cluster_node's
+// client-facing listener falls back to plain HTTP (with its own "running
+// without TLS" warning) — the peers URL scheme and the curl checks below
+// must match what's actually listening, not what a production deployment
+// would use.
+auto build_peers_arg(const std::vector<std::string>& public_ips) -> std::string {
+    std::ostringstream peers;
+    for (std::size_t i = 0; i < public_ips.size(); ++i) {
+        if (i > 0) {
+            peers << ",";
+        }
+        peers << (i + 1) << ":" << public_ips[i] << ":7000@http://" << public_ips[i] << ":8443";
+    }
+    return peers.str();
+}
+
+struct http_reply {
+    int status = 0;
+    std::string body;
+};
+
+// Runs curl against the node's own HTTP port over SSH and splits off the
+// status code curl appends on its own last line. Over SSH rather than from
+// the runner for the reason given at the leader wait in the test body.
+auto curl_on(const std::string& ip, const std::string& private_key_pem,
+             const std::string& curl_args) -> http_reply {
+    auto out = ssh_execute(ip, private_key_pem,
+                           "curl -s -w '\\n%{http_code}' -H 'Authorization: Bearer " +
+                               std::string(TEST_AUTH_TOKEN) + "' " + curl_args,
+                           std::chrono::seconds(30));
+    http_reply r;
+    auto nl = out.rfind('\n');
+    if (nl == std::string::npos) {
+        return r;  // curl itself failed; status 0
+    }
+    r.body = out.substr(0, nl);
+    try {
+        r.status = std::stoi(out.substr(nl + 1));
+    } catch (const std::exception&) {
+        r.status = 0;
+    }
+    return r;
+}
+
+// The leader is the one node that answers /v1/root-ca with 200; followers
+// redirect (308) and leaderless nodes answer 503. Returns the leader's index
+// into `ips` and the root PEM it served.
+struct leader_probe {
+    std::size_t index = 0;
+    std::string root_pem;
+};
+
+auto find_leader(const std::vector<std::string>& ips, const std::string& private_key_pem,
+                 const std::set<std::size_t>& skip, std::chrono::seconds timeout)
+    -> std::optional<leader_probe> {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        for (std::size_t i = 0; i < ips.size(); ++i) {
+            if (skip.contains(i)) {
+                continue;
+            }
+            auto r = curl_on(ips[i], private_key_pem, "http://localhost:8443/v1/root-ca");
+            if (r.status == 200 && !r.body.empty()) {
+                return leader_probe{i, r.body};
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    return std::nullopt;
+}
+
+// POSTs to a leader-only route, retrying while the answer is transient: 503
+// (a just-elected leader whose signer isn't rebuilt yet, or no leader) and
+// 502/0 (commit timeout, dropped connection). Returns the last reply.
+auto post_json_with_retry(const std::string& ip, const std::string& private_key_pem,
+                          const std::string& path, const std::string& json_body,
+                          std::chrono::seconds timeout) -> http_reply {
+    // A serialized boost::json body is one line (PEM newlines become the
+    // two characters \n) and carries no single quote, so it rides the SSH
+    // command line inside single quotes.
+    const std::string args = "-X POST -H 'Content-Type: application/json' --data-binary '" +
+                             json_body + "' http://localhost:8443" + path;
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    http_reply r;
+    do {
+        r = curl_on(ip, private_key_pem, args);
+        if (r.status != 0 && r.status != 502 && r.status != 503) {
+            return r;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    } while (std::chrono::steady_clock::now() < deadline);
+    return r;
+}
+
+// Issues a certificate through the leader at `ip` and returns its serial.
+auto issue_certificate(const std::string& ip, const std::string& private_key_pem,
+                       const std::string& common_name) -> std::uint64_t {
+    raft::testing::leaf_certificate_options opts;
+    opts.subject.common_name = common_name;
+    opts.dns_names = {common_name + ".example.com"};
+    auto csr = raft::testing::generate_key_and_csr(opts);
+
+    boost::json::object body;
+    body["csr_pem"] = csr.csr_pem;
+    body["dns_names"] = boost::json::array{boost::json::string(common_name + ".example.com")};
+    auto r = post_json_with_retry(ip, private_key_pem, "/v1/certificates",
+                                  boost::json::serialize(body), std::chrono::seconds(180));
+    BOOST_REQUIRE_MESSAGE(r.status == 200,
+                          "issuing " << common_name << " failed: " << r.status << " " << r.body);
+
+    auto pem =
+        std::string(boost::json::parse(r.body).as_object().at("certificate_pem").as_string());
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(
+        BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), &BIO_free);
+    std::unique_ptr<X509, decltype(&X509_free)> cert(
+        PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr), &X509_free);
+    BOOST_REQUIRE(cert != nullptr);
+    std::uint64_t serial = 0;
+    BOOST_REQUIRE(ASN1_INTEGER_get_uint64(&serial, X509_get_serialNumber(cert.get())) == 1);
+    return serial;
+}
+
+// Revoke-by-serial against the leader at `ip`: 200 iff that leader's ledger
+// holds the serial, 404 iff it doesn't (see the file header).
+auto ledger_probe(const std::string& ip, const std::string& private_key_pem, std::uint64_t serial)
+    -> http_reply {
+    boost::json::object body;
+    body["serial"] = std::to_string(serial);
+    return post_json_with_retry(ip, private_key_pem, "/v1/certificates/revoke",
+                                boost::json::serialize(body), std::chrono::seconds(120));
+}
+
+// SIGKILL, not SIGTERM: the point is a crash. Matched by process name (-x),
+// not -f on the path, because -f would also match the sudo and shell
+// running this very command line. The process runs as root (sudo in
+// start_node_command), so the kill needs sudo as well.
+void kill_node_process(const std::string& ip, const std::string& private_key_pem) {
+    ssh_execute(ip, private_key_pem,
+                "sudo pkill -KILL -x ca_cluster_node; "
+                "for i in $(seq 1 30); do pgrep -x ca_cluster_node >/dev/null || exit 0; "
+                "sleep 1; done; exit 1",
+                std::chrono::seconds(60));
+}
+
+auto wait_healthy(const std::string& ip, const std::string& private_key_pem,
+                  std::chrono::seconds timeout) -> bool {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (curl_on(ip, private_key_pem, "http://localhost:8443/healthz").status == 200) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    return false;
+}
+
+// std::cerr, not BOOST_TEST_MESSAGE: this project's real-ec2 tests run
+// under Boost.Test's default log level, which does not print message-level
+// output at all — confirmed empirically when an earlier BOOST_TEST_MESSAGE
+// version of this same diagnostic produced zero output in a real CI run.
+// stderr always shows up under ctest --output-on-failure regardless of
+// Boost.Test's own log-level filtering.
+void dump_node_logs(const std::vector<std::string>& ips, const std::string& private_key_pem) {
+    for (const auto& ip : ips) {
+        try {
+            auto log = ssh_execute(ip, private_key_pem,
+                                   "sudo tail -n 80 /tmp/ca_cluster_node.log 2>&1; echo; "
+                                   "echo '--- ps ---'; pgrep -a -x ca_cluster_node",
+                                   std::chrono::seconds(30));
+            std::cerr << "=== " << ip << " ca_cluster_node.log ===\n" << log << "\n";
+        } catch (const std::exception& e) {
+            std::cerr << "=== " << ip << ": could not fetch log: " << e.what() << "\n";
+        }
+    }
+}
+
 }  // namespace
 
-// Requirement 17.12(b) end-to-end: three real EC2 instances, one per AZ,
-// running the real ca_cluster_node binary — verifies the deployment
-// documented in docker/ca_cluster_node/README.md actually produces a
-// working Raft-replicated CA cluster, not just correctly-placed instances
-// (that half is already covered by ca_cluster_node_localstack_test.cpp).
-BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_network_fixture,
-                        *boost::unit_test::timeout(900)) {
+// Requirement 17.12(b) end-to-end, task 31: see the file header for the
+// seven steps. The Boost timeout covers fixture setup and teardown too.
+BOOST_FIXTURE_TEST_CASE(three_az_cluster_survives_instance_loss_and_replacement,
+                        three_az_network_fixture, *boost::unit_test::timeout(1800)) {
+    using manager_t = kythira::aws_ec2_quorum_manager<>;
     std::string ami = env("KYTHIRA_EC2_TEST_AMI");
 
     kythira::aws_ec2_quorum_manager_config cfg;
@@ -606,62 +818,30 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
         cfg.subnet_by_group[az] = subnet_id;
     }
 
-    kythira::aws_ec2_quorum_manager<> mgr{cfg};
+    manager_t mgr{cfg};
 
-    // Phase 1: launch all three instances (subnets have MapPublicIpOnLaunch
-    // set, so each gets a public IP automatically — no Elastic IP juggling
-    // needed). provision_node() only returns {node_id, private_ip:port}, not
-    // the EC2 instance ID or public IP, so phase 2 below looks each instance
-    // up by its known private IP to get the rest.
+    // ── Step 1: form the cluster ────────────────────────────────────────
+    // Launch all three instances (subnets have MapPublicIpOnLaunch set, so
+    // each gets a public IP automatically). The manager's node identity is
+    // the EC2 instance ID, so the public IP comes from DescribeInstances on
+    // that ID. Index i here is Raft node id i + 1.
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
-    std::vector<std::string> private_ips;
+    std::vector<std::string> public_ips;
     for (const auto& [az, subnet_id] : subnet_by_az) {
         (void)subnet_id;
         auto peer = mgr.provision_node(az, std::nullopt).get();
         cluster.push_back({.node_id = peer.node_id, .group_id = az});
-        auto colon = peer.address.rfind(':');
-        private_ips.push_back(peer.address.substr(0, colon));
-        track_instance("node " + std::to_string(peer.node_id) + " (" + az + ")", cfg.instance_type);
+        track_instance("node " + std::to_string(cluster.size()) + " (" + az + ")",
+                       cfg.instance_type);
+        auto ip = public_ip_of(manager_t::node_id_to_ec2_id(peer.node_id));
+        BOOST_REQUIRE_MESSAGE(!ip.empty(), "no public IP for " << az);
+        public_ips.push_back(ip);
     }
     BOOST_REQUIRE_EQUAL(cluster.size(), 3u);
 
-    // Phase 2: resolve each instance's public IP by its known private IP.
-    std::vector<std::string> public_ips;
-    for (const auto& private_ip : private_ips) {
-        Aws::EC2::Model::DescribeInstancesRequest req;
-        Aws::EC2::Model::Filter filter;
-        filter.SetName("private-ip-address");
-        filter.AddValues(private_ip);
-        req.AddFilters(filter);
-        auto out = ec2->DescribeInstances(req);
-        BOOST_REQUIRE(out.IsSuccess());
-        std::string public_ip;
-        for (const auto& res : out.GetResult().GetReservations()) {
-            for (const auto& inst : res.GetInstances()) {
-                public_ip = std::string(inst.GetPublicIpAddress());
-            }
-        }
-        BOOST_REQUIRE_MESSAGE(!public_ip.empty(),
-                              "no public IP found for private IP " + private_ip);
-        public_ips.push_back(public_ip);
-    }
-
-    // Phase 3: now that every public IP is known, build the shared --peers
-    // list and start ca_cluster_node on each instance over SSH.
-    std::ostringstream peers;
-    for (std::size_t i = 0; i < public_ips.size(); ++i) {
-        if (i > 0) {
-            peers << ",";
-        }
-        // start_node_command() below passes no --tls-cert/--tls-key, so
-        // ca_cluster_node's client-facing listener falls back to plain
-        // HTTP (with its own "running without TLS" warning) — the peers
-        // URL scheme and the curl checks below must match what's actually
-        // listening, not what a production deployment would use.
-        peers << (i + 1) << ":" << public_ips[i] << ":7000@http://" << public_ips[i] << ":8443";
-    }
-    std::string peers_arg = peers.str();
-
+    // Every public IP is known only now, so the --peers list is too; start
+    // ca_cluster_node on each instance over SSH.
+    const std::string peers_arg = build_peers_arg(public_ips);
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
         // "running" only means the VM has booted, not that user-data has
         // finished - cloud-init's final stage (which runs
@@ -684,58 +864,229 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
         // observed directly on a real run: node 2 won, node 1 (the only
         // flagged node) never became leader, and the CA was never created
         // at all, so /v1/root-ca never started responding.
-        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/true);
-        ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
+        ssh_execute(public_ips[i], private_key_pem,
+                    start_node_command(i + 1, peers_arg, /*bootstrap=*/true),
+                    std::chrono::minutes(3));
     }
 
-    // Wait for the cluster to bootstrap and elect a leader, then confirm it
-    // can actually serve — verified over SSH (curl against localhost:8443 on
-    // each instance) rather than a direct HTTPS client from the test runner,
-    // since the runner's own network path to the instances' HTTP port is not
-    // guaranteed even though the security group permits it (e.g. running
-    // from a CI environment without direct internet egress).
-    std::string leader_ip;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
-    while (std::chrono::steady_clock::now() < deadline && leader_ip.empty()) {
-        for (const auto& ip : public_ips) {
-            auto out =
-                ssh_execute(ip, private_key_pem,
-                            "curl -sf -o /dev/null -w '%{http_code}' "
-                            "-H 'Authorization: Bearer " +
-                                std::string(TEST_AUTH_TOKEN) + "' http://localhost:8443/v1/root-ca",
-                            std::chrono::seconds(30));
-            if (out == "200") {
-                leader_ip = ip;
-                break;
-            }
-        }
-        if (leader_ip.empty()) {
-            std::this_thread::sleep_for(std::chrono::seconds(10));
-        }
+    // Checked over SSH (curl against localhost:8443 on each instance)
+    // rather than from the test runner, since the runner's own network path
+    // to the instances' HTTP port is not guaranteed even though the
+    // security group permits it (e.g. a CI environment without direct
+    // internet egress).
+    auto leader = find_leader(public_ips, private_key_pem, {}, std::chrono::minutes(5));
+    if (!leader) {
+        dump_node_logs(public_ips, private_key_pem);
     }
-    if (leader_ip.empty()) {
-        // std::cerr, not BOOST_TEST_MESSAGE: this project's real-ec2 tests
-        // run under Boost.Test's default log level, which does not print
-        // message-level output at all — confirmed empirically when an
-        // earlier BOOST_TEST_MESSAGE version of this same diagnostic
-        // produced zero output in a real CI run. stderr always shows up
-        // under ctest --output-on-failure regardless of Boost.Test's own
-        // log-level filtering.
-        for (const auto& ip : public_ips) {
-            try {
-                auto log = ssh_execute(ip, private_key_pem,
-                                       "sudo cat /tmp/ca_cluster_node.log 2>&1; echo; "
-                                       "echo '--- ps ---'; ps aux | grep ca_cluster_node",
-                                       std::chrono::seconds(30));
-                std::cerr << "=== " << ip << " ca_cluster_node.log ===\n" << log << "\n";
-            } catch (const std::exception& e) {
-                std::cerr << "=== " << ip << ": could not fetch log: " << e.what() << "\n";
-            }
-        }
-    }
-    BOOST_REQUIRE_MESSAGE(!leader_ip.empty(),
+    BOOST_REQUIRE_MESSAGE(leader.has_value(),
                           "no ca_cluster_node leader became reachable within the timeout");
-    BOOST_TEST_MESSAGE("leader reachable at " << leader_ip);
+    const std::string root_pem = leader->root_pem;
+    std::cerr << "[ca_cluster_node_real_ec2_test] cluster formed; leader is node "
+              << leader->index + 1 << " (" << cluster[leader->index].group_id << ")\n";
+
+    // ── Step 2: issue a certificate ─────────────────────────────────────
+    const std::uint64_t serial_before =
+        issue_certificate(public_ips[leader->index], private_key_pem, "failover-before");
+
+    // ── Step 3: lose the leader's instance ──────────────────────────────
+    // Terminated directly, not via mgr.decommission_node(): the manager has
+    // to discover the loss through its own assessment, as it would in
+    // production. The leader is the harder case for Property 17: the
+    // certificate must survive on nodes that only ever followed.
+    const std::size_t lost = leader->index;
+    const auto lost_placement = cluster[lost];
+    const std::string lost_ec2_id = manager_t::node_id_to_ec2_id(lost_placement.node_id);
+    {
+        Aws::EC2::Model::TerminateInstancesRequest term;
+        term.AddInstanceIds(lost_ec2_id);
+        auto out = ec2->TerminateInstances(term);
+        BOOST_REQUIRE_MESSAGE(out.IsSuccess(),
+                              "TerminateInstances: " + std::string(out.GetError().GetMessage()));
+    }
+    auto lost_still_running = [&] {
+        Aws::EC2::Model::DescribeInstanceStatusRequest req;
+        req.AddInstanceIds(lost_ec2_id);
+        req.SetIncludeAllInstances(true);
+        auto out = ec2->DescribeInstanceStatus(req);
+        if (!out.IsSuccess()) {
+            return true;  // unknown; keep waiting
+        }
+        for (const auto& st : out.GetResult().GetInstanceStatuses()) {
+            if (st.GetInstanceState().GetName() == Aws::EC2::Model::InstanceStateName::running) {
+                return true;
+            }
+        }
+        return false;
+    };
+    auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+    while (lost_still_running() && std::chrono::steady_clock::now() < stop_deadline) {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+    }
+    BOOST_REQUIRE_MESSAGE(!lost_still_running(), "terminated leader instance still running");
+
+    // ── Step 4: quorum survives on the remaining two ───────────────────
+    auto survivor_leader =
+        find_leader(public_ips, private_key_pem, {lost}, std::chrono::minutes(3));
+    if (!survivor_leader) {
+        dump_node_logs(public_ips, private_key_pem);
+    }
+    BOOST_REQUIRE_MESSAGE(survivor_leader.has_value(), "no leader among the two survivors");
+    BOOST_TEST(survivor_leader->root_pem == root_pem);
+    // With one of three gone, this commit needs both survivors.
+    const std::uint64_t serial_during =
+        issue_certificate(public_ips[survivor_leader->index], private_key_pem, "failover-during");
+
+    // ── Step 5: the manager replaces the lost instance in the same AZ ──
+    auto pre = mgr.maintain_quorum(cluster).get();
+    BOOST_REQUIRE_EQUAL(pre.unreachable_nodes.size(), 1u);
+    BOOST_TEST(pre.unreachable_nodes.front() == lost_placement.node_id);
+
+    std::set<std::string> known;
+    for (const auto& p : cluster) {
+        known.insert(manager_t::node_id_to_ec2_id(p.node_id));
+    }
+    std::vector<std::string> fresh;
+    std::string fresh_subnet, fresh_az, fresh_group;
+    {
+        Aws::EC2::Model::DescribeInstancesRequest req;
+        Aws::EC2::Model::Filter vpc_filter;
+        vpc_filter.SetName("vpc-id");
+        vpc_filter.AddValues(vpc_id);
+        req.AddFilters(vpc_filter);
+        Aws::EC2::Model::Filter state_filter;
+        state_filter.SetName("instance-state-name");
+        state_filter.AddValues("pending");
+        state_filter.AddValues("running");
+        req.AddFilters(state_filter);
+        auto out = ec2->DescribeInstances(req);
+        BOOST_REQUIRE(out.IsSuccess());
+        for (const auto& res : out.GetResult().GetReservations()) {
+            for (const auto& inst : res.GetInstances()) {
+                std::string id(inst.GetInstanceId());
+                if (known.contains(id)) {
+                    continue;
+                }
+                fresh.push_back(id);
+                fresh_subnet = std::string(inst.GetSubnetId());
+                fresh_az = std::string(inst.GetPlacement().GetAvailabilityZone());
+                for (const auto& tag : inst.GetTags()) {
+                    if (tag.GetKey() == "kythira:group") {
+                        fresh_group = std::string(tag.GetValue());
+                    }
+                }
+            }
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(fresh.size() == 1u,
+                          "expected exactly one replacement instance, found " << fresh.size());
+    track_instance(
+        "replacement node " + std::to_string(lost + 1) + " (" + lost_placement.group_id + ")",
+        cfg.instance_type);
+    BOOST_TEST(fresh_az == lost_placement.group_id);
+    BOOST_TEST(fresh_subnet == subnet_by_az.at(lost_placement.group_id));
+    BOOST_TEST(fresh_group == lost_placement.group_id);
+
+    cluster[lost] = {.node_id = manager_t::ec2_id_to_node_id(fresh[0]),
+                     .group_id = lost_placement.group_id};
+    auto after = mgr.assess_quorum(cluster).get();
+    BOOST_TEST(after.live_node_count == 3u);
+
+    // ── Step 6: the replacement rejoins as the lost node's Raft id ─────
+    public_ips[lost] = public_ip_of(fresh[0]);
+    BOOST_REQUIRE_MESSAGE(!public_ips[lost].empty(), "no public IP for the replacement");
+    const std::string new_peers_arg = build_peers_arg(public_ips);
+    ssh_execute(public_ips[lost], private_key_pem, "sudo cloud-init status --wait",
+                std::chrono::minutes(3));
+    // No --bootstrap-ca: any root this node serves must come from its peers.
+    ssh_execute(public_ips[lost], private_key_pem,
+                start_node_command(lost + 1, new_peers_arg, /*bootstrap=*/false),
+                std::chrono::minutes(1));
+    BOOST_REQUIRE_MESSAGE(wait_healthy(public_ips[lost], private_key_pem, std::chrono::minutes(2)),
+                          "replacement never became healthy");
+    // Survivors still address Raft id lost+1 at the dead IP. Restart them
+    // one at a time from their own data dirs with the new list; the
+    // current leader goes last so the first restart doesn't force an
+    // election on top of it.
+    std::vector<std::size_t> roll;
+    for (std::size_t i = 0; i < public_ips.size(); ++i) {
+        if (i != lost && i != survivor_leader->index) {
+            roll.push_back(i);
+        }
+    }
+    roll.push_back(survivor_leader->index);
+    for (auto i : roll) {
+        kill_node_process(public_ips[i], private_key_pem);
+        ssh_execute(public_ips[i], private_key_pem,
+                    start_node_command(i + 1, new_peers_arg, /*bootstrap=*/false),
+                    std::chrono::minutes(1));
+        BOOST_REQUIRE_MESSAGE(wait_healthy(public_ips[i], private_key_pem, std::chrono::minutes(2)),
+                              "survivor node " << i + 1 << " never became healthy after restart");
+    }
+
+    // ── Step 7: every node, as leader, still holds both issuances ──────
+    auto current = find_leader(public_ips, private_key_pem, {}, std::chrono::minutes(3));
+    if (!current) {
+        dump_node_logs(public_ips, private_key_pem);
+    }
+    BOOST_REQUIRE_MESSAGE(current.has_value(), "no leader after the replacement rejoined");
+
+    // The probe must be able to fail: a serial nobody issued is a 404.
+    std::uint64_t never_issued = 1;
+    while (never_issued == serial_before || never_issued == serial_during) {
+        ++never_issued;
+    }
+    {
+        auto r = ledger_probe(public_ips[current->index], private_key_pem, never_issued);
+        BOOST_TEST(r.status == 404, "never-issued serial probe: " << r.status << " " << r.body);
+    }
+
+    // Leadership moves by killing the leader's process; whichever of the
+    // other two wins is random, so this is bounded by rounds, not
+    // scripted. Each round has a 1/2 chance of reaching the last unchecked
+    // node, so 12 rounds miss it with probability 1/2048.
+    std::set<std::size_t> verified;
+    for (int round = 0; round < 12; ++round) {
+        // Re-resolved every round: a probe sent to a node that has since
+        // lost leadership would get a 308, not a ledger answer.
+        current = find_leader(public_ips, private_key_pem, {}, std::chrono::minutes(2));
+        if (!current) {
+            dump_node_logs(public_ips, private_key_pem);
+        }
+        BOOST_REQUIRE_MESSAGE(current.has_value(), "no leader in rotation round " << round);
+        const auto idx = current->index;
+        if (!verified.contains(idx)) {
+            BOOST_TEST(current->root_pem == root_pem,
+                       "node " << idx + 1 << " serves a different root");
+            for (auto serial : {serial_before, serial_during}) {
+                auto r = ledger_probe(public_ips[idx], private_key_pem, serial);
+                BOOST_TEST(r.status == 200, "node " << idx + 1 << " ledger probe for " << serial
+                                                    << ": " << r.status << " " << r.body);
+            }
+            verified.insert(idx);
+            std::cerr << "[ca_cluster_node_real_ec2_test] node " << idx + 1
+                      << (idx == lost ? " (replacement)" : "") << " verified as leader\n";
+        }
+        if (verified.size() == public_ips.size()) {
+            break;
+        }
+        kill_node_process(public_ips[idx], private_key_pem);
+        auto next = find_leader(public_ips, private_key_pem, {idx}, std::chrono::minutes(2));
+        if (!next) {
+            dump_node_logs(public_ips, private_key_pem);
+        }
+        BOOST_REQUIRE_MESSAGE(next.has_value(), "no new leader after killing node " << idx + 1);
+        // Restart only after the new leader is in place, so the restarted
+        // node can't simply win the election back.
+        ssh_execute(public_ips[idx], private_key_pem,
+                    start_node_command(idx + 1, new_peers_arg, /*bootstrap=*/false),
+                    std::chrono::minutes(1));
+        BOOST_REQUIRE_MESSAGE(
+            wait_healthy(public_ips[idx], private_key_pem, std::chrono::minutes(2)),
+            "node " << idx + 1 << " never became healthy after restart");
+    }
+    BOOST_TEST(verified.size() == public_ips.size(),
+               "only " << verified.size() << " of 3 nodes were checked as leader");
+    BOOST_TEST(verified.contains(lost), "the replacement was never checked as leader");
 
     for (const auto& p : cluster) {
         BOOST_CHECK_NO_THROW(mgr.decommission_node(p.node_id).get());
