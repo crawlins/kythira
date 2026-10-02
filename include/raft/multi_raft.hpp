@@ -1540,6 +1540,18 @@ private:
     /// @brief Channel (d): heartbeat on the configured cadence, from `tick()`.
     auto maybe_heartbeat() -> void;
 
+    /// @brief Sends the split and merge reports the apply path queued, from
+    ///        each group's leader only.
+    ///
+    /// `report_split` and `report_merge` used to be called from inside the
+    /// apply path, behind `node::is_leader()`. The apply path runs under the
+    /// group node's own mutex, which `is_leader()` takes again, so the first
+    /// split with `report_split` set deadlocked the replica that applied it.
+    /// A driver hook is also an RPC in any real deployment, which has no
+    /// business running under a Raft lock either. The apply path now queues
+    /// the report and `tick()` sends it, where neither is true.
+    auto flush_driver_reports() -> void;
+
     auto note_skipped_operator(const shard_operation_type& op, skipped_operator_reason reason)
         -> operator_outcome;
 
@@ -1602,6 +1614,15 @@ private:
 
     /// steady_clock ticks at `start()`; zero before. Reported as uptime.
     std::atomic<std::int64_t> _started_at_ns{0};
+
+    /// A split or merge report waiting for `flush_driver_reports()`: sent only
+    /// if this host still leads `_group` when the tick gets to it.
+    struct pending_driver_report {
+        GroupId _group{};
+        std::function<void()> _send;
+    };
+    std::mutex _driver_reports_mutex;
+    std::vector<pending_driver_report> _driver_reports;
     std::chrono::steady_clock::time_point _last_policy_run{};
     std::atomic<std::uint64_t> _applied_splits{0};
     std::atomic<std::uint64_t> _applied_merges{0};
