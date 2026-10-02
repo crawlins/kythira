@@ -252,9 +252,17 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_real_gossip_transport,
     BOOST_REQUIRE(
         wait_until([&] { return node2.debug_state().last_applied >= leader_last_index; }));
 
+    // node1 keeps heartbeating while node3 catches up. node2's election timer
+    // is ticked here too, and only node1's AppendEntries reset it; without
+    // them node2 campaigns, wins node3's vote (a dormant node3 has never
+    // heard from a leader, so leader stickiness does not hold it back),
+    // and appends a no-op that node3 receives before node1 does -- the
+    // 14 != 13 log mismatch below. With an instant simulated network node3
+    // caught up before node2's timer fired; with 30ms of link latency per
+    // hop it sometimes did not.
     BOOST_REQUIRE(wait_until(
         [&] {
-            node1.check_election_timeout();
+            node1.check_heartbeat_timeout();
             node2.check_election_timeout();
             node3.check_election_timeout();
             return static_cast<std::size_t>(node3.debug_state().log.size()) >=

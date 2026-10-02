@@ -252,9 +252,23 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
     // it does not wait for the next heartbeat tick — so a "local-only"
     // entry is only achievable by having no reachable followers at the
     // moment it is submitted. Isolate node1 from everyone first.
+    //
+    // node2 is cut off from the clean trio {3,4,5} here too, before it can
+    // acquire the poisoned entry, rather than after. node1 sends no further
+    // heartbeats, so node2's election timer runs out while it waits for the
+    // fetch below. Were {3,4,5} still reachable at that point, node2 would win
+    // their votes, append its own no-op (so its last entry is no longer the
+    // poisoned one), and could replicate the poisoned entry to node3 -- which
+    // is exactly the leak this test's partition exists to prevent. Without
+    // link latency the fetch normally beats node2's timer; with 30ms of
+    // simulated latency per hop the race was lost in 7 of 12 runs.
     for (auto other : {"2", "3", "4", "5"}) {
         sim.remove_edge("1", other);
         sim.remove_edge(other, "1");
+    }
+    for (auto clean : {"3", "4", "5"}) {
+        sim.remove_edge("2", clean);
+        sim.remove_edge(clean, "2");
     }
     auto poisoned_command =
         kythira::test_key_value_state_machine<std::uint64_t>::make_put_command("poisoned", "v");
@@ -280,15 +294,8 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
     BOOST_REQUIRE(node2.debug_state().log.back().command() == poisoned_command);
 
     // node1<->node2 no longer needs to stay connected to each other for
-    // what follows; leave as-is (both remain isolated from {3,4,5} below).
-
-    // Isolate the polluted pair {1,2} from the clean trio {3,4,5}.
-    for (auto polluted : {"1", "2"}) {
-        for (auto clean : {"3", "4", "5"}) {
-            sim.remove_edge(polluted, clean);
-            sim.remove_edge(clean, polluted);
-        }
-    }
+    // what follows; leave as-is. The polluted pair {1,2} has been isolated
+    // from the clean trio {3,4,5} since before node2 fetched the entry.
 
     // node3 (only non-dormant node among {3,4,5}) wins a real election using
     // just node4/node5's votes — neither node1 nor node2 is reachable, and
