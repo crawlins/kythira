@@ -928,6 +928,7 @@ add_raft_completion_test(membership_change_leader_crash_property_test membership
 add_raft_completion_test(membership_change_leave_rpc_unit_test membership_change_leave_rpc_unit_test.cpp)
 add_raft_completion_test(membership_change_leave_rpc_property_test membership_change_leave_rpc_property_test.cpp)
 add_raft_completion_test(node_recovery_unit_test node_recovery_unit_test.cpp)
+add_raft_completion_test(raft_snapshot_boundary_replication_test raft_snapshot_boundary_replication_test.cpp)
 
 # Multi-Raft sharding — .kiro/specs/multi-raft/
 # Phases 1-3 are strictly additive: these targets exercise the sharding value
