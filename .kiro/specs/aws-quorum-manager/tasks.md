@@ -1,6 +1,16 @@
 # Implementation Plan — AWS Quorum Managers
 
-## Status: Complete — all 7 tasks
+## Status: Tasks 1-7 complete; task 8 open
+
+> **Process liveness (decided 2026-10-02).** A running instance whose
+> kythira process has crashed, hung or been isolated is NOT live. Neither
+> manager detects that: there is no `kythira:last-heartbeat` tag, no
+> `heartbeat_timeout` field and no `--ec2-heartbeat-tag` flag. The Raft leader
+> that owns the manager counts a voter unreachable once it has answered no
+> RPC for `quorum_peer_dead_after` (quorum-management Requirement 13 AC 7),
+> and `assess_quorum` reports EC2 state only (requirements.md Requirement 6
+> AC 10). Heartbeat-tag text below that predates this is superseded.
+
 
 **Last Updated**: July 18, 2026 (tracking doc corrected; implementation itself
 landed earlier — see `doc/TODO.md`'s Cloud Provider Support "AWS" entry and
@@ -557,6 +567,16 @@ Reference implementations to study before starting:
   - Verify: when `KYTHIRA_AWS_REAL_EC2_TESTS` is unset, the binary compiles
     but is not registered in CTest; all other tests pass without modification
   - _Requirements: 16.8–16.11, 16.15–16.21, 17.4–17.7, 18.10, 19.6–19.7_
+
+- [ ] 8. Real-EC2 `process_crash_triggers_replacement` (Req 19.7, 16.19j-k)
+  - Replace the heartbeat-tag cases in task 7 (`heartbeat_timeout_triggers_replacement`
+    and the quarantine waits on `heartbeat_timeout`) with leader-driven
+    checks: run a kythira cluster whose leader owns the manager with
+    `quorum_peer_dead_after = 30s`, kill the process over SSH (the current
+    `process_crash_via_ssh_kill` calls `StopInstances` instead), verify
+    `assess_quorum` still reports the node live, then verify the leader's
+    AZ1 replacement, removal and termination.
+  - Real-cloud runs follow the project's real-cloud cost rules.
 
 ## Notes
 

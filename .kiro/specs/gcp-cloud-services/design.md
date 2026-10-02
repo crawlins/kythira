@@ -135,60 +135,28 @@ labels it after the fact — see the node-identity discussion above).
 
 ```
 startup-script              = {rendered startup_script_template}   ; written at creation
-enable-guest-attributes     = TRUE                                  ; written at creation, gates the guest attribute below
+enable-guest-attributes     = TRUE                                  ; written at creation; kythira writes no guest attribute
 ```
 
 Both keys are set once, by `provision_node`, as part of the `instances.insert`
 request body — nothing writes to plain instance metadata after creation.
 
-### Guest Attributes (a write-enabled subset of metadata, distinct from both labels and plain metadata)
+### Guest Attributes
 
-```
-kythira/last-heartbeat    = {unix_timestamp}    ; namespace "kythira", key "last-heartbeat"; written by the kythira process itself, from inside the guest
-```
+No guest attribute carries a heartbeat. An earlier revision of this design
+had the kythira process write `kythira/last-heartbeat` through the local
+metadata server and `assess_quorum` read it back with
+`instances.getGuestAttributes`. It was never built, and it is superseded:
+whether the kythira process on a RUNNING instance is alive is decided by the
+Raft leader that owns the manager, from replication traffic, once a voter
+has answered no RPC for `quorum_peer_dead_after` (quorum-management
+Requirement 13 AC 7). That one rule covers every provider and needs no
+writer, IAM grant or API quota on the instance side. `assess_quorum` reads
+instance status only (Requirement 9 AC 11).
 
-The heartbeat is a **guest attribute**, not a plain metadata key, because of
-an asymmetry in GCE's permission model that plain metadata doesn't resolve
-cleanly:
-
-- A local read of any instance metadata (plain or guest-attribute) from
-  inside the guest needs no IAM permission at all — just the metadata
-  server's `Metadata-Flavor: Google` header.
-- A local **write**, however, only bypasses IAM for the guest-attribute
-  namespace. A write to plain metadata has to go through the real
-  `instances.setMetadata` API call, which requires
-  `compute.instances.setMetadata` on the instance's *own* attached service
-  account — a permission that has to be granted to every fleet instance,
-  is easy to over-scope (it lets a compromised instance rewrite its own
-  `startup-script`, not just the heartbeat key), and was the original design
-  in an earlier revision of this document. A write to the
-  `instance/guest-attributes/{namespace}/{key}` path, by contrast, is
-  answered entirely by the local metadata server with no API call and no IAM
-  check — the guest doesn't need `compute.instances.setMetadata` or any
-  other permission on itself to update its own heartbeat.
-
-The tradeoff moves to the *reader*: `assess_quorum`/`maintain_quorum` read
-the value back via `instances.getGuestAttributes`, which does require
-`compute.instances.getGuestAttributes` on the quorum manager's own
-credentials. That's not a new operational burden — the manager already holds
-broad `compute.instances.*` permissions to create, list, and delete
-instances in the first place — whereas requiring `setMetadata` on every
-fleet instance's service account would have been a permission granted
-per-node, for a write only that node itself ever needed to make. This is
-the closest GCP equivalent to AWS's `--ec2-heartbeat-tag` flag writing an EC2
-tag from inside the instance via its IAM role, but AWS's EC2 tag write has no
-comparably scoped-down local-write channel — `CreateTags` there is a normal,
-fully-IAM-checked API call regardless of whether it's invoked from inside the
-instance or externally, so the AWS design accepts granting the (narrower)
-`ec2:CreateTags` permission to the fleet role. GCP's guest attributes let
-this design avoid granting the fleet any write permission at all.
-
-`provision_node` sets `enable-guest-attributes = TRUE` at creation
-(Requirement 8 AC 6); omitting it makes the guest's local write to
-`instance/guest-attributes/...` fail with no error visible to kythira — the
-key simply never appears — which is why this spec treats the flag as a
-required part of every `instances.insert` request, not an optional
-enhancement.
+`provision_node` still sets `enable-guest-attributes = TRUE` at creation
+(Requirement 8 AC 6) so on-instance agents can publish guest attributes
+without `compute.instances.setMetadata`; kythira itself writes none.
 
 ### Instance Name Grammar (`gcp_compute_quorum_manager` only)
 

@@ -103,9 +103,8 @@ gated independently of `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`
   needed on the guest's attached service account, unlike a normal
   `instances.setMetadata` call. An external caller reads a guest attribute
   back via `instances.getGuestAttributes`, which does require
-  `compute.instances.getGuestAttributes` on the *caller's* credentials. Used
-  for the heartbeat value written by the running kythira process (Requirement
-  8 AC 5).
+  `compute.instances.getGuestAttributes` on the *caller's* credentials.
+  Kythira writes and reads none (Requirement 8 AC 5).
 - **Managed Instance Group (MIG)**: The GCP analogue of an AWS Auto Scaling
   Group. This spec uses **zonal** MIGs only (one per placement group/zone),
   not regional MIGs — regional MIGs spread instances across zones
@@ -435,30 +434,19 @@ without keeping in-memory records.
 4. The rendered `startup_script_template` (after `{NODE_ID}`/`{NODE_PORT}`/
    `{CLUSTER}`/`{ZONE}` substitution) SHALL be written to the instance's
    `startup-script` metadata key at creation time.
-5. A `kythira/last-heartbeat` guest attribute (Unix timestamp, seconds, under
-   namespace `kythira`, key `last-heartbeat`) SHALL be documented as written
-   by the running kythira node process itself via a local, unauthenticated
-   `PUT` to `instance/guest-attributes/kythira/last-heartbeat` on its own
-   metadata server — requiring no IAM permission on the guest's attached
-   service account, only that `provision_node` set
-   `enable-guest-attributes = TRUE` at creation time (AC 6 below). It is read
-   externally by `assess_quorum`/`maintain_quorum` via
-   `instances.getGuestAttributes`, which requires
-   `compute.instances.getGuestAttributes` on the *quorum manager's own*
-   credentials — a permission the manager already needs alongside
-   `compute.instances.get`/`.list`/`.insert`/`.delete`, not an additional
-   operational burden placed on every fleet instance's service account the
-   way a guest-side `instances.setMetadata` write would have been. Kythira
-   does not write an initial value at provision time; its absence on a
-   freshly created instance is expected and not treated as unreachable until
-   `config.provision_timeout` has elapsed since creation.
+5. There is no heartbeat guest attribute. An earlier revision had the node
+   write `kythira/last-heartbeat` and `assess_quorum` read it back; that was
+   never built and is superseded. A RUNNING instance whose kythira process
+   has crashed, hung or lost its network is NOT live, and the Raft leader
+   that owns this manager detects it from replication traffic: it counts a
+   voter unreachable once it has answered no RPC for
+   `quorum_peer_dead_after` (quorum-management Requirement 13 AC 7). The
+   manager therefore reads instance status only (Requirement 9 AC 11).
 6. `provision_node` SHALL include `enable-guest-attributes = TRUE` in the new
-   instance's `metadata.items` at creation time (Requirement 10 AC 3), a
-   prerequisite for AC 5's guest-attribute write to succeed. Omitting it
-   causes the guest's local write to fail silently from kythira's
-   perspective — the guest attribute simply never appears — so this key is a
-   required, not optional, part of every `instances.insert` request this
-   manager builds.
+   instance's `metadata.items` at creation time (Requirement 10 AC 3). Kythira
+   itself writes no guest attribute; the flag is kept so on-instance agents
+   (for example the Ops Agent, or the operator's own tooling) can publish
+   guest attributes without a separate `instances.setMetadata` call.
 
 ---
 
@@ -466,8 +454,8 @@ without keeping in-memory records.
 
 **User Story:** As an orchestrator, I need `assess_quorum` to report which
 nodes are live at the GCE infrastructure layer so that stopped or deleted
-instances are detected without relying solely on an application-level
-heartbeat.
+instances are detected. Whether the kythira process on a RUNNING instance
+is alive is the Raft leader's call (AC 11), not this manager's.
 
 #### Acceptance Criteria
 
@@ -501,6 +489,13 @@ heartbeat.
 10. `assess_quorum` SHALL check the fault injection point
     `"raft/gcp/compute/list_instances"` before issuing each per-zone
     `instances.list` call.
+11. `assess_quorum` reports infrastructure liveness only. A RUNNING instance
+    whose kythira process is dead is NOT live, but this manager cannot see
+    that and SHALL NOT read any heartbeat; the Raft leader counts such a node
+    unreachable after `quorum_peer_dead_after` (quorum-management
+    Requirement 13 AC 7) and replaces it through the normal provision →
+    remove → `decommission_node` flow. The same split applies to
+    `gcp_mig_quorum_manager`.
 
 ---
 
