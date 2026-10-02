@@ -218,11 +218,6 @@ jobs:
       # contributes no meaningful wall-clock to this job's 360-minute budget
       # and runs on both matrix legs rather than being pinned to x64.
       BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.aws_bundle_object_persistence == 'true') || (github.event.inputs.aws_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED == 'true') }}
-      # ccache >=4.0 defaults to ~/.cache/ccache, not ~/.ccache — without
-      # this, the Restore/Save ccache steps below (path: ~/.ccache) never
-      # see what ccache actually wrote. See ci.yml's build-and-test job for
-      # the same fix and .kiro/specs/ccache-adoption/ Task 7 for how this
-      # was found (every restore silently missed, Save failed outright).
 
     steps:
       - name: Checkout

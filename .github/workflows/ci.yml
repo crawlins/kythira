@@ -44,16 +44,6 @@ jobs:
     name: Build & Test (${{ matrix.compiler }}, ${{ matrix.arch_label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
-    # ccache >=4.0 defaults to the XDG cache dir (~/.cache/ccache), not
-    # ~/.ccache — without this, ccache silently caches to a directory the
-    # Restore/Save ccache steps below (path: ~/.ccache) never see, so every
-    # run is cold and Save fails outright ("Path(s) ... do(es) not exist").
-    # /home/runner is a fixed, documented property of GitHub-hosted
-    # ubuntu-24.04/ubuntu-24.04-arm runners — matches what `~` resolves to
-    # in the cache steps' own `path:` field. Found via .kiro/specs/ccache-adoption/
-    # Task 7's real re-measurement (see tasks.md) after every prior run
-    # silently missed on every restore-keys prefix, including the broadest.
-
     strategy:
       fail-fast: false
       matrix:
@@ -96,7 +86,7 @@ jobs:
           #
           # Higher timeout than the others for one reason: pointing vcpkg at a
           # different compiler changes every port's ABI hash, so this leg
-          # cannot share the x-gha binary cache with the g++-13 legs and its
+          # cannot share the vcpkg binary cache with the g++-13 legs and its
           # first run is a genuinely cold build of the full dependency set.
           # Later runs restore from cache and look like any other leg.
           - compiler: g++-14
@@ -301,17 +291,6 @@ jobs:
         run: cmake --build build-fmt --target format-check
 
       # ── Release build + tests ─────────────────────────────────────────────
-      # ccache: restore-broad/save-unique — the restore key is unique per run
-      # (never hits) so restore-keys always resolves to the most recent prior
-      # cache for this OS+compiler+branch; the save step's key is likewise
-      # unique per run so actions/cache/save never skips saving (unlike the
-      # combined action used for vcpkg_installed/ above, which should skip
-      # saving except when vcpkg.json's hash actually changes). runner.arch
-      # is part of the key for the same reason it's part of the vcpkg
-      # cache key above: runner.os alone is "Linux" for both the x64 and
-      # arm64 legs of this matrix, and ccache's own cached objects are not
-      # portable across architectures. See .kiro/specs/ccache-adoption/ and
-      # .kiro/specs/arm64-ci-verification/ Requirement 4.
       # sccache, not ccache: its objects live in the OCI bucket, so they
       # survive the runner being destroyed. The script decides whether this
       # job may use it by compiling a five-byte file through it, because no
@@ -627,7 +606,7 @@ jobs:
   # straight past it — the same reasoning as the GCC 14 build-and-test leg.
   #
   # Timeout 300, not 180, for that leg's reason too: CC/CXX are part of every
-  # port's ABI hash, so this job's x-gha entries are shared with the GCC 14
+  # port's ABI hash, so this job's vcpkg binary-cache entries are shared with the GCC 14
   # build-and-test leg and with nothing else, and the first run after either
   # changes is a cold build of the whole dependency set.
   ion-serializer-build:
@@ -939,13 +918,6 @@ jobs:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
       # ── Coverage build + tests ────────────────────────────────────────────
-      # ccache: smaller --max-size (1G, vs. 2G for build-and-test) — this job
-      # has repeated "No space left on device" history from ~148 statically-
-      # linked binaries (see "Free disk space" step's comment above); the
-      # ccache restore below runs after that reclaim step, not before, so it
-      # never eats into headroom that step is specifically freeing up. Same
-      # restore-broad/save-unique key pattern as build-and-test; see
-      # .kiro/specs/ccache-adoption/.
       # sccache, not ccache: its objects live in the OCI bucket, so they
       # survive the runner being destroyed. The script decides whether this
       # job may use it by compiling a five-byte file through it, because no
