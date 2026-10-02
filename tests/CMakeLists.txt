@@ -831,6 +831,10 @@ set_tests_properties(object_store_backup_cli_unit_test PROPERTIES
 
 add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
 add_raft_completion_test(tcp_cluster_join_test tcp_cluster_join_test.cpp)
+# chaos_node's environment parsing for joining a running cluster.
+add_raft_completion_test(chaos_node_config_unit_test chaos_node_config_unit_test.cpp)
+target_include_directories(chaos_node_config_unit_test PRIVATE
+                           "${CMAKE_SOURCE_DIR}/cmd/chaos_node")
 add_raft_completion_test(raft_follower_acknowledgment_tracking_property_test raft_follower_acknowledgment_tracking_property_test.cpp)
 add_raft_completion_test(raft_majority_commit_index_advancement_property_test raft_majority_commit_index_advancement_property_test.cpp)
 add_raft_completion_test(raft_non_blocking_slow_followers_property_test raft_non_blocking_slow_followers_property_test.cpp)
