@@ -41,6 +41,8 @@ namespace kythira::testing::aws_real_ec2 {
 //
 // Published on-demand us-east-1 Linux prices ($/hr, approximate).
 // Source: https://aws.amazon.com/ec2/pricing/on-demand/ (June 2025)
+// The t4g rows are Graviton, the default type on arm64 runners; without
+// them an arm64 run silently priced its t4g.micro at the t3.micro fallback.
 inline auto ec2_hourly_rate(const std::string& type) -> double {
     static const std::map<std::string, double> kRates{
         {"t3.nano", 0.0052},    {"t3.micro", 0.0104},   {"t3.small", 0.0208},
@@ -50,6 +52,8 @@ inline auto ec2_hourly_rate(const std::string& type) -> double {
         {"m5.large", 0.0960},   {"m5.xlarge", 0.1920},  {"m5.2xlarge", 0.3840},
         {"m6i.large", 0.0960},  {"m6i.xlarge", 0.1920}, {"c5.large", 0.0850},
         {"c5.xlarge", 0.1700},  {"r5.large", 0.1260},   {"r5.xlarge", 0.2520},
+        {"t4g.nano", 0.0042},   {"t4g.micro", 0.0084},  {"t4g.small", 0.0168},
+        {"t4g.medium", 0.0336}, {"t4g.large", 0.0672},
     };
     auto it = kRates.find(type);
     return (it != kRates.end()) ? it->second : 0.0104;
