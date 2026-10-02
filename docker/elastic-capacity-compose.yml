@@ -22,11 +22,17 @@
 #   * **No hardcoded runtime.** The harness picks it with `container_runtime()`
 #     and `compose_prefix()`. The container API the controller calls is
 #     whatever socket CONTAINER_SOCKET names (the harness points it at the
-#     rootless Podman socket under Podman) mounted at the path the manager
-#     dials. Podman serves the Docker-compatible API there.
+#     rootless Podman socket under Podman). Podman serves the
+#     Docker-compatible API there.
 #   * **No privileges.** No `privileged`, no `cap_add`, no host networking.
-#     A controller that creates containers needs the API socket and nothing
-#     else.
+#     No node mounts the API socket either: only `container-api-proxy` does,
+#     and it forwards just the calls docker_quorum_manager makes, for this
+#     cluster's containers, with no HostConfig (docker/container_api_proxy/
+#     proxy.py). The controller dials it over the network.
+#
+# Published ports bind to 127.0.0.1, because the control and capacity
+# surfaces take commands without authentication. Set KYTHIRA_BIND_ADDRESS to
+# publish them elsewhere, on a machine where that is safe.
 #
 # The network has an explicit `name:` because the controller attaches the
 # containers it creates to it by that name; a compose-prefixed name would
@@ -70,8 +76,9 @@ services:
       CAPACITY_SHARDS_HIGH: "3"
       CAPACITY_SHARDS_LOW: "1"
       CAPACITY_SUSTAINED_MS: "5000"
-    volumes:
-      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      CAPACITY_DOCKER_URL: "http://container-api-proxy:2375"
+    depends_on:
+      - container-api-proxy
     ports:
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE1_DATA_PORT:-27101}:7001"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE1_CONTROL_PORT:-27201}:7002"
@@ -112,6 +119,19 @@ services:
     ports:
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE3_DATA_PORT:-27103}:7001"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE3_CONTROL_PORT:-27203}:7002"
+    networks:
+      - capacity_net
+
+  container-api-proxy:
+    image: kythira-container-api-proxy:dev
+    build:
+      context: container_api_proxy
+    environment:
+      PROXY_CLUSTER: "${CAPACITY_CLUSTER}"
+      PROXY_IMAGE: "${CAPACITY_IMAGE:-kythira-multi-raft-node:dev}"
+      PROXY_NETWORK: "kythira-${CAPACITY_CLUSTER}-net"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     networks:
       - capacity_net
 

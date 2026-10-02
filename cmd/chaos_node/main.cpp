@@ -449,6 +449,9 @@ int main(int argc, char** argv) {
         qm_cfg.cluster_name = get_env("QUORUM_CLUSTER", "kythira-quorum-test");
         qm_cfg.network_name = get_env("QUORUM_NETWORK", "kythira-quorum-net");
         qm_cfg.target_count = static_cast<std::size_t>(std::stoul(get_env("QUORUM_TARGET", "3")));
+        // The container API: the socket by default, or the filtering proxy
+        // docker-compose.quorum.yml runs in front of it.
+        qm_cfg.daemon_url = get_env("QUORUM_DOCKER_URL", "unix:///var/run/docker.sock");
         qm_cfg.node_port = static_cast<std::uint16_t>(cfg.rpc_port);
 
         // A provisioned replacement starts with JOIN=1 and every current

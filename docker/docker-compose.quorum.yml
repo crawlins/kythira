@@ -3,14 +3,22 @@
 
 # docker-compose.quorum.yml — 3-node kythira cluster with docker_quorum_manager enabled.
 #
-# Each node mounts the Docker socket so that the Raft leader can provision
-# replacement containers directly through the Docker daemon.  No static IPs
-# are used; containers address each other by service/hostname (CLAUDE.md rule).
+# The Raft leader provisions replacement containers through the container
+# API, but no node mounts the API socket: only `container-api-proxy` does,
+# and it forwards just the calls docker_quorum_manager makes, for this
+# cluster's containers, with no HostConfig (docker/container_api_proxy/
+# proxy.py). A node that is compromised can start and remove its own
+# cluster's nodes, not take over the host. No static IPs are used;
+# containers address each other by service/hostname (CLAUDE.md rule).
+#
+# Published ports bind to 127.0.0.1: the control plane and fiu_rc_tcp take
+# commands without authentication. Set KYTHIRA_BIND_ADDRESS to publish them
+# elsewhere, on a machine where that is safe.
 #
 # Set KYTHIRA_CONTAINER_RUNTIME / KYTHIRA_COMPOSE_COMMAND before invoking if
 # running under rootless Podman (see CLAUDE.md), and point CONTAINER_SOCKET at
 # the Podman API socket (e.g. $XDG_RUNTIME_DIR/podman/podman.sock); it is
-# mounted at /var/run/docker.sock inside each node, where the manager looks.
+# mounted into the proxy at /var/run/docker.sock.
 #
 # Per-test cluster isolation: override QUORUM_CLUSTER via:
 #   QUORUM_CLUSTER=mytest docker compose -f docker-compose.quorum.yml up -d
@@ -49,12 +57,13 @@ services:
       # decommissioned, on later quorum checks; the 30 s default would
       # leave the healing tests waiting minutes for that.
       QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
+      QUORUM_DOCKER_URL: "http://container-api-proxy:2375"
     ports:
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7101:7000"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8181:8080"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9101:9000"
-    volumes:
-      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    depends_on:
+      - container-api-proxy
     cap_add:
       - NET_ADMIN
     networks:
@@ -93,12 +102,13 @@ services:
       # decommissioned, on later quorum checks; the 30 s default would
       # leave the healing tests waiting minutes for that.
       QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
+      QUORUM_DOCKER_URL: "http://container-api-proxy:2375"
     ports:
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7102:7000"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8182:8080"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9102:9000"
-    volumes:
-      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    depends_on:
+      - container-api-proxy
     cap_add:
       - NET_ADMIN
     networks:
@@ -137,14 +147,28 @@ services:
       # decommissioned, on later quorum checks; the 30 s default would
       # leave the healing tests waiting minutes for that.
       QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
+      QUORUM_DOCKER_URL: "http://container-api-proxy:2375"
     ports:
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7103:7000"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8183:8080"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9103:9000"
-    volumes:
-      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    depends_on:
+      - container-api-proxy
     cap_add:
       - NET_ADMIN
+    networks:
+      - kythira-quorum-net
+
+  container-api-proxy:
+    image: kythira-container-api-proxy:dev
+    build:
+      context: container_api_proxy
+    environment:
+      PROXY_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      PROXY_IMAGE: "kythira-chaos-node:dev"
+      PROXY_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     networks:
       - kythira-quorum-net
 
