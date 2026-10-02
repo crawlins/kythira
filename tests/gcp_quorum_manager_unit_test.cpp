@@ -114,8 +114,11 @@ BOOST_AUTO_TEST_SUITE_END()
 
 #ifdef KYTHIRA_HAS_GCP_SDK
 
+#include "gcp_fake_compute_clients.hpp"
+
 #include <raft/gcp_compute_quorum_manager.hpp>
 #include <raft/gcp_mig_quorum_manager.hpp>
+#include <raft/gcp_operation_wait.hpp>
 
 #ifdef FIU_ENABLE
 #include <fiu-control.h>
@@ -141,8 +144,6 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 #ifdef FIU_ENABLE
 struct FiuInitFixture {
     FiuInitFixture() { fiu_init(0); }
-    // Skip the MIG autohealing-policy read (an instanceGroupManagers.get call)
-    // during construction so mig_construction tests don't need live GCP.
 };
 BOOST_GLOBAL_FIXTURE(FiuInitFixture);
 #endif
@@ -166,6 +167,49 @@ auto valid_mig_config() -> kythira::gcp_mig_quorum_manager_config<std::string> {
     cfg.node_port = 7000;
     cfg.topology.groups.push_back({.group_id = "us-central1-a", .target_count = 3});
     return cfg;
+}
+
+namespace fakes = kythira::test::gcp_fakes;
+using compute_mgr = kythira::gcp_compute_quorum_manager<>;
+using mig_mgr = kythira::gcp_mig_quorum_manager<>;
+using placements = std::vector<kythira::node_placement<std::uint64_t, std::string>>;
+
+/// Shrinks every wait so a fake-backed call that polls returns in milliseconds.
+template<typename Config> auto fast(Config cfg) -> Config {
+    cfg.gcp.api_timeout = std::chrono::seconds{1};
+    cfg.gcp.operation_poll_interval = std::chrono::milliseconds{1};
+    cfg.poll_interval = std::chrono::milliseconds{1};
+    cfg.provision_timeout = std::chrono::seconds{1};
+    return cfg;
+}
+
+auto make_compute(const fakes::fake_compute& f,
+                  kythira::gcp_compute_quorum_manager_config<std::string> cfg =
+                      valid_compute_config()) -> compute_mgr {
+    return compute_mgr{fast(std::move(cfg)), f.instances_client(), f.zone_operations_client()};
+}
+
+/// Registers every MIG in @p cfg with the fake (no autohealing policy), then
+/// builds the manager over it — the constructor reads each MIG.
+auto make_mig(const fakes::fake_compute& f,
+              kythira::gcp_mig_quorum_manager_config<std::string> cfg = valid_mig_config())
+    -> mig_mgr {
+    for (const auto& [zone, name] : cfg.mig_by_group) {
+        if (f.migs->migs.find(name) == f.migs->migs.end()) {
+            f.migs->add(name, 3);
+        }
+    }
+    return mig_mgr{fast(std::move(cfg)), f.migs_client(), f.instances_client(),
+                   f.zone_operations_client()};
+}
+
+auto what_of(auto&& fut) -> std::string {
+    try {
+        std::move(fut).get();
+    } catch (const std::exception& ex) {
+        return ex.what();
+    }
+    return {};
 }
 
 }  // namespace
@@ -278,13 +322,6 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(gcp_fault_injection)
 
-// The MIG constructor reads each MIG's autoHealingPolicies via
-// instanceGroupManagers.get; skip that read so these tests need no live GCP.
-struct MigSkipAutohealing {
-    MigSkipAutohealing() { fiu_enable("raft/gcp/mig/skip_autohealing_validation", 1, nullptr, 0); }
-    ~MigSkipAutohealing() { fiu_disable("raft/gcp/mig/skip_autohealing_validation"); }
-};
-
 BOOST_AUTO_TEST_CASE(compute_list_instances_fault_returns_exceptional_future) {
     kythira::gcp_compute_quorum_manager<> mgr{valid_compute_config()};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
@@ -321,8 +358,10 @@ BOOST_AUTO_TEST_CASE(compute_maintain_quorum_fault_returns_exceptional_future) {
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }
 
-BOOST_FIXTURE_TEST_CASE(mig_list_instances_fault_returns_exceptional_future, MigSkipAutohealing) {
-    kythira::gcp_mig_quorum_manager<> mgr{valid_mig_config()};
+// The MIG constructor reads each MIG over the injected fake, so no live GCP.
+BOOST_AUTO_TEST_CASE(mig_list_instances_fault_returns_exceptional_future) {
+    fakes::fake_compute f;
+    auto mgr = make_mig(f);
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     cluster.push_back({.node_id = 42, .group_id = "us-central1-a"});
 
@@ -332,24 +371,27 @@ BOOST_FIXTURE_TEST_CASE(mig_list_instances_fault_returns_exceptional_future, Mig
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }
 
-BOOST_FIXTURE_TEST_CASE(mig_resize_fault_returns_exceptional_future, MigSkipAutohealing) {
-    kythira::gcp_mig_quorum_manager<> mgr{valid_mig_config()};
+BOOST_AUTO_TEST_CASE(mig_resize_fault_returns_exceptional_future) {
+    fakes::fake_compute f;
+    auto mgr = make_mig(f);
     fiu_enable("raft/gcp/mig/resize", 1, nullptr, 0);
     auto fut = mgr.provision_node("us-central1-a", std::nullopt);
     fiu_disable("raft/gcp/mig/resize");
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }
 
-BOOST_FIXTURE_TEST_CASE(mig_delete_instances_fault_returns_exceptional_future, MigSkipAutohealing) {
-    kythira::gcp_mig_quorum_manager<> mgr{valid_mig_config()};
+BOOST_AUTO_TEST_CASE(mig_delete_instances_fault_returns_exceptional_future) {
+    fakes::fake_compute f;
+    auto mgr = make_mig(f);
     fiu_enable("raft/gcp/mig/delete_instances", 1, nullptr, 0);
     auto fut = mgr.decommission_node(std::uint64_t{42});
     fiu_disable("raft/gcp/mig/delete_instances");
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }
 
-BOOST_FIXTURE_TEST_CASE(mig_maintain_quorum_fault_returns_exceptional_future, MigSkipAutohealing) {
-    kythira::gcp_mig_quorum_manager<> mgr{valid_mig_config()};
+BOOST_AUTO_TEST_CASE(mig_maintain_quorum_fault_returns_exceptional_future) {
+    fakes::fake_compute f;
+    auto mgr = make_mig(f);
     fiu_enable("raft/gcp/mig/maintain_quorum", 1, nullptr, 0);
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     auto fut = mgr.maintain_quorum(cluster);
@@ -370,6 +412,291 @@ BOOST_AUTO_TEST_CASE(compute_provision_unknown_group_returns_exceptional_future)
     auto fut = mgr.provision_node("no-such-zone", std::nullopt);
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }
+
+// Requirement 23 AC 8, MIG half: a group with no `mig_by_group` entry is
+// rejected before any instanceGroupManagers call is made.
+BOOST_AUTO_TEST_CASE(mig_provision_unknown_group_returns_exceptional_future) {
+    fakes::fake_compute f;
+    auto mgr = make_mig(f);
+    const int gets_after_construction = f.migs->get_calls;
+
+    auto msg = what_of(mgr.provision_node("no-such-zone", std::nullopt));
+    BOOST_CHECK_NE(msg.find("no MIG for group: no-such-zone"), std::string::npos);
+    BOOST_CHECK_EQUAL(f.migs->get_calls, gets_after_construction);
+    BOOST_CHECK_EQUAL(f.migs->resize_calls, 0);
+    BOOST_CHECK_EQUAL(f.zone_ops->get_calls, 0);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── wait_for_zone_operation against a fake zoneOperations ──────────────────
+
+BOOST_AUTO_TEST_SUITE(gcp_zone_operation_wait)
+
+constexpr auto kTimeout = std::chrono::seconds{5};
+constexpr auto kPoll = std::chrono::milliseconds{1};
+
+BOOST_AUTO_TEST_CASE(done_operation_resolves_after_one_poll) {
+    fakes::fake_compute f;
+    auto client = f.zone_operations_client();
+    BOOST_CHECK_NO_THROW(kythira::wait_for_zone_operation(client, "test-project", "us-central1-a",
+                                                          "op-1", kTimeout, kPoll)
+                             .get());
+    BOOST_CHECK_EQUAL(f.zone_ops->get_calls, 1);
+}
+
+BOOST_AUTO_TEST_CASE(polls_until_done) {
+    fakes::fake_compute f;
+    f.zone_ops->on_get = [&](const auto& req) -> google::cloud::StatusOr<fakes::cv1::Operation> {
+        return fakes::make_operation(req.operation(),
+                                     f.zone_ops->get_calls < 3 ? "RUNNING" : "DONE");
+    };
+    auto client = f.zone_operations_client();
+    BOOST_CHECK_NO_THROW(kythira::wait_for_zone_operation(client, "test-project", "us-central1-a",
+                                                          "op-1", kTimeout, kPoll)
+                             .get());
+    BOOST_CHECK_EQUAL(f.zone_ops->get_calls, 3);
+}
+
+BOOST_AUTO_TEST_CASE(done_with_error_is_exceptional_and_names_the_error) {
+    fakes::fake_compute f;
+    f.zone_ops->on_get = [](const auto& req) -> google::cloud::StatusOr<fakes::cv1::Operation> {
+        return fakes::make_failed_operation(req.operation(), "QUOTA_EXCEEDED", "no CPUs left");
+    };
+    auto client = f.zone_operations_client();
+    auto msg = what_of(kythira::wait_for_zone_operation(client, "test-project", "us-central1-a",
+                                                        "op-1", kTimeout, kPoll));
+    BOOST_CHECK_NE(msg.find("[QUOTA_EXCEEDED] no CPUs left"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(get_failure_is_exceptional) {
+    fakes::fake_compute f;
+    f.zone_ops->on_get = [](const auto&) -> google::cloud::StatusOr<fakes::cv1::Operation> {
+        return google::cloud::Status(google::cloud::StatusCode::kPermissionDenied, "denied");
+    };
+    auto client = f.zone_operations_client();
+    auto msg = what_of(kythira::wait_for_zone_operation(client, "test-project", "us-central1-a",
+                                                        "op-1", kTimeout, kPoll));
+    BOOST_CHECK_NE(msg.find("zoneOperations.get: denied"), std::string::npos);
+}
+
+// Requirement 4 AC 4: running out of time is a `gcp_operation_timeout`, so a
+// caller can tell "we gave up waiting" from "GCP said no".
+BOOST_AUTO_TEST_CASE(never_done_times_out_with_gcp_operation_timeout) {
+    fakes::fake_compute f;
+    f.zone_ops->on_get = [](const auto& req) -> google::cloud::StatusOr<fakes::cv1::Operation> {
+        return fakes::make_operation(req.operation(), "RUNNING");
+    };
+    auto client = f.zone_operations_client();
+    BOOST_CHECK_THROW(kythira::wait_for_zone_operation(client, "test-project", "us-central1-a",
+                                                       "op-1", std::chrono::seconds{0}, kPoll)
+                          .get(),
+                      kythira::gcp_operation_timeout);
+}
+
+#ifdef FIU_ENABLE
+
+// Requirement 20 AC 9 / Requirement 23 AC 9: the poll fault point fires before
+// zoneOperations.get, so no request reaches the API.
+BOOST_AUTO_TEST_CASE(poll_fault_returns_exceptional_future_without_polling) {
+    fakes::fake_compute f;
+    auto client = f.zone_operations_client();
+    fiu_enable("raft/gcp/zone_operation/poll", 1, nullptr, 0);
+    auto fut = kythira::wait_for_zone_operation(client, "test-project", "us-central1-a", "op-1",
+                                                kTimeout, kPoll);
+    fiu_disable("raft/gcp/zone_operation/poll");
+    auto msg = what_of(std::move(fut));
+    BOOST_CHECK_NE(msg.find("fault: raft/gcp/zone_operation/poll"), std::string::npos);
+    BOOST_CHECK_EQUAL(f.zone_ops->get_calls, 0);
+}
+
+#endif  // FIU_ENABLE
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── gcp_compute_quorum_manager over injected fakes ──────────────────────────
+
+BOOST_AUTO_TEST_SUITE(gcp_compute_fake_clients)
+
+BOOST_AUTO_TEST_CASE(assess_quorum_counts_only_running_instances) {
+    fakes::fake_compute f;
+    const std::map<std::string, std::string> labels{{"kythira-cluster", "test-cluster"}};
+    f.instances->add("us-central1-a", compute_mgr::node_id_to_instance_name("test-cluster", 1),
+                     "RUNNING", labels);
+    f.instances->add("us-central1-a", compute_mgr::node_id_to_instance_name("test-cluster", 2),
+                     "TERMINATED", labels);
+    // Right name, wrong cluster label: the label filter must exclude it.
+    f.instances->add("us-central1-a", compute_mgr::node_id_to_instance_name("test-cluster", 3),
+                     "RUNNING", {{"kythira-cluster", "other-cluster"}});
+    auto mgr = make_compute(f);
+
+    placements cluster{{.node_id = 1, .group_id = "us-central1-a"},
+                       {.node_id = 2, .group_id = "us-central1-a"},
+                       {.node_id = 3, .group_id = "us-central1-a"}};
+    auto health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_CHECK_EQUAL(health.total_node_count, 3u);
+    BOOST_CHECK(health.status == kythira::quorum_status::lost);
+    BOOST_CHECK((health.unreachable_nodes == std::vector<std::uint64_t>{2, 3}));
+    BOOST_CHECK_EQUAL(f.instances->list_calls, 1);
+}
+
+BOOST_AUTO_TEST_CASE(assess_quorum_list_error_is_exceptional) {
+    fakes::fake_compute f;
+    f.instances->list_error =
+        google::cloud::Status(google::cloud::StatusCode::kUnavailable, "backend down");
+    auto mgr = make_compute(f);
+    placements cluster{{.node_id = 1, .group_id = "us-central1-a"}};
+    auto msg = what_of(mgr.assess_quorum(cluster));
+    BOOST_CHECK_NE(msg.find("backend down"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(provision_node_inserts_a_labelled_instance_and_returns_its_address) {
+    fakes::fake_compute f;
+    auto mgr = make_compute(f);
+    auto peer = mgr.provision_node("us-central1-a", std::nullopt).get();
+
+    BOOST_REQUIRE_EQUAL(f.instances->instances.size(), 1u);
+    const auto& inst = f.instances->instances.front();
+    BOOST_CHECK_EQUAL(inst.name(),
+                      compute_mgr::node_id_to_instance_name("test-cluster", peer.node_id));
+    BOOST_CHECK_EQUAL(inst.labels().at("kythira-cluster"), "test-cluster");
+    BOOST_CHECK_EQUAL(peer.address, inst.network_interfaces(0).network_ip() + ":7000");
+    // The insert operation was awaited before the RUNNING poll.
+    BOOST_REQUIRE(!f.zone_ops->polled.empty());
+    BOOST_CHECK_EQUAL(f.zone_ops->polled.front(), "op-insert-" + inst.name());
+}
+
+BOOST_AUTO_TEST_CASE(provision_node_insert_operation_error_is_exceptional) {
+    fakes::fake_compute f;
+    f.zone_ops->on_get = [](const auto& req) -> google::cloud::StatusOr<fakes::cv1::Operation> {
+        return fakes::make_failed_operation(req.operation(), "ZONE_RESOURCE_POOL_EXHAUSTED",
+                                            "no capacity");
+    };
+    auto mgr = make_compute(f);
+    auto msg = what_of(mgr.provision_node("us-central1-a", std::nullopt));
+    BOOST_CHECK_NE(msg.find("ZONE_RESOURCE_POOL_EXHAUSTED"), std::string::npos);
+    BOOST_CHECK_EQUAL(f.instances->insert_calls, 1);  // Not a collision: no retry.
+}
+
+BOOST_AUTO_TEST_CASE(decommission_node_deletes_and_awaits_the_operation) {
+    fakes::fake_compute f;
+    const auto name = compute_mgr::node_id_to_instance_name("test-cluster", 42);
+    f.instances->add("us-central1-a", name, "RUNNING");
+    auto mgr = make_compute(f);
+
+    BOOST_CHECK_NO_THROW(mgr.decommission_node(42).get());
+    BOOST_CHECK(f.instances->instances.empty());
+    BOOST_CHECK((f.zone_ops->polled == std::vector<std::string>{"op-delete-" + name}));
+}
+
+BOOST_AUTO_TEST_CASE(decommission_node_missing_instance_is_idempotent_success) {
+    fakes::fake_compute f;
+    auto mgr = make_compute(f);
+    BOOST_CHECK_NO_THROW(mgr.decommission_node(42).get());
+    BOOST_CHECK_EQUAL(f.zone_ops->get_calls, 0);
+}
+
+#ifdef FIU_ENABLE
+
+// Requirement 23 AC 9 for `raft/gcp/zone_operation/poll` through the manager:
+// the delete is issued, then awaiting its operation faults.
+BOOST_AUTO_TEST_CASE(decommission_zone_operation_poll_fault_returns_exceptional_future) {
+    fakes::fake_compute f;
+    f.instances->add("us-central1-a", compute_mgr::node_id_to_instance_name("test-cluster", 42),
+                     "RUNNING");
+    auto mgr = make_compute(f);
+
+    fiu_enable("raft/gcp/zone_operation/poll", 1, nullptr, 0);
+    auto fut = mgr.decommission_node(42);
+    fiu_disable("raft/gcp/zone_operation/poll");
+    auto msg = what_of(std::move(fut));
+    BOOST_CHECK_NE(msg.find("fault: raft/gcp/zone_operation/poll"), std::string::npos);
+    BOOST_CHECK_EQUAL(f.instances->delete_calls, 1);
+    BOOST_CHECK_EQUAL(f.zone_ops->get_calls, 0);
+}
+
+#endif  // FIU_ENABLE
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── gcp_mig_quorum_manager over injected fakes ──────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(gcp_mig_fake_clients)
+
+BOOST_AUTO_TEST_CASE(construction_reads_every_configured_mig) {
+    fakes::fake_compute f;
+    auto cfg = valid_mig_config();
+    cfg.mig_by_group["us-central1-b"] = "kythira-mig-b";
+    BOOST_CHECK_NO_THROW(make_mig(f, cfg));
+    BOOST_CHECK_EQUAL(f.migs->get_calls, 2);
+}
+
+// Requirement 23 AC 7 / Requirement 18 AC 1: an autohealer racing kythira's own
+// remediation risks split-brain, so a MIG with a policy is refused.
+BOOST_AUTO_TEST_CASE(autohealing_policy_is_rejected_at_construction) {
+    fakes::fake_compute f;
+    f.migs->add("kythira-mig-a", 3, /*autohealing=*/true);
+    try {
+        make_mig(f);
+        BOOST_FAIL("expected std::invalid_argument");
+    } catch (const std::invalid_argument& ex) {
+        BOOST_CHECK_NE(std::string(ex.what()).find("autoHealingPolicies"), std::string::npos);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(autohealing_policy_on_any_mig_is_rejected) {
+    fakes::fake_compute f;
+    auto cfg = valid_mig_config();
+    cfg.mig_by_group["us-central1-b"] = "kythira-mig-b";
+    f.migs->add("kythira-mig-b", 3, /*autohealing=*/true);
+    BOOST_CHECK_THROW(make_mig(f, cfg), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(unreadable_mig_is_rejected_at_construction) {
+    fakes::fake_compute f;
+    auto cfg = fast(valid_mig_config());
+    // Not registered with the fake: instanceGroupManagers.get reports NOT_FOUND.
+    BOOST_CHECK_THROW(
+        (mig_mgr{cfg, f.migs_client(), f.instances_client(), f.zone_operations_client()}),
+        std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(assess_quorum_resolves_nodes_by_node_id_label) {
+    fakes::fake_compute f;
+    f.instances->add("us-central1-a", "kythira-mig-a-abcd", "RUNNING",
+                     {{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "7"}});
+    f.instances->add("us-central1-a", "kythira-mig-a-efgh", "STOPPING",
+                     {{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "8"}});
+    auto mgr = make_mig(f);
+
+    placements cluster{{.node_id = 7, .group_id = "us-central1-a"},
+                       {.node_id = 8, .group_id = "us-central1-a"}};
+    auto health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_CHECK((health.unreachable_nodes == std::vector<std::uint64_t>{8}));
+}
+
+#ifdef FIU_ENABLE
+
+// Requirement 23 AC 9 for `raft/gcp/zone_operation/poll` through the MIG
+// manager: deleteInstances is issued, then awaiting its operation faults.
+BOOST_AUTO_TEST_CASE(decommission_zone_operation_poll_fault_returns_exceptional_future) {
+    fakes::fake_compute f;
+    f.instances->add("us-central1-a", "kythira-mig-a-abcd", "RUNNING",
+                     {{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "42"}});
+    auto mgr = make_mig(f);
+
+    fiu_enable("raft/gcp/zone_operation/poll", 1, nullptr, 0);
+    auto fut = mgr.decommission_node(42);
+    fiu_disable("raft/gcp/zone_operation/poll");
+    auto msg = what_of(std::move(fut));
+    BOOST_CHECK_NE(msg.find("fault: raft/gcp/zone_operation/poll"), std::string::npos);
+    BOOST_CHECK_EQUAL(f.migs->delete_instances_calls, 1);
+    BOOST_CHECK_EQUAL(f.zone_ops->get_calls, 0);
+}
+
+#endif  // FIU_ENABLE
 
 BOOST_AUTO_TEST_SUITE_END()
 
