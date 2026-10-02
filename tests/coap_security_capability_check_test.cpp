@@ -78,4 +78,39 @@ BOOST_AUTO_TEST_CASE(placeholder_when_built_with_libcoap,
 
 #endif
 
+// Requirement 7.2/7.3: the DTLS capability decision every DTLS provider (and
+// OSCORE layered over DTLS) runs before touching a context. Exercised here
+// directly with libcoap's answers stubbed, since no CI build links a libcoap
+// without DTLS.
+BOOST_AUTO_TEST_CASE(dtls_capability_check_passes_when_supported,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
+    BOOST_CHECK_NO_THROW(require_dtls_capability(coap_auth_mode::dtls_psk, "PSK", true, true));
+}
+
+BOOST_AUTO_TEST_CASE(dtls_capability_check_fails_without_dtls,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
+    try {
+        require_dtls_capability(coap_auth_mode::dtls_pki, "PKI", false, false);
+        BOOST_FAIL("expected coap_unsupported_security_mode_error");
+    } catch (const coap_unsupported_security_mode_error& e) {
+        BOOST_CHECK(e.mode() == coap_auth_mode::dtls_pki);
+        const std::string what = e.what();
+        BOOST_CHECK(what.find("dtls_pki") != std::string::npos);
+        BOOST_CHECK(what.find("DTLS not compiled") != std::string::npos);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(dtls_capability_check_names_the_missing_credential_type,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
+    // e.g. RPK with a TLS library that has no raw public keys. OSCORE over
+    // DTLS reports its own mode, with the DTLS layer's credential type.
+    try {
+        require_dtls_capability(coap_auth_mode::oscore, "RPK", true, false);
+        BOOST_FAIL("expected coap_unsupported_security_mode_error");
+    } catch (const coap_unsupported_security_mode_error& e) {
+        BOOST_CHECK(e.mode() == coap_auth_mode::oscore);
+        BOOST_CHECK(std::string(e.what()).find("DTLS-RPK") != std::string::npos);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
