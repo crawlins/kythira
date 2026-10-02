@@ -2450,6 +2450,11 @@ endif()
 # trip over UDP with cbor_rpc_serializer as Types::serializer_type
 if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_network_test(coap_cbor_end_to_end_test coap_cbor_end_to_end_test.cpp)
+    # Block-wise transfer (Requirement 12) with more than one block actually on
+    # the wire between a real client and server.
+    add_network_test(coap_block_transfer_end_to_end_test coap_block_transfer_end_to_end_test.cpp)
+    set_tests_properties(coap_block_transfer_end_to_end_test PROPERTIES
+        TIMEOUT 300 LABELS "coap;integration;libcoap")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 
 if(KYTHIRA_BUILD_COAP_TRANSPORT)
