@@ -20,10 +20,22 @@
 #include <folly/init/Init.h>
 
 #endif
+#include "test_timeout_scale.hpp"
+#include <network_simulator/network_simulator.hpp>
+
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <deque>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 // ── Folly global fixture ──────────────────────────────────────────────────────
@@ -48,69 +60,166 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
 
+using placement_vector = std::vector<kythira::node_placement<std::uint64_t, std::string>>;
+
+// State shared by every copy of mock_quorum_manager.  The node takes its
+// quorum manager by value, so the test keeps a shared_ptr to this to observe
+// calls and steer results after the mock has been moved into node_config.
+struct qm_state {
+    struct assess_call {
+        std::uint64_t caller;
+        placement_vector cluster;
+    };
+
+    mutable std::mutex mu;
+    std::vector<assess_call> assess_calls;
+    std::vector<std::pair<std::string, std::optional<std::uint64_t>>> provisions;
+    std::vector<std::uint64_t> decommissions;
+
+    // Inputs.
+    kythira::desired_topology<std::string> topo{};
+    std::set<std::uint64_t> unreachable;
+    std::optional<kythira::quorum_status> forced_status;
+    bool assess_fails{false};
+    bool decommission_fails{false};
+    // Node IDs handed out by successive provision_node calls; empty → fail.
+    std::deque<std::uint64_t> provision_ids;
+    // Called (without the mock's lock) from inside decommission_node, on the
+    // leader's tick thread, before the call returns.
+    std::function<void(std::uint64_t)> on_decommission;
+
+    [[nodiscard]] auto assess_count(std::uint64_t caller) const -> std::size_t {
+        std::lock_guard lock(mu);
+        return static_cast<std::size_t>(
+            std::count_if(assess_calls.begin(), assess_calls.end(),
+                          [&](const assess_call& c) { return c.caller == caller; }));
+    }
+    [[nodiscard]] auto last_assess(std::uint64_t caller) const -> std::optional<placement_vector> {
+        std::lock_guard lock(mu);
+        for (auto it = assess_calls.rbegin(); it != assess_calls.rend(); ++it) {
+            if (it->caller == caller) {
+                return it->cluster;
+            }
+        }
+        return std::nullopt;
+    }
+    [[nodiscard]] auto provision_count() const -> std::size_t {
+        std::lock_guard lock(mu);
+        return provisions.size();
+    }
+    [[nodiscard]] auto decommissioned() const -> std::vector<std::uint64_t> {
+        std::lock_guard lock(mu);
+        return decommissions;
+    }
+};
+
 struct mock_quorum_manager {
     using node_id_type = std::uint64_t;
     using address_type = std::string;
     using placement_group_id_type = std::string;
 
-    // Configurable return value for the next assess_quorum call
-    kythira::quorum_health<node_id_type, placement_group_id_type> next_health{
-        .status = kythira::quorum_status::healthy,
-        .live_node_count = 0,
-        .total_node_count = 0,
-        .unreachable_nodes = {},
-        .groups = {},
-    };
+    std::shared_ptr<qm_state> state = std::make_shared<qm_state>();
+    std::uint64_t owner{0};  // ID of the node holding this copy
 
-    // Configurable return for provision_node (nullopt → throw)
-    std::optional<kythira::peer_info<node_id_type, address_type>> provision_result{std::nullopt};
-
-    // Call recording
-    std::vector<std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>>
-        assess_calls;
-    std::size_t provision_calls{0};
-    std::size_t decommission_calls{0};
-    std::vector<std::pair<placement_group_id_type, std::optional<node_id_type>>> provision_groups;
-    std::vector<node_id_type> decommissioned_nodes;
-
-    // Desired topology (returned by topology())
-    kythira::desired_topology<placement_group_id_type> topo{};
-
-    auto assess_quorum(
-        const std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>& cluster)
+    // live_count per group is computed from the supplied cluster minus
+    // `unreachable`, so the reported health follows real membership changes.
+    auto assess_quorum(const placement_vector& cluster)
         -> kythira::future_default<kythira::quorum_health<node_id_type, placement_group_id_type>> {
-        assess_calls.push_back(cluster);
-        next_health.live_node_count = cluster.size();
-        next_health.total_node_count = cluster.size();
-        return kythira::future_factory_default::makeFuture(next_health);
+        std::lock_guard lock(state->mu);
+        state->assess_calls.push_back({owner, cluster});
+        if (state->assess_fails) {
+            return kythira::future_factory_default::makeExceptionalFuture<
+                kythira::quorum_health<node_id_type, placement_group_id_type>>(
+                std::make_exception_ptr(std::runtime_error("mock: assess failed")));
+        }
+
+        kythira::quorum_health<node_id_type, placement_group_id_type> health{};
+        health.total_node_count = cluster.size();
+        for (const auto& gt : state->topo.groups) {
+            health.groups.push_back({.group_id = gt.group_id,
+                                     .live_count = 0,
+                                     .target_count = gt.target_count,
+                                     .unreachable_nodes = {}});
+        }
+        for (const auto& np : cluster) {
+            auto git = std::find_if(health.groups.begin(), health.groups.end(),
+                                    [&](const auto& g) { return g.group_id == np.group_id; });
+            if (git == health.groups.end()) {
+                health.groups.push_back({.group_id = np.group_id,
+                                         .live_count = 0,
+                                         .target_count = 0,
+                                         .unreachable_nodes = {}});
+                git = std::prev(health.groups.end());
+            }
+            if (state->unreachable.contains(np.node_id)) {
+                git->unreachable_nodes.push_back(np.node_id);
+                health.unreachable_nodes.push_back(np.node_id);
+            } else {
+                ++git->live_count;
+                ++health.live_node_count;
+            }
+        }
+
+        const std::size_t majority = cluster.size() / 2 + 1;
+        bool below_target =
+            std::any_of(health.groups.begin(), health.groups.end(),
+                        [](const auto& g) { return g.live_count < g.target_count; });
+        if (health.live_node_count < majority) {
+            health.status = kythira::quorum_status::lost;
+        } else if (below_target) {
+            health.status = health.live_node_count == majority ? kythira::quorum_status::critical
+                                                               : kythira::quorum_status::degraded;
+        } else {
+            health.status = kythira::quorum_status::healthy;
+        }
+        if (state->forced_status) {
+            health.status = *state->forced_status;
+        }
+        return kythira::future_factory_default::makeFuture(health);
     }
 
     auto provision_node(placement_group_id_type group, std::optional<node_id_type> replacing)
         -> kythira::future_default<kythira::peer_info<node_id_type, address_type>> {
-        ++provision_calls;
-        provision_groups.emplace_back(group, replacing);
-        if (!provision_result.has_value()) {
+        std::lock_guard lock(state->mu);
+        state->provisions.emplace_back(group, replacing);
+        if (state->provision_ids.empty()) {
             return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::peer_info<node_id_type, address_type>>(
-                std::make_exception_ptr(std::runtime_error("mock: provision not configured")));
+                std::make_exception_ptr(std::runtime_error("mock: provisioning not configured")));
         }
-        return kythira::future_factory_default::makeFuture(*provision_result);
+        auto id = state->provision_ids.front();
+        state->provision_ids.pop_front();
+        return kythira::future_factory_default::makeFuture(
+            kythira::peer_info<node_id_type, address_type>{id, std::to_string(id)});
     }
 
     auto decommission_node(const node_id_type& id) -> kythira::future_default<void> {
-        ++decommission_calls;
-        decommissioned_nodes.push_back(id);
+        std::function<void(std::uint64_t)> hook;
+        bool fail = false;
+        {
+            std::lock_guard lock(state->mu);
+            state->decommissions.push_back(id);
+            hook = state->on_decommission;
+            fail = state->decommission_fails;
+        }
+        if (hook) {
+            hook(id);
+        }
+        if (fail) {
+            return kythira::future_factory_default::makeExceptionalFuture<void>(
+                std::make_exception_ptr(std::runtime_error("mock: decommission failed")));
+        }
         return kythira::future_factory_default::makeFuture();
     }
 
-    auto maintain_quorum(
-        const std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>& cluster)
+    auto maintain_quorum(const placement_vector& cluster)
         -> kythira::future_default<kythira::quorum_health<node_id_type, placement_group_id_type>> {
         return assess_quorum(cluster);
     }
 
     [[nodiscard]] auto topology() const -> kythira::desired_topology<placement_group_id_type> {
-        return topo;
+        std::lock_guard lock(state->mu);
+        return state->topo;
     }
 };
 
@@ -118,8 +227,6 @@ static_assert(kythira::quorum_manager<mock_quorum_manager, std::uint64_t, std::s
               "mock_quorum_manager must satisfy quorum_manager");
 
 // ── Test types bundle ─────────────────────────────────────────────────────────
-
-#include <network_simulator/network_simulator.hpp>
 
 struct test_raft_types_with_qm {
     using future_type = kythira::future_default<std::vector<std::byte>>;
@@ -168,68 +275,178 @@ struct test_raft_types_with_qm {
 };
 
 using test_node_type = kythira::node<test_raft_types_with_qm>;
+using sim_type = network_simulator::NetworkSimulator<test_raft_types_with_qm::raft_network_types>;
 
-// Build a single-node test node that owns a mock_quorum_manager.
-// The mock is pointer-stable because it is allocated in the fixture — the
-// node gets a copy but we examine the original to count calls. This works
-// because all mock state is value-based (vectors/counters), not
-// reference-to-external-state.  For this test pattern we use node_config so
-// the node gets the mock by value and a reference is kept by the test.
-struct NodeFixture {
-    network_simulator::NetworkSimulator<test_raft_types_with_qm::raft_network_types> sim;
-    test_raft_types_with_qm::serializer_type ser;
+using kythira::testing::scaled_deadline;
+using kythira::testing::scaled_timeout;
+
+template<typename Pred>
+auto wait_until(Pred pred, std::chrono::milliseconds deadline = scaled_deadline(5000)) -> bool {
+    auto start = std::chrono::steady_clock::now();
+    while (!pred()) {
+        if (std::chrono::steady_clock::now() - start > deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    return true;
+}
+
+// Fast protocol timings for every test; individual tests override the quorum
+// knobs.  Election timeouts are long relative to the heartbeat so a follower
+// never campaigns while the leader's tick is busy in a blocking quorum call.
+auto fast_config() -> kythira::raft_configuration {
     kythira::raft_configuration cfg;
-    std::unique_ptr<test_node_type> node;
+    cfg._election_timeout_min = std::chrono::milliseconds{150};
+    cfg._election_timeout_max = std::chrono::milliseconds{300};
+    cfg._heartbeat_interval = std::chrono::milliseconds{10};
+    cfg._rpc_timeout = std::chrono::milliseconds{100};
+    cfg._append_entries_timeout = std::chrono::milliseconds{200};
+    cfg._heartbeat_retry_policy = {.initial_delay = std::chrono::milliseconds{10},
+                                   .max_delay = std::chrono::milliseconds{20},
+                                   .backoff_multiplier = 1.5,
+                                   .jitter_factor = 0.1,
+                                   .max_attempts = 2};
+    cfg._quorum_check_interval = std::chrono::milliseconds{20};
+    cfg._quorum_heartbeat_failure_threshold = 2;
+    return cfg;
+}
 
-    NodeFixture() {
-        sim.start();
-        auto net = sim.create_node("1");
+// A simulated cluster whose nodes all share one qm_state.  Node 1 is made
+// leader deterministically by ticking only its election timer; afterwards a
+// ticker thread per running node drives both timers, as an event loop would.
+class test_cluster {
+public:
+    explicit test_cluster(kythira::raft_configuration cfg) : _cfg(cfg) { _sim.start(); }
 
-        cfg = kythira::raft_configuration{};
-        cfg._quorum_check_interval = std::chrono::milliseconds{10};
-        cfg._quorum_heartbeat_failure_threshold = 2;
-        cfg._heartbeat_interval = std::chrono::milliseconds{5};
-        cfg._election_timeout_min = std::chrono::milliseconds{50};
-        cfg._election_timeout_max = std::chrono::milliseconds{100};
+    test_cluster(const test_cluster&) = delete;
+    auto operator=(const test_cluster&) -> test_cluster& = delete;
 
+    ~test_cluster() {
+        stop_tickers();
+        for (auto& [id, n] : _nodes) {
+            n->stop();
+        }
+    }
+
+    // Creates and starts node `id` with the given initial configuration;
+    // every node is fully meshed with the live ones created before it.  A
+    // killed node stays disconnected: the simulator routes over multiple
+    // hops, so one edge to it would make it reachable from every node again.
+    auto add_node(std::uint64_t id, std::vector<std::uint64_t> configuration,
+                  std::unordered_map<std::uint64_t, std::string> placement = {})
+        -> test_node_type& {
+        auto net = _sim.create_node(std::to_string(id));
+        for (const auto& [other, _] : _nodes) {
+            if (_killed.contains(other)) {
+                continue;
+            }
+            _sim.add_edge(std::to_string(id), std::to_string(other), {});
+            _sim.add_edge(std::to_string(other), std::to_string(id), {});
+        }
         kythira::node_config<test_raft_types_with_qm> ncfg{
-            .node_id = 1,
-            .network_client = test_raft_types_with_qm::network_client_type{net, ser},
-            .network_server = test_raft_types_with_qm::network_server_type{net, ser},
-            .persistence = test_raft_types_with_qm::persistence_engine_type{},
-            .logger = test_raft_types_with_qm::logger_type{},
-            .metrics = test_raft_types_with_qm::metrics_type{},
-            .membership = test_raft_types_with_qm::membership_manager_type{},
-            .config = cfg,
-            .quorum_manager = mock_quorum_manager{},
+            .node_id = id,
+            .network_client = {net, test_raft_types_with_qm::serializer_type{}},
+            .network_server = {net, test_raft_types_with_qm::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{kythira::log_level::info},
+            .metrics = {},
+            .membership = {},
+            .config = _cfg,
+            .quorum_manager = mock_quorum_manager{.state = state, .owner = id},
+            .initial_placement = std::move(placement),
         };
-
-        node = std::make_unique<test_node_type>(std::move(ncfg));
-        node->set_cluster_configuration({1});
+        auto n = std::make_unique<test_node_type>(std::move(ncfg));
+        n->set_cluster_configuration(configuration);
+        n->start();
+        auto& ref = *n;
+        _nodes.emplace(id, std::move(n));
+        return ref;
     }
 
-    // Promote this node to leader (no peers so election is immediate after timeout)
-    void make_leader() {
-        node->start();
-        // Must wait for the randomized election timeout to elapse first
-        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{30});
-        node->check_election_timeout();
-    }
+    auto node(std::uint64_t id) -> test_node_type& { return *_nodes.at(id); }
 
-    // Tick the heartbeat N times, each separated by `delay`
-    void tick_heartbeats(int n, std::chrono::milliseconds delay = std::chrono::milliseconds{10}) {
-        for (int i = 0; i < n; ++i) {
-            std::this_thread::sleep_for(delay);
-            node->check_heartbeat_timeout();
+    // Elect node 1, then start a ticker for every running node.
+    auto elect_node1_and_run() -> bool {
+        auto& leader = node(1);
+        auto deadline = std::chrono::steady_clock::now() + scaled_deadline(5000);
+        while (!leader.is_leader()) {
+            if (std::chrono::steady_clock::now() > deadline) {
+                return false;
+            }
+            std::this_thread::sleep_for(_cfg._election_timeout_max);
+            leader.check_election_timeout();
+            wait_until([&] { return leader.is_leader(); }, std::chrono::milliseconds{200});
         }
+        for (auto& [id, n] : _nodes) {
+            start_ticker(id);
+        }
+        return true;
     }
 
-    ~NodeFixture() {
-        if (node) {
-            node->stop();
-        }
+    // Ticks a node created after elect_node1_and_run().
+    auto start_ticker(std::uint64_t id) -> void {
+        auto* n = _nodes.at(id).get();
+        auto stop = std::make_shared<std::atomic<bool>>(false);
+        _ticker_stops[id] = stop;
+        _tickers.emplace_back([n, stop] {
+            while (!stop->load()) {
+                n->check_election_timeout();
+                n->check_heartbeat_timeout();
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+        });
     }
+
+    // Permanent failure: the node stops, its ticker stops, the network drops
+    // every message to and from it, and the mock reports it unreachable.
+    auto kill(std::uint64_t id) -> void {
+        if (auto it = _ticker_stops.find(id); it != _ticker_stops.end()) {
+            it->second->store(true);
+        }
+        for (const auto& [other, _] : _nodes) {
+            if (other != id) {
+                _sim.remove_edge(std::to_string(id), std::to_string(other));
+                _sim.remove_edge(std::to_string(other), std::to_string(id));
+            }
+        }
+        _killed.insert(id);
+        {
+            std::lock_guard lock(state->mu);
+            state->unreachable.insert(id);
+        }
+        _nodes.at(id)->stop();
+    }
+
+    std::shared_ptr<qm_state> state = std::make_shared<qm_state>();
+
+private:
+    auto stop_tickers() -> void {
+        for (auto& [id, stop] : _ticker_stops) {
+            stop->store(true);
+        }
+        for (auto& t : _tickers) {
+            t.join();
+        }
+        _tickers.clear();
+    }
+
+    kythira::raft_configuration _cfg;
+    sim_type _sim;
+    std::map<std::uint64_t, std::unique_ptr<test_node_type>> _nodes;
+    std::map<std::uint64_t, std::shared_ptr<std::atomic<bool>>> _ticker_stops;
+    std::set<std::uint64_t> _killed;
+    std::vector<std::thread> _tickers;
 };
+
+auto group_of(const placement_vector& cluster, std::uint64_t id) -> std::optional<std::string> {
+    for (const auto& np : cluster) {
+        if (np.node_id == id) {
+            return np.group_id;
+        }
+    }
+    return std::nullopt;
+}
 
 }  // namespace
 
@@ -237,102 +454,285 @@ struct NodeFixture {
 
 BOOST_AUTO_TEST_SUITE(quorum_leader_integration)
 
-// Req 16.1 — become_leader starts the loop; become_follower stops it.
-// We verify by checking that assess_quorum is called after becoming leader
-// but NOT after stepping down.
-BOOST_AUTO_TEST_CASE(start_stop_quorum_loop, *boost::unit_test::timeout(10)) {
-    NodeFixture f;
-    f.make_leader();
-    BOOST_REQUIRE(f.node->is_leader());
+// Req 16.1 — become_leader() starts the assessment loop and stepping down
+// stops it.  Leadership moves from node 1 to node 2; node 1's assessments
+// stop and node 2's begin.
+BOOST_AUTO_TEST_CASE(loop_runs_only_while_leader, *boost::unit_test::timeout(scaled_timeout(20))) {
+    test_cluster c{fast_config()};
+    c.add_node(1, {1, 2});
+    c.add_node(2, {1, 2});
+    BOOST_REQUIRE(c.elect_node1_and_run());
 
-    // Tick past the quorum_check_interval so at least one assessment fires
-    f.tick_heartbeats(5);
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) >= 2; }));
+    BOOST_CHECK_EQUAL(c.state->assess_count(2), 0u);
 
-    // After becoming leader the assessment loop should have fired
-    // (can't inspect mock directly without exposing internals; instead verify
-    //  that calling check_heartbeat_timeout while a follower does NOT crash
-    //  and the node is still healthy — a sanity check for Req 16.1)
-    BOOST_CHECK(f.node->is_leader());  // still single-node, stays leader
+    c.node(1).transfer_leadership(2, scaled_deadline(3000)).detach();
+    BOOST_REQUIRE(wait_until([&] { return c.node(2).is_leader() && !c.node(1).is_leader(); }));
+
+    auto calls_after_step_down = c.state->assess_count(1);
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(2) >= 3; }));
+    BOOST_CHECK_EQUAL(c.state->assess_count(1), calls_after_step_down);
 }
 
-// Req 16.2 — assess_quorum is called with the correct cluster vector after
-// the check interval elapses.  We verify via node_config with a custom type
-// that records calls.  (The mock records calls via its own state; here we
-// use a simpler approach: after ticking enough, no crash = the path ran.)
-BOOST_AUTO_TEST_CASE(assess_quorum_called_after_interval, *boost::unit_test::timeout(10)) {
-    NodeFixture f;
-    f.make_leader();
-    BOOST_REQUIRE(f.node->is_leader());
-
-    // Tick until quorum_check_interval has elapsed (10ms interval, sleep 15ms each tick)
-    f.tick_heartbeats(3, std::chrono::milliseconds{15});
-
-    BOOST_CHECK(f.node->is_leader());
-}
-
-// Req 16.5 — when assess_quorum returns `lost`, the leader does NOT call provision_node.
-// Build a node with a mock whose next_health returns `lost`.
-BOOST_AUTO_TEST_CASE(no_provision_on_quorum_lost, *boost::unit_test::timeout(10)) {
-    network_simulator::NetworkSimulator<test_raft_types_with_qm::raft_network_types> sim;
-    sim.start();
-    auto net = sim.create_node("1");
-    test_raft_types_with_qm::serializer_type ser;
-
-    kythira::raft_configuration cfg;
-    cfg._quorum_check_interval = std::chrono::milliseconds{5};
-    cfg._heartbeat_interval = std::chrono::milliseconds{5};
-    cfg._election_timeout_min = std::chrono::milliseconds{30};
-    cfg._election_timeout_max = std::chrono::milliseconds{60};
-
-    // Topology: 3 nodes target but only 1 live → should be lost
-    mock_quorum_manager mock;
-    mock.next_health = {
-        .status = kythira::quorum_status::lost,
-        .live_node_count = 1,
-        .total_node_count = 3,
-        .unreachable_nodes = {2, 3},
-        .groups =
-            {{.group_id = "g", .live_count = 1, .target_count = 3, .unreachable_nodes = {2, 3}}},
-    };
-    mock.topo = {.groups = {{.group_id = "g", .target_count = 3}}};
-
-    kythira::node_config<test_raft_types_with_qm> ncfg{
-        .node_id = 1,
-        .network_client = test_raft_types_with_qm::network_client_type{net, ser},
-        .network_server = test_raft_types_with_qm::network_server_type{net, ser},
-        .persistence = test_raft_types_with_qm::persistence_engine_type{},
-        .logger = test_raft_types_with_qm::logger_type{},
-        .metrics = test_raft_types_with_qm::metrics_type{},
-        .membership = test_raft_types_with_qm::membership_manager_type{},
-        .config = cfg,
-        .quorum_manager = std::move(mock),
-    };
-
-    auto n = std::make_unique<test_node_type>(std::move(ncfg));
-    n->set_cluster_configuration({1});
-    n->start();
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{30});
-    n->check_election_timeout();
-    BOOST_REQUIRE(n->is_leader());
-
-    // Tick several heartbeats to let the quorum assessment run
-    for (int i = 0; i < 5; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds{10});
-        n->check_heartbeat_timeout();
+// Req 16.2 — after quorum_check_interval the leader calls assess_quorum with
+// every configuration member paired with its placement group.
+BOOST_AUTO_TEST_CASE(assess_vector_carries_every_member_and_group,
+                     *boost::unit_test::timeout(scaled_timeout(20))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "az-a", .target_count = 1},
+                                    {.group_id = "az-b", .target_count = 1},
+                                    {.group_id = "az-c", .target_count = 1}}};
     }
+    std::unordered_map<std::uint64_t, std::string> placement{
+        {1, "az-a"}, {2, "az-b"}, {3, "az-c"}, {99, "az-z"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
 
-    // The node must still be alive and not have crashed
-    BOOST_CHECK(n->is_leader());
-    n->stop();
+    // More than one call: the second can only come from the interval timer.
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) >= 2; }));
+    auto cluster = c.state->last_assess(1);
+    BOOST_REQUIRE(cluster.has_value());
+    BOOST_CHECK_EQUAL(cluster->size(), 3u);
+    BOOST_CHECK(group_of(*cluster, 1) == std::optional<std::string>{"az-a"});
+    BOOST_CHECK(group_of(*cluster, 2) == std::optional<std::string>{"az-b"});
+    BOOST_CHECK(group_of(*cluster, 3) == std::optional<std::string>{"az-c"});
+    // Req 12.5 — a placement entry for a non-member is ignored.
+    BOOST_CHECK(!group_of(*cluster, 99).has_value());
 }
 
-// Req 16.10 — node_config constructor (Req 17) accepts initial_placement and
-//              set_placement works without error.
+// Req 16.3 — reaching quorum_heartbeat_failure_threshold for one peer triggers
+// an assessment immediately.  The interval is far longer than the test, so
+// any call after the leader's first (which become_leader() schedules
+// immediately) must be failure-triggered.
+BOOST_AUTO_TEST_CASE(heartbeat_failures_trigger_immediate_assessment,
+                     *boost::unit_test::timeout(scaled_timeout(20))) {
+    auto cfg = fast_config();
+    cfg._quorum_check_interval = std::chrono::minutes{10};
+    test_cluster c{cfg};
+    c.add_node(1, {1, 2, 3});
+    c.add_node(2, {1, 2, 3});
+    c.add_node(3, {1, 2, 3});
+    BOOST_REQUIRE(c.elect_node1_and_run());
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) >= 1; }));
+    // Let the leader's first assessment settle, then confirm the timer alone
+    // does not produce a second call.
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    auto before = c.state->assess_count(1);
+    BOOST_REQUIRE_EQUAL(before, 1u);
+
+    c.kill(3);
+    BOOST_CHECK(wait_until([&] { return c.state->assess_count(1) > before; }));
+}
+
+// Req 16.4 / 14.3 — a degraded group gets exactly one provision_node call,
+// and none while that provision is pending (provisioned but not yet joined).
+BOOST_AUTO_TEST_CASE(provisions_once_while_pending,
+                     *boost::unit_test::timeout(scaled_timeout(20))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 2}}};
+        c.state->provision_ids = {9};  // node 9 never joins
+    }
+    c.add_node(1, {1}, {{1, "g"}});
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) >= 10; }));
+    std::lock_guard lock(c.state->mu);
+    BOOST_REQUIRE_EQUAL(c.state->provisions.size(), 1u);
+    BOOST_CHECK_EQUAL(c.state->provisions[0].first, "g");
+    BOOST_CHECK(!c.state->provisions[0].second.has_value());
+}
+
+// Req 14.6 — a failed provision_node clears its pending slot, so the next
+// assessment retries.
+BOOST_AUTO_TEST_CASE(failed_provision_is_retried, *boost::unit_test::timeout(scaled_timeout(20))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 2}}};
+    }
+    c.add_node(1, {1}, {{1, "g"}});
+    BOOST_REQUIRE(c.elect_node1_and_run());
+    BOOST_CHECK(wait_until([&] { return c.state->provision_count() >= 3; }));
+}
+
+// Req 16.5 — when assess_quorum reports `lost` the leader never provisions.
+BOOST_AUTO_TEST_CASE(no_provision_on_quorum_lost, *boost::unit_test::timeout(scaled_timeout(20))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 3}}};
+        c.state->forced_status = kythira::quorum_status::lost;
+        c.state->provision_ids = {7, 8};
+    }
+    c.add_node(1, {1}, {{1, "g"}});
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) >= 10; }));
+    BOOST_CHECK_EQUAL(c.state->provision_count(), 0u);
+}
+
+// Req 13.5 — a failed assessment is retried after quorum_check_interval, not
+// on every heartbeat tick.
+BOOST_AUTO_TEST_CASE(failed_assessment_waits_for_interval,
+                     *boost::unit_test::timeout(scaled_timeout(20))) {
+    auto cfg = fast_config();
+    cfg._quorum_check_interval = std::chrono::milliseconds{250};
+    test_cluster c{cfg};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->assess_fails = true;
+    }
+    c.add_node(1, {1});
+    BOOST_REQUIRE(c.elect_node1_and_run());
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) >= 1; }));
+
+    // ~100 heartbeat ticks elapse; only the interval may schedule retries.
+    std::this_thread::sleep_for(std::chrono::milliseconds{1000});
+    auto calls = c.state->assess_count(1);
+    BOOST_CHECK_GE(calls, 2u);
+    BOOST_CHECK_LE(calls, 7u);
+}
+
+// Req 16.6, 16.7, 16.9 — a three-node cluster with one permanently failed node
+// heals back to three live voters with no operator action: the leader
+// provisions a replacement, records its placement, promotes it once it has
+// joined, removes the failed node and only then decommissions it.  A second
+// failure heals the same way, which fails if the pending-provision counter
+// is never released after the first heal (Req 14.5).
+BOOST_AUTO_TEST_CASE(self_heals_failed_nodes_repeatedly,
+                     *boost::unit_test::timeout(scaled_timeout(45))) {
+    test_cluster c{fast_config()};
+    std::vector<std::size_t> size_at_decommission;
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 3}}};
+        c.state->provision_ids = {4, 5};
+        c.state->on_decommission = [&c, &size_at_decommission](std::uint64_t) {
+            // Runs on node 1's tick thread before decommission_node returns.
+            size_at_decommission.push_back(c.node(1).get_cluster_size());
+        };
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "g"}, {2, "g"}, {3, "g"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    // One heal round: `failed` dies, `spare` is provisioned and joins through
+    // the same add_learner() path a ClusterJoin takes.
+    auto heal = [&](std::uint64_t failed, std::uint64_t spare, std::size_t round) {
+        c.kill(failed);
+        BOOST_REQUIRE(wait_until([&] { return c.state->provision_count() >= round; }));
+        {
+            std::lock_guard lock(c.state->mu);
+            BOOST_REQUIRE_EQUAL(c.state->provisions.size(), round);
+            BOOST_CHECK_EQUAL(c.state->provisions.back().first, "g");
+            BOOST_CHECK(c.state->provisions.back().second == std::optional<std::uint64_t>{failed});
+        }
+
+        c.add_node(spare, {spare});
+        c.start_ticker(spare);
+        c.node(1).add_learner(spare).detach();
+
+        BOOST_REQUIRE(wait_until([&] { return c.state->decommissioned().size() >= round; },
+                                 scaled_deadline(10000)));
+        BOOST_CHECK_EQUAL(c.state->decommissioned().back(), failed);
+        // Req 15.3 — the failed node had already left the configuration when
+        // its infrastructure was decommissioned.
+        BOOST_CHECK_EQUAL(size_at_decommission.back(), 3u);
+
+        // Req 16.6 — later assessments carry the new node in its group and no
+        // longer carry the failed one.
+        auto calls = c.state->assess_count(1);
+        BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) > calls; }));
+        auto cluster = c.state->last_assess(1);
+        BOOST_REQUIRE(cluster.has_value());
+        BOOST_CHECK_EQUAL(cluster->size(), 3u);
+        BOOST_CHECK(group_of(*cluster, spare) == std::optional<std::string>{"g"});
+        BOOST_CHECK(!group_of(*cluster, failed).has_value());
+    };
+
+    heal(3, 4, 1);
+    heal(2, 5, 2);
+
+    BOOST_CHECK(c.node(1).is_leader());
+    BOOST_CHECK_EQUAL(c.node(1).get_cluster_size(), 3u);
+    // Healthy again: no further provisioning.
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    BOOST_CHECK_EQUAL(c.state->provision_count(), 2u);
+}
+
+// Req 16.7 / 15.4 — a decommission failure is logged only; the removal of
+// the failed node from the configuration stands.
+BOOST_AUTO_TEST_CASE(decommission_failure_keeps_removal,
+                     *boost::unit_test::timeout(scaled_timeout(30))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 3}}};
+        c.state->provision_ids = {4};
+        c.state->decommission_fails = true;
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "g"}, {2, "g"}, {3, "g"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    c.kill(3);
+    BOOST_REQUIRE(wait_until([&] { return c.state->provision_count() >= 1; }));
+    c.add_node(4, {4});
+    c.start_ticker(4);
+    c.node(1).add_learner(4).detach();
+
+    BOOST_REQUIRE(
+        wait_until([&] { return !c.state->decommissioned().empty(); }, scaled_deadline(10000)));
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+
+    BOOST_CHECK_EQUAL(c.state->decommissioned().size(), 1u);
+    BOOST_CHECK_EQUAL(c.node(1).get_cluster_size(), 3u);
+    auto cluster = c.state->last_assess(1);
+    BOOST_REQUIRE(cluster.has_value());
+    BOOST_CHECK(!group_of(*cluster, 3).has_value());
+    BOOST_CHECK(group_of(*cluster, 4).has_value());
+}
+
+// Req 16.8 / 15.5 — an operator-initiated remove_server() never triggers
+// decommission_node.
+BOOST_AUTO_TEST_CASE(operator_remove_does_not_decommission,
+                     *boost::unit_test::timeout(scaled_timeout(20))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 2}}};
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "g"}, {2, "g"}, {3, "g"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    c.node(1).remove_server(3).detach();
+    BOOST_REQUIRE(wait_until([&] { return c.node(1).get_cluster_size() == 2u; }));
+    auto calls = c.state->assess_count(1);
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) >= calls + 5; }));
+
+    BOOST_CHECK(c.state->decommissioned().empty());
+    BOOST_CHECK_EQUAL(c.state->provision_count(), 0u);
+}
+
+// Req 12.2 — set_placement accepts entries for members and non-members.
 BOOST_AUTO_TEST_CASE(set_placement_does_not_crash, *boost::unit_test::timeout(5)) {
-    NodeFixture f;
-    // set_placement on any node ID must not throw
-    BOOST_CHECK_NO_THROW(f.node->set_placement(42u, std::string{"az-a"}));
-    BOOST_CHECK_NO_THROW(f.node->set_placement(1u, std::string{"az-b"}));
+    test_cluster c{fast_config()};
+    auto& n = c.add_node(1, {1});
+    BOOST_CHECK_NO_THROW(n.set_placement(42u, std::string{"az-a"}));
+    BOOST_CHECK_NO_THROW(n.set_placement(1u, std::string{"az-b"}));
 }
 
 // Req 16.10 — existing node_config constructor populates initial_placement
