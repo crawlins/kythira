@@ -25,6 +25,8 @@
 #include <fiu.h>
 #include <fiu-control.h>
 
+#include "fault_profiles.hpp"
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -98,10 +100,13 @@ static constexpr const char* k_all_fault_points[] = {
 };
 
 // Disable every Raft fault point — replacement for the non-existent fiu_disable_all().
+// Also starts a fresh fault-point record, so a diagnostic names only the
+// points the current scenario enabled.
 inline void clear_all_faults() {
     for (const auto* name : k_all_fault_points) {
         fiu_disable(name);
     }
+    forget_fault_points();
 }
 
 // Global Folly + FIU initialisation fixture — use with BOOST_GLOBAL_FIXTURE.

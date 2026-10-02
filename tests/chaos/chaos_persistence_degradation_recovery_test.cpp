@@ -9,9 +9,11 @@
 
 #include "chaos_test_types.hpp"
 #include "fault_profiles.hpp"
+#include "liveness_assertions.hpp"
 #include "safety_assertions.hpp"
 
 #include <chrono>
+#include <format>
 #include <thread>
 #include <vector>
 #include <memory>
@@ -23,14 +25,21 @@ namespace {
 constexpr std::chrono::milliseconds k_election_min{50};
 constexpr std::chrono::milliseconds k_election_max{100};
 constexpr std::chrono::milliseconds k_heartbeat{20};
-}
+constexpr std::chrono::milliseconds k_step{5};
+constexpr std::chrono::milliseconds k_election_budget{2000};
+constexpr std::chrono::milliseconds k_command_timeout{5000};
+constexpr std::chrono::milliseconds k_settle_budget{2000};
+}  // namespace
 
 BOOST_AUTO_TEST_SUITE(chaos_persistence_degradation_recovery)
 
 // Liveness: cluster recovers log replication after disk degradation ends.
 //
 // Scenario: apply disk_degradation_profile (30% failure) to all nodes;
-// submit 10 commands; disable profile; verify all log entries match after recovery.
+// submit 10 commands, whose outcomes are deliberately ignored; disable the
+// profile; then (Requirement 6.3) require the leader to accept, persist and
+// commit a new command, and every node to apply it, which also commits and
+// applies whatever the degraded phase left in the leader's log.
 BOOST_AUTO_TEST_CASE(replication_recovers_after_disk_degradation, *boost::unit_test::timeout(120)) {
     using namespace kythira::chaos;
     kythira::chaos::clear_all_faults();
@@ -57,10 +66,11 @@ BOOST_AUTO_TEST_CASE(replication_recovers_after_disk_degradation, *boost::unit_t
     n2->start();
     n3->start();
 
+    std::vector<chaos_node*> nodes = {n1.get(), n2.get(), n3.get()};
+
     // Elect n1.
     std::this_thread::sleep_for(k_election_max + std::chrono::milliseconds{20});
-    n1->check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    require_elected(*n1, nodes, k_election_budget, k_step, "initial election");
 
     // Degrade all nodes (30%) and submit commands.
     {
@@ -78,13 +88,33 @@ BOOST_AUTO_TEST_CASE(replication_recovers_after_disk_degradation, *boost::unit_t
             std::this_thread::sleep_for(std::chrono::milliseconds{5});
         }
     }
-    // Degradation cleared — allow recovery.
-    for (int i = 0; i < 10; ++i) {
-        n1->check_heartbeat_timeout();
-        std::this_thread::sleep_for(k_heartbeat);
+    // Degradation cleared. A failed save_current_term can cost n1 its
+    // leadership, so drive whichever node leads now, electing n1 if none does.
+    auto* leader = current_leader(nodes);
+    if (leader == nullptr) {
+        require_elected(*n1, nodes, k_election_budget, k_step, "re-election after degradation");
+        leader = n1.get();
     }
 
-    std::vector<chaos_node*> nodes = {n1.get(), n2.get(), n3.get()};
+    // Requirement 6.3: the leader persists a new entry and the cluster
+    // commits it.
+    const auto index = last_log_index(*leader) + 1;
+    auto cmd = kythira::test_key_value_state_machine<>::make_put_command("after_degradation", "v");
+    auto result = leader->submit_command(cmd, k_command_timeout);
+    require_command_succeeds(*leader, result, k_settle_budget, k_step, nodes,
+                             "command after degradation lifted");
+    BOOST_REQUIRE_GE(leader->debug_state().commit_index, index);
+    require_applied_through(*leader, nodes, index, k_settle_budget, k_step,
+                            "command after degradation lifted");
+    for (auto* n : nodes) {
+        BOOST_CHECK_MESSAGE(
+            n->with_state_machine([](auto& sm) { return sm.contains("after_degradation"); }),
+            std::format("node {} applied through index {} but its state machine lacks the "
+                        "command; {}",
+                        n->get_node_id(), index, describe_nodes(nodes)));
+    }
+
+    assert_election_safety(nodes);
     assert_log_matching(nodes);
 
     n1->stop();

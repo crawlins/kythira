@@ -204,9 +204,12 @@ as `fiu_do_on` macros that compile to nothing without `FIU_ENABLE` (task 5).
 
 - [x] 13. `tests/chaos/chaos_leader_completeness_test.cpp`
   - Property: a committed entry must appear in all future leaders' logs
-  - Scenario: commit one command; apply `network_partition_profile` to the
-    current leader (isolating it); wait for a new leader to be elected; verify
-    the committed entry appears in the new leader's log
+  - Scenario: commit one command; isolate the current leader; wait for a new
+    leader to be elected; verify the committed entry appears in the new
+    leader's log
+  - The leader is isolated by removing its simulator edges, not with
+    `network_partition_profile`: libfiu fault points are process-wide, so the
+    profile fails every in-process node's sends and no new leader can win
   - _Requirements: 5.3_
 
 - [x] 14. `tests/chaos/chaos_state_machine_safety_test.cpp`
@@ -227,8 +230,9 @@ as `fiu_do_on` macros that compile to nothing without `FIU_ENABLE` (task 5).
 
 - [x] 16. `tests/chaos/chaos_commit_recovery_test.cpp`
   - Liveness: a pending command commits after network faults stop
-  - Scenario: submit a command with `network_partition_profile` active on a
-    minority; disable profile; verify commit within 10× `heartbeat_interval`
+  - Scenario: submit a command with `network_partition_profile` active (it
+    applies to every in-process node, not just a minority); disable profile;
+    verify commit within 10× `heartbeat_interval`
   - _Requirements: 6.2_
 
 - [x] 17. `tests/chaos/chaos_persistence_degradation_recovery_test.cpp`
@@ -240,9 +244,10 @@ as `fiu_do_on` macros that compile to nothing without `FIU_ENABLE` (task 5).
 - [x] 18. `tests/chaos/chaos_state_machine_recovery_test.cpp`
   - Liveness: a node with state machine faults resumes applying entries once
     the fault is removed
-  - Scenario: apply `state_machine_fault_profile` (100%) to one follower;
-    commit 5 commands; disable profile; verify the follower catches up
-    (its `last_applied` reaches the cluster `commit_index`)
+  - Scenario: apply `state_machine_fault_profile` (100%, so every
+    in-process node's state machine); commit 5 commands; disable profile;
+    verify every node catches up (its `last_applied` reaches the cluster
+    `commit_index`) with no further writes
   - _Requirements: 6.4_
 
 ---

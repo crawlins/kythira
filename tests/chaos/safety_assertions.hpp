@@ -3,10 +3,13 @@
 
 #pragma once
 
+#include "fault_profiles.hpp"
+
 #include <raft/raft.hpp>
 #include <boost/test/unit_test.hpp>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <vector>
 
 namespace kythira::chaos {
@@ -29,9 +32,11 @@ void assert_election_safety(const std::vector<kythira::node<Types>*>& nodes) {
     for (std::size_t i = 0; i < leaders.size(); ++i) {
         for (std::size_t j = i + 1; j < leaders.size(); ++j) {
             if (leaders[i].first == leaders[j].first) {
-                BOOST_FAIL(std::format(
-                    "election safety violated: nodes {} and {} both claim leadership in term {}",
-                    leaders[i].second, leaders[j].second, leaders[i].first));
+                BOOST_FAIL(
+                    std::format("election safety violated: nodes {} and {} both claim leadership "
+                                "in term {}; {}",
+                                leaders[i].second, leaders[j].second, leaders[i].first,
+                                describe_fault_points()));
             }
         }
     }
@@ -88,14 +93,14 @@ template<typename Types> void assert_log_matching(const std::vector<kythira::nod
                 if (ei->term() != ej->term()) {
                     BOOST_FAIL(
                         std::format("log matching violated at index {}: "
-                                    "node {} has term {}, node {} has term {}",
-                                    idx, i, ei->term(), j, ej->term()));
+                                    "node {} has term {}, node {} has term {}; {}",
+                                    idx, i, ei->term(), j, ej->term(), describe_fault_points()));
                 }
                 if (ei->command() != ej->command()) {
                     BOOST_FAIL(
                         std::format("log matching violated at index {}: "
-                                    "node {} and node {} have different command bytes",
-                                    idx, i, j));
+                                    "node {} and node {} have different command bytes; {}",
+                                    idx, i, j, describe_fault_points()));
                 }
             }
         }
@@ -145,8 +150,8 @@ void assert_state_machine_safety(const std::vector<kythira::node<Types>*>& nodes
                 if (ei->command() != ej->command()) {
                     BOOST_FAIL(
                         std::format("state machine safety violated at index {}: "
-                                    "node {} and node {} applied different commands",
-                                    idx, i, j));
+                                    "node {} and node {} applied different commands; {}",
+                                    idx, i, j, describe_fault_points()));
                 }
             }
         }
