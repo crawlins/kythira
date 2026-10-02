@@ -51,13 +51,13 @@ Required:
   --github-org ORG        e.g. crawlins
   --github-repo REPO      e.g. kythira
   --bundles LIST          Comma-separated, one per policies/*.json:
-                           ec2-quorum-manager,ca-cluster-node,
-                           ca-cluster-node-rpc-tls,ami-build,object-persistence,
-                           cloudwatch-monitoring,perf-cloud
+                           ec2-quorum-manager,asg-quorum-manager,
+                           ca-cluster-node,ca-cluster-node-rpc-tls,ami-build,
+                           object-persistence,cloudwatch-monitoring,perf-cloud
                            (any non-empty subset)
                           WARNING: this rebuilds the inline policy WHOLESALE, so
                            a bundle you leave out loses its permissions. To add
-                           one permission, pass all seven, not just the bundle
+                           one permission, pass all eight, not just the bundle
                            you edited. This list omitted cloudwatch-monitoring
                            and perf-cloud until 2026-09-29, so anyone following
                            it silently revoked both -- and perf-cloud.yml
@@ -244,6 +244,7 @@ echo "  gh variable set REAL_CLOUD_TESTS_AWS_ENABLED --body true"
 for bundle in "${BUNDLE_LIST[@]}"; do
     case "${bundle}" in
         ec2-quorum-manager) VAR="REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED" ;;
+        asg-quorum-manager) VAR="REAL_CLOUD_TESTS_AWS_ASG_QUORUM_ENABLED" ;;
         ca-cluster-node) VAR="REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED" ;;
         ca-cluster-node-rpc-tls) VAR="REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED" ;;
         ami-build) VAR="REAL_CLOUD_TESTS_AWS_AMI_BUILD_ENABLED" ;;
