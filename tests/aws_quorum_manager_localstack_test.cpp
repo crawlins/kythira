@@ -682,6 +682,39 @@ BOOST_AUTO_TEST_CASE(ec2_maintain_quorum_leaves_healthy_cluster_alone) {
     BOOST_CHECK_EQUAL(live_cluster().size(), 3u);
 }
 
+// elastic-shard-capacity Requirement 8.2: the key rides in RunInstances'
+// TagSpecifications, and DescribeInstances' tag filters find it again. The
+// subject is filter syntax and tag round-tripping, which is what LocalStack
+// models faithfully.
+BOOST_AUTO_TEST_CASE(keyed_provision_is_found_by_its_key) {
+    kythira::aws_ec2_quorum_manager_config cfg;
+    cfg.cluster_name = uuid;
+    cfg.image_id = "ami-12345678";
+    cfg.node_port = 7000;
+    cfg.topology.groups.push_back({.group_id = "AZ1", .target_count = 1});
+    cfg.subnet_by_group["AZ1"] = subnet_id;
+    cfg.security_group_ids.push_back(sg_id);
+    cfg.provision_timeout = std::chrono::seconds{60};
+    cfg.poll_interval = std::chrono::seconds{2};
+    cfg.aws = make_localstack_cfg();
+
+    kythira::aws_ec2_quorum_manager<> mgr{cfg};
+
+    const std::string key = "cap-1-" + uuid;
+    auto peer = mgr.provision_node_keyed("AZ1", std::nullopt, key).get();
+
+    auto found = mgr.find_by_idempotency_key(key).get();
+    BOOST_REQUIRE(found.has_value());
+    BOOST_CHECK_EQUAL(found->node_id, peer.node_id);
+    BOOST_CHECK_EQUAL(found->address, peer.address);
+
+    BOOST_CHECK(!mgr.find_by_idempotency_key(key + "-other").get().has_value());
+
+    // Terminated no longer counts as holding the key.
+    mgr.decommission_node(peer.node_id).get();
+    BOOST_CHECK(!mgr.find_by_idempotency_key(key).get().has_value());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ── ASG manager tests (Requirement 16.14) ─────────────────────────────────────
