@@ -24,7 +24,7 @@
   "containerDefinitions": [
     {
       "name": "ca-cluster-node-2",
-      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-cluster-node:latest",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-cluster-node@sha256:IMAGE_DIGEST",
       "essential": true,
       "entryPoint": [
         "sh",

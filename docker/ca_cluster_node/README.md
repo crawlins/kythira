@@ -20,8 +20,12 @@ never costs the cluster its quorum (2 of 3).
 ## Building the image
 
 ```
-docker build -f docker/ca_cluster_node/Dockerfile -t kythira-ca-cluster-node:latest .
+docker build -f docker/ca_cluster_node/Dockerfile -t kythira-ca-cluster-node:VERSION .
 ```
+
+Tag each build with a version (a release number or the commit hash), not
+`:latest`. The ECS task definitions go further and pin the image by digest;
+see `ecs-task-definitions/README.md`'s "Pinning the image".
 
 (Requires `vcpkg_installed/` already present in the build context, same as
 `docker/ca_service/Dockerfile`.)

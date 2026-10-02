@@ -5,6 +5,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 2, 2026)
 
+- **The ECS task definitions pin their image by digest instead of
+  `:latest`** (`docker/ca_service/ecs-task-definition.json`,
+  `docker/ca_cluster_node/ecs-task-definitions/*.json`). A mutable tag let
+  anyone with push access to the repository change what the CA runs at its
+  next task restart, and could leave the three cluster nodes on different
+  builds. The image is now `...@sha256:IMAGE_DIGEST`, a placeholder like
+  `ACCOUNT_ID`; `ecs-task-definitions/README.md` shows how to read the digest
+  back from ECR and recommends immutable tags.
 - **The Alibaba Cloud spec is closed** (`.kiro/specs/alibaba-cloud-services/`,
   every task ticked, task 4 by descope). The checklist had read 3 of 12 since
   August while the tree held nearly all of it; each task is now ticked against
