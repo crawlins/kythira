@@ -124,6 +124,15 @@ runs:
           *)         key_id="$RO_ID"; secret="$RO_SECRET"; mode="read";      which="read-only" ;;
         esac
 
+        # The read-write key is an environment secret of build-cache-write
+        # (main only), not a repository secret, so a job on main that runs
+        # in another environment -- real-cloud-tests.yml's provider jobs --
+        # does not receive it. Such a job still reads the cache rather than
+        # building cold.
+        if [ "$mode" = "readwrite" ] && { [ -z "$key_id" ] || [ -z "$secret" ]; }; then
+          key_id="$RO_ID"; secret="$RO_SECRET"; mode="read"; which="read-only (no read-write key in this job's environment)"
+        fi
+
         if [ -z "$key_id" ] || [ -z "$secret" ]; then
           echo "::warning::no OCI build-cache credential for ${GITHUB_EVENT_NAME} on ${GITHUB_REF_NAME}; both caches disabled for this run"
           echo "enabled=false" >> "$GITHUB_OUTPUT"

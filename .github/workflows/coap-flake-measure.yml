@@ -129,6 +129,12 @@ jobs:
     name: Measure ${{ github.event.inputs.label || 'coap' }} @ ${{ github.event.inputs.compiler || 'clang++-18' }}/${{ github.event.inputs.arch || 'x64' }}
     runs-on: ${{ github.event.inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 240
+    # The read-write build-cache key is an environment secret of
+    # build-cache-write, whose deployment branches are main only, so a
+    # job on any other ref never receives it and cannot poison the cache
+    # main builds from. Other refs run with no environment and fall back
+    # to the read-only key. See doc/ci_build_cache.md.
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
