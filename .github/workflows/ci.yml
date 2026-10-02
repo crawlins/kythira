@@ -425,6 +425,54 @@ jobs:
             --floor 1 \
             -- -R '^future_backend_benchmark_test$'
 
+      # The EC2 tag-scan discovery test (.kiro/specs/multi-machine-placement/
+      # task 8) is labelled `slow;localstack`, so the Test step above filters
+      # it out, and until this step nothing started a LocalStack for it. Its
+      # subject is DescribeInstances filter syntax and tag round-tripping,
+      # which only a real EC2 API shape can check, and LocalStack serves that
+      # shape with no credentials. One leg is enough: the subject is the API
+      # dialogue, not the compiler or the architecture.
+      #
+      # Pinned to 4.14.0, the tag docker/cloudwatch-localstack-compose.yml
+      # already uses, because later LocalStack images need an auth token. The
+      # test exits 77 (ctest "Not Run", which ctest does not count as a
+      # failure) when LocalStack is unreachable, so the step fails on a skip
+      # explicitly: a skip here means the step stopped doing its job.
+      - name: Run the EC2 discovery test against LocalStack
+        if: matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
+        run: |
+          set -o pipefail
+          docker run -d --rm --name localstack -p 4566:4566 -e SERVICES=ec2 \
+            localstack/localstack:4.14.0
+          ready=0
+          for _ in $(seq 1 90); do
+            if curl -fsS http://localhost:4566/_localstack/health \
+                | grep -Eq '"ec2": "(available|running)"'; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then
+            echo "::error::LocalStack EC2 never became available"
+            docker logs localstack | tail -50
+            exit 1
+          fi
+          ctest --test-dir build \
+            -R '^aws_ec2_peer_discovery_localstack_test$' \
+            --output-on-failure \
+            --no-tests=error \
+            --timeout 300 \
+            2>&1 | tee ctest-localstack-out.txt
+          if grep -q 'tests did not run' ctest-localstack-out.txt; then
+            echo "::error::aws_ec2_peer_discovery_localstack_test was skipped"
+            exit 1
+          fi
+
+      - name: Stop LocalStack
+        if: always() && matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
+        run: docker stop localstack || true
+
       - name: Publish test results
         uses: dorny/test-reporter@v1
         if: always()

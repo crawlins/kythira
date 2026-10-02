@@ -196,6 +196,11 @@ one reporting clean while blind.
     out of the peer set — without it the cluster believes it has N+1 voters,
     which presents as elections that will not settle — and `await_peers`
     naming what it never saw rather than proceeding.
+  - Those cases now run on every change. CI's `Build & Test (g++-13, x64)`
+    leg starts `localstack/localstack:4.14.0` and runs
+    `aws_ec2_peer_discovery_localstack_test` against it. Before that, the
+    test's `slow;localstack` labels kept it out of every CI run, so the
+    passes above were local only.
   - **Demonstrated with real node processes and no static list anywhere:**
     three hosts registered, discovered all three peers, and every one reported
     `{"ready":true,"groups_without_leader":0}`. A workload then ran through the
