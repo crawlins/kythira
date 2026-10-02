@@ -74,26 +74,30 @@ constexpr std::uint16_t ephemeral_port = 0;
 }
 
 /// A port nothing is listening on, obtained by binding and releasing.
+///
+/// IPv4 on purpose, like `loopback`: the backend's dual-stack socket receives
+/// v4 either way, and a host with no IPv6 at all (where the backend falls back
+/// to AF_INET) cannot create an AF_INET6 socket for these helpers to use.
 [[nodiscard]] auto reserve_dead_port() -> std::uint16_t {
-    const int fd = ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-    sockaddr_in6 addr{};
-    addr.sin6_family = AF_INET6;
-    addr.sin6_addr = in6addr_any;
+    const int fd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     ::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     socklen_t length = sizeof(addr);
     ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &length);
-    const auto port = ntohs(addr.sin6_port);
+    const auto port = ntohs(addr.sin_port);
     ::close(fd);
     return port;
 }
 
 /// Fire raw bytes at a port. Used to prove the server survives garbage.
 auto send_raw(std::uint16_t port, const std::vector<std::uint8_t>& bytes) -> void {
-    const int fd = ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-    sockaddr_in6 addr{};
-    addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons(port);
-    ::inet_pton(AF_INET6, "::1", &addr.sin6_addr);
+    const int fd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    ::inet_pton(AF_INET, loopback, &addr.sin_addr);
     ::sendto(fd, bytes.data(), bytes.size(), 0, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     ::close(fd);
 }
@@ -426,21 +430,25 @@ BOOST_AUTO_TEST_CASE(test_server_restarts_cleanly_on_the_same_port,
 // A name resolves to every address it has, not only the first, and repeats
 // (AI_ALL can list one address twice) are dropped.
 BOOST_AUTO_TEST_CASE(test_endpoint_resolves_every_address) {
+    const auto as_v6 =
+        [](const kythira::cantcoap_detail::peer_address& peer) -> const sockaddr_in6& {
+        return reinterpret_cast<const sockaddr_in6&>(peer.storage);
+    };
+
     const auto v6 = kythira::cantcoap_detail::resolve_endpoint("coap://[::1]:5683");
     BOOST_REQUIRE_EQUAL(v6.size(), 1U);
-    BOOST_TEST(IN6_IS_ADDR_LOOPBACK(&v6.front().sin6_addr));
-    BOOST_TEST(ntohs(v6.front().sin6_port) == 5683U);
+    BOOST_TEST(IN6_IS_ADDR_LOOPBACK(&as_v6(v6.front()).sin6_addr));
+    BOOST_TEST(ntohs(as_v6(v6.front()).sin6_port) == 5683U);
 
     const auto v4 = kythira::cantcoap_detail::resolve_endpoint("127.0.0.1:9");
     BOOST_REQUIRE_EQUAL(v4.size(), 1U);
-    BOOST_TEST(IN6_IS_ADDR_V4MAPPED(&v4.front().sin6_addr));
+    BOOST_TEST(IN6_IS_ADDR_V4MAPPED(&as_v6(v4.front()).sin6_addr));
 
     const auto local = kythira::cantcoap_detail::resolve_endpoint("coap://localhost:5683");
     BOOST_TEST(!local.empty());
     for (std::size_t i = 0; i < local.size(); ++i) {
         for (std::size_t j = i + 1; j < local.size(); ++j) {
-            BOOST_TEST(std::memcmp(&local[i].sin6_addr, &local[j].sin6_addr, sizeof(in6_addr)) !=
-                       0);
+            BOOST_TEST(local[i].key() != local[j].key());
         }
     }
 }
