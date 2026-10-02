@@ -17,12 +17,13 @@ namespace docker_chaos {
 using namespace std::chrono_literals;
 
 // ── Port layout for the quorum compose file ───────────────────────────────────
-// Mirrors docker/docker-compose.quorum.yml port bindings.
+// Mirrors the port bindings of docker/docker-compose.quorum.yml (nodes 1-3)
+// and docker/docker-compose.quorum-5.yml (nodes 1-5).
 
 inline const std::map<int, NodePorts> k_quorum_node_map{
     {1, {7101, 8181, 9101, ""}},  // container name is cluster-specific; set per-fixture
-    {2, {7102, 8182, 9102, ""}},
-    {3, {7103, 8183, 9103, ""}},
+    {2, {7102, 8182, 9102, ""}}, {3, {7103, 8183, 9103, ""}},
+    {4, {7104, 8184, 9104, ""}}, {5, {7105, 8185, 9105, ""}},
 };
 
 // ── QuorumHealingFixture ──────────────────────────────────────────────────────
@@ -39,11 +40,16 @@ inline const std::map<int, NodePorts> k_quorum_node_map{
 class QuorumHealingFixture {
 public:
     // cluster_suffix is appended to "kythira-quorum-" to form the unique
-    // cluster name for this test run.
-    explicit QuorumHealingFixture(std::string cluster_suffix)
+    // cluster name for this test run.  node_count is 3 (docker-compose.quorum.yml)
+    // or 5 (docker-compose.quorum-5.yml), and is also the quorum target.
+    explicit QuorumHealingFixture(std::string cluster_suffix, std::size_t node_count = 3)
         : _cluster_name("kythira-quorum-" + cluster_suffix),
+          _node_count(node_count),
           _exec(os::real_exec),
-          _compose_file(default_quorum_compose_file()) {
+          _compose_file(default_quorum_compose_file(node_count)) {
+        if (node_count != 3 && node_count != 5) {
+            throw std::invalid_argument("QuorumHealingFixture: node_count must be 3 or 5");
+        }
         _setup_env();
         _start_cluster();
     }
@@ -68,7 +74,7 @@ public:
     bool wait_for_cluster_size(std::size_t n, std::chrono::milliseconds timeout = 60s) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
-            if (_running_container_count() == n) {
+            if (running_container_count() == n) {
                 return true;
             }
             std::this_thread::sleep_for(1s);
@@ -100,17 +106,20 @@ public:
     // replacement has joined, been promoted and the failed node removed from
     // the configuration, so this trails wait_for_cluster_size() by a few
     // quorum checks.
+    // Checks at least once, so a zero timeout is a non-blocking probe.
     bool wait_for_container_absent(std::uint64_t node_id, std::chrono::milliseconds timeout = 60s) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (std::chrono::steady_clock::now() < deadline) {
+        while (true) {
             auto res = _exec({os::container_runtime(), "inspect", "--format", "{{.State.Status}}",
                               container_name(node_id)});
             if (res.code != 0) {
                 return true;
             }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
             std::this_thread::sleep_for(1s);
         }
-        return false;
     }
 
     // Container name for a node ID: kythira-{cluster_name}-{node_id}, the
@@ -122,7 +131,7 @@ public:
 
     // ── ChaosNode access ─────────────────────────────────────────────────────
 
-    // Returns a ChaosNode for one of the three original compose nodes.
+    // Returns a ChaosNode for one of the original compose nodes.
     // Port layout is fixed per docker-compose.quorum.yml.
     ChaosNode& node(int id) {
         auto it = _nodes.find(id);
@@ -133,7 +142,7 @@ public:
         return it->second;
     }
 
-    // Waits for a leader to be elected among the three original nodes.
+    // Waits for a leader to be elected among the original nodes.
     ChaosNode& wait_for_leader(std::chrono::milliseconds timeout = 30s) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
@@ -175,24 +184,45 @@ public:
 
     [[nodiscard]] const std::string& cluster_name() const { return _cluster_name; }
 
+    // Count containers in Running state with the kythira.cluster label.
+    std::size_t running_container_count() {
+        auto res = _exec({os::container_runtime(), "ps", "--filter",
+                          "label=kythira.cluster=" + _cluster_name, "--filter", "status=running",
+                          "--quiet"});
+        if (res.code != 0 || res.out.empty()) {
+            return 0;
+        }
+        std::size_t count = 0;
+        std::istringstream ss(res.out);
+        std::string tok;
+        while (ss >> tok) {
+            ++count;
+        }
+        return count;
+    }
+
 private:
     std::string _cluster_name;
+    std::size_t _node_count;
     os::CmdExecutor _exec;
     std::string _compose_file;
     std::map<int, ChaosNode> _nodes;
 
-    static std::string default_quorum_compose_file() {
-        const char* env = std::getenv("KYTHIRA_QUORUM_COMPOSE_FILE");
+    static std::string default_quorum_compose_file(std::size_t node_count) {
+        const char* env = std::getenv(node_count == 5 ? "KYTHIRA_QUORUM5_COMPOSE_FILE"
+                                                      : "KYTHIRA_QUORUM_COMPOSE_FILE");
         if ((env != nullptr) && (*env != 0)) {
             return env;
         }
-        return "docker/docker-compose.quorum.yml";
+        return node_count == 5 ? "docker/docker-compose.quorum-5.yml"
+                               : "docker/docker-compose.quorum.yml";
     }
 
     // Set environment variables that docker-compose.quorum.yml substitutes.
     void _setup_env() {
         ::setenv("QUORUM_CLUSTER", _cluster_name.c_str(), /*overwrite=*/1);
         ::setenv("QUORUM_NETWORK", (_cluster_name + "-net").c_str(), 1);
+        ::setenv("QUORUM_TARGET", std::to_string(_node_count).c_str(), 1);
     }
 
     void _start_cluster() {
@@ -201,6 +231,9 @@ private:
         // container names and quorum ports (7101-7103 / 8181-8183) are respected
         // rather than the defaults from k_node_map.
         for (const auto& [id, ports] : k_quorum_node_map) {
+            if (static_cast<std::size_t>(id) > _node_count) {
+                continue;
+            }
             auto cname = container_name(id);
             _nodes.emplace(std::piecewise_construct, std::forward_as_tuple(id),
                            std::forward_as_tuple(id, ports.http_port,
@@ -214,7 +247,7 @@ private:
         up_cmd.insert(up_cmd.end(), {"-f", _compose_file, "-p", _cluster_name, "up", "-d"});
         os::checked_exec(_exec, up_cmd);
 
-        // Wait for all three nodes to report healthy
+        // Wait for every bootstrap node to report healthy
         auto deadline = std::chrono::steady_clock::now() + 60s;
         for (auto& [id, n] : _nodes) {
             while (std::chrono::steady_clock::now() < deadline) {
@@ -264,23 +297,7 @@ private:
 
         ::unsetenv("QUORUM_CLUSTER");
         ::unsetenv("QUORUM_NETWORK");
-    }
-
-    // Count containers in Running state with the kythira.cluster label.
-    std::size_t _running_container_count() {
-        auto res = _exec({os::container_runtime(), "ps", "--filter",
-                          "label=kythira.cluster=" + _cluster_name, "--filter", "status=running",
-                          "--quiet"});
-        if (res.code != 0 || res.out.empty()) {
-            return 0;
-        }
-        std::size_t count = 0;
-        std::istringstream ss(res.out);
-        std::string tok;
-        while (ss >> tok) {
-            ++count;
-        }
-        return count;
+        ::unsetenv("QUORUM_TARGET");
     }
 };
 

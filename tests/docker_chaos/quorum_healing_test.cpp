@@ -20,6 +20,7 @@
 #include <chrono>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 
@@ -175,6 +176,67 @@ BOOST_AUTO_TEST_CASE(sustained_pause_triggers_replacement, *boost::unit_test::ti
                         "the paused node was not replaced and decommissioned within 90 s");
     BOOST_CHECK_MESSAGE(f.wait_for_cluster_size(3, 30s),
                         "cluster is not back to 3 running nodes after the sustained pause");
+
+    f.assert_no_split_brain();
+}
+
+// ── Req 19 AC 9 — two followers of a 5-node cluster fail at once ─────────────
+
+BOOST_AUTO_TEST_CASE(dual_follower_kill_5_node_cluster, *boost::unit_test::timeout(300)) {
+    if (!docker_integration_tests_enabled()) {
+        BOOST_TEST_MESSAGE("skipped: set KYTHIRA_DOCKER_INTEGRATION_TESTS=1 to enable");
+        return;
+    }
+
+    docker_chaos::QuorumHealingFixture f{"dual-kill", 5};
+
+    auto& leader = f.wait_for_leader(30s);
+    std::vector<int> victims;
+    for (int id = 1; id <= 5 && victims.size() < 2; ++id) {
+        if (id != leader.id()) {
+            victims.push_back(id);
+        }
+    }
+
+    // Both at once, so no assessment sees only one of them gone.
+    std::thread first{[&] { f.node(victims[0]).kill(); }};
+    f.node(victims[1]).kill();
+    first.join();
+
+    // Three of five voters remain, so the cluster must keep committing for
+    // the whole healing interval, through both replacements' joins and
+    // promotions and both failed nodes' removals.
+    int submitted = 0;
+    int committed = 0;
+    auto healed = [&] {
+        return f.running_container_count() == 5 && f.wait_for_container_absent(victims[0], 0s) &&
+               f.wait_for_container_absent(victims[1], 0s);
+    };
+    auto deadline = std::chrono::steady_clock::now() + 65s;
+    while (std::chrono::steady_clock::now() < deadline && !healed()) {
+        ++submitted;
+        try {
+            auto resp =
+                f.wait_for_leader(10s).submit_command("dualkill" + std::to_string(submitted), "v");
+            if (resp.contains("success") && resp["success"].as_bool()) {
+                ++committed;
+            }
+        } catch (const std::exception& ex) {
+            BOOST_TEST_MESSAGE("command " << submitted << " failed: " << ex.what());
+        }
+        std::this_thread::sleep_for(1s);
+    }
+
+    BOOST_TEST_MESSAGE(committed << " of " << submitted << " commands committed while healing");
+    BOOST_CHECK_MESSAGE(f.wait_for_cluster_size(5, 5s),
+                        "cluster did not self-heal to 5 nodes after the dual kill");
+    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(victims[0], 5s),
+                        "first killed follower was not decommissioned");
+    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(victims[1], 5s),
+                        "second killed follower was not decommissioned");
+    BOOST_CHECK_GT(submitted, 0);
+    BOOST_CHECK_MESSAGE(committed == submitted, "only " << committed << " of " << submitted
+                                                        << " commands committed while healing");
 
     f.assert_no_split_brain();
 }
