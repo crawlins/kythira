@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Demonstrates ca_service (oneshot mode) provisioning a shared root CA and
-# per-service leaf certificates into a named volume before dependent node
+# per-service leaf certificates into named volumes before dependent node
 # containers start. The mtls-node1/mtls-node2 services are illustrative stubs
 # (Alpine + a shell check) — wiring up an actual mTLS chaos test node is future
 # work, tracked separately from the certificate-authority framework itself.
@@ -11,13 +11,33 @@
 # address each other by compose service name only, so it works unmodified
 # under both Docker and rootless Podman (see CLAUDE.md's container runtime
 # compatibility rules).
+#
+# Key isolation: each service gets its own volume holding only its own
+# cert/key/chain, and the public root certificate lives in a separate
+# ca-trust volume. ca-service mounts every per-service volume beneath its
+# output directory, so ca_service's on-disk layout is unchanged:
+#
+#   ca-trust          -> /ca                (root_ca.pem)
+#   mtls-node1-tls    -> /ca/mtls-node1     (cert.pem, key.pem, chain.pem)
+#   mtls-node2-tls    -> /ca/mtls-node2     (cert.pem, key.pem, chain.pem)
+#
+# Each node mounts ca-trust plus its own volume only, both read-only, at the
+# same paths, so a compromised node cannot read a peer's private key. The
+# nested mountpoint directories already exist inside ca-trust (the runtime
+# created them while ca-service ran, and depends_on orders the nodes after
+# it), so the read-only ca-trust mount needs no directory created in it.
+# Adding a service means adding its <name>-tls volume, a matching mount and
+# --service argument on ca-service, and mounting only that volume on the
+# new node.
 
 networks:
   ca-provisioning-net:
     driver: bridge
 
 volumes:
-  ca-material:
+  ca-trust:
+  mtls-node1-tls:
+  mtls-node2-tls:
 
 services:
   ca-service:
@@ -28,7 +48,9 @@ services:
     networks:
       - ca-provisioning-net
     volumes:
-      - ca-material:/ca
+      - ca-trust:/ca
+      - mtls-node1-tls:/ca/mtls-node1
+      - mtls-node2-tls:/ca/mtls-node2
     command:
       - "--out-dir=/ca"
       - "--service=mtls-node1"
@@ -41,7 +63,8 @@ services:
     networks:
       ca-provisioning-net:
     volumes:
-      - ca-material:/ca:ro
+      - ca-trust:/ca:ro
+      - mtls-node1-tls:/ca/mtls-node1:ro
     depends_on:
       ca-service:
         condition: service_completed_successfully
@@ -54,6 +77,7 @@ services:
         test -f /ca/mtls-node1/cert.pem
         test -f /ca/mtls-node1/key.pem
         test -f /ca/mtls-node1/chain.pem
+        test ! -e /ca/mtls-node2/key.pem
         echo "mtls-node1: certificate material present"
 
   mtls-node2:
@@ -62,7 +86,8 @@ services:
     networks:
       ca-provisioning-net:
     volumes:
-      - ca-material:/ca:ro
+      - ca-trust:/ca:ro
+      - mtls-node2-tls:/ca/mtls-node2:ro
     depends_on:
       ca-service:
         condition: service_completed_successfully
@@ -75,4 +100,5 @@ services:
         test -f /ca/mtls-node2/cert.pem
         test -f /ca/mtls-node2/key.pem
         test -f /ca/mtls-node2/chain.pem
+        test ! -e /ca/mtls-node1/key.pem
         echo "mtls-node2: certificate material present"

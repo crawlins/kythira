@@ -320,9 +320,10 @@ service on a cloud instance or in a long-running container.
     `docker/dns_discovery_node/Dockerfile` (builder stage compiles
     `ca_service`; runtime stage copies the binary plus `libssl3`); no
     `HEALTHCHECK` (init-container pattern, gated on exit status not a probe)
-  - `docker/ca-provisioning-compose.yml`: a `ca-service` container writing to a
-    named volume, plus two illustrative dependent node stubs mounting that
-    volume read-only with `depends_on: ca-service: condition:
+  - `docker/ca-provisioning-compose.yml`: a `ca-service` container writing to
+    a root-certificate volume plus one volume per service, and two
+    illustrative dependent node stubs each mounting the root volume and only
+    its own volume read-only with `depends_on: ca-service: condition:
     service_completed_successfully`; no static IPs; addressing by compose
     service name; must work unmodified under both Docker and rootless Podman
     (no `--privileged`, no host networking)
