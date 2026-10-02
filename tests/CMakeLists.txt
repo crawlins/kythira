@@ -3653,6 +3653,39 @@ else()
     message(STATUS "oci_http_client_unit_test: skipped (requires OpenSSL and httplib)")
 endif()
 
+# OCI real-cloud launch ladder, offline (oci-cloud-provider Req 13.12-13.15)
+#
+# The walk/ordering/cost-line logic the real suite uses, driven by a scripted
+# launcher and injected prices. Registered with CTest, unlike the real suite:
+# the advance-past-stockout path otherwise runs only when OCI happens to be
+# short of capacity, plus the one stockout the real case forces.
+if(TARGET OpenSSL::SSL AND TARGET httplib::httplib AND KYTHIRA_OCI_SHARED)
+    add_executable(oci_launch_ladder_unit_test oci_launch_ladder_unit_test.cpp)
+    target_link_libraries(oci_launch_ladder_unit_test PRIVATE
+        Boost::unit_test_framework
+        httplib::httplib
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+        target_link_libraries(oci_launch_ladder_unit_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+    elseif(TARGET Boost::json)
+        target_link_libraries(oci_launch_ladder_unit_test PRIVATE Boost::json)
+    endif()
+    target_include_directories(oci_launch_ladder_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(oci_launch_ladder_unit_test PRIVATE cxx_std_23)
+    add_test(NAME oci_launch_ladder_unit_test COMMAND oci_launch_ladder_unit_test)
+    set_tests_properties(oci_launch_ladder_unit_test PROPERTIES
+        TIMEOUT 60
+        LABELS "unit;oci;cloud"
+    )
+elseif(NOT KYTHIRA_OCI_SHARED)
+    message(STATUS "oci_launch_ladder_unit_test: skipped (OCI support disabled by Kconfig)")
+else()
+    message(STATUS "oci_launch_ladder_unit_test: skipped (requires OpenSSL and httplib)")
+endif()
+
 # oci_object_storage_client unit test (cloud object persistence, task 10)
 #
 # Same dependency set as the http client's, because it is built on it: OpenSSL

@@ -587,6 +587,18 @@ Reference implementations to study before starting:
       **under the failure condition** (force the first candidate to be
       unavailable) and confirm it advances, rather than only observing a
       green run where the first choice happened to succeed.
+    - **Backed October 2, 2026.** Until then the ladder was only walked by
+      a non-launching probe, and the real launch went through the pool's
+      fixed Instance Configuration, which has no shape or AD to vary. Now
+      `ladder_launch_advances_past_a_forced_stockout` launches the
+      fixture's own instance through the ladder (image and subnet read
+      from the pool), forces rung 1 out of capacity with Finding 14's
+      verbatim error, checks OCI launched the rung the walk chose, and
+      files the shape/AD/market/rate cost line.
+      `oci_launch_ladder_unit_test` pins the walk, ordering and cost line
+      offline in CTest. Two ladder bugs fixed on the way: the fallback was
+      priced by full shape name (always unknown, so the 13.12 truncation
+      never fired), and the zero-priced A1 family sorted first.
   - Replace the no-op `oci` job body in
     `.github/workflows/real-cloud-tests.yml` with real steps, following the
     `aws` job's shape: new `REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED` /
