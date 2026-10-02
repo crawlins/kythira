@@ -223,6 +223,36 @@ private:
     resolver_fn _resolver;
 };
 
+// Counts RPCs in flight per endpoint so that one unreachable peer cannot take
+// every thread of tcp_rpc_client's pool.  Shared with the dispatched tasks,
+// which release their slot when they finish.
+class inflight_limiter {
+public:
+    explicit inflight_limiter(std::size_t per_endpoint) : _limit(per_endpoint) {}
+
+    auto try_acquire(const std::string& endpoint) -> bool {
+        std::lock_guard lock(_mu);
+        auto& n = _count[endpoint];
+        if (n >= _limit) {
+            return false;
+        }
+        ++n;
+        return true;
+    }
+
+    void release(const std::string& endpoint) {
+        std::lock_guard lock(_mu);
+        if (auto it = _count.find(endpoint); it != _count.end() && --it->second == 0) {
+            _count.erase(it);
+        }
+    }
+
+private:
+    std::mutex _mu;
+    std::size_t _limit;
+    std::unordered_map<std::string, std::size_t> _count;
+};
+
 }  // namespace tcp_detail
 
 // ── tcp_rpc_client ────────────────────────────────────────────────────────────
@@ -265,8 +295,18 @@ public:
     // concurrently in-flight blocking connect()/send()/recv() sequences.
     static constexpr std::size_t k_rpc_thread_pool_size = 8;
 
+    // A peer that has gone away can hold a pool thread for seconds: its name
+    // may take a full resolver timeout to fail, and a connect() or recv() to
+    // it waits out the RPC timeout.  The leader sends it a heartbeat every
+    // interval regardless, so without a cap those calls fill the whole pool
+    // and RPCs to live peers queue behind them, long enough for followers to
+    // start elections.  A call over the cap fails at once, which Raft already
+    // treats as an unreachable peer.
+    static constexpr std::size_t k_max_inflight_per_endpoint = 2;
+
     tcp_rpc_client()
-        : _executor(std::make_shared<kythira::executor_default>(k_rpc_thread_pool_size)) {}
+        : _executor(std::make_shared<kythira::executor_default>(k_rpc_thread_pool_size)),
+          _inflight(std::make_shared<tcp_detail::inflight_limiter>(k_max_inflight_per_endpoint)) {}
 
     void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
         _peers.add_peer(id, std::move(host), port);
@@ -391,6 +431,12 @@ private:
         // broadcasting to multiple peers in a loop move on to the next peer
         // immediately instead of blocking on this one's full
         // connect()-through-recv() sequence.
+        auto endpoint = host + ':' + std::to_string(port);
+        if (!_inflight->try_acquire(endpoint)) {
+            return future_factory_default::makeExceptionalFuture<Resp>(std::make_exception_ptr(
+                network_exception("tcp_rpc_client: too many RPCs in flight to " + endpoint)));
+        }
+
         promise_default<Resp> promise;
         auto future = promise.getFuture();
 
@@ -398,43 +444,49 @@ private:
         // temporary (e.g. _ser.serialize(req)), which does not outlive this
         // function; copying now, before dispatch, is required for the
         // background task to see valid data.
-        _executor->submit(
-            [promise = std::move(promise), host, port, payload, timeout, deser]() mutable {
-                int fd = tcp_detail::connect_to(host, port, timeout);
-                if (fd < 0) {
-                    promise.setException(std::make_exception_ptr(network_exception(
-                        "tcp_rpc_client: connect failed to " + host + ":" + std::to_string(port))));
-                    return;
-                }
+        _executor->submit([promise = std::move(promise), host, port, payload, timeout, deser,
+                           inflight = _inflight, endpoint = std::move(endpoint)]() mutable {
+            struct Slot {
+                tcp_detail::inflight_limiter& limiter;
+                const std::string& endpoint;
+                ~Slot() { limiter.release(endpoint); }
+            } slot{*inflight, endpoint};
 
-                struct Guard {
-                    int fd;
-                    ~Guard() {
-                        if (fd >= 0) {
-                            ::close(fd);
-                        }
+            int fd = tcp_detail::connect_to(host, port, timeout);
+            if (fd < 0) {
+                promise.setException(std::make_exception_ptr(network_exception(
+                    "tcp_rpc_client: connect failed to " + host + ":" + std::to_string(port))));
+                return;
+            }
+
+            struct Guard {
+                int fd;
+                ~Guard() {
+                    if (fd >= 0) {
+                        ::close(fd);
                     }
-                } g{fd};
-
-                if (!tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(payload))) {
-                    promise.setException(
-                        std::make_exception_ptr(network_exception("tcp_rpc_client: send failed")));
-                    return;
                 }
+            } g{fd};
 
-                auto resp = tcp_detail::frame_recv(fd);
-                if (!resp) {
-                    promise.setException(
-                        std::make_exception_ptr(network_exception("tcp_rpc_client: recv failed")));
-                    return;
-                }
+            if (!tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(payload))) {
+                promise.setException(
+                    std::make_exception_ptr(network_exception("tcp_rpc_client: send failed")));
+                return;
+            }
 
-                try {
-                    promise.setValue(deser(tcp_detail::str_to_bytes(*resp)));
-                } catch (...) {
-                    promise.setException(std::current_exception());
-                }
-            });
+            auto resp = tcp_detail::frame_recv(fd);
+            if (!resp) {
+                promise.setException(
+                    std::make_exception_ptr(network_exception("tcp_rpc_client: recv failed")));
+                return;
+            }
+
+            try {
+                promise.setValue(deser(tcp_detail::str_to_bytes(*resp)));
+            } catch (...) {
+                promise.setException(std::current_exception());
+            }
+        });
 
         return future;
     }
@@ -442,6 +494,7 @@ private:
     tcp_detail::peer_registry<std::uint64_t> _peers;
     serializer_t _ser;
     std::shared_ptr<kythira::executor_default> _executor;
+    std::shared_ptr<tcp_detail::inflight_limiter> _inflight;
 };
 
 // ── tcp_rpc_server ────────────────────────────────────────────────────────────
