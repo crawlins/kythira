@@ -410,6 +410,36 @@ jobs:
             --floor 400 \
             -- -LE '^(slow|performance|verbose|benchmark|docker)$'
 
+      # future-backend-performance-benchmark Requirement 4: the CTest variant
+      # of the backend benchmark asserts only hardware-independent sanity
+      # floors and is meant to run in routine CI. The main Test step must keep
+      # excluding the `benchmark` label (the label also selects heavier suites
+      # nobody wants per PR), so this one test is selected by name and run on
+      # its own after the -j$(nproc) suite has finished: a timing floor
+      # measured while every core is busy with other tests would measure the
+      # contention, not the backend. Retries match the main step; a floor that
+      # fails three times in a row is a real regression, and the check below
+      # still reports any first-attempt failure the retry absorbed.
+      - name: Benchmark sanity floors
+        if: always() && steps.test.outcome != 'skipped'
+        run: |
+          set -o pipefail
+          ctest --test-dir build \
+            --output-on-failure \
+            --repeat until-pass:3 \
+            --no-tests=error \
+            -R '^future_backend_benchmark_test$' \
+            2>&1 | tee ctest-bench-out.txt
+
+      - name: Check the benchmark run did the work
+        if: always() && steps.test.outcome != 'skipped'
+        run: |
+          scripts/check-test-run.sh \
+            --build-dir build \
+            --log ctest-bench-out.txt \
+            --floor 1 \
+            -- -R '^future_backend_benchmark_test$'
+
       - name: Publish test results
         uses: dorny/test-reporter@v1
         if: always()
