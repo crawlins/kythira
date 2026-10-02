@@ -5792,6 +5792,27 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(oscore_rfc8613_vectors_test PROPERTIES
         TIMEOUT 60 LABELS "oscore;security;unit")
 
+    # One OSCORE Security Context per (peer, Raft group): ID Context derivation,
+    # bounded recipient-side derivation, zeroization, and the replay-window
+    # property the per-group contexts exist for -- coap-transport-multi-raft
+    # tasks 9-11. Transport-neutral like the vectors test; Folly only for the
+    # placement driver's futures in the group-id reuse case.
+    add_executable(oscore_group_contexts_test oscore_group_contexts_test.cpp)
+    target_link_libraries(oscore_group_contexts_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+    )
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(oscore_group_contexts_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(TARGET Folly::folly)
+        target_link_libraries(oscore_group_contexts_test PRIVATE Folly::folly)
+    endif()
+    target_compile_features(oscore_group_contexts_test PRIVATE cxx_std_23)
+    add_test(NAME oscore_group_contexts_test COMMAND oscore_group_contexts_test)
+    set_tests_properties(oscore_group_contexts_test PROPERTIES
+        TIMEOUT 60 LABELS "oscore;security;unit")
+
     # Everything in oscore.hpp *around* the cryptography the vectors test pins: the
     # message codec, the Class E/U split, inner block options, and the request /
     # response binding. Links no CoAP backend on purpose -- the header is
