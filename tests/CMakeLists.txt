@@ -990,6 +990,10 @@ add_raft_completion_test(capacity_ledger_unit_test capacity_ledger_unit_test.cpp
 # elastic-shard-capacity spec, task 6: the leadership lease, over hooks and
 # over a real replicated coordination group.
 add_raft_completion_test(capacity_coordination_test capacity_coordination_test.cpp)
+# elastic-shard-capacity spec, task 7: the deterministic mock quorum manager
+# every later capacity suite builds on.
+add_raft_completion_test(mock_capacity_quorum_manager_test
+                         mock_capacity_quorum_manager_test.cpp)
 add_raft_completion_test(multi_raft_invariant_property_test
                          multi_raft_invariant_property_test.cpp)
 # Task 34 of .kiro/specs/multi-raft/: 1000 groups across three simulated nodes.
