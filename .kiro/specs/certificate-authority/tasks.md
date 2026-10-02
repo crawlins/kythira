@@ -2,13 +2,20 @@
 
 ## Status: Complete (35/35 tasks)
 
-All 35 tasks are implemented, built, and verified. Tasks 31's LocalStack and
-real-EC2 coverage (`tests/ca_cluster_node_localstack_test.cpp`,
-`tests/ca_cluster_node_real_ec2_test.cpp`) is compile-verified but not
-executed — no LocalStack instance or real AWS credentials/EC2 access are
-available in this environment, consistent with the always-compiled-but-
-runtime-skipped pattern already used elsewhere in this project for
-AWS-infrastructure-dependent tests (see `tests/aws_acm_pca_provider_unit_test.cpp`).
+All 35 tasks are implemented, built, and verified, except task 31's
+LocalStack and real-EC2 coverage (`tests/ca_cluster_node_localstack_test.cpp`,
+`tests/ca_cluster_node_real_ec2_test.cpp`). Both now carry the task's full
+scenario (same-AZ replacement after a terminated instance; on real EC2 also
+issuance, rejoin under the lost node's Raft id, and the issuance present in
+every node's ledger), but neither has run green yet:
+- the real-EC2 case runs only in the Real Cloud Tests workflow's
+  ca-cluster-node bundle;
+- the LocalStack case runs only by hand, against
+  `docker/aws-localstack-compose.yml`. Its ready hook gives instances
+  AWS-shaped IDs (`i-0` + 16 hex digits); a plain LocalStack's 17 random
+  hex digits overflow the `uint64_t` node id `aws_ec2_quorum_manager`
+  derives from them.
+
 Every other task's test coverage runs and passes under `ctest`.
 
 **Last Updated**: July 8, 2026
@@ -832,7 +839,7 @@ service on a cloud instance or in a long-running container.
   - Depends on tasks 25 (`ca_cluster_node`) and 27 (3-AZ packaging artifacts);
     reuses the existing `aws_ec2_quorum_manager` unmodified — no new AWS
     provisioning code
-  - `tests/ca_cluster_node_aws_localstack_test.cpp`: gated like
+  - `tests/ca_cluster_node_localstack_test.cpp`: gated like
     `aws_quorum_manager_localstack_test.cpp`; configure
     `aws_ec2_quorum_manager` with the 3-AZ topology (one placement group per
     AZ, `target_count = 1`) against LocalStack; assert `RunInstances` is
@@ -854,7 +861,7 @@ service on a cloud instance or in a long-running container.
     run, matching `aws_quorum_manager_real_ec2_test.cpp`; note in the task
     that this test has real per-run AWS cost and should run on a
     scheduled/manual job, not per-PR
-  - Verify: `ctest --test-dir build -R ca_cluster_node_aws_localstack` passes
+  - Verify: `ctest --test-dir build -R ca_cluster_node_localstack` passes
     without real AWS credentials
   - _Requirements: 17.12_
 

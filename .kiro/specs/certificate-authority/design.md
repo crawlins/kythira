@@ -2067,7 +2067,7 @@ failed."
   directly (bypassing `acme_certificate_provider`) — malformed JWS, unknown
   account, nonce reuse, and the `skip_challenge_validation` fault-injection
   path, confirming each maps to the correct RFC 8555 problem-document type.
-- **`tests/ca_cluster_node_aws_localstack_test.cpp`** (new, opt-in): configures
+- **`tests/ca_cluster_node_localstack_test.cpp`** (new, opt-in): configures
   `aws_ec2_quorum_manager` with the 3-AZ topology from component 20 (one
   placement group per AZ, `target_count = 1`) pointed at LocalStack, gated the
   same way as `aws_quorum_manager_localstack_test.cpp`. LocalStack does not
