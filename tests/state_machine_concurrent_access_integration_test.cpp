@@ -3,10 +3,16 @@
 
 #define BOOST_TEST_MODULE state_machine_concurrent_access_integration_test
 #include <boost/test/unit_test.hpp>
-#include <thread>
-#include <vector>
 #include <atomic>
 #include <chrono>
+#include <cstring>
+#include <map>
+#include <mutex>
+#include <random>
+#include <shared_mutex>
+#include <string>
+#include <thread>
+#include <vector>
 #include "state_machine_test_utilities.hpp"
 
 namespace {

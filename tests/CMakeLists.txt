@@ -446,6 +446,35 @@ set_tests_properties(raft_comprehensive_performance_benchmark_verbose PROPERTIES
     TIMEOUT 600
     LABELS "performance;benchmark;raft;verbose"
 )
+
+# State-machine micro-benchmarks (apply latency/throughput, snapshot create and
+# restore, register ops). Its throughput case runs for a fixed 5s and its
+# sanity bounds are wall-clock thresholds, so it carries the same
+# performance/benchmark labels CI's default ctest run excludes, and
+# PROCESSORS 4 for the same reason state_machine_apply_performance_property_test
+# does when someone runs it under `ctest -j`.
+add_raft_completion_test(raft_performance_benchmark raft_performance_benchmark.cpp)
+set_tests_properties(raft_performance_benchmark PROPERTIES
+    TIMEOUT 600
+    PROCESSORS 4
+    LABELS "performance;benchmark;raft"
+)
+
+# create_snapshot() against a real node: the snapshot carries the state
+# machine's state at last_applied_index(), the covered log is compacted, and a
+# restart on the same persistence engine restores from it (raft-consensus
+# tasks 303.2/314/504, membership-change task 19).
+add_raft_completion_test(raft_snapshot_creation_integration_test raft_snapshot_creation_integration_test.cpp)
+set_tests_properties(raft_snapshot_creation_integration_test PROPERTIES
+    LABELS "integration;raft;snapshot"
+)
+
+# A reader/writer-locked state machine under concurrent apply, get_state and
+# restore_from_snapshot (raft-consensus task 606). Wall-clock bounded at ~3s.
+add_raft_completion_test(state_machine_concurrent_access_integration_test state_machine_concurrent_access_integration_test.cpp)
+set_tests_properties(state_machine_concurrent_access_integration_test PROPERTIES
+    LABELS "integration;state_machine"
+)
 if(TARGET Folly::folly)
     add_network_test(kythira_future_concept_compliance_test kythira_future_concept_compliance_test.cpp)
 else()
