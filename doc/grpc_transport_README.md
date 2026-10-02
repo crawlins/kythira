@@ -107,6 +107,72 @@ The `.proto` file is checked in; the generated `raft.pb.{h,cc}` /
   (with `require_client_cert`) the server's `ca_cert_pem` does not chain to the
   client's certificate. Verify both sides were issued by the same CA.
 
+## Certificate reload
+
+TLS material can change while a node runs, without dropping connections or
+forcing a leader election (`.kiro/specs/grpc-tls-reload/`).
+
+- **Where material comes from.** Each side takes exactly one of:
+  - the `*_pem` fields (static: a reload re-applies the same strings and
+    succeeds; there is nothing to watch);
+  - the `*_path` fields (`server_cert_path`, `server_key_path`,
+    `ca_cert_path`; `client_cert_path`, `client_key_path`, `ca_cert_path`),
+    read whole on every load;
+  - `material_source`, a `std::shared_ptr<kythira::tls_material_source>`.
+
+  Setting an item's `*_pem` and `*_path` together, mixing PEM and path
+  fields, or combining `material_source` with either, throws
+  `grpc_tls_configuration_error` at construction. So does a source that has
+  not published yet (generation 0).
+- **`reload_tls_material()`** on `grpc_server` and `grpc_client` re-reads the
+  material, validates it (parseable certificate and key, key matches the
+  certificate, roots present and parseable where they are used), and applies
+  it. Invalid material throws `grpc_tls_configuration_error` and the old
+  material keeps being served. Without TLS it throws `std::logic_error`.
+  Emits `grpc.{server,client}.tls_reload.succeeded` or `.failed`, with a
+  `generation` dimension.
+- **What a reload changes.** Every handshake that starts afterwards uses the
+  new material: new connections to the server, and new connections made by
+  every client channel, cached or not. Established connections and RPCs are
+  never closed. A reload cannot add or remove an identity or trusted roots,
+  and `require_client_cert` is fixed for the server's lifetime.
+- **Latency bound.** New material reaches handshakes within
+  `tls_refresh_interval` (default and minimum 1 second). gRPC 1.71 has no
+  certificate provider that can be updated in memory, so the transport stages
+  each validated generation in a private directory (mode 0700, files 0600,
+  under `$XDG_RUNTIME_DIR` or the temporary directory, removed on
+  destruction) that gRPC's file-watching provider re-reads on that interval.
+  The key and certificate a handshake uses always match. For up to one
+  interval after a reload that changes both identity and roots, the roots may
+  still be the previous generation's.
+- **Auto-reload.** `enable_auto_reload(poll_interval)` polls the `*_path`
+  files' modification times and reloads when one changes. A failed reload
+  emits `.failed` and is retried at the next poll. `disable_auto_reload()`
+  joins the thread, and `stop()` and the destructors call it. It throws
+  `std::logic_error` for PEM fields (no files) and for a material source
+  (which detects its own changes). **Replace files atomically** (write a
+  temporary file, then `rename()`), as
+  `certificate_authority::replace_atomically()` does. A read that catches a
+  certificate and key from different writes fails validation and is retried
+  rather than applied.
+- **Material sources** (`include/raft/tls_material_source.hpp`) are
+  transport-neutral:
+  - `static_tls_material_source`: fixed PEM strings.
+  - `file_tls_material_source`: PEM files, optionally polling them on its own
+    thread.
+  - `issuing_tls_material_source<P>`
+    (`include/raft/issuing_tls_material_source.hpp`): obtains its certificate
+    from any `certificate_provider` (local CA, ACME, AWS ACM PCA, GCP Private
+    CA, OCI). Each issuance generates a fresh ECDSA P-256 key in memory and
+    renews at two thirds of the validity by default. On failure it keeps the
+    current material, retries with capped exponential backoff, and emits
+    `tls_material_source.renewal.failed`, plus `tls_material_source.expired`
+    if the certificate lapses.
+
+  A source can be shared, so one node presents the same identity as a server
+  and as a client. A transport subscribes to a self-refreshing source and
+  unsubscribes before it is destroyed.
+
 ## Deadlines, timeouts, and message sizes
 
 - Every `send_*` call takes a `timeout`; the transport sets the gRPC

@@ -5477,6 +5477,26 @@ if(TARGET raft_grpc_transport)
     else()
         message(STATUS "grpc_transport_integration_test: skipped (requires certificate_authority)")
     endif()
+
+    # TLS reload (.kiro/specs/grpc-tls-reload/): the bridge against a bare
+    # grpc::Server, and reload end to end through grpc_server/grpc_client.
+    # Both mint certificates with certificate_authority and observe what the
+    # server presents through a raw OpenSSL handshake.
+    if(TARGET certificate_authority)
+        foreach(reload_test grpc_tls_bridge_test grpc_tls_reload_integration_test)
+            add_executable(${reload_test} ${reload_test}.cpp)
+            target_link_libraries(${reload_test} PRIVATE
+                kythira_test_pch raft_grpc_transport certificate_authority)
+            if(TARGET Folly::folly)
+                target_link_libraries(${reload_test} PRIVATE Folly::folly)
+            endif()
+            target_precompile_headers(${reload_test} REUSE_FROM kythira_test_pch)
+            add_test(NAME ${reload_test} COMMAND ${reload_test})
+            set_tests_properties(${reload_test} PROPERTIES
+                LABELS "grpc;transport;integration;tls_reload"
+                TIMEOUT 180)
+        endforeach()
+    endif()
 else()
     message(STATUS "gRPC transport tests: skipped (raft_grpc_transport target not available)")
 endif()

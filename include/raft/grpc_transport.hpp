@@ -18,10 +18,13 @@
 #include <chrono>
 #include <cstddef>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 
 namespace kythira {
+
+class tls_material_source;  // raft/tls_material_source.hpp
 
 // ============================================================================
 // grpc_transport_types concept (Requirement 14)
@@ -101,6 +104,21 @@ struct grpc_client_config {
     std::string ca_cert_pem{};           ///< Trusted root(s), PEM.
     std::string client_cert_pem{};       ///< Mutual TLS client certificate, PEM.
     std::string client_key_pem{};        ///< Mutual TLS client private key, PEM.
+    /// File-backed alternatives to the three PEM fields above, re-read by
+    /// `reload_tls_material()` and watched by `enable_auto_reload()`. Each
+    /// item comes from its `*_pem` field or its `*_path` field, never both,
+    /// and PEM and path fields are not mixed. Replace the files atomically
+    /// (write, then rename). See .kiro/specs/grpc-tls-reload/.
+    std::string ca_cert_path{};
+    std::string client_cert_path{};
+    std::string client_key_path{};
+    /// When set, the only TLS input: no `*_pem` or `*_path` field may be set.
+    /// May be shared with a `grpc_server` so a node presents one identity both
+    /// ways. Must have published (generation >= 1) before construction.
+    std::shared_ptr<tls_material_source> material_source{};
+    /// How often gRPC re-reads applied material, which bounds how long a
+    /// reload takes to reach new handshakes. gRPC's minimum is 1 second.
+    std::chrono::seconds tls_refresh_interval{1};
     std::string target_name_override{};  ///< Test-only: bypass SAN hostname check.
     /// Permit plaintext channels to targets that can reach beyond this host.
     /// Without it, a client with TLS off refuses any target that is not
@@ -128,7 +146,16 @@ struct grpc_server_config {
     std::string server_cert_pem{};    ///< Server certificate, PEM.
     std::string server_key_pem{};     ///< Server private key, PEM.
     std::string ca_cert_pem{};        ///< Trusted root for client certs (mTLS).
-    bool require_client_cert{false};  ///< Enforce mutual TLS.
+    bool require_client_cert{false};  ///< Enforce mutual TLS. Fixed for life.
+    /// File-backed alternatives to the PEM fields above; same rules as the
+    /// client's (see grpc_client_config::ca_cert_path).
+    std::string server_cert_path{};
+    std::string server_key_path{};
+    std::string ca_cert_path{};
+    /// When set, the only TLS input (see grpc_client_config::material_source).
+    std::shared_ptr<tls_material_source> material_source{};
+    /// Bound on how long a reload takes to reach new handshakes; >= 1 second.
+    std::chrono::seconds tls_refresh_interval{1};
     /// Permit a plaintext listener on a bind address that is not
     /// loopback-only. Without it, a server with TLS off and such an address
     /// fails construction with grpc_plaintext_refused_error. Ignored when
