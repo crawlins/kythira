@@ -36,6 +36,23 @@ const std::vector<std::string> secure_cipher_suites = {
 const std::vector<std::string> legacy_cipher_suites = {
     "TLS_RSA_WITH_AES_128_CBC_SHA", "TLS_RSA_WITH_AES_256_CBC_SHA", "TLS_RSA_WITH_3DES_EDE_CBC_SHA",
     "TLS_DHE_RSA_WITH_AES_128_CBC_SHA", "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"};
+
+// cipher_suites restricts certificate-based DTLS only. The cases below that
+// configure DTLS-PSK expect a non-empty list to be refused at construction
+// (it could not be honoured on every backend, and used to be silently
+// ignored), and an empty one to keep the defaults and construct normally.
+template<typename Make>
+auto check_psk_cipher_config(bool has_cipher_suites, Make&& make, const std::string& what) -> void {
+    if (has_cipher_suites) {
+        BOOST_CHECK_THROW(make(), coap_security_config_error);
+        return;
+    }
+    try {
+        make();
+    } catch (const std::exception& e) {
+        BOOST_FAIL(what + " should not throw: " + std::string(e.what()));
+    }
+}
 }
 
 /**
@@ -212,16 +229,10 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering,
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
             {1, "coaps://127.0.0.1:5684"}};
 
-        // Test 1: Client should handle mixed cipher suite configuration
-        try {
-            coap_client<test_types> client(node_endpoints, client_config, metrics);
-
-            BOOST_CHECK(true);  // Client should handle mixed cipher suites gracefully
-
-        } catch (const std::exception& e) {
-            BOOST_FAIL("Mixed cipher suite configuration should not throw exceptions: " +
-                       std::string(e.what()));
-        }
+        // Test 1: a mixed list with PSK is refused, not silently ignored
+        check_psk_cipher_config(
+            true, [&] { coap_client<test_types> client(node_endpoints, client_config, metrics); },
+            "Mixed cipher suite configuration");
 
         // Test 2: Test with only secure cipher suites
         client_config.cipher_suites.clear();
@@ -229,15 +240,10 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering,
             client_config.cipher_suites.push_back(secure_cipher_suites[i]);
         }
 
-        try {
-            coap_client<test_types> secure_client(node_endpoints, client_config, metrics);
-
-            BOOST_CHECK(true);  // Client with only secure cipher suites should work
-
-        } catch (const std::exception& e) {
-            BOOST_FAIL("Secure-only cipher suite configuration should not throw exceptions: " +
-                       std::string(e.what()));
-        }
+        check_psk_cipher_config(
+            true,
+            [&] { coap_client<test_types> secure_client(node_endpoints, client_config, metrics); },
+            "Secure-only cipher suite configuration");
 
         // Test 3: Test with empty cipher suite list (should use defaults)
         client_config.cipher_suites.clear();
@@ -331,32 +337,30 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility,
                 break;
         }
 
+        const auto scenario = std::to_string(compatibility_scenario);
+
         // Test 1: Client creation with compatibility scenario
-        try {
-            coap_client<test_types> client(node_endpoints, client_config, client_metrics);
-
-            BOOST_CHECK(true);  // Client should be created successfully
-
-        } catch (const std::exception& e) {
-            BOOST_FAIL("Client creation should not fail in compatibility scenario " +
-                       std::to_string(compatibility_scenario) + ": " + std::string(e.what()));
-        }
+        check_psk_cipher_config(
+            !client_config.cipher_suites.empty(),
+            [&] { coap_client<test_types> client(node_endpoints, client_config, client_metrics); },
+            "Client creation in compatibility scenario " + scenario);
 
         // Test 2: Server creation with compatibility scenario
-        try {
-            coap_server<test_types> server(
-                test_bind_address,
-                test_bind_port + iteration % 1000,  // Avoid port conflicts
-                server_config, server_metrics);
+        check_psk_cipher_config(
+            !server_config.cipher_suites.empty(),
+            [&] {
+                coap_server<test_types> server(
+                    test_bind_address,
+                    test_bind_port + iteration % 1000,  // Avoid port conflicts
+                    server_config, server_metrics);
+            },
+            "Server creation in compatibility scenario " + scenario);
 
-            BOOST_CHECK(true);  // Server should be created successfully
-
-        } catch (const std::exception& e) {
-            BOOST_FAIL("Server creation should not fail in compatibility scenario " +
-                       std::to_string(compatibility_scenario) + ": " + std::string(e.what()));
+        // Test 3: Both client and server should coexist (only the default
+        // scenario constructs under PSK)
+        if (!client_config.cipher_suites.empty() || !server_config.cipher_suites.empty()) {
+            continue;
         }
-
-        // Test 3: Both client and server should coexist
         try {
             coap_client<test_types> client(node_endpoints, client_config, client_metrics);
 
@@ -436,21 +440,18 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement,
                 break;
         }
 
+        const bool has_cipher_suites = !client_config.cipher_suites.empty();
+        const auto level = std::to_string(security_level);
+
         // Test 1: Client creation with security level
-        try {
-            coap_client<test_types> client(node_endpoints, client_config, metrics);
+        check_psk_cipher_config(
+            has_cipher_suites,
+            [&] { coap_client<test_types> client(node_endpoints, client_config, metrics); },
+            "Client at security level " + level);
 
-            BOOST_CHECK(true);  // Client should handle all security levels
-
-        } catch (const std::exception& e) {
-            BOOST_FAIL("Client should handle security level " + std::to_string(security_level) +
-                       ": " + std::string(e.what()));
-        }
-
-        // Test 2: Verify cipher suite configuration is applied
-        // Note: In a real implementation, we would verify that the configured
-        // cipher suites are actually used. In the stub implementation, we just
-        // verify that the configuration is accepted.
+        // Test 2: the server side reaches the same verdict. That the list is
+        // actually enforced in a handshake is covered over certificate-based
+        // DTLS by coap_dtls_cipher_suites_test.
 
         coap_server_config server_config;
         server_config.enable_dtls = true;
@@ -458,18 +459,15 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement,
         server_config.psk_key = client_config.psk_key;
         server_config.cipher_suites = client_config.cipher_suites;
 
-        try {
-            coap_server<test_types> server(
-                test_bind_address,
-                test_bind_port + iteration % 1000,  // Avoid port conflicts
-                server_config, metrics);
-
-            BOOST_CHECK(true);  // Server should handle all security levels
-
-        } catch (const std::exception& e) {
-            BOOST_FAIL("Server should handle security level " + std::to_string(security_level) +
-                       ": " + std::string(e.what()));
-        }
+        check_psk_cipher_config(
+            has_cipher_suites,
+            [&] {
+                coap_server<test_types> server(
+                    test_bind_address,
+                    test_bind_port + iteration % 1000,  // Avoid port conflicts
+                    server_config, metrics);
+            },
+            "Server at security level " + level);
     }
 }
 
@@ -514,20 +512,14 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_performance_impact,
 
         auto start_time = std::chrono::steady_clock::now();
 
-        try {
-            coap_client<test_types> client(node_endpoints, client_config, metrics);
-
-            auto end_time = std::chrono::steady_clock::now();
-            auto duration =
-                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-            // Client creation should complete within reasonable time (less than 1 second)
-            BOOST_CHECK_LT(duration.count(), 1000);
-
-        } catch (const std::exception& e) {
-            BOOST_FAIL("Client creation with large cipher suite list should not throw: " +
-                       std::string(e.what()));
-        }
+        // Under PSK the list is refused; checking it must still be quick.
+        check_psk_cipher_config(
+            true, [&] { coap_client<test_types> client(node_endpoints, client_config, metrics); },
+            "Client creation with large cipher suite list");
+        BOOST_CHECK_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - start_time)
+                           .count(),
+                       1000);
 
         // Test 2: Compare with default cipher suite configuration
         client_config.cipher_suites.clear();  // Use defaults
@@ -558,22 +550,18 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_performance_impact,
 
         start_time = std::chrono::steady_clock::now();
 
-        try {
-            coap_server<test_types> server(
-                test_bind_address,
-                test_bind_port + iteration % 1000,  // Avoid port conflicts
-                server_config, metrics);
-
-            auto end_time = std::chrono::steady_clock::now();
-            auto duration =
-                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-            // Server creation should complete within reasonable time
-            BOOST_CHECK_LT(duration.count(), 1000);
-
-        } catch (const std::exception& e) {
-            BOOST_FAIL("Server creation with large cipher suite list should not throw: " +
-                       std::string(e.what()));
-        }
+        check_psk_cipher_config(
+            true,
+            [&] {
+                coap_server<test_types> server(
+                    test_bind_address,
+                    test_bind_port + iteration % 1000,  // Avoid port conflicts
+                    server_config, metrics);
+            },
+            "Server creation with large cipher suite list");
+        BOOST_CHECK_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - start_time)
+                           .count(),
+                       1000);
     }
 }

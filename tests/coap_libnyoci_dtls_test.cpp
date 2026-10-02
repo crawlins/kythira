@@ -367,6 +367,33 @@ BOOST_AUTO_TEST_CASE(test_pki_with_missing_files_fails_at_start,
     BOOST_TEST(!server.is_running());
 }
 
+// cipher_suites takes IANA names, which OpenSSL's cipher-string parser does
+// not understand on its own; they used to reach it untranslated and fail
+// start(). A name that selects nothing is still a configuration error.
+BOOST_AUTO_TEST_CASE(test_dtls_pki_cipher_suites_accept_iana_names,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    const pki_material material{"server"};
+    kythira::pki_credentials creds;
+    creds.cert_file = material.cert_file;
+    creds.key_file = material.key_file;
+    creds.verify_peer_cert = false;
+    creds.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"};
+
+    kythira::coap_server_config config;
+    config.security.mode = kythira::coap_auth_mode::dtls_pki;
+    config.security.credentials = creds;
+    {
+        test_server server{loopback, ephemeral_port, config, test_metrics{}};
+        BOOST_CHECK_NO_THROW(server.start());
+        server.stop();
+    }
+
+    creds.cipher_suites = {"NOT-A-CIPHER"};
+    config.security.credentials = creds;
+    test_server server{loopback, ephemeral_port, config, test_metrics{}};
+    BOOST_CHECK_THROW(server.start(), kythira::coap_security_config_error);
+}
+
 // A mode that names credentials of the wrong alternative is a configuration
 // error, and must say so rather than dereferencing the wrong variant member.
 BOOST_AUTO_TEST_CASE(test_psk_mode_with_pki_credentials_is_a_config_error,

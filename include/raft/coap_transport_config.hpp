@@ -222,6 +222,13 @@ inline auto translate_legacy_fields(const LegacyConfig& cfg) -> coap_security_co
                 "both security.mode and legacy DTLS fields (cert_file/psk_identity) are "
                 "set; populate only one");
         }
+        // The legacy cipher_suites field would otherwise be dropped here
+        // without a word, leaving the handshake on the backend's defaults.
+        if (!cfg.cipher_suites.empty()) {
+            throw coap_security_config_error(
+                "cipher_suites is a legacy DTLS field and is ignored when security.mode is "
+                "set; put the suites in pki_credentials::cipher_suites instead");
+        }
         return cfg.security;
     }
 
@@ -236,6 +243,15 @@ inline auto translate_legacy_fields(const LegacyConfig& cfg) -> coap_security_co
         return coap_security_config{coap_auth_mode::dtls_pki, creds, std::nullopt};
     }
     if (legacy_psk) {
+        // DTLS-PSK runs on each backend's fixed PSK suite list (libcoap
+        // offers no hook to change it on the server side), so a restriction
+        // here could not be honoured everywhere. Refuse it rather than
+        // silently negotiating something the operator ruled out.
+        if (!cfg.cipher_suites.empty()) {
+            throw coap_security_config_error(
+                "cipher_suites applies only to certificate-based DTLS (cert_file / dtls_pki); "
+                "it cannot be combined with psk_identity");
+        }
         psk_credentials creds{cfg.psk_identity, cfg.psk_key};
         return coap_security_config{coap_auth_mode::dtls_psk, creds, std::nullopt};
     }

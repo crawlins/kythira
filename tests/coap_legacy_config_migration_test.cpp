@@ -105,6 +105,31 @@ BOOST_AUTO_TEST_CASE(explicit_mode_plus_legacy_psk_identity_throws,
     BOOST_CHECK_THROW(translate_legacy_fields(cfg), coap_security_config_error);
 }
 
+// No backend can restrict DTLS-PSK suites everywhere (libcoap's server has
+// no hook for it), so asking for it must fail instead of being ignored.
+BOOST_AUTO_TEST_CASE(legacy_psk_with_cipher_suites_throws,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
+    coap_client_config cfg;
+    cfg.psk_identity = "node-1";
+    cfg.psk_key = std::vector<std::byte>(16, std::byte{0x11});
+    cfg.cipher_suites = {"TLS_PSK_WITH_AES_128_CCM_8"};
+
+    BOOST_CHECK_THROW(translate_legacy_fields(cfg), coap_security_config_error);
+}
+
+// With an explicit mode the legacy cipher_suites field used to be dropped on
+// the floor; the suites belong in pki_credentials::cipher_suites.
+BOOST_AUTO_TEST_CASE(explicit_mode_plus_legacy_cipher_suites_throws,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
+    coap_server_config cfg;
+    cfg.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"};
+    cfg.security.mode = coap_auth_mode::dtls_pki;
+    cfg.security.credentials =
+        pki_credentials{"/tmp/other.crt", "/tmp/other.key", "", true, {}, nullptr};
+
+    BOOST_CHECK_THROW(translate_legacy_fields(cfg), coap_security_config_error);
+}
+
 BOOST_AUTO_TEST_CASE(server_config_legacy_translation_matches_client,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_server_config cfg;

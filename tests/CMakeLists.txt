@@ -2563,6 +2563,10 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_network_test(coap_certificate_revocation_test coap_certificate_revocation_test.cpp)
     set_tests_properties(coap_certificate_revocation_test PROPERTIES
         TIMEOUT 180 LABELS "coap;coap-security;libcoap")
+    # DTLS cipher_suites actually restricting the handshake (Requirement 6.4).
+    add_network_test(coap_dtls_cipher_suites_test coap_dtls_cipher_suites_test.cpp)
+    set_tests_properties(coap_dtls_cipher_suites_test PROPERTIES
+        TIMEOUT 300 LABELS "coap;coap-security;libcoap")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 
 if(KYTHIRA_BUILD_COAP_TRANSPORT)

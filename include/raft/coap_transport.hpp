@@ -361,6 +361,10 @@ private:
     std::unordered_map<std::uint64_t, std::string> _node_id_to_endpoint;
     coap_context_t* _coap_context;
     std::unique_ptr<coap_security_provider> _security_provider;
+    // OpenSSL cipher list built from pki_credentials::cipher_suites; empty
+    // means libcoap's defaults. The libcoap context's app data points here,
+    // which is how detail::libcoap_cipher_list_hook finds it mid-handshake.
+    std::string _dtls_cipher_list;
     kythira::coap_client_config _config;
     metrics_type _metrics;
     mutable logger_type _logger;
@@ -614,6 +618,10 @@ private:
     serializer_registry_type _registry;
     coap_context_t* _coap_context;
     std::unique_ptr<coap_security_provider> _security_provider;
+    // OpenSSL cipher list built from pki_credentials::cipher_suites; empty
+    // means libcoap's defaults. The libcoap context's app data points here,
+    // which is how detail::libcoap_cipher_list_hook finds it mid-handshake.
+    std::string _dtls_cipher_list;
     address_type _bind_address;
     port_type _bind_port;
     // Set from the real bound address in start() -- see bound_port()'s own

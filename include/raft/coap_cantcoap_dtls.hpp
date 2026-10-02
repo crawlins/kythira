@@ -66,6 +66,7 @@
 /// which is also the only thread that touches the socket.
 
 #include <raft/coap_exceptions.hpp>
+#include <raft/coap_dtls_cipher_suites.hpp>
 #include <raft/coap_security.hpp>
 
 #include <openssl/bio.h>
@@ -465,19 +466,7 @@ private:
         } else if (creds.verify_peer_cert) {
             SSL_CTX_set_default_verify_paths(_ctx.get());
         }
-        if (!creds.cipher_suites.empty()) {
-            std::string list;
-            for (const auto& suite : creds.cipher_suites) {
-                if (!list.empty()) {
-                    list.push_back(':');
-                }
-                list += suite;
-            }
-            if (SSL_CTX_set_cipher_list(_ctx.get(), list.c_str()) != 1) {
-                throw coap_security_config_error("none of the configured DTLS cipher suites ('" +
-                                                 list + "') is available");
-            }
-        }
+        detail::apply_dtls_cipher_list(_ctx.get(), detail::dtls_cipher_list(creds.cipher_suites));
         if (creds.verify_peer_cert) {
             int mode = SSL_VERIFY_PEER;
             if (_role == coap_security_role::server) {
