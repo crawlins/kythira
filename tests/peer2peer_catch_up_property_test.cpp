@@ -345,7 +345,7 @@ BOOST_AUTO_TEST_CASE(remove_server_revokes_catch_up_eligibility_immediately,
     }
 
     auto cfg = make_fast_config();
-    auto make_node = [&](std::uint64_t id, auto net) {
+    auto make_node = [&](std::uint64_t id, auto net, const kythira::raft_configuration& c) {
         return test_node{id,
                          {net, test_types::serializer_type{}},
                          {net, test_types::serializer_type{}},
@@ -353,15 +353,22 @@ BOOST_AUTO_TEST_CASE(remove_server_revokes_catch_up_eligibility_immediately,
                          kythira::console_logger{},
                          {},
                          {},
-                         cfg,
+                         c,
                          std::to_string(id),
                          preset_peer_discovery<std::uint64_t, std::string>{},
                          replicator_t{table}};
     };
 
-    auto node1 = make_node(1, net1);
-    auto node2 = make_node(2, net2);
-    auto node3 = make_node(3, net3);
+    auto node1 = make_node(1, net1, cfg);
+    auto node2 = make_node(2, net2, cfg);
+    // node3 is ticked below only to advertise its progress into the shared
+    // table, never to campaign, so it gets the dormant election timeout.
+    // With the fast one, that tick also started an election whenever node1's
+    // heartbeats had not reached node3 within 80-160ms. node3 then won (its
+    // log was as long as anyone's), node1 stepped down, and remove_server(3)
+    // failed with node3 as leader. That needed only a slow round trip: with
+    // 30ms of simulated link latency per hop this test failed 4-6 times in 20.
+    auto node3 = make_node(3, net3, make_dormant_config());
 
     node1.set_cluster_configuration({1, 2, 3});
     node2.set_cluster_configuration({1, 2, 3});
