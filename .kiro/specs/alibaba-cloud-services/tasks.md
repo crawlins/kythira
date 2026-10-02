@@ -1,40 +1,38 @@
 # Implementation Plan — Alibaba Cloud Services
 
-## Status: THIS CHECKLIST IS STALE — read this first (September 12, 2026)
+## Status: complete — audited task by task (October 2, 2026)
 
-The heading below says "Wave 1 complete" and the boxes say 3 of 12. **The tree
-disagrees, and the tree is newer.** Found while auditing `doc/TODO.md`, which
-had been carrying "at wave 1 with its vendor-fact spike open" as a result.
+Every box below is now ticked, and each was ticked against its own **Verify**
+line rather than on the strength of files existing. Task 4 stays closed by
+descope. The September 12 note this replaces said the checklist and the tree
+disagreed and that a per-task pass was owed; this is that pass.
 
-What is on `main` that this list shows unchecked:
+| Task | Evidence |
+| --- | --- |
+| 0.2 | Live PutObject chain, spike-notes Finding 2; read-after-write, Finding 13 |
+| 0.3 | spike-notes Finding 11. Pagination past one page is the one thing still documentation-and-mock only, on purpose |
+| 0.5 | spike-notes Finding 12, via the vendor's action |
+| 3 | 33 unit cases incl. the four fault points; `static_assert` at the foot of the header. **The audit found the "NodeId max+1 incl. boundary" case the test list names was not covered, and the boundary was broken** — see below |
+| 5 | `alibaba_oss_persistence_unit_test` (CI-green on `main`); live in Finding 13 |
+| 6 | Mock verifies both schemes from received bytes; `a_tampered_object_signature_is_rejected` is the corrupted-signature control |
+| 7 | Both real suites exit 77 naming the missing `KYTHIRA_ALIBABA_*` values (re-run October 2); neither is `add_test`-registered |
+| 8 | `Fail closed if Alibaba CI variables are unset` names each missing variable; the zero-bundles guard; YAML parses |
+| 9 | Req 18 artifacts present; README provider list added October 2 (it was the one missing item) |
+| 10 | Account, role, OIDC provider, scaling group and bucket recorded in `scripts/ci-cloud-credentials/alibaba/README.md`; the script's idempotency was run three times (`89259dc`) |
+| 11 | Two real suites, not the three the text names (the CA suite went with task 4). Scheduled run 36426191450: both bundles green, audit clean; dispatch 36936632218 green; CI-runner latency in the operator README |
 
-| Task | Shown | Actually |
-| --- | --- | --- |
-| 3. `alibaba_ess_quorum_manager` | `[ ]` | `include/raft/alibaba_ess_quorum_manager.hpp`, **1,049 lines**, landed as `5fd8f14` |
-| 5. `alibaba_oss_persistence_engine` | `[ ]` | `include/raft/alibaba_oss_persistence.hpp`, same commit |
-| 6. Mock server + mock-tier tests | `[ ]` | `tests/alibaba_mock_server.hpp` plus `*_mock_test.cpp` for persistence and the quorum manager |
-| 7. Real-tier suites | `[ ]` | `alibaba_*_real_test.cpp` and `alibaba_real_test_support.hpp` |
-| 8. CI wiring + credential scripts | `[ ]` | **70** references in `.github/workflows/real-cloud-tests.yml`; `scripts/ci-cloud-credentials/alibaba/` |
-| 9. Docs, example config | `[ ]` | `docker/alibaba_quorum_manager/` |
+**What the audit fixed rather than ticked (task 3).** `next_node_id_from`
+parsed tags with `std::stoull`, which reads `"-1"` as 2^64-1, so one stray
+tag made max+1 wrap to NodeId 0 — and kept doing so, giving every later
+provision the same identity. A tag already at the ceiling did the same. The
+scan now parses strict decimal and refuses to wrap, and because the NodeId is
+computed *after* ESS has launched the instance, a refusal there now removes
+the instance instead of leaving it running untagged. Three unit cases pin
+it; all three fail against the previous header.
 
-`5fd8f14`'s subject is "feat(alibaba): ESS quorum manager and OSS persistence
-engine" — tasks 3 and 5 by name. **Seven alibaba tests are registered CTest
-entries in a configured tree**, which is why this says "built" and not merely
-"present": file existence is not evidence, and this project has been caught by
-that distinction before.
-
-**The boxes are deliberately NOT ticked here.** Ticking six on the strength of
-"the files exist and build" is the shape of failure this repo keeps a
-Known Follow-ups section about — machinery reporting success while nobody
-checked the work. Each task carries acceptance criteria; someone who can check
-them against the implementation owes it a pass, and until then the honest
-record is that the checklist and the tree disagree.
-
-**What looks genuinely outstanding** after that pass, and it is small: spike
-sub-items **0.2, 0.3 and 0.5** (0.1 and 0.4 are CONFIRMED in
-`spike-notes.md`); task **10**, marked `[operator]`, which needs a real
-Alibaba Cloud account provisioned by a human; and task **11**, live
-verification, which 10 blocks.
+**Not verifiable from the repository:** task 10's root-account hardening (MFA
+on root, no root AccessKey). It is an operator attestation, recorded here as
+such rather than as checked.
 
 ## Status: Wave 1 complete (August 13, 2026) — superseded, see above
 
@@ -88,7 +86,7 @@ Reference implementations to study before starting:
 
 ## Tasks
 
-- [ ] 0. **Spike: pin the vendor facts this spec paraphrases**
+- [x] 0. **Spike: pin the vendor facts this spec paraphrases**
 
   Run against vendor documentation and (once any account exists — a
   personal/trial account suffices for signing captures) live endpoints.
@@ -101,12 +99,12 @@ Reference implementations to study before starting:
         golden vectors (canonical request, string-to-sign, Authorization)
         for the unit tests. Confirm percent-encoding rules and the signed
         header set with/without `x-acs-security-token`.
-  - [~] 0.2 **OSS V4 signing canonical form** — canonical form CONFIRMED; final signature OPEN (vendor masked the example's secret — Finding 2). Live PutObject is the highest-value first-account check. — same treatment for
+  - [x] 0.2 **OSS V4 signing canonical form** — CONFIRMED LIVE: the first live PutObject found the unsigned Content-Type defect, fixed and re-verified end to end (Finding 2); read-after-write seen live (Finding 13). — same treatment for
         PutObject/GetObject/ListObjectsV2; confirm the path-style
         addressing behavior the mock tier depends on (Requirement 2.3),
         and confirm the documented durability/consistency statements cited
         by Requirement 15.2.
-  - [ ] 0.3 **ESS semantics** — confirm `ModifyScalingGroup`
+  - [x] 0.3 **ESS semantics** — CONFIRMED LIVE except pagination past one page (Finding 11). — confirm `ModifyScalingGroup`
         DesiredCapacity+1 vs `ScaleWithAdjustment` for provision
         (idempotency under retry) and `RemoveInstances` vs
         `DetachInstances`+decrement for decommission (must terminate AND
@@ -117,7 +115,7 @@ Reference implementations to study before starting:
         problems with hand-rolled signing, record the fallback decision to
         adopt vcpkg `aliyun-oss-cpp-sdk` for the data plane only, and why;
         otherwise record CONFIRMED for the no-SDK path.
-  - [ ] 0.5 **AssumeRoleWithOIDC exchange** — confirm the STS request shape
+  - [x] 0.5 **AssumeRoleWithOIDC exchange** — CONFIRMED LIVE through the vendor action (Finding 12). — confirm the STS request shape
         (unauthenticated call carrying the OIDC token + role ARN + OIDC
         provider ARN) and the returned credential triple, for Requirement
         17.2's workflow step.
@@ -156,7 +154,7 @@ Reference implementations to study before starting:
   - Verify: unit test green; golden V4 vector case pinned.
   - _Requirements: 2.1–2.6, 16.2_
 
-- [ ] 3. **`alibaba_ess_quorum_manager`**
+- [x] 3. **`alibaba_ess_quorum_manager`**
 
   - **Config + constructor** (Req 3): validation, fail-fast
     `DescribeScalingGroups` probe.
@@ -185,7 +183,7 @@ Reference implementations to study before starting:
       number.
   - _Requirements: 12 (descope record)_
 
-- [ ] 5. **`alibaba_oss_persistence_engine`**
+- [x] 5. **`alibaba_oss_persistence_engine`**
 
   - Engine per Requirement 15 + design: layout (Req 14), in-memory
     mirror, synchronous writes with single idempotent-PUT retry,
@@ -199,7 +197,7 @@ Reference implementations to study before starting:
   - Verify: unit test green, including the durability-ordering case.
   - _Requirements: 14.1–14.3, 15.1–15.9, 16.5_
 
-- [ ] 6. **Mock server + mock-tier tests**
+- [x] 6. **Mock server + mock-tier tests**
 
   - `tests/alibaba_mock_server.hpp`: ESS/ECS routes + OSS path-style
     object store, in-memory state, additive TagResources semantics,
@@ -213,7 +211,7 @@ Reference implementations to study before starting:
     (proving verification is live).
   - _Requirements: 16.6–16.7_
 
-- [ ] 7. **Real-tier suites (compiled, gated, skip-correct)**
+- [x] 7. **Real-tier suites (compiled, gated, skip-correct)**
 
   - `tests/alibaba_{quorum_manager,oss_persistence}_real_test.cpp`
     under `KYTHIRA_ALIBABA_REAL_TESTS`; never CTest-registered; exit-77
@@ -223,7 +221,7 @@ Reference implementations to study before starting:
     lines; `ctest -N` does not list them.
   - _Requirements: 16.8–16.10_
 
-- [ ] 8. **CI wiring + credential provisioning scripts (ships fail-closed)**
+- [x] 8. **CI wiring + credential provisioning scripts (ships fail-closed)**
 
   - Replace the `alibaba` stub job in real-cloud-tests.yml per Req 17:
     bundle toggles + dispatch inputs, zero-bundles guard,
@@ -238,7 +236,7 @@ Reference implementations to study before starting:
     missing variables** (this is verifiable today, without an account).
   - _Requirements: 17.1–17.5_
 
-- [ ] 9. **Docs, example config, close-out**
+- [x] 9. **Docs, example config, close-out**
 
   - `docker/alibaba_quorum_manager/alibaba_quorum_manager.env.example` +
     `README.md` per Req 18.1–18.2 (prerequisites, credential modes, zone
@@ -250,7 +248,7 @@ Reference implementations to study before starting:
     has not run live.
   - _Requirements: 11.3, 18.1–18.4_
 
-- [ ] 10. **[operator] Provision the Alibaba Cloud account for validation
+- [x] 10. **[operator] Provision the Alibaba Cloud account for validation
       and CI**
 
   The one task on this list an operator must at least initiate by hand
@@ -288,7 +286,7 @@ Reference implementations to study before starting:
     verdict — that is task 11's concern).
   - _Requirements: 16.9, 17.2–17.3, 17.5, 18.2_
 
-- [ ] 11. **Live verification** (unblocked by task 10)
+- [x] 11. **Live verification** (unblocked by task 10)
 
   - Run all three real suites against the provisioned account; fold every
     live correction back into spike-notes.md/requirements/design in place
