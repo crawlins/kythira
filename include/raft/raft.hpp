@@ -1301,6 +1301,19 @@ private:
     // Must be called with _mutex held (or before start(), single-threaded).
     auto sync_peer2peer_membership() -> void;
 
+    // Serialises a configuration entry's payload.  When placement groups are
+    // strings (every in-tree quorum manager's), the payload also carries the
+    // placement of each member this node knows, so the map survives a change
+    // of leader instead of living only on the leader that provisioned a node.
+    // Must be called with _mutex held.
+    [[nodiscard]] auto encode_configuration(const cluster_configuration_type& cfg) const
+        -> std::vector<std::byte>;
+
+    // Merges the placement a configuration entry carries into _placement_map.
+    // Entries written without placement change nothing.  Must be called with
+    // _mutex held.
+    auto adopt_replicated_placement(const std::vector<std::byte>& command) -> void;
+
     // Responder side of fetch_log_entries (Requirement 5.4/5.5). Only reachable
     // if network_server_with_log_fetch<network_server_type>.
     [[nodiscard]] auto handle_fetch_log_entries(const fetch_log_entries_request_type& request)
@@ -1551,6 +1564,36 @@ template<raft_types Types>
 auto node<Types>::set_placement(node_id_type id, placement_group_id_type group) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _placement_map[std::move(id)] = std::move(group);
+}
+
+template<raft_types Types>
+auto node<Types>::encode_configuration(const cluster_configuration_type& cfg) const
+    -> std::vector<std::byte> {
+    if constexpr (std::same_as<placement_group_id_type, std::string>) {
+        std::map<node_id_type, std::string> placement;
+        auto record = [&](const node_id_type& id) {
+            if (auto it = _placement_map.find(id); it != _placement_map.end()) {
+                placement.emplace(id, it->second);
+            }
+        };
+        std::for_each(cfg.nodes().begin(), cfg.nodes().end(), record);
+        std::for_each(cfg.learners().begin(), cfg.learners().end(), record);
+        if (cfg.old_nodes()) {
+            std::for_each(cfg.old_nodes()->begin(), cfg.old_nodes()->end(), record);
+        }
+        return serialize_configuration<node_id_type>(cfg, &placement);
+    } else {
+        return serialize_configuration<node_id_type>(cfg);
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::adopt_replicated_placement(const std::vector<std::byte>& command) -> void {
+    if constexpr (std::same_as<placement_group_id_type, std::string>) {
+        for (auto& [id, group] : deserialize_placement<node_id_type>(command)) {
+            _placement_map[id] = std::move(group);
+        }
+    }
 }
 
 // ── Quorum management (Req 12-15) ────────────────────────────────────────────
@@ -3605,7 +3648,7 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
         cluster_configuration_type learner_config = _configuration;
         learner_config._learners.push_back(new_node);
 
-        auto command = serialize_configuration<node_id_type>(learner_config);
+        auto command = encode_configuration(learner_config);
         const auto entry_index = get_last_log_index() + 1;
         log_entry_type entry{._term = _current_term,
                              ._index = entry_index,
@@ -3886,7 +3929,7 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     // commits in apply_committed_entries().
     cluster_configuration_type joint_config{new_nodes, true, _configuration.nodes(),
                                             _configuration.learners()};
-    auto joint_bytes = serialize_configuration<node_id_type>(joint_config);
+    auto joint_bytes = encode_configuration(joint_config);
     const auto joint_idx = get_last_log_index() + 1;
     log_entry_type joint_entry{._term = _current_term,
                                ._index = joint_idx,
@@ -4016,7 +4059,7 @@ auto node<Types>::add_learner(node_id_type new_node) -> future_type {
     cluster_configuration_type new_config = _configuration;
     new_config._learners.push_back(new_node);
 
-    auto command = serialize_configuration<node_id_type>(new_config);
+    auto command = encode_configuration(new_config);
     const auto entry_index = get_last_log_index() + 1;
     log_entry_type entry{._term = _current_term,
                          ._index = entry_index,
@@ -4115,7 +4158,7 @@ auto node<Types>::remove_learner(node_id_type learner) -> future_type {
         std::remove(new_config._learners.begin(), new_config._learners.end(), learner),
         new_config._learners.end());
 
-    auto command = serialize_configuration<node_id_type>(new_config);
+    auto command = encode_configuration(new_config);
     const auto entry_index = get_last_log_index() + 1;
     log_entry_type entry{._term = _current_term,
                          ._index = entry_index,
@@ -4250,7 +4293,7 @@ auto node<Types>::begin_voter_promotion(node_id_type learner) -> future_type {
     // Build C_old+new joint configuration and append it as a configuration log entry.
     cluster_configuration_type joint_config{new_voting, true, _configuration.nodes(),
                                             remaining_learners};
-    auto joint_bytes = serialize_configuration<node_id_type>(joint_config);
+    auto joint_bytes = encode_configuration(joint_config);
     const auto joint_idx = get_last_log_index() + 1;
     log_entry_type joint_entry{._term = _current_term,
                                ._index = joint_idx,
@@ -4577,6 +4620,7 @@ auto node<Types>::initialize_from_storage() -> void {
     for (auto it = _log.rbegin(); it != _log.rend(); ++it) {
         if (it->type() == entry_type::configuration) {
             _configuration = deserialize_configuration<node_id_type>(it->command());
+            adopt_replicated_placement(it->command());
             _logger.info("Restored configuration from log entry",
                          {{"node_id", node_id_to_string(_node_id)},
                           {"log_index", std::to_string(it->index())}});
@@ -5266,6 +5310,7 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
         for (auto it = _log.rbegin(); it != _log.rend(); ++it) {
             if (it->type() == entry_type::configuration) {
                 reverted = deserialize_configuration<node_id_type>(it->command());
+                adopt_replicated_placement(it->command());
                 break;
             }
         }
@@ -7619,6 +7664,7 @@ auto node<Types>::apply_committed_entries() -> void {
         // configuration change protocol instead.
         if (entry.type() == entry_type::configuration) {
             auto new_config = deserialize_configuration<node_id_type>(entry.command());
+            adopt_replicated_placement(entry.command());
             // Req 12.4 — voters dropped by a committed joint configuration
             // (a remove_server()) leave the placement map on every replica.
             // Done at the joint commit because that is the only committed
@@ -7656,7 +7702,7 @@ auto node<Types>::apply_committed_entries() -> void {
                 // Learners are preserved unchanged — the joint phase only affects the voting set.
                 cluster_configuration_type c_new{new_config.nodes(), false, std::nullopt,
                                                  new_config.learners()};
-                auto c_new_bytes = serialize_configuration<node_id_type>(c_new);
+                auto c_new_bytes = encode_configuration(c_new);
                 log_entry_type c_new_entry{._term = _current_term,
                                            ._index = get_last_log_index() + 1,
                                            ._command = std::move(c_new_bytes),
