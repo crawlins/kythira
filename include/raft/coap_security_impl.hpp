@@ -502,6 +502,11 @@ private:
         conf_text << "sender_id,hex,\"" << detail::bytes_to_hex(_creds.sender_id) << "\"\n";
         conf_text << "recipient_id,hex,\"" << detail::bytes_to_hex(_creds.recipient_id) << "\"\n";
         conf_text << "aead_alg,text,\"" << _creds.aead_algorithm << "\"\n";
+        if (!_creds.id_context.empty()) {
+            // Same field, same meaning as security_context's: libcoap mixes it
+            // into the derivation and sends it as the kid context.
+            conf_text << "id_context,hex,\"" << detail::bytes_to_hex(_creds.id_context) << "\"\n";
+        }
         // RFC8613 Appendix B.1.2's "server rebooting replay window" mode
         // (libcoap default: true) has the server challenge a peer it has no
         // replay-window state for with a 4.01 + Echo option, expecting the
