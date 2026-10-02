@@ -42,6 +42,14 @@ socket and `CoapPDU`: inbound datagrams are decrypted before parsing, outbound
 stay in `coap_edhoc.hpp` exactly as on the libcoap path, so the security story
 does not fork per backend.
 
+**As built:** the placement held, the reuse did not. `coap_security_provider`
+is expressed entirely in libcoap types and this backend cannot include a libcoap
+header (the option-number macro collision), so the layer between the socket and
+`CoapPDU` is `include/raft/coap_cantcoap_dtls.hpp` — OpenSSL DTLS driven per
+peer over a datagram-preserving custom BIO. OSCORE is `raft/oscore.hpp` and the
+EDHOC bootstrap is `coap_edhoc_bootstrap.hpp`, both transport-neutral and both
+shared with the libnyoci backend. See tasks.md Task 6.
+
 ### Non-goal: reimplementing CoAP semantics cantcoap can't express
 
 cantcoap covers RFC 7252 message format and options. Anything genuinely beyond
