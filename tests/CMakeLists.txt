@@ -1746,6 +1746,10 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     )
     target_compile_features(coap_concept_conformance_test PRIVATE cxx_std_23)
     add_test(NAME coap_concept_conformance_test COMMAND coap_concept_conformance_test)
+    # >= the sum of the file's per-case boost budgets (eight cases at 15s, two
+    # at 30s), so CTest never kills a run Boost would have let finish; scaled
+    # with them by KYTHIRA_TEST_TIMEOUT_SCALE at the bottom of this file.
+    set_tests_properties(coap_concept_conformance_test PROPERTIES TIMEOUT 180 LABELS "coap;unit")
 
     # CoAP message serialization property test needs Boost.JSON
     add_executable(coap_message_serialization_property_test coap_message_serialization_property_test.cpp)
