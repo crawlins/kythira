@@ -15,6 +15,8 @@
 #include <raft/coap_transport_cantcoap_impl.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
+#include "coap_wire_probe.hpp"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -23,6 +25,7 @@
 #include <chrono>
 #include <cstring>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -586,6 +589,96 @@ BOOST_AUTO_TEST_CASE(test_oscore_server_refuses_plaintext,
     BOOST_TEST(!handler_ran);
 
     server.stop();
+}
+
+// ── TimeoutNow (coap-transport-multi-raft task 7) ──────────────────────────
+
+// Every field survives, group_id included: multi-Raft's scatter is why this
+// RPC exists on CoAP, and a transfer delivered to the wrong group is worse
+// than one not delivered.
+BOOST_AUTO_TEST_CASE(test_timeout_now_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    kythira::timeout_now_request<> seen{};
+    server.register_timeout_now_handler([&seen](const kythira::timeout_now_request<>& request) {
+        seen = request;
+        kythira::timeout_now_response<> response{};
+        response._term = request.term();
+        response._success = true;
+        response._group_id = request.group_id();
+        return response;
+    });
+    server.start();
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, fast_client_config(), test_metrics{}};
+
+    kythira::timeout_now_request<> request{};
+    request._term = 7;
+    request._leader_id = 1;
+    request._last_log_index = 42;
+    request._group_id = 9001;
+    const auto response =
+        client.send_timeout_now(peer_node_id, request, std::chrono::seconds{10}).get();
+    server.stop();
+
+    BOOST_TEST(response.term() == 7U);
+    BOOST_TEST(response.success());
+    BOOST_TEST(response.group_id() == 9001U);
+    BOOST_TEST(seen.term() == 7U);
+    BOOST_TEST(seen.leader_id() == 1U);
+    BOOST_TEST(seen.last_log_index() == 42U);
+    BOOST_TEST(seen.group_id() == 9001U);
+}
+
+// Requirement 3.4: with the config set to NON, a RequestVote leaves as NON and
+// a TimeoutNow still leaves as CON. Read off the wire by a raw socket, since
+// the message type is not visible above the transport.
+BOOST_AUTO_TEST_CASE(test_timeout_now_is_confirmable_when_the_config_says_non,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::testing::udp_probe fake_server;
+    auto config = fast_client_config();
+    config.use_confirmable_messages = false;
+    test_client client{{{peer_node_id, fake_server.endpoint()}}, config, test_metrics{}};
+
+    // Neither future is ever answered; only the outgoing bytes matter.
+    auto vote = client.send_request_vote(peer_node_id, kythira::request_vote_request<>{},
+                                         std::chrono::seconds{2});
+    const auto vote_datagram = fake_server.receive();
+    auto transfer = client.send_timeout_now(peer_node_id, kythira::timeout_now_request<>{},
+                                            std::chrono::seconds{2});
+    const auto transfer_datagram = fake_server.receive();
+
+    BOOST_REQUIRE(vote_datagram.has_value());
+    BOOST_REQUIRE(transfer_datagram.has_value());
+    BOOST_TEST(kythira::testing::coap_message_type(*vote_datagram) ==
+               kythira::testing::coap_type_non);
+    BOOST_TEST(kythira::testing::coap_message_type(*transfer_datagram) ==
+               kythira::testing::coap_type_con);
+}
+
+// No handler is 5.01 Not Implemented, never 4.04, the same answer the libcoap
+// server gives: a peer can tell "cannot transfer" from "not a Raft endpoint".
+BOOST_AUTO_TEST_CASE(test_timeout_now_without_a_handler_is_not_implemented,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    server.start();
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, fast_client_config(), test_metrics{}};
+
+    std::optional<std::uint8_t> code;
+    try {
+        (void)client
+            .send_timeout_now(peer_node_id, kythira::timeout_now_request<>{},
+                              std::chrono::seconds{10})
+            .get();
+    } catch (const kythira::coap_server_error& error) {
+        code = error.response_code();
+    } catch (const kythira::coap_transport_error&) {  // NOLINT(bugprone-empty-catch)
+    }
+    server.stop();
+    BOOST_REQUIRE(code.has_value());
+    BOOST_TEST(*code == 0xA1U);  // 5.01
 }
 
 #else  // CANTCOAP_AVAILABLE

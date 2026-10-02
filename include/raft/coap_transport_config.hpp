@@ -46,6 +46,17 @@
 
 namespace kythira {
 
+/// Whether one RPC's request travels as CoAP CON or follows the client's
+/// configuration. Raft retries most RPCs itself, so most may follow
+/// `coap_client_config::use_confirmable_messages`; two must not.
+/// InstallSnapshot is large and rare with no cheap retry above it, and
+/// TimeoutNow is one rare message whose loss costs a full election timeout
+/// (.kiro/specs/coap-transport-multi-raft/ Requirements 3.4, 6.4).
+enum class coap_message_reliability {
+    per_config,
+    always_confirmable,
+};
+
 // Message tracking structures - using callbacks to work with generic future types
 struct pending_message {
     std::string token;

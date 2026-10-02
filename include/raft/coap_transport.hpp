@@ -279,6 +279,15 @@ public:
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{30000})
         -> future_template<kythira::install_snapshot_response<>>;
 
+    /// Leadership transfer (Ongaro's dissertation §3.10): POST
+    /// /raft/timeout_now, satisfying network_client_with_timeout_now. Always
+    /// confirmable, whatever use_confirmable_messages says: one rare message
+    /// whose loss costs a whole election timeout is the case CoAP's own
+    /// retransmission is worth paying for.
+    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+                          std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::timeout_now_response<>>;
+
     // Multicast support. Resolves once `timeout` has elapsed with every
     // successful response that arrived in that window, one entry per
     // responding group member -- possibly none.
@@ -422,10 +431,13 @@ private:
     ///        extended (Requirement 7.3). CoAP needs this for the same reason
     ///        HTTP does — the request `Content-Format` is chosen before the peer
     ///        has said anything, so a wrong first guess has to be recoverable.
+    /// @param reliability Whether this request must travel as CON even when
+    ///        the configuration says NON (see coap_message_reliability).
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
-                  std::chrono::milliseconds timeout, std::vector<std::string> attempted = {})
-        -> future_template<Response>;
+                  std::chrono::milliseconds timeout,
+                  coap_message_reliability reliability = coap_message_reliability::per_config,
+                  std::vector<std::string> attempted = {}) -> future_template<Response>;
 
     auto get_endpoint_uri(std::uint64_t node_id) const -> std::string;
     auto generate_message_token() -> std::string;
@@ -560,6 +572,12 @@ public:
                                                const kythira::install_snapshot_request<>&)>
                                                handler) -> void;
 
+    /// Serves POST /raft/timeout_now, satisfying
+    /// network_server_with_timeout_now.
+    auto register_timeout_now_handler(
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+            handler) -> void;
+
     // Server lifecycle
     auto start() -> void;
     auto stop() -> void;
@@ -669,6 +687,8 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        _timeout_now_handler;
 
     // Synchronization
     mutable std::mutex _mutex;
