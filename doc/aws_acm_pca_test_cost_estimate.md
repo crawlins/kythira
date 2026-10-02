@@ -93,6 +93,11 @@ full session:
 (Requirement 10.3-10.4) and other read/describe API calls are not separately
 billed.
 
+`tests/aws_acm_pca_provider_real_test.cpp` on its own adds exactly one
+`IssueCertificate` per run ($0.058 short-lived, $0.75 general-purpose)
+against the existing CA named by `$KYTHIRA_TEST_ACM_PCA_ARN`, and creates no
+CA. Its `RevokeCertificate` call is not separately billed.
+
 **CA operation, prorated to the session's lifetime.** Since the CA is now
 created at the start of the session and deleted at the end (see
 "Assumption" above), its $400 or $50 monthly fee is billed only for the
