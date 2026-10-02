@@ -1948,6 +1948,26 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     else()
         message(STATUS "coap_raft_node_integration_test: skipped (requires Folly)")
     endif()
+    # multi_raft over the libcoap backend: two groups sharing one CoAP client
+    # and server per host, per-group isolation, a split, a merge and a
+    # TimeoutNow-backed scatter -- coap-transport-multi-raft task 13. Raft
+    # timings and waits scale with KYTHIRA_TEST_TIMEOUT_SCALE; ports are
+    # ephemeral. TIMEOUT >= the sum of the per-case boost budgets.
+    if(TARGET Folly::folly)
+        add_executable(multi_raft_coap_test multi_raft_coap_test.cpp)
+        target_link_libraries(multi_raft_coap_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+            Folly::folly
+        )
+        target_compile_features(multi_raft_coap_test PRIVATE cxx_std_23)
+        add_test(NAME multi_raft_coap_test COMMAND multi_raft_coap_test)
+        set_tests_properties(multi_raft_coap_test PROPERTIES TIMEOUT 860
+            LABELS "coap;integration;raft;multi-raft")
+    else()
+        message(STATUS "multi_raft_coap_test: skipped (requires Folly)")
+    endif()
     # TimeoutNow on the libcoap backend's wire: a round trip through every
     # serializer this build has, CON regardless of use_confirmable_messages,
     # and 5.01 without a handler -- coap-transport-multi-raft task 6. TIMEOUT

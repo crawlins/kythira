@@ -31,11 +31,11 @@
 /// optional one **behind a `requires` clause on the underlying transport**,
 /// exactly as `group_scoped_client` does. That is what makes the extension
 /// story cheap: a transport that grows `timeout_now` lights it up here with no
-/// edit, and one that never has it — CoAP, whose deployments are constrained
-/// devices and whose transport is shaped around a fixed resource set — simply
-/// does not satisfy `network_client_with_timeout_now`, `multi_group_network_server`'s
-/// own `if constexpr` skips the handler, and `transfer_leader` / `scatter`
-/// report `unsupported` on that row rather than failing to compile.
+/// edit — as the CoAP backends did (`.kiro/specs/coap-transport-multi-raft/`
+/// task 6) — and one that lacks it simply does not satisfy
+/// `network_client_with_timeout_now`, `multi_group_network_server`'s own
+/// `if constexpr` skips the handler, and `transfer_leader` / `scatter` report
+/// `unsupported` on that row rather than failing to compile.
 ///
 /// ### Adding a transport
 ///
@@ -46,8 +46,9 @@
 /// `drain()` / `shutdown()` — `drain()` returning only once no request handler
 /// is still running, `shutdown()` releasing the fixture's own threads.
 /// Nothing else in the harness or in the tests changes. A CoAP fixture would
-/// differ only in owning a libcoap context instead of an `io_context` and in
-/// reporting `_timeout_now = false`.
+/// differ in owning a libcoap context instead of an `io_context`, and in
+/// reporting `_pre_vote = false` and `_log_fetch = false`: CoAP carries
+/// TimeoutNow but neither of those.
 
 #include "multi_raft_kv_workload.hpp"
 #include "multi_raft_test_fabric.hpp"
@@ -299,10 +300,9 @@ private:
 
 /// @brief What a transport can carry, reported per row rather than assumed.
 ///
-/// The multi-Raft design's own "known limitations" section records that CoAP
-/// does not implement TimeoutNow and that `transfer_leader` / `scatter` report
-/// `unsupported` there. That is a property of the transport, so it is described
-/// here rather than rediscovered by a test that fails.
+/// Whether a transport carries pre-vote, log fetch or TimeoutNow is a property
+/// of the transport — CoAP carries TimeoutNow but neither of the others — so
+/// it is described here rather than rediscovered by a test that fails.
 struct transport_capabilities {
     bool _pre_vote{false};
     bool _log_fetch{false};
