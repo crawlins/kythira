@@ -4928,6 +4928,37 @@ set_tests_properties(aws_acm_pca_provider_unit_test PROPERTIES
     LABELS "unit;certificate_authority;ca;aws;acm-pca"
 )
 
+# LocalStack and real-AWS coverage (task 11). Both need certificate_authority
+# for generate_key_and_csr(), and both are labelled slow so the default CI run
+# skips them; each exits 77 (SKIP_RETURN_CODE) when its backend is absent.
+if(TARGET certificate_authority)
+    foreach(_acm_pca_test aws_acm_pca_provider_localstack_test aws_acm_pca_provider_real_test)
+        add_executable(${_acm_pca_test} ${_acm_pca_test}.cpp)
+        target_link_libraries(${_acm_pca_test} PRIVATE
+            network_simulator
+            certificate_authority
+            Boost::unit_test_framework
+            aws-cpp-sdk-acm-pca
+        )
+        if(TARGET Folly::folly)
+            target_link_libraries(${_acm_pca_test} PRIVATE Folly::folly)
+        endif()
+        target_compile_features(${_acm_pca_test} PRIVATE cxx_std_23)
+        add_test(NAME ${_acm_pca_test} COMMAND ${_acm_pca_test})
+    endforeach()
+    set_tests_properties(aws_acm_pca_provider_localstack_test PROPERTIES
+        TIMEOUT 300
+        LABELS "integration;certificate_authority;ca;aws;acm-pca;localstack;slow"
+        SKIP_RETURN_CODE 77
+    )
+    # Opt-in: needs $KYTHIRA_TEST_ACM_PCA_ARN naming an existing CA.
+    set_tests_properties(aws_acm_pca_provider_real_test PROPERTIES
+        TIMEOUT 600
+        LABELS "integration;certificate_authority;ca;aws;acm-pca;real-acm-pca;slow"
+        SKIP_RETURN_CODE 77
+    )
+endif()
+
 else()
     message(STATUS "AWS ACM Private CA SDK component not found — aws_acm_pca_provider_unit_test will not be built")
 endif()

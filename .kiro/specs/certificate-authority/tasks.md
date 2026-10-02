@@ -418,6 +418,10 @@ service on a cloud instance or in a long-running container.
     default `ctest` run, matching `aws_quorum_manager_real_ec2_test.cpp`
   - Verify: `ctest --test-dir build -R aws_acm_pca_provider_unit` passes
     without any AWS credentials configured
+  - Status: the LocalStack and real files were added after this task was
+    first ticked (the spec-gap audit of 2026-10-02 found them missing). Both
+    are compile-verified only; neither has yet run against LocalStack Pro or
+    a real CA. Shared OpenSSL helpers live in `tests/aws_acm_pca_test_support.hpp`
   - _Requirements: 10.1–10.7_
 
 - [x] 12. Implement `ca_service --serve` mode
