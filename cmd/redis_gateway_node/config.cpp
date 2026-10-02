@@ -257,6 +257,28 @@ auto from_env() -> node_options {
         to_bool("KYTHIRA_REDIS_FORWARDING", get_opt("KYTHIRA_REDIS_FORWARDING", "true"));
     g._internal_user = get_opt("KYTHIRA_REDIS_INTERNAL_USER", "kythira-internal");
     g._internal_secret = get_opt("KYTHIRA_REDIS_INTERNAL_SECRET", "");
+    // Forwarding carries the internal secret, so it follows the listener: a
+    // node with a TLS listener forwards to its peers' TLS listeners unless
+    // told otherwise. Plaintext forwarding is an explicit opt-in.
+    g._forward_tls =
+        to_bool("KYTHIRA_REDIS_FORWARD_TLS",
+                get_opt("KYTHIRA_REDIS_FORWARD_TLS", g._tls_listen.empty() ? "false" : "true"));
+    g._forward_tls_ca_path = get_opt("KYTHIRA_REDIS_FORWARD_TLS_CA", "");
+    g._forward_tls_cert_path = get_opt("KYTHIRA_REDIS_FORWARD_TLS_CERT", "");
+    g._forward_tls_key_path = get_opt("KYTHIRA_REDIS_FORWARD_TLS_KEY", "");
+    g._allow_plaintext_forwarding =
+        to_bool("KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING",
+                get_opt("KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING", "false"));
+    if (g._forward_tls && g._forward_tls_ca_path.empty() && g._tls_ca_path.empty()) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_REDIS_FORWARD_TLS needs KYTHIRA_REDIS_FORWARD_TLS_CA or "
+            "KYTHIRA_REDIS_TLS_CA to verify peer gateways against");
+    }
+    if (g._forward_tls_cert_path.empty() != g._forward_tls_key_path.empty()) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_REDIS_FORWARD_TLS_CERT and KYTHIRA_REDIS_FORWARD_TLS_KEY "
+            "go together");
+    }
     g._io_threads = to_u64("KYTHIRA_REDIS_IO_THREADS", get_opt("KYTHIRA_REDIS_IO_THREADS", "2"));
     g._worker_threads =
         to_u64("KYTHIRA_REDIS_WORKER_THREADS", get_opt("KYTHIRA_REDIS_WORKER_THREADS", "8"));
@@ -266,8 +288,10 @@ auto from_env() -> node_options {
     if (auto pg = get_opt("KYTHIRA_REDIS_PEER_GATEWAYS", ""); !pg.empty()) {
         o._peer_gateways = parse_id_map("KYTHIRA_REDIS_PEER_GATEWAYS", pg);
     } else {
+        // Each peer's listener of the kind this node forwards over.
+        const auto& listener = g._forward_tls ? g._tls_listen : g._listen;
         for (const auto& [id, url] : o._peers) {
-            o._peer_gateways[id] = host_of(url) + ":" + port_of(g._listen);
+            o._peer_gateways[id] = host_of(url) + ":" + port_of(listener);
         }
     }
     return o;
@@ -320,8 +344,14 @@ auto usage() -> std::string {
            "  KYTHIRA_REDIS_INTERNAL_USER      ACL user forwarded commands run as     "
            "[kythira-internal]\n"
            "  KYTHIRA_REDIS_INTERNAL_SECRET    that user's secret; empty disables forwarding\n"
+           "  KYTHIRA_REDIS_FORWARD_TLS        forward to peers' TLS listeners  [true if "
+           "TLS_LISTEN]\n"
+           "  KYTHIRA_REDIS_FORWARD_TLS_CA     CA peers must chain to                 [TLS_CA]\n"
+           "  KYTHIRA_REDIS_FORWARD_TLS_CERT / _KEY  client cert for peers  [TLS_CERT / TLS_KEY]\n"
+           "  KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING  send the internal secret unencrypted "
+           "[false]\n"
            "  KYTHIRA_REDIS_PEER_GATEWAYS      id=host:port,... of every peer's gateway [peer host "
-           "+ LISTEN port]\n"
+           "+ LISTEN port, or TLS_LISTEN port when forwarding over TLS]\n"
            "  KYTHIRA_REDIS_IO_THREADS, KYTHIRA_REDIS_WORKER_THREADS, KYTHIRA_REDIS_LOG_COMMANDS\n"
            "\n"
            "ACL file lines: user <name> <pbkdf2-record|nopass|disabled> "

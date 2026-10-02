@@ -28,9 +28,17 @@ export KYTHIRA_PEERS="1=http://kv1:7000,2=http://kv2:7000,3=http://kv3:7000"
 export KYTHIRA_SHARD_CUTS="sccache/8"
 export KYTHIRA_REDIS_ACL_FILE=/etc/kythira/acl.txt
 export KYTHIRA_REDIS_INTERNAL_SECRET="$(cat /run/secrets/kythira-internal)"
-export KYTHIRA_REDIS_PEER_GATEWAYS="1=kv1:6379,2=kv2:6379,3=kv3:6379"
+export KYTHIRA_REDIS_TLS_LISTEN=0.0.0.0:6380
+export KYTHIRA_REDIS_TLS_CERT=/etc/kythira/kv.crt   # names this node's host
+export KYTHIRA_REDIS_TLS_KEY=/etc/kythira/kv.key
+export KYTHIRA_REDIS_TLS_CA=/etc/kythira/ca.crt     # the CA the peers chain to
 redis_gateway_node
 ```
+
+With a TLS listener, forwarding goes to each peer's TLS listener (`kv2:6380`
+here, derived from `KYTHIRA_PEERS` and the TLS listen port; set
+`KYTHIRA_REDIS_PEER_GATEWAYS` when the peers listen elsewhere). See
+*Forwarding security* below.
 
 `docker/sccache-e2e-compose.yml` is a complete three-node example, and
 `docker/redis_gateway_node/Dockerfile` packages the host-built binary the same
@@ -78,7 +86,11 @@ The Redis front end:
 | `KYTHIRA_REDIS_FORWARDING` | `true` | Forward a command whose shard this node does not lead to the leader's gateway, one hop. Off, the client gets a retryable error instead |
 | `KYTHIRA_REDIS_INTERNAL_USER` | `kythira-internal` | The ACL user forwarded commands authenticate as on the peer |
 | `KYTHIRA_REDIS_INTERNAL_SECRET` | none | That user's secret. Empty disables forwarding. The daemon appends the user to the loaded ACL itself, so the file never carries it |
-| `KYTHIRA_REDIS_PEER_GATEWAYS` | peer host + `LISTEN` port | `id=host:port,...` of every peer's RESP listener, for forwarding |
+| `KYTHIRA_REDIS_FORWARD_TLS` | `true` when `TLS_LISTEN` is set | Forward to the peers' TLS listeners |
+| `KYTHIRA_REDIS_FORWARD_TLS_CA` | `_TLS_CA` | CA every peer's certificate must chain to. Forwarding over TLS without one refuses to start |
+| `KYTHIRA_REDIS_FORWARD_TLS_CERT` / `_KEY` | `_TLS_CERT` / `_TLS_KEY` | Client certificate presented to peers that require one; it needs the `clientAuth` extended key usage, or none |
+| `KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING` | `false` | Forward over plaintext TCP, sending the internal secret unencrypted. Without this or TLS forwarding, a command for a shard led elsewhere gets the retry error |
+| `KYTHIRA_REDIS_PEER_GATEWAYS` | peer host + `LISTEN` port (`TLS_LISTEN` port when forwarding over TLS) | `id=host:port,...` of every peer's RESP listener, for forwarding |
 | `KYTHIRA_REDIS_IO_THREADS` | `2` | Listener/IO threads |
 | `KYTHIRA_REDIS_WORKER_THREADS` | `8` | Command workers |
 | `KYTHIRA_REDIS_LOG_COMMANDS` | `false` | Log every command (keys, never values or secrets) at debug |
@@ -175,6 +187,27 @@ export SCCACHE_REDIS_EXPIRATION=1209600           # optional; makes every write 
 Any node's listener will do as the endpoint: a node that does not lead the
 key's shard forwards the command one hop. Point different runners at
 different nodes to spread the connection load.
+
+### Forwarding security
+
+A forwarded command reaches the peer on a connection authenticated as
+`KYTHIRA_REDIS_INTERNAL_USER`, which can read and write every key, so that
+connection's `AUTH` must not cross the network in the clear. The gateway
+forwards in one of two ways:
+
+- **TLS** (the default once `KYTHIRA_REDIS_TLS_LISTEN` is set). The peer's
+  certificate must chain to `KYTHIRA_REDIS_FORWARD_TLS_CA` and name the host
+  in the peer's endpoint: a DNS SAN for a name, an IP SAN for an address.
+  The node presents its own certificate, so peers may require client
+  certificates on their TLS listener.
+- **Plaintext**, only with `KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING=true`,
+  for a network private to the cluster. The daemon warns at every start.
+
+With neither, forwarding is off in effect: the gateway logs why at startup,
+and a command for a shard led elsewhere gets
+`-ERR shard has no reachable leader, retry`. Every forward, connect and TLS
+handshake included, must finish within `KYTHIRA_REDIS_COMMAND_TIMEOUT_MS`;
+a peer that stops answering costs one command timeout and the retry error.
 
 **`SCCACHE_REDIS_RW_MODE=READ_ONLY` is a client-side convenience, not a
 control.** It stops a runner from *trying* to write; the gateway's `read_only`

@@ -25,6 +25,7 @@
 
 #include <raft/redis_acl.hpp>
 #include <raft/redis_auth_limiter.hpp>
+#include <raft/redis_forward_link.hpp>
 #include <raft/redis_kv_commands.hpp>
 #include <raft/redis_kv_state_machine.hpp>
 #include <raft/resp_protocol.hpp>
@@ -106,6 +107,26 @@ struct redis_gateway_config {
     /// of at least read_write and scope `*`; the daemon creates it.
     std::string _internal_user = "kythira-internal";
     std::string _internal_secret;
+
+    /// Forward over TLS, to the peers' TLS listeners. Forwarding sends
+    /// `AUTH <_internal_user> <_internal_secret>` to the peer, and that
+    /// identity can read and write every key, so the internal connection is
+    /// TLS unless `_allow_plaintext_forwarding` says otherwise. The peer's
+    /// certificate must chain to the forwarding CA and name the host its
+    /// endpoint is dialled by (a DNS SAN, or an IP SAN for an address).
+    bool _forward_tls = false;
+    /// CA bundle peer gateways' certificates must chain to. Empty means
+    /// `_tls_ca_path`; forwarding over TLS with neither set refuses to start.
+    std::string _forward_tls_ca_path;
+    /// Client certificate and key presented to peers whose TLS listener asks
+    /// for one. Empty means the listener's own `_tls_cert_path` and
+    /// `_tls_key_path`, which then need the clientAuth key usage (or none).
+    std::string _forward_tls_cert_path;
+    std::string _forward_tls_key_path;
+    /// Forward over plaintext TCP, sending the internal secret in the clear.
+    /// Off by default: with neither this nor `_forward_tls`, a command for a
+    /// shard led elsewhere is answered with the retry error instead.
+    bool _allow_plaintext_forwarding = false;
 
     std::size_t _io_threads = 2;
     std::size_t _worker_threads = 8;
@@ -298,14 +319,16 @@ private:
     auto register_connection(const std::shared_ptr<connection>& c) -> void;
     auto unregister_connection(connection* c) -> void;
 
+    auto build_forward_ssl_context() -> boost::asio::ssl::context;
+
     struct forward_pool {
         std::mutex _mutex;
-        std::vector<std::unique_ptr<boost::asio::ip::tcp::socket>> _idle;
+        std::vector<std::unique_ptr<redis_forward_link>> _idle;
     };
-    auto forward_socket(const std::string& endpoint)
-        -> std::unique_ptr<boost::asio::ip::tcp::socket>;
+    auto forward_socket(const std::string& endpoint, std::chrono::steady_clock::time_point deadline)
+        -> std::unique_ptr<redis_forward_link>;
     auto return_forward_socket(const std::string& endpoint,
-                               std::unique_ptr<boost::asio::ip::tcp::socket> sock) -> void;
+                               std::unique_ptr<redis_forward_link> sock) -> void;
 
     Host& _host;
     redis_acl& _acl;
@@ -323,6 +346,8 @@ private:
     std::vector<std::shared_ptr<boost::asio::ip::tcp::acceptor>> _acceptors;
     std::vector<std::shared_ptr<boost::asio::ip::tcp::acceptor>> _tls_acceptors;
     std::shared_ptr<boost::asio::ssl::context> _ssl_ctx;
+    /// Client side of forwarding over TLS; null when forwarding is plaintext.
+    std::shared_ptr<boost::asio::ssl::context> _forward_ssl_ctx;
     std::vector<std::thread> _io_threads;
     std::optional<boost::asio::thread_pool> _workers;
     std::uint16_t _port = 0;
