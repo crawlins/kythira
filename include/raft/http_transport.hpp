@@ -116,6 +116,13 @@ struct cpp_httplib_client_config {
 
 // Server configuration structure
 struct cpp_httplib_server_config {
+    /// @brief Most connections served at once, per listening address
+    ///     (Requirement 14.6). Must be greater than zero.
+    ///
+    /// cpp-httplib holds one worker thread per connection for its whole
+    /// keep-alive life. Workers start as connections arrive, up to this many;
+    /// a connection past the limit waits for a worker rather than being
+    /// refused.
     std::size_t max_concurrent_connections{100};
     std::size_t max_request_body_size{10 * 1024 * 1024};  // 10 MB
     std::chrono::seconds request_timeout{30};

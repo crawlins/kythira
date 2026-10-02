@@ -8,6 +8,7 @@
 #include <raft/future_default.hpp>
 #include <httplib.h>
 #include <raft/httplib_listeners.hpp>
+#include <raft/httplib_task_queue.hpp>
 #include <algorithm>
 #include <format>
 #include <stdexcept>
@@ -1503,6 +1504,10 @@ cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uin
             std::format("SSL configuration error during server construction: {}", e.what()));
     }
 
+    if (_config.max_concurrent_connections == 0) {
+        throw std::invalid_argument("cpp_httplib_server: max_concurrent_connections must be > 0");
+    }
+
     // The listeners themselves (plain or httplib::SSLServer, one per bind
     // address) are built by start(), via make_listener().
 }
@@ -1660,6 +1665,11 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> std::unique_ptr<httpli
     // and the plain server leaves every TLS deployment on the old behaviour
     // with nothing to indicate it.
     ssl_server->set_tcp_nodelay(_config.tcp_nodelay);
+    // As make_listener(): missing it here would leave TLS listeners on
+    // httplib's fixed pool.
+    ssl_server->new_task_queue = [limit = _config.max_concurrent_connections] {
+        return new kythira::net_bind::growing_task_queue(limit);
+    };
     return ssl_server;
 #else
     throw kythira::ssl_configuration_error("SSL support not available (OpenSSL not enabled)");
@@ -1689,6 +1699,12 @@ auto cpp_httplib_server<Types>::make_listener() -> std::unique_ptr<httplib::Serv
     // latency-bound as the request that provoked it, so setting this on
     // one side only would leave half the round trip stalled.
     server->set_tcp_nodelay(_config.tcp_nodelay);
+    // Requirement 14.6: at most max_concurrent_connections connections are
+    // served at once, each on its own worker; workers start on demand. See
+    // httplib_task_queue.hpp for why httplib's fixed pool is not enough.
+    server->new_task_queue = [limit = _config.max_concurrent_connections] {
+        return new kythira::net_bind::growing_task_queue(limit);
+    };
     return server;
 }
 
