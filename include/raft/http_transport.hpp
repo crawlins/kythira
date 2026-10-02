@@ -21,6 +21,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <thread>
 #include <stop_token>
@@ -203,8 +204,46 @@ private:
     /// re-choice, never a failure.
     peer_capability_cache<std::uint64_t> _capability_cache;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
-    std::unordered_map<std::uint64_t, std::unique_ptr<httplib::Client>> _http_clients;
-    std::vector<std::unique_ptr<httplib::Client>> _retired_clients;
+    /// One cached connection to a peer. `call_mutex` is held across setting a
+    /// call's deadline and sending it: the timeout setters are plain stores
+    /// that a concurrent request on the same client would read mid-flight.
+    /// cpp-httplib already serialises requests per client on its own
+    /// `request_mutex_`, so holding this costs no concurrency. Waiting is
+    /// bounded by the caller's deadline, so a call queued behind another still
+    /// gives up on time.
+    ///
+    /// A busy flag under a condition variable rather than `std::timed_mutex`:
+    /// libstdc++'s `try_lock_until` locks through `pthread_mutex_clocklock`,
+    /// which ThreadSanitizer does not intercept, so every unlock was reported
+    /// as unlocking an unlocked mutex.
+    struct pooled_http_client {
+        std::unique_ptr<httplib::Client> client;
+        std::mutex call_mutex;
+        std::condition_variable call_done;
+        bool call_in_flight{false};
+
+        /// Claims the connection for one call, or returns false if `deadline`
+        /// passes first.
+        auto acquire_until(std::chrono::steady_clock::time_point deadline) -> bool {
+            std::unique_lock<std::mutex> lock(call_mutex);
+            if (!call_done.wait_until(lock, deadline, [this] { return !call_in_flight; })) {
+                return false;
+            }
+            call_in_flight = true;
+            return true;
+        }
+
+        auto release() -> void {
+            {
+                std::lock_guard<std::mutex> lock(call_mutex);
+                call_in_flight = false;
+            }
+            call_done.notify_one();
+        }
+    };
+
+    std::unordered_map<std::uint64_t, std::unique_ptr<pooled_http_client>> _http_clients;
+    std::vector<std::unique_ptr<pooled_http_client>> _retired_clients;
     cpp_httplib_client_config _config;
     metrics_type _metrics;
     mutable std::mutex _mutex;
@@ -213,7 +252,7 @@ private:
 
     // Helper methods
     auto get_base_url(std::uint64_t node_id) const -> std::string;
-    auto get_or_create_client(std::uint64_t node_id) -> httplib::Client*;
+    auto get_or_create_client(std::uint64_t node_id) -> pooled_http_client*;
     auto configure_ssl_client(httplib::Client* client) -> void;
     auto load_client_certificates() -> void;
     auto validate_certificate_files() const -> void;
