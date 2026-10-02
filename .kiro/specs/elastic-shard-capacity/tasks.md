@@ -80,7 +80,7 @@ Read before starting:
 
 ---
 
-- [ ] 1. Unblock host composition (`include/raft/multi_raft.hpp`)
+- [x] 1. Unblock host composition (`include/raft/multi_raft.hpp`)
   - Shadow `quorum_manager_type` in `group_scoped_types` with
     `no_op_quorum_manager<node_id_type, address_type, std::string>`, with the
     comment stating both reasons: `create_group_impl` default-constructs it
@@ -98,7 +98,7 @@ Read before starting:
     The existing multi-raft suites pass unmodified.
   - _Requirements: 15.1, 15.6, 1.3_
 
-- [ ] 2. Split capacity gate and host accounting (`multi_raft.hpp`, `multi_raft_impl.hpp`)
+- [x] 2. Split capacity gate and host accounting (`multi_raft.hpp`, `multi_raft_impl.hpp`)
   - Add `arbiter_gate::capacity` with its `to_string` arm, and
     `split_capacity_floor_bytes` (`std::optional`, unset ⇒ gate off) to
     `multi_raft_config`.
@@ -116,7 +116,7 @@ Read before starting:
     node heartbeats.
   - _Requirements: 6.1-6.6, 15.2, 15.4, 15.5, 2.3_
 
-- [ ] 3. Capacity value types and the `capacity_policy` concept (`include/raft/capacity_policy.hpp`)
+- [x] 3. Capacity value types and the `capacity_policy` concept (`include/raft/capacity_policy.hpp`)
   - `capacity_reason`, `capacity_evidence`, `capacity_decision<GroupId>` with
     factory-only construction so an inconsistent decision is unrepresentable,
     and `cluster_capacity_snapshot<NodeId, GroupId, Key>` assembled purely from
@@ -132,7 +132,7 @@ Read before starting:
     non-conforming policy; round-trip and ordering tests on the value types.
   - _Requirements: 2.1, 2.2, 3.1-3.6_
 
-- [ ] 4. `threshold_capacity_policy` (`include/raft/capacity_policy.hpp`)
+- [x] 4. `threshold_capacity_policy` (`include/raft/capacity_policy.hpp`)
   - Five signals, each with a scale-out and a scale-in watermark (design.md §3),
     `sustained_for` / `sustained_for_scale_in`, `min_cluster_size` /
     `max_cluster_size` awareness, and disabled-by-default configuration.
@@ -150,7 +150,7 @@ Read before starting:
     named errors; projection arithmetic against hand-computed values.
   - _Requirements: 4.1-4.7, 5.2, 5.3, 5.5, 5.6_
 
-- [ ] 5. The provisioning ledger (`include/raft/capacity_ledger.hpp`)
+- [x] 5. The provisioning ledger (`include/raft/capacity_ledger.hpp`)
   - The `capacity_ledger` concept and the intent record: idempotency key,
     decision and evidence, target placement group, deadlines, state.
   - The intent state machine of design.md §4 as an explicit transition table,
@@ -166,7 +166,7 @@ Read before starting:
     keeps the ledger bounded under a long synthetic run.
   - _Requirements: 8.1, 8.2, 8.5-8.8_
 
-- [ ] 6. The lease (`include/raft/capacity_lease.hpp`)
+- [x] 6. The lease (`include/raft/capacity_lease.hpp`)
   - The `capacity_lease` concept (`held()`, `fencing_token()`), with `held()`
     returning `false` whenever the answer is unknown.
   - The shipped implementation over Raft leadership of a nominated coordination
@@ -178,7 +178,7 @@ Read before starting:
     monotonic across failovers.
   - _Requirements: 7.1-7.4, 7.6_
 
-- [ ] 7. Deterministic mock quorum manager (`tests/mock_capacity_quorum_manager.hpp`)
+- [x] 7. Deterministic mock quorum manager (`tests/mock_capacity_quorum_manager.hpp`)
   - Satisfies `quorum_manager` with a `static_assert`; programmable per call:
     latency, failure, stock-out per placement group, partial success (created
     but unreachable), and never-joins; injectable clock; a record of every call
@@ -186,7 +186,7 @@ Read before starting:
   - Verify: its own unit test; no `sleep` anywhere in it or its users.
   - _Requirements: 16.1, 1.2_
 
-- [ ] 8. Controller core (`include/raft/elastic_capacity_controller.hpp`)
+- [x] 8. Controller core (`include/raft/elastic_capacity_controller.hpp`)
   - The class template of design.md §4 with its four concept constraints, the
     inventory (latest report per node with age, per-shard reports, rate
     windows), `build_snapshot()`, and the non-blocking `step()` sequence.
@@ -206,7 +206,7 @@ Read before starting:
     and never calls a provider inline.
   - _Requirements: 2.4, 2.5, 3.5, 12.1-12.6, 13.1-13.4, 13.7_
 
-- [ ] 9. Reconciliation and orphan reaping
+- [x] 9. Reconciliation and orphan reaping
   - The startup/failover sequence of design.md §7: open intents, `assess_quorum`,
     match by idempotency key then node id then join deadline, resolve each to
     `completed` / `orphaned` / `failed`; no new provider call until it finishes
@@ -218,7 +218,7 @@ Read before starting:
     reaping twice is harmless.
   - _Requirements: 7.5, 8.3, 8.4, 8.6, 13.5_
 
-- [ ] 10. Placement-group selection
+- [x] 10. Placement-group selection
   - The scoring function of design.md §8 over `topology()` as floor and shape,
     with the under-target bonus, the decaying refusal penalty, and a
     deterministic tie-break; never a group absent from `topology()`; never
@@ -233,7 +233,7 @@ Read before starting:
     when present and skipped when not.
   - _Requirements: 1.5, 9.1-9.5_
 
-- [ ] 11. Admission and the rebalance planner
+- [x] 11. Admission and the rebalance planner
   - Plan generation: candidate selection by the decision's reason, exclusion of
     non-`stable` shards, shards with down/pending replicas, and shards in
     cooldown; move caps per target and cluster-wide, further reduced by the
@@ -250,7 +250,7 @@ Read before starting:
     quorum; a test that operator skips produce backoff or re-plan, not resend.
   - _Requirements: 10.1, 10.3-10.8, 13.6_
 
-- [ ] 12. Scale-in and drain
+- [x] 12. Scale-in and drain
   - Drain: transfer leadership away, remove replicas one group at a time, then
     `decommission_node`; at most one machine draining cluster-wide; every
     refusal rule of Requirement 11.3-11.4 enforced before each removal, not once
@@ -263,7 +263,7 @@ Read before starting:
     taken below quorum by a drain.
   - _Requirements: 11.1-11.6_
 
-- [ ] 13. `elastic_shard_placement_driver` (`include/raft/elastic_shard_placement_driver.hpp`)
+- [x] 13. `elastic_shard_placement_driver` (`include/raft/elastic_shard_placement_driver.hpp`)
   - The decorator of design.md §5: `allocate_shard_ids` straight through to the
     inner driver; heartbeats fed to the controller with
     `inner ∪ controller` operators, inner first, duplicates dropped;
@@ -278,7 +278,7 @@ Read before starting:
     (exercising `multi_raft_impl.hpp:1240-1300`).
   - _Requirements: 5.1, 10.2, 13.7_
 
-- [ ] 14. Observability
+- [x] 14. Observability
   - Counters, gauges and the one-record-per-decision structured log of
     design.md §11, under the existing `kythira.multiraft.*` taxonomy; the split
     gate reuses `split.rejected{gate}` rather than adding a metric; no provider
@@ -289,7 +289,7 @@ Read before starting:
     and bounds in one line.
   - _Requirements: 14.1-14.5_
 
-- [ ] 15. Property and failover suites
+- [x] 15. Property and failover suites
   - Properties over a simulated cluster with the task-7 mock: size within
     [floor, ceiling]; no group loses quorum through an admission or a drain;
     live provider machines ≤ recorded intents; no non-`stable` shard is moved.
@@ -301,7 +301,7 @@ Read before starting:
     wall-clock sleeps, and are wired into CTest with the existing labels.
   - _Requirements: 16.2, 16.3, 16.4, 16.7_
 
-- [ ] 16. End-to-end acceptance on Docker
+- [x] 16. End-to-end acceptance on Docker
   - A scenario test using `docker_quorum_manager`: a loaded cluster splits,
     crosses the density watermark, provisions a container, admits it, and ends
     with shards on it — with no cloud credentials present.
@@ -314,9 +314,14 @@ Read before starting:
     still exists.
   - Verify: the Docker leg passes in CI on a credential-free runner; each live
     leg, where run, ends with a clean audit.
+  - Status: the Docker leg is `docker-elastic-capacity-tests`, a step in the
+    arm64 Docker smoke workflow. The optional per-provider live legs are not
+    part of this change. They spend real cloud money, and no cloud manager
+    carries an idempotency key yet (design §15, item 7), so each would be
+    exercising the unkeyed path only.
   - _Requirements: 1.6, 16.5, 16.6_
 
-- [ ] 17. Documentation
+- [x] 17. Documentation
   - `doc/elastic_shard_capacity.md`: the operating envelope first (design.md
     §14 — the 10–30 minute lag, the snapshot-transfer cost of every move, what
     the feature cannot do), then the provider parity table, the full
