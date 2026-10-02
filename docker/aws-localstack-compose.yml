@@ -1,0 +1,36 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# docker/aws-localstack-compose.yml — the LocalStack that
+# tests/aws_quorum_manager_localstack_test.cpp runs against.
+#
+#   docker compose -f docker/aws-localstack-compose.yml up -d
+#   build/tests/aws_quorum_manager_localstack_test
+#   docker compose -f docker/aws-localstack-compose.yml down
+#
+# (podman-compose works the same way.) The test reaches LocalStack at
+# localhost:4566, hence the one published port.
+#
+# The ready hook under aws-localstack/init/ready.d is what makes the EC2 cases
+# runnable at all: it gives instances the i-0 + 16 hex digit IDs real AWS
+# uses, which aws_ec2_quorum_manager needs to derive a 64-bit node ID. See the
+# hook's own header.
+#
+# The ASG cases need LocalStack's autoscaling service, which the community
+# edition does not include; they skip, naming the reason, and the EC2 cases
+# still run.
+
+services:
+  localstack:
+    # 4.x, NOT the date-versioned tags (2026.x): those are the licensed
+    # distribution and exit 55 without a paid auth token. Same pin as
+    # cloudwatch-localstack-compose.yml.
+    image: localstack/localstack:4.14.0
+    container_name: aws-localstack-test-localstack
+    hostname: localstack
+    environment:
+      SERVICES: "ec2,sts,iam,autoscaling"
+    volumes:
+      - ./aws-localstack/init/ready.d:/etc/localstack/init/ready.d:ro
+    ports:
+      - "4566:4566"

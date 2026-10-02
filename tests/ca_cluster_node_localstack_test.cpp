@@ -12,13 +12,28 @@
 // CA-cluster-specific topology shape: three placement groups named by AZ,
 // target_count = 1 each, exactly as documented for a ca_cluster_node fleet —
 // verifying THAT shape provisions correctly (one instance per AZ/subnet,
-// correctly tagged) is the actual gap this file closes.
+// correctly tagged), and that losing one instance gets it replaced in the
+// SAME AZ (a CA cluster spread one-per-AZ that refilled the gap in another
+// AZ would silently lose its AZ fault tolerance), is the actual gap this
+// file closes.
 //
 // LocalStack's EC2 API is a control-plane mock — it tracks instance records
 // and state transitions but never boots real software, so this file can only
 // verify the PROVISIONING topology, not that a real ca_cluster_node cluster
 // actually forms (that requires real EC2 + SSH — see
 // ca_cluster_node_real_ec2_test.cpp).
+//
+// Run it against docker/aws-localstack-compose.yml:
+//
+//   docker compose -f docker/aws-localstack-compose.yml up -d
+//   build/tests/ca_cluster_node_localstack_test
+//   docker compose -f docker/aws-localstack-compose.yml down
+//
+// A plain LocalStack container is not enough. Its instance IDs are 17
+// random hex digits, and aws_ec2_quorum_manager derives its uint64_t node id
+// from that hex value, so provision_node() overflows for about 15 of every
+// 16 instances. The compose file's ready hook gives instances the i-0 + 16
+// hex digit shape real AWS uses.
 
 #define BOOST_TEST_MODULE ca_cluster_node_localstack_test
 #include <boost/test/unit_test.hpp>
@@ -37,6 +52,7 @@
 #include <aws/ec2/model/DeleteSecurityGroupRequest.h>
 #include <aws/ec2/model/DeleteSubnetRequest.h>
 #include <aws/ec2/model/DeleteVpcRequest.h>
+#include <aws/ec2/model/DescribeInstanceStatusRequest.h>
 #include <aws/ec2/model/DescribeInstancesRequest.h>
 #include <aws/ec2/model/TerminateInstancesRequest.h>
 #include <aws/sts/STSClient.h>
@@ -58,8 +74,10 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -263,14 +281,63 @@ struct three_az_fixture {
     }
 };
 
+// One instance as DescribeInstances reports it — what the provisioning
+// assertions below check, rather than trusting the group_id the test itself
+// passed to provision_node().
+struct described_instance {
+    std::string instance_id;
+    std::string subnet_id;
+    std::string availability_zone;
+    std::string group_tag;  // kythira:group, set at launch by the manager
+    std::string state;
+};
+
+auto describe_live_instances(Aws::EC2::EC2Client& ec2, const std::string& vpc_id)
+    -> std::vector<described_instance> {
+    Aws::EC2::Model::DescribeInstancesRequest req;
+    Aws::EC2::Model::Filter vpc_filter;
+    vpc_filter.SetName("vpc-id");
+    vpc_filter.AddValues(vpc_id);
+    req.AddFilters(vpc_filter);
+    Aws::EC2::Model::Filter state_filter;
+    state_filter.SetName("instance-state-name");
+    state_filter.AddValues("pending");
+    state_filter.AddValues("running");
+    req.AddFilters(state_filter);
+    auto out = ec2.DescribeInstances(req);
+    BOOST_REQUIRE_MESSAGE(out.IsSuccess(),
+                          "DescribeInstances: " + std::string(out.GetError().GetMessage()));
+    std::vector<described_instance> result;
+    for (const auto& res : out.GetResult().GetReservations()) {
+        for (const auto& inst : res.GetInstances()) {
+            described_instance d;
+            d.instance_id = std::string(inst.GetInstanceId());
+            d.subnet_id = std::string(inst.GetSubnetId());
+            d.availability_zone = std::string(inst.GetPlacement().GetAvailabilityZone());
+            d.state =
+                std::string(Aws::EC2::Model::InstanceStateNameMapper::GetNameForInstanceStateName(
+                    inst.GetState().GetName()));
+            for (const auto& tag : inst.GetTags()) {
+                if (tag.GetKey() == "kythira:group") {
+                    d.group_tag = std::string(tag.GetValue());
+                }
+            }
+            result.push_back(std::move(d));
+        }
+    }
+    return result;
+}
+
 }  // namespace
 
 // Requirement 17.12(b): three placement groups named by AZ, target_count = 1
 // each, subnet_by_group set to a distinct per-AZ subnet — exactly the shape
 // documented in docker/ca_cluster_node/README.md's Path 3. Verifies
 // aws_ec2_quorum_manager provisions exactly one instance per AZ group when
-// configured this way, with each instance landing in its own AZ's subnet.
-BOOST_FIXTURE_TEST_CASE(three_az_topology_provisions_one_node_per_az, three_az_fixture,
+// configured this way, with each instance landing in its own AZ's subnet,
+// and that after one instance is terminated, maintain_quorum() launches
+// exactly one replacement, in the lost instance's AZ.
+BOOST_FIXTURE_TEST_CASE(three_az_topology_provisions_and_replaces_one_node_per_az, three_az_fixture,
                         *boost::unit_test::timeout(120)) {
     kythira::aws_ec2_quorum_manager_config cfg;
     cfg.cluster_name = "ca-cluster";
@@ -303,8 +370,88 @@ BOOST_FIXTURE_TEST_CASE(three_az_topology_provisions_one_node_per_az, three_az_f
         BOOST_TEST(count == 1);
     }
 
+    // The group_id above is only what this test asked for. Check where each
+    // instance actually landed: its subnet must be its own AZ's, and the
+    // manager's launch tags must name that same group.
+    using manager_t = kythira::aws_ec2_quorum_manager<>;
+    std::map<std::string, described_instance> by_id;
+    for (auto& d : describe_live_instances(*ec2, vpc_id)) {
+        by_id[d.instance_id] = d;
+    }
+    BOOST_TEST(by_id.size() == 3u);
+    for (const auto& p : cluster) {
+        auto it = by_id.find(manager_t::node_id_to_ec2_id(p.node_id));
+        BOOST_REQUIRE_MESSAGE(it != by_id.end(),
+                              "provisioned node " << p.node_id << " not found in the VPC");
+        BOOST_TEST(it->second.subnet_id == subnet_by_az.at(p.group_id));
+        BOOST_TEST(it->second.group_tag == p.group_id);
+    }
+
     auto health = mgr.assess_quorum(cluster).get();
     BOOST_TEST(health.live_node_count == 3u);
+
+    // Lose one instance the way a real failure would: terminated outside
+    // the manager, which only finds out through its next assessment.
+    const auto victim = cluster[1];
+    const std::string victim_ec2_id = manager_t::node_id_to_ec2_id(victim.node_id);
+    {
+        Aws::EC2::Model::TerminateInstancesRequest term;
+        term.AddInstanceIds(victim_ec2_id);
+        auto term_out = ec2->TerminateInstances(term);
+        BOOST_REQUIRE_MESSAGE(
+            term_out.IsSuccess(),
+            "TerminateInstances: " + std::string(term_out.GetError().GetMessage()));
+    }
+    auto still_running = [&] {
+        Aws::EC2::Model::DescribeInstanceStatusRequest req;
+        req.AddInstanceIds(victim_ec2_id);
+        req.SetIncludeAllInstances(true);
+        auto out = ec2->DescribeInstanceStatus(req);
+        if (!out.IsSuccess()) {
+            return false;
+        }
+        for (const auto& st : out.GetResult().GetInstanceStatuses()) {
+            if (st.GetInstanceState().GetName() == Aws::EC2::Model::InstanceStateName::running) {
+                return true;
+            }
+        }
+        return false;
+    };
+    auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (still_running() && std::chrono::steady_clock::now() < stop_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    }
+    BOOST_REQUIRE_MESSAGE(!still_running(), "terminated instance still reports running");
+
+    auto pre = mgr.maintain_quorum(cluster).get();
+    BOOST_REQUIRE_EQUAL(pre.unreachable_nodes.size(), 1u);
+    BOOST_TEST(pre.unreachable_nodes.front() == victim.node_id);
+
+    // Exactly one new instance, and it is in the lost node's AZ: its subnet
+    // and its kythira:group tag. The two healthy AZs got nothing.
+    std::set<std::string> known;
+    for (const auto& p : cluster) {
+        known.insert(manager_t::node_id_to_ec2_id(p.node_id));
+    }
+    std::vector<described_instance> fresh;
+    for (auto& d : describe_live_instances(*ec2, vpc_id)) {
+        BOOST_TEST(d.instance_id != victim_ec2_id);
+        if (!known.contains(d.instance_id)) {
+            fresh.push_back(std::move(d));
+        }
+    }
+    BOOST_REQUIRE_EQUAL(fresh.size(), 1u);
+    BOOST_TEST(fresh[0].subnet_id == subnet_by_az.at(victim.group_id));
+    BOOST_TEST(fresh[0].group_tag == victim.group_id);
+    BOOST_TEST_MESSAGE("replacement " << fresh[0].instance_id << " in " << victim.group_id);
+
+    cluster[1] = {.node_id = manager_t::ec2_id_to_node_id(fresh[0].instance_id),
+                  .group_id = victim.group_id};
+    auto after = mgr.assess_quorum(cluster).get();
+    BOOST_TEST(after.live_node_count == 3u);
+    for (const auto& g : after.groups) {
+        BOOST_TEST(g.live_count == 1u, "group " << g.group_id << " live " << g.live_count);
+    }
 
     for (const auto& p : cluster) {
         BOOST_CHECK_NO_THROW(mgr.decommission_node(p.node_id).get());
