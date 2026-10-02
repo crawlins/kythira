@@ -1084,6 +1084,12 @@ private:
     // the returned closure, because a continuation attached to that future may
     // re-enter the node.
     auto finish_leader_transfer(std::exception_ptr error) -> std::function<void()>;
+    // Requirement 9.6: whether `candidate` may be granted a vote by
+    // membership — a voter of the current configuration (either half while
+    // joint). True when this node knows no configuration yet, so a node that
+    // has not been told its cluster can still take part in the first
+    // election. Must be called with _mutex held.
+    [[nodiscard]] auto candidate_in_configuration(const node_id_type& candidate) -> bool;
     auto become_leader() -> void;
 
     // ── The durability barrier (`.kiro/specs/durable-append-barrier/`) ───────
@@ -3563,6 +3569,14 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 }
 
 template<raft_types Types>
+auto node<Types>::candidate_in_configuration(const node_id_type& candidate) -> bool {
+    if (_configuration.nodes().empty()) {
+        return true;
+    }
+    return _membership.is_node_in_configuration(candidate, _configuration);
+}
+
+template<raft_types Types>
 
 auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -4463,6 +4477,27 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
     _metrics.add_one();
     _metrics.emit();
 
+    // Requirement 9.6: a removed server stops receiving heartbeats, times out
+    // and campaigns with ever-higher terms. Honouring those terms would depose
+    // a healthy leader once per election timeout, forever. So a candidate this
+    // node does not know as a voter (C_new or, while joint, C_old) is refused
+    // BEFORE the higher-term check below, leaving this node's term alone.
+    if (!candidate_in_configuration(request.candidate_id())) {
+        _logger.debug("Ignoring RequestVote from a server outside the configuration",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"candidate", node_id_to_string(request.candidate_id())},
+                       {"request_term", std::to_string(request.term())},
+                       {"current_term", std::to_string(_current_term)}});
+
+        _metrics.set_metric_name("raft_vote_denied");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("reason", "not_in_configuration");
+        _metrics.add_one();
+        _metrics.emit();
+
+        return request_vote_response_type{_current_term, false};
+    }
+
     // Rule 1: Reply false if request term < current term (§5.1)
     if (request.term() < _current_term) {
         _logger.debug("Denying vote: request term < current term",
@@ -4609,6 +4644,15 @@ auto node<Types>::handle_request_pre_vote(const request_pre_vote_request_type& r
                    {"from_candidate", node_id_to_string(request.candidate_id())},
                    {"request_term", std::to_string(request.term())},
                    {"current_term", std::to_string(_current_term)}});
+
+    // Requirement 9.6, as in handle_request_vote(): a pre-vote granted here
+    // would only lead to a real RequestVote that is refused anyway.
+    if (!candidate_in_configuration(request.candidate_id())) {
+        _logger.debug("Denying pre-vote: candidate is outside the configuration",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"candidate", node_id_to_string(request.candidate_id())}});
+        return request_pre_vote_response_type{_current_term, false};
+    }
 
     if (_last_leader_contact.has_value()) {
         auto now = std::chrono::steady_clock::now();

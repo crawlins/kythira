@@ -1413,6 +1413,8 @@ This property ensures observability. All important state changes are logged for 
 
 This property ensures that servers respect term numbers. Discovering a higher term means the server's information is stale, so it must step down.
 
+One exception, from Requirement 9.6: a RequestVote whose candidate is not a voter of the receiver's current configuration (either half while joint) is refused before its term is inspected, so it does not count as discovering a higher term. Otherwise a removed server, which stops receiving heartbeats and campaigns with ever-higher terms, would depose a healthy leader once per election timeout. A receiver that knows no configuration yet does not apply the check.
+
 ### Completion Properties
 
 The following properties ensure the correctness of the completion components:

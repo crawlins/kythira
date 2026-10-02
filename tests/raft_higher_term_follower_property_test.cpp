@@ -329,17 +329,12 @@ BOOST_AUTO_TEST_CASE(server_becomes_follower_on_higher_term_install_snapshot) {
 }
 
 /**
- * Property: Leader transitions to follower on RequestVote with higher term
+ * Property: a leader ignores a higher-term RequestVote from a non-member
  *
- * This test verifies Property 22: "Higher Term Causes Follower Transition"
- * When a leader receives a RequestVote from ANY node with a higher term,
- * it must update its term and transition to follower, even if the sender
- * is not in the cluster configuration.
- *
- * This is the correct Raft behavior: term discovery takes precedence over
- * cluster membership checks. The leader will become a follower but may
- * choose not to grant the vote based on other criteria (log completeness,
- * cluster membership, etc.).
+ * Requirement 9.6, the one exception to Property 22: node2 is not in node1's
+ * configuration (node1 runs as a single-node cluster), so its RequestVote is
+ * refused before its term is inspected. Honouring it would let a removed
+ * server depose a healthy leader once per election timeout, forever.
  */
 BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
     std::random_device rd;
@@ -430,17 +425,10 @@ BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
         // Wait for message to be delivered and processed
         std::this_thread::sleep_for(std::chrono::milliseconds{500});
 
-        // Property: node1 SHOULD transition to follower (higher term discovered)
-        // Per Raft protocol, any server discovering a higher term must become follower
-        BOOST_CHECK_EQUAL(node1.get_state(), kythira::server_state::follower);
-
-        // Property: node1's term SHOULD have been updated to the higher term
-        BOOST_CHECK_GE(node1.get_current_term(), higher_term);
-
-        // Note: The actual rejection of the vote (not granting it) happens internally
-        // in handle_request_vote, but we cannot directly observe whether the vote
-        // was granted or not from the public API. The important property is that
-        // the term is updated and the server becomes a follower.
+        // Property: node1 stays leader and keeps its term; the non-member's
+        // higher term is not adopted.
+        BOOST_CHECK_EQUAL(node1.get_state(), kythira::server_state::leader);
+        BOOST_CHECK_EQUAL(node1.get_current_term(), term_before);
 
         node1.stop();
     }
