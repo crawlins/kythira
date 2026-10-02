@@ -215,6 +215,10 @@ This document lists the dependencies required to build and use the network simul
   and no DTLS. The adapter supplies all of that, reusing kythira's existing
   `pending_message` / `received_message_info` / `block_option` scaffolding and
   the transport-neutral OSCORE implementation in `include/raft/oscore.hpp`
+  (with the EDHOC bootstrap when lakers is present). DTLS is OpenSSL driven over
+  the adapter's own socket (`include/raft/coap_cantcoap_dtls.hpp`), so it needs
+  no library beyond the OpenSSL kythira already links; `dtls_rpk` additionally
+  needs OpenSSL 3.2 or later
 - **Version**: pinned to commit `99e9ed5` (master, 2026-05-09). cantcoap
   publishes no tags at all, so a commit pin is the only option; unlike libnyoci
   the project is still maintained, so periodic re-pinning is worthwhile

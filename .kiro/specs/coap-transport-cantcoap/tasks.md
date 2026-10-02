@@ -1,14 +1,15 @@
 # Implementation Plan — CoAP Transport (cantcoap backend)
 
-## Status: Implemented (Tasks 1-5, 7-9 complete; Task 6 partial by design)
+## Status: Complete (Tasks 1-9)
 
 The overlay port is pinned and builds; the adapter owns a UDP socket, an RX and
-retransmission loop, duplicate suppression, block-wise sequencing and OSCORE.
-`coap_cantcoap_client`/`coap_cantcoap_server` satisfy
+retransmission loop, duplicate suppression, block-wise sequencing, OSCORE with
+an optional EDHOC bootstrap, and DTLS 1.2 (PSK, PKI and RPK) driven over that
+same socket. `coap_cantcoap_client`/`coap_cantcoap_server` satisfy
 `network_client`/`network_server` and speak the same wire protocol as the
-libcoap and libnyoci backends. DTLS is refused, with a reason — see Task 6.
+libcoap and libnyoci backends.
 
-**Last Updated**: August 8, 2026
+**Last Updated**: October 2, 2026
 
 ## What this backend cost, versus the other two
 
@@ -23,7 +24,8 @@ everything above the socket already existed.**
 | Retransmit / dedup | nothing | `pending_message`, `received_message_info` |
 | Block-wise | nothing | `block_option` + our own sequencing |
 | OSCORE | nothing | `oscore::security_context` — **inherited free** |
-| DTLS | nothing | refused (Task 6) |
+| EDHOC bootstrap | nothing | `coap_edhoc_bootstrap.hpp` — **inherited**, plus the resource |
+| DTLS | nothing | new here: OpenSSL over our own socket (`coap_cantcoap_dtls.hpp`) |
 
 The OSCORE row is the interesting one. `raft/oscore.hpp` was written for the
 libnyoci backend and made transport-neutral on principle; this backend picked it
@@ -94,7 +96,7 @@ the socket. That principle paid for itself the first time it was tested.
   - Covered by a 12 KiB snapshot against a 256-byte block size, roughly 48
     round trips.
 
-- [~] 6. Security layer
+- [x] 6. Security layer
   - [x] 6.1 OSCORE, via `raft/oscore.hpp`
     - Inherited unchanged from the libnyoci work. The adapter protects the
       cantcoap-built PDU by re-reading it through the neutral codec and
@@ -102,42 +104,92 @@ the socket. That principle paid for itself the first time it was tested.
       looks at them. Covered end to end, with two negative controls: a wrong
       Master Secret and a plaintext client are both refused *and the RPC handler
       never runs*.
-  - [ ] 6.2 DTLS — **refused, not implemented**
-    - cantcoap is cleartext-only, and unlike libnyoci there is no DTLS plugin to
-      drive. Providing it would mean running an OpenSSL DTLS BIO over this
-      backend's own socket — handshake, retransmission, cookie exchange and all
-      — which is a transport in its own right rather than an adapter detail.
-    - `plan_security()` refuses every DTLS mode at construction with a message
-      that points at OSCORE (which this backend does provide) or at the other
-      two backends. A half-implementation that merely looked encrypted would be
-      worse than refusing.
-    - Note this is a *different* reason from the libnyoci backend's RPK refusal:
-      there the surface existed and OpenSSL lacked the feature; here the surface
-      does not exist at all.
-  - [ ] 6.3 EDHOC bootstrap — not implemented here
-    - The libnyoci backend serves `/.well-known/edhoc`; this one does not yet.
-      Static OSCORE credentials work. Refused explicitly rather than treated as
-      static provisioning.
+  - [x] 6.2 DTLS, over this backend's own socket
+    - `coap_security_provider` still cannot be reused — its interface is libcoap
+      types — so `include/raft/coap_cantcoap_dtls.hpp` supplies the layer the
+      requirement describes: between `recvfrom`/`sendto` and `CoapPDU`,
+      decrypting inbound and encrypting outbound, with CoAP's own reliability
+      running over it unchanged (RFC 7252 Section 9.1).
+    - One `SSL` per peer over a small custom BIO whose write is one `sendto()`
+      and whose read is one queued datagram. Not a socket BIO (there is one
+      socket shared by every peer) and not `BIO_s_mem` (a byte stream, so a
+      multi-datagram handshake flight would come out concatenated;
+      `BIO_s_dgram_mem` only arrived in OpenSSL 3.2). This is how libcoap drives
+      OpenSSL too. Handshake retransmission is OpenSSL's, ticked from the
+      existing poll loop, so no thread is added.
+    - `dtls_psk` (the server answers only its configured identity), `dtls_pki`
+      (chain, key, CA, `verify_peer_cert` as mutual authentication on a server,
+      `cipher_suites`, and `cn_validator` run once the handshake completes) and
+      `dtls_rpk` (RFC 7250, pinned against `trusted_peer_keys`). RPK needs
+      OpenSSL 3.2+; on an older one it is refused at construction naming the
+      version, which is a version gate rather than a missing surface.
+    - The server answers every ClientHello with a HelloVerifyRequest cookie
+      keyed on the peer address, so it cannot be used as an amplifier; the
+      session table is capped (LRU eviction) because a first ClientHello still
+      allocates.
+    - Session recovery both ways: a stopping server sends close_notify, and a
+      client whose exchange goes unanswered drops its session, so either side
+      restarting is followed by a fresh handshake rather than records nobody
+      can read. A failed handshake rejects the waiting requests at once with
+      the reason, not at their timeout.
+    - Key material loads where the socket opens — client construction, server
+      `start()` — so bad credentials never leave a listening socket behind.
+  - [x] 6.3 EDHOC bootstrap on `/.well-known/edhoc`
+    - The libnyoci shape, carried by this backend's own exchanges: the client
+      runs the initiator lazily on the first RPC through a raw (no
+      Content-Format, no OSCORE) POST, and the server rendezvouses with a
+      responder thread through `edhoc_responder_channel`. The wire shape
+      matches the libnyoci backend's (no Content-Format, 2.04 replies, an empty
+      2.04 for message_3), though no test crosses the two yet.
+    - Two things the libnyoci version does not do, both found by tests here:
+      - A server whose initiator vanished after message_2 is not wedged. A
+        message_1 always starts a fresh responder; message_1 and message_3 are
+        told apart by their first CBOR item (an integer METHOD versus the
+        CIPHERTEXT_3 byte string), since this carriage has no C_R prefix.
+      - A client whose server restarted recovers. An EDHOC server with no
+        matching context answers with an unprotected 4.01; the client fails
+        that request promptly and drops its context, so the next request
+        bootstraps again.
+    - Each exchange pins the context it was protected under, so a context
+      replaced mid-flight cannot be used to verify the wrong response.
   - [x] 6.4 Malformed or undecryptable datagrams are dropped without invoking a
         handler and without crashing
 
 - [x] 7. Sockets, threading, lifecycle
   - One AF_INET6 socket per client and per server, `IPV6_V6ONLY` off so v4 peers
-    arrive v4-mapped. One `std::jthread` each, polling with a bounded timeout so
+    arrive v4-mapped, falling back to AF_INET on a kernel with no IPv6 at all
+    (found by running the suite on one: every test failed to open a socket).
+    One `std::jthread` each, polling with a bounded timeout so
     the *same* loop that receives datagrams also drives retransmission and
     expiry — no second timer thread, and no lock ordering between them.
   - `stop()` ends the loop, closes the socket, joins, and rejects every
     in-flight future; the destructor sweeps anything the loop missed.
 
 - [x] 8. Tests
-  - `tests/coap_cantcoap_concept_conformance_test.cpp` (5 cases) and
-    `tests/coap_cantcoap_integration_test.cpp` (17 cases).
+  - `tests/coap_cantcoap_concept_conformance_test.cpp` (5 cases),
+    `tests/coap_cantcoap_integration_test.cpp` (22 cases with lakers) and
+    `tests/coap_cantcoap_dtls_test.cpp` (15 cases on OpenSSL 3.2+, 14 below).
   - Beyond the three round trips: block-wise over 12 KiB, retransmission
     exhaustion *with timing assertions that the schedule actually ran and then
     terminated*, duplicate suppression, in-flight cancellation, server restart
     on the same port, unknown target, unhandled RPC, and a robustness case that
     fires empty/truncated/version-0/oversized-token/random datagrams at the
     server and then proves it still answers a real RPC.
+  - EDHOC: bootstrap then RPC, bootstrap-once across five RPCs and a block-wise
+    snapshot, a mismatched credential that fails without the handler running
+    *and* leaves the server able to bootstrap the next client, plaintext
+    refused with 4.01 before any handshake, and recovery after a server
+    restart.
+  - DTLS: PSK, PKI and RPK round trips, each with negative controls (unknown
+    identity, wrong key, untrusted CA, missing client certificate, a refusing
+    `cn_validator`, unpinned raw keys on either side), a plaintext client
+    ignored, block-wise over DTLS, recovery after a server restart, and garbage
+    datagrams at a DTLS server.
+  - The EDHOC tests found a duplicate-suppression bug: the server keyed seen
+    Message IDs by ID alone, so a second client whose IDs collided with the
+    first's had its requests silently dropped for 60 seconds. RFC 7252 Section
+    4.5 scopes a Message ID to its source endpoint; the server now does too,
+    and clients start from a random Message ID (Section 4.4).
   - OSCORE has a positive case and two negative controls, because a
     security test that only checks the happy path cannot tell protection from
     its absence.
@@ -148,11 +200,10 @@ the socket. That principle paid for itself the first time it was tested.
 
 ## Follow-ups
 
-- **DTLS** (Task 6.2), if a deployment needs channel security on this backend
-  specifically. OSCORE covers object security today.
-- **EDHOC bootstrap** (Task 6.3): the machinery exists in
-  `coap_edhoc_bootstrap.hpp`; what is missing is serving `/.well-known/edhoc`
-  from this server, which is a small piece of work.
 - **arm64**, unverified here as for the other backends — no cross toolchain.
 - **Cross-backend interop tests** still need two processes, since no two CoAP
-  backends can share a translation unit.
+  backends can share a translation unit. EDHOC and DTLS are both meant to
+  interoperate with the other backends on the wire; neither is asserted yet.
+- **CI does not install the `coap-cantcoap` feature**, so CI compiles this
+  backend's stub path only. The suites above were run locally against cantcoap
+  and lakers, on OpenSSL 3.0 and 3.6, and under ASan, UBSan and TSan.
