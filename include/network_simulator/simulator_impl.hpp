@@ -10,6 +10,7 @@
 #include <raft/future_default.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <future>
 #include <random>
 #include <sstream>
@@ -438,7 +439,17 @@ auto NetworkSimulator<Types>::apply_latency(address_type from, address_type to)
         return std::chrono::milliseconds(0);
     }
 
-    return to_it->second.latency();
+    // KYTHIRA_SIM_EXTRA_LATENCY_MS adds a fixed delay to every configured
+    // edge without touching any test. It exists to find tests whose timings
+    // only hold on an instant network: a loaded CI runner stretches round
+    // trips, and 30ms here reproduces the races that causes. Unset (the
+    // default, and in CI) it adds nothing. See coap-flake-measure.yml's
+    // `sim_extra_latency_ms` input.
+    static const std::chrono::milliseconds extra_latency = [] {
+        const char* v = std::getenv("KYTHIRA_SIM_EXTRA_LATENCY_MS");
+        return std::chrono::milliseconds{v ? std::atoi(v) : 0};
+    }();
+    return to_it->second.latency() + extra_latency;
 }
 
 template<typename Types>

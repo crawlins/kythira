@@ -110,6 +110,16 @@ on:
         type: string
         required: false
         default: ""
+      test_regex:
+        description: "CTest -R name regex (blank = no name filter)"
+        type: string
+        required: false
+        default: ""
+      sim_extra_latency_ms:
+        description: "KYTHIRA_SIM_EXTRA_LATENCY_MS: extra ms added to every network simulator edge (0 = off)"
+        type: string
+        required: false
+        default: "0"
 
 permissions:
   contents: read
@@ -213,6 +223,9 @@ jobs:
         run: cmake --build build -j$(nproc)
 
       - name: Run the suite N times and record every result
+        env:
+          TEST_REGEX: ${{ github.event.inputs.test_regex }}
+          SIM_EXTRA_LATENCY_MS: ${{ github.event.inputs.sim_extra_latency_ms }}
         run: |
           set -uo pipefail
           ITER="${{ github.event.inputs.iterations || '20' }}"
@@ -225,6 +238,10 @@ jobs:
           # description for why an empty string cannot serve that purpose.
           [ -n "$LABEL" ] && [ "$LABEL" != "all" ] && SEL+=(-L "$LABEL")
           [ -n "$EXCLUDE" ] && SEL+=(-LE "$EXCLUDE")
+          [ -n "$TEST_REGEX" ] && SEL+=(-R "$TEST_REGEX")
+          # Read by the network simulator; 0 leaves every edge as configured.
+          export KYTHIRA_SIM_EXTRA_LATENCY_MS="${SIM_EXTRA_LATENCY_MS:-0}"
+          echo "KYTHIRA_SIM_EXTRA_LATENCY_MS=$KYTHIRA_SIM_EXTRA_LATENCY_MS"
           [ ${#SEL[@]} -eq 0 ] && SEL+=(-L coap)
           mkdir -p flake-results
           echo "Measuring ${SEL[*]} over $ITER iterations at -j$JOBS"
@@ -244,8 +261,10 @@ jobs:
             fi
             ctest --test-dir build "${SEL[@]}" -j"$JOBS" \
               --output-junit "$PWD/flake-results/run-$i.xml" \
+              --output-on-failure \
               > "flake-results/run-$i.log" 2>&1 || true
             echo "  iteration $i/$ITER done"
+            grep -nE "error: in|fatal error: in|\*\*\*Failed|\*\*\*Timeout|\*\*\*Exception|Test case .* did not|check .* has failed" "flake-results/run-$i.log" | head -60 || true
           done
 
       - name: Summarise per-test failure rates
