@@ -335,7 +335,9 @@ networks:
     driver: bridge
 
 volumes:
-  ca-material:
+  ca-trust:
+  mtls-node1-tls:
+  mtls-node2-tls:
 
 services:
   ca-service:
@@ -343,7 +345,9 @@ services:
     networks:
       - ca-provisioning-net
     volumes:
-      - ca-material:/ca
+      - ca-trust:/ca
+      - mtls-node1-tls:/ca/mtls-node1
+      - mtls-node2-tls:/ca/mtls-node2
     command:
       - "--out-dir=/ca"
       - "--service=mtls-node1"
@@ -356,7 +360,8 @@ services:
     networks:
       ca-provisioning-net:
     volumes:
-      - ca-material:/ca:ro
+      - ca-trust:/ca:ro
+      - mtls-node1-tls:/ca/mtls-node1:ro
     depends_on:
       ca-service:
         condition: service_completed_successfully
@@ -367,11 +372,19 @@ services:
     networks:
       ca-provisioning-net:
     volumes:
-      - ca-material:/ca:ro
+      - ca-trust:/ca:ro
+      - mtls-node2-tls:/ca/mtls-node2:ro
     depends_on:
       ca-service:
         condition: service_completed_successfully
 ```
+
+Each service's leaf material lives in its own `<name>-tls` volume and the
+public root certificate in a separate `ca-trust` volume. `ca-service` mounts
+every per-service volume beneath `/ca`, so `ca_service`'s output layout is
+unchanged, while each node mounts only `ca-trust` and its own volume. A
+compromised node therefore cannot read a peer's private key, which a single
+shared volume would have allowed.
 
 No static IPs appear anywhere in this file; nodes address each other by compose
 service name (`mtls-node1`, `mtls-node2`), consistent with the project's

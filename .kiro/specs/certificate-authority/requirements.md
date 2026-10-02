@@ -307,9 +307,13 @@ checked into the repo.
    following the two-stage build pattern used by the existing
    `docker/dns_discovery_node/Dockerfile`.
 7. `docker/ca-provisioning-compose.yml` SHALL demonstrate a `ca-service`
-   container writing its output to a named volume, plus two dependent
-   node-service stubs that mount that volume read-only and declare
-   `depends_on: ca-service: condition: service_completed_successfully`. No
+   container writing its output to named volumes, plus two dependent
+   node-service stubs that declare
+   `depends_on: ca-service: condition: service_completed_successfully`.
+   Each service's certificate, private key and chain SHALL live in a volume
+   of its own, separate from the volume holding the public root
+   certificate, and each node SHALL mount read-only only the root
+   certificate's volume and its own, never another service's key. No
    static IP addresses SHALL be configured in this file; inter-container
    addressing SHALL be by compose service name, and the file SHALL work
    unmodified under both Docker and rootless Podman per the project's container
