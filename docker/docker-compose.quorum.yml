@@ -8,7 +8,9 @@
 # are used; containers address each other by service/hostname (CLAUDE.md rule).
 #
 # Set KYTHIRA_CONTAINER_RUNTIME / KYTHIRA_COMPOSE_COMMAND before invoking if
-# running under rootless Podman (see CLAUDE.md).
+# running under rootless Podman (see CLAUDE.md), and point CONTAINER_SOCKET at
+# the Podman API socket (e.g. $XDG_RUNTIME_DIR/podman/podman.sock); it is
+# mounted at /var/run/docker.sock inside each node, where the manager looks.
 #
 # Per-test cluster isolation: override QUORUM_CLUSTER via:
 #   QUORUM_CLUSTER=mytest docker compose -f docker-compose.quorum.yml up -d
@@ -16,7 +18,12 @@
 services:
   qnode1:
     image: kythira-chaos-node:dev
-    container_name: ${QUORUM_CLUSTER:-kythira-quorum-test}-chaos-1
+    # Named and labelled exactly as docker_quorum_manager names the containers
+    # it provisions, so assess_quorum and decommission_node find these too.
+    container_name: kythira-${QUORUM_CLUSTER:-kythira-quorum-test}-1
+    labels:
+      kythira.cluster: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      kythira.node_id: "1"
     hostname: qnode1
     environment:
       NODE_ID: "1"
@@ -38,7 +45,7 @@ services:
       - "8181:8080"
       - "9101:9000"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     cap_add:
       - NET_ADMIN
     networks:
@@ -46,7 +53,12 @@ services:
 
   qnode2:
     image: kythira-chaos-node:dev
-    container_name: ${QUORUM_CLUSTER:-kythira-quorum-test}-chaos-2
+    # Named and labelled exactly as docker_quorum_manager names the containers
+    # it provisions, so assess_quorum and decommission_node find these too.
+    container_name: kythira-${QUORUM_CLUSTER:-kythira-quorum-test}-2
+    labels:
+      kythira.cluster: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      kythira.node_id: "2"
     hostname: qnode2
     environment:
       NODE_ID: "2"
@@ -68,7 +80,7 @@ services:
       - "8182:8080"
       - "9102:9000"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     cap_add:
       - NET_ADMIN
     networks:
@@ -76,7 +88,12 @@ services:
 
   qnode3:
     image: kythira-chaos-node:dev
-    container_name: ${QUORUM_CLUSTER:-kythira-quorum-test}-chaos-3
+    # Named and labelled exactly as docker_quorum_manager names the containers
+    # it provisions, so assess_quorum and decommission_node find these too.
+    container_name: kythira-${QUORUM_CLUSTER:-kythira-quorum-test}-3
+    labels:
+      kythira.cluster: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      kythira.node_id: "3"
     hostname: qnode3
     environment:
       NODE_ID: "3"
@@ -98,7 +115,7 @@ services:
       - "8183:8080"
       - "9103:9000"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     cap_add:
       - NET_ADMIN
     networks:
@@ -106,4 +123,8 @@ services:
 
 networks:
   kythira-quorum-net:
+    # An explicit name, so it is the network QUORUM_NETWORK names: without it
+    # compose prefixes the project name and the manager attaches provisioned
+    # containers to a network that does not exist.
+    name: ${QUORUM_NETWORK:-kythira-quorum-net}
     driver: bridge

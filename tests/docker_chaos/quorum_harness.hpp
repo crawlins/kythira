@@ -86,7 +86,7 @@ public:
 
     // Throws if the container kythira-{cluster_name}-{node_id} still exists.
     void assert_container_absent(std::uint64_t node_id) {
-        auto name = _cluster_name + "-" + std::to_string(node_id);
+        auto name = container_name(node_id);
         auto res =
             _exec({os::container_runtime(), "inspect", "--format", "{{.State.Status}}", name});
         if (res.code == 0) {
@@ -95,10 +95,11 @@ public:
         }
     }
 
-    // Returns the container name for the given initial node ID
-    // (nodes 1-3 that started with the compose file).
-    [[nodiscard]] std::string container_name(int initial_node_id) const {
-        return _cluster_name + "-chaos-" + std::to_string(initial_node_id);
+    // Container name for a node ID: kythira-{cluster_name}-{node_id}, the
+    // scheme docker_quorum_manager uses for the containers it provisions and
+    // docker-compose.quorum.yml uses for the bootstrap nodes.
+    [[nodiscard]] std::string container_name(std::uint64_t node_id) const {
+        return "kythira-" + _cluster_name + "-" + std::to_string(node_id);
     }
 
     // ── ChaosNode access ─────────────────────────────────────────────────────
