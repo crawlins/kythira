@@ -125,11 +125,23 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
+      # Same compiler cache as every ci.yml job (oci-build-cache Req 5.1):
+      # the host build of chaos_node, multi_raft_node and the scenario test
+      # binaries is otherwise cold on every dispatch. The script probes with a
+      # real compile and leaves the launcher unset when the bucket is
+      # unreachable, so a cache failure falls back to an uncached build rather
+      # than a red one.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
       - name: Configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
 
       # Each target below builds its own image(s) (DEPENDS) and the scenario
@@ -276,3 +288,14 @@ jobs:
       - name: Run docker-sccache-e2e-tests (redis_gateway_node + sccache runner images)
         if: success() || failure()
         run: cmake --build build --target docker-sccache-e2e-tests -j$(nproc)
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — arm64-docker-smoke-test"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats

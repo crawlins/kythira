@@ -184,6 +184,17 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
+      # Same compiler cache as every ci.yml job (oci-build-cache Req 5.1).
+      # Without it CMake's `auto` launcher picks the apt-installed ccache,
+      # which starts empty on every runner, so each dispatch recompiled the
+      # whole tree cold. The script probes with a real compile and leaves the
+      # launcher unset when the bucket is unreachable, so a cache failure
+      # falls back to an uncached build rather than a red one.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
       - name: Configure
         run: |
           SCALE="${{ github.event.inputs.timeout_scale }}"
@@ -199,18 +210,31 @@ jobs:
               -DENABLE_COVERAGE=ON \
               -DCMAKE_BUILD_TYPE=Debug \
               $SCALE_ARG \
+              -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
               -DCMAKE_CXX_COMPILER=${{ github.event.inputs.compiler || 'clang++-18' }} \
               -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}
           else
             cmake -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               $SCALE_ARG \
+              -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
               -DCMAKE_CXX_COMPILER=${{ github.event.inputs.compiler || 'clang++-18' }} \
               -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}
           fi
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — coap-flake-measure"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
 
       - name: Run the suite N times and record every result
         run: |
