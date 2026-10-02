@@ -10,8 +10,27 @@
 namespace kythira {
 namespace coap_utils {
 
+// The I/O thread's wait and drain settings (coap-client-event-driven-io
+// Requirement 6.3). Split out because the libcoap client's constructor runs
+// it too: a zero budget would make each pass skip its drain test and a
+// non-positive wait would turn the readiness loop into a busy spin, so these
+// cannot wait for a caller to remember validate_client_config().
+inline auto validate_io_wait_config(const coap_client_config& config) -> void {
+    if (config.io_drain_budget == 0) {
+        throw coap_transport_error("io_drain_budget must be greater than 0");
+    }
+    if (config.io_max_wait.count() <= 0) {
+        throw coap_transport_error("io_max_wait must be positive");
+    }
+    if (config.io_paced_interval.count() < 0) {
+        throw coap_transport_error("io_paced_interval must not be negative");
+    }
+}
+
 // Client configuration validation
 inline auto validate_client_config(const coap_client_config& config) -> void {
+    validate_io_wait_config(config);
+
     // Validate timeout values
     if (config.ack_timeout.count() <= 0) {
         throw coap_transport_error("ack_timeout must be positive");
