@@ -13,6 +13,7 @@
 // received_message_info / translate_legacy_fields() live here, deliberately
 // free of any libcoap type so the libnyoci backend can share them.
 #include <raft/coap_transport_config.hpp>
+#include <raft/coap_exchange_table.hpp>
 #include <raft/coap_edhoc.hpp>
 #include <raft/coap_ace_oauth.hpp>
 #include <raft/metrics.hpp>
@@ -26,6 +27,7 @@
 #include <network_simulator/network_simulator.hpp>
 
 #include <string>
+#include <string_view>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -389,7 +391,9 @@ private:
 
     // Message tracking
     std::unordered_map<std::string, std::unique_ptr<pending_message>> _pending_requests;
-    std::unordered_map<std::uint16_t, received_message_info> _received_messages;
+    // Keyed on (peer endpoint, Message ID, token), not the Message ID alone:
+    // see coap_exchange_table.hpp for why the bare Message ID conflated peers.
+    coap_exchange_table _received_messages;
     std::unordered_map<std::string, std::unique_ptr<block_transfer_state>> _active_block_transfers;
     std::unordered_map<std::string, std::shared_ptr<multicast_response_collector>>
         _multicast_requests;
@@ -456,8 +460,10 @@ private:
     // itself has internally given up.
     auto handle_nack(const std::string& token, const std::string& reason_description) -> void;
     auto handle_acknowledgment(std::uint16_t message_id) -> void;
-    auto is_duplicate_message(std::uint16_t message_id) -> bool;
-    auto record_received_message(std::uint16_t message_id) -> void;
+    auto is_duplicate_message(const std::string& peer, std::uint16_t message_id,
+                              std::string_view token) -> bool;
+    auto record_received_message(const std::string& peer, std::uint16_t message_id,
+                                 std::string_view token) -> void;
     auto retransmit_message(const std::string& token) -> void;
     auto cleanup_expired_messages() -> void;
     auto calculate_retransmission_timeout(std::size_t attempt) const -> std::chrono::milliseconds;
@@ -667,7 +673,9 @@ private:
     std::atomic<std::size_t> _concurrent_requests{0};
 
     // Message tracking
-    std::unordered_map<std::uint16_t, received_message_info> _received_messages;
+    // Keyed on (peer endpoint, Message ID, token): two peers' independently
+    // numbered requests must never be taken for one another's retransmission.
+    coap_exchange_table _received_messages;
     std::unordered_map<std::string, std::unique_ptr<block_transfer_state>> _active_block_transfers;
     std::unordered_set<std::string> _multicast_groups;
 
@@ -706,8 +714,10 @@ private:
     auto setup_dtls_context() -> void;
     auto send_error_response(coap_pdu_t* response, coap_pdu_code_t code, const std::string& message)
         -> void;
-    auto is_duplicate_message(std::uint16_t message_id) -> bool;
-    auto record_received_message(std::uint16_t message_id) -> void;
+    auto is_duplicate_message(const std::string& peer, std::uint16_t message_id,
+                              std::string_view token) -> bool;
+    auto record_received_message(const std::string& peer, std::uint16_t message_id,
+                                 std::string_view token) -> void;
     auto cleanup_expired_messages() -> void;
 
     // Resource handler template

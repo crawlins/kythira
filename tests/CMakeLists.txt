@@ -1904,6 +1904,30 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     else()
         message(STATUS "coap_duplicate_detection_property_test: skipped (requires Folly)")
     endif()
+    # Duplicate detection keyed by (peer, Message ID, token) --
+    # .kiro/specs/coap-transport-multi-raft/ tasks 3-4. The table test drives
+    # coap_exchange_table with an injected clock and needs nothing else; the
+    # peer test sends hand-built datagrams from raw sockets to a real server on
+    # an ephemeral port. Each TIMEOUT is >= the sum of its file's per-case
+    # boost budgets and is scaled by KYTHIRA_TEST_TIMEOUT_SCALE below.
+    add_executable(coap_exchange_table_test coap_exchange_table_test.cpp)
+    target_link_libraries(coap_exchange_table_test PRIVATE Boost::unit_test_framework)
+    target_compile_features(coap_exchange_table_test PRIVATE cxx_std_23)
+    add_test(NAME coap_exchange_table_test COMMAND coap_exchange_table_test)
+    set_tests_properties(coap_exchange_table_test PROPERTIES TIMEOUT 270 LABELS "coap;unit")
+    if(TARGET Folly::folly)
+        add_executable(coap_duplicate_detection_peer_test coap_duplicate_detection_peer_test.cpp)
+        target_link_libraries(coap_duplicate_detection_peer_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        target_compile_features(coap_duplicate_detection_peer_test PRIVATE cxx_std_23)
+        add_test(NAME coap_duplicate_detection_peer_test COMMAND coap_duplicate_detection_peer_test)
+        set_tests_properties(coap_duplicate_detection_peer_test PROPERTIES TIMEOUT 100 LABELS "coap;integration")
+    else()
+        message(STATUS "coap_duplicate_detection_peer_test: skipped (requires Folly)")
+    endif()
     # TimeoutNow on the libcoap backend's wire: a round trip through every
     # serializer this build has, CON regardless of use_confirmable_messages,
     # and 5.01 without a handler -- coap-transport-multi-raft task 6. TIMEOUT
