@@ -10,14 +10,14 @@
 /// `main.cpp` includes this and nothing from `host_stacks.hpp`, which is the
 /// point: the four `multi_raft` instantiations that made the host's single
 /// translation unit peak at 10,974 MiB of compiler RSS are now four objects that
-/// compile in parallel, and `main.cpp` itself is cheap again. See
-/// `host_stacks.hpp` for the measurement and the failure it caused.
+/// compile in parallel (six with Proxygen), and `main.cpp` itself is cheap
+/// again. See `host_stacks.hpp` for the measurement and the failure it caused.
 ///
-/// The set is closed deliberately. `--transport proxygen` is refused at run
-/// time by `main`, not represented here, for the reason its own comment gives:
-/// Proxygen's server needs a caller-owned `folly::IOThreadPoolExecutor` and a
-/// shutdown sequence this binary does not implement, and a transport that
-/// half-works in a measurement host produces rows nobody can trust.
+/// The set follows the build: httplib always, Beast under
+/// `KYTHIRA_BENCH_HAS_BEAST`, and Proxygen under `KYTHIRA_BENCH_HAS_PROXYGEN`
+/// (set when `KYTHIRA_BUILD_PROXYGEN_TRANSPORT` is on), the same macros the
+/// Tier B benchmark compiles its rows under. A transport that was not compiled
+/// in is refused by `main` with exit status 2 rather than silently substituted.
 
 #include "config.hpp"
 
@@ -30,6 +30,11 @@ auto run_httplib_cbor(const node_options& opt) -> int;
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
 auto run_beast_json(const node_options& opt) -> int;
 auto run_beast_cbor(const node_options& opt) -> int;
+#endif
+
+#if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
+auto run_proxygen_json(const node_options& opt) -> int;
+auto run_proxygen_cbor(const node_options& opt) -> int;
 #endif
 
 }  // namespace kythira::bench::host

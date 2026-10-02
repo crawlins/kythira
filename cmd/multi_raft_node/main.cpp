@@ -27,10 +27,11 @@
 /// rather than of two tiers. That is the failure Requirement 4.1 names, and
 /// this include is what prevents it.
 ///
-/// **The four `multi_raft` instantiations are not here.** They are one per
+/// **The `multi_raft` instantiations are not here.** They are one per
 /// `(transport × wire serializer)` pair in `run_httplib_json.cpp`,
-/// `run_httplib_cbor.cpp`, `run_beast_json.cpp` and `run_beast_cbor.cpp`,
-/// behind the declarations in `host_runners.hpp`. Compiling all four here made
+/// `run_httplib_cbor.cpp`, `run_beast_json.cpp`, `run_beast_cbor.cpp`,
+/// `run_proxygen_json.cpp` and `run_proxygen_cbor.cpp`, behind the
+/// declarations in `host_runners.hpp`. Compiling all four here made
 /// this the heaviest translation unit in the tree at 10,974 MiB of compiler RSS
 /// and broke CI's 16 GiB runner; `host_stacks.hpp` records the measurement.
 /// What is left in this file is the part that is cheap to compile and has to
@@ -101,17 +102,6 @@ auto is_loopback_address(const std::string& address) -> bool {
 using kythira::bench::node_options;
 using kythira::bench::node_transport;
 using kythira::bench::wire_serializer;
-
-/// Not wired here. Proxygen's server needs a caller-owned
-/// `folly::IOThreadPoolExecutor` and a shutdown sequence this binary does not
-/// yet implement, and a transport that half-works in a measurement host would
-/// produce rows nobody could trust. Refused loudly rather than silently
-/// substituted.
-[[nodiscard]] auto refuse_proxygen() -> int {
-    std::cerr << "multi_raft_node: --transport proxygen is not implemented in this host; "
-                 "use httplib or beast\n";
-    return 2;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Discovery
@@ -224,7 +214,8 @@ void resolve_peers_by_discovery(node_options& opt) {
 // templates instantiated here. It is a flat switch now because each arm is a
 // call into a translation unit that already holds exactly one instantiation —
 // the templates themselves live in `host_stacks.hpp` and are instantiated in
-// `run_*.cpp`. Behaviourally identical, including which combinations exist.
+// `run_*.cpp`. Every combination is runnable when its transport is compiled
+// in; one that is not is refused with exit status 2, never substituted.
 [[nodiscard]] auto dispatch(const node_options& opt) -> int {
     switch (opt._serializer) {
         case wire_serializer::json:
@@ -239,7 +230,12 @@ void resolve_peers_by_discovery(node_options& opt) {
                     return 2;
 #endif
                 case node_transport::proxygen:
-                    return refuse_proxygen();
+#if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
+                    return kythira::bench::host::run_proxygen_json(opt);
+#else
+                    std::cerr << "multi_raft_node: --transport proxygen was not compiled in\n";
+                    return 2;
+#endif
             }
             return 2;
         case wire_serializer::cbor:
@@ -254,7 +250,12 @@ void resolve_peers_by_discovery(node_options& opt) {
                     return 2;
 #endif
                 case node_transport::proxygen:
-                    return refuse_proxygen();
+#if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
+                    return kythira::bench::host::run_proxygen_cbor(opt);
+#else
+                    std::cerr << "multi_raft_node: --transport proxygen was not compiled in\n";
+                    return 2;
+#endif
             }
             return 2;
     }

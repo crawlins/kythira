@@ -37,7 +37,8 @@ Usage: run-tier-c-row.sh [options]
   --repetitions N        (default 5)
   --scenario NAME        write | read-state | read-log | read-local (write).
   --tick-interval MS     (default 2)
-  --transport NAME       httplib | beast (default httplib)
+  --transport NAME       httplib | beast | proxygen (default httplib;
+                         proxygen needs a host built with it)
   --persistence MODE     memory | file-buffered | file-barrier (default memory)
   --data-threads N       Threads serving each host's data path. A handler
                          blocks for the whole commit, so this caps client
