@@ -74,6 +74,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -94,7 +95,7 @@
 // The POSIX socket headers are included unconditionally, unlike <cantcoap.h>.
 // This adapter supplies its own UDP socket, so `sockaddr_in6` and friends name
 // the transport's own state rather than anything cantcoap declares — and
-// `pending_exchange` below stores a `sockaddr_in6` whether or not the codec was
+// `pending_exchange` below stores a `peer_address` whether or not the codec was
 // found. Guarding these caused a build that has no cantcoap to compile only by
 // accident, via a transitive include from folly; the stdexec future backend
 // pulls in no folly and failed outright.
@@ -183,6 +184,53 @@ template<typename Config>
     throw coap_security_config_error("unknown coap_auth_mode");
 }
 
+/// A peer's socket address, of either family.
+///
+/// The backend prefers one AF_INET6 socket that also carries v4 peers
+/// v4-mapped, but falls back to AF_INET on a kernel with no IPv6 at all, so the
+/// address type has to hold both.
+struct peer_address {
+    sockaddr_storage storage{};
+    socklen_t length{0};
+
+    [[nodiscard]] auto as_sockaddr() const -> const sockaddr* {
+        return reinterpret_cast<const sockaddr*>(&storage);
+    }
+
+    /// The bytes that identify this peer: family, address and port, without
+    /// the padding and the IPv6 flow label that would make two datagrams from
+    /// the same peer compare unequal.
+    [[nodiscard]] auto key() const -> std::string {
+        std::string out;
+        if (storage.ss_family == AF_INET6) {
+            const auto& v6 = reinterpret_cast<const sockaddr_in6&>(storage);
+            out.push_back('6');
+            out.append(reinterpret_cast<const char*>(&v6.sin6_addr), sizeof(v6.sin6_addr));
+            out.append(reinterpret_cast<const char*>(&v6.sin6_port), sizeof(v6.sin6_port));
+            out.append(reinterpret_cast<const char*>(&v6.sin6_scope_id), sizeof(v6.sin6_scope_id));
+        } else if (storage.ss_family == AF_INET) {
+            const auto& v4 = reinterpret_cast<const sockaddr_in&>(storage);
+            out.push_back('4');
+            out.append(reinterpret_cast<const char*>(&v4.sin_addr), sizeof(v4.sin_addr));
+            out.append(reinterpret_cast<const char*>(&v4.sin_port), sizeof(v4.sin_port));
+        }
+        return out;
+    }
+
+    /// "127.0.0.1:5684" or "[::1]:5684", for error messages.
+    [[nodiscard]] auto to_string() const -> std::string {
+        std::array<char, INET6_ADDRSTRLEN> text{};
+        if (storage.ss_family == AF_INET6) {
+            const auto& v6 = reinterpret_cast<const sockaddr_in6&>(storage);
+            ::inet_ntop(AF_INET6, &v6.sin6_addr, text.data(), text.size());
+            return "[" + std::string{text.data()} + "]:" + std::to_string(ntohs(v6.sin6_port));
+        }
+        const auto& v4 = reinterpret_cast<const sockaddr_in&>(storage);
+        ::inet_ntop(AF_INET, &v4.sin_addr, text.data(), text.size());
+        return std::string{text.data()} + ":" + std::to_string(ntohs(v4.sin_port));
+    }
+};
+
 #ifdef CANTCOAP_AVAILABLE
 
 /// An owned UDP socket. Exists so the destructor cannot forget the close(),
@@ -193,11 +241,14 @@ public:
     udp_socket() = default;
     udp_socket(const udp_socket&) = delete;
     auto operator=(const udp_socket&) -> udp_socket& = delete;
-    udp_socket(udp_socket&& other) noexcept : _fd(other._fd) { other._fd = -1; }
+    udp_socket(udp_socket&& other) noexcept : _fd(other._fd), _family(other._family) {
+        other._fd = -1;
+    }
     auto operator=(udp_socket&& other) noexcept -> udp_socket& {
         if (this != &other) {
             close();
             _fd = other._fd;
+            _family = other._family;
             other._fd = -1;
         }
         return *this;
@@ -206,36 +257,74 @@ public:
 
     /// Binds an AF_INET6 socket with IPV6_V6ONLY off, so one socket serves both
     /// families and a v4 peer arrives as a v4-mapped address.
+    ///
+    /// Falls back to a plain AF_INET socket when the kernel has no IPv6 at all
+    /// (EAFNOSUPPORT: booted with ipv6.disable=1, or a container runtime that
+    /// strips it). Without the fallback the backend could not open a socket on
+    /// such a host even to talk to 127.0.0.1.
     auto open(std::uint16_t port) -> void {
+        _family = AF_INET6;
         _fd = ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+        if (_fd < 0 && errno == EAFNOSUPPORT) {
+            _family = AF_INET;
+            _fd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        }
         if (_fd < 0) {
             throw coap_network_error("failed to create a UDP socket for the cantcoap backend");
         }
-        int off = 0;
-        ::setsockopt(_fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));
         int reuse = 1;
         ::setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
-        sockaddr_in6 addr{};
-        addr.sin6_family = AF_INET6;
-        addr.sin6_addr = in6addr_any;
-        addr.sin6_port = htons(port);
-        if (::bind(_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        int bound = -1;
+        if (_family == AF_INET6) {
+            int off = 0;
+            ::setsockopt(_fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));
+            sockaddr_in6 addr{};
+            addr.sin6_family = AF_INET6;
+            addr.sin6_addr = in6addr_any;
+            addr.sin6_port = htons(port);
+            bound = ::bind(_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        } else {
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
+            addr.sin_port = htons(port);
+            bound = ::bind(_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        }
+        if (bound != 0) {
             close();
             throw coap_network_error("failed to bind a UDP socket to port " + std::to_string(port));
         }
     }
 
     [[nodiscard]] auto bound_port() const -> std::uint16_t {
-        sockaddr_in6 addr{};
+        sockaddr_storage addr{};
         socklen_t length = sizeof(addr);
         if (_fd < 0 || ::getsockname(_fd, reinterpret_cast<sockaddr*>(&addr), &length) != 0) {
             return 0;
         }
-        return ntohs(addr.sin6_port);
+        if (addr.ss_family == AF_INET6) {
+            return ntohs(reinterpret_cast<const sockaddr_in6&>(addr).sin6_port);
+        }
+        return ntohs(reinterpret_cast<const sockaddr_in&>(addr).sin_port);
+    }
+
+    /// One datagram out to `peer`.
+    /// False when the kernel refuses it outright (no route to that family).
+    auto send_to(const peer_address& peer, const void* data, std::size_t length) const -> bool {
+        return ::sendto(_fd, data, length, 0, peer.as_sockaddr(), peer.length) >= 0;
+    }
+
+    /// One datagram in, with its source. Returns the byte count, or <= 0.
+    auto receive_from(std::uint8_t* buffer, std::size_t capacity, peer_address& from) const
+        -> ssize_t {
+        from.length = sizeof(from.storage);
+        return ::recvfrom(_fd, buffer, capacity, 0, reinterpret_cast<sockaddr*>(&from.storage),
+                          &from.length);
     }
 
     [[nodiscard]] auto fd() const -> int { return _fd; }
+    [[nodiscard]] auto family() const -> int { return _family; }
     [[nodiscard]] auto valid() const -> bool { return _fd >= 0; }
 
     auto close() -> void {
@@ -247,13 +336,15 @@ public:
 
 private:
     int _fd{-1};
+    int _family{AF_INET6};
 };
 
-/// Resolve "coap://host:port" (or "host:port") to every sockaddr this backend
-/// can sendto(), in getaddrinfo()'s preference order, duplicates dropped. v4
-/// results are mapped into the v6 socket's address family.
-[[nodiscard]] inline auto resolve_endpoint(const std::string& endpoint)
-    -> std::vector<sockaddr_in6> {
+/// Resolve "coap://host:port" (or "host:port") to every address this
+/// backend's socket can sendto(), in getaddrinfo()'s preference order,
+/// duplicates dropped. On the usual AF_INET6 socket, v4 results are mapped
+/// into v6; on the AF_INET fallback socket only v4 results are usable.
+[[nodiscard]] inline auto resolve_endpoint(const std::string& endpoint, int family = AF_INET6)
+    -> std::vector<peer_address> {
     std::string rest = endpoint;
     for (const auto* scheme : {"coaps://", "coap://"}) {
         if (rest.rfind(scheme, 0) == 0) {
@@ -284,23 +375,28 @@ private:
     }
 
     addrinfo hints{};
-    hints.ai_family = AF_INET6;
     hints.ai_socktype = SOCK_DGRAM;
-    // V4MAPPED|ALL so a v4-only host still resolves into the v6 socket's family.
-    hints.ai_flags = AI_V4MAPPED | AI_ALL;
+    if (family == AF_INET6) {
+        hints.ai_family = AF_INET6;
+        // V4MAPPED|ALL so a v4-only host still resolves into the v6 socket's family.
+        hints.ai_flags = AI_V4MAPPED | AI_ALL;
+    } else {
+        hints.ai_family = AF_INET;
+    }
 
     addrinfo* results = nullptr;
     if (::getaddrinfo(host.c_str(), port.c_str(), &hints, &results) != 0 || results == nullptr) {
         throw coap_network_error("failed to resolve CoAP endpoint: " + endpoint);
     }
-    std::vector<sockaddr_in6> out;
+    std::vector<peer_address> out;
     for (const addrinfo* ai = results; ai != nullptr; ai = ai->ai_next) {
-        sockaddr_in6 one{};
-        std::memcpy(&one, ai->ai_addr, std::min<std::size_t>(sizeof(one), ai->ai_addrlen));
-        const bool seen = std::any_of(out.begin(), out.end(), [&](const sockaddr_in6& prior) {
-            return std::memcmp(&prior.sin6_addr, &one.sin6_addr, sizeof(one.sin6_addr)) == 0 &&
-                   prior.sin6_port == one.sin6_port && prior.sin6_scope_id == one.sin6_scope_id;
-        });
+        peer_address one;
+        one.length =
+            static_cast<socklen_t>(std::min<std::size_t>(sizeof(one.storage), ai->ai_addrlen));
+        std::memcpy(&one.storage, ai->ai_addr, one.length);
+        const auto key = one.key();
+        const bool seen = std::any_of(
+            out.begin(), out.end(), [&](const peer_address& prior) { return prior.key() == key; });
         if (!seen) {
             out.push_back(one);
         }
@@ -529,7 +625,7 @@ private:
         /// `peers[peer_index]`; a send the kernel refuses, or a
         /// retransmission, moves on to the next one, so a name with an
         /// unreachable first address still gets through.
-        std::vector<sockaddr_in6> peers;
+        std::vector<cantcoap_detail::peer_address> peers;
         std::size_t peer_index{0};
         std::chrono::steady_clock::time_point deadline;
         std::chrono::milliseconds backoff{0};
@@ -572,7 +668,7 @@ private:
             }
 
             auto exchange = std::make_unique<pending_exchange>();
-            exchange->peers = cantcoap_detail::resolve_endpoint(endpoint->second);
+            exchange->peers = cantcoap_detail::resolve_endpoint(endpoint->second, _socket.family());
             exchange->resource_path = resource_path;
             exchange->request_media_type = media_type;
             exchange->full_request = _registry.encode_with(media_type, request);
@@ -687,10 +783,8 @@ private:
             fds.events = POLLIN;
             const int ready = ::poll(&fds, 1, cantcoap_poll_interval_ms);
             if (ready > 0 && (fds.revents & POLLIN) != 0) {
-                sockaddr_in6 from{};
-                socklen_t from_length = sizeof(from);
-                const auto received = ::recvfrom(_socket.fd(), buffer.data(), buffer.size(), 0,
-                                                 reinterpret_cast<sockaddr*>(&from), &from_length);
+                cantcoap_detail::peer_address from;
+                const auto received = _socket.receive_from(buffer.data(), buffer.size(), from);
                 if (received > 0) {
                     handle_datagram(buffer.data(), static_cast<int>(received));
                 }
@@ -820,9 +914,9 @@ private:
         return {start, start + pdu.getPDULength()};
     }
 
-    auto send_datagram(const std::vector<std::byte>& bytes, const sockaddr_in6& peer) -> bool {
-        return ::sendto(_socket.fd(), bytes.data(), bytes.size(), 0,
-                        reinterpret_cast<const sockaddr*>(&peer), sizeof(peer)) >= 0;
+    auto send_datagram(const std::vector<std::byte>& bytes,
+                       const cantcoap_detail::peer_address& peer) -> bool {
+        return _socket.send_to(peer, bytes.data(), bytes.size());
     }
 
     /// Send the exchange's datagram to its current address, moving on
@@ -1034,7 +1128,10 @@ private:
     std::unordered_map<std::uint16_t, received_message_info> _seen;
     bool _shutting_down{false};
     std::atomic<std::uint64_t> _token_counter{1};
-    std::atomic<std::uint16_t> _message_id_counter{1};
+    /// RFC 7252 Section 4.4: the initial Message ID SHOULD be randomized, so
+    /// a restarted client does not replay the IDs its predecessor used.
+    std::atomic<std::uint16_t> _message_id_counter{
+        static_cast<std::uint16_t>(std::random_device{}())};
     std::mt19937 _rng{std::random_device{}()};
 
 #ifdef CANTCOAP_AVAILABLE
@@ -1169,10 +1266,8 @@ private:
             if (ready <= 0 || (fds.revents & POLLIN) == 0) {
                 continue;
             }
-            sockaddr_in6 from{};
-            socklen_t from_length = sizeof(from);
-            const auto received = ::recvfrom(_socket.fd(), buffer.data(), buffer.size(), 0,
-                                             reinterpret_cast<sockaddr*>(&from), &from_length);
+            cantcoap_detail::peer_address from;
+            const auto received = _socket.receive_from(buffer.data(), buffer.size(), from);
             if (received <= 0) {
                 continue;
             }
@@ -1187,7 +1282,8 @@ private:
         }
     }
 
-    auto handle_datagram(std::uint8_t* data, int length, const sockaddr_in6& from) -> void {
+    auto handle_datagram(std::uint8_t* data, int length, const cantcoap_detail::peer_address& from)
+        -> void {
         std::vector<std::byte> plain(reinterpret_cast<std::byte*>(data),
                                      reinterpret_cast<std::byte*>(data) + length);
         oscore::request_binding binding;
@@ -1212,7 +1308,7 @@ private:
         }
 
         const std::lock_guard lock(_mutex);
-        if (is_duplicate(pdu.getMessageID())) {
+        if (is_duplicate(from, pdu.getMessageID())) {
             return;  // Requirement 4.4.
         }
 
@@ -1345,7 +1441,7 @@ private:
         return reply;
     }
 
-    auto finish_reply(CoapPDU& reply, const sockaddr_in6& to,
+    auto finish_reply(CoapPDU& reply, const cantcoap_detail::peer_address& to,
                       const oscore::request_binding& binding) -> void {
         const auto* start = reinterpret_cast<const std::byte*>(reply.getPDUPointer());
         std::vector<std::byte> bytes(start, start + reply.getPDULength());
@@ -1353,11 +1449,10 @@ private:
             const auto inner = oscore::parse_message(bytes);
             bytes = oscore::serialize_message(_oscore->protect_response(inner, binding));
         }
-        ::sendto(_socket.fd(), bytes.data(), bytes.size(), 0,
-                 reinterpret_cast<const sockaddr*>(&to), sizeof(to));
+        _socket.send_to(to, bytes.data(), bytes.size());
     }
 
-    auto send_error(CoapPDU& request, const sockaddr_in6& to,
+    auto send_error(CoapPDU& request, const cantcoap_detail::peer_address& to,
                     const oscore::request_binding& binding, CoapPDU::Code code) -> void {
         auto reply = begin_reply(request, code);
         finish_reply(*reply, to, binding);
@@ -1365,7 +1460,7 @@ private:
 
     /// 2.31 Continue, echoing the Block1 option so the peer knows which block
     /// landed (RFC 7959 Section 2.5).
-    auto send_continue(CoapPDU& request, const sockaddr_in6& to,
+    auto send_continue(CoapPDU& request, const cantcoap_detail::peer_address& to,
                        const oscore::request_binding& binding, const block_option& block) -> void {
         auto reply = begin_reply(request, static_cast<CoapPDU::Code>(0x5F));
         block_option echo = block;
@@ -1377,7 +1472,7 @@ private:
     /// 2.05 Content, sliced into Block2 when the body exceeds one block.
     /// Stateless: the block number comes from the request, so nothing has to be
     /// remembered between datagrams.
-    auto send_content(CoapPDU& request, const sockaddr_in6& to,
+    auto send_content(CoapPDU& request, const cantcoap_detail::peer_address& to,
                       const oscore::request_binding& binding, const std::vector<std::byte>& body,
                       const std::string& media_type, std::uint32_t block_number) -> void {
         const auto format = kythira::coap_utils::media_type_to_coap_content_format(media_type);
@@ -1416,15 +1511,23 @@ private:
         finish_reply(*reply, to, binding);
     }
 
-    [[nodiscard]] auto is_duplicate(std::uint16_t message_id) -> bool {
+    /// Requirement 4.4, keyed by the sender as well as the Message ID: RFC
+    /// 7252 Section 4.5 scopes a Message ID to its source endpoint, so two
+    /// clients that happen to pick the same one -- a restarted client counting
+    /// from its start again, say -- are not duplicates of each other.
+    [[nodiscard]] auto is_duplicate(const cantcoap_detail::peer_address& from,
+                                    std::uint16_t message_id) -> bool {
         const auto now = std::chrono::steady_clock::now();
         std::erase_if(_seen, [now](const auto& entry) {
             return now - entry.second.received_time > std::chrono::seconds{60};
         });
-        if (_seen.contains(message_id)) {
+        auto key = from.key();
+        key.push_back(static_cast<char>(message_id >> 8U));
+        key.push_back(static_cast<char>(message_id & 0xFFU));
+        if (_seen.contains(key)) {
             return true;
         }
-        _seen.emplace(message_id, received_message_info{message_id});
+        _seen.emplace(std::move(key), received_message_info{message_id});
         return false;
     }
 #endif  // CANTCOAP_AVAILABLE
@@ -1449,7 +1552,7 @@ private:
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};
-    std::unordered_map<std::uint16_t, received_message_info> _seen;
+    std::unordered_map<std::string, received_message_info> _seen;
     std::vector<std::byte> _block1_assembly;
 
 #ifdef CANTCOAP_AVAILABLE
