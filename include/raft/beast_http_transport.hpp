@@ -151,6 +151,9 @@ struct boost_beast_client_config {
     std::chrono::milliseconds connection_timeout{5000};
     std::chrono::milliseconds request_timeout{10000};
     std::chrono::milliseconds keep_alive_timeout{60000};
+    /// Verify the server's certificate chain *and* that it names the peer the
+    /// node URL addresses: a dNSName subjectAltName for a host name (also sent
+    /// as SNI), an iPAddress one for an IP literal.
     bool enable_ssl_verification{true};
     std::string ca_cert_path{};
     std::string client_cert_path{};

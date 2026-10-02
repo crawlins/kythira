@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <random>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -69,15 +70,20 @@ struct temp_tls_material {
     std::filesystem::path cert_path;
     std::filesystem::path key_path;
 
-    temp_tls_material() {
+    // @p subject_name and @p subject_alt_name default to the 127.0.0.1
+    // identity every https:// URL below addresses; the hostname-verification
+    // tests pass another identity to get a certificate that chains to a
+    // trusted root but names some other peer.
+    explicit temp_tls_material(const std::string& subject_name = "127.0.0.1",
+                               const std::string& subject_alt_name = "IP:127.0.0.1") {
         auto dir = std::filesystem::temp_directory_path();
         auto unique = std::to_string(std::random_device{}());
         cert_path = dir / ("beast_test_cert_" + unique + ".pem");
         key_path = dir / ("beast_test_key_" + unique + ".pem");
         std::string cmd = "openssl req -x509 -newkey rsa:2048 -keyout " + key_path.string() +
                           " -out " + cert_path.string() +
-                          " -days 1 -nodes -subj \"/CN=127.0.0.1\" -addext "
-                          "\"subjectAltName=IP:127.0.0.1\" 2>/dev/null";
+                          " -days 1 -nodes -subj \"/CN=" + subject_name +
+                          "\" -addext \"subjectAltName=" + subject_alt_name + "\" 2>/dev/null";
         int rc = std::system(cmd.c_str());
         BOOST_REQUIRE_MESSAGE(rc == 0,
                               "openssl CLI must be available to generate test TLS material");
@@ -91,6 +97,46 @@ struct temp_tls_material {
         std::filesystem::remove(key_path, ec);
     }
 };
+
+// Sends one RequestVote over a verifying client that trusts @p tls's
+// certificate as its only root, to @p url; the server presents that same
+// certificate. Returns whether the RPC completed, so each case below differs
+// only in the identity the certificate carries and the name the URL uses.
+auto verified_request_vote_succeeds(const temp_tls_material& tls, std::uint16_t port,
+                                    const std::string& url) -> bool {
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+
+    kythira::boost_beast_server_config server_config;
+    server_config.enable_ssl = true;
+    server_config.ssl_cert_path = tls.cert_path.string();
+    server_config.ssl_key_path = tls.key_path.string();
+    kythira::boost_beast_server<test_transport_types> server(
+        ioc, test_bind_address, port, server_config, kythira::noop_metrics{});
+    register_echo_handlers(server);
+    server.start();
+
+    kythira::boost_beast_client_config client_config;
+    client_config.enable_ssl_verification = true;
+    client_config.ca_cert_path = tls.cert_path.string();
+    std::unordered_map<std::uint64_t, std::string> node_map{{test_node_id, url}};
+    kythira::boost_beast_client<test_transport_types> client(ioc, node_map, client_config,
+                                                             kythira::noop_metrics{});
+
+    kythira::request_vote_request<> req{};
+    req._term = 7;
+    bool succeeded = false;
+    try {
+        auto resp =
+            std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(30000)))
+                .get();
+        succeeded = resp.term() == 7;
+    } catch (const std::exception& e) {
+        BOOST_TEST_MESSAGE("request to " << url << " failed: " << e.what());
+    }
+    server.stop();
+    return succeeded;
+}
 
 }  // namespace
 
@@ -197,6 +243,79 @@ BOOST_AUTO_TEST_CASE(mutual_tls_client_certificate_enforcement) {
                 .get(),
             std::exception);
     }
+
+    server.stop();
+}
+
+// Server identity (audit M15): with verification on, a certificate that
+// chains to a trusted root is accepted only for the peer it names. The
+// positive cases matter as much as the negative ones -- they pin that an IP
+// literal is matched against an iPAddress SAN and a host name against a
+// dNSName SAN, so the check cannot be "fixed" by rejecting everything.
+BOOST_AUTO_TEST_CASE(verified_tls_accepts_certificate_naming_the_ip_literal) {
+    temp_tls_material tls;
+    auto port = static_cast<std::uint16_t>(test_bind_port_base + 2);
+    BOOST_TEST(
+        verified_request_vote_succeeds(tls, port, "https://127.0.0.1:" + std::to_string(port)));
+}
+
+// The audit's attack: a valid, trusted certificate issued to some other peer.
+// Before the fix the handshake completed, because only the chain was checked.
+BOOST_AUTO_TEST_CASE(verified_tls_rejects_trusted_certificate_for_another_ip) {
+    temp_tls_material tls("other-node.example", "DNS:other-node.example,IP:10.0.0.9");
+    auto port = static_cast<std::uint16_t>(test_bind_port_base + 3);
+    BOOST_TEST(
+        !verified_request_vote_succeeds(tls, port, "https://127.0.0.1:" + std::to_string(port)));
+}
+
+BOOST_AUTO_TEST_CASE(verified_tls_accepts_certificate_naming_the_host) {
+    temp_tls_material tls("localhost", "DNS:localhost");
+    auto port = static_cast<std::uint16_t>(test_bind_port_base + 4);
+    BOOST_TEST(
+        verified_request_vote_succeeds(tls, port, "https://localhost:" + std::to_string(port)));
+}
+
+// A certificate naming the peer's *address* does not vouch for a host name
+// that happens to resolve there, and a CN alone is not a dNSName SAN.
+BOOST_AUTO_TEST_CASE(verified_tls_rejects_trusted_certificate_for_another_host) {
+    temp_tls_material tls("localhost", "DNS:other-node.example,IP:127.0.0.1");
+    auto port = static_cast<std::uint16_t>(test_bind_port_base + 5);
+    BOOST_TEST(
+        !verified_request_vote_succeeds(tls, port, "https://localhost:" + std::to_string(port)));
+}
+
+// enable_ssl_verification=false must keep working against a mismatched
+// certificate: the identity check is part of chain verification, so turning
+// verification off turns it off too rather than failing the connection.
+BOOST_AUTO_TEST_CASE(unverified_tls_ignores_certificate_name) {
+    temp_tls_material tls("other-node.example", "DNS:other-node.example");
+
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+
+    auto port = static_cast<std::uint16_t>(test_bind_port_base + 6);
+    kythira::boost_beast_server_config server_config;
+    server_config.enable_ssl = true;
+    server_config.ssl_cert_path = tls.cert_path.string();
+    server_config.ssl_key_path = tls.key_path.string();
+    kythira::boost_beast_server<test_transport_types> server(
+        ioc, test_bind_address, port, server_config, kythira::noop_metrics{});
+    register_echo_handlers(server);
+    server.start();
+
+    kythira::boost_beast_client_config client_config;
+    client_config.enable_ssl_verification = false;
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {test_node_id, "https://127.0.0.1:" + std::to_string(port)}};
+    kythira::boost_beast_client<test_transport_types> client(ioc, node_map, client_config,
+                                                             kythira::noop_metrics{});
+
+    kythira::request_vote_request<> req{};
+    req._term = 8;
+    auto resp =
+        std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(30000)))
+            .get();
+    BOOST_TEST(resp.term() == 8);
 
     server.stop();
 }
