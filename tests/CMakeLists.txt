@@ -1039,6 +1039,7 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
     add_raft_completion_test(redis_kv_state_machine_unit_test redis_kv_state_machine_unit_test.cpp)
     add_raft_completion_test(redis_acl_unit_test redis_acl_unit_test.cpp)
     target_link_libraries(redis_acl_unit_test PRIVATE OpenSSL::Crypto)
+    add_raft_completion_test(redis_auth_limiter_unit_test redis_auth_limiter_unit_test.cpp)
     # redis_gateway_node's own environment parsing (the plaintext-Raft opt-in).
     add_raft_completion_test(redis_gateway_node_config_unit_test
                              redis_gateway_node_config_unit_test.cpp)

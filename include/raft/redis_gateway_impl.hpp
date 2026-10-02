@@ -41,8 +41,8 @@ public:
         socket.set_option(tcp::no_delay(true), ec);
         auto remote = socket.remote_endpoint(ec);
         if (!ec) {
-            _session._rate_key = remote.address().to_string();
-            _session._source = _session._rate_key + ":" + std::to_string(remote.port());
+            _session._rate_key = redis_auth_limiter::rate_key(remote.address());
+            _session._source = remote.address().to_string() + ":" + std::to_string(remote.port());
         } else {
             _session._source = "unknown";
             _session._rate_key = "unknown";
@@ -57,6 +57,7 @@ public:
         if (gw._config._allow_anonymous && gw._acl.empty()) {
             _session._identity = redis_identity{"anonymous", redis_role::admin, {""}};
         }
+        _authenticated.store(_session._identity.has_value());
     }
 
     auto start() -> void {
@@ -127,6 +128,7 @@ private:
         if (auto id = _gw._acl.authenticate_certificate(subject)) {
             _session._identity = std::move(id);
             _session._internal = _session._identity->_user == _gw._config._internal_user;
+            _authenticated.store(true);
             _gw.audit(_session, "TLS", "certificate accepted");
         } else {
             _gw.audit(_session, "TLS", "certificate subject not mapped");
@@ -155,6 +157,10 @@ private:
         }
         {
             std::lock_guard<std::mutex> lock(_mutex);
+            if (_parse_held) {
+                // A pre-auth command is executing; the worker resumes us.
+                return;
+            }
             if (_queue.size() >= _gw._config._max_inflight_per_connection) {
                 // Backpressure: leave the bytes in the kernel until the worker
                 // has drained the queue; it re-posts do_read when it has.
@@ -184,44 +190,90 @@ private:
         }
         arm_idle();
         _gw._stats._bytes_in += n;
-        std::vector<resp_command> commands;
         try {
-            commands = _session._parser.consume(std::span<const std::byte>(
+            _session._parser.feed(std::span<const std::byte>(
                 reinterpret_cast<const std::byte*>(_read_buffer.data()), n));
         } catch (const resp_protocol_error& e) {
-            // Redis closes on a protocol error; so do we, after saying why.
-            queue_reply(_session._writer.error(std::string("ERR Protocol error: ") + e.what()));
-            _session._closing = true;
-            _close_after_flush = true;
-            flush();
+            protocol_error(e);
             return;
         }
-        if (!commands.empty()) {
-            std::lock_guard<std::mutex> lock(_mutex);
-            for (auto& cmd : commands) {
-                queued_command q;
-                q._bytes = 0;
-                for (const auto& a : cmd._argv) {
-                    q._bytes += a.size();
-                }
-                // Total in-flight memory bound (Requirement 13.5): shed with a
-                // retryable error rather than queue past the budget. The reply
-                // is queued in order so pipelining stays intact.
-                auto before = _gw._inflight_bytes.fetch_add(q._bytes);
-                if (before + q._bytes > _gw._config._max_inflight_bytes) {
-                    _gw._inflight_bytes.fetch_sub(q._bytes);
-                    q._bytes = 0;
-                    q._prebuilt = _session._writer.error(
-                        "TRYAGAIN gateway is over its in-flight budget, retry");
-                    ++_gw._stats._shed;
-                } else {
-                    q._cmd = std::move(cmd);
-                }
-                _queue.push_back(std::move(q));
-            }
+        if (drain_parser()) {
+            kick();
+            do_read();
         }
-        kick();
-        do_read();
+    }
+
+    /// Redis closes on a protocol error; so do we, after saying why.
+    auto protocol_error(const resp_protocol_error& e) -> void {
+        queue_reply(_session._writer.error(std::string("ERR Protocol error: ") + e.what()));
+        _session._closing = true;
+        _close_after_flush = true;
+        flush();
+    }
+
+    /// Strand only. Parse and queue what the parser holds. Before AUTH
+    /// succeeds the parser runs under the small pre-auth limits and yields
+    /// one command at a time: the next is not parsed (nor more bytes read)
+    /// until the worker has executed this one, so a pipelined `AUTH` + large
+    /// `SET` is parsed under the limits that apply once AUTH has run, as in
+    /// Redis, which executes each command before parsing the next. Returns
+    /// false after a protocol error.
+    auto drain_parser() -> bool {
+        bool authenticated = _authenticated.load();
+        _session._parser.set_limits(authenticated
+                                        ? _gw._config._parser_limits
+                                        : resp_pre_auth_limits(_gw._config._parser_limits));
+        try {
+            while (true) {
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    if (_parse_held) {
+                        break;
+                    }
+                }
+                auto cmd = _session._parser.next();
+                if (!cmd.has_value()) {
+                    break;
+                }
+                enqueue(std::move(*cmd), !authenticated);
+            }
+        } catch (const resp_protocol_error& e) {
+            protocol_error(e);
+            return false;
+        }
+        return true;
+    }
+
+    auto enqueue(resp_command cmd, bool hold) -> void {
+        std::lock_guard<std::mutex> lock(_mutex);
+        queued_command q;
+        q._bytes = 0;
+        for (const auto& a : cmd._argv) {
+            q._bytes += a.size();
+        }
+        // Total in-flight memory bound (Requirement 13.5): shed with a
+        // retryable error rather than queue past the budget. The reply
+        // is queued in order so pipelining stays intact.
+        auto before = _gw._inflight_bytes.fetch_add(q._bytes);
+        if (before + q._bytes > _gw._config._max_inflight_bytes) {
+            _gw._inflight_bytes.fetch_sub(q._bytes);
+            q._bytes = 0;
+            q._prebuilt =
+                _session._writer.error("TRYAGAIN gateway is over its in-flight budget, retry");
+            ++_gw._stats._shed;
+        } else {
+            q._cmd = std::move(cmd);
+        }
+        _queue.push_back(std::move(q));
+        _parse_held = hold;
+    }
+
+    /// Bytes queued for the socket past which commands stop executing.
+    /// Caller holds `_mutex`.
+    [[nodiscard]] auto output_full_locked() const -> bool {
+        auto limit = _authenticated.load() ? _gw._config._max_output_buffer_bytes
+                                           : _gw._config._pre_auth_output_buffer_bytes;
+        return _out.size() + _writing_bytes >= limit;
     }
 
     /// Hand the queue to a worker unless one already has it.
@@ -238,37 +290,55 @@ private:
     }
 
     /// Worker-pool job: execute queued commands in order until the queue is
-    /// empty, then hand the connection back to the I/O side.
+    /// empty (or the client has stopped reading its replies), then hand the
+    /// connection back to the I/O side.
     auto process() -> void {
         while (true) {
             queued_command q;
-            bool resume = false;
+            bool stop = false;
+            bool resume_read = false;
+            bool resume_parse = false;
             {
                 std::lock_guard<std::mutex> lock(_mutex);
-                if (_queue.empty() || _session._closing || _closed) {
+                bool closing = _session._closing || _closed;
+                bool blocked = !closing && !_queue.empty() && output_full_locked();
+                if (_queue.empty() || closing || blocked) {
+                    // Output backpressure: leave the queue as it is; the
+                    // write completion kicks us once the client catches up.
+                    // Until then a full queue keeps reads paused too.
                     _busy = false;
-                    resume = _paused;
-                    _paused = false;
-                    if (!resume) {
-                        return;
+                    if (blocked && !_output_blocked) {
+                        ++_gw._stats._output_stalls;
                     }
-                }
-                if (!resume) {
+                    _output_blocked = blocked;
+                    stop = true;
+                    if (!closing && !blocked) {
+                        resume_read = _paused;
+                        _paused = false;
+                        resume_parse = _parse_held;
+                        _parse_held = false;
+                    }
+                } else {
                     q = std::move(_queue.front());
                     _queue.pop_front();
                     if (_paused && _queue.size() < _gw._config._max_inflight_per_connection) {
                         _paused = false;
-                        resume = true;
+                        resume_read = true;
                     }
                 }
             }
-            if (resume) {
+            if (resume_read || resume_parse) {
                 auto self = this->shared_from_this();
-                boost::asio::post(_strand, [self] { self->do_read(); });
-                std::lock_guard<std::mutex> lock(_mutex);
-                if (!_busy) {
-                    return;
-                }
+                boost::asio::post(_strand, [self, resume_parse] {
+                    if (resume_parse && !self->drain_parser()) {
+                        return;
+                    }
+                    self->kick();
+                    self->do_read();
+                });
+            }
+            if (stop) {
+                return;
             }
             if (q._bytes != 0) {
                 _gw._inflight_bytes.fetch_sub(q._bytes);
@@ -285,15 +355,16 @@ private:
                     reply = _session._writer.error("ERR internal error");
                 }
             }
+            // AUTH, HELLO ... AUTH and RESET change this; the strand reads it
+            // to pick parser limits only once this command has finished.
+            _authenticated.store(_session._identity.has_value());
             if (!reply.empty()) {
                 queue_reply(reply);
             }
             if (_session._closing) {
                 _close_after_flush = true;
-                flush();
-            } else {
-                flush();
             }
+            flush();
         }
     }
 
@@ -315,6 +386,7 @@ private:
             std::lock_guard<std::mutex> lock(_mutex);
             _writing_buffer.swap(_out);
             _out.clear();
+            _writing_bytes = _writing_buffer.size();
         }
         if (_writing_buffer.empty()) {
             if (_close_after_flush) {
@@ -328,9 +400,21 @@ private:
             self->_writing = false;
             self->_gw._stats._bytes_out += n;
             self->_writing_buffer.clear();
+            bool unblocked = false;
+            {
+                std::lock_guard<std::mutex> lock(self->_mutex);
+                self->_writing_bytes = 0;
+                if (self->_output_blocked && !self->output_full_locked()) {
+                    self->_output_blocked = false;
+                    unblocked = true;
+                }
+            }
             if (ec) {
                 self->do_close();
                 return;
+            }
+            if (unblocked) {
+                self->kick();
             }
             self->do_write();
         };
@@ -385,8 +469,19 @@ private:
     std::deque<queued_command> _queue;
     std::string _out;
     std::string _writing_buffer;
+    /// Size of `_writing_buffer` while a write is in flight, readable under
+    /// `_mutex` (the buffer itself belongs to the strand).
+    std::size_t _writing_bytes = 0;
     bool _busy = false;
     bool _paused = false;
+    /// The worker stopped because `_out` is over its cap.
+    bool _output_blocked = false;
+    /// Pre-auth: a parsed command is queued or executing; parse and read
+    /// nothing more until it has run.
+    bool _parse_held = false;
+    /// Mirrors `_session._identity.has_value()` for the strand, which must
+    /// not read the session while a worker executes against it.
+    std::atomic<bool> _authenticated{false};
     bool _writing = false;
     bool _read_pending = false;
     bool _close_after_flush = false;
@@ -406,7 +501,11 @@ redis_gateway<Host, Logger, Metrics>::redis_gateway(Host& host, redis_acl& acl, 
       _logger(logger),
       _metrics(metrics),
       _config(std::move(config)),
-      _resolver(std::move(resolver)) {}
+      _resolver(std::move(resolver)),
+      _auth_limiter(_config._auth_failure_limit, _config._auth_failure_window,
+                    _config._max_concurrent_auth != 0
+                        ? _config._max_concurrent_auth
+                        : std::max<std::size_t>(1, _config._worker_threads / 2)) {}
 
 template<typename Host, typename Logger, typename Metrics>
 redis_gateway<Host, Logger, Metrics>::~redis_gateway() {
@@ -691,56 +790,6 @@ auto redis_gateway<Host, Logger, Metrics>::audit(session& s, std::string_view co
 }
 
 template<typename Host, typename Logger, typename Metrics>
-auto redis_gateway<Host, Logger, Metrics>::auth_rate_limited(const std::string& source) -> bool {
-    std::lock_guard<std::mutex> lock(_auth_mutex);
-    auto it = _auth_failures.find(source);
-    if (it == _auth_failures.end()) {
-        return false;
-    }
-    auto now = std::chrono::steady_clock::now();
-    if (now - it->second._window_start > _config._auth_failure_window) {
-        _auth_failures.erase(it);
-        return false;
-    }
-    return it->second._count >= _config._auth_failure_limit;
-}
-
-template<typename Host, typename Logger, typename Metrics>
-auto redis_gateway<Host, Logger, Metrics>::note_auth_failure(const std::string& source) -> void {
-    std::lock_guard<std::mutex> lock(_auth_mutex);
-    auto now = std::chrono::steady_clock::now();
-    auto& f = _auth_failures[source];
-    if (f._count == 0 || now - f._window_start > _config._auth_failure_window) {
-        f._window_start = now;
-        f._count = 0;
-    }
-    ++f._count;
-    // Keep the table bounded: an attacker cycling source addresses must not
-    // grow it without limit. This used to clear() the whole table, which let
-    // that same attacker reset every other source's counter — including its
-    // own — on demand. Drop expired windows first; if still full, evict only
-    // the oldest window (never the entry just updated).
-    constexpr std::size_t k_max_tracked_sources = 65536;
-    if (_auth_failures.size() > k_max_tracked_sources) {
-        std::erase_if(_auth_failures, [&](const auto& kv) {
-            return now - kv.second._window_start > _config._auth_failure_window;
-        });
-    }
-    if (_auth_failures.size() > k_max_tracked_sources) {
-        auto oldest = _auth_failures.end();
-        for (auto it = _auth_failures.begin(); it != _auth_failures.end(); ++it) {
-            if (it->first != source && (oldest == _auth_failures.end() ||
-                                        it->second._window_start < oldest->second._window_start)) {
-                oldest = it;
-            }
-        }
-        if (oldest != _auth_failures.end()) {
-            _auth_failures.erase(oldest);
-        }
-    }
-}
-
-template<typename Host, typename Logger, typename Metrics>
 auto redis_gateway<Host, Logger, Metrics>::authorize(session& s, std::string_view upper,
                                                      const std::vector<std::string_view>& keys)
     -> std::optional<std::string> {
@@ -948,6 +997,9 @@ auto redis_gateway<Host, Logger, Metrics>::forward_socket(const std::string& end
     std::string buf;
     std::array<char, 512> chunk{};
     while (resp_reply_length(buf) == 0) {
+        if (buf.size() > 64u * 1024u) {
+            throw std::runtime_error("oversized AUTH reply from peer gateway");
+        }
         auto n = sock->read_some(boost::asio::buffer(chunk));
         buf.append(chunk.data(), n);
     }
@@ -1003,7 +1055,14 @@ auto redis_gateway<Host, Logger, Metrics>::forward(session& s, const resp_comman
         std::string buf;
         std::array<char, 16 * 1024> chunk{};
         std::size_t len = 0;
-        while ((len = resp_reply_length(buf)) == 0) {
+        // A peer's reply is never larger than the largest request this
+        // gateway itself accepts; past that, give up on the peer.
+        resp_reply_limits limits;
+        limits._max_bulk_len = _config._parser_limits._max_bulk_len;
+        while ((len = resp_reply_length(buf, limits)) == 0) {
+            if (buf.size() > _config._parser_limits._max_buffered_bytes) {
+                throw std::runtime_error("oversized reply from peer gateway");
+            }
             auto n = sock->read_some(boost::asio::buffer(chunk));
             buf.append(chunk.data(), n);
         }
@@ -1211,17 +1270,32 @@ auto redis_gateway<Host, Logger, Metrics>::handle_auth(session& s, const resp_co
     // `AUTH password` is the pre-ACL form; it authenticates the `default` user.
     std::string user = cmd._argv.size() == 3 ? cmd._argv[1] : "default";
     const auto& secret = cmd._argv.back();
-    if (auth_rate_limited(s._rate_key)) {
-        ++_stats._auth_failures;
-        emit("redis.auth.failures", "AUTH");
-        audit(s, "AUTH", "rate limited");
-        return s._writer.error(
-            "ERR too many authentication failures from this address, retry later");
+    // Admission is decided, and the attempt charged, before the KDF runs.
+    switch (_auth_limiter.begin(s._rate_key)) {
+        case redis_auth_limiter::verdict::allowed:
+            break;
+        case redis_auth_limiter::verdict::rate_limited:
+            ++_stats._auth_failures;
+            emit("redis.auth.failures", "AUTH");
+            audit(s, "AUTH", "rate limited");
+            return s._writer.error(
+                "ERR too many authentication failures from this address, retry later");
+        case redis_auth_limiter::verdict::busy:
+            ++_stats._auth_busy;
+            emit("redis.auth.busy", "AUTH");
+            audit(s, "AUTH", "too many concurrent attempts");
+            return s._writer.error("ERR too many concurrent authentication attempts, retry later");
     }
-    auto id = _acl.authenticate(user, secret);
+    std::optional<redis_identity> id;
+    try {
+        id = _acl.authenticate(user, secret);
+    } catch (...) {
+        _auth_limiter.finish(s._rate_key, false);
+        throw;
+    }
+    _auth_limiter.finish(s._rate_key, id.has_value());
     if (!id) {
         ++_stats._auth_failures;
-        note_auth_failure(s._rate_key);
         emit("redis.auth.failures", "AUTH");
         audit(s, "AUTH", "rejected user '" + user + "'");
         // Identical for unknown user and wrong password (Requirement 10.4).
@@ -1683,10 +1757,12 @@ auto redis_gateway<Host, Logger, Metrics>::handle_info(session& s) -> std::strin
         << "kythira_value_conflicts:" << _stats._value_conflicts.load() << "\r\n"
         << "kythira_oversize_rejections:" << _stats._oversize_rejections.load() << "\r\n"
         << "kythira_auth_failures:" << _stats._auth_failures.load() << "\r\n"
+        << "kythira_auth_busy:" << _stats._auth_busy.load() << "\r\n"
         << "kythira_authz_denials:" << _stats._authz_denials.load() << "\r\n"
         << "kythira_forwards:" << _stats._forwards.load() << "\r\n"
         << "kythira_forward_failures:" << _stats._forward_failures.load() << "\r\n"
-        << "kythira_shed:" << _stats._shed.load() << "\r\n";
+        << "kythira_shed:" << _stats._shed.load() << "\r\n"
+        << "kythira_output_stalls:" << _stats._output_stalls.load() << "\r\n";
     return s._writer.bulk(out.str());
 }
 
