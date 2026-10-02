@@ -547,6 +547,103 @@ BOOST_AUTO_TEST_CASE(test_a_message_already_carrying_oscore_is_refused) {
                       osc::unsupported_feature_error);
 }
 
+// ── The ID Context, end to end (coap-transport-multi-raft task 8) ────────
+// C.3 above checks the derivation helper. These check that
+// oscore_credentials::id_context actually reaches security_context, and that
+// egress carries it: C.6 is C.4's request protected under C.3's context.
+
+namespace {
+
+[[nodiscard]] auto c3_client_credentials() -> kythira::oscore_credentials {
+    auto creds = c1_client_credentials();
+    creds.id_context = from_hex("37cbf3210017a2d3");
+    return creds;
+}
+
+[[nodiscard]] auto c3_server_credentials() -> kythira::oscore_credentials {
+    auto creds = c1_server_credentials();
+    creds.id_context = from_hex("37cbf3210017a2d3");
+    return creds;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(test_c3_id_context_reaches_the_security_context) {
+    const kythira::oscore::security_context context{c3_client_credentials()};
+    BOOST_TEST(to_hex(context.id_context()) == "37cbf3210017a2d3");
+    BOOST_TEST(to_hex(context.sender_key()) == "af2a1300a5e95788b356336eeecd2b92");
+    BOOST_TEST(to_hex(context.recipient_key()) == "e39a0c7c77b43f03b4b39ab9a268699f");
+    BOOST_TEST(to_hex(context.common_iv()) == "2ca58fb85ff1b81c0b7181b85e");
+}
+
+BOOST_AUTO_TEST_CASE(test_c6_protected_request_carries_the_kid_context) {
+    namespace osc = kythira::oscore;
+    osc::security_context context{c3_client_credentials()};
+    context.set_sender_sequence_for_testing(20);
+
+    const auto unprotected =
+        osc::parse_message(from_hex("44015d1f00003974396c6f63616c686f737483747631"));
+    osc::request_binding binding;
+    const auto protected_message = context.protect_request(unprotected, binding);
+
+    // Flags 0x19 (h, k, one-byte Partial IV), Partial IV 0x14, s = 8, the
+    // eight ID Context bytes, and an empty kid.
+    BOOST_TEST(to_hex(osc::serialize_message(protected_message)) ==
+               "44025d1f00003974396c6f63616c686f73746b19140837cbf3210017a2d3"
+               "ff72cd7273fd331ac45cffbe55c3");
+    BOOST_TEST(to_hex(binding.nonce) == "2ca58fb85ff1b81c0b7181b84a");
+}
+
+BOOST_AUTO_TEST_CASE(test_c6_request_verifies_on_the_server) {
+    namespace osc = kythira::oscore;
+    osc::security_context server{c3_server_credentials()};
+    const auto protected_message =
+        osc::parse_message(from_hex("44025d1f00003974396c6f63616c686f73746b19140837cbf3210017a2d3"
+                                    "ff72cd7273fd331ac45cffbe55c3"));
+    osc::request_binding binding;
+    const auto recovered = server.unprotect_request(protected_message, binding);
+    BOOST_TEST(to_hex(osc::serialize_message(recovered)) ==
+               "44015d1f00003974396c6f63616c686f737483747631");
+}
+
+// Requirement 4.11: no ID Context, no change. C.4's bytes are what a context
+// with an empty id_context has always produced, and must still produce.
+BOOST_AUTO_TEST_CASE(test_an_empty_id_context_leaves_the_wire_unchanged) {
+    namespace osc = kythira::oscore;
+    auto creds = c1_client_credentials();
+    creds.id_context.clear();
+    osc::security_context context{creds};
+    context.set_sender_sequence_for_testing(20);
+    osc::request_binding binding;
+    const auto protected_message = context.protect_request(
+        osc::parse_message(from_hex("44015d1f00003974396c6f63616c686f737483747631")), binding);
+    BOOST_TEST(to_hex(osc::serialize_message(protected_message)) ==
+               "44025d1f00003974396c6f63616c686f7374620914ff612f1092f1776f1c1668b3825e");
+}
+
+// A request under one ID Context is refused by a context holding another,
+// before decryption and before the replay window moves.
+BOOST_AUTO_TEST_CASE(test_a_foreign_kid_context_is_refused) {
+    namespace osc = kythira::oscore;
+    osc::security_context client{c3_client_credentials()};
+    auto other = c3_server_credentials();
+    other.id_context = from_hex("37cbf3210017a2d4");
+    osc::security_context server{other};
+
+    osc::request_binding sent;
+    const auto request = client.protect_request(
+        osc::parse_message(from_hex("44015d1f00003974396c6f63616c686f737483747631")), sent);
+    osc::request_binding received;
+    BOOST_CHECK_THROW((void)server.unprotect_request(request, received), osc::verification_error);
+}
+
+BOOST_AUTO_TEST_CASE(test_an_oversized_id_context_is_refused) {
+    auto creds = c1_client_credentials();
+    creds.id_context.assign(256, std::byte{0x5A});
+    BOOST_CHECK_THROW(kythira::oscore::security_context{creds},
+                      kythira::coap_security_config_error);
+}
+
 BOOST_AUTO_TEST_CASE(test_identical_sender_and_recipient_ids_are_refused) {
     // RFC 8613 Section 3.3: identical IDs derive identical keys, which breaks
     // the nonce-uniqueness argument the AEAD depends on.

@@ -1948,6 +1948,22 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     else()
         message(STATUS "coap_raft_rate_profile_test: skipped (requires Folly)")
     endif()
+    # oscore_credentials::id_context through libcoap's own OSCORE: matched
+    # pair talks, mismatched does not, absent changes nothing --
+    # coap-transport-multi-raft task 8.
+    if(TARGET Folly::folly)
+        add_executable(coap_oscore_id_context_test coap_oscore_id_context_test.cpp)
+        target_link_libraries(coap_oscore_id_context_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        target_compile_features(coap_oscore_id_context_test PRIVATE cxx_std_23)
+        add_test(NAME coap_oscore_id_context_test COMMAND coap_oscore_id_context_test)
+        set_tests_properties(coap_oscore_id_context_test PROPERTIES TIMEOUT 100 LABELS "coap;oscore;integration")
+    else()
+        message(STATUS "coap_oscore_id_context_test: skipped (requires Folly)")
+    endif()
     # CoAP DTLS connection establishment property test needs Boost.JSON
     if(TARGET Folly::folly)
         add_executable(coap_dtls_connection_establishment_property_test coap_dtls_connection_establishment_property_test.cpp)

@@ -538,6 +538,11 @@ private:
         conf_text << "sender_id,hex,\"" << detail::bytes_to_hex(_creds.sender_id) << "\"\n";
         conf_text << "recipient_id,hex,\"" << detail::bytes_to_hex(_creds.recipient_id) << "\"\n";
         conf_text << "aead_alg,text,\"" << _creds.aead_algorithm << "\"\n";
+        if (!_creds.id_context.empty()) {
+            // Same field, same meaning as security_context's: libcoap mixes it
+            // into the derivation and sends it as the kid context.
+            conf_text << "id_context,hex,\"" << detail::bytes_to_hex(_creds.id_context) << "\"\n";
+        }
         // RFC 8613 Appendix B.1.2 stays on (libcoap's default). It is not
         // optional: libcoap's server only runs its replay window once a
         // recipient has answered an Echo challenge, so with it off every
