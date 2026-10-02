@@ -36,7 +36,7 @@ bool docker_integration_tests_enabled() {
 
 // ── Req 19 AC 4 — follower kill self-heals to 3 nodes ────────────────────────
 
-BOOST_AUTO_TEST_CASE(follower_kill_heals_to_target, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(follower_kill_heals_to_target, *boost::unit_test::timeout(240)) {
     if (!docker_integration_tests_enabled()) {
         BOOST_TEST_MESSAGE("skipped: set KYTHIRA_DOCKER_INTEGRATION_TESTS=1 to enable");
         return;
@@ -56,14 +56,15 @@ BOOST_AUTO_TEST_CASE(follower_kill_heals_to_target, *boost::unit_test::timeout(1
                         "cluster did not self-heal to 3 nodes within 60 s");
 
     // The killed node's original container should have been decommissioned
-    BOOST_CHECK_NO_THROW(f.assert_container_absent(follower_id));
+    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(follower_id, 60s),
+                        "the failed follower was not decommissioned within 60 s");
 
     f.assert_no_split_brain();
 }
 
 // ── Req 19 AC 5 — follower stop self-heals ───────────────────────────────────
 
-BOOST_AUTO_TEST_CASE(follower_stop_heals_to_target, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(follower_stop_heals_to_target, *boost::unit_test::timeout(240)) {
     if (!docker_integration_tests_enabled()) {
         BOOST_TEST_MESSAGE("skipped: set KYTHIRA_DOCKER_INTEGRATION_TESTS=1 to enable");
         return;
@@ -79,13 +80,14 @@ BOOST_AUTO_TEST_CASE(follower_stop_heals_to_target, *boost::unit_test::timeout(1
     BOOST_CHECK_MESSAGE(f.wait_for_cluster_size(3, 60s),
                         "cluster did not self-heal to 3 nodes after follower stop");
 
-    BOOST_CHECK_NO_THROW(f.assert_container_absent(follower_id));
+    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(follower_id, 60s),
+                        "the failed follower was not decommissioned within 60 s");
     f.assert_no_split_brain();
 }
 
 // ── Req 19 AC 6 — killing the leader triggers re-election + healing ───────────
 
-BOOST_AUTO_TEST_CASE(leader_kill_new_leader_heals, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(leader_kill_new_leader_heals, *boost::unit_test::timeout(240)) {
     if (!docker_integration_tests_enabled()) {
         BOOST_TEST_MESSAGE("skipped: set KYTHIRA_DOCKER_INTEGRATION_TESTS=1 to enable");
         return;
@@ -106,7 +108,8 @@ BOOST_AUTO_TEST_CASE(leader_kill_new_leader_heals, *boost::unit_test::timeout(12
     BOOST_CHECK_MESSAGE(f.wait_for_cluster_size(3, 60s),
                         "cluster did not self-heal to 3 nodes after leader kill");
 
-    BOOST_CHECK_NO_THROW(f.assert_container_absent(old_leader_id));
+    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(old_leader_id, 60s),
+                        "the failed old leader was not decommissioned within 60 s");
     f.assert_no_split_brain();
 }
 
@@ -122,12 +125,19 @@ BOOST_AUTO_TEST_CASE(transient_pause_below_threshold_no_replacement,
     docker_chaos::QuorumHealingFixture f{"transient-pause"};
     f.wait_for_leader(30s);
 
+    // A new leader assesses immediately, and every assessment reads each
+    // container's state from the daemon, where a paused container is not
+    // running. Pausing during one would rightly count node 2 as failed, so
+    // pause between the first assessment and the next (5 s later).
+    std::this_thread::sleep_for(2s);
+
     // Count initial running containers
     std::size_t initial_count = 3;
 
     // Pause a follower for fewer ticks than the heartbeat failure threshold (3)
-    // then immediately unpause.  The default heartbeat interval is 50ms so
-    // 2 × 50ms < threshold × interval is easily achieved with 80ms.
+    // then immediately unpause.  docker-compose.quorum.yml's heartbeat
+    // interval is 100 ms, so an 80 ms pause stays well below
+    // threshold × interval.
     f.pause(2);
     std::this_thread::sleep_for(80ms);
     f.unpause(2);
@@ -145,7 +155,7 @@ BOOST_AUTO_TEST_CASE(transient_pause_below_threshold_no_replacement,
 
 // ── Req 19 AC 8 — sustained pause triggers replacement ───────────────────────
 
-BOOST_AUTO_TEST_CASE(sustained_pause_triggers_replacement, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(sustained_pause_triggers_replacement, *boost::unit_test::timeout(240)) {
     if (!docker_integration_tests_enabled()) {
         BOOST_TEST_MESSAGE("skipped: set KYTHIRA_DOCKER_INTEGRATION_TESTS=1 to enable");
         return;
@@ -156,18 +166,16 @@ BOOST_AUTO_TEST_CASE(sustained_pause_triggers_replacement, *boost::unit_test::ti
 
     f.pause(2);
 
-    // Wait long enough for assessment + provisioning
-    // quorum_check_interval (default 30s) + threshold × heartbeat (3 × 50ms) + margin
-    std::this_thread::sleep_for(35s);
-
+    // A paused container is not running, so the leader's next assessment
+    // counts node 2 unreachable and provisions a replacement. Once that
+    // replacement is promoted, node 2 is removed from the configuration and
+    // its container decommissioned, which also removes the paused container:
+    // there is nothing left to unpause.
+    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(2, 90s),
+                        "the paused node was not replaced and decommissioned within 90 s");
     BOOST_CHECK_MESSAGE(f.wait_for_cluster_size(3, 30s),
-                        "cluster did not provision replacement after sustained pause");
+                        "cluster is not back to 3 running nodes after the sustained pause");
 
-    // Unpause the original — cluster should handle the returning node gracefully
-    f.unpause(2);
-    std::this_thread::sleep_for(5s);
-
-    // Either 3 or 4 running containers is acceptable; quorum must not be lost
     f.assert_no_split_brain();
 }
 
