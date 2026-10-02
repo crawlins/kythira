@@ -252,13 +252,34 @@ server.start();
 
 ### Cipher Suite Selection
 
+`cipher_suites` restricts certificate-based DTLS (legacy `cert_file`
+configs, or `pki_credentials::cipher_suites` with `security.mode =
+dtls_pki`) to the listed suites, on the libcoap, cantcoap and libnyoci
+backends alike. Both sides enforce their own list, so a handshake succeeds
+only when the two lists overlap.
+
 ```cpp
-// Example: Restrict to specific cipher suites (implementation-dependent)
 coap_client_config config;
 config.enable_dtls = true;
-// Note: Cipher suite configuration depends on libcoap build options
-// Consult libcoap documentation for available cipher suites
+config.cert_file = "/etc/kythira/node.pem";
+config.key_file = "/etc/kythira/node.key";
+config.ca_file = "/etc/kythira/ca.pem";
+config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"};
 ```
+
+- Names may be IANA names (as above) or OpenSSL names
+  (`ECDHE-ECDSA-AES128-GCM-SHA256`).
+- Every entry must name a suite this OpenSSL can negotiate over DTLS 1.2.
+  An unknown name, or a TLS 1.3 suite such as `TLS_AES_128_GCM_SHA256`,
+  fails construction (or `start()`) with `coap_security_config_error`.
+- An empty list keeps the backend's defaults.
+- `cipher_suites` cannot be combined with DTLS-PSK, and the top-level
+  field cannot be combined with an explicit `security.mode`; both are
+  configuration errors rather than settings that would be ignored.
+- The libcoap backend needs libcoap built with OpenSSL (the vcpkg `dtls`
+  feature is) to apply a list; with another TLS library a configured list
+  is refused at construction.
 
 ### Session Resumption
 
