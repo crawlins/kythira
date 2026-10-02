@@ -648,6 +648,23 @@ The client should maintain a connection pool per target node:
 - Idle connections closed after `keep_alive_timeout`
 - Pool cleanup on client destruction
 
+As implemented, each RPC leases one connection (one `httplib::Client`) for
+its whole exchange. `connection_pool_size` bounds the connections open to one
+target, leased and idle together, so it is also the most RPCs in flight to
+that target. An RPC that finds the pool full waits for a returned connection
+until its own deadline (Requirement 11.5). Idle connections past
+`keep_alive_timeout` are closed on the next lease to any target
+(Requirement 11.4). A connection whose exchange failed, or that was built
+before a TLS reload, is closed when returned rather than pooled.
+
+On the server side, cpp-httplib holds one worker thread per connection for
+the connection's keep-alive life, and its default pool has a fixed
+max(8, cores - 1) workers. A client pool larger than that could hold every
+worker and starve the rest, so the server replaces it with a pool that starts
+workers on demand up to `max_concurrent_connections` per listener
+(Requirement 14.6). Connections past the limit wait for a worker; refusing
+them is left to the http-server-request-limits spec.
+
 ### Timeout Handling
 
 Timeouts are enforced at multiple levels:

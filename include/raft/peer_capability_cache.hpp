@@ -57,7 +57,7 @@ namespace kythira {
 ///
 /// Carries its own mutex rather than borrowing the client's. The design note
 /// suggested reusing the connection-map mutex, but `send_rpc` consults this
-/// cache on a path that has already gone through `get_or_create_client()` —
+/// cache on a path that has already gone through `lease_connection()` —
 /// which takes that mutex — and `std::mutex` is not recursive. A separate lock
 /// removes a deadlock that would otherwise depend on call ordering nobody would
 /// think to re-check. The critical sections here are a map lookup and a string
