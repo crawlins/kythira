@@ -21,7 +21,7 @@
 #       --project PROJECT_ID --github-org ORG --github-repo REPO \
 #       --bundles BUNDLE[,BUNDLE...] \
 #       [--pool-id ID] [--provider-id ID] [--service-account-id ID] \
-#       [--ref-restriction REF] [--dry-run]
+#       [--environment NAME] [--test-service-account EMAIL] [--dry-run]
 #
 # Bundles: gcp-quorum-manager, gcp-privateca (any non-empty subset).
 set -euo pipefail
@@ -36,7 +36,8 @@ BUNDLES=""
 POOL_ID="kythira-ci-pool"
 PROVIDER_ID="kythira-ci-github"
 SA_ID="kythira-ci-real-cloud-tests"
-REF_RESTRICTION=""
+ENVIRONMENT="real-cloud-tests"
+TEST_SA_EMAIL=""
 OBJECT_PERSISTENCE_BUCKET=""
 DRY_RUN=0
 
@@ -59,7 +60,17 @@ Optional:
   --pool-id ID              Workload Identity Pool id (default kythira-ci-pool)
   --provider-id ID          OIDC provider id (default kythira-ci-github)
   --service-account-id ID   SA id (default kythira-ci-real-cloud-tests)
-  --ref-restriction REF     Narrow trust to a single git ref (e.g. refs/heads/main)
+  --environment NAME        GitHub Environment the provider trusts (default
+                             real-cloud-tests). Tokens are accepted only when
+                             their environment claim equals NAME, i.e. only
+                             from a job that declares that environment.
+  --test-service-account EMAIL
+                            The service account the quorum-manager fixture
+                             attaches to the instances it launches
+                             (GCP_TEST_SERVICE_ACCOUNT). CI is granted actAs
+                             on that one account only. Omit it when the
+                             fixture launches instances with no service
+                             account, as CI does today.
   --dry-run                 Print the gcloud calls without running them
 
 Safe to re-run — every step checks for existing state first, and re-running
@@ -76,7 +87,12 @@ while [[ $# -gt 0 ]]; do
         --pool-id) POOL_ID="$2"; shift 2;;
         --provider-id) PROVIDER_ID="$2"; shift 2;;
         --service-account-id) SA_ID="$2"; shift 2;;
-        --ref-restriction) REF_RESTRICTION="$2"; shift 2;;
+        --environment) ENVIRONMENT="$2"; shift 2;;
+        --test-service-account) TEST_SA_EMAIL="$2"; shift 2;;
+        --ref-restriction)
+            echo "--ref-restriction was removed; the provider now trusts one GitHub" \
+                 "Environment (--environment, default real-cloud-tests)" >&2
+            exit 1;;
         --object-persistence-bucket) OBJECT_PERSISTENCE_BUCKET="$2"; shift 2;;
         --dry-run) DRY_RUN=1; shift;;
         -h|--help) usage; exit 0;;
@@ -114,12 +130,15 @@ if ! gcloud iam workload-identity-pools describe "$POOL_ID" \
 fi
 
 echo "== OIDC provider =="
-# Restrict the token subject to this repository (optionally a single ref),
-# mirroring the aws role's repo:<org>/<repo>:* trust condition.
-ATTR_CONDITION="assertion.repository == '${GITHUB_ORG}/${GITHUB_REPO}'"
-if [[ -n "$REF_RESTRICTION" ]]; then
-    ATTR_CONDITION="${ATTR_CONDITION} && assertion.ref == '${REF_RESTRICTION}'"
-fi
+# Accept only tokens from this repository AND from a job that declares the
+# environment, matching the AWS, Azure, OCI and Alibaba trust. Checking the
+# repository alone let a workflow on any branch impersonate the CI service
+# account without declaring the environment, so the environment's reviewers
+# and branch rules never ran. A token with no environment claim fails the
+# condition rather than passing it.
+ATTR_CONDITION="assertion.repository == '${GITHUB_ORG}/${GITHUB_REPO}' && assertion.environment == '${ENVIRONMENT}'"
+ATTR_MAPPING="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.environment=assertion.environment"
+echo "   condition: ${ATTR_CONDITION}"
 if ! gcloud iam workload-identity-pools providers describe "$PROVIDER_ID" \
         --project "$PROJECT" --location=global \
         --workload-identity-pool="$POOL_ID" >/dev/null 2>&1; then
@@ -128,7 +147,15 @@ if ! gcloud iam workload-identity-pools providers describe "$PROVIDER_ID" \
         --workload-identity-pool="$POOL_ID" \
         --display-name="GitHub Actions" \
         --issuer-uri="https://token.actions.githubusercontent.com" \
-        --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
+        --attribute-mapping="$ATTR_MAPPING" \
+        --attribute-condition="$ATTR_CONDITION"
+else
+    # Re-applied on every run: a provider created by an older version of this
+    # script keeps its old, repository-only condition until it is updated.
+    run gcloud iam workload-identity-pools providers update-oidc "$PROVIDER_ID" \
+        --project "$PROJECT" --location=global \
+        --workload-identity-pool="$POOL_ID" \
+        --attribute-mapping="$ATTR_MAPPING" \
         --attribute-condition="$ATTR_CONDITION"
 fi
 
@@ -153,9 +180,15 @@ run gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
 # absent, it means project, which is what every pre-existing entry meant.
 #
 # The difference is not cosmetic: roles/storage.objectUser at project scope
-# would grant object access to every bucket in the project, including any the
-# real-GCE fixture creates for node binaries, which is exactly the widening
-# this bundle exists to avoid.
+# would grant object access to every bucket in the project, which is exactly
+# the widening this bundle exists to avoid.
+#
+# "scope": "test-service-account" binds ON THE --test-service-account
+# account. roles/iam.serviceAccountUser at project scope is actAs on every
+# service account in the project, so CI could launch an instance as any of
+# them, including one with Owner. When --test-service-account is not given
+# the binding is skipped: the fixture then launches instances with no
+# service account attached and needs no actAs at all.
 echo "== Role bindings for the selected bundles =="
 IFS=',' read -ra BUNDLE_ARR <<< "$BUNDLES"
 for bundle in "${BUNDLE_ARR[@]}"; do
@@ -169,6 +202,17 @@ for bundle in "${BUNDLE_ARR[@]}"; do
                 echo "   (bucket-scoped: gs://${OBJECT_PERSISTENCE_BUCKET})"
                 run gcloud storage buckets add-iam-policy-binding \
                     "gs://${OBJECT_PERSISTENCE_BUCKET}" \
+                    --member="serviceAccount:${SA_EMAIL}" \
+                    --role="$role"
+                ;;
+            test-service-account)
+                if [[ -z "$TEST_SA_EMAIL" ]]; then
+                    echo "   (skipping ${role}: no --test-service-account given)"
+                    continue
+                fi
+                echo "   (service-account-scoped: ${TEST_SA_EMAIL})"
+                run gcloud iam service-accounts add-iam-policy-binding "$TEST_SA_EMAIL" \
+                    --project "$PROJECT" \
                     --member="serviceAccount:${SA_EMAIL}" \
                     --role="$role"
                 ;;
@@ -186,6 +230,25 @@ import json, sys
 for e in json.load(open(sys.argv[1])):
     print(e["role"], e.get("scope", "project"), sep="\t")
 ' "$policy")
+done
+
+# Project-level grants older versions of this script made and no policy file
+# asks for any more. Bindings are only ever added above, so without this a
+# re-run would leave them in place. roles/iam.serviceAccountUser is now bound
+# on the test service account instead (see above); roles/storage.admin was for
+# a node-binary upload the real-GCE fixture never implemented.
+echo "== Revoke retired project-wide grants =="
+for role in roles/iam.serviceAccountUser roles/storage.admin; do
+    if gcloud projects get-iam-policy "$PROJECT" \
+            --flatten='bindings[].members' \
+            --filter="bindings.role=${role} AND bindings.members=serviceAccount:${SA_EMAIL}" \
+            --format='value(bindings.role)' 2>/dev/null | grep -q .; then
+        run gcloud projects remove-iam-policy-binding "$PROJECT" \
+            --member="serviceAccount:${SA_EMAIL}" \
+            --role="$role" --condition=None
+    else
+        echo "   ${role}: not bound"
+    fi
 done
 
 PROVIDER_RESOURCE="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}"

@@ -19,7 +19,7 @@
 #   scripts/ci-cloud-credentials/aws/provision-oidc-role.sh \
 #       --github-org ORG --github-repo REPO --bundles BUNDLE[,BUNDLE...] \
 #       [--role-name NAME] [--session-duration-seconds N] \
-#       [--ref-restriction REF] [--dry-run]
+#       [--environment NAME] [--dry-run]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -31,7 +31,7 @@ BUNDLES=""
 BUCKET=""
 ROLE_NAME="kythira-ci-real-cloud-tests"
 SESSION_DURATION="3600"
-REF_RESTRICTION=""
+ENVIRONMENT="real-cloud-tests"
 DRY_RUN=0
 
 OIDC_PROVIDER_URL="token.actions.githubusercontent.com"
@@ -71,9 +71,13 @@ Optional:
                                   bucket.sh's own default, kythira-ci-<account>
   --role-name NAME               default: kythira-ci-real-cloud-tests
   --session-duration-seconds N   default: 3600 (one hour)
-  --ref-restriction REF          e.g. "ref:refs/heads/main" — further
-                                  restricts the trust policy's subject
-                                  condition beyond repo:ORG/REPO:*
+  --environment NAME             GitHub Environment the role trusts.
+                                  default: real-cloud-tests. The trust
+                                  policy matches the OIDC subject
+                                  repo:ORG/REPO:environment:NAME exactly,
+                                  so only a job that declares this
+                                  environment (and so passes its
+                                  protection rules) can assume the role.
   --dry-run                      Print the AWS CLI calls that would run
                                   without executing them
   -h, --help                     Show this help
@@ -88,7 +92,11 @@ while [[ $# -gt 0 ]]; do
         --bucket) BUCKET="$2"; shift 2 ;;
         --role-name) ROLE_NAME="$2"; shift 2 ;;
         --session-duration-seconds) SESSION_DURATION="$2"; shift 2 ;;
-        --ref-restriction) REF_RESTRICTION="$2"; shift 2 ;;
+        --environment) ENVIRONMENT="$2"; shift 2 ;;
+        --ref-restriction)
+            echo "ERROR: --ref-restriction was removed; the role now trusts one" \
+                 "GitHub Environment (--environment, default real-cloud-tests)." >&2
+            exit 1 ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
@@ -139,10 +147,13 @@ else
 fi
 
 echo "[step] Build trust policy"
-SUBJECT="repo:${GITHUB_ORG}/${GITHUB_REPO}:*"
-if [[ -n "${REF_RESTRICTION}" ]]; then
-    SUBJECT="repo:${GITHUB_ORG}/${GITHUB_REPO}:${REF_RESTRICTION}"
-fi
+# An exact match on the environment subject, not StringLike on
+# repo:ORG/REPO:*. The wildcard let a workflow on any branch assume the
+# role without declaring the environment, so the environment's reviewers
+# and branch rules never ran. GitHub issues this subject to every job that
+# declares `environment: NAME`, and only to such jobs.
+SUBJECT="repo:${GITHUB_ORG}/${GITHUB_REPO}:environment:${ENVIRONMENT}"
+echo "  trusted subject: ${SUBJECT}"
 TRUST_POLICY=$(cat <<EOF
 {
     "Version": "2012-10-17",
@@ -152,8 +163,10 @@ TRUST_POLICY=$(cat <<EOF
             "Principal": {"Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER_URL}"},
             "Action": "sts:AssumeRoleWithWebIdentity",
             "Condition": {
-                "StringEquals": {"${OIDC_PROVIDER_URL}:aud": "${OIDC_AUDIENCE}"},
-                "StringLike": {"${OIDC_PROVIDER_URL}:sub": "${SUBJECT}"}
+                "StringEquals": {
+                    "${OIDC_PROVIDER_URL}:aud": "${OIDC_AUDIENCE}",
+                    "${OIDC_PROVIDER_URL}:sub": "${SUBJECT}"
+                }
             }
         }
     ]

@@ -108,16 +108,14 @@ echo "== Federated identity credential (GitHub OIDC, no client secret) =="
 # changes the OIDC subject GitHub issues to
 # repo:<org>/<repo>:environment:<environment-name> -- unlike a plain
 # ref-scoped subject (repo:<org>/<repo>:ref:refs/heads/main), this is NOT
-# branch-specific, so it authenticates from any branch/PR that runs a job
-# targeting this environment (matches the AWS provisioner's
-# repo:<org>/<repo>:* trust policy's own "any branch/tag/PR" intent, just
-# scoped by environment name instead of by wildcard ref, since Azure AD
-# federated credentials require an exact subject match with no wildcard
-# support the way an AWS IAM trust policy's StringLike condition has).
-# Narrow this further (e.g. to a specific branch) if your threat model wants
-# it -- but note a ref-scoped subject would then need updating every time
-# this environment's jobs are exercised from a different branch, which is
-# exactly the mismatch this comment replaces.
+# branch-specific, so it authenticates from any branch that runs a job
+# targeting this environment, after the environment's own protection rules
+# (required reviewers, deployment branches) let that job start. The AWS,
+# GCP and Alibaba provisioners trust the same environment subject, so one
+# set of environment rules gates every provider. Restrict the environment's
+# deployment branches rather than this subject: a ref-scoped subject would
+# need updating every time this environment's jobs are exercised from a
+# different branch.
 FIC_NAME="github-actions-real-cloud-tests"
 EXISTING_FIC=$(az ad app federated-credential list --id "$APP_ID" \
     --query "[?name=='$FIC_NAME'].name" -o tsv 2>/dev/null || true)

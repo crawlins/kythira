@@ -41,7 +41,10 @@ source "amazon-ebs" "ca_cluster_node" {
   ssh_username  = var.ssh_username
   ami_name      = local.ami_name
 
-  ami_description = "kythira ca_cluster_node - commit ${var.git_sha}, ${var.arch}"
+  # No ami_description: Packer applies one with ec2:ModifyImageAttribute
+  # after CreateImage, and the ami-build bundle deliberately does not grant
+  # that action (it is also how an AMI is shared with another account). The
+  # commit and arch the description carried are in the tags below.
 
   tags = merge(local.common_tags, {
     "Name"             = local.ami_name

@@ -67,7 +67,7 @@ scripts/ci-cloud-credentials/azure/provision-federated-identity.sh \
 Pass only the bundles you actually want CI to be able to run. Creates (if
 absent) the `kythira-ci-real-cloud-tests` Azure AD app registration + service
 principal, a federated identity credential trusting
-`repo:<org>/<repo>:ref:refs/heads/main` (no client secret), and the RBAC role
+`repo:<org>/<repo>:environment:real-cloud-tests` (no client secret), and the RBAC role
 assignments for the given bundles. Run with `--dry-run` first to see the
 exact `az` calls without making them. Safe to re-run — every step checks for
 existing state first.

@@ -45,8 +45,24 @@ scripts/ci-cloud-credentials/gcp/provision-workload-identity.sh \
 Pass only the bundles you want CI to be able to run — a bundle left out grants
 the service account none of its permissions. Run with `--dry-run` first to see
 the exact `gcloud` calls without making them. Safe to re-run; every step checks
-for existing state first. Optionally narrow trust to a single ref with
-`--ref-restriction refs/heads/main`.
+for existing state first.
+
+The provider accepts a token only when it comes from this repository **and**
+from a job that declares `environment: real-cloud-tests` (`--environment` to
+change the name), the same trust the AWS, Azure, OCI and Alibaba identities
+use, so that environment's protection rules gate every use of the service
+account. Re-running the script updates an existing provider's condition in
+place.
+
+`roles/iam.serviceAccountUser` (actAs) is bound only on the account named by
+`--test-service-account`, the `GCP_TEST_SERVICE_ACCOUNT` the quorum-manager
+fixture attaches to its instances, and skipped when that flag is absent: CI
+leaves `GCP_TEST_SERVICE_ACCOUNT` unset, so its instances run with no service
+account and need no actAs. The script also revokes the project-wide
+`roles/iam.serviceAccountUser` and `roles/storage.admin` grants earlier
+versions made: project-wide actAs let CI act as any service account in the
+project, and storage.admin served a node-binary upload the fixture never
+implemented.
 
 The script prints the `gh variable set` commands to run next.
 
@@ -87,9 +103,9 @@ entry; nothing needs teardown.
 
 ## What the tests create (and clean up)
 
-The real-GCE fixture creates its own VPC subnetworks, service account (if
-`GCP_TEST_SERVICE_ACCOUNT` is unset), test instances/MIGs, and a Cloud Storage
-object holding the uploaded `KYTHIRA_NODE_BINARY`; the real-CAS fixture creates a
+The real-GCE fixture creates its own VPC subnetworks and test instances/MIGs
+(with no service account attached unless `GCP_TEST_SERVICE_ACCOUNT` names one);
+the real-CAS fixture creates a
 CA pool + self-signed root CA (if `GCP_TEST_CA_POOL` is unset). Every fixture
 labels the resources it creates with `kythira-test-run=<run-id>` and tears them
 down in reverse dependency order at the end, executing every teardown step
