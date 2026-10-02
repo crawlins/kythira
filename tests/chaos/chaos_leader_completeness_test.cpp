@@ -9,9 +9,11 @@
 
 #include "chaos_test_types.hpp"
 #include "fault_profiles.hpp"
+#include "liveness_assertions.hpp"
 #include "safety_assertions.hpp"
 
 #include <chrono>
+#include <format>
 #include <thread>
 #include <vector>
 #include <memory>
@@ -22,16 +24,27 @@ BOOST_GLOBAL_FIXTURE(ChaosFixture);
 namespace {
 constexpr std::chrono::milliseconds k_election_min{50};
 constexpr std::chrono::milliseconds k_election_max{100};
-}
+constexpr std::chrono::milliseconds k_step{5};
+constexpr std::chrono::milliseconds k_election_budget{2000};
+constexpr std::chrono::milliseconds k_command_timeout{5000};
+constexpr std::chrono::milliseconds k_settle_budget{2000};
+}  // namespace
 
 BOOST_AUTO_TEST_SUITE(chaos_leader_completeness)
 
-// Property: a committed entry must appear in all future leaders' logs.
+// Property (Requirement 5.3): a committed entry must appear in all future
+// leaders' logs.
 //
-// Scenario: commit one command; apply network_partition_profile to the current
-// leader (isolating it); wait for a new election on n2; verify the committed
-// entry appears in n2's log (via assert_log_matching which checks all shared
-// entries match).
+// Scenario: commit one command and confirm every node applied it; isolate the
+// leader n1; elect n2 in a higher term; require n2's log to hold the entry at
+// the same index, term and bytes; heal; require n1 to step down and the
+// cluster to commit a new command on n2 that every node applies.
+//
+// The isolation removes n1's simulator edges instead of using
+// network_partition_profile. libfiu fault points are process-wide, so that
+// profile fails every node's sends: n2 could never collect a vote, no new
+// leader was ever elected, and the old version of this test passed without
+// testing anything.
 BOOST_AUTO_TEST_CASE(committed_entry_survives_leader_change, *boost::unit_test::timeout(120)) {
     using namespace kythira::chaos;
     kythira::chaos::clear_all_faults();
@@ -58,38 +71,66 @@ BOOST_AUTO_TEST_CASE(committed_entry_survives_leader_change, *boost::unit_test::
     n2->start();
     n3->start();
 
+    std::vector<chaos_node*> nodes = {n1.get(), n2.get(), n3.get()};
+
     // Elect n1.
     std::this_thread::sleep_for(k_election_max + std::chrono::milliseconds{20});
-    n1->check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    require_elected(*n1, nodes, k_election_budget, k_step, "initial election");
 
-    // Commit one command on n1.
+    // Commit one command on n1, and confirm it really committed: the old
+    // test caught and ignored any failure here and asserted nothing after.
     auto cmd = kythira::test_key_value_state_machine<>::make_put_command("committed_key", "val");
-    try {
-        n1->submit_command(cmd, std::chrono::milliseconds{100});
-        n1->replicate_to_followers();
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    } catch (...) {
-        // submission timing — continue with assert
+    const auto index = last_log_index(*n1) + 1;
+    auto result = n1->submit_command(cmd, k_command_timeout);
+    require_command_succeeds(*n1, result, k_settle_budget, k_step, nodes, "committed entry");
+    require_applied_through(*n1, nodes, index, k_settle_budget, k_step, "committed entry");
+    const auto committed = entry_at(*n1, index);
+    BOOST_REQUIRE_MESSAGE(committed.has_value() && committed->command() == cmd,
+                          std::format("n1 has no entry at index {} carrying the submitted "
+                                      "command; {}",
+                                      index, describe_nodes(nodes)));
+    const auto old_term = n1->get_current_term();
+
+    // Isolate n1 and elect n2 from the remaining majority.
+    for (const auto* peer : {"2", "3"}) {
+        sim->remove_edge("1", peer);
+        sim->remove_edge(peer, "1");
     }
+    std::this_thread::sleep_for(k_election_max * 2);
+    require_elected(*n2, nodes, k_election_budget, k_step, "election with n1 isolated");
+    BOOST_REQUIRE_GT(n2->get_current_term(), old_term);
 
-    // Isolate n1 via network partition.
-    {
-        network_partition_profile partition;
+    // The new leader must hold the committed entry, unchanged.
+    const auto held = entry_at(*n2, index);
+    BOOST_REQUIRE_MESSAGE(
+        held.has_value(),
+        std::format("leader completeness violated: new leader n2 (term {}) "
+                    "has no entry at committed index {}; {}; {}",
+                    n2->get_current_term(), index, describe_nodes(nodes), describe_fault_points()));
+    BOOST_REQUIRE_MESSAGE(
+        held->term() == committed->term() && held->command() == cmd,
+        std::format("leader completeness violated: new leader n2 (term {}) "
+                    "holds index {} with term {}, committed term was {}; {}; {}",
+                    n2->get_current_term(), index, held->term(), committed->term(),
+                    describe_nodes(nodes), describe_fault_points()));
 
-        // Let n2 start a new election; wrap in try-catch as belt-and-suspenders
-        // in case any synchronous path escapes the exceptional-future machinery.
-        std::this_thread::sleep_for(k_election_max * 2);
-        try {
-            n2->check_election_timeout();
-        } catch (...) {
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    }
-    // Partition healed.
+    // Heal. n1 learns of the higher term from n2's heartbeats and steps down,
+    // and a write on n2 commits and reaches every node, n1 included.
+    wire_full_mesh(sim, {"1", "2", "3"});
+    const bool stepped_down = drive_until(
+        k_settle_budget, k_step, [&] { n2->check_heartbeat_timeout(); },
+        [&] { return !n1->is_leader(); });
+    BOOST_REQUIRE_MESSAGE(stepped_down,
+                          "isolated old leader n1 did not step down after the "
+                          "partition healed; " +
+                              describe_nodes(nodes));
 
-    // Both nodes should have matching log entries at any shared index.
-    std::vector<chaos_node*> nodes = {n1.get(), n2.get(), n3.get()};
+    auto next = kythira::test_key_value_state_machine<>::make_put_command("after_heal", "val");
+    const auto next_index = last_log_index(*n2) + 1;
+    auto next_result = n2->submit_command(next, k_command_timeout);
+    require_command_succeeds(*n2, next_result, k_settle_budget, k_step, nodes, "write after heal");
+    require_applied_through(*n2, nodes, next_index, k_settle_budget, k_step, "write after heal");
+
     assert_log_matching(nodes);
     assert_election_safety(nodes);
 

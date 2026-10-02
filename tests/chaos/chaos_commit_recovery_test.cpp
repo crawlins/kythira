@@ -9,9 +9,11 @@
 
 #include "chaos_test_types.hpp"
 #include "fault_profiles.hpp"
+#include "liveness_assertions.hpp"
 #include "safety_assertions.hpp"
 
 #include <chrono>
+#include <format>
 #include <thread>
 #include <vector>
 #include <memory>
@@ -23,14 +25,29 @@ namespace {
 constexpr std::chrono::milliseconds k_election_min{50};
 constexpr std::chrono::milliseconds k_election_max{100};
 constexpr std::chrono::milliseconds k_heartbeat{20};
-}
+constexpr std::chrono::milliseconds k_step{5};
+constexpr std::chrono::milliseconds k_election_budget{2000};
+// Long enough that the command is still pending when the fault lifts.
+constexpr std::chrono::milliseconds k_command_timeout{5000};
+// Budget for the client future and follower apply after the commit itself
+// has been checked against the requirement's deadline.
+constexpr std::chrono::milliseconds k_settle_budget{2000};
+}  // namespace
 
 BOOST_AUTO_TEST_SUITE(chaos_commit_recovery)
 
-// Liveness: a pending command commits after network faults stop.
+// Liveness (Requirement 6.2): a pending command commits after network faults
+// stop.
 //
-// Scenario: submit a command with network_partition_profile active on a
-// minority; disable profile; verify the node can send heartbeats without fault.
+// Scenario: elect n1; submit a command with network_partition_profile active;
+// confirm the fault held the command back; lift the profile; require the
+// command to commit within 10x heartbeat_interval, then to complete
+// successfully and be applied on every node.
+//
+// libfiu fault points are process-wide, so the profile cuts every node's
+// sends at once rather than a minority's. For this test that only makes the
+// fault stronger: the leader cannot reach anyone, so the command is certainly
+// still pending when the fault lifts.
 BOOST_AUTO_TEST_CASE(commit_succeeds_after_fault_removal, *boost::unit_test::timeout(120)) {
     using namespace kythira::chaos;
     kythira::chaos::clear_all_faults();
@@ -57,35 +74,52 @@ BOOST_AUTO_TEST_CASE(commit_succeeds_after_fault_removal, *boost::unit_test::tim
     n2->start();
     n3->start();
 
+    std::vector<chaos_node*> nodes = {n1.get(), n2.get(), n3.get()};
+
     // Elect n1.
     std::this_thread::sleep_for(k_election_max + std::chrono::milliseconds{20});
-    n1->check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    require_elected(*n1, nodes, k_election_budget, k_step, "initial election");
 
     auto cmd = kythira::test_key_value_state_machine<>::make_put_command("recovery_key", "value");
+    const auto index = last_log_index(*n1) + 1;
 
-    // Submit command while n3 is partitioned (minority fault).
-    {
-        network_partition_profile partition;
-        try {
-            n1->submit_command(cmd, std::chrono::milliseconds{50});
-        } catch (...) {
-            // May fail to replicate to majority — expected.
-        }
-        // Wait briefly with faults active.
-        std::this_thread::sleep_for(k_heartbeat * 3);
-    }
-    // Fault cleared.
-
-    // Allow up to 10× heartbeat for commit recovery.
-    for (int i = 0; i < 10; ++i) {
+    // Submit while every send fails. The submit must still be accepted into
+    // the leader's log; only replication is blocked.
+    network_partition_profile partition;
+    auto result = n1->submit_command(cmd, k_command_timeout);
+    for (int i = 0; i < 3; ++i) {
         n1->check_heartbeat_timeout();
         std::this_thread::sleep_for(k_heartbeat);
     }
+    BOOST_REQUIRE_MESSAGE(
+        last_log_index(*n1) >= index,
+        "submit_command did not append to the leader's log; " + describe_nodes(nodes));
+    BOOST_REQUIRE_MESSAGE(n1->debug_state().commit_index < index,
+                          "command committed while the partition was active, so the "
+                          "scenario never exercised recovery; " +
+                              describe_nodes(nodes));
+    BOOST_REQUIRE_MESSAGE(!result.isReady(), "command completed while the partition was active; " +
+                                                 describe_nodes(nodes));
 
-    // Verify no two leaders share a term after recovery.
-    std::vector<chaos_node*> nodes = {n1.get(), n2.get(), n3.get()};
+    partition.disable();
+
+    // Requirement 6.2: committed within 10x heartbeat_interval of the fault
+    // stopping.
+    const bool committed = drive_until(
+        k_heartbeat * 10, k_step, [&] { n1->check_heartbeat_timeout(); },
+        [&] { return n1->debug_state().commit_index >= index; });
+    BOOST_REQUIRE_MESSAGE(
+        committed, std::format("pending command at index {} did not commit within "
+                               "10 x heartbeat_interval ({} ms) of the fault lifting; {}; {}",
+                               index, (k_heartbeat * 10).count(), describe_nodes(nodes),
+                               describe_fault_points()));
+
+    // The client sees success, and every replica applies it.
+    require_command_succeeds(*n1, result, k_settle_budget, k_step, nodes, "pending command");
+    require_applied_through(*n1, nodes, index, k_settle_budget, k_step, "pending command");
+
     assert_election_safety(nodes);
+    assert_log_matching(nodes);
 
     n1->stop();
     n2->stop();
