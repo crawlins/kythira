@@ -99,11 +99,12 @@ struct grpc_client_config {
     std::chrono::seconds keepalive_timeout{10};              ///< Ping ack deadline.
     bool keepalive_permit_without_calls{true};
 
-    bool enable_tls{false};              ///< Off by default (Requirement 9.7).
-    bool enable_ssl_verification{true};  ///< Validate the server certificate.
-    std::string ca_cert_pem{};           ///< Trusted root(s), PEM.
-    std::string client_cert_pem{};       ///< Mutual TLS client certificate, PEM.
-    std::string client_key_pem{};        ///< Mutual TLS client private key, PEM.
+    /// Off by default (Requirement 9.7). When on, the server certificate is
+    /// always verified; there is deliberately no switch to turn that off.
+    bool enable_tls{false};
+    std::string ca_cert_pem{};      ///< Trusted root(s), PEM.
+    std::string client_cert_pem{};  ///< Mutual TLS client certificate, PEM.
+    std::string client_key_pem{};   ///< Mutual TLS client private key, PEM.
     /// File-backed alternatives to the three PEM fields above, re-read by
     /// `reload_tls_material()` and watched by `enable_auto_reload()`. Each
     /// item comes from its `*_pem` field or its `*_path` field, never both,
