@@ -21,6 +21,8 @@
 #include <httplib.h>
 #include <boost/json.hpp>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -101,9 +103,21 @@ public:
             std::size_t live = 0;
 
             for (const auto& np : cluster) {
+                note_node_id(np.node_id);
                 auto name = container_name(np.node_id);
                 auto path = "/containers/" + name + "/json";
                 auto res = cli->Get(path);
+
+                // Req 18 AC 10 — a daemon we cannot connect to says nothing
+                // about the containers, so fail the assessment rather than
+                // report every node unreachable (which reads as quorum loss).
+                // A read that times out is per-container and stays
+                // "unreachable" (AC 7).
+                if (!res && daemon_unreachable(res.error())) {
+                    throw std::runtime_error("cannot reach the Docker daemon at " +
+                                             _cfg.daemon_url + ": " +
+                                             httplib::to_string(res.error()));
+                }
 
                 bool is_live = false;
                 if (res && res->status == 200) {
@@ -125,7 +139,7 @@ public:
             }
 
             std::size_t total = cluster.size();
-            quorum_status status = compute_status(live, total);
+            quorum_status status = compute_status(live, total, _cfg.target_count);
 
             placement_group_health<NodeId, std::string> grp{
                 .group_id = _cfg.group_id,
@@ -410,6 +424,15 @@ public:
 private:
     docker_quorum_manager_config _cfg;
 
+    // Highest node ID seen in any assess_quorum call.  Raft members that this
+    // manager did not create (e.g. bootstrap containers started by compose)
+    // carry no kythira.node_id label, so the label scan alone would hand out
+    // an ID that is already a live member.  The leader always assesses before
+    // it provisions, so this floor is re-learned after a manager restart.
+    // Shared so the manager stays copyable (node_config takes it by value).
+    std::shared_ptr<std::atomic<std::uint64_t>> _max_seen_node_id{
+        std::make_shared<std::atomic<std::uint64_t>>(0)};
+
     // Build a container name for a given node ID (Req 18 AC 5)
     [[nodiscard]] auto container_name(const NodeId& id) const -> std::string {
         return "kythira-" + _cfg.cluster_name + "-" + node_id_label(id);
@@ -473,37 +496,38 @@ private:
     auto next_node_id(httplib::Client& cli) const -> NodeId {
         const auto encoded =
             url_encode(R"({"label":["kythira.cluster=)" + _cfg.cluster_name + R"("]})");
-        auto path = "/containers/json?filters=" + encoded;
+        // all=true: an exited container still owns its name and ID.
+        auto path = "/containers/json?all=true&filters=" + encoded;
         auto res = cli.Get(path);
 
-        NodeId max_id{};
+        // Compare numerically: for std::string IDs a lexicographic max would
+        // rank "9" above "10" and hand out a duplicate.
+        std::uint64_t max_id = _max_seen_node_id->load();
         if (res && res->status == 200) {
             auto jv = boost::json::parse(res->body);
             for (const auto& ct : jv.as_array()) {
                 const auto& obj = ct.as_object();
-                if (!obj.contains("Labels")) {
+                if (!obj.contains("Labels") || !obj.at("Labels").is_object()) {
                     continue;
                 }
                 const auto& labels = obj.at("Labels").as_object();
                 if (!labels.contains("kythira.node_id")) {
                     continue;
                 }
-                const auto id =
-                    parse_node_id(std::string(labels.at("kythira.node_id").as_string()));
-                if (id > max_id) {
-                    max_id = id;
+                try {
+                    max_id = std::max<std::uint64_t>(
+                        max_id, std::stoull(std::string(labels.at("kythira.node_id").as_string())));
+                } catch (const std::exception&) {
+                    // A label we did not write; it cannot collide with ours.
                 }
             }
         }
 
-        // If no containers, start at 1; otherwise increment highest
+        // If no containers and no members were seen, start at 1.
         if constexpr (std::is_same_v<NodeId, std::string>) {
-            if (max_id.empty()) {
-                return "1";
-            }
-            return std::to_string(std::stoull(max_id) + 1);
+            return std::to_string(max_id + 1);
         } else {
-            return max_id + NodeId{1};
+            return static_cast<NodeId>(max_id + 1);
         }
     }
 
@@ -515,23 +539,49 @@ private:
         }
     }
 
-    // Compute quorum_status from live and total counts
-    static auto compute_status(std::size_t live, std::size_t total) -> quorum_status {
+    // Compute quorum_status from the live, total and target counts (Req 4.4,
+    // Req 18 AC 9).  Quorum is judged against the configured members; the
+    // target only decides whether an intact quorum is healthy or degraded,
+    // so a cluster that is all-live but smaller than target_count reports
+    // degraded and the leader provisions the missing nodes.
+    static auto compute_status(std::size_t live, std::size_t total, std::size_t target)
+        -> quorum_status {
         if (total == 0) {
-            return quorum_status::healthy;
+            return quorum_status::healthy;  // nothing to assess
         }
         std::size_t majority = total / 2 + 1;
         if (live < majority) {
             return quorum_status::lost;
         }
-        if (live == majority) {
+        if (live == majority && live < total) {
             return quorum_status::critical;
         }
-        // live > majority
-        if (live < total) {
+        if (live < total || live < target) {
             return quorum_status::degraded;
         }
         return quorum_status::healthy;
+    }
+
+    // Connection-level failures mean the daemon itself is unreachable.
+    static auto daemon_unreachable(httplib::Error err) -> bool {
+        return err == httplib::Error::Connection || err == httplib::Error::ConnectionTimeout;
+    }
+
+    // Records the highest node ID seen in an assess_quorum cluster vector.
+    auto note_node_id(const NodeId& id) -> void {
+        std::uint64_t numeric = 0;
+        if constexpr (std::is_same_v<NodeId, std::string>) {
+            try {
+                numeric = std::stoull(id);
+            } catch (...) {
+                return;  // non-numeric IDs cannot collide with generated ones
+            }
+        } else {
+            numeric = static_cast<std::uint64_t>(id);
+        }
+        std::uint64_t prev = _max_seen_node_id->load();
+        while (numeric > prev && !_max_seen_node_id->compare_exchange_weak(prev, numeric)) {
+        }
     }
 
     // Create an httplib::Client from the configured daemon_url.

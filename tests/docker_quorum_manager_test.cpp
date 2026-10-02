@@ -347,19 +347,81 @@ BOOST_FIXTURE_TEST_CASE(make_client_tcp_no_port_uses_default, MockDockerServer) 
 
 // ── unix socket path exercises the unix:// branch of make_client() ───────────
 
-BOOST_AUTO_TEST_CASE(make_client_unix_socket_path_coverage) {
+BOOST_AUTO_TEST_CASE(assess_quorum_fails_when_daemon_socket_missing) {
     docker_quorum_manager_config cfg;
     cfg.daemon_url = "unix:///tmp/nonexistent-kythira-test.sock";
     cfg.image = "img";
     cfg.cluster_name = "c";
     cfg.network_name = "n";
     docker_quorum_manager<> mgr(cfg);
-    // When the socket doesn't exist httplib returns a null result; the manager
-    // treats the container as unreachable rather than throwing, so the future
-    // resolves to a lost-quorum report (1 unreachable out of 1 = lost).
+    // Req 18 AC 10/22: an unreachable daemon fails the assessment.  Reporting
+    // the node unreachable instead would read as quorum loss.
     std::vector<node_placement<uint64_t, std::string>> cluster{{1u, "default"}};
+    BOOST_CHECK_THROW(mgr.assess_quorum(cluster).get(), std::runtime_error);
+}
+
+// Req 18 AC 9: every configured member is running but the cluster is smaller
+// than target_count, so the leader must see a deficit.
+BOOST_FIXTURE_TEST_CASE(assess_quorum_below_target_is_degraded, MockDockerServer) {
+    serve_container_state("1", "running");
+    serve_container_state("2", "running");
+
+    docker_quorum_manager<> mgr(make_cfg());  // target_count = 3
+    Cluster cluster{{1u, "default"}, {2u, "default"}};
     auto h = mgr.assess_quorum(cluster).get();
-    BOOST_CHECK_EQUAL(h.unreachable_nodes.size(), 1u);
+
+    BOOST_CHECK_EQUAL(h.status, quorum_status::degraded);
+    BOOST_REQUIRE_EQUAL(h.groups.size(), 1u);
+    BOOST_CHECK_EQUAL(h.groups[0].live_count, 2u);
+    BOOST_CHECK_EQUAL(h.groups[0].target_count, 3u);
+}
+
+// Members this manager did not create carry no kythira.node_id label (e.g.
+// compose-started bootstrap nodes).  Their IDs, learned from assess_quorum,
+// must still never be handed out again.
+BOOST_FIXTURE_TEST_CASE(provision_node_skips_ids_of_assessed_members, MockDockerServer) {
+    serve_container_state("1", "running");
+    serve_container_state("2", "running");
+    serve_container_state("3", "exited");
+    std::string list_query;
+    server.Get("/containers/json", [&](const httplib::Request& req, httplib::Response& res) {
+        list_query = req.has_param("all") ? req.get_param_value("all") : "";
+        res.set_content("[]", "application/json");
+    });
+    server.Post("/containers/create", [](const httplib::Request&, httplib::Response& res) {
+        res.status = 201;
+        res.set_content(R"({"Id":"n4"})", "application/json");
+    });
+    server.Post(R"(/containers/kythira-test-cluster-4/start)",
+                [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    Cluster cluster{{1u, "default"}, {2u, "default"}, {3u, "default"}};
+    mgr.assess_quorum(cluster).get();
+    auto peer = mgr.provision_node("default", std::optional<uint64_t>{3u}).get();
+
+    BOOST_CHECK_EQUAL(peer.node_id, 4u);
+    // Exited containers still own their names, so they must be listed too.
+    BOOST_CHECK_EQUAL(list_query, "true");
+}
+
+BOOST_FIXTURE_TEST_CASE(provision_node_orders_string_ids_numerically, MockDockerServer) {
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(
+            R"([{"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"9"}},
+                {"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"10"}}])",
+            "application/json");
+    });
+    server.Post("/containers/create", [](const httplib::Request&, httplib::Response& res) {
+        res.status = 201;
+        res.set_content(R"({"Id":"n11"})", "application/json");
+    });
+    server.Post(R"(/containers/kythira-test-cluster-11/start)",
+                [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
+
+    docker_quorum_manager<std::string> mgr(make_cfg());
+    auto peer = mgr.provision_node("default", std::nullopt).get();
+    BOOST_CHECK_EQUAL(peer.node_id, "11");
 }
 
 // ── extra_env / extra_args are wired into the create body ────────────────────
