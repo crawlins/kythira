@@ -2074,6 +2074,7 @@ file(GLOB_RECURSE FORMAT_SOURCES
     "${CMAKE_SOURCE_DIR}/include/*.cpp"  "${CMAKE_SOURCE_DIR}/include/*.hpp"
     "${CMAKE_SOURCE_DIR}/tests/*.cpp"    "${CMAKE_SOURCE_DIR}/tests/*.hpp"
     "${CMAKE_SOURCE_DIR}/examples/*.cpp" "${CMAKE_SOURCE_DIR}/examples/*.hpp"
+    "${CMAKE_SOURCE_DIR}/cmd/*.cpp"      "${CMAKE_SOURCE_DIR}/cmd/*.hpp"
 )
 list(LENGTH FORMAT_SOURCES FORMAT_SOURCES_COUNT)
 
@@ -2118,6 +2119,7 @@ file(GLOB_RECURSE TIDY_SOURCES
     "${CMAKE_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_SOURCE_DIR}/tests/*.cpp"
     "${CMAKE_SOURCE_DIR}/examples/*.cpp"
+    "${CMAKE_SOURCE_DIR}/cmd/*.cpp"
 )
 list(LENGTH TIDY_SOURCES TIDY_SOURCES_COUNT)
 
