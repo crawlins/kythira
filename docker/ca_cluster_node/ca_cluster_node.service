@@ -14,10 +14,12 @@
 #   sudo install -m 0600 -o ca-cluster-node -g ca-cluster-node /path/to/unseal.key /etc/ca_cluster_node/unseal.key
 #   sudo install -m 0600 -o ca-cluster-node -g ca-cluster-node /path/to/rpc_bootstrap.crt /etc/ca_cluster_node/rpc_bootstrap.crt
 #   sudo install -m 0600 -o ca-cluster-node -g ca-cluster-node /path/to/rpc_bootstrap.key /etc/ca_cluster_node/rpc_bootstrap.key
+#   sudo install -m 0644 -o ca-cluster-node -g ca-cluster-node /path/to/http_tls.crt /etc/ca_cluster_node/http_tls.crt
+#   sudo install -m 0600 -o ca-cluster-node -g ca-cluster-node /path/to/http_tls.key /etc/ca_cluster_node/http_tls.key
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now ca_cluster_node
 #
-# EnvironmentFile must define NODE_ID, PEERS, and AUTH_TOKEN (see
+# EnvironmentFile must define NODE_ID, PEERS, and CA_SERVICE_AUTH_TOKEN (see
 # ca_cluster_node.env.example for the exact per-node values that differ
 # across the three AZs) — /etc/ca_cluster_node/unseal.key MUST contain the
 # IDENTICAL passphrase on all three nodes (Requirement 17.4); losing it makes
@@ -26,7 +28,12 @@
 # all three nodes for their first startup, but — unlike the unseal key —
 # are only needed for that initial cutover, not for the node's entire
 # lifetime (see ca_cluster_node.env.example's RPC_TLS_CERT/RPC_TLS_KEY
-# comment for details).
+# comment for details). http_tls.{crt,key} is this node's own client-API
+# TLS listener identity (see HTTP_TLS_CERT/HTTP_TLS_KEY in the env example).
+#
+# The bearer token is NOT passed on the command line: systemd exports
+# CA_SERVICE_AUTH_TOKEN from the EnvironmentFile and ca_cluster_node reads it
+# from there, so it never shows up in /proc/<pid>/cmdline or `ps`.
 
 [Unit]
 Description=Kythira ca_cluster_node (Raft-replicated CA cluster member)
@@ -43,7 +50,8 @@ ExecStart=/usr/local/bin/ca_cluster_node \
     --data-dir /var/lib/ca_cluster_node \
     --unseal-key-file /etc/ca_cluster_node/unseal.key \
     --peers ${PEERS} \
-    --auth-token ${CA_SERVICE_AUTH_TOKEN} \
+    --tls-cert ${HTTP_TLS_CERT} \
+    --tls-key ${HTTP_TLS_KEY} \
     --rpc-tls-cert ${RPC_TLS_CERT} \
     --rpc-tls-key ${RPC_TLS_KEY} \
     ${BOOTSTRAP_CA_FLAG} \

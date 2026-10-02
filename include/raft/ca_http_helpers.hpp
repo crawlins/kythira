@@ -135,9 +135,9 @@ inline auto parse_csr_signing_options(const boost::json::object& obj) -> csr_sig
 // hold: an HMAC key derived from the unseal passphrase every node already
 // needs (to decrypt the CA key when it becomes leader). API clients never see
 // that passphrase, so the bearer token alone can no longer mint a peer
-// identity. The same key authenticates the root certificate a follower
-// fetches over the (unverified-TLS) intra-cluster HTTP path, so a network
-// attacker can no longer substitute its own root as the RPC trust anchor.
+// identity. The same key authenticates the RPC trust state (root, cutover,
+// revoked peer serials) a follower fetches from the leader, so even a peer
+// link without verified TLS cannot have its trust anchor substituted.
 
 /// DNS SAN prefix reserved for Raft peer identities. Only an authenticated
 /// peer enrollment may obtain a certificate carrying a name with this prefix.
@@ -196,22 +196,37 @@ inline constexpr std::string_view k_reserved_peer_dns_prefix = "ca-cluster-node-
     return a.size() == b.size() && CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
 }
 
+/// PBKDF2 iteration count for derive_peer_enrollment_key. Matches the
+/// at-rest CA key encryption (ca_state_machine's k_pbkdf2_iterations), so a
+/// MAC observed on the wire is no cheaper to brute-force than the encrypted
+/// CA key in the replicated log.
+inline constexpr int k_peer_enrollment_kdf_iterations = 200000;
+
 /// Derives the peer-enrollment HMAC key from the cluster unseal passphrase.
-/// Domain-separated so the MAC key is never the passphrase itself.
+/// A slow KDF, not a single HMAC: every enrollment and trust-state MAC is
+/// computed under this key, so anyone who captures one (nonce, MAC) pair can
+/// test passphrase guesses offline, and a guessed passphrase yields both a
+/// peer identity and the CA private key. Domain-separated by a fixed salt
+/// so the key is never the passphrase itself, nor the at-rest encryption
+/// key (which uses a random per-record salt).
 [[nodiscard]] inline auto derive_peer_enrollment_key(const std::string& unseal_passphrase)
     -> std::string {
     if (unseal_passphrase.empty()) {
         throw std::invalid_argument("ca_http_helpers: empty unseal passphrase");
     }
-    return hmac_sha256_hex(unseal_passphrase, "kythira ca_cluster_node peer-enrollment v1");
+    static constexpr std::string_view k_salt = "kythira ca_cluster_node peer-enrollment v2";
+    unsigned char key[32];
+    if (PKCS5_PBKDF2_HMAC(unseal_passphrase.data(), static_cast<int>(unseal_passphrase.size()),
+                          reinterpret_cast<const unsigned char*>(k_salt.data()),
+                          static_cast<int>(k_salt.size()), k_peer_enrollment_kdf_iterations,
+                          EVP_sha256(), sizeof(key), key) != 1) {
+        throw std::runtime_error("ca_http_helpers: PBKDF2 key derivation failed");
+    }
+    return hex_encode(key, sizeof(key));
 }
 
 /// HTTP header carrying a peer-enrollment MAC on POST /v1/certificates.
 inline constexpr const char* k_peer_enrollment_header = "X-Kythira-Peer-Enrollment";
-/// Request header carrying a follower's fresh nonce on GET /v1/root-ca, and
-/// the response header carrying the leader's MAC over (nonce, root PEM).
-inline constexpr const char* k_peer_nonce_header = "X-Kythira-Peer-Nonce";
-inline constexpr const char* k_peer_root_mac_header = "X-Kythira-Peer-Root-Mac";
 
 /// MAC binding a peer-enrollment request to the node id it enrolls and the
 /// exact CSR being signed: replaying a captured request only ever yields a
@@ -221,24 +236,85 @@ inline constexpr const char* k_peer_root_mac_header = "X-Kythira-Peer-Root-Mac";
     return hmac_sha256_hex(key, "enroll\n" + std::to_string(node_id) + "\n" + csr_pem);
 }
 
-/// Request header authenticating a peer's GET /v1/root-ca in place of the
-/// client bearer token (see peer_root_request_mac).
-inline constexpr const char* k_peer_request_mac_header = "X-Kythira-Peer-Request-Mac";
+// ── Peer RPC trust state (GET /v1/peer/rpc-trust) ───────────────────────────
+//
+// What a node needs from the leader to run its own RPC TLS trust policy: the
+// cluster root (trust anchor), whether every node has cut over to a
+// CA-issued peer identity (so the shared bootstrap credential can stop being
+// accepted), and which peer certificates have been revoked. Only peers may
+// fetch it: the request carries a MAC over a fresh nonce, and the response
+// body is MAC'd over (nonce, body). A client bearer token gets nothing here,
+// so it cannot collect MACs to brute-force the passphrase offline.
 
-/// MAC a peer attaches to GET /v1/root-ca so it need not send the client
-/// bearer token over an intra-cluster link whose TLS it does not verify. A
-/// replay only fetches the (public) root again, so binding to the request
-/// nonce alone suffices; the response is separately MAC'd (peer_root_mac).
-[[nodiscard]] inline auto peer_root_request_mac(const std::string& key, const std::string& nonce)
+/// Path of the peer-only trust-state route.
+inline constexpr const char* k_peer_rpc_trust_path = "/v1/peer/rpc-trust";
+/// Request header carrying a peer's fresh nonce, request header carrying the
+/// MAC over that nonce, and response header carrying the MAC over the body.
+inline constexpr const char* k_peer_nonce_header = "X-Kythira-Peer-Nonce";
+inline constexpr const char* k_peer_request_mac_header = "X-Kythira-Peer-Request-Mac";
+inline constexpr const char* k_peer_trust_mac_header = "X-Kythira-Peer-Trust-Mac";
+
+/// MAC a peer attaches to GET /v1/peer/rpc-trust in place of the client
+/// bearer token. A replay only fetches the (non-secret) trust state again,
+/// so binding to the nonce alone suffices; the response is separately MAC'd.
+[[nodiscard]] inline auto peer_trust_request_mac(const std::string& key, const std::string& nonce)
     -> std::string {
-    return hmac_sha256_hex(key, "root-ca-request\n" + nonce);
+    return hmac_sha256_hex(key, "rpc-trust-request\n" + nonce);
 }
 
-/// MAC over a /v1/root-ca response body, bound to the requester's nonce so a
-/// stale or attacker-chosen root cannot be replayed into a later fetch.
-[[nodiscard]] inline auto peer_root_mac(const std::string& key, const std::string& nonce,
-                                        const std::string& root_pem) -> std::string {
-    return hmac_sha256_hex(key, "root-ca\n" + nonce + "\n" + root_pem);
+/// MAC over a /v1/peer/rpc-trust response body, bound to the requester's
+/// nonce so a stale or attacker-chosen state cannot be replayed into a later
+/// fetch.
+[[nodiscard]] inline auto peer_trust_mac(const std::string& key, const std::string& nonce,
+                                         const std::string& body) -> std::string {
+    return hmac_sha256_hex(key, "rpc-trust\n" + nonce + "\n" + body);
+}
+
+/// The replicated facts a node's RPC TLS trust policy is built from.
+struct peer_rpc_trust_state {
+    std::string root_pem;
+    /// Every cluster member has enrolled a CA-issued peer identity.
+    bool cutover_complete{false};
+    /// Serials of revoked certificates that carry a reserved peer name.
+    std::set<std::uint64_t> revoked_peer_serials;
+
+    auto operator==(const peer_rpc_trust_state&) const -> bool = default;
+};
+
+[[nodiscard]] inline auto encode_peer_rpc_trust_state(const peer_rpc_trust_state& state)
+    -> std::string {
+    boost::json::array revoked;
+    for (auto serial : state.revoked_peer_serials) {
+        // As a string: JSON numbers above 2^53 do not survive every parser.
+        revoked.emplace_back(std::to_string(serial));
+    }
+    return boost::json::serialize(boost::json::object{
+        {"root_pem", state.root_pem},
+        {"cutover_complete", state.cutover_complete},
+        {"revoked_peer_serials", std::move(revoked)},
+    });
+}
+
+/// Throws std::invalid_argument on a malformed body.
+[[nodiscard]] inline auto decode_peer_rpc_trust_state(const std::string& body)
+    -> peer_rpc_trust_state {
+    try {
+        const auto obj = boost::json::parse(body).as_object();
+        peer_rpc_trust_state state;
+        state.root_pem = std::string(obj.at("root_pem").as_string());
+        state.cutover_complete = obj.at("cutover_complete").as_bool();
+        for (const auto& v : obj.at("revoked_peer_serials").as_array()) {
+            state.revoked_peer_serials.insert(std::stoull(std::string(v.as_string())));
+        }
+        if (state.root_pem.empty()) {
+            throw std::invalid_argument("empty root_pem");
+        }
+        return state;
+    } catch (const std::invalid_argument&) {
+        throw;
+    } catch (const std::exception& ex) {
+        throw std::invalid_argument(std::string("malformed peer RPC trust state: ") + ex.what());
+    }
 }
 
 /// A fresh random nonce, hex encoded.

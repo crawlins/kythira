@@ -599,9 +599,11 @@ auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, boo
         << " --unseal-key-file /etc/ca_cluster_node/unseal.key"
         << " --peers " << peers_arg << " --auth-token "
         << TEST_AUTH_TOKEN
-        // Plaintext across hosts needs the explicit opt-in; the RPC TLS
-        // variant of this deployment is ca_cluster_node_rpc_tls_real_ec2_test.
-        << " --allow-plaintext-rpc" << (bootstrap ? " --bootstrap-ca" : "")
+        // Plaintext across hosts needs the explicit opt-in, for Raft RPC and
+        // for the client API alike (the test VPC is private to the run); the
+        // RPC TLS variant of this deployment is
+        // ca_cluster_node_rpc_tls_real_ec2_test.
+        << " --allow-plaintext-rpc --allow-plaintext-http" << (bootstrap ? " --bootstrap-ca" : "")
         << " > /tmp/ca_cluster_node.log 2>&1 < /dev/null &\ndisown\n";
     return cmd.str();
 }

@@ -11,10 +11,13 @@
 //   ca_cluster_node --node-id <n> --rpc-port <n> --http-port <n>
 //                    --data-dir <path> --unseal-key-file <path>
 //                    --peers <id>:<rpc_host>:<rpc_port>@<http_address>[,...]
-//                    [--rpc-address <addr>] [--bootstrap-ca]
-//                    [--auth-token <token>] [--tls-cert <path> --tls-key <path>]
+//                    [--rpc-address <addr>] [--http-address <addr>] [--bootstrap-ca]
+//                    [--tls-cert <path> --tls-key <path>] [--peer-tls-ca <path>]
 //                    [--rpc-tls-cert <path> --rpc-tls-key <path>]
-//                    [--allow-plaintext-rpc]
+//                    [--allow-plaintext-rpc] [--allow-plaintext-http]
+//
+// The client bearer token comes from $CA_SERVICE_AUTH_TOKEN (--auth-token
+// still works, but leaves the token in /proc/<pid>/cmdline).
 //
 // Every node in the cluster SHALL be started with the SAME --unseal-key-file
 // contents (Requirement 17.4) — losing it makes the persisted CA key
@@ -41,6 +44,15 @@
 // unless --rpc-address is loopback (127.0.0.0/8, ::1, or a name such as
 // "localhost" resolving only to those; single-host use) or the operator
 // passes --allow-plaintext-rpc / CA_CLUSTER_ALLOW_PLAINTEXT_RPC=1.
+//
+// The client-facing HTTP API follows the same rule: without --tls-cert/
+// --tls-key the node refuses to start unless --http-address is loopback or
+// the operator passes --allow-plaintext-http / CA_CLUSTER_ALLOW_PLAINTEXT_HTTP=1.
+// Calls to a peer's https:// address verify its certificate (chain and
+// hostname) against --peer-tls-ca, or this node's own --tls-cert bundle, so
+// every node's listener certificate must chain to one shared root and name
+// the host its peers dial; an http:// peer address must be loopback unless
+// plaintext HTTP is opted in.
 
 #include "config.hpp"
 
@@ -71,6 +83,7 @@
 
 #include <folly/init/Init.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -202,6 +215,13 @@ auto rpc_peer_key_path(const std::string& data_dir) -> std::string {
 auto rpc_peer_root_path(const std::string& data_dir) -> std::string {
     return data_dir + "/rpc_ca_root.pem";
 }
+// Present once this node has seen every cluster member enroll a CA-issued
+// peer identity. A restart then trusts the cluster root alone instead of
+// re-admitting the shared bootstrap credential (which identifies no
+// particular node, so a holder of it could speak as any node).
+auto rpc_cutover_marker_path(const std::string& data_dir) -> std::string {
+    return data_dir + "/rpc_cutover_finalized";
+}
 
 auto read_whole_file(const std::string& path) -> std::optional<std::string> {
     std::ifstream f(path, std::ios::binary);
@@ -271,8 +291,8 @@ auto cluster_peer_node_ids(const ca_cluster_node::ca_cluster_node_config& cfg)
 
 // Never present (or persist) a certificate this cluster's own peers would
 // reject: it must chain to the (MAC-verified) cluster root and carry this
-// node's reserved peer name. The leader's response arrives over an
-// unverified-TLS HTTP path, so it is not trusted on its own.
+// node's reserved peer name. The leader's response may arrive over plaintext
+// HTTP (loopback or --allow-plaintext-http), so it is not trusted on its own.
 auto issued_peer_cert_ok(const std::string& cert_pem, const std::string& root_pem,
                          std::uint64_t node_id) -> bool {
     BIO* bio = BIO_new_mem_buf(cert_pem.data(), static_cast<int>(cert_pem.size()));
@@ -286,154 +306,170 @@ auto issued_peer_cert_ok(const std::string& cert_pem, const std::string& root_pe
     return ok;
 }
 
-// "scheme://host:port" -> (host, port), for constructing an httplib client
-// against cfg.http_address_for(leader_id) (already stored in that combined
-// form — config.hpp's own doc comment on ca_cluster_peer_info::http_address).
-auto split_host_port(const std::string& url) -> std::pair<std::string, int> {
-    auto scheme_end = url.find("://");
-    auto rest = scheme_end == std::string::npos ? url : url.substr(scheme_end + 3);
-    auto slash = rest.find('/');
-    if (slash != std::string::npos) rest = rest.substr(0, slash);
-    auto colon = rest.rfind(':');
-    if (colon == std::string::npos) return {rest, 443};
-    return {rest.substr(0, colon), std::stoi(rest.substr(colon + 1))};
+// An HTTP client for a peer's client-facing API. An https:// peer is
+// verified, chain and hostname, against peer_tls_ca_file(): this link
+// carries peer enrollment and the RPC trust state, and with verification
+// off anyone on-path could impersonate the leader. An http:// peer was
+// already limited to loopback or --allow-plaintext-http at startup
+// (peer_http_security_error). `client_cert`/`client_key`, when given,
+// present this node's RPC peer identity for the mTLS /renew route.
+auto make_peer_client(const std::string& http_address,
+                      const ca_cluster_node::ca_cluster_node_config& cfg,
+                      const std::string& client_cert = {}, const std::string& client_key = {})
+    -> std::unique_ptr<httplib::Client> {
+    auto url = ca_cluster_node::parse_peer_url(http_address);
+    auto host = url.host.find(':') == std::string::npos ? url.host : "[" + url.host + "]";
+    auto origin = url.scheme + "://" + host + ":" + std::to_string(url.port);
+    auto client = client_cert.empty()
+                      ? std::make_unique<httplib::Client>(origin)
+                      : std::make_unique<httplib::Client>(origin, client_cert, client_key);
+    if (url.scheme == "https") {
+        client->enable_server_certificate_verification(true);
+        client->set_ca_cert_path(ca_cluster_node::peer_tls_ca_file(cfg));
+    }
+    return client;
 }
 
-// Requirement 5.1's own "has_root_material() at all" check, NOT the
-// separate CSR-signing step below. node<Types>::read_state() rejects
-// immediately with "not leader" for a follower — it does not forward to
-// the leader (confirmed during this spec's implementation: a follower's
-// read_state() call returns in the same log timestamp as the request,
-// with no RPC to any peer in between). Using it unconditionally (as
-// design.md's own maybe_acquire_rpc_identity sketch does) means a
-// follower can NEVER learn whether the CA root exists via that path,
-// which is exactly the deadlock this helper avoids: a leader's read is
-// in-process (works, using whatever RPC-TLS identity is currently
-// active); a follower instead asks the leader's *client-facing* HTTP API
-// (/v1/root-ca, bearer-token authenticated) — a completely separate
-// transport and trust boundary from RPC TLS, so it keeps working
-// regardless of whatever state this node's or the leader's RPC-TLS
-// transport is currently in. Mirrors the same leader/follower split
-// acquire_rpc_peer_certificate() below already uses for CSR signing.
-// Best-effort GET of one address's own /v1/root-ca. Used both for the
-// Raft-known leader (the common case) and for the blind per-peer fallback
-// below - a non-leader peer just answers 308/503 (require_leader_or_
-// redirect()) or refuses the connection outright, which this treats
-// identically to "not this one, try the next".
-// The response must carry a MAC over (fresh nonce, body) under the
-// peer-enrollment key: TLS verification is off on this path, so without it
-// any on-path attacker (or a fake "leader") could hand back its own root,
-// which this node then installs as its RPC trust anchor and persists.
-[[nodiscard]] inline auto try_fetch_root_cert_pem_from(
-    const std::string& http_address, const ca_cluster_node::ca_cluster_node_config& cfg)
-    -> std::optional<std::string> {
-    auto [host, port] = split_host_port(http_address);
-    httplib::Client client(host, port);
-    client.enable_server_certificate_verification(false);
-    client.set_connection_timeout(5, 0);
-    client.set_read_timeout(10, 0);
+// The RPC trust facts derived from replicated CA state: the root, whether
+// every configured node has enrolled its CA-issued peer identity, and which
+// peer certificates have been revoked.
+auto rpc_trust_state_of(const raft::testing::ca_state_machine& state,
+                        const std::vector<std::uint64_t>& node_ids)
+    -> raft::testing::peer_rpc_trust_state {
+    raft::testing::peer_rpc_trust_state out;
+    out.root_pem = state.root_certificate_pem();
+    auto ready = state.rpc_tls_ready_node_ids();
+    out.cutover_complete =
+        std::ranges::all_of(node_ids, [&](std::uint64_t id) { return ready.contains(id); });
+    for (const auto& entry : state.ledger()) {
+        if (entry.revoked_at.has_value() &&
+            std::ranges::any_of(entry.dns_names, [](const std::string& name) {
+                return raft::testing::is_reserved_peer_dns_name(name);
+            })) {
+            out.revoked_peer_serials.insert(entry.serial);
+        }
+    }
+    return out;
+}
+
+// Best-effort GET of one address's /v1/peer/rpc-trust. A non-leader peer
+// answers 308/503 (require_leader_or_redirect()) or refuses the connection,
+// which this treats as "not this one, try the next". The request carries a
+// MAC over a fresh nonce instead of the client bearer token, and the
+// response must carry a MAC over (nonce, body): the state becomes this
+// node's RPC trust anchor, so an impostor must not be able to supply it.
+[[nodiscard]] auto try_fetch_rpc_trust_from(const std::string& http_address,
+                                            const ca_cluster_node::ca_cluster_node_config& cfg)
+    -> std::optional<raft::testing::peer_rpc_trust_state> {
+    std::unique_ptr<httplib::Client> client;
+    try {
+        client = make_peer_client(http_address, cfg);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+    client->set_connection_timeout(5, 0);
+    client->set_read_timeout(10, 0);
     auto nonce = raft::testing::random_nonce_hex();
-    // Authenticated by the peer-enrollment key, not the client bearer
-    // token: this link's TLS is unverified, so anything sent here may reach
-    // an impostor, and the bearer token would grant it client API access.
-    auto res = client.Get("/v1/root-ca",
-                          {{raft::testing::k_peer_nonce_header, nonce},
-                           {raft::testing::k_peer_request_mac_header,
-                            raft::testing::peer_root_request_mac(cfg.peer_enrollment_key, nonce)}});
+    auto res =
+        client->Get(raft::testing::k_peer_rpc_trust_path,
+                    {{raft::testing::k_peer_nonce_header, nonce},
+                     {raft::testing::k_peer_request_mac_header,
+                      raft::testing::peer_trust_request_mac(cfg.peer_enrollment_key, nonce)}});
     if (!res || res->status != 200 || res->body.empty()) return std::nullopt;
-    auto mac = res->get_header_value(raft::testing::k_peer_root_mac_header);
+    auto mac = res->get_header_value(raft::testing::k_peer_trust_mac_header);
     if (!raft::testing::constant_time_equals(
-            mac, raft::testing::peer_root_mac(cfg.peer_enrollment_key, nonce, res->body))) {
-        std::cerr << "[warn] ca_cluster_node: rejecting /v1/root-ca response from " << http_address
+            mac, raft::testing::peer_trust_mac(cfg.peer_enrollment_key, nonce, res->body))) {
+        std::cerr << "[warn] ca_cluster_node: rejecting RPC trust state from " << http_address
                   << " — missing or invalid peer MAC\n";
         return std::nullopt;
     }
-    return res->body;
+    try {
+        return raft::testing::decode_peer_rpc_trust_state(res->body);
+    } catch (const std::invalid_argument& ex) {
+        std::cerr << "[warn] ca_cluster_node: malformed RPC trust state from " << http_address
+                  << ": " << ex.what() << "\n";
+        return std::nullopt;
+    }
 }
 
+// The cluster's current RPC trust state, or std::nullopt while the CA root
+// does not exist yet or no leader can be reached. node<Types>::read_state()
+// only works on the leader (a follower's call is rejected at once, with no
+// forwarding), so the leader reads in-process and a follower asks the
+// leader's client-facing API — a separate transport from RPC TLS, which
+// keeps working whatever state this node's or the leader's RPC TLS is in.
 template<typename Types>
-auto fetch_root_cert_pem(kythira::node<Types>& raft_node,
-                         const ca_cluster_node::ca_cluster_node_config& cfg)
-    -> std::optional<std::string> {
+auto fetch_rpc_trust_state(kythira::node<Types>& raft_node,
+                           const ca_cluster_node::ca_cluster_node_config& cfg)
+    -> std::optional<raft::testing::peer_rpc_trust_state> {
     if (raft_node.is_leader()) {
         try {
             auto state = read_ca_state(raft_node, std::chrono::milliseconds(5000));
             if (!state.has_root_material()) return std::nullopt;
-            return state.root_certificate_pem();
+            return rpc_trust_state_of(state, cfg.all_node_ids());
         } catch (const std::exception&) {
             return std::nullopt;
         }
     }
 
-    // Prefer the Raft-learned leader when known - one HTTP call, same as
-    // this function's original (leader-only) behavior.
+    // Prefer the Raft-learned leader when known: one HTTP call.
     if (auto leader_id = raft_node.known_leader(); leader_id.has_value()) {
         if (auto leader_http = cfg.http_address_for(*leader_id); leader_http.has_value()) {
-            if (auto pem = try_fetch_root_cert_pem_from(*leader_http, cfg)) {
-                return pem;
+            if (auto state = try_fetch_rpc_trust_from(*leader_http, cfg)) {
+                return state;
             }
         }
     }
 
-    // Fall back to asking every configured peer directly by its static
-    // client-facing address, not only whichever leader this node has
-    // learned via Raft RPC. known_leader() can stay permanently empty for
-    // a node that hasn't yet widened its own RPC-TLS accept policy (see
-    // maybe_widen_rpc_trust_policy()): once any peer switches its
-    // PRESENTED identity to a CA-issued cert (maybe_acquire_rpc_identity,
-    // after k_identity_acquire_grace), a not-yet-widened node rejects that
-    // peer's connections in both directions - including the leader's own
-    // AppendEntries, which is how known_leader() would normally get
-    // populated in the first place. That is a real deadlock on real AWS
-    // infrastructure (observed: a node's data directory staying completely
-    // empty - no persisted Raft term/voted_for, let alone a peer cert -
-    // while its log filled with "peer certificate rejected by trust
-    // policy" against every peer, indefinitely), not merely a slow
-    // convergence. Every peer's client-facing HTTP API is a separate
-    // transport and trust boundary from RPC TLS (bearer-token
-    // authenticated, TLS verification deliberately disabled - see
-    // acquire_rpc_peer_certificate()'s own comment) and keeps working
-    // regardless of RPC-TLS state, so trying each configured peer's
-    // address directly breaks the deadlock: only the actual leader answers
-    // 200, every other peer answers 308/503 or refuses the connection and
-    // is simply skipped.
+    // Fall back to asking every configured peer directly. known_leader() can
+    // stay empty for a node whose RPC TLS accept policy does not yet match
+    // its peers' presented identities (not yet widened, or a replacement
+    // node still holding only the bootstrap credential after the rest of
+    // the cluster cut over): the leader's AppendEntries, which is how
+    // known_leader() is learned, never gets through. That is a real
+    // deadlock, observed on AWS as a node's data directory staying empty
+    // while its log filled with "peer certificate rejected by trust policy".
+    // Only the actual leader answers 200; every other peer answers 308/503
+    // or refuses the connection and is skipped.
     for (const auto& p : cfg.peers) {
-        if (auto pem = try_fetch_root_cert_pem_from(p.http_address, cfg)) {
-            return pem;
+        if (auto state = try_fetch_rpc_trust_from(p.http_address, cfg)) {
+            return state;
         }
     }
     return std::nullopt;
 }
 
+// The ledger record for a certificate this node just signed with
+// `options`. Shared by every issuing path so peer certificates are recorded
+// (and so revocable) exactly like client ones.
+auto ledger_entry_for(const raft::testing::pem_material& material,
+                      const raft::testing::csr_signing_options& options)
+    -> raft::testing::ca_ledger_entry {
+    raft::testing::ca_ledger_entry entry;
+    entry.serial = material.serial;
+    entry.subject = extract_subject_cn(material.certificate_pem);
+    entry.dns_names = options.dns_names;
+    entry.ip_addresses = options.ip_addresses;
+    entry.certificate_pem = material.certificate_pem;
+    entry.not_before = std::chrono::system_clock::now();
+    entry.not_after = entry.not_before + options.validity;
+    return entry;
+}
+
 // Requirement 5.1: obtains a signed certificate for this node's own RPC
 // identity via the cluster's own /v1/certificates route — directly
-// in-process if leader (via the already-open `signer`), otherwise over
-// HTTPS to the leader's client-facing address, bearer-token authenticated.
-// Verification of the leader's client-facing TLS listener is deliberately
-// disabled (matching the existing internal-caller precedent in
-// tests/ca_service_serve_integration_test.cpp): the bearer token, not the
-// listener's certificate, is the trust factor for this already-a-cluster-
-// member-by-virtue-of-Raft-membership call.
-// Also submits record_rpc_tls_ready(cfg.node_id) — Requirement 5.3 — as
-// part of the same call, since that's the ONE thing both branches below
-// (in-process leader signing vs. HTTP-to-leader for a follower) can
-// always do reliably: node<Types>::submit_command() only works when
-// called on the node that's actually leader right now (confirmed during
-// this spec's implementation — it has no built-in forwarding, matching
-// read_state()'s identical behavior, which is why require_leader_or_
-// redirect() exists at all for the ordinary HTTP routes below), so a
-// follower calling it directly for itself would always fail. Piggybacking
-// this node's id onto the SAME CSR request that's already reaching the
-// real leader lets that leader call submit_command() successfully on
-// this follower's behalf, right after committing the same CSR's issuance
-// — both happen inside the one process that can actually do it. Best-
-// effort in both branches: a failure here does not throw (the certificate
-// itself was still obtained successfully either way) — the caller simply
-// retries the whole acquire flow next tick if have_valid_persisted_peer_
-// cert() is still false, or (if the cert was already persisted from a
-// prior successful call) is expected to eventually converge via this
-// same best-effort path succeeding on some later call while the CA
-// client-facing API remains reachable.
+// in-process if leader (via the already-open `signer`), otherwise over the
+// leader's client-facing API, authenticated by the peer-enrollment MAC (not
+// the client bearer token) and, for an https:// peer, over TLS verified
+// against peer_tls_ca_file().
+// Also commits record_rpc_tls_ready(cfg.node_id) — Requirement 5.3 — as
+// part of the same call. node<Types>::submit_command() only works on the
+// node that is leader right now (it has no forwarding, like read_state(),
+// which is why require_leader_or_redirect() exists for the HTTP routes), so
+// a follower cannot commit it for itself; piggybacking its id on the CSR
+// request lets the leader commit it right after the issuance. That part is
+// best-effort in both branches: the follower retries the whole flow next
+// tick while have_valid_persisted_peer_cert() is false.
 template<typename Types>
 auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
                                   const ca_cluster_node::ca_cluster_node_config& cfg,
@@ -452,6 +488,15 @@ auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
             }
             material = signer->sign_csr(csr_pem, sign_opts);
         }
+        // Record the leader's own peer certificate in the ledger like every
+        // other issuance. It used to be signed and used without a ledger
+        // entry, so it could never be revoked. Not best-effort: an
+        // unrecorded certificate is discarded and the next tick retries.
+        raft_node
+            .submit_command(raft::testing::encode_record_issuance_command(
+                                ledger_entry_for(material, sign_opts)),
+                            k_command_timeout)
+            .get();
         try {
             raft_node
                 .submit_command(raft::testing::encode_record_rpc_tls_ready_command(cfg.node_id),
@@ -463,20 +508,6 @@ auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
         return material;
     }
 
-    auto leader_id = raft_node.known_leader();
-    if (!leader_id.has_value())
-        throw std::runtime_error("acquire_rpc_peer_certificate: no known leader");
-    auto leader_http = cfg.http_address_for(*leader_id);
-    if (!leader_http.has_value()) {
-        throw std::runtime_error("acquire_rpc_peer_certificate: leader http address unknown");
-    }
-
-    auto [host, port] = split_host_port(*leader_http);
-    httplib::Client client(host, port);
-    client.enable_server_certificate_verification(false);
-    client.set_connection_timeout(5, 0);
-    client.set_read_timeout(30, 0);
-
     boost::json::object body;
     body["csr_pem"] = csr_pem;
     boost::json::array dns_arr;
@@ -484,41 +515,68 @@ auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
     body["dns_names"] = dns_arr;
     body["server_auth"] = sign_opts.server_auth;
     body["client_auth"] = sign_opts.client_auth;
-    // Requirement 5.3's record_rpc_tls_ready(self) submission: this node
-    // is a follower here (the in-process branch above handles the leader
-    // case directly), and node<Types>::submit_command() has no built-in
-    // forwarding to the actual leader — it just fails outright with "not
-    // leader" for anyone who calls it while not currently leading
-    // (confirmed during this spec's implementation, matching how
-    // read_state() behaves and why require_leader_or_redirect() exists at
-    // all for the ordinary HTTP routes below). Piggybacking this node's
-    // own id on the SAME request that's already reaching the real leader
-    // lets the leader submit record_rpc_tls_ready(cfg.node_id) on this
-    // follower's behalf immediately after it commits this CSR's issuance
-    // — both happen inside the same leader process that can actually
-    // call submit_command() successfully.
+    // Requirement 5.3: the leader commits record_rpc_tls_ready for this id
+    // right after this CSR's issuance (see the function comment).
     body["rpc_tls_ready_node_id"] = cfg.node_id;
+    const auto request_body = boost::json::serialize(body);
 
-    auto res = client.Post(
-        "/v1/certificates",
-        // No bearer token (see try_fetch_root_cert_pem_from): the
-        // enrollment MAC alone authenticates this request.
-        {{raft::testing::k_peer_enrollment_header,
-          raft::testing::peer_enrollment_mac(cfg.peer_enrollment_key, cfg.node_id, csr_pem)}},
-        boost::json::serialize(body), "application/json");
-    if (!res) {
-        throw std::runtime_error("acquire_rpc_peer_certificate: request to leader failed: " +
-                                 httplib::to_string(res.error()));
+    // The Raft-known leader first, then every configured peer: once the
+    // rest of the cluster has cut over, a node that holds only the bootstrap
+    // credential never hears from the leader over RPC, so known_leader()
+    // stays empty (see fetch_rpc_trust_state()). Non-leaders answer 308/503.
+    std::vector<std::string> candidates;
+    if (auto leader_id = raft_node.known_leader(); leader_id.has_value()) {
+        if (auto leader_http = cfg.http_address_for(*leader_id)) candidates.push_back(*leader_http);
     }
-    if (res->status != 200) {
-        throw std::runtime_error("acquire_rpc_peer_certificate: leader returned " +
-                                 std::to_string(res->status) + ": " + res->body);
+    for (const auto& p : cfg.peers) candidates.push_back(p.http_address);
+
+    std::string last_error = "no reachable leader";
+    for (const auto& address : candidates) {
+        std::unique_ptr<httplib::Client> client;
+        try {
+            client = make_peer_client(address, cfg);
+        } catch (const std::exception& ex) {
+            last_error = ex.what();
+            continue;
+        }
+        client->set_connection_timeout(5, 0);
+        client->set_read_timeout(30, 0);
+        auto res = client->Post(
+            "/v1/certificates",
+            // No bearer token: the enrollment MAC alone authenticates this.
+            {{raft::testing::k_peer_enrollment_header,
+              raft::testing::peer_enrollment_mac(cfg.peer_enrollment_key, cfg.node_id, csr_pem)}},
+            request_body, "application/json");
+        if (!res) {
+            last_error = address + ": " + httplib::to_string(res.error());
+            continue;
+        }
+        if (res->status != 200) {
+            last_error = address + " returned " + std::to_string(res->status) + ": " + res->body;
+            continue;
+        }
+        auto parsed = boost::json::parse(res->body).as_object();
+        raft::testing::pem_material material;
+        material.certificate_pem = std::string(parsed.at("certificate_pem").as_string());
+        if (auto* v = parsed.if_contains("chain_pem")) {
+            material.chain_pem = std::string(v->as_string());
+        }
+        return material;
     }
-    auto parsed = boost::json::parse(res->body).as_object();
-    raft::testing::pem_material material;
-    material.certificate_pem = std::string(parsed.at("certificate_pem").as_string());
-    if (auto* v = parsed.if_contains("chain_pem")) material.chain_pem = std::string(v->as_string());
-    return material;
+    throw std::runtime_error("acquire_rpc_peer_certificate: " + last_error);
+}
+
+// This node's persisted peer certificate serial, if it has one.
+auto persisted_peer_cert_serial(const std::string& data_dir) -> std::optional<std::uint64_t> {
+    auto cert_pem = read_whole_file(rpc_peer_cert_path(data_dir));
+    if (!cert_pem.has_value()) return std::nullopt;
+    BIO* bio = BIO_new_mem_buf(cert_pem->data(), static_cast<int>(cert_pem->size()));
+    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (cert == nullptr) return std::nullopt;
+    auto serial = raft::testing::cert_serial_u64(cert);
+    X509_free(cert);
+    return serial;
 }
 
 #endif  // KYTHIRA_HAS_OPENSSL
@@ -717,25 +775,37 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     // ── RPC TLS maintenance behaviors (Requirements 5, 6, 7) — only
     //    meaningful (and only compiled in a way that's reachable) when this
     //    Types instantiation actually uses tls_tcp_rpc_client/server. ──────
-    bool cutover_finalized = false;
+    // The facts this node's RPC trust policy is built from. The policy
+    // starts as whatever main() configured (bootstrap fingerprint only, or
+    // the persisted root after a restart) and is rebuilt by
+    // apply_rpc_trust_policy() whenever one of these changes.
+    const std::optional<std::string> bootstrap_fingerprint =
+        cfg.rpc_tls_config.trust_policy.bootstrap_fingerprint_hex;
+    std::optional<std::string> trusted_root;
+    // Requirement 6.2 cutover: set once every node has enrolled, on every
+    // node (leader and followers alike), and persisted so a restart does
+    // not re-admit the bootstrap credential.
+    bool cutover_finalized = std::filesystem::exists(rpc_cutover_marker_path(cfg.data_dir));
+    std::set<std::uint64_t> revoked_peer_serials;
     bool trust_widened = false;
+    std::optional<std::chrono::steady_clock::time_point> last_trust_refresh;
     std::optional<std::chrono::steady_clock::time_point> root_first_seen_at;
     // Lower bound on how long a node waits, after first observing the CA
     // root exists, before it PRESENTS its own CA-issued identity —
     // deliberately separate from (and larger than) one maintenance-thread
     // tick. Confirmed necessary during this spec's implementation: on a
     // contended host, the node that acquires fastest (typically the
-    // leader, whose fetch_root_cert_pem() is an in-process read) can
+    // leader, whose fetch_rpc_trust_state() is an in-process read) can
     // finish widening-then-acquiring-then-switching within the SAME
     // maintenance tick the root commits on, while a follower's own widen
-    // still needs a real HTTP round trip to the leader's /v1/root-ca to
+    // still needs a real HTTP round trip to the leader's /v1/peer/rpc-trust to
     // even begin — and that endpoint itself requires a quorum-confirmed
     // leader read (node<Types>::read_state()'s read-index heartbeat),
     // which depends on RPC connectivity to a majority of followers. If
     // the leader switches its presented identity before ANY follower has
     // widened, every follower starts rejecting the leader's connections,
     // which breaks the very read-index heartbeats read_state() needs —
-    // which in turn breaks /v1/root-ca for every follower still trying to
+    // which in turn breaks /v1/peer/rpc-trust for every follower still trying to
     // widen, since it can no longer get a quorum-confirmed read either.
     // That is a genuine deadlock, not a slow-and-eventually-resolves
     // race: it was reproduced reliably on GitHub Actions' shared runners
@@ -748,6 +818,11 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     // widen (a plain HTTP call, unaffected by RPC-TLS as long as nobody
     // has switched their presented identity yet) before anyone switches.
     constexpr auto k_identity_acquire_grace = std::chrono::seconds(3);
+
+    // How often a node re-reads the trust state after it has widened, so a
+    // revoked peer certificate stops being accepted and a follower notices
+    // the cutover completing.
+    constexpr auto k_trust_refresh_interval = std::chrono::seconds(5);
 
     // Widening what this node ACCEPTS (Requirement 6.1) is deliberately
     // decoupled from acquiring/PRESENTING this node's own CA-issued
@@ -769,27 +844,70 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     // PRESENTED identity, every peer that has already observed the same
     // replicated root material has already widened its OWN accept policy
     // too.
-    auto maybe_widen_rpc_trust_policy = [&] {
+    //
+    // The same refresh carries the rest of the trust state: once every node
+    // has enrolled (cutover_complete), the bootstrap credential is dropped
+    // from the policy — on followers too, not only on whichever node is
+    // leader at that moment, so no node keeps accepting the shared
+    // credential as an any-node-id peer — and revoked peer certificates are
+    // refused through the CA path (tls_rpc_trust_policy::revoked_serials).
+    auto apply_rpc_trust_policy = [&] {
         if constexpr (!k_rpc_tls) {
             return;
         } else {
-            if (trust_widened) return;
-            auto root_pem = fetch_root_cert_pem(raft_node, cfg);
-            if (!root_pem.has_value()) return;
-            if (!root_first_seen_at.has_value()) {
-                root_first_seen_at = std::chrono::steady_clock::now();
-            }
+            if (!trusted_root.has_value()) return;
+            kythira::tls_rpc_trust_policy policy;
+            policy.ca_root_pem = *trusted_root;
+            if (!cutover_finalized) policy.bootstrap_fingerprint_hex = bootstrap_fingerprint;
+            policy = policy.binding_peer_node_ids(cluster_peer_node_ids(cfg))
+                         .revoking_serials(revoked_peer_serials);
+            rpc_server_handle.reload_trust_policy(policy);
+            rpc_client_handle.reload_trust_policy(policy);
+        }
+    };
 
-            auto dual_policy =
-                kythira::either(
-                    cfg.rpc_tls_config.trust_policy.bootstrap_fingerprint_hex.value_or(""),
-                    *root_pem)
-                    .binding_peer_node_ids(cluster_peer_node_ids(cfg));
-            if (!cfg.rpc_tls_config.trust_policy.bootstrap_fingerprint_hex.has_value()) {
-                dual_policy.bootstrap_fingerprint_hex.reset();
+    auto maybe_refresh_rpc_trust_policy = [&] {
+        if constexpr (!k_rpc_tls) {
+            return;
+        } else {
+            auto now = std::chrono::steady_clock::now();
+            // Every tick until the root is first seen, then (successful or
+            // not, so an unreachable leader is not polled every tick) once
+            // per k_trust_refresh_interval.
+            if (trust_widened) {
+                if (last_trust_refresh.has_value() &&
+                    now - *last_trust_refresh < k_trust_refresh_interval) {
+                    return;
+                }
+                last_trust_refresh = now;
             }
-            rpc_server_handle.reload_trust_policy(dual_policy);
-            rpc_client_handle.reload_trust_policy(dual_policy);
+            auto state = fetch_rpc_trust_state(raft_node, cfg);
+            if (!state.has_value()) return;
+            if (!root_first_seen_at.has_value()) root_first_seen_at = now;
+
+            bool changed = !trust_widened;
+            if (trusted_root != state->root_pem) {
+                trusted_root = state->root_pem;
+                changed = true;
+            }
+            if (revoked_peer_serials != state->revoked_peer_serials) {
+                revoked_peer_serials = state->revoked_peer_serials;
+                changed = true;
+            }
+            if (state->cutover_complete && !cutover_finalized) {
+                try {
+                    write_whole_file(rpc_cutover_marker_path(cfg.data_dir), "1\n");
+                } catch (const std::exception& ex) {
+                    // Still narrow now; only a restart would re-widen.
+                    std::cerr << "[warn] ca_cluster_node: failed to persist RPC TLS cutover: "
+                              << ex.what() << "\n";
+                }
+                cutover_finalized = true;
+                changed = true;
+                std::cerr << "[info] ca_cluster_node: RPC TLS cutover finalized — bootstrap "
+                             "credential no longer accepted for new connections\n";
+            }
+            if (changed) apply_rpc_trust_policy();
             trust_widened = true;
         }
     };
@@ -798,14 +916,18 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         if constexpr (!k_rpc_tls) {
             return;
         } else {
-            if (have_valid_persisted_peer_cert(cfg.data_dir)) return;
+            // A revoked identity is replaced with a fresh key: revocation
+            // answers a leaked peer key, and this node can still prove
+            // membership through the peer-enrollment key.
+            auto own_serial = persisted_peer_cert_serial(cfg.data_dir);
+            bool own_revoked = own_serial.has_value() && revoked_peer_serials.contains(*own_serial);
+            if (have_valid_persisted_peer_cert(cfg.data_dir) && !own_revoked) return;
             if (!root_first_seen_at.has_value() ||
                 std::chrono::steady_clock::now() - *root_first_seen_at < k_identity_acquire_grace) {
                 return;
             }
-
-            auto root_pem = fetch_root_cert_pem(raft_node, cfg);
-            if (!root_pem.has_value()) return;
+            if (!trusted_root.has_value()) return;
+            const std::string root_pem = *trusted_root;
 
             auto leaf_opts = rpc_peer_identity_options(cfg.node_id);
             auto csr = raft::testing::generate_key_and_csr(leaf_opts);
@@ -826,7 +948,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 return;
             }
 
-            if (!issued_peer_cert_ok(material.certificate_pem, *root_pem, cfg.node_id)) {
+            if (!issued_peer_cert_ok(material.certificate_pem, root_pem, cfg.node_id)) {
                 std::cerr << "[warn] ca_cluster_node: issued RPC peer certificate does not chain "
                              "to the cluster root or lacks this node's peer name — discarding, "
                              "will retry\n";
@@ -835,7 +957,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
 
             try {
                 persist_rpc_peer_identity(cfg.data_dir, material.certificate_pem,
-                                          csr.private_key_pem, *root_pem);
+                                          csr.private_key_pem, root_pem);
             } catch (const std::exception& ex) {
                 std::cerr << "[warn] ca_cluster_node: failed to persist RPC peer identity: "
                           << ex.what() << "\n";
@@ -861,46 +983,6 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             // closure, owns that submission).
             std::cerr << "[info] ca_cluster_node: RPC peer identity acquired for node "
                       << cfg.node_id << "\n";
-        }
-    };
-
-    auto maybe_finalize_rpc_tls_cutover = [&] {
-        if constexpr (!k_rpc_tls) {
-            return;
-        } else {
-            if (cutover_finalized) return;
-            // rpc_tls_ready_node_ids() isn't exposed by any client-facing
-            // HTTP route (unlike has_root_material()/root_certificate_pem(),
-            // fetch_root_cert_pem()'s follower fallback has nothing to call
-            // for this check) — so, like maybe_bootstrap()/ensure_signer()
-            // above, finalization only runs on the leader, via the
-            // in-process read that already works correctly once every node
-            // has widened via maybe_widen_rpc_trust_policy(). A follower
-            // that never happens to become leader simply never finalizes
-            // itself and stays in the dual-trust policy indefinitely —
-            // Requirement 6.4 explicitly tolerates this ("operators MAY
-            // continue using [the bootstrap credential]... this requirement
-            // governs an individual already-cutover node's own trust
-            // policy"), so an asymmetric steady state where some nodes have
-            // finalized and others haven't is safe, not a correctness bug.
-            if (!raft_node.is_leader()) return;
-            raft::testing::ca_state_machine state;
-            try {
-                state = read_ca_state(raft_node, std::chrono::milliseconds(5000));
-            } catch (const std::exception&) {
-                return;
-            }
-            auto ready = state.rpc_tls_ready_node_ids();
-            for (auto id : cfg.all_node_ids()) {
-                if (!ready.contains(id)) return;
-            }
-            auto root_only_policy = kythira::ca_root_only(state.root_certificate_pem())
-                                        .binding_peer_node_ids(cluster_peer_node_ids(cfg));
-            rpc_server_handle.reload_trust_policy(root_only_policy);
-            rpc_client_handle.reload_trust_policy(root_only_policy);
-            cutover_finalized = true;
-            std::cerr << "[info] ca_cluster_node: RPC TLS cutover finalized — bootstrap "
-                         "credential no longer accepted for new connections\n";
         }
     };
 
@@ -933,41 +1015,47 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             if (!leader_id.has_value()) return;
             auto leader_http = cfg.http_address_for(*leader_id);
             if (!leader_http.has_value()) return;
-            auto [host, port] = split_host_port(*leader_http);
+            // /renew authenticates by mTLS, which a plaintext peer address
+            // cannot carry.
+            if (!leader_http->starts_with("https://")) return;
 
             auto leaf_opts = rpc_peer_identity_options(cfg.node_id);
             auto csr = raft::testing::generate_key_and_csr(leaf_opts);
 
-            httplib::SSLClient renew_client(host, port, rpc_peer_cert_path(cfg.data_dir),
-                                            rpc_peer_key_path(cfg.data_dir));
-            renew_client.enable_server_certificate_verification(false);
-            renew_client.set_connection_timeout(5, 0);
-            renew_client.set_read_timeout(30, 0);
+            std::unique_ptr<httplib::Client> renew_client;
+            try {
+                renew_client = make_peer_client(*leader_http, cfg, rpc_peer_cert_path(cfg.data_dir),
+                                                rpc_peer_key_path(cfg.data_dir));
+            } catch (const std::exception&) {
+                return;
+            }
+            renew_client->set_connection_timeout(5, 0);
+            renew_client->set_read_timeout(30, 0);
 
             boost::json::object body;
             body["csr_pem"] = csr.csr_pem;
-            auto res = renew_client.Post("/v1/certificates/renew", boost::json::serialize(body),
-                                         "application/json");
+            auto res = renew_client->Post("/v1/certificates/renew", boost::json::serialize(body),
+                                          "application/json");
             if (!res || res->status != 200) {
                 std::cerr << "[warn] ca_cluster_node: RPC peer identity renewal failed, will "
                              "retry\n";
                 return;
             }
 
-            auto root_pem = fetch_root_cert_pem(raft_node, cfg);
-            if (!root_pem.has_value()) return;
+            auto trust = fetch_rpc_trust_state(raft_node, cfg);
+            if (!trust.has_value()) return;
 
             try {
                 auto parsed = boost::json::parse(res->body).as_object();
                 std::string new_cert_pem = std::string(parsed.at("certificate_pem").as_string());
-                if (!issued_peer_cert_ok(new_cert_pem, *root_pem, cfg.node_id)) {
+                if (!issued_peer_cert_ok(new_cert_pem, trust->root_pem, cfg.node_id)) {
                     std::cerr << "[warn] ca_cluster_node: renewed RPC peer certificate does not "
                                  "chain to the cluster root or lacks this node's peer name — "
                                  "discarding, will retry\n";
                     return;
                 }
                 persist_rpc_peer_identity(cfg.data_dir, new_cert_pem, csr.private_key_pem,
-                                          *root_pem);
+                                          trust->root_pem);
             } catch (const std::exception& ex) {
                 std::cerr << "[warn] ca_cluster_node: failed to persist renewed RPC peer "
                              "identity: "
@@ -1015,9 +1103,8 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             was_leader = is_leader_now;
 #ifdef KYTHIRA_HAS_OPENSSL
             if constexpr (k_rpc_tls) {
-                maybe_widen_rpc_trust_policy();
+                maybe_refresh_rpc_trust_policy();
                 maybe_acquire_rpc_identity();
-                maybe_finalize_rpc_tls_cutover();
                 maybe_renew_rpc_identity();
             }
 #endif
@@ -1080,10 +1167,12 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         return 1;
 #endif
     } else {
+        // main() already refused this unless plaintext_http_permitted().
         make_http_server = [] { return std::make_unique<httplib::Server>(); };
-        std::cerr << "ca_cluster_node: WARNING: running without TLS (no --tls-cert/--tls-key "
-                     "given) — suitable "
-                     "only for a private network\n";
+        std::cerr << "ca_cluster_node: WARNING: client HTTP API is PLAINTEXT on "
+                  << cfg.http_bind_address << ":" << cfg.http_port
+                  << (cfg.allow_plaintext_http ? " (plaintext opted in)" : " (loopback only)")
+                  << "; the bearer token and issued certificates cross it in the clear\n";
     }
 
     kythira::net_bind::httplib_listeners<> http_listeners;
@@ -1129,20 +1218,26 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                                                                      // no credentials
             }
             // Peer-to-peer calls authenticate with the peer-enrollment key
-            // instead of the client bearer token, which followers no longer send
-            // over the unverified intra-cluster link:
-            //  - GET /v1/root-ca with a valid request MAC over its nonce;
+            // instead of the client bearer token, which followers never send
+            // to a peer:
+            //  - GET /v1/peer/rpc-trust needs a valid request MAC over its
+            //    nonce, and nothing else gets in: a bearer token holder must
+            //    not be able to collect response MACs to test passphrase
+            //    guesses against;
             //  - POST /v1/certificates carrying an enrollment MAC — admitted here
             //    only provisionally; the handler refuses it unless it verifies
             //    as a complete peer enrollment (classify_peer_enrollment).
-            if (req.method == "GET" && req.path == "/v1/root-ca") {
+            if (req.path == raft::testing::k_peer_rpc_trust_path) {
                 auto nonce = req.get_header_value(raft::testing::k_peer_nonce_header);
-                if (raft::testing::is_well_formed_nonce(nonce) &&
+                if (req.method == "GET" && raft::testing::is_well_formed_nonce(nonce) &&
                     raft::testing::constant_time_equals(
                         req.get_header_value(raft::testing::k_peer_request_mac_header),
-                        raft::testing::peer_root_request_mac(cfg.peer_enrollment_key, nonce))) {
+                        raft::testing::peer_trust_request_mac(cfg.peer_enrollment_key, nonce))) {
                     return httplib::Server::HandlerResponse::Unhandled;
                 }
+                res.status = 401;
+                res.set_content(json_error("unauthorized"), "application/json");
+                return httplib::Server::HandlerResponse::Handled;
             }
             if (req.method == "POST" && req.path == "/v1/certificates" &&
                 req.has_header(raft::testing::k_peer_enrollment_header)) {
@@ -1170,15 +1265,32 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                     res.set_content(json_error("not_bootstrapped"), "application/json");
                     return;
                 }
-                // A peer fetching the root as its RPC trust anchor sends a nonce
-                // and verifies this MAC (try_fetch_root_cert_pem_from).
-                auto nonce = req.get_header_value(raft::testing::k_peer_nonce_header);
-                if (raft::testing::is_well_formed_nonce(nonce)) {
-                    res.set_header(raft::testing::k_peer_root_mac_header,
-                                   raft::testing::peer_root_mac(cfg.peer_enrollment_key, nonce,
-                                                                state.root_certificate_pem()));
-                }
                 res.set_content(state.root_certificate_pem(), "application/x-pem-file");
+            } catch (const std::exception& ex) {
+                res.status = 503;
+                res.set_content(json_error(ex.what()), "application/json");
+            }
+        });
+
+        // Peer-only (pre-routing admits nothing but a valid request MAC):
+        // the RPC trust state a follower builds its RPC TLS policy from.
+        server->Get(raft::testing::k_peer_rpc_trust_path, [&](const httplib::Request& req,
+                                                              httplib::Response& res) {
+            if (!require_leader_or_redirect(req, res)) return;
+            try {
+                auto state = read_ca_state(raft_node, k_command_timeout);
+                if (!state.has_root_material()) {
+                    res.status = 503;
+                    res.set_content(json_error("not_bootstrapped"), "application/json");
+                    return;
+                }
+                auto body = raft::testing::encode_peer_rpc_trust_state(
+                    rpc_trust_state_of(state, cfg.all_node_ids()));
+                res.set_header(raft::testing::k_peer_trust_mac_header,
+                               raft::testing::peer_trust_mac(
+                                   cfg.peer_enrollment_key,
+                                   req.get_header_value(raft::testing::k_peer_nonce_header), body));
+                res.set_content(body, "application/json");
             } catch (const std::exception& ex) {
                 res.status = 503;
                 res.set_content(json_error(ex.what()), "application/json");
@@ -1244,14 +1356,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 auto material = signer->sign_csr(csr_pem, options);
                 signer_lock.unlock();
 
-                raft::testing::ca_ledger_entry entry;
-                entry.serial = material.serial;
-                entry.subject = extract_subject_cn(material.certificate_pem);
-                entry.dns_names = options.dns_names;
-                entry.ip_addresses = options.ip_addresses;
-                entry.certificate_pem = material.certificate_pem;
-                entry.not_before = std::chrono::system_clock::now();
-                entry.not_after = entry.not_before + options.validity;
+                auto entry = ledger_entry_for(material, options);
 
                 // HTTP response SHALL NOT be sent until submit_command()'s future
                 // resolves (Requirement 17.8) — so a client never observes an
@@ -1372,14 +1477,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 auto material = signer->sign_csr(csr_pem, options);
                 signer_lock.unlock();
 
-                raft::testing::ca_ledger_entry entry;
-                entry.serial = material.serial;
-                entry.subject = extract_subject_cn(material.certificate_pem);
-                entry.dns_names = options.dns_names;
-                entry.ip_addresses = options.ip_addresses;
-                entry.certificate_pem = material.certificate_pem;
-                entry.not_before = std::chrono::system_clock::now();
-                entry.not_after = entry.not_before + options.validity;
+                auto entry = ledger_entry_for(material, options);
 
                 raft_node
                     .submit_command(raft::testing::encode_record_issuance_command(entry),
@@ -1560,6 +1658,27 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (cfg.auth_token_from_argv) {
+        std::cerr << "ca_cluster_node: WARNING: --auth-token puts the bearer token in the process "
+                     "command line, readable by any local user via /proc or ps; set "
+                     "$CA_SERVICE_AUTH_TOKEN instead\n";
+    }
+
+    // The bearer token and every issued certificate cross the client HTTP
+    // API. Without TLS, refuse unless it is loopback-only or the operator
+    // explicitly opted in (the same rule as plaintext Raft RPC below).
+    if (cfg.tls_cert_path.empty() && !ca_cluster_node::plaintext_http_permitted(cfg)) {
+        std::cerr << "ca_cluster_node: refusing to start: the client HTTP API would be plaintext "
+                     "on "
+                  << cfg.http_bind_address << ":" << cfg.http_port
+                  << " (no --tls-cert/--tls-key given).\n"
+                     "  Pass --tls-cert/--tls-key, bind --http-address to loopback for "
+                     "single-host use, or pass --allow-plaintext-http (or set "
+                     "CA_CLUSTER_ALLOW_PLAINTEXT_HTTP=1) to accept a plaintext API on a trusted "
+                     "network.\n";
+        return 1;
+    }
+
     std::string unseal_passphrase;
     try {
         unseal_passphrase = read_unseal_key(cfg.unseal_key_file);
@@ -1586,18 +1705,23 @@ int main(int argc, char** argv) {
         if (have_persisted) {
             rpc_tls_config.cert_path = rpc_peer_cert_path(cfg.data_dir);
             rpc_tls_config.key_path = rpc_peer_key_path(cfg.data_dir);
-            // Requirement 6.1: still dual-trust at startup, not straight to
-            // ca_root_only — a restart doesn't know whether every peer had
-            // already reached rpc_tls_ready before this node went down, and
-            // maybe_finalize_rpc_tls_cutover() will re-narrow this within one
-            // maintenance tick once quorum confirms the full ready set
-            // again. Using ca_root_only immediately here risks this node
+            // Requirement 6.1: still dual-trust at startup unless this node
+            // recorded the cutover (rpc_cutover_marker_path) before it went
+            // down. Without that record it doesn't know whether every peer
+            // had reached rpc_tls_ready, and maybe_refresh_rpc_trust_policy()
+            // re-narrows within one maintenance tick once the leader reports
+            // the full ready set. Using ca_root_only immediately would risk
             // rejecting a peer that itself hasn't cut over yet.
             auto root_pem = read_whole_file(rpc_peer_root_path(cfg.data_dir));
             kythira::tls_rpc_trust_policy policy;
             policy.ca_root_pem = root_pem;
             policy = policy.binding_peer_node_ids(cluster_peer_node_ids(cfg));
-            if (!cfg.rpc_tls_cert_path.empty()) {
+            // Once this node has seen the whole cluster cut over, a restart
+            // trusts the root alone: re-admitting the bootstrap credential
+            // here would let its holder speak as any node again.
+            const bool cutover_done =
+                std::filesystem::exists(rpc_cutover_marker_path(cfg.data_dir));
+            if (!cfg.rpc_tls_cert_path.empty() && !cutover_done) {
                 try {
                     auto bundle = read_whole_file(cfg.rpc_tls_cert_path);
                     if (bundle.has_value()) {

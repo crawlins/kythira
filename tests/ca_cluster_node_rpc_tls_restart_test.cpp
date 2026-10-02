@@ -135,6 +135,11 @@ struct rpc_tls_node_process {
             // comfortably inside this file's TIMEOUT) for headroom that
             // holds regardless of host load — this test asserts eventual
             // functional convergence, not latency.
+            // No client-API TLS listener here, so keep that API on
+            // loopback, the one plaintext case allowed without
+            // --allow-plaintext-http.
+            "--http-address",
+            "127.0.0.1",
             "--election-timeout-min-ms",
             "3000",
             "--election-timeout-max-ms",

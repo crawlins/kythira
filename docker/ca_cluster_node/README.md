@@ -40,7 +40,34 @@ only in `NODE_ID` and whether `BOOTSTRAP_CA_FLAG` is set — `PEERS` and
 passphrase installed separately at `/etc/ca_cluster_node/unseal.key`
 (Requirement 17.4: byte-identical on every node, or the persisted CA key
 becomes unrecoverable), and — if RPC TLS is enabled, see below —
-`rpc_bootstrap.crt`/`rpc_bootstrap.key`.
+`rpc_bootstrap.crt`/`rpc_bootstrap.key`. Each instance also has its own
+client-API TLS pair, `http_tls.crt`/`http_tls.key` (see below).
+
+The bearer token is read from `CA_SERVICE_AUTH_TOKEN`, never the command
+line: `--auth-token` still works but logs a warning, because any local user
+can read a process's arguments from `/proc/<pid>/cmdline` or `ps`.
+
+## Securing the client HTTP API
+
+The bearer token and every issued certificate cross the client-facing API, so
+**a plaintext API is opt-in**, under the same rule as plaintext Raft RPC
+below. Without `--tls-cert`/`--tls-key` a node refuses to start unless
+`--http-address` is loopback, or `--allow-plaintext-http` /
+`CA_CLUSTER_ALLOW_PLAINTEXT_HTTP=1` is given for a network you trust end to
+end.
+
+Nodes also call each other's client API (enrollment and the RPC trust state,
+below), and those calls now verify TLS: an `https://` address in `--peers` is
+checked, chain and hostname, against the root in the node's own `--tls-cert`
+bundle (or `--peer-tls-ca <bundle>`). So every node's listener certificate
+must chain to one shared root and carry a SAN for the host or IP its peers
+dial. An `http://` peer address must be loopback unless plaintext HTTP is
+opted in, and a peer address without a scheme is a startup error.
+
+**Upgrading:** a node that served plaintext HTTP off loopback exits at startup
+on this release. Provision `HTTP_TLS_CERT`/`HTTP_TLS_KEY` (see
+`ca_cluster_node.env.example`) and switch `PEERS` to `https://`, or add
+`--allow-plaintext-http` to keep the previous behaviour.
 
 ## Securing the Raft-internal RPC channel (RPC TLS, `.kiro/specs/ca-cluster-rpc-mtls/`)
 
@@ -117,15 +144,36 @@ node refuses a peer answering in place of the one it dialled. Those names can on
 peer enrollment, which is authenticated with an HMAC key derived from the
 unseal passphrase — `POST /v1/certificates` answers `403` to a request for a
 `ca-cluster-node-*` name (or one carrying `rpc_tls_ready_node_id`) that holds
-only the client bearer token. The same key authenticates the root certificate
-a follower fetches from the leader's `/v1/root-ca` before installing it as its
-RPC trust anchor. These node-to-node calls carry only peer MACs, never the
-client bearer token: the link's TLS is not verified, so the token must not
-cross it. All nodes must therefore run a release with this check
-before any of them is restarted onto it: a follower on the new release rejects
-an older leader's unauthenticated `/v1/root-ca` answer, and a new leader
-rejects an older follower's unauthenticated peer enrollment (both retry
-harmlessly, staying on the bootstrap credential, until the peer is upgraded).
+only the client bearer token. The same key authenticates the RPC trust state
+a node fetches from the leader's peer-only `GET /v1/peer/rpc-trust`: the
+cluster root (its RPC trust anchor), whether every node has cut over, and the
+serials of revoked peer certificates. These node-to-node calls carry only peer
+MACs, never the client bearer token, and a bearer token gets nothing from
+`/v1/peer/rpc-trust`. The key is derived with PBKDF2-HMAC-SHA256 (200,000
+iterations, the same cost as the at-rest CA key encryption), so a MAC seen on
+the wire is no shortcut to guessing the passphrase.
+
+**Every node finalizes, and remembers it.** Followers learn that the cutover
+is complete from the trust state and drop the bootstrap credential too, not
+only whichever node led when the last peer enrolled, and each node records it
+as `rpc_cutover_finalized` under `--data-dir`. A restarted node with that
+record trusts the cluster root alone even if `--rpc-tls-cert` is still
+passed. A replacement node that still holds only the bootstrap credential
+enrolls through the peers' client API (it tries every peer, since it cannot
+learn the leader over RPC), then joins with its new identity.
+
+**Revocation applies to Raft peers.** Peer certificates, the leader's own
+included, are recorded in the issuance ledger, and revoking one
+(`POST /v1/certificates/revoke`) makes every node refuse it on new RPC
+connections within one trust refresh (about five seconds). A node whose own
+peer certificate is revoked enrolls a fresh key.
+
+All nodes must run a release with these checks before any of them is
+restarted onto it: the peer key derivation and the trust-state route changed,
+so a node on the new release and one on an older release cannot enroll
+through each other (both retry harmlessly, staying on whatever credential they
+hold, until the peer is upgraded). An already cut-over cluster keeps running
+on its persisted peer certificates throughout a rolling upgrade.
 
 If RPC TLS is enabled, consider raising the Raft timing flags beyond their
 plain-TCP defaults — every RPC call now pays a full TLS handshake, which is

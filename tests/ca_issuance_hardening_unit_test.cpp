@@ -217,7 +217,7 @@ BOOST_AUTO_TEST_CASE(peer_enrollment_requires_mac, *boost::unit_test::timeout(30
     BOOST_TEST(ok.node_id.value() == 2u);
 }
 
-BOOST_AUTO_TEST_CASE(root_mac_binds_nonce_and_body, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(trust_mac_binds_nonce_and_body, *boost::unit_test::timeout(30)) {
     const auto key = derive_peer_enrollment_key("unseal-passphrase");
     auto nonce = random_nonce_hex();
     BOOST_TEST(is_well_formed_nonce(nonce));
@@ -226,15 +226,73 @@ BOOST_AUTO_TEST_CASE(root_mac_binds_nonce_and_body, *boost::unit_test::timeout(3
     BOOST_TEST(!is_well_formed_nonce("zz\nroot"));
     // The request MAC (sent instead of the bearer token) is key- and
     // nonce-bound, and distinct from the response MAC.
-    auto req_mac = peer_root_request_mac(key, nonce);
-    BOOST_TEST(constant_time_equals(req_mac, peer_root_request_mac(key, nonce)));
+    auto req_mac = peer_trust_request_mac(key, nonce);
+    BOOST_TEST(constant_time_equals(req_mac, peer_trust_request_mac(key, nonce)));
     BOOST_TEST(!constant_time_equals(
-        req_mac, peer_root_request_mac(derive_peer_enrollment_key("other"), nonce)));
-    BOOST_TEST(!constant_time_equals(req_mac, peer_root_mac(key, nonce, "")));
-    auto mac = peer_root_mac(key, nonce, "root-pem");
-    BOOST_TEST(constant_time_equals(mac, peer_root_mac(key, nonce, "root-pem")));
-    BOOST_TEST(!constant_time_equals(mac, peer_root_mac(key, nonce, "attacker-root")));
-    BOOST_TEST(!constant_time_equals(mac, peer_root_mac(key, random_nonce_hex(), "root-pem")));
+        req_mac, peer_trust_request_mac(derive_peer_enrollment_key("other"), nonce)));
+    BOOST_TEST(!constant_time_equals(req_mac, peer_trust_mac(key, nonce, "")));
+    auto mac = peer_trust_mac(key, nonce, "state");
+    BOOST_TEST(constant_time_equals(mac, peer_trust_mac(key, nonce, "state")));
+    BOOST_TEST(!constant_time_equals(mac, peer_trust_mac(key, nonce, "attacker-state")));
+    BOOST_TEST(!constant_time_equals(mac, peer_trust_mac(key, random_nonce_hex(), "state")));
+}
+
+// The enrollment key is a slow KDF of the passphrase, not one HMAC: a MAC
+// captured off the wire must cost as much per passphrase guess as the
+// encrypted CA key at rest.
+BOOST_AUTO_TEST_CASE(enrollment_key_is_a_slow_kdf_of_the_passphrase,
+                     *boost::unit_test::timeout(30)) {
+    const auto key = derive_peer_enrollment_key("unseal-passphrase");
+    BOOST_TEST(key.size() == 64u);
+    BOOST_TEST(key == derive_peer_enrollment_key("unseal-passphrase"));
+    BOOST_TEST(key != derive_peer_enrollment_key("unseal-passphrasf"));
+    BOOST_TEST(key !=
+               hmac_sha256_hex("unseal-passphrase", "kythira ca_cluster_node peer-enrollment v1"));
+    BOOST_TEST(k_peer_enrollment_kdf_iterations >= 200000);
+    BOOST_CHECK_THROW((void)derive_peer_enrollment_key(""), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(rpc_trust_state_round_trips, *boost::unit_test::timeout(30)) {
+    peer_rpc_trust_state state;
+    state.root_pem = "-----BEGIN CERTIFICATE-----\nroot\n-----END CERTIFICATE-----\n";
+    state.cutover_complete = true;
+    state.revoked_peer_serials = {1, 18446744073709551615ULL};
+    BOOST_TEST((decode_peer_rpc_trust_state(encode_peer_rpc_trust_state(state)) == state));
+
+    BOOST_CHECK_THROW((void)decode_peer_rpc_trust_state("not json"), std::invalid_argument);
+    BOOST_CHECK_THROW((void)decode_peer_rpc_trust_state(R"({"root_pem":"x"})"),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW((void)decode_peer_rpc_trust_state(
+                          R"({"root_pem":"","cutover_complete":false,"revoked_peer_serials":[]})"),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(
+        (void)decode_peer_rpc_trust_state(
+            R"({"root_pem":"x","cutover_complete":false,"revoked_peer_serials":["nope"]})"),
+        std::invalid_argument);
+}
+
+// A revoked peer certificate stops being a Raft peer, whichever way the
+// policy would otherwise have accepted it through the CA path.
+BOOST_AUTO_TEST_CASE(rpc_trust_refuses_revoked_peer_certs, *boost::unit_test::timeout(30)) {
+    certificate_authority ca;
+    leaf_certificate_options peer_opts;
+    peer_opts.dns_names = {peer_identity_dns_name(2)};
+    auto issued = ca.issue(peer_opts);
+    auto peer = load(issued.certificate_pem);
+    auto other = load(ca.issue(peer_opts).certificate_pem);
+
+    auto policy = kythira::ca_root_only(ca.root_certificate_pem())
+                      .binding_peer_node_ids({{peer_identity_dns_name(2), 2}});
+    BOOST_TEST(policy.accepts(peer.get()));
+    BOOST_TEST(policy.binds(peer.get(), 2));
+
+    auto revoking = policy.revoking_serials({issued.serial});
+    BOOST_TEST(!revoking.accepts(peer.get()));
+    BOOST_TEST(!revoking.binds(peer.get(), 2));
+    BOOST_TEST(!revoking.authenticated_node_id(peer.get()).has_value());
+    // A different (unrevoked) certificate for the same node still works.
+    BOOST_TEST(revoking.accepts(other.get()));
+    BOOST_TEST(revoking.binds(other.get(), 2));
 }
 
 BOOST_AUTO_TEST_CASE(rpc_trust_requires_peer_name_for_ca_certs, *boost::unit_test::timeout(30)) {
