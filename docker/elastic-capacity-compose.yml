@@ -1,0 +1,121 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Elastic shard capacity, end to end, on containers.
+# `.kiro/specs/elastic-shard-capacity/` task 16; driven by
+# `tests/docker_chaos/elastic_capacity_docker_test.cpp`.
+#
+# Three `multi_raft_node` hosts. Node 1 runs the capacity controller over
+# `docker_quorum_manager` and serves its control plane on 7003; nodes 2 and 3
+# are members whose placement-driver hooks call it. The scenario: load splits
+# the two starting shards, shards per node cross the high watermark, the
+# controller creates a fourth container through the container API, and admits
+# it onto shards as a learner that is then promoted.
+#
+# CLAUDE.md's container rules, and how each is met:
+#
+#   * **No static IPs.** Every host is addressed by name. The names are the
+#     ones `docker_quorum_manager` gives the containers it creates,
+#     `kythira-<cluster>-<id>`, so PEERS can name ids 4..6 before they exist:
+#     both Docker's embedded DNS and Podman's aardvark-dns resolve a container
+#     name on a user-defined network once that container is there.
+#   * **No hardcoded runtime.** The harness picks it with `container_runtime()`
+#     and `compose_prefix()`. The container API the controller calls is
+#     whatever socket CONTAINER_SOCKET names (the harness points it at the
+#     rootless Podman socket under Podman) mounted at the path the manager
+#     dials. Podman serves the Docker-compatible API there.
+#   * **No privileges.** No `privileged`, no `cap_add`, no host networking.
+#     A controller that creates containers needs the API socket and nothing
+#     else.
+#
+# The network has an explicit `name:` because the controller attaches the
+# containers it creates to it by that name; a compose-prefixed name would
+# leave them unable to reach anyone.
+
+x-shape: &shape
+  # The cluster's shape. The controller copies these into every container it
+  # creates (see docker/multi_raft_node/entrypoint.sh), so they are the same
+  # everywhere by construction.
+  PEERS: "1:kythira-${CAPACITY_CLUSTER:?set CAPACITY_CLUSTER}-1:7000,2:kythira-${CAPACITY_CLUSTER}-2:7000,3:kythira-${CAPACITY_CLUSTER}-3:7000,4:kythira-${CAPACITY_CLUSTER}-4:7000,5:kythira-${CAPACITY_CLUSTER}-5:7000,6:kythira-${CAPACITY_CLUSTER}-6:7000"
+  VOTERS: "1,2,3"
+  GROUPS: "2"
+  KEY_COUNT: "1000"
+  TICK_INTERVAL_MS: "5"
+  TRANSPORT: "httplib"
+  SERIALIZER: "json"
+  PERSISTENCE: "memory"
+  RAFT_PORT: "7000"
+  DATA_PORT: "7001"
+  CONTROL_PORT: "7002"
+  SPLIT_KEYS: "${SPLIT_KEYS:-60}"
+  CAPACITY_HEARTBEAT_MS: "1000"
+
+services:
+  node1:
+    image: ${CAPACITY_IMAGE:-kythira-multi-raft-node:dev}
+    container_name: kythira-${CAPACITY_CLUSTER}-1
+    hostname: kythira-${CAPACITY_CLUSTER}-1
+    labels:
+      kythira.cluster: "${CAPACITY_CLUSTER}"
+      kythira.node_id: "1"
+    environment:
+      <<: *shape
+      NODE_ID: "1"
+      CAPACITY_ROLE: "controller"
+      CAPACITY_PORT: "7003"
+      CAPACITY_CLUSTER: "${CAPACITY_CLUSTER}"
+      CAPACITY_NETWORK: "kythira-${CAPACITY_CLUSTER}-net"
+      CAPACITY_IMAGE: "${CAPACITY_IMAGE:-kythira-multi-raft-node:dev}"
+      CAPACITY_MAX_NODES: "4"
+      CAPACITY_SHARDS_HIGH: "3"
+      CAPACITY_SHARDS_LOW: "1"
+      CAPACITY_SUSTAINED_MS: "5000"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    ports:
+      - "${NODE1_DATA_PORT:-27101}:7001"
+      - "${NODE1_CONTROL_PORT:-27201}:7002"
+      - "${CAPACITY_PUBLISHED_PORT:-27003}:7003"
+    networks:
+      - capacity_net
+
+  node2:
+    image: ${CAPACITY_IMAGE:-kythira-multi-raft-node:dev}
+    container_name: kythira-${CAPACITY_CLUSTER}-2
+    hostname: kythira-${CAPACITY_CLUSTER}-2
+    labels:
+      kythira.cluster: "${CAPACITY_CLUSTER}"
+      kythira.node_id: "2"
+    environment:
+      <<: *shape
+      NODE_ID: "2"
+      CAPACITY_ROLE: "member"
+      CAPACITY_CONTROLLER: "kythira-${CAPACITY_CLUSTER}-1:7003"
+    ports:
+      - "${NODE2_DATA_PORT:-27102}:7001"
+      - "${NODE2_CONTROL_PORT:-27202}:7002"
+    networks:
+      - capacity_net
+
+  node3:
+    image: ${CAPACITY_IMAGE:-kythira-multi-raft-node:dev}
+    container_name: kythira-${CAPACITY_CLUSTER}-3
+    hostname: kythira-${CAPACITY_CLUSTER}-3
+    labels:
+      kythira.cluster: "${CAPACITY_CLUSTER}"
+      kythira.node_id: "3"
+    environment:
+      <<: *shape
+      NODE_ID: "3"
+      CAPACITY_ROLE: "member"
+      CAPACITY_CONTROLLER: "kythira-${CAPACITY_CLUSTER}-1:7003"
+    ports:
+      - "${NODE3_DATA_PORT:-27103}:7001"
+      - "${NODE3_CONTROL_PORT:-27203}:7002"
+    networks:
+      - capacity_net
+
+networks:
+  capacity_net:
+    name: kythira-${CAPACITY_CLUSTER}-net
+    driver: bridge
