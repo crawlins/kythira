@@ -2793,6 +2793,13 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                        {"token", token},
                        {"message_id", std::to_string(mid)}});
 
+        // Give back the reference get_or_create_session() lent this call; the
+        // pool still holds the session for the next one. A fresh session made
+        // with reuse off has no other owner and is left as it always was.
+        if (_config.enable_session_reuse) {
+            coap_session_release(session);
+        }
+
         // Per-RPC request metric carrying the negotiated media type
         // (Requirement 10.1). Emitted as a new metric name rather than by
         // adding a dimension to the transport's base `coap_client` metric:
@@ -7881,28 +7888,47 @@ auto coap_client<Types>::get_or_create_session(std::uint64_t target, coap_addres
 #ifdef LIBCOAP_AVAILABLE
     std::string endpoint_key = std::to_string(target);
 
-    // Check if we have a pooled session for this endpoint
-    if (_config.enable_session_reuse) {
-        std::lock_guard lock(_mutex);
-        auto pool_it = _session_pools.find(endpoint_key);
-        if (pool_it != _session_pools.end() && !pool_it->second.empty()) {
-            auto session = pool_it->second.back();
-            pool_it->second.pop_back();
-
-            // Validate session is still active
-            if (coap_session_get_state(session) == COAP_SESSION_STATE_ESTABLISHED) {
-                _logger.debug("Reusing existing session", {{"target", std::to_string(target)},
-                                                           {"session_state", "established"}});
-                return session;
-            } else {
-                // Session is no longer valid, release it
-                coap_session_release(session);
-            }
+    // One session per peer, held by the pool and lent to each caller.
+    //
+    // This used to pop the session out of the pool and hand it over, and
+    // nothing ever put one back: send_rpc() has no return path, so every RPC
+    // opened a fresh session -- a fresh UDP socket -- and kept it until the
+    // client died. One Raft group at heartbeat rate took minutes to notice;
+    // multi-Raft over one shared client ran a 20,000-descriptor process out
+    // of file descriptors in seconds ("Too many open files").
+    //
+    // So the pool keeps its reference and the caller gets one of its own,
+    // which it gives back with coap_session_release() once coap_send() has
+    // taken the PDU. libcoap holds its own reference for as long as a CON is
+    // awaiting its ACK, and responses are matched by token, so any number of
+    // exchanges can share the session.
+    //
+    // Sharing it puts every request to that peer under NSTART, which libcoap
+    // defaults to RFC 7252's 1: one outstanding CON per peer, the rest held in
+    // libcoap's delay queue until the previous ACK. Per-RPC sessions never hit
+    // that, and Raft has no use for it -- a leader re-sends AppendEntries every
+    // tick while entries are unacknowledged, so at NSTART 1 the queue grew
+    // faster than it drained and followers applied requests seconds stale. So
+    // the session admits max_concurrent_requests outstanding exchanges, the
+    // client's existing bound on concurrency.
+    std::lock_guard lock(_mutex);
+    auto& pool = _session_pools[endpoint_key];
+    while (!pool.empty()) {
+        auto* session = pool.back();
+        if (coap_session_get_state(session) == COAP_SESSION_STATE_ESTABLISHED) {
+            _logger.debug("Reusing existing session",
+                          {{"target", std::to_string(target)}, {"session_state", "established"}});
+            return coap_session_reference(session);
         }
+        pool.pop_back();
+        coap_session_release(session);
     }
 
-    // Create new session
-    return create_new_session(dst_addr, uri);
+    auto* session = create_new_session(dst_addr, uri);
+    coap_session_set_nstart(session, static_cast<uint16_t>(std::clamp<std::size_t>(
+                                         _config.max_concurrent_requests, 1, UINT16_MAX)));
+    pool.push_back(session);
+    return coap_session_reference(session);
 #else
     // Stub implementation
     return reinterpret_cast<coap_session_t*>(
