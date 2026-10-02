@@ -2776,7 +2776,9 @@ jobs:
         with:
           role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
           oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
-          region: ${{ vars.ALIBABA_CI_REGION }}
+          # No `region` input: the action has none, and passing one only
+          # earned an "Unexpected input(s) 'region'" warning on every run.
+          # The suites take their region from KYTHIRA_ALIBABA_REGION below.
 
       # Exit 77 is the suites' "not configured" skip. In CI that is a
       # misconfiguration, not a skip — the bundle was explicitly enabled — so
