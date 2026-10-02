@@ -15,19 +15,24 @@
 
 #include <raft/csr_policy.hpp>
 
+#include <aws/acm-pca/model/DescribeCertificateAuthorityRequest.h>
 #include <aws/acm-pca/model/GetCertificateAuthorityCertificateRequest.h>
 #include <aws/acm-pca/model/GetCertificateRequest.h>
 #include <aws/acm-pca/model/IssueCertificateRequest.h>
+#include <aws/acm-pca/model/RevocationReason.h>
 #include <aws/acm-pca/model/RevokeCertificateRequest.h>
 #include <aws/acm-pca/model/SigningAlgorithm.h>
 #include <aws/acm-pca/model/Validity.h>
 #include <aws/acm-pca/model/ValidityPeriodType.h>
 #include <aws/core/utils/Array.h>
 
+#include <array>
 #include <chrono>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 
 namespace raft::testing {
 
@@ -56,6 +61,31 @@ inline auto signing_algorithm_from_string(const std::string& name)
     return Aws::ACMPCA::Model::SigningAlgorithmMapper::GetSigningAlgorithmForName(name);
 }
 
+/// Maps an ACM Private CA `RevocationReason` name to its enum value. The SDK's
+/// own mapper can't validate: it keeps unknown names in an overflow container
+/// and hands back a synthetic enum value that AWS then rejects, so the accepted
+/// names are spelled out here.
+inline auto revocation_reason_from_string(const std::string& name)
+    -> Aws::ACMPCA::Model::RevocationReason {
+    using Aws::ACMPCA::Model::RevocationReason;
+    static constexpr std::array<std::pair<std::string_view, RevocationReason>, 8> k_reasons{{
+        {"UNSPECIFIED", RevocationReason::UNSPECIFIED},
+        {"KEY_COMPROMISE", RevocationReason::KEY_COMPROMISE},
+        {"CERTIFICATE_AUTHORITY_COMPROMISE", RevocationReason::CERTIFICATE_AUTHORITY_COMPROMISE},
+        {"AFFILIATION_CHANGED", RevocationReason::AFFILIATION_CHANGED},
+        {"SUPERSEDED", RevocationReason::SUPERSEDED},
+        {"CESSATION_OF_OPERATION", RevocationReason::CESSATION_OF_OPERATION},
+        {"PRIVILEGE_WITHDRAWN", RevocationReason::PRIVILEGE_WITHDRAWN},
+        {"A_A_COMPROMISE", RevocationReason::A_A_COMPROMISE},
+    }};
+    for (const auto& [reason_name, value] : k_reasons) {
+        if (reason_name == name) {
+            return value;
+        }
+    }
+    throw std::invalid_argument("aws_acm_pca_provider: unknown revocation reason '" + name + "'");
+}
+
 }  // namespace detail
 
 inline aws_acm_pca_provider::aws_acm_pca_provider(aws_acm_pca_provider_config config)
@@ -64,6 +94,8 @@ inline aws_acm_pca_provider::aws_acm_pca_provider(aws_acm_pca_provider_config co
         throw std::invalid_argument(
             "aws_acm_pca_provider: certificate_authority_arn must be non-empty");
     }
+    // Fail at startup, not on the first revocation.
+    (void)detail::revocation_reason_from_string(_config.revocation_reason);
 }
 
 inline auto aws_acm_pca_provider::root_certificate_pem() -> kythira::future_default<std::string> {
@@ -178,15 +210,48 @@ inline auto aws_acm_pca_provider::sign_csr(std::string csr_pem, csr_signing_opti
     }
 }
 
-inline auto aws_acm_pca_provider::revoke(const std::string& certificate_serial)
+inline auto aws_acm_pca_provider::revocation_configured() -> kythira::future_default<bool> {
+    try {
+        fiu_do_on(
+            "raft/aws/acm_pca/describe_certificate_authority",
+            throw std::runtime_error("fault: raft/aws/acm_pca/describe_certificate_authority"););
+
+        Aws::ACMPCA::Model::DescribeCertificateAuthorityRequest req;
+        req.SetCertificateAuthorityArn(_config.certificate_authority_arn);
+
+        auto outcome = _client.DescribeCertificateAuthority(req);
+        if (!outcome.IsSuccess()) {
+            throw std::runtime_error("acm-pca DescribeCertificateAuthority: " +
+                                     std::string(outcome.GetError().GetMessage()));
+        }
+        const auto& revocation =
+            outcome.GetResult().GetCertificateAuthority().GetRevocationConfiguration();
+        bool configured = revocation.GetCrlConfiguration().GetEnabled() ||
+                          revocation.GetOcspConfiguration().GetEnabled();
+        return kythira::future_factory_default::makeReadyFuture(configured);
+    } catch (const std::exception& ex) {
+        return kythira::future_factory_default::makeExceptionalFuture<bool>(
+            std::make_exception_ptr(std::runtime_error(
+                std::string("aws_acm_pca_provider::revocation_configured: ") + ex.what())));
+    }
+}
+
+inline auto aws_acm_pca_provider::revoke(const std::string& certificate_serial,
+                                         const std::string& reason)
     -> kythira::future_default<void> {
     try {
+        // AWS rejects a RevokeCertificate without a RevocationReason, so one is
+        // always sent; an unknown name is the caller's error, not AWS's.
+        auto revocation_reason = detail::revocation_reason_from_string(
+            reason.empty() ? _config.revocation_reason : reason);
+
         fiu_do_on("raft/aws/acm_pca/revoke_certificate",
                   throw std::runtime_error("fault: raft/aws/acm_pca/revoke_certificate"););
 
         Aws::ACMPCA::Model::RevokeCertificateRequest req;
         req.SetCertificateAuthorityArn(_config.certificate_authority_arn);
         req.SetCertificateSerial(certificate_serial);
+        req.SetRevocationReason(revocation_reason);
 
         auto outcome = _client.RevokeCertificate(req);
         if (!outcome.IsSuccess()) {
@@ -194,6 +259,10 @@ inline auto aws_acm_pca_provider::revoke(const std::string& certificate_serial)
                                      std::string(outcome.GetError().GetMessage()));
         }
         return kythira::future_factory_default::makeFuture();
+    } catch (const std::invalid_argument&) {
+        // Stays an invalid_argument so HTTP callers answer 400, not 502.
+        return kythira::future_factory_default::makeExceptionalFuture<void>(
+            std::current_exception());
     } catch (const std::exception& ex) {
         return kythira::future_factory_default::makeExceptionalFuture<void>(std::make_exception_ptr(
             std::runtime_error(std::string("aws_acm_pca_provider::revoke: ") + ex.what())));

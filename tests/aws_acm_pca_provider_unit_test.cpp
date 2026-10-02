@@ -70,6 +70,40 @@ BOOST_AUTO_TEST_CASE(empty_arn_throws) {
     BOOST_CHECK_THROW((aws_acm_pca_provider{cfg}), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(every_acm_pca_revocation_reason_constructs) {
+    for (const char* reason : {"UNSPECIFIED", "KEY_COMPROMISE", "CERTIFICATE_AUTHORITY_COMPROMISE",
+                               "AFFILIATION_CHANGED", "SUPERSEDED", "CESSATION_OF_OPERATION",
+                               "PRIVILEGE_WITHDRAWN", "A_A_COMPROMISE"}) {
+        aws_acm_pca_provider_config cfg;
+        cfg.certificate_authority_arn =
+            "arn:aws:acm-pca:us-east-1:123456789012:certificate-authority/test";
+        cfg.aws.region = "us-east-1";
+        cfg.revocation_reason = reason;
+        BOOST_CHECK_NO_THROW((aws_acm_pca_provider{cfg}));
+    }
+}
+
+// The SDK's own mapper would accept any name, so this must be caught here.
+BOOST_AUTO_TEST_CASE(unknown_default_revocation_reason_throws) {
+    aws_acm_pca_provider_config cfg;
+    cfg.certificate_authority_arn =
+        "arn:aws:acm-pca:us-east-1:123456789012:certificate-authority/test";
+    cfg.aws.region = "us-east-1";
+    cfg.revocation_reason = "unspecified";
+    BOOST_CHECK_THROW((aws_acm_pca_provider{cfg}), std::invalid_argument);
+}
+
+// Rejected before any AWS call, so no network or credentials are needed.
+BOOST_AUTO_TEST_CASE(revoke_with_unknown_reason_rejects_with_invalid_argument) {
+    aws_acm_pca_provider_config cfg;
+    cfg.certificate_authority_arn =
+        "arn:aws:acm-pca:us-east-1:123456789012:certificate-authority/test";
+    cfg.aws.region = "us-east-1";
+    aws_acm_pca_provider provider{cfg};
+    BOOST_CHECK_THROW(std::move(provider.revoke("01", "NOT_A_REASON")).get(),
+                      std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(satisfies_certificate_provider_concept) {
     static_assert(certificate_provider<aws_acm_pca_provider>);
     BOOST_TEST(true);
@@ -111,6 +145,16 @@ BOOST_AUTO_TEST_CASE(issue_certificate_fault_returns_exceptional_future) {
     fiu_enable("raft/aws/acm_pca/issue_certificate", 1, nullptr, 0);
     auto fut = provider.sign_csr("not a real csr", opts);
     fiu_disable("raft/aws/acm_pca/issue_certificate");
+
+    BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(describe_certificate_authority_fault_returns_exceptional_future) {
+    aws_acm_pca_provider provider{make_provider()};
+
+    fiu_enable("raft/aws/acm_pca/describe_certificate_authority", 1, nullptr, 0);
+    auto fut = provider.revocation_configured();
+    fiu_disable("raft/aws/acm_pca/describe_certificate_authority");
 
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }

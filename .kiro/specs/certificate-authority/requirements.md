@@ -424,7 +424,13 @@ obtained the same way local test certificates are.
    a CRL or OCSP configuration (an out-of-band operator setup, like the CA ARN
    itself), a call against a CA without one configured SHALL surface the
    resulting AWS error to the caller rather than falling back to any local
-   behavior.
+   behavior. Every call SHALL send a `RevocationReason` (required by the
+   API): the caller's, or `aws_acm_pca_provider_config::revocation_reason`
+   (default `UNSPECIFIED`). An unknown reason name SHALL be rejected with
+   `std::invalid_argument` before any AWS call, and an unknown configured
+   default SHALL fail construction. `revocation_configured()` SHALL report,
+   via `DescribeCertificateAuthority`, whether the CA has a CRL or OCSP
+   configuration enabled.
 
 ### Requirement 11: `ca_service --serve` network API mode
 
@@ -458,7 +464,11 @@ still obtain certificates trusted by a common CA.
    - `POST /v1/certificates/revoke` → body `{"serial": "..."}`. Under the
      `local` provider it SHALL revoke via the underlying `certificate_authority`;
      under `aws-acm-pca` without a CRL/OCSP configured (Requirement 10.7) it
-     SHALL return `501 Not Implemented`.
+     SHALL return `501 Not Implemented`. Under `aws-acm-pca` with one
+     configured it SHALL revoke through `aws_acm_pca_provider::revoke()`,
+     taking `serial` as the hex string ACM Private CA expects and an optional
+     `reason`, and answer `200`, `400` for a missing serial or unknown reason,
+     or `502` for an AWS error.
    - `GET /v1/crl` → `local` provider only; returns the current CRL PEM.
      `501 Not Implemented` under `aws-acm-pca`.
 4. Every request SHALL require an `Authorization: Bearer <token>` header
@@ -509,7 +519,9 @@ still obtain certificates from a common CA.
    long-running ECS service/task, with a task role granting the minimum ACM
    Private CA permissions needed
    (`acm-pca:GetCertificateAuthorityCertificate`, `acm-pca:IssueCertificate`,
-   `acm-pca:GetCertificate`) when `--provider aws-acm-pca` is used.
+   `acm-pca:GetCertificate`, plus `acm-pca:DescribeCertificateAuthority` and
+   `acm-pca:RevokeCertificate` for the revoke route) when
+   `--provider aws-acm-pca` is used.
 6. Provisioning the EC2 instance or ECS cluster itself (auto-scaling, load
    balancing, DNS registration for the deployed `ca_service`) is explicitly OUT
    OF SCOPE for this spec. Requirement 12 delivers example configuration

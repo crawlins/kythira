@@ -403,7 +403,7 @@ ca_service (extended)
           GET  /healthz
           GET  /v1/root-ca
           POST /v1/certificates          (CSR in → cert+chain PEM out; no private key crosses the wire)
-          POST /v1/certificates/revoke   (local provider only; 501 otherwise)
+          POST /v1/certificates/revoke   (local; aws-acm-pca when its CA has CRL/OCSP; 501 otherwise)
           GET  /v1/crl                   (local provider only; 501 otherwise)
         Deployable as:
           - long-running docker-compose service   (docker/ca-service-server-compose.yml)

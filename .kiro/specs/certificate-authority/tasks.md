@@ -393,8 +393,11 @@ service on a cloud instance or in a long-running container.
     wrapped in `fiu_do_on("raft/aws/acm_pca/get_certificate", ...)`; return
     `pem_material{cert, "", cert + chain, 0}` on success, reject the future
     with the AWS error message on failure or poll-timeout
-  - `revoke(serial)`: `RevokeCertificateRequest`; propagate AWS errors (e.g. no
-    CRL/OCSP configured on the target CA) directly to the caller
+  - `revoke(serial)`: `RevokeCertificateRequest` with a `RevocationReason`
+    (config default `UNSPECIFIED`, validated at construction); propagate AWS
+    errors (e.g. no CRL/OCSP configured on the target CA) directly to the
+    caller. `revocation_configured()` reads the CA's revocation configuration
+    via `DescribeCertificateAuthority`
   - `static_assert(certificate_provider<aws_acm_pca_provider>)`
   - Verify: `cmake --build build` succeeds with and without the `acm-pca` SDK
     component present
@@ -432,8 +435,9 @@ service on a cloud instance or in a long-running container.
     <token>` on every route, returning `401` otherwise
   - Routes: `GET /healthz`, `GET /v1/root-ca`, `POST /v1/certificates` (CSR +
     JSON metadata in, `{certificate_pem, chain_pem}` JSON out), `POST
-    /v1/certificates/revoke` and `GET /v1/crl` (local provider only; `501` for
-    `aws-acm-pca`)
+    /v1/certificates/revoke` (local, or `aws-acm-pca` when the CA has CRL/OCSP
+    configured; `501` otherwise) and `GET /v1/crl` (local provider only; `501`
+    for `aws-acm-pca`)
   - Install `SIGINT`/`SIGTERM` handlers calling `server.stop()`; `main()`
     blocks in `server.listen(...)` until shutdown
   - Verify: manual `curl` against a locally started `ca_service --serve

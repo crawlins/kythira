@@ -43,6 +43,12 @@ struct aws_acm_pca_provider_config {
     std::string signing_algorithm{"SHA256WITHRSA"};
     /// Certificate validity period.
     std::chrono::seconds validity{std::chrono::hours(24 * 30)};
+    /// RFC 5280 reason `revoke()` sends when the caller names none. One of the
+    /// ACM Private CA `RevocationReason` names (`UNSPECIFIED`,
+    /// `KEY_COMPROMISE`, `CERTIFICATE_AUTHORITY_COMPROMISE`,
+    /// `AFFILIATION_CHANGED`, `SUPERSEDED`, `CESSATION_OF_OPERATION`,
+    /// `PRIVILEGE_WITHDRAWN`, `A_A_COMPROMISE`); validated at construction.
+    std::string revocation_reason{"UNSPECIFIED"};
 };
 
 /// `certificate_provider` backed by `Aws::ACMPCA::ACMPCAClient`. See
@@ -61,11 +67,20 @@ public:
     [[nodiscard]] auto sign_csr(std::string csr_pem, csr_signing_options options)
         -> kythira::future_default<pem_material>;
 
-    /// Calls `RevokeCertificate`. Requires the target CA to already have a
-    /// CRL/OCSP configuration (an out-of-band operator setup); a call against a
-    /// CA without one surfaces the resulting AWS error to the caller rather than
+    /// Calls `DescribeCertificateAuthority` and reports whether the CA has a
+    /// CRL or OCSP configuration enabled, which `RevokeCertificate` needs.
+    /// Not cached: an operator can change the configuration at any time.
+    [[nodiscard]] auto revocation_configured() -> kythira::future_default<bool>;
+
+    /// Calls `RevokeCertificate` with `certificate_serial` (the hexadecimal
+    /// serial, as `openssl x509 -serial` or `-text` prints it) and `reason`,
+    /// or `aws_acm_pca_provider_config::revocation_reason` when `reason` is
+    /// empty. An unknown reason rejects with `std::invalid_argument` before any
+    /// AWS call. Requires the target CA to already have a CRL/OCSP
+    /// configuration (an out-of-band operator setup); a call against a CA
+    /// without one surfaces the resulting AWS error to the caller rather than
     /// falling back to any local behavior.
-    [[nodiscard]] auto revoke(const std::string& certificate_serial)
+    [[nodiscard]] auto revoke(const std::string& certificate_serial, const std::string& reason = {})
         -> kythira::future_default<void>;
 
 private:
