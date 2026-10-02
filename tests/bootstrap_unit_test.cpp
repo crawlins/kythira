@@ -12,11 +12,17 @@
 #include <folly/init/Init.h>
 
 #endif
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <future>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // ── Folly global fixture ───────────────────────────────────────────────────
@@ -228,6 +234,101 @@ bootstrap_node_type make_joining_node(std::uint64_t id, auto net, std::uint64_t 
             std::vector<kythira::peer_info<std::uint64_t, std::string>>{{leader_id, leader_addr}})};
 }
 
+// Record of every peer_discovery call a node makes. Shared so the test keeps
+// a handle after the discovery object has been moved into the node.
+struct discovery_probe {
+    std::atomic<int> register_calls{0};
+    std::atomic<int> find_calls{0};
+    // find_peers() calls already made when register_node() was first called;
+    // -1 until then. Requirement 10.1 puts registration before any lookup.
+    std::atomic<int> finds_before_register{-1};
+    std::atomic<bool> reject_register{false};
+
+    std::mutex mutex;
+    std::vector<std::pair<std::uint64_t, std::string>> registrations;
+};
+
+// Peer discovery that returns a fixed peer list and counts its calls, and can
+// be told to reject register_node().
+class counting_peer_discovery {
+public:
+    using node_id_type = std::uint64_t;
+    using address_type = std::string;
+
+    counting_peer_discovery() : _probe(std::make_shared<discovery_probe>()) {}
+    explicit counting_peer_discovery(
+        std::shared_ptr<discovery_probe> probe,
+        std::vector<kythira::peer_info<std::uint64_t, std::string>> peers = {})
+        : _probe(std::move(probe)), _peers(std::move(peers)) {}
+
+    auto register_node(std::uint64_t id, std::string address) -> kythira::future_default<void> {
+        int expected = -1;
+        _probe->finds_before_register.compare_exchange_strong(expected, _probe->find_calls.load());
+        {
+            std::lock_guard<std::mutex> lock(_probe->mutex);
+            _probe->registrations.emplace_back(id, std::move(address));
+        }
+        ++_probe->register_calls;
+        if (_probe->reject_register.load()) {
+            return kythira::future_factory_default::makeExceptionalFuture<void>(
+                std::make_exception_ptr(std::runtime_error("registration rejected")));
+        }
+        return kythira::future_factory_default::makeFuture();
+    }
+
+    [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
+        -> kythira::future_default<std::vector<kythira::peer_info<std::uint64_t, std::string>>> {
+        ++_probe->find_calls;
+        return kythira::future_factory_default::makeFuture(
+            std::vector<kythira::peer_info<std::uint64_t, std::string>>(_peers));
+    }
+
+private:
+    std::shared_ptr<discovery_probe> _probe;
+    std::vector<kythira::peer_info<std::uint64_t, std::string>> _peers;
+};
+
+static_assert(kythira::peer_discovery<counting_peer_discovery, std::uint64_t, std::string>);
+
+struct counting_raft_types : bootstrap_raft_types {
+    using peer_discovery_type = counting_peer_discovery;
+};
+
+using counting_node_type = kythira::node<counting_raft_types>;
+
+// Construct a node whose discovery calls are recorded in `probe`. Pass a
+// persistence engine with a non-zero term to make it a restarting node.
+counting_node_type make_counting_node(
+    std::uint64_t id, auto net, std::shared_ptr<discovery_probe> probe,
+    std::vector<kythira::peer_info<std::uint64_t, std::string>> peers = {},
+    bootstrap_raft_types::persistence_engine_type persistence = {},
+    kythira::raft_configuration cfg = make_cluster_config()) {
+    auto ser = bootstrap_raft_types::serializer_type{};
+    return counting_node_type{id,
+                              bootstrap_raft_types::network_client_type{net, ser},
+                              bootstrap_raft_types::network_server_type{net, ser},
+                              std::move(persistence),
+                              kythira::console_logger{},
+                              bootstrap_raft_types::metrics_type{},
+                              bootstrap_raft_types::membership_manager_type{},
+                              cfg,
+                              std::to_string(id),
+                              counting_peer_discovery{std::move(probe), std::move(peers)}};
+}
+
+// Persistence for a node that ran before: a non-zero term makes
+// is_fresh_node() false, so start() takes the reconnect path.
+bootstrap_raft_types::persistence_engine_type restarted_persistence(std::uint64_t term) {
+    bootstrap_raft_types::persistence_engine_type persistence;
+    persistence.save_current_term(term);
+    return persistence;
+}
+
+// One full run_reconnect() cycle: the isolation wait plus the retry sleep.
+std::chrono::milliseconds reconnect_cycle(kythira::raft_configuration const& cfg) {
+    return cfg._election_timeout_max * 2 + cfg._bootstrap_retry_interval;
+}
+
 }  // namespace
 
 // ── Suite 1: peer_discovery concept and implementations ───────────────────
@@ -424,6 +525,179 @@ BOOST_AUTO_TEST_CASE(stop_cancels_bootstrap_retry_loop, *boost::unit_test::timeo
     auto status = done_fut.wait_for(std::chrono::milliseconds{500});
     BOOST_CHECK(status == std::future_status::ready);
     start_thread.join();
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Suite 3b: peer-discovery calls made by start() ────────────────────────
+//
+// node-bootstrap Requirements 8.8 and 8.9: the restarting node's reconnect
+// loop stops once a leader's AppendEntries arrives, and start() registers
+// the node exactly once on every path and aborts when registration fails.
+
+BOOST_AUTO_TEST_SUITE(bootstrap_discovery_calls)
+
+// Requirement 8.8: a restarting node cut off from its peers keeps calling
+// find_peers(); once a valid AppendEntries arrives the loop exits and never
+// calls it again.
+BOOST_AUTO_TEST_CASE(reconnect_loop_stops_on_append_entries, *boost::unit_test::timeout(30)) {
+    bsim_t sim;
+    sim.start();
+    auto cfg = make_cluster_config();
+
+    auto net1 = sim.create_node("1");
+    auto net2 = sim.create_node("2");
+    auto net3 = sim.create_node("3");
+    // Nodes 1 and 2 form the quorum; node 3 has no edges yet.
+    bconnect_all(sim, {"1", "2"});
+
+    auto node1 = make_bootstrap_node(1, net1, cfg);
+    auto node2 = make_bootstrap_node(2, net2, cfg);
+    node1.set_cluster_configuration({1, 2, 3});
+    node2.set_cluster_configuration({1, 2, 3});
+    node1.start();
+    node2.start();
+    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{30});
+    node1.check_election_timeout();
+    BOOST_REQUIRE(wait_ready([&] { return node1.is_leader(); }, std::chrono::seconds{5}));
+
+    auto probe = std::make_shared<discovery_probe>();
+    auto node3 = make_counting_node(3, net3, probe, {{1u, "1"}, {2u, "2"}},
+                                    restarted_persistence(node1.get_current_term()), cfg);
+    node3.set_cluster_configuration({1, 2, 3});
+    node3.start();
+
+    // The loop is running: it has timed out and fallen back to discovery twice.
+    BOOST_REQUIRE(
+        wait_ready([&] { return probe->find_calls.load() >= 2; }, reconnect_cycle(cfg) * 4));
+
+    network_simulator::NetworkEdge edge{};
+    sim.add_edge("1", "3", edge);
+    sim.add_edge("3", "1", edge);
+    node1.check_heartbeat_timeout();
+    BOOST_REQUIRE(
+        wait_ready([&] { return node3.known_leader() == std::optional<std::uint64_t>{1}; },
+                   std::chrono::seconds{5}));
+
+    // A find_peers() already under way when the AppendEntries landed has
+    // been counted, so from here on the count must not move.
+    auto const calls_at_contact = probe->find_calls.load();
+    std::this_thread::sleep_for(reconnect_cycle(cfg) * 3);
+    BOOST_CHECK_EQUAL(probe->find_calls.load(), calls_at_contact);
+
+    node3.stop();
+    node2.stop();
+    node1.stop();
+}
+
+// Requirement 8.9: a fresh node that founds a cluster registers once, with
+// its own id and address, before its first find_peers().
+BOOST_AUTO_TEST_CASE(register_node_once_for_founding_node, *boost::unit_test::timeout(10)) {
+    bsim_t sim;
+    sim.start();
+    auto probe = std::make_shared<discovery_probe>();
+    auto node = make_counting_node(1, sim.create_node("1"), probe);
+
+    node.start();
+
+    BOOST_CHECK_EQUAL(probe->register_calls.load(), 1);
+    BOOST_CHECK_EQUAL(probe->finds_before_register.load(), 0);
+    BOOST_CHECK_GE(probe->find_calls.load(), 1);
+    {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        BOOST_REQUIRE_EQUAL(probe->registrations.size(), 1u);
+        BOOST_CHECK_EQUAL(probe->registrations[0].first, 1u);
+        BOOST_CHECK_EQUAL(probe->registrations[0].second, "1");
+    }
+    node.stop();
+}
+
+// Requirement 8.9: a fresh node whose seed peers are unreachable registers
+// once, not once per bootstrap retry.
+BOOST_AUTO_TEST_CASE(register_node_once_across_bootstrap_retries, *boost::unit_test::timeout(15)) {
+    bsim_t sim;
+    sim.start();
+    auto cfg = make_cluster_config();
+    auto probe = std::make_shared<discovery_probe>();
+    auto node = make_counting_node(1, sim.create_node("1"), probe, {{99u, "ghost_node:9000"}});
+
+    std::thread start_thread([&node] { node.start(); });
+
+    BOOST_CHECK(wait_ready([&] { return probe->find_calls.load() >= 3; },
+                           cfg._bootstrap_retry_interval * 10));
+    BOOST_CHECK_EQUAL(probe->register_calls.load(), 1);
+    BOOST_CHECK_EQUAL(probe->finds_before_register.load(), 0);
+
+    node.stop();
+    start_thread.join();
+}
+
+// Requirement 8.9: a restarting node registers once too, before its
+// reconnect loop's first find_peers().
+BOOST_AUTO_TEST_CASE(register_node_once_for_restarting_node, *boost::unit_test::timeout(15)) {
+    bsim_t sim;
+    sim.start();
+    auto cfg = make_cluster_config();
+    auto probe = std::make_shared<discovery_probe>();
+    auto node =
+        make_counting_node(3, sim.create_node("3"), probe, {}, restarted_persistence(1), cfg);
+    node.set_cluster_configuration({1, 2, 3});
+
+    node.start();
+    BOOST_CHECK(node.is_running());
+    BOOST_CHECK(
+        wait_ready([&] { return probe->find_calls.load() >= 2; }, reconnect_cycle(cfg) * 4));
+
+    BOOST_CHECK_EQUAL(probe->register_calls.load(), 1);
+    BOOST_CHECK_EQUAL(probe->finds_before_register.load(), 0);
+    {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        BOOST_REQUIRE_EQUAL(probe->registrations.size(), 1u);
+        BOOST_CHECK_EQUAL(probe->registrations[0].first, 3u);
+        BOOST_CHECK_EQUAL(probe->registrations[0].second, "3");
+    }
+    node.stop();
+}
+
+// Requirement 8.9 (and 10.3): a rejected registration propagates out of
+// start() on the fresh path; the node never runs and never looks up peers.
+BOOST_AUTO_TEST_CASE(register_rejection_aborts_fresh_start, *boost::unit_test::timeout(10)) {
+    bsim_t sim;
+    sim.start();
+    auto cfg = make_cluster_config();
+    auto probe = std::make_shared<discovery_probe>();
+    probe->reject_register = true;
+    auto node = make_counting_node(1, sim.create_node("1"), probe);
+
+    BOOST_CHECK_THROW(node.start(), std::runtime_error);
+    BOOST_CHECK(!node.is_running());
+
+    std::this_thread::sleep_for(cfg._bootstrap_retry_interval * 2);
+    BOOST_CHECK_EQUAL(probe->register_calls.load(), 1);
+    BOOST_CHECK_EQUAL(probe->find_calls.load(), 0);
+    BOOST_CHECK_NO_THROW(node.stop());
+}
+
+// Requirement 8.9 (and 10.3): the same on the restarting path; no reconnect
+// loop is launched, so find_peers() is never called.
+BOOST_AUTO_TEST_CASE(register_rejection_aborts_restarting_start, *boost::unit_test::timeout(10)) {
+    bsim_t sim;
+    sim.start();
+    auto cfg = make_cluster_config();
+    auto probe = std::make_shared<discovery_probe>();
+    probe->reject_register = true;
+    auto node = make_counting_node(3, sim.create_node("3"), probe, {{1u, "1"}},
+                                   restarted_persistence(1), cfg);
+    node.set_cluster_configuration({1, 2, 3});
+
+    BOOST_CHECK_THROW(node.start(), std::runtime_error);
+    BOOST_CHECK(!node.is_running());
+
+    // Long enough for a launched reconnect loop to reach find_peers() twice.
+    std::this_thread::sleep_for(reconnect_cycle(cfg) * 2);
+    BOOST_CHECK_EQUAL(probe->register_calls.load(), 1);
+    BOOST_CHECK_EQUAL(probe->find_calls.load(), 0);
+    BOOST_CHECK_NO_THROW(node.stop());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
