@@ -4638,50 +4638,18 @@ target_compile_features(state_machine_crash_recovery_property_test PRIVATE cxx_s
 add_test(NAME state_machine_crash_recovery_property_test COMMAND state_machine_crash_recovery_property_test)
 
 
-# Raft multi-node test fixture test
-add_executable(raft_multi_node_fixture_test raft_multi_node_fixture_test.cpp)
-target_link_libraries(raft_multi_node_fixture_test PRIVATE
-    network_simulator
-    Boost::unit_test_framework
-)
-if(TARGET Folly::folly)
-    target_link_libraries(raft_multi_node_fixture_test PRIVATE Folly::folly)
-endif()
-target_compile_features(raft_multi_node_fixture_test PRIVATE cxx_std_23)
-add_test(NAME raft_multi_node_fixture_test COMMAND raft_multi_node_fixture_test)
-set_tests_properties(raft_multi_node_fixture_test PROPERTIES
-    TIMEOUT 60
-    LABELS "unit;raft;fixture"
-)
-
-# Raft cluster initialization test - DISABLED due to simulator network bugs
-# This is an optional enhancement test (task 701) that has issues with the
-# simulator network implementation. The core Raft implementation is complete
-# and all 78 required tests pass.
-#
-# Cluster initialization integration test (disabled due to network simulator issues)
-# This test is known to have memory access violations due to network simulator bugs.
-# The functionality is validated through:
-# 1. raft_cluster_initialization_unit_test (unit tests for initialization logic)
-# 2. Existing property-based tests (election safety, follower behavior, etc.)
-# 3. Single-node integration tests
-# See: BUILD_SYSTEM_FIX_SUMMARY.md and SPEC_EXECUTION_COMPLETE_SUMMARY.md
-# add_executable(raft_cluster_initialization_test raft_cluster_initialization_test.cpp)
-# target_link_libraries(raft_cluster_initialization_test PRIVATE
-#     network_simulator
-#     Boost::unit_test_framework
-#     boost_json
-#     Boost::context
-# )
-# if(TARGET Folly::folly)
-#     target_link_libraries(raft_cluster_initialization_test PRIVATE Folly::folly)
-# endif()
-# target_compile_features(raft_cluster_initialization_test PRIVATE cxx_std_23)
-# add_test(NAME raft_cluster_initialization_test COMMAND raft_cluster_initialization_test)
-# set_tests_properties(raft_cluster_initialization_test PROPERTIES
-#     TIMEOUT 120
-#     LABELS "integration;raft;cluster"
-# )
+# Raft multi-node tests (raft-consensus tasks 700-713, 730, 731): real nodes
+# over the network simulator, driven by raft_multi_node_test_fixture.hpp.
+foreach(_multi_node_test
+        raft_multi_node_fixture_test
+        raft_multi_node_partition_test
+        raft_multi_node_property_test)
+    add_raft_completion_test(${_multi_node_test} ${_multi_node_test}.cpp)
+    set_tests_properties(${_multi_node_test} PROPERTIES
+        TIMEOUT 300
+        LABELS "integration;raft;multi-node"
+    )
+endforeach()
 
 # Cluster initialization unit test (simplified version without network simulator)
 add_executable(raft_cluster_initialization_unit_test raft_cluster_initialization_unit_test.cpp)
@@ -4701,22 +4669,11 @@ set_tests_properties(raft_cluster_initialization_unit_test PROPERTIES
     LABELS "unit;raft;cluster;initialization"
 )
 
-# Membership management unit test (Task 702)
-add_executable(raft_membership_management_unit_test raft_membership_management_unit_test.cpp)
-target_link_libraries(raft_membership_management_unit_test PRIVATE
-    network_simulator
-    Boost::unit_test_framework
-    boost_json
-    Boost::context
-)
-if(TARGET Folly::folly)
-    target_link_libraries(raft_membership_management_unit_test PRIVATE Folly::folly)
-endif()
-target_compile_features(raft_membership_management_unit_test PRIVATE cxx_std_23)
-add_test(NAME raft_membership_management_unit_test COMMAND raft_membership_management_unit_test)
+# Membership management on a real cluster (raft-consensus task 702)
+add_raft_completion_test(raft_membership_management_unit_test raft_membership_management_unit_test.cpp)
 set_tests_properties(raft_membership_management_unit_test PROPERTIES
-    TIMEOUT 120
-    LABELS "unit;raft;membership;configuration"
+    TIMEOUT 300
+    LABELS "integration;raft;membership;configuration"
 )
 
 # Coverage-targeted tests

@@ -527,9 +527,16 @@ The following tasks are **optional enhancements** that would improve the project
 
 ## Phase 5: Multi-Node Testing (Tasks 700-730) - Optional Enhancement
 
-**Status**: Not started - Optional enhancement for comprehensive cluster validation
+**Status**: Complete (2026-10-02). Until then the fixture held no Raft nodes and the tests built on it checked only fixture bookkeeping.
 
-**Note**: Current tests use simplified single-node implementations and mock network interactions. Core Raft functionality is already validated through property-based and integration tests. These tasks are optional enhancements for real multi-node cluster testing.
+`tests/raft_multi_node_test_fixture.hpp` runs real `kythira::node` instances over the network simulator, one ticker thread per node, with crash/restart, partitions, per-node latency and loss, log inspection, and an observer that records every (term, leader) pair so tests can assert Election Safety. Tests built on it:
+
+- 700, 701, 730: `tests/raft_multi_node_fixture_test.cpp`
+- 702: `tests/raft_membership_management_unit_test.cpp`
+- 710-713: `tests/raft_multi_node_partition_test.cpp`
+- 731: `tests/raft_multi_node_property_test.cpp`
+
+Building them surfaced three defects, fixed alongside: the simulator transport handed an RPC's reply to whichever call read the node's queue first (including requests meant for the node's own server), `initialize_from_storage()` appended the persisted log onto the in-memory one on an in-process restart, and a late AppendEntries reply put a removed peer back into the leader's replication set.
 
 ### Multi-Node Cluster Initialization (Low Priority)
 
