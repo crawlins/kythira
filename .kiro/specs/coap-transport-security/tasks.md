@@ -306,6 +306,11 @@ already confirmed present in the linked library (≥4.3.2; project pins
 - [x] 13. `tests/coap_dtls_rpk_test.cpp` (new file)
   - RPK peer-key match succeeds; mismatch is rejected.
   - _Requirements: 9.3_
+  - The live handshake is in `tests/coap_dtls_raft_rpc_test.cpp`: Raft RPCs
+    over DTLS-RPK, and each side refusing an untrusted key. Those cases run
+    only against a libcoap whose TLS backend supports RPK; on the OpenSSL
+    build CI uses they are skipped, and the test checks that RPK is refused
+    at construction instead.
 
 - [x] 14. `tests/coap_oscore_integration_test.cpp` (new file)
   - Client/server round-trip under plain OSCORE and OSCORE-over-DTLS-PSK;
