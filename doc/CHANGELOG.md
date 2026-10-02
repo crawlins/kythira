@@ -5,6 +5,17 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 2, 2026)
 
+- **CI cloud identities trust only the `real-cloud-tests` environment.**
+  The AWS, GCP and Alibaba CI roles trusted any workflow in the repository
+  (`repo:crawlins/kythira:*`), so a pushed branch could assume them without
+  declaring the environment and skip its protection rules. Each provisioning
+  script now pins the exact environment subject, as Azure and OCI already
+  did. The GCP CI account loses project-wide actAs and `storage.admin`, and
+  the AWS `ami-build` bundle loses AMI/snapshot sharing and instance
+  attribute rewrites. The live roles change only when the scripts are re-run.
+- **The read-write build-cache key is main-only.** It moves from a repository
+  secret to the `build-cache-write` environment, which only `main` may use;
+  other refs, and real-cloud jobs on `main`, read with the read-only key.
 - **The ECS task definitions pin their image by digest instead of
   `:latest`** (`docker/ca_service/ecs-task-definition.json`,
   `docker/ca_cluster_node/ecs-task-definitions/*.json`). A mutable tag let
