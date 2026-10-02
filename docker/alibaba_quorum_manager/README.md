@@ -43,11 +43,17 @@ The engine's durability contract is that `save_current_term` and
 the whole point, and it is stronger than `file_persistence_engine`, which
 does not even fsync. But it means those calls are now WAN-latency operations.
 
-Measured from a developer machine to `ap-southeast-1`: **~2–3 s per object
-round trip** (`spike-notes.md` Finding 7). That is an upper bound dominated
-by geography — an in-region node will see far less — but **size election
-timeouts against a measurement from where your nodes actually run**, not
-against this number and not against local-disk intuition. If your election
+Two measurements, both to `ap-southeast-1` and both from outside the region:
+
+| Measured from | Per write | Source |
+|---|---|---|
+| A developer machine | ~2–3 s per object round trip | `spike-notes.md` Finding 7 |
+| A GitHub-hosted CI runner | `save_current_term` p50 **1.10 s**, p99 1.21 s; `append_log_entry` p50 1.08 s | `spike-notes.md` Finding 13 (scheduled run 36426191450) |
+
+Both are upper bounds dominated by geography — an in-region node will see
+far less, and nobody has yet measured from inside the region — but **size
+election timeouts against a measurement from where your nodes actually run**,
+not against these numbers and not against local-disk intuition. If your election
 timeout is shorter than a round trip, the node cannot persist its vote before
 the election it is voting in has already timed out.
 

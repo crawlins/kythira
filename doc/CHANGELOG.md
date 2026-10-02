@@ -3,6 +3,22 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 2, 2026)
+
+- **The Alibaba Cloud spec is closed** (`.kiro/specs/alibaba-cloud-services/`,
+  every task ticked, task 4 by descope). The checklist had read 3 of 12 since
+  August while the tree held nearly all of it; each task is now ticked against
+  its own Verify line, with the evidence tabled at the top of `tasks.md` and
+  spike-notes Findings 11-13 covering the three spike items and the CI runs.
+- **`alibaba_ess_quorum_manager` no longer wraps NodeIds.** The tag scan read
+  `"-1"` as 2^64-1 through `std::stoull`, so max+1 became 0 for every later
+  provision; it now parses strict decimal and refuses at the ceiling, and a
+  refusal after ESS has launched the instance removes it rather than leaving
+  it running untagged.
+- The Alibaba CI credentials step no longer passes the vendor action a
+  `region` input it does not have, and the 23 MB `aliyun` CLI tarball
+  committed to the tree root in August is removed and ignored.
+
 ### What Changed (August 19, 2026)
 
 - **Cloud key-object persistence lands, on all five providers, live-verified**

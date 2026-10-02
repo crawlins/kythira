@@ -5,9 +5,12 @@ Corrections are folded back into requirements.md/design.md in place; this
 file is the record of *how* each fact was established, and — as important —
 which facts are still only documentation-deep because no account exists.
 
-**Account status: provisioned August 13, 2026** (account 5633986662052576, region `ap-southeast-1`, RAM user `kythira-ci-user`; OSS confirmed live, ESS/ECS activated but not yet exercised). Everything below is derived from vendor
-documentation plus independent recomputation. Sub-items needing live traffic
-are marked OPEN and stay open until Task 10 provisions an account.
+**Account status: provisioned August 13, 2026** (account 5633986662052576, region `ap-southeast-1`, RAM user `kythira-ci-user`). OSS, ESS and ECS have all
+since been exercised live, from a developer machine and from CI (Findings 9,
+10 and 13). The findings were written in order, so an early one may say OPEN
+where a later paragraph or finding closes it; each closure says so in place.
+**Every Task 0 sub-item now has a finding**: 0.1 Finding 1, 0.2 Finding 2,
+0.3 Finding 11, 0.4 Finding 5, 0.5 Finding 12.
 
 ---
 
@@ -307,6 +310,14 @@ defects). Nothing here has been resolved against DNS. The mock tier cannot
 see any of it — `endpoint_override` replaces the host wholesale — so this
 stays a first-live-run checklist item.
 
+**RESOLVED live, for `ap-southeast-1`.** Every host this provider derives
+has now answered real traffic: `ess.aliyuncs.com` (central) and
+`ecs.ap-southeast-1.aliyuncs.com` in Findings 9 and 10 and on every CI run of
+the `ess-quorum-manager` bundle, and the OSS virtual-host form in Finding 2
+and the `oss-persistence` bundle. No realm-style split surfaced. The STS host
+is the vendor action's business since Finding 6.3, not this code's. Other
+regions remain documentation-deep, which is the honest scope of "confirmed".
+
 ## Finding 4 — CAS Private CA: WITHDRAWN (component descoped)
 
 The spike item asking which CAS operation to use, and what EKUs it issues,
@@ -365,6 +376,105 @@ non-default version instead.
 Not yet exercised: the *runtime* half — a real GitHub Actions job assuming
 this role. That needs Task 7's suites to exist, and is the next live check
 after them.
+
+**Exercised since**: every run of the `alibaba` job assumes this role through
+the official action; see Finding 12 for the exchange and Finding 13 for the
+runs.
+
+## Finding 11 — ESS semantics (Task 0.3): CONFIRMED LIVE, pagination excepted
+
+The sub-item asked five questions. Four are answered by live traffic; one is
+answered by documentation and the mock tier only, deliberately.
+
+- **Provision: `ModifyScalingGroup` DesiredCapacity+1, not
+  `ScaleWithAdjustment`. CONFIRMED live** (Finding 10, and every green
+  `ess-quorum-manager` run since). Retry idempotency comes from setting an
+  absolute capacity computed from a snapshot rather than from an adjustment
+  ESS would apply twice.
+- **Decommission: `RemoveInstances` with `DecreaseDesiredCapacity=true`, not
+  `DetachInstances` plus a decrement. CONFIRMED live** (Finding 10, August 17,
+  and CI): it terminates the instance and shrinks capacity in one call, and
+  the post-run audit reads `TotalCapacity` 0 afterwards. **CORRECTED, on the
+  permission side only:** RAM authorizes `RemoveInstances` against
+  `ess:DetachInstances`, so the CI policy needs both names (`ebf48d8`). The
+  denial body names the real action; the API name does not.
+- **Lifecycle vocabulary: `InService` (ESS) and `Running` (ECS). CONFIRMED
+  live** — no instance had reached either state under this code until August
+  17, and both spellings matched.
+- **ECS `DescribeInstances` batch limit: 100 IDs. Documentation only for the
+  limit itself**; batching at 100 is pinned by
+  `listing_paginates_and_ecs_lookups_batch`, and the response parsing is
+  confirmed live (Finding 10).
+- **`DescribeScalingInstances` pagination: documentation and mock only.**
+  The page size is the documented maximum of 50, and the unit test pins the
+  50-per-page boundary. The live group has never held more than one
+  instance, so a second page has never come back from the real service.
+  Exercising it would mean launching 51 billable instances to test a loop
+  whose shape is the same one `DescribeScalingActivities` already runs live.
+  Recorded as unexercised rather than run.
+
+## Finding 12 — AssumeRoleWithOIDC (Task 0.5): CONFIRMED LIVE, via the vendor action
+
+Finding 6.3 moved the exchange out of this repository: the workflow calls
+`aliyun/configure-aliyun-credentials-action@v1` with `role-to-assume` and
+`oidc-provider-arn`, and the action performs the unauthenticated
+`AssumeRoleWithOIDC` call carrying GitHub's OIDC token. What the sub-item
+asked to confirm is therefore the action's contract, and every run of the
+`alibaba` job confirms it: the returned credential triple arrives as
+`ALIBABA_CLOUD_ACCESS_KEY_ID`, `ALIBABA_CLOUD_ACCESS_KEY_SECRET` and
+`ALIBABA_CLOUD_SECURITY_TOKEN`, which the test steps map onto the suites'
+`KYTHIRA_ALIBABA_*` variables, and the suites then sign with them
+successfully.
+
+**CORRECTED — the action takes no `region` input.** The workflow passed
+one, and every run logged `Unexpected input(s) 'region', valid inputs are
+['oidc-provider-arn', 'role-to-assume', 'role-session-expiration',
+'role-session-name', 'audience', 'role-chaining']`. Harmless — the suites
+take their region from `KYTHIRA_ALIBABA_REGION` — but a warning on every run
+is noise that hides the next real one, so the input is gone.
+
+## Finding 13 — Live verification in CI (Task 11)
+
+**Both bundles green on the scheduled run of September 28, 2026**
+([run 36426191450](https://github.com/crawlins/kythira/actions/runs/36426191450),
+job 108940619579):
+
+- `oss-persistence`: 7 cases, 229 s, including the fresh-engine read-back,
+  binary commands, truncation, and the shared cloud-object cases.
+- `ess-quorum-manager`: all 4 cases, 134 s, including
+  `provision_then_decommission_a_real_instance` (126 s: launched
+  `i-t4n8c5qj329bdxff9mow` in `ap-southeast-1a`, adopted it as node 1,
+  removed it).
+- Leak audit: `scaling group TotalCapacity after the run: 0`.
+
+**And the `ess-quorum-manager` bundle green again on a dispatch of October
+1, 2026**
+([run 36936632218](https://github.com/crawlins/kythira/actions/runs/36936632218),
+124 s), audit clean. Account-side `Forbidden.RiskControl` refusals have come
+and gone around these runs; that story is in `doc/TODO.md`, and it is not a
+code fault.
+
+**Latency from a GitHub-hosted runner to `ap-southeast-1`**, from the shared
+measurement case on the September 28 run:
+
+```
+KYTHIRA_LATENCY provider=oss op=save_current_term samples=8  p50_ms=1101.17 p99_ms=1211.22
+KYTHIRA_LATENCY provider=oss op=append_log_entry  samples=20 p50_ms=1083.47 p99_ms=1100.12
+```
+
+About half Finding 7's developer-machine figure, and still a cross-ocean
+number. Nobody has measured from inside the region; the README presents both
+as upper bounds. List-after-write ran 3 × 25 objects and listed all 25 every
+round, which is live evidence for the read-after-write consistency
+Requirement 15.2 cites.
+
+One thing this run shows that is not this spec's to fix:
+`shared_measured_latency` logs `did not check any assertions`. It is the
+cross-provider case from `tests/object_persistence_real_cases.hpp`, owned by
+the cloud-object-persistence spec. The `alibaba` job runs its binaries
+directly rather than through `run-real-cloud-suite.sh`, so the job does not
+fail on it, but anything grepping the log for that line will read the run
+as hollow.
 
 ---
 

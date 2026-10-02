@@ -118,7 +118,28 @@ query URL is effectively a capability URL and is stored as a repository
 *variable*, not a secret. One synthetic metric makes the stakes low; the point
 is that the flag does not describe the behaviour.
 
+## The account
+
+| | |
+|---|---|
+| Account ID | `5633986662052576` (international console) |
+| Home region | `ap-southeast-1` |
+| CI role | `acs:ram::5633986662052576:role/kythira-ci-real-cloud-tests` |
+| OIDC provider | `acs:ram::5633986662052576:oidc-provider/github-actions` |
+| Scaling group | `asg-t4ne1kbdhc5xbzskizxm` (MinSize 0) |
+| OSS bucket | `kythira-ci-5633986662052576` |
+
+The scaling group, its scaling configuration, security group and vSwitches,
+and the bucket are the prerequisites the code deliberately does not create
+(see `docker/alibaba_quorum_manager/README.md`); no script here creates them.
+
 ## Cost
+
+**At rest, near zero.** The scaling group sits at MinSize 0 and holds no
+instances between runs, and the bucket is empty apart from the length of a
+run. Neither carries a standing charge of its own. The one materially priced
+resource this provider could have had, a private CA, is the one the
+certificate provider's descope avoided.
 
 CloudMonitor 2.0 Prometheus ingestion is billed per sample; one metric per
 run is fractions of a cent. There is nothing to tear down after a run — the

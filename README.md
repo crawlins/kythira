@@ -1611,14 +1611,21 @@ The implementation has been tested with multiple transport layers:
 ✅ **Azure Quorum Managers & Certificate Provider**: `azure_vm_quorum_manager`,
   `azure_vmss_quorum_manager`, and `azure_key_vault_ca_provider` — see the
   dedicated section below. AWS, Azure, and GCP are all implemented today.
+✅ **Alibaba Cloud Quorum Manager & Persistence**: `alibaba_ess_quorum_manager`
+  (Auto Scaling / ESS scaling groups) and `alibaba_oss_persistence_engine`
+  (OSS), both over hand-rolled request signing with no vendor SDK, and both
+  verified live by the scheduled real-cloud run. There is no Alibaba
+  certificate provider: it was descoped on cost. See
+  [`docker/alibaba_quorum_manager/README.md`](https://github.com/crawlins/kythira/blob/main/docker/alibaba_quorum_manager/README.md).
 
 See [`doc/TODO.md`](https://github.com/crawlins/kythira/blob/main/doc/TODO.md) for the full task-by-task status, or
 [`doc/CHANGELOG.md`](https://github.com/crawlins/kythira/blob/main/doc/CHANGELOG.md) for a dated history of what changed and why.
 
 ### What's In Progress
 
-⚠️ **Additional cloud providers**: OCI and Alibaba Cloud quorum
-  managers / certificate providers — AWS, Azure, and GCP are implemented today
+⚠️ **Additional cloud providers**: none outstanding. AWS, Azure, GCP and OCI
+  have quorum managers and certificate providers; Alibaba Cloud has a quorum
+  manager and OSS persistence, and its certificate provider is descoped
 
 ### Production Checklist
 
@@ -1639,8 +1646,8 @@ Before deploying to production:
 Contributions are welcome! See [`doc/TODO.md`](https://github.com/crawlins/kythira/blob/main/doc/TODO.md) for the full
 outstanding-work list. Areas where help is needed:
 
-1. **Additional cloud providers**: OCI and Alibaba Cloud quorum
-   managers / certificate providers (AWS, Azure, and GCP are implemented today)
+1. **Additional cloud providers**: AWS, Azure, GCP, OCI and Alibaba Cloud
+   are implemented today; another provider would follow the same shape
 2. **Performance Optimization**: Profiling and memory usage optimization
 3. **Documentation**: More examples and tutorials
 
