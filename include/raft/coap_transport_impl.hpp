@@ -263,6 +263,13 @@ coap_client<Types>::coap_client(
                 osc = run_edhoc_handshake(osc.edhoc, *transport);
             }
         }
+        // OSCORE over DTLS needs the DTLS endpoints enable_dtls brings (coaps://);
+        // without them the outer layer could not run, and refusing the
+        // configuration beats sessions that never connect.
+        if (security.oscore_dtls && !_config.enable_dtls) {
+            throw coap_security_config_error(
+                "security.oscore_dtls (OSCORE over DTLS) requires enable_dtls");
+        }
         _security_provider = make_security_provider(security, coap_security_role::client);
 #ifdef LIBCOAP_AVAILABLE
         if (const auto* pki = std::get_if<pki_credentials>(&security.credentials)) {
@@ -631,6 +638,13 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
                 auto transport = _config.edhoc_transport_factory();
                 osc = run_edhoc_handshake(osc.edhoc, *transport);
             }
+        }
+        // OSCORE over DTLS needs the DTLS endpoint enable_dtls brings;
+        // without it the outer layer could not run, and refusing the
+        // configuration beats a server that never connects.
+        if (security.oscore_dtls && !_config.enable_dtls) {
+            throw coap_security_config_error(
+                "security.oscore_dtls (OSCORE over DTLS) requires enable_dtls");
         }
         _security_provider = make_security_provider(security, coap_security_role::server);
 #ifdef LIBCOAP_AVAILABLE
@@ -4562,7 +4576,13 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
         // coap_new_client_session() with COAP_PROTO_DTLS picks those up --
         // there is no coap_new_client_session_dtls() in libcoap's public API.
         coap_session_t* session = nullptr;
-        if (uri.scheme == COAP_URI_SCHEME_COAPS && _config.enable_dtls) {
+        if (uri.scheme == COAP_URI_SCHEME_COAPS && _config.enable_dtls &&
+            _config.security.mode == coap_auth_mode::oscore) {
+            // OSCORE over DTLS: only the provider can make a session that
+            // carries both layers.
+            session = _security_provider->create_client_session(_coap_context, nullptr, &dst_addr,
+                                                                COAP_PROTO_DTLS);
+        } else if (uri.scheme == COAP_URI_SCHEME_COAPS && _config.enable_dtls) {
             session = new_dtls_client_session(&dst_addr);
         } else {
             // Delegates to the OSCORE-flavored constructor when
@@ -8035,8 +8055,12 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
     if (_config.enable_dtls && uri->scheme == COAP_URI_SCHEME_COAPS) {
         // Create DTLS session with enhanced security. See
         // new_dtls_client_session() for where each credential type comes
-        // from.
-        session = new_dtls_client_session(dst_addr);
+        // from. OSCORE over DTLS goes through its provider, the only thing
+        // that can make a session carrying both layers.
+        session = _config.security.mode == coap_auth_mode::oscore
+                      ? _security_provider->create_client_session(_coap_context, nullptr, dst_addr,
+                                                                  COAP_PROTO_DTLS)
+                      : new_dtls_client_session(dst_addr);
 
         if (session) {
             // Configure DTLS parameters

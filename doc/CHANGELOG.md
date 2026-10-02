@@ -45,6 +45,11 @@ current list of outstanding work, see [TODO.md](TODO.md).
 - **The read-write build-cache key is main-only.** It moves from a repository
   secret to the `build-cache-write` environment, which only `main` may use;
   other refs, and real-cloud jobs on `main`, read with the read-only key.
+- **OSCORE over DTLS on the libcoap backend** (coap-transport-security
+  Requirement 4.2, tasks 6 and 14, which were ticked without it).
+  `security.oscore_dtls` layers OSCORE inside a DTLS-PSK or DTLS-PKI session,
+  and new tests run both combinations end to end, through the provider and
+  through `coap_client`/`coap_server`.
 - **DTLS modes check the linked libcoap first** (Requirement 7.2). A libcoap
   without DTLS, or without the configured credential type, now fails at
   construction with `coap_unsupported_security_mode_error`, where it used to
