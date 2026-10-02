@@ -62,6 +62,7 @@
 // raft/coap_transport.hpp -- see above.
 #include <raft/coap_transport_config.hpp>
 #include <raft/coap_conformance_types.hpp>
+#include <raft/coap_exchange_table.hpp>
 #include <raft/coap_block_option.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
@@ -87,6 +88,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -423,7 +425,24 @@ inline auto add_uri_path(CoapPDU& pdu, const std::string& path) -> void {
     return path;
 }
 
+/// The token of a parsed PDU, for the duplicate-detection key.
+[[nodiscard]] inline auto token_of(CoapPDU& pdu) -> std::string {
+    return {reinterpret_cast<const char*>(pdu.getTokenPointer()),
+            static_cast<std::size_t>(pdu.getTokenLength())};
+}
+
 #endif  // CANTCOAP_AVAILABLE
+
+/// A datagram's source as "[address]:port", the peer half of the
+/// duplicate-detection key (coap_exchange_table.hpp). RFC 7252 Section 4.4
+/// scopes a Message ID to its source endpoint, port included.
+[[nodiscard]] inline auto peer_endpoint(const sockaddr_in6& from) -> std::string {
+    std::array<char, INET6_ADDRSTRLEN> address{};
+    if (::inet_ntop(AF_INET6, &from.sin6_addr, address.data(), address.size()) == nullptr) {
+        return {};
+    }
+    return "[" + std::string{address.data()} + "]:" + std::to_string(ntohs(from.sin6_port));
+}
 
 }  // namespace cantcoap_detail
 
@@ -709,7 +728,7 @@ private:
                 const auto received = ::recvfrom(_socket.fd(), buffer.data(), buffer.size(), 0,
                                                  reinterpret_cast<sockaddr*>(&from), &from_length);
                 if (received > 0) {
-                    handle_datagram(buffer.data(), static_cast<int>(received));
+                    handle_datagram(buffer.data(), static_cast<int>(received), from);
                 }
             }
             service_timers();
@@ -859,7 +878,7 @@ private:
         return static_cast<std::uint16_t>(_message_id_counter.fetch_add(1));
     }
 
-    auto handle_datagram(std::uint8_t* data, int length) -> void {
+    auto handle_datagram(std::uint8_t* data, int length, const sockaddr_in6& from) -> void {
         std::vector<std::byte> bytes(reinterpret_cast<std::byte*>(data),
                                      reinterpret_cast<std::byte*>(data) + length);
         std::optional<oscore::request_binding> binding_for_response;
@@ -894,7 +913,7 @@ private:
         if (pdu.validate() != 1) {
             return;
         }
-        if (is_duplicate(pdu.getMessageID())) {
+        if (is_duplicate(cantcoap_detail::peer_endpoint(from), pdu.getMessageID(), token)) {
             return;  // Requirement 4.4.
         }
         handle_response_locked(exchange, token, pdu);
@@ -976,17 +995,12 @@ private:
         return std::make_exception_ptr(coap_client_error(value, context + ": client error"));
     }
 
-    /// Requirement 4.4: suppress a Message ID seen recently.
-    [[nodiscard]] auto is_duplicate(std::uint16_t message_id) -> bool {
-        const auto now = std::chrono::steady_clock::now();
-        std::erase_if(_seen, [now](const auto& entry) {
-            return now - entry.second.received_time > std::chrono::seconds{60};
-        });
-        if (_seen.contains(message_id)) {
-            return true;
-        }
-        _seen.emplace(message_id, received_message_info{message_id});
-        return false;
+    /// Requirement 4.4: suppress an exchange seen recently. Keyed on (peer,
+    /// Message ID, token), not the Message ID alone: one socket talks to every
+    /// server, and each numbers its separate responses independently.
+    [[nodiscard]] auto is_duplicate(const std::string& peer, std::uint16_t message_id,
+                                    std::string_view token) -> bool {
+        return _seen.check_and_record(peer, message_id, token);
     }
 
     /// Retransmission with exponential backoff, and expiry (Requirements 4.1,
@@ -1048,7 +1062,7 @@ private:
     mutable std::mutex _mutex;
     std::unordered_map<std::string, std::unique_ptr<pending_exchange>> _pending;
     std::vector<std::string> _to_start;
-    std::unordered_map<std::uint16_t, received_message_info> _seen;
+    coap_exchange_table _seen;
     bool _shutting_down{false};
     std::atomic<std::uint64_t> _token_counter{1};
     std::atomic<std::uint16_t> _message_id_counter{1};
@@ -1241,7 +1255,8 @@ private:
         }
 
         const std::lock_guard lock(_mutex);
-        if (is_duplicate(pdu.getMessageID())) {
+        if (is_duplicate(cantcoap_detail::peer_endpoint(from), pdu.getMessageID(),
+                         cantcoap_detail::token_of(pdu))) {
             return;  // Requirement 4.4.
         }
 
@@ -1455,16 +1470,9 @@ private:
         finish_reply(*reply, to, binding);
     }
 
-    [[nodiscard]] auto is_duplicate(std::uint16_t message_id) -> bool {
-        const auto now = std::chrono::steady_clock::now();
-        std::erase_if(_seen, [now](const auto& entry) {
-            return now - entry.second.received_time > std::chrono::seconds{60};
-        });
-        if (_seen.contains(message_id)) {
-            return true;
-        }
-        _seen.emplace(message_id, received_message_info{message_id});
-        return false;
+    [[nodiscard]] auto is_duplicate(const std::string& peer, std::uint16_t message_id,
+                                    std::string_view token) -> bool {
+        return _seen.check_and_record(peer, message_id, token);
     }
 #endif  // CANTCOAP_AVAILABLE
 
@@ -1490,7 +1498,7 @@ private:
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};
-    std::unordered_map<std::uint16_t, received_message_info> _seen;
+    coap_exchange_table _seen;
     std::vector<std::byte> _block1_assembly;
 
 #ifdef CANTCOAP_AVAILABLE

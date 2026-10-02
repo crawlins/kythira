@@ -8,6 +8,7 @@
 #include <raft/coap_security_impl.hpp>
 #include <raft/net_bind.hpp>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -66,6 +67,29 @@
 #endif
 
 namespace kythira {
+
+#ifdef LIBCOAP_AVAILABLE
+namespace coap_detail {
+
+/// The remote endpoint of a libcoap session as "address:port", the peer half
+/// of the duplicate-detection key (coap_exchange_table.hpp). RFC 7252 Section
+/// 4.4 scopes a Message ID to its source endpoint, port included: two clients
+/// on one host are two peers with two independent counters.
+inline auto session_peer_endpoint(const coap_session_t* session) -> std::string {
+    if (session == nullptr) {
+        return {};
+    }
+    const coap_address_t* remote = coap_session_get_addr_remote(session);
+    if (remote == nullptr) {
+        return {};
+    }
+    std::array<unsigned char, INET6_ADDRSTRLEN + 16> text{};
+    const std::size_t length = coap_print_addr(remote, text.data(), text.size());
+    return std::string{reinterpret_cast<const char*>(text.data()), length};
+}
+
+}  // namespace coap_detail
+#endif
 
 #ifdef KYTHIRA_HAS_OPENSSL
 namespace detail {
@@ -1891,22 +1915,22 @@ auto coap_client<Types>::handle_acknowledgment(std::uint16_t message_id) -> void
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::is_duplicate_message(std::uint16_t message_id) -> bool {
-    // Check if we've already received this message ID
+auto coap_client<Types>::is_duplicate_message(const std::string& peer, std::uint16_t message_id,
+                                              std::string_view token) -> bool {
+    // A retransmission of an exchange already seen from this same peer. The
+    // Message ID alone is not enough: every peer numbers its own messages.
     std::lock_guard lock(_mutex);
-    auto it = _received_messages.find(message_id);
-    return it != _received_messages.end();
+    return _received_messages.is_duplicate(peer, message_id, token);
 }
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::record_received_message(std::uint16_t message_id) -> void {
-    // Record that we've received this message ID
+auto coap_client<Types>::record_received_message(const std::string& peer, std::uint16_t message_id,
+                                                 std::string_view token) -> void {
+    // Expiry is amortised inside the table itself; sweeping the whole table on
+    // every record, as this used to, cost O(entries) per received message.
     std::lock_guard lock(_mutex);
-    _received_messages.emplace(message_id, received_message_info{message_id});
-
-    // Clean up old entries periodically
-    cleanup_expired_messages();
+    _received_messages.record(peer, message_id, token);
 }
 
 template<typename Types>
@@ -1944,18 +1968,10 @@ auto coap_client<Types>::retransmit_message(const std::string& token) -> void {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::cleanup_expired_messages() -> void {
-    // Clean up old received message records to prevent memory growth
+    // Clean up old received message records to prevent memory growth. The
+    // horizon is RFC 7252's EXCHANGE_LIFETIME (coap_exchange_lifetime).
     // Note: This method assumes the caller already holds _mutex
-    auto now = std::chrono::steady_clock::now();
-    constexpr auto max_age = std::chrono::minutes(5);  // Keep records for 5 minutes
-
-    for (auto it = _received_messages.begin(); it != _received_messages.end();) {
-        if (now - it->second.received_time > max_age) {
-            it = _received_messages.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    _received_messages.sweep();
 }
 
 template<typename Types>
@@ -3586,38 +3602,30 @@ auto coap_server<Types>::send_error_response(coap_pdu_t* response, coap_pdu_code
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::is_duplicate_message(std::uint16_t message_id) -> bool {
-    // Check if we've already received this message ID
+auto coap_server<Types>::is_duplicate_message(const std::string& peer, std::uint16_t message_id,
+                                              std::string_view token) -> bool {
+    // A retransmission of an exchange already seen from this same peer. The
+    // Message ID alone is not enough: every peer numbers its own messages.
     std::lock_guard lock(_mutex);
-    auto it = _received_messages.find(message_id);
-    return it != _received_messages.end();
+    return _received_messages.is_duplicate(peer, message_id, token);
 }
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::record_received_message(std::uint16_t message_id) -> void {
-    // Record that we've received this message ID
+auto coap_server<Types>::record_received_message(const std::string& peer, std::uint16_t message_id,
+                                                 std::string_view token) -> void {
+    // Expiry is amortised inside the table itself; sweeping the whole table on
+    // every record, as this used to, cost O(entries) per received message.
     std::lock_guard lock(_mutex);
-    _received_messages.emplace(message_id, received_message_info{message_id});
-
-    // Clean up old entries periodically
-    cleanup_expired_messages();
+    _received_messages.record(peer, message_id, token);
 }
 
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::cleanup_expired_messages() -> void {
-    // Clean up old received message records to prevent memory growth
-    auto now = std::chrono::steady_clock::now();
-    constexpr auto max_age = std::chrono::minutes(5);  // Keep records for 5 minutes
-
-    for (auto it = _received_messages.begin(); it != _received_messages.end();) {
-        if (now - it->second.received_time > max_age) {
-            it = _received_messages.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    // Clean up old received message records to prevent memory growth. The
+    // horizon is RFC 7252's EXCHANGE_LIFETIME (coap_exchange_lifetime).
+    _received_messages.sweep();
 }
 
 template<typename Types>
@@ -3978,17 +3986,25 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         // Extract message ID from CoAP PDU
         std::uint16_t message_id = coap_pdu_get_mid(request);
 
+        // The exchange's identity: who sent it, which Message ID they chose,
+        // and the token that tells a retransmission from a new request on a
+        // counter that has wrapped (RFC 7252 Sections 4.4 and 5.3.1).
+        const std::string peer = coap_detail::session_peer_endpoint(session);
+        const auto request_token = coap_pdu_get_token(request);
+        const std::string_view token{reinterpret_cast<const char*>(request_token.s),
+                                     request_token.length};
+
         // Check for duplicate messages
-        if (is_duplicate_message(message_id)) {
+        if (is_duplicate_message(peer, message_id, token)) {
             // This is a duplicate message, send cached response or ignore
             _logger.debug("Duplicate message received, ignoring",
-                          {{"message_id", std::to_string(message_id)}});
+                          {{"message_id", std::to_string(message_id)}, {"peer", peer}});
             coap_pdu_set_code(response, COAP_RESPONSE_CODE_VALID);
             return;
         }
 
         // Record this message as received
-        record_received_message(message_id);
+        record_received_message(peer, message_id, token);
 
         // Extract request payload. COAP_BLOCK_SINGLE_BODY (see
         // detail::configure_libcoap_block_mode) means libcoap has already
@@ -4232,14 +4248,15 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
 #else
         // Stub implementation when libcoap is not available
         std::uint16_t message_id = 12345;  // Simulated message ID
+        const std::string peer = "stub";
 
         // Check for duplicate messages
-        if (is_duplicate_message(message_id)) {
+        if (is_duplicate_message(peer, message_id, {})) {
             return;
         }
 
         // Record this message as received
-        record_received_message(message_id);
+        record_received_message(peer, message_id, {});
 
         _logger.debug("CoAP RPC request processed (stub implementation)");
 #endif
