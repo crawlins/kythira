@@ -611,8 +611,12 @@ not work around it.
 
 ## Verification status
 
-Written as of **August 21, 2026**, and to be updated as this changes rather
-than written aspirationally.
+Written as of **August 21, 2026** and updated **October 2, 2026** for OCI's
+August 23 result; to be updated as this changes rather than written
+aspirationally. **All five providers are now green in CI under the
+least-privilege grants**: OCI, the last, passed 3/3 dispatched runs at 5/5
+cases on August 23, 2026, once the tenancy-side `404 BucketNotFound` flake
+described below stopped.
 
 **Now also verified from CI, not only from a developer machine.** Run
 [32432380565](https://github.com/crawlins/kythira/actions/runs/32432380565)
@@ -627,15 +631,16 @@ authenticated as principals that already held broader policies:
 | Azure Blob | **pass**, 5/5 |
 | Alibaba OSS | **pass** |
 | GCS | **pass**, 5/5 on re-run ([32441129124](https://github.com/crawlins/kythira/actions/runs/32441129124)). The first attempt was 4/5: `backup_verify_restore_read_back` hit a Google-side `502` ("the server encountered a temporary error… please try again in 30 seconds") after the client's retry policy was exhausted |
-| OCI Object Storage | **did not run** — the read-only pre-flight was declined `404 BucketNotFound`, the tenancy flake below |
+| OCI Object Storage | **did not run** in this dispatch — the read-only pre-flight was declined `404 BucketNotFound`, the tenancy flake below. **Passed 5/5 in each of 3 later dispatched runs, August 23, 2026** |
 
 **Those two failures were not the same kind of failure**, and acting on the
 difference is why one was re-run and the other was not. GCS was told by the
 service, in the service's own words, that the request failed temporarily — so
 a re-run was legitimate, and it passed 5/5. OCI was told that a bucket which
 plainly exists does not exist: a wrong answer whose cause is unknown, where
-re-running until green would launder the unknown away. **OCI has therefore not
-been re-run, and its cell above still says "did not run".**
+re-running until green would launder the unknown away. **OCI was therefore not
+re-run against that flake.** It was re-run only after the flake had stopped on
+its own (August 22), and then passed 3/3.
 
 **A note on the GCS transient, which is a design observation rather than a
 defect.** The 502 exhausted the client's retry policy, and

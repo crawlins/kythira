@@ -12,9 +12,10 @@ code paths.
 Chaos testing complements the existing property-based test suite: where those
 tests verify protocol correctness under ideal conditions, chaos tests verify
 **resilience** under adversarial conditions. The integration is deliberately
-test-only: libfiu is a test-time dependency only, fault injection wrappers live
-in `tests/chaos/`, and the production `kythira::node` template requires no
-changes.
+test-only: libfiu is a test-time dependency only, the chaos tests live in
+`tests/chaos/`, and the production `kythira::node` template requires no
+changes. (Fault points were eventually embedded in production headers rather
+than in test-only wrappers; see the note under Requirement 2.)
 
 ## Glossary
 
@@ -65,6 +66,15 @@ so that the build does not break on machines where libfiu is not installed.
    **test-only optional** dependency with installation instructions.
 
 ### Requirement 2: Chaos Wrapper Infrastructure
+
+> **Superseded in mechanism (noted October 2, 2026).** No decorator wrappers
+> were built. The design moved the fault points into the production headers as
+> `fiu_do_on` macros (`simulator_network.hpp`, `persistence.hpp`,
+> `test_state_machine.hpp`) that compile to nothing unless `FIU_ENABLE` is
+> defined, and the type bundle is `tests/chaos/chaos_test_types.hpp`. Read
+> "wrapper" below as "the instrumented component": the fault-point names
+> (Requirement 3) and the throw-before-forwarding behaviour are what was
+> delivered. See design.md and tasks 5–7.
 
 **User Story:** As a test author, I want decorator types that wrap kythira's
 pluggable components and inject faults via libfiu, so I can write chaos tests

@@ -7,7 +7,14 @@ enforcement in Kythira. Coverage is collected via **Clang's LLVM source-based
 instrumentation** (`-fprofile-instr-generate -fcoverage-mapping`) against a
 separate build (`build-coverage/`), reported via `llvm-cov`, and enforced both
 by a Git pre-commit hook and by a dedicated CI job — both compare against a
-non-decreasing line-coverage floor recorded in `coverage_floor.txt`.
+non-decreasing **function**-coverage floor recorded in `coverage_floor.txt`
+(column 7 of `llvm-cov report`'s `TOTAL` row; line coverage is column 10).
+
+> **Updated October 2, 2026.** The hook no longer raises or stages the floor:
+> it gates only, and the floor is raised by hand from a green CI Coverage
+> job's figure. Both gates allow a 0.50-point band below the floor. The flow
+> chart, step 7, Property 1 and the testing strategy below are amended to
+> match `scripts/pre-commit-coverage.sh` and `ci.yml`.
 
 > **Note on mechanism**: this spec originally targeted gcov/lcov over a
 > GCC-instrumented build. That approach was replaced in commit `bd5e1bb`
@@ -39,10 +46,12 @@ git commit
             │       --repeat until-pass:3   (fast subset; retries absorb flakes)
             ├── llvm-profdata merge -sparse *.profraw -o merged.profdata
             ├── llvm-cov report --instr-profile=merged.profdata <bins> --ignore-filename-regex=...
-            ├── compare TOTAL line-coverage % to coverage_floor.txt
-            │       ├── [lower]  → abort commit, print shortfall
-            │       ├── [equal]  → allow commit unchanged
-            │       └── [higher] → update coverage_floor.txt, git add, allow commit
+            ├── compare TOTAL function-coverage % to coverage_floor.txt
+            │       ├── [> 0.50 below] → abort commit, print shortfall
+            │       ├── [within band]  → allow commit, warn
+            │       ├── [equal]        → allow commit unchanged
+            │       └── [higher]       → allow commit, floor left unchanged
+            │                            (raise it by hand from CI's figure)
             └── exit 0 / exit 1
 
 Developer ad-hoc
@@ -54,9 +63,9 @@ cmake --build build-coverage --target coverage-reset  (delete *.profraw only)
 CI (.github/workflows/ci.yml, "Coverage (clang++-18)" job)
 ───────────────────────────────────────────────────────────
 configure build-coverage (clang++-18, ENABLE_COVERAGE=ON)
-    → build → ctest (full suite, JUnit output)
+    → build → ctest -LE '^(slow|performance|verbose|benchmark|docker)$' (JUnit output)
     → llvm-profdata merge → llvm-cov report (+ llvm-cov show for HTML artifact)
-    → compare to coverage_floor.txt (soft-fail tolerance for measurement noise)
+    → compare function coverage to coverage_floor.txt (0.50-point band for noise)
     → job summary + PR comment with the coverage table
 ```
 
@@ -131,11 +140,12 @@ Coverage stage flow:
 6. Merge profiles with `llvm-profdata merge -sparse` (with
    `DEBUGINFOD_URLS=""` to prevent network stalls from an environment-wide
    debuginfod configuration — see commit `01fb9d6`), then run `llvm-cov
-   report` and extract the `TOTAL` row's line-coverage column (`$7`) via
+   report` and extract the `TOTAL` row's function-coverage column (`$7`) via
    `awk`.
 7. Compare against `coverage_floor.txt` (default `0.0` if absent) using
-   `awk` for portable float comparison; raise-and-stage, allow-unchanged, or
-   abort-with-shortfall-box as appropriate.
+   `awk` for portable float comparison with a 0.50-point band; allow (floor
+   left unchanged, even when coverage rose), warn-within-band, or
+   abort-with-shortfall-box as appropriate. The hook never writes the file.
 8. Print elapsed time; exit 0 or 1.
 
 ### 4. `scripts/install-hooks.sh`
@@ -195,8 +205,8 @@ all valid executions of a system.*
 **Property 1: Floor Monotonicity**
 *For any* sequence of commits made through the pre-commit hook,
 `coverage_floor.txt`'s value should never decrease — a measurement below
-the floor aborts the commit before the file is touched; a measurement at or
-above it either leaves the file untouched or raises it to the new value
+the floor aborts the commit; the hook never writes the file, so the floor
+moves only when a developer raises it by hand from CI's figure
 **Validates: Requirements 3.2, 3.3, 3.4**
 
 **Property 2: No Silent Skip on Real Regressions**
@@ -252,11 +262,12 @@ passing commit via a lucky coverage number
 - **Ratchet rejection path**: manually verified by setting the floor above
   the measured percentage and confirming the hook prints the shortfall box
   and exits non-zero (spec Task 16).
-- **Ratchet raise path**: exercised for real on essentially every commit
-  that adds test coverage — `coverage_floor.txt`'s own git history (e.g.
-  `2c16503`, `791ae6a`, `82fab61`, `f616679`) is a continuous record of the
-  hook's raise-and-stage branch running correctly in production, a stronger
-  guarantee than a single synthetic test (spec Task 15).
+- **Ratchet raise path**: historically exercised on essentially every commit
+  that added test coverage — `coverage_floor.txt`'s own git history (e.g.
+  `2c16503`, `791ae6a`, `82fab61`, `f616679`) records the hook's former
+  raise-and-stage branch (spec Task 15). That branch was removed after it
+  auto-raised the floor from 87.12 to 89.09 inside an unrelated commit
+  (`6326305`); the hook now only reports that coverage rose.
 - **Unchanged path**: verified by committing with no coverage-affecting
   changes and confirming the hook reports "Unchanged at N%" and exits 0
   (spec Task 14).

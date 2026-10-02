@@ -140,10 +140,13 @@ appends it needed to cover did not.
 node advertises an append; the durability axis now reports **100% of appended
 entries covered**, against the 19.9% and 24.5% recorded below. The paragraphs
 below are kept as measured and are marked where they have been superseded.
-Tier D remains undelivered, but for one reason rather than two: it still needs
-the host binary, and that is `.kiro/specs/multi-raft-host-binary/`.
+At the time of writing Tier D remained undelivered, for one reason rather than
+two: it still needed the host binary, `.kiro/specs/multi-raft-host-binary/`.
+*Superseded:* the host binary landed August 31 2026 and Tier D was delivered
+September 3 2026 at 176.7 ops/sec, stable — see the tier table above.
 
-**Why C, D and E are not delivered.** All three need a process that hosts
+**Why C, D and E were not delivered (superseded: all three were delivered
+August 31 – September 3 2026; kept as the record of what blocked them).** All three need a process that hosts
 `multi_raft` and accepts client traffic — a binary in `cmd/`, of which
 `cmd/chaos_node` is the nearest precedent and not a substitute. That binary is
 Appendix B's third open question, and it is now

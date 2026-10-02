@@ -2,7 +2,12 @@
 
 ## Status: Complete (20/20 tasks)
 
-**Last Updated**: July 29, 2026
+**Last Updated**: October 2, 2026. Two corrections to the July 29 text, made
+to match the code: both gates compare **function** coverage (column 7 of the
+`TOTAL` row), not line coverage; and the hook no longer raises or stages
+`coverage_floor.txt` — the ratchet is now manual, raised by hand from a green
+CI Coverage job's figure. Task 11 step 9, Task 15, Task 19 and the summary
+below are amended; requirements.md and design.md carry the same note.
 
 ## Overview
 
@@ -133,14 +138,16 @@ pre-commit hook.
     directory name; now walks up to find `CMakeLists.txt`
   - Original gcovr-era baseline: 84.8% line coverage. Re-measured after the
     LLVM switch (commit `bd5e1bb`): 90.8% on the same suite. Current measured
-    floor (see `coverage_floor.txt`, ratcheted up across many subsequent
-    feature commits): **88.99%**
+    floor: see `coverage_floor.txt` (88.85 function coverage as of October 2,
+    2026; it was briefly quoted here as "88.99% line coverage", which mixed
+    up the two columns)
   - _Requirements: 3.1_
 
 - [x] 9. Create `coverage_floor.txt`
-  - Written at repository root; committed alongside source, ratcheted upward
-    on essentially every commit that adds test coverage since (see git log
-    on `coverage_floor.txt`)
+  - Written at repository root; committed alongside source. It was ratcheted
+    upward automatically by the hook until that was removed (see Task 15);
+    it is now raised by hand from CI's figure (see git log on
+    `coverage_floor.txt`)
   - _Requirements: 3.1_
 
 - [x] 10. Verify ratchet logic manually
@@ -168,10 +175,12 @@ pre-commit hook.
        `089927a`; retries absorb known flaky tests)
     6. `llvm-profdata merge -sparse` + `llvm-cov report` (with
        `DEBUGINFOD_URLS=""` to avoid network stalls — commit `01fb9d6`)
-    7. Extract percentage from the `TOTAL` row's line-coverage column via
-       `awk`
+    7. Extract percentage from the `TOTAL` row's function-coverage column
+       (`$7`) via `awk`
     8. Read `coverage_floor.txt` (default `0.0`)
-    9. Compare with `awk`; update file and `git add` if raised
+    9. Compare with `awk` against a 0.50-point band; fail below the band,
+       warn inside it, and never write the file (originally: update file and
+       `git add` if raised)
     10. Print elapsed time; exit 0 or 1
   - _Requirements: 4.2, 4.3, 4.4, 4.5, 4.6, 5.1, 5.2, 5.4_
 
@@ -203,6 +212,12 @@ pre-commit hook.
     stronger correctness signal than a single isolated test would have been,
     since it's been proven correct under real measurement noise across
     dozens of independent runs rather than one controlled scenario.
+  - **Superseded.** The raise-and-stage branch was later removed: auto-raising
+    from a dev machine's figure wrote floors CI could never meet, and once
+    raised the floor from 87.12 to 89.09 inside an unrelated commit
+    (`6326305`). The raised path now prints the figure, leaves the floor
+    unchanged, and says how to raise it from CI's number
+    (`scripts/pre-commit-coverage.sh`, the `above)` branch).
   - _Requirements: 3.2_
 
 - [x] 16. Test the hook: ratchet rejection path
@@ -218,8 +233,8 @@ pre-commit hook.
 
 - [x] 17. Update `README.md` — Code Coverage section
   - "Code Coverage" section covers: quick start, ratchet explanation, floor
-    file, hook install, and `SKIP_COVERAGE_CHECK` escape hatch; current line
-    coverage badge/text kept in sync with `coverage_floor.txt` (88.99%+)
+    file, hook install, and `SKIP_COVERAGE_CHECK` escape hatch; current
+    function-coverage text kept in sync with `coverage_floor.txt`
   - _Requirements: 6.2_
 
 - [x] 18. Update `doc/TODO.md`
@@ -230,7 +245,8 @@ pre-commit hook.
   - Originally skipped ("no CI pipeline currently in the repo"). A CI
     pipeline (`.github/workflows/ci.yml`) has since been added, including a
     dedicated `coverage` job ("Coverage (clang++-18)"): configures
-    `build-coverage` with Clang, runs the full (unfiltered) test suite,
+    `build-coverage` with Clang, runs the test suite under the same
+    `-LE '^(slow|performance|verbose|benchmark|docker)$'` filter as the hook,
     merges profiles, runs `llvm-cov report`/`llvm-cov show`, compares against
     `coverage_floor.txt`, and posts a job summary plus a PR comment with the
     coverage table (see commits `bcb4aec`, `12da9f6`, `bfb3974`, `bd5e1bb`,
@@ -256,8 +272,9 @@ pre-commit hook.
 
 **Completed**: 20/20 tasks
 
-**Current coverage floor**: 88.99% line coverage (measured via Clang/LLVM
-source-based instrumentation; see `coverage_floor.txt`)
+**Current coverage floor**: 88.85% function coverage as of October 2, 2026
+(measured via Clang/LLVM source-based instrumentation; `coverage_floor.txt` is
+authoritative)
 
 ## Notes
 
@@ -282,9 +299,10 @@ source-based instrumentation; see `coverage_floor.txt`)
   LLVM-based system as implemented, but any future contributor reading old
   commit messages from before `bd5e1bb` should mentally substitute
   `llvm-profdata`/`llvm-cov` for `lcov`/`genhtml`.
-- CI's floor comparison intentionally tolerates small measurement noise
-  rather than hard-failing on every sub-0.1% wobble between runs (scheduling
-  and counter-ordering variance); the pre-commit hook remains the actual
-  local ratchet-enforcement point. If CI's tolerance is ever found to mask a
+- CI's floor comparison intentionally tolerates measurement noise with a
+  0.50-point band rather than hard-failing on every sub-0.1% wobble between
+  runs (scheduling and counter-ordering variance); the hook applies the same
+  band. CI is the authoritative gate, and its figure is the one the floor is
+  raised from. If CI's tolerance is ever found to mask a
   real regression, tighten it in `ci.yml`'s "Measure coverage" step rather
   than in the pre-commit hook.

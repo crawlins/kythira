@@ -24,17 +24,32 @@ Clang-built test binary. The instrumented build lives in a separate directory
 > requirements below describe the current LLVM-based implementation — see
 > [design.md](design.md) for the full rationale.
 
+> **Updated October 2, 2026** to match the code. Two things changed after the
+> spec was written and it was never updated: (1) both the CI Coverage job and
+> the hook gate on **function** coverage (column 7 of `llvm-cov report`'s
+> `TOTAL` row), not line coverage; (2) the hook no longer raises or stages
+> `coverage_floor.txt`. Auto-raising from a dev machine's figure wrote floors CI
+> could not meet (`scripts/pre-commit-coverage.sh`, the `above)` branch), so
+> the floor is now raised by hand from a green CI Coverage job's figure. Both
+> gates allow a 0.50-point band below the floor for measurement noise.
+> Requirements 3.2, 3.4, 3.5 and 6.3 and the glossary are amended below.
+
 ## Glossary
 
 - **Coverage_Build**: A CMake build configured with `ENABLE_COVERAGE=ON` that
   compiles all sources with Clang's `-fprofile-instr-generate
   -fcoverage-mapping` instrumentation.
-- **Coverage_Floor**: The minimum acceptable line-coverage percentage, stored in
+- **Coverage_Floor**: The minimum acceptable function-coverage percentage, stored in
   `coverage_floor.txt` at the repository root and committed alongside source code.
 - **Ratchet**: The rule that the Coverage_Floor may only move upward; a commit
-  that would reduce it is rejected by the pre-commit hook.
+  or CI run measuring more than 0.50 points below it is rejected. The floor is
+  raised by hand, from a green CI Coverage job's figure.
+- **Function_Coverage**: The percentage of functions exercised by at least one
+  test, as reported in column 7 of `llvm-cov report`'s `TOTAL` row. This is the
+  figure both gates compare against the Coverage_Floor.
 - **Line_Coverage**: The percentage of executable source lines exercised by at
-  least one test, as reported by `llvm-cov report`'s `TOTAL` row.
+  least one test, as reported in column 10 of `llvm-cov report`'s `TOTAL` row.
+  Reported, but not the gated figure (see Function_Coverage).
 - **Coverage_Report**: The `llvm-cov show --format=html` report tree generated
   under `build-coverage/coverage-report/`.
 - **Pre_Commit_Hook**: The Git hook script installed at `.git/hooks/pre-commit`
@@ -97,16 +112,20 @@ consistently across all contributors.
    the repository root and SHALL contain a single floating-point number representing
    the current Coverage_Floor as a percentage (e.g., `78.5`).
 2. WHEN a commit raises coverage above the current floor THEN the pre-commit hook
-   SHALL update `coverage_floor.txt` to the new percentage and stage the updated
-   file as part of the commit.
+   SHALL allow the commit, SHALL NOT modify `coverage_floor.txt`, and SHALL tell
+   the developer to raise the floor by hand from a green CI Coverage job's
+   figure. *(Originally: the hook updated and staged the file. Removed because
+   the local figure runs a few tenths above CI's, so auto-raising set floors CI
+   could never meet.)*
 3. WHEN a commit leaves coverage unchanged THEN the pre-commit hook SHALL allow the
    commit to proceed and SHALL NOT modify `coverage_floor.txt`.
-4. WHEN a commit would lower coverage below the current floor THEN the pre-commit
-   hook SHALL print the old floor, the new measurement, and the shortfall, and
-   SHALL exit with a non-zero status to abort the commit.
+4. WHEN a commit would lower coverage more than 0.50 points below the current
+   floor THEN the pre-commit hook SHALL print the old floor, the new
+   measurement, and the shortfall, and SHALL exit with a non-zero status to
+   abort the commit. Within the 0.50-point band it SHALL allow the commit with a
+   warning; the CI Coverage job applies the same band.
 5. WHEN `coverage_floor.txt` is absent THEN the pre-commit hook SHALL treat the
-   floor as `0.0` and create the file with the measured coverage before allowing
-   the commit.
+   floor as `0.0` and allow the commit; it SHALL NOT create the file.
 
 ### Requirement 4: Automated Pre-Commit Ratchet
 
@@ -163,6 +182,8 @@ documented so that new contributors can understand and use it.
 2. WHEN the coverage spec is implemented THEN the project README SHALL include a
    "Code Coverage" section explaining how to generate reports, how the ratchet
    works, and how to install the pre-commit hook.
-3. WHEN `coverage_floor.txt` is updated by the hook THEN the hook SHALL print a
-   message such as `Coverage floor raised: 78.5% → 79.2%` so developers see the
-   improvement acknowledged.
+3. WHEN coverage measures above `coverage_floor.txt` THEN the hook SHALL print
+   the measured figure, say that the floor was left unchanged, and show how to
+   raise it from CI's figure, so developers see the improvement acknowledged.
+   *(Originally: a `Coverage floor raised: 78.5% → 79.2%` message from the hook
+   writing the file itself.)*

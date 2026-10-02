@@ -3319,7 +3319,8 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   backed by OCI Certificates Management, `configType =
   MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA` so the caller's CSR is submitted
   and the private key never reaches OCI). Spec at
-  `.kiro/specs/oci-cloud-provider/`, Tasks 1-5 and 7 of 0-7 complete.
+  `.kiro/specs/oci-cloud-provider/`, all of Tasks 0-7 complete (Task 6, the
+  last, closed August 12, 2026 with a green `oci` CI job).
   **No new dependency**: Oracle publishes no C++ SDK, so both components
   speak the OCI REST API directly over httplib/boost::json/OpenSSL with
   hand-rolled Request Signing v1 (`oci_signing.hpp`), gated behind the
