@@ -25,13 +25,19 @@
 #include <cstddef>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace kythira::testing::rows::detail {
 
 /// @brief One PUT and one GET per shard, over whatever socket `Transport` uses.
-template<typename Transport> auto smoke(const row_observer& observer) -> void {
-    kv_cluster<Transport> cluster{standard_cluster_options()};
+///
+/// `options` defaults to the standard row's. The CoAP row is the one caller
+/// that passes anything else; `bench_rows/coap_json.cpp` says why.
+template<typename Transport>
+auto smoke(const row_observer& observer, kv_cluster_options options = standard_cluster_options())
+    -> void {
+    kv_cluster<Transport> cluster{std::move(options)};
 
     {
         std::ostringstream why;
@@ -40,12 +46,12 @@ template<typename Transport> auto smoke(const row_observer& observer) -> void {
     }
 
     operation_tally tally;
-    const auto options = cluster.options();
+    const auto& shape = cluster.options();
 
     // One key per shard, taken from the middle of each shard's own range so a
     // boundary bug cannot make the choice accidentally correct.
-    for (std::size_t g = 0; g < options._groups; ++g) {
-        const auto n = options._key_count * (2 * g + 1) / (2 * options._groups);
+    for (std::size_t g = 0; g < shape._groups; ++g) {
+        const auto n = shape._key_count * (2 * g + 1) / (2 * shape._groups);
         const auto key = kv_key(n);
         const auto value = kv_value(n, 64);
 
