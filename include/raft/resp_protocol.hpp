@@ -17,9 +17,11 @@
 /// (`PING\r\n`) are accepted too because `redis-cli` and shell probes send
 /// them and refusing them makes the gateway needlessly hard to poke at.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -45,10 +47,30 @@ struct resp_parser_limits {
     /// Largest multibulk element count. The widest command in the closure is
     /// `HELLO 3 AUTH user pass SETNAME name` (7 elements).
     std::size_t _max_multibulk_elements = 64;
-    /// Bytes held unparsed across `consume()` calls before the connection is
-    /// declared abusive.
+    /// Bytes of the command being assembled plus bytes held unparsed across
+    /// `consume()` calls before the connection is declared abusive.
     std::size_t _max_buffered_bytes = 64u * 1024u * 1024u;
+    /// Longest line: an inline command, or a `*<n>` / `$<len>` header.
+    /// Redis's PROTO_INLINE_MAX_SIZE. Bounds the CRLF search, which would
+    /// otherwise rescan an ever-growing unterminated line on every read.
+    std::size_t _max_line_len = 64u * 1024u;
 };
+
+/// Limits for a connection that has not authenticated yet, derived from the
+/// configured ones. Mirrors what Redis applies to unauthenticated clients
+/// (multibulk length 10, bulk length 16 KiB): nothing in the pre-auth
+/// surface (AUTH, HELLO, QUIT, RESET) needs more, and without it any
+/// stranger could make the gateway buffer a 32 MiB argument per connection.
+/// The buffered-byte cap leaves room for one largest pre-auth command plus
+/// one 64 KiB socket read.
+[[nodiscard]] inline auto resp_pre_auth_limits(const resp_parser_limits& configured)
+    -> resp_parser_limits {
+    resp_parser_limits l = configured;
+    l._max_bulk_len = std::min<std::size_t>(l._max_bulk_len, 16u * 1024u);
+    l._max_multibulk_elements = std::min<std::size_t>(l._max_multibulk_elements, 10);
+    l._max_buffered_bytes = std::min<std::size_t>(l._max_buffered_bytes, 512u * 1024u);
+    return l;
+}
 
 /// Thrown by `resp_parser::consume` when the byte stream violates the grammar
 /// or a limit. `what()` is the text after `-ERR Protocol error: `.
@@ -67,6 +89,14 @@ private:
 /// Pipelining is the normal case, not an edge case: redis-rs writes its whole
 /// handshake (`AUTH`, `SELECT`, `CLIENT SETINFO` x2) before reading anything,
 /// so a single `consume()` routinely yields several commands.
+///
+/// The parser keeps its place inside a partial command: header lines and
+/// finished bulk strings are taken off the buffer as soon as they are whole,
+/// and the CRLF search resumes where the last one stopped. Every byte is
+/// therefore examined and copied a bounded number of times however it is
+/// split across reads. (The first version restarted from the command's
+/// first byte on each read and re-copied every finished argument, so a
+/// 63 MB request trickled in 64 KiB reads cost seconds of CPU.)
 class resp_parser {
 public:
     resp_parser() = default;
@@ -76,19 +106,11 @@ public:
     /// Throws `resp_protocol_error` on malformed input or a limit breach; the
     /// parser is unusable afterwards and the caller must close the connection.
     auto consume(std::span<const std::byte> bytes) -> std::vector<resp_command> {
-        if (_buffer.size() - _consumed + bytes.size() > _limits._max_buffered_bytes) {
-            throw resp_protocol_error("too many unparsed bytes buffered");
-        }
-        _buffer.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        feed(bytes);
         std::vector<resp_command> out;
-        while (true) {
-            auto cmd = try_parse_one();
-            if (!cmd.has_value()) {
-                break;
-            }
+        while (auto cmd = next()) {
             out.push_back(std::move(*cmd));
         }
-        compact();
         return out;
     }
 
@@ -96,79 +118,117 @@ public:
         return consume(std::as_bytes(std::span<const char>(text.data(), text.size())));
     }
 
-    /// Bytes received but not yet part of a complete command.
+    /// Append `bytes` without parsing. Use with `next()` when the caller must
+    /// act on one command before the next is parsed (the gateway does, so a
+    /// connection's limits can change when AUTH succeeds).
+    auto feed(std::span<const std::byte> bytes) -> void {
+        if (buffered_bytes() + bytes.size() > _limits._max_buffered_bytes) {
+            throw resp_protocol_error("too many unparsed bytes buffered");
+        }
+        compact();
+        _buffer.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+
+    auto feed(std::string_view text) -> void {
+        feed(std::as_bytes(std::span<const char>(text.data(), text.size())));
+    }
+
+    /// Parse at most one command from what has been fed. Returns nullopt
+    /// when more bytes are needed. Throws as `consume()` does.
+    auto next() -> std::optional<resp_command> {
+        while (true) {
+            if (!_in_multibulk) {
+                if (_consumed >= _buffer.size()) {
+                    return std::nullopt;
+                }
+                if (_buffer[_consumed] != '*') {
+                    return parse_inline();
+                }
+                auto line = read_line("too big mbulk count string");
+                if (!line.has_value()) {
+                    return std::nullopt;
+                }
+                auto count =
+                    parse_integer(std::string_view(*line).substr(1), "invalid multibulk length");
+                if (count <= 0) {
+                    // `*-1\r\n` is a null array and `*0\r\n` an empty one;
+                    // Redis treats both as an empty request.
+                    _pending_raw = 0;
+                    return resp_command{};
+                }
+                if (static_cast<std::size_t>(count) > _limits._max_multibulk_elements) {
+                    throw resp_protocol_error("invalid multibulk length");
+                }
+                _in_multibulk = true;
+                _remaining = static_cast<std::size_t>(count);
+                _pending = resp_command{};
+                _pending._argv.reserve(_remaining);
+                _bulk_len.reset();
+                continue;
+            }
+            if (_remaining == 0) {
+                resp_command done = std::move(_pending);
+                _pending = resp_command{};
+                _in_multibulk = false;
+                _pending_raw = 0;
+                return done;
+            }
+            if (!_bulk_len.has_value()) {
+                auto line = read_line("too big bulk count string");
+                if (!line.has_value()) {
+                    return std::nullopt;
+                }
+                if (line->empty() || (*line)[0] != '$') {
+                    throw resp_protocol_error(
+                        std::string("expected '$', got '") +
+                        (line->empty() ? std::string("") : line->substr(0, 1)) + "'");
+                }
+                auto len = parse_integer(std::string_view(*line).substr(1), "invalid bulk length");
+                if (len < 0 || static_cast<std::size_t>(len) > _limits._max_bulk_len) {
+                    throw resp_protocol_error("invalid bulk length");
+                }
+                _bulk_len = static_cast<std::size_t>(len);
+            }
+            // O(1) while the bulk is still arriving: no rescan, no copy.
+            auto len = *_bulk_len;
+            if (_buffer.size() - _consumed < len + 2) {
+                return std::nullopt;
+            }
+            if (_buffer[_consumed + len] != '\r' || _buffer[_consumed + len + 1] != '\n') {
+                throw resp_protocol_error("bulk string not terminated by CRLF");
+            }
+            _pending._argv.emplace_back(_buffer.data() + _consumed, len);
+            _consumed += len + 2;
+            _scan = _consumed;
+            _pending_raw += len + 2;
+            _bulk_len.reset();
+            --_remaining;
+        }
+    }
+
+    /// Bytes received but not yet part of a complete command, including the
+    /// already-decoded part of the command being assembled.
     [[nodiscard]] auto buffered_bytes() const noexcept -> std::size_t {
-        return _buffer.size() - _consumed;
+        return _buffer.size() - _consumed + _pending_raw;
     }
 
     [[nodiscard]] auto limits() const noexcept -> const resp_parser_limits& { return _limits; }
 
-private:
-    // Attempt to parse one complete command starting at `_consumed`. Returns
-    // nullopt (and leaves `_consumed` untouched) when more bytes are needed.
-    auto try_parse_one() -> std::optional<resp_command> {
-        std::size_t pos = _consumed;
-        if (pos >= _buffer.size()) {
-            return std::nullopt;
-        }
-        if (_buffer[pos] != '*') {
-            return try_parse_inline();
-        }
-        auto count_line = read_line(pos);
-        if (!count_line.has_value()) {
-            return std::nullopt;
-        }
-        auto count = parse_integer(count_line->substr(1), "invalid multibulk length");
-        if (count < 0) {
-            // `*-1\r\n` is a null array; Redis treats it as an empty request.
-            _consumed = pos;
-            return resp_command{};
-        }
-        if (static_cast<std::size_t>(count) > _limits._max_multibulk_elements) {
-            throw resp_protocol_error("invalid multibulk length");
-        }
-        resp_command cmd;
-        cmd._argv.reserve(static_cast<std::size_t>(count));
-        for (std::int64_t i = 0; i < count; ++i) {
-            auto len_line = read_line(pos);
-            if (!len_line.has_value()) {
-                return std::nullopt;
-            }
-            if (len_line->empty() || (*len_line)[0] != '$') {
-                throw resp_protocol_error(
-                    std::string("expected '$', got '") +
-                    (len_line->empty() ? std::string("") : len_line->substr(0, 1)) + "'");
-            }
-            auto len = parse_integer(len_line->substr(1), "invalid bulk length");
-            if (len < 0 || static_cast<std::size_t>(len) > _limits._max_bulk_len) {
-                throw resp_protocol_error("invalid bulk length");
-            }
-            auto need = static_cast<std::size_t>(len) + 2;
-            if (_buffer.size() - pos < need) {
-                return std::nullopt;
-            }
-            if (_buffer[pos + static_cast<std::size_t>(len)] != '\r' ||
-                _buffer[pos + static_cast<std::size_t>(len) + 1] != '\n') {
-                throw resp_protocol_error("bulk string not terminated by CRLF");
-            }
-            cmd._argv.emplace_back(_buffer.data() + pos, static_cast<std::size_t>(len));
-            pos += need;
-        }
-        _consumed = pos;
-        return cmd;
-    }
+    /// Change the limits for everything parsed from now on (the gateway
+    /// relaxes them once a connection authenticates). Bytes already buffered
+    /// are not re-checked against the new buffered-byte cap until the next
+    /// `feed()`.
+    auto set_limits(const resp_parser_limits& limits) noexcept -> void { _limits = limits; }
 
+private:
     // Inline command: a single line of whitespace-separated words. Only used
     // by hand-written probes; quoting is intentionally not supported.
-    auto try_parse_inline() -> std::optional<resp_command> {
-        std::size_t pos = _consumed;
-        auto line = read_line(pos);
+    auto parse_inline() -> std::optional<resp_command> {
+        auto line = read_line("too big inline request");
         if (!line.has_value()) {
-            if (_buffer.size() - _consumed > 64u * 1024u) {
-                throw resp_protocol_error("too big inline request");
-            }
             return std::nullopt;
         }
+        _pending_raw = 0;
         resp_command cmd;
         std::size_t i = 0;
         while (i < line->size()) {
@@ -183,22 +243,32 @@ private:
                 cmd._argv.push_back(line->substr(start, i - start));
             }
         }
-        _consumed = pos;
         return cmd;
     }
 
-    // Read up to and including CRLF at `pos`, advancing `pos` past it.
-    // Returns the line without the terminator, or nullopt if incomplete.
-    auto read_line(std::size_t& pos) -> std::optional<std::string> {
-        auto nl = _buffer.find('\n', pos);
+    // Take one CRLF-terminated line off the front of the buffer, without the
+    // terminator, or return nullopt if it is not complete yet. The search
+    // resumes at `_scan`, so an incomplete line is never rescanned.
+    auto read_line(const char* too_long) -> std::optional<std::string> {
+        auto from = std::max(_scan, _consumed);
+        auto nl = _buffer.find('\n', from);
         if (nl == std::string::npos) {
+            _scan = _buffer.size();
+            if (_buffer.size() - _consumed > _limits._max_line_len) {
+                throw resp_protocol_error(too_long);
+            }
             return std::nullopt;
         }
-        if (nl == pos || _buffer[nl - 1] != '\r') {
+        if (nl == _consumed || _buffer[nl - 1] != '\r') {
             throw resp_protocol_error("expected CRLF line terminator");
         }
-        std::string line = _buffer.substr(pos, nl - 1 - pos);
-        pos = nl + 1;
+        if (nl - 1 - _consumed > _limits._max_line_len) {
+            throw resp_protocol_error(too_long);
+        }
+        std::string line = _buffer.substr(_consumed, nl - 1 - _consumed);
+        _pending_raw += nl + 1 - _consumed;
+        _consumed = nl + 1;
+        _scan = _consumed;
         return line;
     }
 
@@ -220,28 +290,48 @@ private:
             if (text[i] < '0' || text[i] > '9') {
                 throw resp_protocol_error(reason);
             }
-            value = value * 10 + (text[i] - '0');
+            auto digit = static_cast<std::int64_t>(text[i] - '0');
+            if (value > (std::numeric_limits<std::int64_t>::max() - digit) / 10) {
+                throw resp_protocol_error(reason);
+            }
+            value = value * 10 + digit;
         }
         return negative ? -value : value;
     }
 
+    // Drop the consumed prefix once it is at least half the buffer, so each
+    // byte is moved O(1) times amortised.
     auto compact() -> void {
         if (_consumed == 0) {
             return;
         }
         if (_consumed == _buffer.size()) {
             _buffer.clear();
-        } else if (_consumed > _buffer.size() / 2) {
+        } else if (_consumed >= _buffer.size() / 2) {
             _buffer.erase(0, _consumed);
         } else {
             return;
         }
+        _scan -= std::min(_scan, _consumed);
         _consumed = 0;
     }
 
     resp_parser_limits _limits{};
     std::string _buffer;
+    /// Start of the unparsed bytes in `_buffer`.
     std::size_t _consumed = 0;
+    /// Where the next CRLF search starts (>= `_consumed` when meaningful).
+    std::size_t _scan = 0;
+
+    // The multibulk command being assembled, if any.
+    bool _in_multibulk = false;
+    resp_command _pending;
+    std::size_t _remaining = 0;
+    std::optional<std::size_t> _bulk_len;
+    /// Wire bytes of `_pending` already taken off the buffer; counted
+    /// against `_max_buffered_bytes` so splitting a request does not
+    /// sidestep the cap.
+    std::size_t _pending_raw = 0;
 };
 
 /// Reply encoder. RESP2 by default; `set_version(3)` after a successful
@@ -325,37 +415,64 @@ private:
     int _version;
 };
 
-/// Length of one complete reply at the front of `data`, or 0 if more bytes
-/// are needed. Used by the forwarding client, which relays a peer gateway's
-/// reply verbatim and therefore only has to find its end, never decode it.
-/// Throws `resp_protocol_error` on a reply that is not RESP at all.
-[[nodiscard]] inline auto resp_reply_length(std::string_view data) -> std::size_t {
+/// Bounds on a reply `resp_reply_length` will measure. The forwarding client
+/// reads replies from a peer gateway over plain TCP; without these a
+/// malformed or hostile peer could drive unbounded recursion, overflow the
+/// length arithmetic into a bogus short length, or make every read rescan
+/// an unterminated line.
+struct resp_reply_limits {
+    /// Aggregate nesting. Nothing the gateway forwards nests at all.
+    std::size_t _max_depth = 8;
+    /// Largest bulk string, and largest aggregate element count.
+    std::size_t _max_bulk_len = 512u * 1024u * 1024u;
+    std::size_t _max_elements = 1024u * 1024u;
+    /// Longest type/length/simple-string line, CRLF excluded.
+    std::size_t _max_line_len = 64u * 1024u;
+};
+
+namespace resp_detail {
+
+[[nodiscard]] inline auto reply_length(std::string_view data, const resp_reply_limits& limits,
+                                       std::size_t depth) -> std::size_t {
     if (data.empty()) {
         return 0;
     }
-    auto line_end = [&](std::size_t from) -> std::size_t {
-        auto nl = data.find("\r\n", from);
-        return nl == std::string_view::npos ? 0 : nl + 2;
+    if (depth > limits._max_depth) {
+        throw resp_protocol_error("reply nested too deeply");
+    }
+    // End of the line starting at 0 (one past its CRLF), or 0 if incomplete.
+    // The search never looks further than the longest permitted line.
+    auto line_end = [&]() -> std::size_t {
+        auto window = data.substr(0, limits._max_line_len + 2);
+        auto nl = window.find("\r\n", 1);
+        if (nl == std::string_view::npos) {
+            if (window.size() == limits._max_line_len + 2) {
+                throw resp_protocol_error("reply line too long");
+            }
+            return 0;
+        }
+        return nl + 2;
     };
-    auto count_after = [&](std::size_t from, std::size_t end) -> std::int64_t {
-        auto text = data.substr(from, end - 2 - from);
+    // The signed length on the line [1, end - 2), bounded by `max`.
+    auto count_on = [&](std::size_t end, std::size_t max) -> std::int64_t {
+        auto text = data.substr(1, end - 3);
         if (text.empty()) {
             throw resp_protocol_error("empty length in reply");
         }
-        std::int64_t v = 0;
-        bool neg = false;
-        std::size_t i = 0;
-        if (text[0] == '-') {
-            neg = true;
-            i = 1;
+        if (text == "-1") {
+            return -1;
         }
-        for (; i < text.size(); ++i) {
-            if (text[i] < '0' || text[i] > '9') {
+        std::uint64_t v = 0;
+        for (char c : text) {
+            if (c < '0' || c > '9') {
                 throw resp_protocol_error("bad length in reply");
             }
-            v = v * 10 + (text[i] - '0');
+            v = v * 10 + static_cast<std::uint64_t>(c - '0');
+            if (v > max) {
+                throw resp_protocol_error("length in reply exceeds limit");
+            }
         }
-        return neg ? -v : v;
+        return static_cast<std::int64_t>(v);
     };
     switch (data[0]) {
         case '+':
@@ -364,15 +481,15 @@ private:
         case '_':
         case ',':
         case '#':
-            return line_end(1);
+            return line_end();
         case '$':
         case '!':
         case '=': {
-            auto end = line_end(1);
+            auto end = line_end();
             if (end == 0) {
                 return 0;
             }
-            auto n = count_after(1, end);
+            auto n = count_on(end, limits._max_bulk_len);
             if (n < 0) {
                 return end;  // null bulk
             }
@@ -384,11 +501,11 @@ private:
         case '>':
         case '%':
         case '|': {
-            auto end = line_end(1);
+            auto end = line_end();
             if (end == 0) {
                 return 0;
             }
-            auto n = count_after(1, end);
+            auto n = count_on(end, limits._max_elements);
             if (n < 0) {
                 return end;  // null array
             }
@@ -398,7 +515,7 @@ private:
             }
             std::size_t pos = end;
             for (std::size_t i = 0; i < elements; ++i) {
-                auto len = resp_reply_length(data.substr(pos));
+                auto len = reply_length(data.substr(pos), limits, depth + 1);
                 if (len == 0) {
                     return 0;
                 }
@@ -409,6 +526,18 @@ private:
         default:
             throw resp_protocol_error("unexpected reply type byte");
     }
+}
+
+}  // namespace resp_detail
+
+/// Length of one complete reply at the front of `data`, or 0 if more bytes
+/// are needed. Used by the forwarding client, which relays a peer gateway's
+/// reply verbatim and therefore only has to find its end, never decode it.
+/// Throws `resp_protocol_error` on a reply that is not RESP at all or that
+/// breaks `limits`. The caller still bounds how much it buffers in total.
+[[nodiscard]] inline auto resp_reply_length(std::string_view data,
+                                            const resp_reply_limits& limits = {}) -> std::size_t {
+    return resp_detail::reply_length(data, limits, 0);
 }
 
 /// ASCII case-insensitive comparison for command names; Redis commands are
