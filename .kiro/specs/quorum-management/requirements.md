@@ -451,6 +451,15 @@ ghost and the infrastructure is not paying for a permanently broken instance.
    THEN the leader SHALL NOT call `decommission_node` automatically.
    Decommissioning in the auto-provisioning flow is coupled exclusively to the
    provisioning path in Requirements 14–15.
+6. A provisioned node joins through `ClusterJoin`, which admits it as a
+   learner (`.kiro/specs/non-voting-nodes/`), and becomes a voter by
+   promotion; "`add_server()` for a replacement completes" in Criterion 1
+   means that promotion has committed.  While the node it replaces is still
+   a voter in the same placement group, the replacement SHALL be exempt from
+   the non-voting-nodes admission and promotion capacity criteria, which
+   would otherwise refuse it because the group is still at `target_count`
+   with the failed node counted.  The exemption ends when the replaced node
+   leaves the configuration.
 
 ### Requirement 16: Tests for Leader Integration
 
