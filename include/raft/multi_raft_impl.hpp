@@ -70,6 +70,7 @@ auto multi_raft<Types, Key, GroupId>::start() -> void {
     if (_running.exchange(true)) {
         return;
     }
+    _started_at_ns.store(std::chrono::steady_clock::now().time_since_epoch().count());
     {
         std::lock_guard lock(_executor_mutex);
         if (!_executor) {
@@ -194,10 +195,28 @@ auto multi_raft<Types, Key, GroupId>::create_group_impl(
         node_cfg.state_machine = _cfg.state_machine_factory(group);
     }
     node_cfg.config = _cfg.config;
+    // A group never provisions (`group_scoped_types` shadows its manager with
+    // `no_op_quorum_manager`), but `add_learner` and `promote_to_voter` consult
+    // `topology()` and fail closed on a group with no declared target — which,
+    // with the default empty topology, is every group. One unbounded target
+    // under the default placement id is what lets a placement driver's
+    // learner → promote sequence work at all. `no_op_quorum_manager` always
+    // reports `healthy`, so the single-group quorum loop never acts on it.
+    {
+        using group_qm = decltype(node_cfg.quorum_manager);
+        using pg = typename group_qm::placement_group_id_type;
+        node_cfg.quorum_manager = group_qm{desired_topology<pg>{
+            .groups = {
+                {.group_id = pg{}, .target_count = std::numeric_limits<std::size_t>::max()}}}};
+    }
 
     state->_node = std::make_unique<group_node_type>(std::move(node_cfg));
     if (!descriptor._voters.empty()) {
-        state->_node->set_cluster_configuration(descriptor._voters);
+        if (descriptor._learners.empty()) {
+            state->_node->set_cluster_configuration(descriptor._voters);
+        } else {
+            state->_node->set_cluster_configuration(descriptor._voters, descriptor._learners);
+        }
     }
     install_admin_handler(*state);
     note_activity(*state);
@@ -2914,6 +2933,45 @@ auto multi_raft<Types, Key, GroupId>::set_unknown_group_handler(
 // ─────────────────────────────────────────────────────────────────────────────
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::sync_leader_membership() -> void {
+    // The descriptor a group was created with names its first replica set and
+    // nothing ever updated it after a membership change, so a driver that
+    // added a learner could never see it arrive. The leader's own Raft
+    // configuration is the truth; copy it in before reporting.
+    //
+    // Membership only, never the epoch. `_conf_version` is compared at apply
+    // time on every replica (a split entry carries its parent's epoch), so it
+    // may only move where every replica moves it identically — in the log —
+    // and a leader-local bump here would make followers refuse the next
+    // split. A joint configuration is skipped: it is in transit, and the
+    // next heartbeat sees where it landed.
+    for (const auto& g : all_groups()) {
+        if (!g->_node || !g->_node->is_leader()) {
+            continue;
+        }
+        const auto m = g->_node->current_membership();
+        if (m.joint || m.voters.empty()) {
+            continue;
+        }
+        auto sorted = [](std::vector<node_id_type> v) {
+            std::sort(v.begin(), v.end());
+            return v;
+        };
+        if (sorted(m.voters) == sorted(g->_descriptor._voters) &&
+            sorted(m.learners) == sorted(g->_descriptor._learners)) {
+            continue;
+        }
+        auto updated = g->_descriptor;
+        updated._voters = m.voters;
+        updated._learners = m.learners;
+        // The routing map is left alone: it is keyed by epoch, refuses an
+        // equal one, and routes by range and leader hint, not membership.
+        g->_descriptor = updated;
+        publish_report(*g);
+    }
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::build_shard_reports() const
     -> std::vector<shard_report_type> {
     std::vector<shard_report_type> out;
@@ -2943,12 +3001,31 @@ auto multi_raft<Types, Key, GroupId>::build_shard_reports() const
         // "Down" is the leader's own belief, formed from match indices, and it
         // is the only belief anyone holds: no other replica tracks per-peer
         // progress. A driver that waited for certainty would never act.
+        //
+        // "Pending" is the same belief about catching up: a replica the leader
+        // tracks whose log is more than `replica_catch_up_lag` entries behind
+        // its own. A learner the leader does not track yet is pending rather
+        // than down — it has only just been added. A driver promotes a learner
+        // only once it is no longer pending (elastic-shard-capacity Req 10.3).
+        const auto last = static_cast<std::uint64_t>(g->_node->last_log_index());
+        const auto behind = [&](const node_id_type& peer) {
+            const auto match = g->_node->match_index_of(peer);
+            return match.has_value() &&
+                   static_cast<std::uint64_t>(*match) + _cfg.replica_catch_up_lag < last;
+        };
         for (const auto& voter : g->_descriptor._voters) {
             if (voter == _cfg.node_id) {
                 continue;
             }
             if (!g->_node->match_index_of(voter).has_value()) {
                 r._down_replicas.push_back(voter);
+            } else if (behind(voter)) {
+                r._pending_replicas.push_back(voter);
+            }
+        }
+        for (const auto& learner : g->_descriptor._learners) {
+            if (!g->_node->match_index_of(learner).has_value() || behind(learner)) {
+                r._pending_replicas.push_back(learner);
             }
         }
         r._down_replica_count = r._down_replicas.size();
@@ -2970,6 +3047,14 @@ auto multi_raft<Types, Key, GroupId>::build_node_report() const -> node_report_t
         r._used_bytes = capacity >= available ? capacity - available : 0;
     }
     r._overloaded = _cfg.overload_probe ? _cfg.overload_probe() : false;
+    // How long this host has been up: what lets a capacity controller with
+    // no provider metadata tell a machine that booted after its intent from
+    // one that was always there (elastic-shard-capacity design §7).
+    if (const auto started = _started_at_ns.load(); started != 0) {
+        r._uptime = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch() -
+            std::chrono::steady_clock::duration{started});
+    }
 
     std::uint64_t reads = 0;
     std::uint64_t writes = 0;
@@ -3057,6 +3142,16 @@ auto multi_raft<Types, Key, GroupId>::apply_operator(const shard_operation_type&
     return std::visit(
         [&]<typename Op>(const Op& concrete) -> operator_outcome {
             if constexpr (std::same_as<Op, add_replica_operator<node_id_type>>) {
+                // A voter-add naming a current learner is a promotion: the
+                // second half of the learner-first sequence a placement driver
+                // uses to add a replica without enlarging the quorum before
+                // the replica can answer (elastic-shard-capacity Req 10.3).
+                const auto& learners = g->_descriptor._learners;
+                if (!concrete._as_learner && !g->_descriptor.has_voter(concrete._node) &&
+                    std::find(learners.begin(), learners.end(), concrete._node) != learners.end()) {
+                    g->_node->promote_to_voter(concrete._node);
+                    return accept();
+                }
                 if (g->_descriptor.has_replica(concrete._node)) {
                     return note_skipped_operator(op, skipped_operator_reason::precondition);
                 }
@@ -3127,6 +3222,8 @@ auto multi_raft<Types, Key, GroupId>::heartbeat() -> std::size_t {
     if (!_cfg.report_shard_heartbeat) {
         return 0;
     }
+
+    sync_leader_membership();
 
     // Built once and sent once, however many shards this host leads. That is
     // the whole point of the batch: a control plane whose load grows with shard
