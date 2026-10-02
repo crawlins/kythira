@@ -4801,6 +4801,57 @@ set_tests_properties(ca_cluster_node_localstack_test PROPERTIES
     SKIP_RETURN_CODE 77
 )
 
+# Real-AWS Auto Scaling coverage for aws_asg_quorum_manager
+# (.kiro/specs/aws-asg-real-cloud-tests/). Outside the LIBSSH2_FOUND block on
+# purpose: unlike its EC2 sibling this suite never connects to an instance.
+# Same compile definition as the other real-EC2 binaries, so the workflow's
+# existing real-EC2 build switch covers it, and the same preflight skip.
+add_executable(aws_asg_quorum_manager_real_test aws_asg_quorum_manager_real_test.cpp)
+target_compile_definitions(aws_asg_quorum_manager_real_test PRIVATE
+    KYTHIRA_AWS_REAL_EC2_TESTS
+)
+target_link_libraries(aws_asg_quorum_manager_real_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(aws_asg_quorum_manager_real_test PRIVATE Folly::folly)
+endif()
+target_compile_features(aws_asg_quorum_manager_real_test PRIVATE cxx_std_23)
+add_test(NAME aws_asg_quorum_manager_real_test COMMAND aws_asg_quorum_manager_real_test)
+set_tests_properties(aws_asg_quorum_manager_real_test PROPERTIES
+    # Derived, not guessed (Requirement 1.3), and re-derived whenever a case
+    # is added. ctest kills with SIGKILL on expiry, which runs no destructor
+    # and strands whatever the in-flight case created, so this must exceed
+    # the sum of the cases' own Boost timeouts rather than approximate it.
+    # Per-case fixture setup and teardown run inside each case's Boost
+    # timeout, so the sum already includes them. Each case's timeout is
+    # teardown's 1455s worst case plus setup plus its own body.
+    #   fixture_provisions_idle_ec2_health_groups   1800
+    #   rejects_non_ec2_health_check                1800
+    #   provision_node_increases_desired_capacity   2100
+    #   assess_quorum_reports_live_nodes            2100
+    #   assess_detects_stopped_instance             2400
+    #   decommission_removes_instance               2400
+    #   decommission_is_idempotent                  2700
+    #   maintain_quorum_restores_full_cluster       2700
+    #   multi_az_topology                           2400
+    #   ----------------------------------------------------
+    #   sum of case timeouts                       20400
+    #   + process start, SDK init, cost summary      300
+    #   = TIMEOUT                                  20700
+    # That worst case (345 min) sits just under the 360-minute cap of
+    # real-cloud-tests.yml's aws job, which also runs the other AWS suites.
+    # Expected runs are far shorter: the budgets are dominated by
+    # teardown's bounded waits, which a healthy run never exhausts. Spec
+    # task 10 has to account for this when it wires the bundle in.
+    TIMEOUT 20700
+    LABELS "integration;raft;quorum;aws;real-ec2;asg;slow"
+    # PreflightSkipFixture exits 77 before any case runs when no AWS region
+    # is set, so ctest reports "Not Run" rather than "Failed".
+    SKIP_RETURN_CODE 77
+)
+
 # Real-EC2 integration tests — requires AWS credentials + env vars.
 if(LIBSSH2_FOUND)
 add_executable(aws_quorum_manager_real_ec2_test aws_quorum_manager_real_ec2_test.cpp)
