@@ -900,34 +900,32 @@ BOOST_AUTO_TEST_CASE(test_plain_coap_is_accepted,
         (test_server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}}));
 }
 
-BOOST_AUTO_TEST_CASE(test_dtls_is_refused_naming_the_reason,
+BOOST_AUTO_TEST_CASE(test_dtls_is_planned_not_refused,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    // cantcoap is cleartext-only and, unlike libnyoci, has no DTLS plugin to
-    // drive. Refusing beats a half-implementation that looks encrypted.
-    kythira::coap_client_config config;
+    // DTLS used to be refused here; it is now provided over this backend's own
+    // socket (coap_cantcoap_dtls.hpp, and coap_cantcoap_dtls_test.cpp for the
+    // handshakes themselves). Planning it must select the DTLS channel, and
+    // a server must construct, since key material is loaded only in start().
+    kythira::coap_server_config config;
     config.security.mode = kythira::coap_auth_mode::dtls_psk;
     config.security.credentials =
         kythira::psk_credentials{"identity", std::vector<std::byte>{std::byte{0x01}}};
-    try {
-        test_client client{{}, config, test_metrics{}};
-        BOOST_FAIL("DTLS must be refused, not silently downgraded");
-    } catch (const kythira::coap_security_error& e) {
-        const std::string message = e.what();
-        BOOST_TEST(message.find("DTLS") != std::string::npos, message);
-        BOOST_TEST(message.find("OSCORE") != std::string::npos,
-                   "the refusal should point at the alternative it does support: " << message);
-    }
+    const auto [selected, effective] = kythira::cantcoap_detail::plan_security(config, "server");
+    BOOST_TEST((selected == kythira::cantcoap_detail::channel::dtls));
+    BOOST_TEST((effective.mode == kythira::coap_auth_mode::dtls_psk));
+    BOOST_REQUIRE_NO_THROW((test_server{loopback, ephemeral_port, config, test_metrics{}}));
 }
 
-BOOST_AUTO_TEST_CASE(test_legacy_dtls_fields_are_refused_too,
+BOOST_AUTO_TEST_CASE(test_legacy_dtls_fields_select_dtls_pki,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // translate_legacy_fields() is shared with every other backend, so a
     // populated cert_file still means dtls_pki here.
     kythira::coap_server_config config;
     config.cert_file = "/nonexistent/server.pem";
     config.key_file = "/nonexistent/server.key";
-    BOOST_CHECK_THROW((test_server{loopback, ephemeral_port, config, test_metrics{}}),
-                      kythira::coap_security_error);
+    const auto [selected, effective] = kythira::cantcoap_detail::plan_security(config, "server");
+    BOOST_TEST((selected == kythira::cantcoap_detail::channel::dtls));
+    BOOST_TEST((effective.mode == kythira::coap_auth_mode::dtls_pki));
 }
 
 #if !defined(LAKERS_AVAILABLE)
