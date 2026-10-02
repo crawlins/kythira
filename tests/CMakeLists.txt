@@ -977,6 +977,10 @@ add_raft_completion_test(multi_raft_merge_integration_test
                          multi_raft_merge_integration_test.cpp)
 add_raft_completion_test(split_merge_policy_unit_test split_merge_policy_unit_test.cpp)
 add_raft_completion_test(multi_raft_arbiter_unit_test multi_raft_arbiter_unit_test.cpp)
+# elastic-shard-capacity spec, tasks 1-2: the quorum-manager shadow, the split
+# capacity gate, the allocation-suggestion counter, operator feedback and the
+# empty-registry heartbeat.
+add_raft_completion_test(multi_raft_capacity_host_test multi_raft_capacity_host_test.cpp)
 add_raft_completion_test(multi_raft_invariant_property_test
                          multi_raft_invariant_property_test.cpp)
 # Task 34 of .kiro/specs/multi-raft/: 1000 groups across three simulated nodes.

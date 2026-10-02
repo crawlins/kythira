@@ -1028,6 +1028,16 @@ auto multi_raft<Types, Key, GroupId>::admit(group_state& g, signal_channel chann
             ._admitted = false, ._gate = arbiter_gate::concurrency_limit, ._channel = channel};
     }
 
+    // The capacity gate (`.kiro/specs/elastic-shard-capacity/` Requirement 6).
+    // Splits only — a merge reduces consumption — and every channel, admin
+    // included: a machine that cannot write a child's snapshot cannot write it
+    // for an administrator either. It consults the local probe and nothing
+    // else; a split never waits on, or calls, anything that provisions.
+    if (to == shard_operation_state::splitting && capacity_gate_refuses(g)) {
+        g._capacity_refusals.fetch_add(1, std::memory_order_relaxed);
+        return decision{._admitted = false, ._gate = arbiter_gate::capacity, ._channel = channel};
+    }
+
     // The state gate is a TRANSITION, not a check. Two channels racing in the
     // same interval cannot both proceed, because only one compare-exchange can
     // win — conflicting operations are impossible by construction rather than
@@ -1051,6 +1061,35 @@ auto multi_raft<Types, Key, GroupId>::admit(group_state& g, signal_channel chann
                     ._gate = arbiter_gate::state,
                     ._channel = channel,
                     ._preempted_by = std::nullopt};
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::capacity_gate_refuses(group_state& g) -> bool {
+    // Unset floor: the gate does not exist. No probe: the host does not know
+    // its free space, and refusing every split on a guess would be worse than
+    // not gating — so that is "open" too, not "closed".
+    if (!_cfg.split_capacity_floor_bytes.has_value() || !_cfg.capacity_probe) {
+        return false;
+    }
+    const auto floor = *_cfg.split_capacity_floor_bytes;
+    const auto available = _cfg.capacity_probe().second;
+    if (available < floor) {
+        return true;
+    }
+
+    // The projected shortfall: the children's synthetic snapshots together
+    // hold what the parent holds, so the parent's approximate size is the
+    // estimate of what the split is about to write. Only a state machine with
+    // sizing hooks can say; without them the floor check above is all there is.
+    std::uint64_t projected = 0;
+    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+        if (g._node) {
+            g._node->with_state_machine([&](typename Types::state_machine_type& sm) {
+                projected = static_cast<std::uint64_t>(sm.approximate_size_bytes());
+            });
+        }
+    }
+    return available - floor < projected;
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -1633,13 +1672,19 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     const std::size_t new_ids_needed = child_count - 1;  // one child reuses the parent's id
     std::vector<GroupId> new_ids;
     if (new_ids_needed > 0) {
-        if (!_cfg.allocate_group_ids) {
+        if (_cfg.allocate_shard_ids) {
+            for (const auto& allocation : _cfg.allocate_shard_ids(new_ids_needed)) {
+                note_allocation_suggestions(parent, allocation);
+                new_ids.push_back(allocation._group_id);
+            }
+        } else if (!_cfg.allocate_group_ids) {
             release_gate();
             return failed_future(std::make_exception_ptr(std::runtime_error(
                 "multi_raft: split needs allocate_group_ids; ids must come from a "
                 "cluster-scope authority, never from the proposing node")));
+        } else {
+            new_ids = _cfg.allocate_group_ids(new_ids_needed);
         }
-        new_ids = _cfg.allocate_group_ids(new_ids_needed);
         if (new_ids.size() < new_ids_needed) {
             release_gate();
             note_rejection(group, arbiter_gate::pd_unavailable, options._channel, "split");
@@ -2881,6 +2926,8 @@ auto multi_raft<Types, Key, GroupId>::build_shard_reports() const
         r._leader = _cfg.node_id;
         r._term = static_cast<std::uint64_t>(g->_node->get_current_term());
         r._operation = g->_operation.load(std::memory_order_relaxed);
+        r._capacity_refusals =
+            static_cast<std::size_t>(g->_capacity_refusals.exchange(0, std::memory_order_relaxed));
 
         if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
             g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
@@ -3088,8 +3135,13 @@ auto multi_raft<Types, Key, GroupId>::heartbeat() -> std::size_t {
     auto operators = _cfg.report_shard_heartbeat(reports);
     _operators_received.fetch_add(operators.size(), std::memory_order_relaxed);
 
+    std::vector<operator_outcome> outcomes;
+    outcomes.reserve(operators.size());
     for (const auto& op : operators) {
-        apply_operator(op);
+        outcomes.push_back(apply_operator(op));
+    }
+    if (_cfg.report_operator_outcomes && !outcomes.empty()) {
+        _cfg.report_operator_outcomes(outcomes);
     }
     return operators.size();
 }
@@ -3166,6 +3218,42 @@ auto multi_raft<Types, Key, GroupId>::scatter(const GroupId& group,
                                  {"target", detail::describe_value(target)},
                                  {"candidates", std::to_string(candidates.size())}});
     return g->_node->transfer_leadership(target, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::note_allocation_suggestions(
+    const descriptor_type& parent, const shard_id_allocation<GroupId, node_id_type>& allocation)
+    -> void {
+    // Empty means "inherit", which is what happens anyway. A suggestion that
+    // names exactly the parent's set (in any order) is honoured trivially.
+    const auto differs = [](std::vector<node_id_type> suggested, std::vector<node_id_type> actual) {
+        if (suggested.empty()) {
+            return false;
+        }
+        std::sort(suggested.begin(), suggested.end());
+        std::sort(actual.begin(), actual.end());
+        return suggested != actual;
+    };
+    if (!differs(allocation._suggested_voters, parent._voters) &&
+        !differs(allocation._suggested_learners, parent._learners)) {
+        return;
+    }
+    _suggestions_ignored.fetch_add(1, std::memory_order_relaxed);
+    _cfg.logger.info("shard.allocation.suggestion_ignored",
+                     {{"parent", detail::describe_value(parent._group_id)},
+                      {"child", detail::describe_value(allocation._group_id)},
+                      {"suggested_voters", std::to_string(allocation._suggested_voters.size())},
+                      {"suggested_learners", std::to_string(allocation._suggested_learners.size())},
+                      {"reason", "split children inherit the parent's replica set"}});
+    _cfg.metrics.set_metric_name("kythira.multiraft.shard.allocation.suggestion_ignored");
+    _cfg.metrics.add_dimension("group", detail::describe_value(allocation._group_id));
+    _cfg.metrics.add_count(1);
+    _cfg.metrics.emit();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::suggestion_ignored_count() const -> std::uint64_t {
+    return _suggestions_ignored.load(std::memory_order_relaxed);
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>

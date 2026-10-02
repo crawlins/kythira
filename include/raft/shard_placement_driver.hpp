@@ -129,6 +129,17 @@ template<raft_group_id GroupId, shard_key Key, typename NodeId> struct shard_rep
     /// mid-merge can decline to compute an operator that would only be skipped.
     shard_operation_state _operation{shard_operation_state::stable};
 
+    /// @brief Splits of this shard the host refused with `arbiter_gate::capacity`
+    ///        since its previous report.
+    ///
+    /// The one field `.kiro/specs/elastic-shard-capacity/` adds to a report, and
+    /// only because Requirement 6.6 cannot be met without it: a refusal is a
+    /// fact about this shard on this host, it happens between heartbeats, and a
+    /// controller deciding whether the cluster is out of room has no other
+    /// channel to learn of it. Non-zero means "the cluster needs room now",
+    /// which a capacity policy treats as split pressure without projecting.
+    std::size_t _capacity_refusals{0};
+
     /// The term the report was produced in, so a driver can discard a report
     /// from a leader that has since been deposed.
     std::uint64_t _term{0};

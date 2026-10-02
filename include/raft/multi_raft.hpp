@@ -79,6 +79,29 @@ template<typename Types, typename GroupId, typename Demux> struct group_scoped_t
                            typename Types::log_index_type, typename Types::log_entry_type,
                            GroupId>>;
     using network_server_type = group_scoped_server<Demux>;
+
+    /// @brief Every group's `node` sees the no-op manager, whatever the host's
+    ///        bundle names (`.kiro/specs/elastic-shard-capacity/` design §6.1).
+    ///
+    /// Two reasons, either sufficient on its own:
+    ///
+    /// 1. `create_group_impl` builds each group's `node_config` without a
+    ///    `.quorum_manager`, so the member is default-constructed — and no real
+    ///    provider manager is default-constructible (each takes a validated
+    ///    config, e.g. `aws_ec2_quorum_manager`'s explicit constructor). Without
+    ///    this shadow a bundle naming one makes `multi_raft` ill-formed.
+    /// 2. A machine is a host-scope resource. A thousand groups in one process
+    ///    must not each hold a provisioning authority that sees only its own
+    ///    membership; capacity is provisioned by `elastic_capacity_controller`,
+    ///    once, for the whole cluster.
+    ///
+    /// The address parameter goes through the same traits helper `node_config`
+    /// uses, never `Types::address_type`: a bundle is not required to declare
+    /// one, and assuming it would reintroduce a requirement this alias removes.
+    using quorum_manager_type = no_op_quorum_manager<
+        typename Types::node_id_type,
+        typename _bootstrap_type_traits<Types, typename Types::node_id_type>::address_type,
+        std::string>;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,6 +261,14 @@ enum class arbiter_gate : std::uint8_t {
     /// truncation overrides a decision a policy actually made, and a silent
     /// override is the kind of thing that is discovered during an incident.
     split_keys_truncated = 11,
+    /// @brief The host's `capacity_probe` says a split's children would not fit.
+    ///
+    /// Splits only: a merge reduces consumption and is never refused for it.
+    /// Evaluated for every channel — admin included — because a machine that
+    /// cannot write a child's snapshot cannot write it for an administrator
+    /// either (`.kiro/specs/elastic-shard-capacity/` Requirement 6). Off unless
+    /// `multi_raft_config::split_capacity_floor_bytes` is set.
+    capacity = 12,
 };
 
 inline auto to_string(arbiter_gate g) -> std::string {
@@ -266,6 +297,8 @@ inline auto to_string(arbiter_gate g) -> std::string {
             return "preempted_by";
         case arbiter_gate::split_keys_truncated:
             return "split_keys_truncated";
+        case arbiter_gate::capacity:
+            return "capacity";
         default:
             return "unknown";
     }
@@ -471,6 +504,21 @@ struct multi_raft_config {
     /// static allocator serves a pre-split deployment.
     std::function<std::vector<GroupId>(std::size_t)> allocate_group_ids{};
 
+    /// @brief `allocate_group_ids` with the driver's placement suggestions.
+    ///
+    /// Preferred over `allocate_group_ids` when set; the ids are used exactly
+    /// as that hook's would be. The suggestions are **not** applied, and cannot
+    /// be: a child's state is derived locally from the parent's on each replica
+    /// that holds it, so a machine without the parent cannot construct the child
+    /// at split time (`.kiro/specs/elastic-shard-capacity/` design §9, rejected
+    /// alternative 2). Children keep the parent's replica set; every allocation
+    /// whose suggested voters or learners differ from it is counted as
+    /// `shard.allocation.suggestion_ignored` and logged, so a driver author is
+    /// told rather than left guessing. Placement after the split is what the
+    /// driver's `add_replica` / `remove_replica` operators are for.
+    std::function<std::vector<shard_id_allocation<GroupId, node_id_type>>(std::size_t)>
+        allocate_shard_ids{};
+
     /// @brief Turns a routing key into the bytes that ride inside a split entry.
     ///
     /// Every replica must decode exactly the keys the leader encoded, or they
@@ -624,6 +672,33 @@ struct multi_raft_config {
     /// Evaluated per heartbeat. Left unset, the host reports "not overloaded",
     /// which is the honest answer for a host with no way to tell.
     std::function<bool()> overload_probe{};
+
+    /// @brief Told what became of each operator one heartbeat returned.
+    ///
+    /// Called once per heartbeat, after every operator has been applied or
+    /// skipped, with one outcome per operator in the order received. A skip is
+    /// feedback the driver is expected to act on — back off on `shard_busy`,
+    /// re-plan on `stale_epoch` or `not_leader` — and without this hook the
+    /// only way to see one is the host's own counters, which a driver on
+    /// another machine cannot read. Unset means nobody is listening.
+    std::function<void(const std::vector<operator_outcome>&)> report_operator_outcomes{};
+
+    /// @brief The split capacity gate's floor (`arbiter_gate::capacity`).
+    ///
+    /// When set, a split is refused — on every channel, admin included — if
+    /// `capacity_probe` reports fewer available bytes than this, or if the
+    /// available bytes left after writing the children's synthetic snapshots
+    /// (estimated as the parent's approximate size) would fall below it.
+    /// Merges are exempt: they reduce consumption.
+    ///
+    /// **Unset by default, and unset disables the gate entirely** — today's
+    /// behaviour, unchanged. A set floor with no `capacity_probe` also leaves
+    /// the gate open: the host does not know its free space, and refusing every
+    /// split on a guess would be worse than not gating. A refusal is counted as
+    /// `split.rejected{gate=capacity}` and surfaced in the shard's next report
+    /// (`shard_report::_capacity_refusals`), which is how an elastic capacity
+    /// controller learns the cluster is out of room without a second channel.
+    std::optional<std::uint64_t> split_capacity_floor_bytes{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -940,6 +1015,10 @@ public:
     /// @brief How many operators were skipped for one specific reason.
     [[nodiscard]] auto skipped_operator_count(skipped_operator_reason reason) const
         -> std::uint64_t;
+
+    /// @brief How many id allocations carried placement suggestions this host
+    ///        could not apply (`shard.allocation.suggestion_ignored`).
+    [[nodiscard]] auto suggestion_ignored_count() const -> std::uint64_t;
     /// @}
 
     /// @brief Called on every role, term or membership transition.
@@ -1255,6 +1334,11 @@ private:
         /// split already needs it.
         std::atomic<shard_operation_state> _operation{shard_operation_state::stable};
 
+        /// `arbiter_gate::capacity` refusals since this shard's last report.
+        /// Exchanged to zero when the report is built, so each refusal reaches
+        /// the placement driver exactly once.
+        std::atomic<std::uint64_t> _capacity_refusals{0};
+
         // ── merge bookkeeping (design §5.5) ──────────────────────────────────
         //
         // Guarded by `_merge_mutex` rather than atomics: these move together,
@@ -1402,6 +1486,16 @@ private:
     /// The state gate is a *transition*, not a check: `admit` claims the shard
     /// by compare-exchange, so two channels racing in the same interval cannot
     /// both proceed. `release` puts it back.
+    /// @brief `arbiter_gate::capacity`: whether a split of `g` would leave the
+    ///        machine below `split_capacity_floor_bytes`.
+    [[nodiscard]] auto capacity_gate_refuses(group_state& g) -> bool;
+
+    /// @brief Count and log an allocation whose placement suggestions differ
+    ///        from the parent's replica set (they cannot be applied).
+    auto note_allocation_suggestions(const descriptor_type& parent,
+                                     const shard_id_allocation<GroupId, node_id_type>& allocation)
+        -> void;
+
     [[nodiscard]] auto admit(group_state& g, signal_channel channel, shard_operation_state to,
                              bool override_cooldown) -> arbiter_decision<GroupId>;
     auto release(group_state& g) -> void;
@@ -1517,6 +1611,7 @@ private:
     std::function<void(const group_report<GroupId, node_id_type>&)> _report_listener;
     std::atomic<std::uint64_t> _lazy_replicas{0};
     std::atomic<std::uint64_t> _descriptor_lookups{0};
+    std::atomic<std::uint64_t> _suggestions_ignored{0};
 
     /// When each group id was last looked up externally, so the lazy path
     /// cannot turn a message flood into a control-plane flood.
