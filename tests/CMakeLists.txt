@@ -2989,6 +2989,34 @@ set_tests_properties(docker_quorum_manager_test PROPERTIES
     TIMEOUT 60
     LABELS "unit;raft;quorum"
 )
+
+# Req 18 AC 21 — the same manager against a real Docker or rootless Podman
+# daemon. The binary skips itself unless KYTHIRA_DOCKER_INTEGRATION_TESTS=1,
+# and the "docker" label keeps it out of ci.yml's ctest runs, which have no
+# daemon.
+add_executable(docker_quorum_manager_integration_test docker_quorum_manager_integration_test.cpp)
+target_link_libraries(docker_quorum_manager_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    httplib::httplib
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(docker_quorum_manager_integration_test PRIVATE Folly::folly)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_context.a")
+        target_link_libraries(docker_quorum_manager_integration_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_context.a")
+    elseif(TARGET Boost::context)
+        target_link_libraries(docker_quorum_manager_integration_test PRIVATE Boost::context)
+    endif()
+endif()
+target_compile_features(docker_quorum_manager_integration_test PRIVATE cxx_std_23)
+add_test(NAME docker_quorum_manager_integration_test
+         COMMAND docker_quorum_manager_integration_test)
+set_tests_properties(docker_quorum_manager_integration_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;docker;quorum"
+)
 endif()
 
 # Bootstrap property tests
