@@ -677,6 +677,17 @@ private:
     // by leader First index is 1
     std::vector<log_entry_type> _log;
 
+    // The last entry the newest snapshot covers: its index and term. Once a
+    // prefix is compacted away (or a split child starts from a synthetic
+    // snapshot with an empty log), this is the only record of the term at
+    // the boundary, and the boundary is exactly the prevLogIndex an
+    // AppendEntries carries when the follower is caught up to the snapshot
+    // (Raft §7). Without it neither side can match there: the leader resends
+    // the snapshot, the follower drops it as already committed, and the
+    // leader resets nextIndex to the same boundary, forever.
+    log_index_type _snapshot_index{0};
+    term_id_type _snapshot_term{0};
+
     // ========================================================================
     // Volatile state (all servers)
     // ========================================================================
@@ -1114,6 +1125,10 @@ private:
     [[nodiscard]] auto get_last_log_index() const -> log_index_type;
     [[nodiscard]] auto get_last_log_term() const -> term_id_type;
     [[nodiscard]] auto get_log_entry(log_index_type index) const -> std::optional<log_entry_type>;
+    /// The term of the entry at @p index: from the log, or from the snapshot
+    /// when @p index is the last entry it covers. Empty for any other index
+    /// this node no longer (or does not yet) hold.
+    [[nodiscard]] auto term_at(log_index_type index) const -> std::optional<term_id_type>;
 
     // Replication helpers
     auto send_append_entries_to(node_id_type target) -> void;
@@ -2680,9 +2695,8 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
             term_id_type prev_log_term = term_id_type{0};
 
             if (prev_log_index > 0) {
-                auto prev_entry = get_log_entry(prev_log_index);
-                if (prev_entry.has_value()) {
-                    prev_log_term = prev_entry->term();
+                if (const auto term = term_at(prev_log_index)) {
+                    prev_log_term = *term;
                 }
             }
 
@@ -3896,6 +3910,8 @@ auto node<Types>::initialize_from_storage() -> void {
         }
         _last_applied = snap.last_included_index();
         _commit_index = snap.last_included_index();
+        _snapshot_index = snap.last_included_index();
+        _snapshot_term = snap.last_included_term();
         _configuration = snap.configuration();
 
         _logger.info("Restored from snapshot",
@@ -4441,9 +4457,13 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
             return append_entries_response_type{_current_term, false, conflict_index, std::nullopt};
         }
 
-        // Check if the term at prevLogIndex matches prevLogTerm
+        // Check if the term at prevLogIndex matches prevLogTerm. The snapshot
+        // boundary counts: an entry compacted into the snapshot was
+        // committed, so it matches by the Log Matching property.
         auto prev_entry = get_log_entry(prev_log_index);
-        if (!prev_entry.has_value() || prev_entry->term() != prev_log_term) {
+        const bool at_boundary = !prev_entry.has_value() && prev_log_index == _snapshot_index &&
+                                 prev_log_term == _snapshot_term;
+        if (!at_boundary && (!prev_entry.has_value() || prev_entry->term() != prev_log_term)) {
             // Term mismatch at prevLogIndex
             auto conflict_term = prev_entry.has_value() ? prev_entry->term() : term_id_type{0};
 
@@ -4908,9 +4928,8 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
         term_id_type prev_log_term = term_id_type{0};
 
         if (prev_log_index > 0) {
-            auto prev_entry = get_log_entry(prev_log_index);
-            if (prev_entry.has_value()) {
-                prev_log_term = prev_entry->term();
+            if (const auto term = term_at(prev_log_index)) {
+                prev_log_term = *term;
             } else {
                 // Previous entry not in log (compacted) - return error
                 return kythira::future_factory_default::makeExceptionalFuture<
@@ -5723,9 +5742,11 @@ auto node<Types>::get_last_log_index() const -> log_index_type {
 template<raft_types Types>
 
 auto node<Types>::get_last_log_term() const -> term_id_type {
-    // If log is empty, return 0 (no entries)
+    // An empty log ends at the snapshot boundary when there is one: that is
+    // the entry get_last_log_index() names (see term_at()).
     if (_log.empty()) {
-        return term_id_type{0};
+        return _snapshot_index > 0 && _snapshot_index == get_last_log_index() ? _snapshot_term
+                                                                              : term_id_type{0};
     }
     return _log.back().term();
 }
@@ -5827,6 +5848,18 @@ auto node<Types>::append_log_entry(const log_entry_type& entry) -> void {
 
 template<raft_types Types>
 
+auto node<Types>::term_at(log_index_type index) const -> std::optional<term_id_type> {
+    if (auto entry = get_log_entry(index)) {
+        return entry->term();
+    }
+    if (index > 0 && index == _snapshot_index) {
+        return _snapshot_term;
+    }
+    return std::nullopt;
+}
+
+template<raft_types Types>
+
 auto node<Types>::get_log_entry(log_index_type index) const -> std::optional<log_entry_type> {
     // Handle invalid index
     if (index == 0) {
@@ -5900,7 +5933,10 @@ auto node<Types>::replicate_to_followers() -> void {
                 continue;
             }
             auto first_log_index = _log.empty() ? log_index_type{1} : _log.front().index();
-            actions.push_back({peer_id, next_idx < first_log_index});
+            // nextIndex one past the snapshot boundary needs no snapshot:
+            // prevLogIndex is the boundary, whose term term_at() knows.
+            const bool at_boundary = _snapshot_index > 0 && next_idx == _snapshot_index + 1;
+            actions.push_back({peer_id, next_idx < first_log_index && !at_boundary});
         }
     }
     // _mutex released — safe to do blocking I/O now.
@@ -5964,9 +6000,8 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
         prev_log_term = term_id_type{0};
 
         if (prev_log_index > 0) {
-            auto prev_entry = get_log_entry(prev_log_index);
-            if (prev_entry.has_value()) {
-                prev_log_term = prev_entry->term();
+            if (const auto term = term_at(prev_log_index)) {
+                prev_log_term = *term;
             } else {
                 _logger.debug("Previous entry not in log, switching to snapshot",
                               {{"node_id", node_id_to_string(_node_id)},
@@ -7189,9 +7224,8 @@ auto node<Types>::create_snapshot() -> void {
     // Get the term of the last applied entry
     term_id_type last_applied_term = term_id_type{0};
     if (_last_applied > 0) {
-        auto last_entry = get_log_entry(_last_applied);
-        if (last_entry.has_value()) {
-            last_applied_term = last_entry->term();
+        if (const auto term = term_at(_last_applied)) {
+            last_applied_term = *term;
         }
     }
 
@@ -7241,9 +7275,8 @@ auto node<Types>::create_snapshot(const std::vector<std::byte>& state_machine_st
     // Get the term of the last applied entry
     term_id_type last_applied_term = term_id_type{0};
     if (_last_applied > 0) {
-        auto last_entry = get_log_entry(_last_applied);
-        if (last_entry.has_value()) {
-            last_applied_term = last_entry->term();
+        if (const auto term = term_at(_last_applied)) {
+            last_applied_term = *term;
         }
     }
 
@@ -7290,6 +7323,10 @@ auto node<Types>::compact_log() -> void {
 
     auto& snap = snapshot_opt.value();
     auto last_included_index = snap.last_included_index();
+    if (last_included_index >= _snapshot_index) {
+        _snapshot_index = last_included_index;
+        _snapshot_term = snap.last_included_term();
+    }
 
     _logger.info("Compacting log", {{"node_id", node_id_to_string(_node_id)},
                                     {"last_included_index", std::to_string(last_included_index)},
@@ -7378,6 +7415,8 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
 
         // Update last_applied to snapshot's last_included_index
         _last_applied = snap.last_included_index();
+        _snapshot_index = snap.last_included_index();
+        _snapshot_term = snap.last_included_term();
 
         // Update commit_index if snapshot index is higher
         if (snap.last_included_index() > _commit_index) {
