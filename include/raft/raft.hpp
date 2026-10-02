@@ -38,6 +38,9 @@
 #include <atomic>
 #include <format>
 #include <span>
+#include <condition_variable>
+#include <stop_token>
+#include <thread>
 
 namespace kythira {
 
@@ -1303,6 +1306,26 @@ private:
     // of any learner_capacity the group declares — promotion never affects,
     // and is never affected by, the separate learner-capacity ceiling.
     [[nodiscard]] auto group_has_promotion_capacity(placement_group_id_type group) const -> bool;
+
+    // ── Quorum worker ────────────────────────────────────────────────────────
+    // Assessment, provisioning and decommissioning call the quorum manager
+    // and wait for it, and a real manager does blocking I/O (a container
+    // create and start takes hundreds of milliseconds).  On the heartbeat
+    // tick that stopped heartbeats for longer than an election timeout, so a
+    // leader lost its term in the middle of the replacement it had started.
+    // The tick only posts a request; this thread does the work.  Requests
+    // made while it is busy coalesce into one more pass.
+    auto request_quorum_work(bool assess) -> void;
+    auto quorum_worker_loop(std::stop_token stop) -> void;
+    auto stop_quorum_worker() -> void;
+
+    std::mutex _quorum_worker_mutex;
+    std::condition_variable_any _quorum_worker_cv;
+    bool _quorum_work_requested{false};
+    bool _quorum_assess_requested{false};
+    // Declared last so it is destroyed, and so joined, before every member
+    // its loop uses.
+    std::jthread _quorum_worker;
 };
 
 // Raft node concept - defines the interface for a Raft node using unified types
@@ -3346,6 +3369,9 @@ auto node<Types>::stop() -> void {
     // Stop the network server
     _network_server.stop();
 
+    // After _running is cleared, so no tick can start the worker again.
+    stop_quorum_worker();
+
     if constexpr (requires { _peer2peer_replicator.stop(); }) {
         _peer2peer_replicator.stop();
     }
@@ -4186,14 +4212,57 @@ auto node<Types>::check_heartbeat_timeout() -> void {
             }
         }
     }
-    if (should_assess) {
-        run_quorum_assessment();
-    }
-
     // Req 14.5 / 15 — advance provisioned replacements every tick rather than
     // every quorum_check_interval, so a replaced node is removed as soon as
-    // its replacement's promotion commits.
-    reconcile_pending_replacements();
+    // its replacement's promotion commits.  Both run on the quorum worker.
+    request_quorum_work(should_assess);
+}
+
+template<raft_types Types> auto node<Types>::request_quorum_work(bool assess) -> void {
+    {
+        std::lock_guard<std::mutex> lock(_quorum_worker_mutex);
+        if (!_running.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (!_quorum_worker.joinable()) {
+            _quorum_worker =
+                std::jthread([this](std::stop_token stop) { quorum_worker_loop(stop); });
+        }
+        _quorum_work_requested = true;
+        _quorum_assess_requested = _quorum_assess_requested || assess;
+    }
+    _quorum_worker_cv.notify_one();
+}
+
+template<raft_types Types> auto node<Types>::quorum_worker_loop(std::stop_token stop) -> void {
+    while (true) {
+        bool assess = false;
+        {
+            std::unique_lock<std::mutex> lock(_quorum_worker_mutex);
+            if (!_quorum_worker_cv.wait(lock, stop, [this] { return _quorum_work_requested; })) {
+                return;  // stop requested
+            }
+            _quorum_work_requested = false;
+            assess = std::exchange(_quorum_assess_requested, false);
+        }
+        if (assess) {
+            run_quorum_assessment();
+        }
+        reconcile_pending_replacements();
+    }
+}
+
+template<raft_types Types> auto node<Types>::stop_quorum_worker() -> void {
+    std::jthread worker;
+    {
+        std::lock_guard<std::mutex> lock(_quorum_worker_mutex);
+        worker = std::move(_quorum_worker);
+        _quorum_work_requested = false;
+        _quorum_assess_requested = false;
+    }
+    // jthread's destructor requests stop, which wakes the wait, and joins.
+    // A pass already under way finishes first: a quorum manager call is
+    // bounded by its own timeout.
 }
 
 // Placeholder implementations for private methods
