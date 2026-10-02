@@ -554,6 +554,41 @@ BOOST_AUTO_TEST_CASE(test_dtls_pki_cn_validator_is_honoured,
     peer.server.stop();
 }
 
+// cipher_suites takes IANA names (OpenSSL's own names work too) and is
+// enforced: overlapping lists handshake, disjoint ones do not. The IANA
+// spelling used to go to OpenSSL untranslated and fail the whole setup.
+BOOST_AUTO_TEST_CASE(test_dtls_pki_cipher_suites_are_enforced,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    const pki_material pki;
+    auto server_security = pki.server_security();
+    std::get<kythira::pki_credentials>(server_security.credentials).cipher_suites = {
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"};
+    kythira::coap_server_config server_config;
+    server_config.security = server_security;
+    recording_server peer{server_config};
+    const auto endpoint = endpoint_for(peer.server.bound_port());
+
+    {
+        auto security = pki.client_security();
+        std::get<kythira::pki_credentials>(security.credentials).cipher_suites = {
+            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384", "ECDHE-ECDSA-AES128-GCM-SHA256"};
+        auto client_config = fast_client_config();
+        client_config.security = security;
+        test_client client{{{peer_node_id, endpoint}}, client_config, test_metrics{}};
+        BOOST_TEST(vote(client, 31).term() == 31U);
+    }
+    {
+        auto security = pki.client_security();
+        std::get<kythira::pki_credentials>(security.credentials).cipher_suites = {
+            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"};
+        auto client_config = fast_client_config();
+        client_config.security = security;
+        test_client client{{{peer_node_id, endpoint}}, client_config, test_metrics{}};
+        BOOST_TEST(refused(client, std::chrono::seconds{10}));
+    }
+    peer.server.stop();
+}
+
 // Bad key material fails before any socket exists: in start() for a server,
 // at construction for a client.
 BOOST_AUTO_TEST_CASE(test_pki_with_missing_files_fails_early,

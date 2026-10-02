@@ -222,6 +222,14 @@ coap_client<Types>::coap_client(
             }
         }
         _security_provider = make_security_provider(security, coap_security_role::client);
+#ifdef LIBCOAP_AVAILABLE
+        if (const auto* pki = std::get_if<pki_credentials>(&security.credentials)) {
+            _dtls_cipher_list = detail::dtls_cipher_list(pki->cipher_suites);
+            if (!_dtls_cipher_list.empty()) {
+                detail::require_openssl_libcoap_for_cipher_suites();
+            }
+        }
+#endif
     }
 
     // Initialize libcoap context
@@ -229,6 +237,9 @@ coap_client<Types>::coap_client(
     _coap_context = coap_new_context(nullptr);
     if (!_coap_context) {
         throw coap_transport_error("Failed to create CoAP context");
+    }
+    if (!_dtls_cipher_list.empty()) {
+        coap_context_set_app_data(_coap_context, &_dtls_cipher_list);
     }
 
     // Configure CoAP context settings
@@ -564,6 +575,14 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
             }
         }
         _security_provider = make_security_provider(security, coap_security_role::server);
+#ifdef LIBCOAP_AVAILABLE
+        if (const auto* pki = std::get_if<pki_credentials>(&security.credentials)) {
+            _dtls_cipher_list = detail::dtls_cipher_list(pki->cipher_suites);
+            if (!_dtls_cipher_list.empty()) {
+                detail::require_openssl_libcoap_for_cipher_suites();
+            }
+        }
+#endif
     }
 
     // Initialize libcoap context
@@ -571,6 +590,9 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
     _coap_context = coap_new_context(nullptr);
     if (!_coap_context) {
         throw coap_transport_error("Failed to create CoAP server context");
+    }
+    if (!_dtls_cipher_list.empty()) {
+        coap_context_set_app_data(_coap_context, &_dtls_cipher_list);
     }
 
     // Configure CoAP context settings
@@ -1190,6 +1212,9 @@ auto coap_client<Types>::setup_dtls_context() -> void {
             pki_config.cn_call_back_arg = this;
         }
 
+        if (!_dtls_cipher_list.empty()) {
+            pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
+        }
         if (!coap_context_set_pki(_coap_context, &pki_config)) {
             throw coap_security_error("Failed to configure DTLS PKI context");
         }
@@ -1248,17 +1273,12 @@ auto coap_client<Types>::setup_dtls_context() -> void {
         validate_cipher_suites(_config.cipher_suites);
         auto selected_ciphers = select_cipher_suites();
 
-        // Configure cipher suites if specified
+        // The list itself is enforced per session: see
+        // detail::restrict_client_session_ciphers() in new_dtls_client_session().
         if (!selected_ciphers.empty()) {
-            // Set allowed cipher suites for enhanced security
-            for (const auto& cipher_suite : selected_ciphers) {
-                _logger.debug("Configuring cipher suite", {{"cipher_suite", cipher_suite}});
-                // Note: Actual cipher suite configuration would depend on libcoap version
-                // This is a placeholder for the interface
-            }
+            _logger.debug("Restricting DTLS cipher suites", {{"cipher_list", _dtls_cipher_list}});
         } else {
-            // Use secure default cipher suites
-            _logger.debug("Using default secure cipher suites");
+            _logger.debug("Using libcoap's default DTLS cipher suites");
         }
 
         // Enable session resumption for performance
@@ -1400,6 +1420,9 @@ auto coap_client<Types>::reload_tls_material() -> void {
         pki_config.cn_call_back_arg = this;
     }
 
+    if (!_dtls_cipher_list.empty()) {
+        pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
+    }
     if (!coap_context_set_pki(_coap_context, &pki_config)) {
         throw coap_security_error("reload_tls_material: PKI setup rejected");
     }
@@ -3048,6 +3071,9 @@ auto coap_server<Types>::setup_dtls_context() -> void {
         }
 
         // Apply PKI configuration to context
+        if (!_dtls_cipher_list.empty()) {
+            pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
+        }
         if (!coap_context_set_pki(_coap_context, &pki_config)) {
             throw coap_security_error("Failed to configure server DTLS PKI context");
         }
@@ -3259,6 +3285,9 @@ auto coap_server<Types>::reload_tls_material() -> void {
         pki_config.cn_call_back_arg = this;
     }
 
+    if (!_dtls_cipher_list.empty()) {
+        pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
+    }
     if (!coap_context_set_pki(_coap_context, &pki_config)) {
         throw coap_security_error("reload_tls_material: PKI setup rejected");
     }
@@ -4377,7 +4406,7 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
         // there is no coap_new_client_session_dtls() in libcoap's public API.
         coap_session_t* session = nullptr;
         if (uri.scheme == COAP_URI_SCHEME_COAPS && _config.enable_dtls) {
-            session = coap_new_client_session(_coap_context, nullptr, &dst_addr, COAP_PROTO_DTLS);
+            session = new_dtls_client_session(&dst_addr);
         } else {
             // Delegates to the OSCORE-flavored constructor when
             // security.mode == oscore; identical to the previous plain
@@ -7800,8 +7829,20 @@ auto coap_client<Types>::new_dtls_client_session(const coap_address_t* dst_addr)
     }
 
     // PKI and RPK credentials are context-wide (coap_context_set_pki()),
-    // and libcoap applies them to client sessions too.
-    return coap_new_client_session(_coap_context, nullptr, dst_addr, COAP_PROTO_DTLS);
+    // and libcoap applies them to client sessions too. The cipher-suite
+    // restriction is not -- libcoap has no setting for it -- so it goes onto
+    // each session's SSL here, while its first flight is still unanswered
+    // (see restrict_client_session_ciphers() for why that is enough).
+    coap_session_t* session =
+        coap_new_client_session(_coap_context, nullptr, dst_addr, COAP_PROTO_DTLS);
+    if (session != nullptr &&
+        !detail::restrict_client_session_ciphers(session, _dtls_cipher_list)) {
+        _logger.error("Failed to apply the configured DTLS cipher suites to a new session",
+                      {{"cipher_list", _dtls_cipher_list}});
+        coap_session_release(session);
+        return nullptr;
+    }
+    return session;
 #else
     (void)dst_addr;
     return nullptr;

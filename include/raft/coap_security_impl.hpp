@@ -35,6 +35,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include <raft/coap_dtls_cipher_suites.hpp>
 #include <raft/coap_revocation.hpp>
 #endif
 
@@ -61,6 +62,75 @@ namespace detail {
         return true;
     }
     return coap_context_set_pki_root_cas(ctx, ca_file.c_str(), nullptr) != 0;
+}
+
+// ── Applying pki_credentials::cipher_suites through libcoap ───────────────
+// libcoap has no "cipher list" setting: its OpenSSL backend hard-codes
+// COAP_OPENSSL_CIPHERS. What it does offer is a way to reach the SSL object
+// for each connection, and that is enough on both sides:
+//
+// - server: coap_dtls_pki_t::additional_tls_setup_call_back runs inside
+//   OpenSSL's ClientHello callback, before the server picks a suite, so
+//   restricting the SSL there decides what can be negotiated;
+// - client: libcoap 4.3.5 never calls that hook for clients, so the client
+//   restricts each new session through coap_session_get_tls() instead (see
+//   restrict_client_session_ciphers()).
+//
+// The hook gets no user argument of its own, so it finds the list through
+// the context's app data, which coap_client/coap_server point at their
+// _dtls_cipher_list member. It is only installed when a list is configured,
+// and everything unexpected fails the handshake rather than falling back to
+// the defaults.
+
+// The SSL* those functions hand out is only an SSL* when libcoap was built
+// against OpenSSL; any other TLS library would need its own cipher API.
+inline auto require_openssl_libcoap_for_cipher_suites() -> void {
+    const coap_tls_version_t* tls = coap_get_tls_library_version();
+    if (tls == nullptr || tls->type != COAP_TLS_LIBRARY_OPENSSL) {
+        throw coap_security_config_error(
+            "DTLS cipher_suites are configured, but this libcoap is not built with OpenSSL, so "
+            "they cannot be applied");
+    }
+}
+
+inline auto libcoap_cipher_list_hook(void* tls_session, coap_dtls_pki_t* /*setup_data*/) -> int {
+    auto* ssl = static_cast<SSL*>(tls_session);
+    if (ssl == nullptr) {
+        return 0;
+    }
+    const auto* session = static_cast<const coap_session_t*>(SSL_get_app_data(ssl));
+    const coap_context_t* ctx = session == nullptr ? nullptr : coap_session_get_context(session);
+    const auto* list =
+        ctx == nullptr ? nullptr : static_cast<const std::string*>(coap_context_get_app_data(ctx));
+    if (list == nullptr || list->empty()) {
+        return 0;
+    }
+    return apply_dtls_cipher_list(ssl, *list) ? 1 : 0;
+}
+
+// Restrict a freshly created client DTLS session to `list` (no-op for "").
+//
+// libcoap has already sent the first ClientHello by the time the session is
+// returned, so that one still advertises the default suites. That is
+// harmless: OpenSSL checks the ServerHello's choice against the *current*
+// list and aborts with "wrong cipher returned" otherwise, and the retried
+// ClientHello after a HelloVerifyRequest is built from the restricted list.
+// Restricting the shared SSL_CTX as well means every later session offers
+// only the configured suites from its first flight.
+[[nodiscard]] inline auto restrict_client_session_ciphers(coap_session_t* session,
+                                                          const std::string& list) -> bool {
+    if (list.empty()) {
+        return true;
+    }
+    coap_tls_library_t tls_lib{};
+    auto* ssl = static_cast<SSL*>(coap_session_get_tls(session, &tls_lib));
+    if (ssl == nullptr || tls_lib != COAP_TLS_LIBRARY_OPENSSL) {
+        return false;
+    }
+    if (!apply_dtls_cipher_list(ssl, list)) {
+        return false;
+    }
+    return SSL_CTX_set_cipher_list(SSL_get_SSL_CTX(ssl), list.c_str()) == 1;
 }
 #endif
 
@@ -228,6 +298,9 @@ public:
         if (_creds.verify_peer_cert) {
             pki_config.validate_cn_call_back = &dtls_pki_provider::validate_cn;
             pki_config.cn_call_back_arg = this;
+        }
+        if (!_creds.cipher_suites.empty()) {
+            pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
         }
         if (coap_context_set_pki(ctx, &pki_config) == 0) {
             throw coap_security_error("Failed to configure DTLS PKI context");

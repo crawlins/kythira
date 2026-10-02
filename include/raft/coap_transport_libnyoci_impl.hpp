@@ -108,6 +108,7 @@ extern "C" {
 // OpenSSL headers. network_simulator already links OpenSSL::SSL/Crypto, so this
 // costs consumers nothing.
 #include <openssl/ssl.h>
+#include <raft/coap_dtls_cipher_suites.hpp>
 // RFC 7250 raw public keys: the certificate-type extensions
 // (SSL_CTX_set1_client_cert_type and friends) and X509_STORE_CTX_get0_rpk()
 // arrived in OpenSSL 3.2. The vcpkg baseline pins a newer OpenSSL than that,
@@ -509,18 +510,7 @@ inline auto apply_pki_credentials(SSL_CTX* ctx, const pki_credentials& creds,
                              : SSL_VERIFY_PEER;
         SSL_CTX_set_verify(ctx, mode, nullptr);
     }
-    if (!creds.cipher_suites.empty()) {
-        std::string list;
-        for (const auto& suite : creds.cipher_suites) {
-            if (!list.empty()) {
-                list += ':';
-            }
-            list += suite;
-        }
-        if (SSL_CTX_set_cipher_list(ctx, list.c_str()) != 1) {
-            throw coap_security_error("failed to apply the configured DTLS cipher suites: " + list);
-        }
-    }
+    detail::apply_dtls_cipher_list(ctx, detail::dtls_cipher_list(creds.cipher_suites));
 }
 
 #ifdef KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
