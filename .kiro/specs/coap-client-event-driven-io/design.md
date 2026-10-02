@@ -61,6 +61,53 @@ socket, make one `NO_WAIT` call, count dispatches. If one call dispatches all
 N, the bottleneck measured in task 14 is not where this design says it is, and
 the right next step is to re-measure, not to build §2.
 
+### Task 1 results (measured October 2, 2026)
+
+`tests/coap_io_probe.cpp` (target `coap_io_probe`, not built by default and not
+registered with ctest) was run
+against two builds on Linux x86-64:
+
+- **4.3.5** — the vcpkg port's version and options at the `vcpkg.json`
+  baseline (`v4.3.5`, `ENABLE_DTLS=ON`, `DTLS_BACKEND=openssl`, static),
+  built from the upstream tag in the cloud sandbox because vcpkg itself cannot
+  fetch there. The port's two patches touch only DLL export and the tinydtls
+  include path.
+- **4.3.4** — Ubuntu 24.04's `libcoap3-dev` (`4.3.4-1.1build4`,
+  `libcoap-3-openssl`), the system build the task 14 machine linked.
+
+The peer is a raw UDP socket, so the probe decides how many replies sit in the
+client's socket buffer before libcoap reads any.
+
+| # | 4.3.5 (vcpkg port) | 4.3.4 (system) | Verdict |
+|---|---|---|---|
+| L1 | fd 3 (`coap_epoll_is_supported()` = 1) | fd 3 | **Holds.** Both builds have epoll; readiness mode is the main path on both |
+| L2 | readable with replies queued; stays readable after every partial step; not readable once drained | same | **Holds.** A zero-timeout `poll()` is a correct "more work?" test; the L2 fallback is not needed |
+| L3 | N = 1, 8, 32, 64 replies on one socket: each `NO_WAIT` call dispatches exactly 1, N calls to drain. Three sockets × 16: first call dispatches 3, 16 calls | same | **Holds.** One datagram per ready socket per call. The gate passes |
+| L4 | idle: returns **0**; CON outstanding: 2,281 ms (ack_timeout 2 s plus jitter) | idle 0; CON 2,250 ms | **Holds, with a correction:** 0 means "no timer scheduled", not "due now", so it must map to `io_max_wait`, never to a zero timeout |
+| L4b | the epoll fd itself became readable when the retransmit timer fell due (`poll(fd, 10 s)` returned after 2,281 ms with no I/O) | same, 2,250 ms | **New.** libcoap arms a `timerfd` inside its epoll set from `coap_io_prepare_epoll()`, so a wait on the fd wakes for libcoap's own timers even if the timeout were wrong. The computed timeout stays as specified; this makes it belt and braces |
+| L5 | a session created after the first `poll()`: its reply woke `poll(fd)` and dispatched | same | **Holds.** No extra wake needed for new sessions |
+| L6 | every response handler ran on the calling thread, inside `coap_io_process()` | same | **Holds** |
+| L7 | 8 CON requests on one session: **1** on the wire before any step, then one released per step as each ACK is processed (8 steps for 8). With `coap_session_set_nstart(s, 8)`: 8 on the wire at once, still 1 dispatched per step | same | **New.** Explains why L3 binds once PR #385 raises NSTART; see below |
+
+**L7: why it is L3, not NSTART, that binds the task 14 cells.** libcoap
+enforces RFC 7252's NSTART per session, default 1: with it, the second CON to
+a peer waits in libcoap's delay queue until the first one's ACK has been
+*processed* by `coap_io_process()`, so under the 5 ms loop a peer would get
+one exchange per pass however the drain worked. PR #385 (`c207095`) shares one
+session per peer and raises NSTART on it to `max_concurrent_requests` (50 by
+default), which is what the task 14 measurement ran with. The probe's second
+L7 row is that configuration: all requests go out at once, their replies are
+queued together on the peer's one socket, and the client then needs one
+`NO_WAIT` call per reply. So with #385 in place, L3 is the binding limit and
+both halves of this design apply: the readiness wait (Requirement 1) removes
+the 5 ms between calls, and the drain (Requirement 2) empties a peer's queued
+replies in one pass instead of one per pass.
+
+Without #385, NSTART = 1 would make the drain nearly idle (at most one CON
+reply per peer is ever ready) and the readiness wait alone would carry the
+gain. That is the configuration `main` had before #385; this change is built
+on top of it.
+
 ---
 
 ## 2. The loop
