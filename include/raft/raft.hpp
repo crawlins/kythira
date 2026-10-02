@@ -7555,6 +7555,15 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                     return;
                 }
 
+                // A reply from a peer this leader no longer tracks — removed by a
+                // configuration change that committed while the RPC was in flight —
+                // must not put it back: `_next_index` is the replication fan-out,
+                // so recreating the entry kept the leader sending AppendEntries to
+                // the removed server for the rest of its term.
+                if (!_next_index.contains(target)) {
+                    return;
+                }
+
                 if (response.success()) {
                     // Success - update next_index and match_index
                     auto new_match_index = next_idx + entries_to_send.size() - 1;
@@ -7808,9 +7817,13 @@ auto node<Types>::send_install_snapshot_chunk(node_id_type target,
                     }
 
                     if (is_last_chunk) {
-                        // Snapshot transfer complete - update next_index and match_index
-                        _next_index[target] = snap->last_included_index() + 1;
-                        _match_index[target] = snap->last_included_index();
+                        // Snapshot transfer complete - update next_index and
+                        // match_index, unless the peer was removed while the
+                        // transfer ran (see the AppendEntries reply path).
+                        if (_next_index.contains(target)) {
+                            _next_index[target] = snap->last_included_index() + 1;
+                            _match_index[target] = snap->last_included_index();
+                        }
                         _snapshot_transfers_in_flight.erase(target);
                     }
                 }
