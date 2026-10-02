@@ -5634,6 +5634,27 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(coap_cantcoap_integration_test PROPERTIES
         TIMEOUT 600 LABELS "coap;cantcoap;integration")
 
+    # DTLS over the backend's own socket (coap_cantcoap_dtls.hpp). Unconditional
+    # like the two above: the DTLS layer is plain OpenSSL and compiles whether or
+    # not cantcoap is installed, so a default build still checks it, while the
+    # handshakes themselves collapse to a single "skipped" case.
+    add_executable(coap_cantcoap_dtls_test coap_cantcoap_dtls_test.cpp)
+    target_link_libraries(coap_cantcoap_dtls_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(coap_cantcoap_dtls_test PRIVATE Folly::folly)
+    endif()
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(coap_cantcoap_dtls_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    target_compile_features(coap_cantcoap_dtls_test PRIVATE cxx_std_23)
+    add_test(NAME coap_cantcoap_dtls_test COMMAND coap_cantcoap_dtls_test)
+    set_tests_properties(coap_cantcoap_dtls_test PROPERTIES
+        TIMEOUT 300 LABELS "coap;cantcoap;security;integration")
+
     # ── OSCORE (RFC 8613) ────────────────────────────────────────────────────────
     # The conformance suite for include/raft/oscore.hpp, checked against every test
     # vector in RFC 8613 Appendix C. Deliberately depends on nothing but OpenSSL and

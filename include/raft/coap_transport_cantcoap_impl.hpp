@@ -30,6 +30,7 @@
 //   block-wise         block_option (coap_block_option.hpp) + our own sequencing
 //   OSCORE             oscore::security_context (raft/oscore.hpp)
 //   EDHOC bootstrap    coap_edhoc_bootstrap.hpp over /.well-known/edhoc
+//   DTLS               OpenSSL over our own socket (coap_cantcoap_dtls.hpp)
 //
 // So "own the stack" really means "own the socket and the timer, and wire up
 // the pieces" -- not "reimplement CoAP".
@@ -63,6 +64,7 @@
 // raft/coap_transport.hpp -- see above.
 #include <raft/coap_transport_config.hpp>
 #include <raft/coap_block_option.hpp>
+#include <raft/coap_cantcoap_dtls.hpp>
 #include <raft/coap_edhoc_bootstrap.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
@@ -135,23 +137,19 @@ namespace cantcoap_detail {
 /// The same finding as the libnyoci backend, reached independently:
 /// `coap_security_provider`'s whole interface is expressed in libcoap types, so
 /// it cannot be reused from a backend that cannot include a libcoap header.
+/// What this backend has instead is every datagram on both sides of its own
+/// socket, and both security layers are built on that:
 ///
-/// What *is* reusable is `raft/oscore.hpp` -- object security implemented
-/// against CoAP message bytes -- which is exactly the shape this backend needs,
-/// since it already owns the bytes on both sides of the socket. That was
-/// written for the libnyoci backend and is inherited here for free, which is
-/// the payoff of having made it transport-neutral. The EDHOC bootstrap that
-/// derives its context (`coap_edhoc_bootstrap.hpp`) is inherited the same way.
-///
-/// DTLS is refused. cantcoap is cleartext-only and, unlike libnyoci, there is
-/// no plugin to fall back on: providing it would mean driving an OpenSSL DTLS
-/// BIO over this backend's own socket, including the handshake, retransmission
-/// and cookie exchange. That is a transport in its own right and is out of
-/// scope for this spec; refusing beats a half-implementation that looks
-/// encrypted.
+/// - OSCORE (and the EDHOC bootstrap that derives its context) is object
+///   security over CoAP message bytes, `raft/oscore.hpp`, written for the
+///   libnyoci backend and inherited here unchanged.
+/// - DTLS is OpenSSL driven over the same socket through a datagram BIO,
+///   `coap_cantcoap_dtls.hpp`, sitting between recvfrom()/sendto() and the
+///   CoAP message layer.
 enum class channel {
     plain,
-    oscore
+    oscore,
+    dtls
 };
 
 template<typename Config>
@@ -180,13 +178,10 @@ template<typename Config>
         case coap_auth_mode::dtls_psk:
         case coap_auth_mode::dtls_pki:
         case coap_auth_mode::dtls_rpk:
-            throw coap_security_error(
-                std::string("the cantcoap CoAP backend cannot provide DTLS for this ") + role +
-                ". cantcoap is a message codec with no transport, and unlike libnyoci there is no "
-                "DTLS plugin to drive -- supplying it would mean implementing the DTLS handshake "
-                "and record layer over this backend's own socket. Use OSCORE here (object "
-                "security, which this backend does provide), or the libcoap or libnyoci backend "
-                "for DTLS. See .kiro/specs/coap-transport-cantcoap/ Requirement 6.");
+            // Credentials are checked, and key material loaded, when the
+            // dtls_layer is built: at construction for a client and in start()
+            // for a server, matching where each opens its socket.
+            return {channel::dtls, std::move(effective)};
     }
     throw coap_security_config_error("unknown coap_auth_mode");
 }
@@ -199,53 +194,6 @@ template<typename Config>
            std::get<oscore_credentials>(config.credentials).bootstrap_method ==
                oscore_bootstrap::edhoc;
 }
-
-/// A peer's socket address, of either family.
-///
-/// The backend prefers one AF_INET6 socket that also carries v4 peers
-/// v4-mapped, but falls back to AF_INET on a kernel with no IPv6 at all, so the
-/// address type has to hold both.
-struct peer_address {
-    sockaddr_storage storage{};
-    socklen_t length{0};
-
-    [[nodiscard]] auto as_sockaddr() const -> const sockaddr* {
-        return reinterpret_cast<const sockaddr*>(&storage);
-    }
-
-    /// The bytes that identify this peer: family, address and port, without
-    /// the padding and the IPv6 flow label that would make two datagrams from
-    /// the same peer compare unequal.
-    [[nodiscard]] auto key() const -> std::string {
-        std::string out;
-        if (storage.ss_family == AF_INET6) {
-            const auto& v6 = reinterpret_cast<const sockaddr_in6&>(storage);
-            out.push_back('6');
-            out.append(reinterpret_cast<const char*>(&v6.sin6_addr), sizeof(v6.sin6_addr));
-            out.append(reinterpret_cast<const char*>(&v6.sin6_port), sizeof(v6.sin6_port));
-            out.append(reinterpret_cast<const char*>(&v6.sin6_scope_id), sizeof(v6.sin6_scope_id));
-        } else if (storage.ss_family == AF_INET) {
-            const auto& v4 = reinterpret_cast<const sockaddr_in&>(storage);
-            out.push_back('4');
-            out.append(reinterpret_cast<const char*>(&v4.sin_addr), sizeof(v4.sin_addr));
-            out.append(reinterpret_cast<const char*>(&v4.sin_port), sizeof(v4.sin_port));
-        }
-        return out;
-    }
-
-    /// "127.0.0.1:5684" or "[::1]:5684", for error messages.
-    [[nodiscard]] auto to_string() const -> std::string {
-        std::array<char, INET6_ADDRSTRLEN> text{};
-        if (storage.ss_family == AF_INET6) {
-            const auto& v6 = reinterpret_cast<const sockaddr_in6&>(storage);
-            ::inet_ntop(AF_INET6, &v6.sin6_addr, text.data(), text.size());
-            return "[" + std::string{text.data()} + "]:" + std::to_string(ntohs(v6.sin6_port));
-        }
-        const auto& v4 = reinterpret_cast<const sockaddr_in&>(storage);
-        ::inet_ntop(AF_INET, &v4.sin_addr, text.data(), text.size());
-        return std::string{text.data()} + ":" + std::to_string(ntohs(v4.sin_port));
-    }
-};
 
 #ifdef CANTCOAP_AVAILABLE
 
@@ -590,6 +538,14 @@ public:
         // do. Opening here rather than lazily means a bind failure surfaces at
         // construction instead of on the first RPC.
         _socket.open(0);
+        if (selected == cantcoap_detail::channel::dtls) {
+            // Loads every credential now, so bad key material fails the
+            // constructor rather than the first handshake.
+            _dtls = std::make_unique<cantcoap_detail::dtls_layer>(
+                security, coap_security_role::client,
+                [this](const cantcoap_detail::peer_address& peer, const std::uint8_t* data,
+                       std::size_t length) { _socket.send_to(peer, data, length); });
+        }
         _thread = std::jthread([this](std::stop_token stop) { run_loop(stop); });
 #endif
     }
@@ -599,6 +555,13 @@ public:
         if (_thread.joinable()) {
             _thread.request_stop();
             _thread.join();
+        }
+        if (_dtls) {
+            // The loop has stopped, so this thread is now the only one that
+            // touches the DTLS sessions. close_notify lets each server free its
+            // half now rather than when the session is evicted.
+            _dtls->close_all();
+            _dtls.reset();
         }
         _socket.close();
 #endif
@@ -666,6 +629,10 @@ private:
         /// unreachable first address still gets through.
         std::vector<cantcoap_detail::peer_address> peers;
         std::size_t peer_index{0};
+
+        [[nodiscard]] auto current_peer() const -> const cantcoap_detail::peer_address& {
+            return peers[peer_index];
+        }
         std::chrono::steady_clock::time_point deadline;
         std::chrono::milliseconds backoff{0};
         std::size_t retransmissions{0};
@@ -925,9 +892,21 @@ private:
             if (ready > 0 && (fds.revents & POLLIN) != 0) {
                 cantcoap_detail::peer_address from;
                 const auto received = _socket.receive_from(buffer.data(), buffer.size(), from);
-                if (received > 0) {
+                if (received > 0 && _dtls) {
+                    // Decrypt first: what comes out is ordinary CoAP, handled
+                    // exactly as a plaintext datagram would be.
+                    for (auto& plain :
+                         _dtls->receive(from, buffer.data(), static_cast<std::size_t>(received))) {
+                        handle_datagram(reinterpret_cast<std::uint8_t*>(plain.data()),
+                                        static_cast<int>(plain.size()));
+                    }
+                } else if (received > 0) {
                     handle_datagram(buffer.data(), static_cast<int>(received));
                 }
+            }
+            if (_dtls) {
+                _dtls->service_timers();
+                reject_failed_handshakes();
             }
             service_timers();
         }
@@ -979,6 +958,30 @@ private:
         }
         std::uniform_int_distribution<long long> distribution(0, jitter);
         return std::chrono::milliseconds{base + distribution(_rng)};
+    }
+
+    /// Fail every exchange waiting on a peer whose DTLS handshake just failed,
+    /// at once and with the reason, rather than letting each run out its
+    /// timeout against a session that will never exist.
+    auto reject_failed_handshakes() -> void {
+        const auto failures = _dtls->take_failures();
+        if (failures.empty()) {
+            return;
+        }
+        const std::lock_guard lock(_mutex);
+        for (const auto& [peer, reason] : failures) {
+            const auto key = peer.key();
+            for (auto it = _pending.begin(); it != _pending.end();) {
+                if (it->second && it->second->current_peer().key() == key) {
+                    settle_reject(*it->second, std::make_exception_ptr(coap_security_error(
+                                                   "DTLS handshake with " + peer.to_string() +
+                                                   " failed: " + reason)));
+                    it = _pending.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
     }
 
     [[nodiscard]] auto build_request(pending_exchange& exchange, const std::string& token)
@@ -1061,6 +1064,12 @@ private:
 
     auto send_datagram(const std::vector<std::byte>& bytes,
                        const cantcoap_detail::peer_address& peer) -> bool {
+        if (_dtls) {
+            // The layer owns the socket writes from here: a handshake that
+            // never completes surfaces through take_failures(), not here.
+            _dtls->send(peer, bytes);
+            return true;
+        }
         return _socket.send_to(peer, bytes.data(), bytes.size());
     }
 
@@ -1246,6 +1255,7 @@ private:
                     continue;
                 }
                 if (now >= exchange->expiry) {
+                    forget_dtls_sessions(*exchange);
                     to_reject.emplace_back(
                         token, std::make_exception_ptr(coap_timeout_error(
                                    "CoAP request to " + exchange->message->target_endpoint +
@@ -1256,6 +1266,7 @@ private:
                     continue;
                 }
                 if (exchange->retransmissions >= _config.max_retransmit) {
+                    forget_dtls_sessions(*exchange);
                     to_reject.emplace_back(
                         token, std::make_exception_ptr(coap_timeout_error(
                                    "CoAP request to " + exchange->message->target_endpoint +
@@ -1281,6 +1292,19 @@ private:
         }
     }
 
+    /// An exchange that went unanswered over DTLS may mean the server lost its
+    /// half of the session (it restarted without a close_notify reaching us).
+    /// No record we send on this session can then ever be read, so forget it:
+    /// the next request handshakes afresh instead of failing forever. Every
+    /// address the exchange rotated through is forgotten, since any of them
+    /// may hold the stale session.
+    auto forget_dtls_sessions(const pending_exchange& exchange) -> void {
+        if (_dtls) {
+            for (const auto& peer : exchange.peers) {
+                _dtls->reset(peer);
+            }
+        }
+    }
 #endif  // CANTCOAP_AVAILABLE
 
     serializer_type _serializer;
@@ -1298,6 +1322,9 @@ private:
     bool _edhoc_bootstrap{false};
     /// Serialises EDHOC bootstraps, so concurrent first RPCs run one handshake.
     std::mutex _bootstrap_mutex;
+    /// Set in DTLS mode. Touched only on the loop thread (and by the destructor
+    /// once the loop has stopped).
+    std::unique_ptr<cantcoap_detail::dtls_layer> _dtls;
 
     mutable std::mutex _mutex;
     std::unordered_map<std::string, std::unique_ptr<pending_exchange>> _pending;
@@ -1343,6 +1370,7 @@ public:
         kythira::coap_utils::validate_registry_content_formats(_registry);
         auto [selected, security] = cantcoap_detail::plan_security(_config, "server");
         _secure = selected == cantcoap_detail::channel::oscore;
+        _dtls_requested = selected == cantcoap_detail::channel::dtls;
         // When EDHOC is asked for, the context arrives when a peer runs the
         // handshake against /.well-known/edhoc. Until then this server serves
         // that resource and nothing else.
@@ -1389,10 +1417,23 @@ public:
             set_oscore(std::make_shared<oscore::security_context>(
                 std::get<oscore_credentials>(_security.credentials)));
         }
+        if (_dtls_requested) {
+            // Key material is loaded here, before any socket exists, so a
+            // server with unusable credentials never starts listening.
+            _dtls = std::make_unique<cantcoap_detail::dtls_layer>(
+                _security, coap_security_role::server,
+                [this](const cantcoap_detail::peer_address& peer, const std::uint8_t* data,
+                       std::size_t length) { _socket.send_to(peer, data, length); });
+        }
         // One AF_INET6 socket with IPV6_V6ONLY off, so v4 peers arrive
         // v4-mapped. _bind_address is recorded for parity with the other
         // backends and for diagnostics; this binds the wildcard, as they do.
-        _socket.open(_bind_port);
+        try {
+            _socket.open(_bind_port);
+        } catch (...) {
+            _dtls.reset();
+            throw;
+        }
         _actual_bound_port = _socket.bound_port();
         _running.store(true);
         _thread = std::jthread([this](std::stop_token stop) { run_loop(stop); });
@@ -1420,6 +1461,12 @@ public:
         {
             const std::lock_guard lock(_edhoc_mutex);
             _edhoc_channel.reset();
+        }
+        if (_dtls) {
+            // close_notify while the socket is still open: it is what tells
+            // each client to handshake again with whatever listens here next.
+            _dtls->close_all();
+            _dtls.reset();
         }
         _socket.close();
         set_oscore(nullptr);
@@ -1456,6 +1503,12 @@ private:
             fds.fd = _socket.fd();
             fds.events = POLLIN;
             const int ready = ::poll(&fds, 1, cantcoap_poll_interval_ms);
+            if (_dtls) {
+                // Handshake retransmission; the datagram path below never
+                // throws out of the DTLS layer, so neither does this.
+                _dtls->service_timers();
+                (void)_dtls->take_failures();  // nobody to tell on this side
+            }
             if (ready <= 0 || (fds.revents & POLLIN) == 0) {
                 continue;
             }
@@ -1468,7 +1521,15 @@ private:
             // malformed or undecryptable datagram must not take the server down
             // (Requirement 6.4, and the robustness test that checks it).
             try {
-                handle_datagram(buffer.data(), static_cast<int>(received), from);
+                if (_dtls) {
+                    for (auto& plain :
+                         _dtls->receive(from, buffer.data(), static_cast<std::size_t>(received))) {
+                        handle_datagram(reinterpret_cast<std::uint8_t*>(plain.data()),
+                                        static_cast<int>(plain.size()), from);
+                    }
+                } else {
+                    handle_datagram(buffer.data(), static_cast<int>(received), from);
+                }
             } catch (const std::exception&) {
                 // Swallowed deliberately; the peer sees a timeout, we stay up.
             }
@@ -1682,7 +1743,11 @@ private:
             const auto inner = oscore::parse_message(bytes);
             bytes = oscore::serialize_message(_reply_context->protect_response(inner, binding));
         }
-        _socket.send_to(to, bytes.data(), bytes.size());
+        if (_dtls) {
+            _dtls->send(to, bytes);
+        } else {
+            _socket.send_to(to, bytes.data(), bytes.size());
+        }
     }
 
     /// Serve one EDHOC message on `/.well-known/edhoc`.
@@ -1920,6 +1985,7 @@ private:
     metrics_type _metrics;
     coap_security_config _security{};
     bool _secure{false};
+    bool _dtls_requested{false};
     /// Guarded by `_mutex`: installed by the EDHOC responder thread, read on
     /// the loop thread through current_oscore().
     std::shared_ptr<oscore::security_context> _oscore;
@@ -1933,6 +1999,9 @@ private:
     mutable std::mutex _edhoc_mutex;
     std::shared_ptr<std::atomic<bool>> _edhoc_done{std::make_shared<std::atomic<bool>>(true)};
     std::jthread _edhoc_thread;
+    /// Set in DTLS mode between start() and stop(). Loop thread only, except
+    /// in stop() once the loop has been joined.
+    std::unique_ptr<cantcoap_detail::dtls_layer> _dtls;
 
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
