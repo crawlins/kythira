@@ -730,10 +730,34 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
     // `splitting` should be reported as splitting rather than as stable — the
     // driver can then decline to compute an operator that would only be
     // skipped.
+    flush_driver_reports();
     maybe_heartbeat();
 
     evaluate_hibernation(ready);
     return report;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::flush_driver_reports() -> void {
+    std::vector<pending_driver_report> pending;
+    {
+        std::lock_guard lock(_driver_reports_mutex);
+        pending.swap(_driver_reports);
+    }
+    for (auto& r : pending) {
+        // Every replica applies; only the leader reports — N copies of the
+        // same fact would tell the driver nothing extra.
+        const auto g = find_group(r._group);
+        if (!g || !g->_node || !g->_node->is_leader()) {
+            continue;
+        }
+        try {
+            r._send();
+        } catch (const std::exception& e) {
+            _cfg.logger.warning(std::string("multi_raft: placement driver report failed: ") +
+                                e.what());
+        }
+    }
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -2011,8 +2035,16 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
     // of clients holding a descriptor for a range that no longer exists is a
     // cost with no benefit. Every replica applies, but only the leader reports
     // — N copies of the same fact would tell the driver nothing extra.
-    if (_cfg.report_split && parent._node && parent._node->is_leader()) {
-        _cfg.report_split(cmd._children[derived_index], cmd._children);
+    //
+    // Queued, not sent: this runs inside the node's apply path, under its
+    // mutex. See `flush_driver_reports()`.
+    if (_cfg.report_split) {
+        std::lock_guard lock(_driver_reports_mutex);
+        _driver_reports.push_back(
+            {._group = parent._descriptor._group_id,
+             ._send = [this, derived = cmd._children[derived_index], children = cmd._children] {
+                 _cfg.report_split(derived, children);
+             }});
     }
 }
 
@@ -2462,12 +2494,18 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
     destroy_merged_source(target, cmd._source._group_id);
 
     target._last_merge_ns.store(now_ns(), std::memory_order_relaxed);
-    if (_cfg.report_merge && target._node && target._node->is_leader()) {
+    if (_cfg.report_merge) {
         // The command's own copy of the source descriptor, not a lookup: by
         // this point the local source replica has been torn down, and the
         // descriptor the merge was computed against is the one the driver needs
-        // in order to retire its routing row.
-        _cfg.report_merge(cmd._source, target._descriptor);
+        // in order to retire its routing row. Queued for the same reason as a
+        // split's report: this is the apply path, under the node's mutex.
+        std::lock_guard lock(_driver_reports_mutex);
+        _driver_reports.push_back(
+            {._group = target._descriptor._group_id,
+             ._send = [this, source = cmd._source, survivor = target._descriptor] {
+                 _cfg.report_merge(source, survivor);
+             }});
     }
     release(target);
     {
