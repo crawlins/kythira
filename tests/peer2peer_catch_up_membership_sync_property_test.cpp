@@ -211,8 +211,13 @@ BOOST_AUTO_TEST_CASE(add_server_makes_new_node_immediately_eligible,
     };
 
     auto node1 = make_node(1, net1);
+    // add_server() admits node 2 as a learner and promotes it only once it has
+    // caught up (raft-consensus Req 9.4), so node 2 must be running to answer.
+    auto node2 = make_node(2, net2);
     node1.set_cluster_configuration({1});
+    node2.set_cluster_configuration({2});
     node1.start();
+    node2.start();
 
     std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
     node1.check_election_timeout();
@@ -221,10 +226,14 @@ BOOST_AUTO_TEST_CASE(add_server_makes_new_node_immediately_eligible,
 
     BOOST_CHECK_EQUAL(node1.get_cluster_size(), 1u);
     node1.add_server(2);
-    // No heartbeat pump — checked at the exact synchronous point add_server()
-    // returns, proving eligibility does not wait for the change to commit.
-    BOOST_CHECK_EQUAL(node1.get_cluster_size(), 2u);
+    // Each tick is checked before the next one, so the size is read at the
+    // same synchronous point the joint entry takes effect on the leader.
+    BOOST_CHECK(wait_until([&] {
+        node1.check_heartbeat_timeout();
+        return node1.get_cluster_size() == 2u;
+    }));
 
+    node2.stop();
     node1.stop();
 }
 

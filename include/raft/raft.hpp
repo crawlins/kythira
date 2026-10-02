@@ -316,6 +316,21 @@ public:
     /// @{
 
     /// @brief Add a new server to the cluster via a joint-consensus configuration change.
+    ///
+    /// The server first joins as a learner and is promoted only once it has
+    /// caught up with the log (raft-consensus Requirement 9.4, dissertation
+    /// §4.2.1): catch-up runs in rounds, each replicating up to the leader's
+    /// last index at the round's start, and a round that finishes within
+    /// `election_timeout_min` starts the promotion. Unlike `add_learner()` and
+    /// `promote_to_voter()`, no placement-capacity check is applied.
+    ///
+    /// The future fails if leadership is lost, if the server makes no
+    /// replication progress for `append_entries_timeout() * 10`, or if it has
+    /// not caught up after ten rounds. The server is then left as a learner:
+    /// calling `add_server()` again resumes from there, and `remove_learner()`
+    /// drops it. While one is pending, `add_server()`, `remove_server()` and
+    /// `promote_to_voter()` are refused as a configuration change in progress.
+    ///
     /// @param new_node Identifier of the server to add.
     /// @return Future that resolves once the configuration change is committed.
     auto add_server(node_id_type new_node) -> future_type;
@@ -891,6 +906,41 @@ private:
     // cluster a term each time, which is exactly what transfer exists to avoid.
     bool _timeout_now_sent{false};
 
+    // ========================================================================
+    // Server addition with learner catch-up (dissertation §4.2.1, Req 9.4)
+    // ========================================================================
+    //
+    // add_server() admits the new server as a learner first and only starts
+    // the joint-consensus promotion once it has caught up. Until then a node
+    // with an empty log would count toward the new configuration's majority,
+    // and adding it to a three-node cluster with one node down stalls every
+    // commit until it has replicated the entire log.
+    //
+    // Catch-up is measured in rounds, as in the dissertation: each round
+    // replicates up to the leader's last log index at the round's start. A
+    // round that finishes within election_timeout_min means the learner is
+    // close enough that promoting it costs no more than one ordinary
+    // heartbeat delay. Guarded by _mutex and driven from the tick.
+    struct pending_server_addition {
+        node_id_type _node{};
+        std::shared_ptr<promise_type> _promise;
+        // Index of the learner configuration entry; 0 when the node was
+        // already a learner and no entry was appended.
+        log_index_type _learner_entry_index{0};
+        log_index_type _round_target{0};
+        std::chrono::steady_clock::time_point _round_start{};
+        std::size_t _rounds{0};
+        // Last observed match index and when it last moved: a learner that
+        // makes no progress for a whole config-change timeout is unreachable
+        // or broken, and the addition is abandoned rather than left pending.
+        log_index_type _last_match{0};
+        std::chrono::steady_clock::time_point _last_progress{};
+    };
+    std::optional<pending_server_addition> _server_addition;
+    // Rounds a learner gets before add_server() gives up on it (the
+    // dissertation suggests ten).
+    static constexpr std::size_t max_catch_up_rounds = 10;
+
     // Random number generator for election timeout randomization
     std::mt19937 _rng;
 
@@ -1098,12 +1148,28 @@ private:
     // the returned closure, because a continuation attached to that future may
     // re-enter the node.
     auto finish_leader_transfer(std::exception_ptr error) -> std::function<void()>;
+    // Drives a pending add_server() one step: abort on losing leadership, on a
+    // stalled learner or after max_catch_up_rounds, start the promotion once
+    // the learner has caught up, otherwise wait for the next tick. Called from
+    // every check_heartbeat_timeout().
+    auto drive_server_addition() -> void;
+    // Clears _server_addition and returns a closure that fails its caller's
+    // future. Must be called with _mutex held; run the closure after the lock
+    // is released, for the same reason as finish_leader_transfer().
+    auto abandon_server_addition(std::exception_ptr error) -> std::function<void()>;
+    // True while a joint-consensus change or a pending add_server() catch-up
+    // is in flight. Must be called with _mutex held.
+    [[nodiscard]] auto membership_change_in_progress() -> bool;
     // Requirement 9.6: whether `candidate` may be granted a vote by
     // membership — a voter of the current configuration (either half while
     // joint). True when this node knows no configuration yet, so a node that
     // has not been told its cluster can still take part in the first
     // election. Must be called with _mutex held.
     [[nodiscard]] auto candidate_in_configuration(const node_id_type& candidate) -> bool;
+    // Appends the C_old+new joint entry that makes `learner` a voter and
+    // returns the future of the whole change. Callers have already validated
+    // leadership, membership and capacity. Must be called with _mutex held.
+    auto begin_voter_promotion(node_id_type learner) -> future_type;
     auto become_leader() -> void;
 
     // ── The durability barrier (`.kiro/specs/durable-append-barrier/`) ───────
@@ -1825,8 +1891,7 @@ template<raft_types Types> auto node<Types>::reconcile_pending_replacements() ->
         };
         // A membership change is settled when no joint configuration is
         // pending and the synchronizer has nothing in flight.
-        bool settled = !_configuration.is_joint_consensus() &&
-                       !_config_synchronizer.is_configuration_change_in_progress();
+        bool settled = !_configuration.is_joint_consensus() && !membership_change_in_progress();
 
         for (auto it = _pending_replacements.begin(); it != _pending_replacements.end();) {
             const auto& new_id = it->first;
@@ -3385,6 +3450,15 @@ auto node<Types>::stop() -> void {
         }
     }
 
+    // A pending add_server() is driven by the tick too.
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+        auto settle = abandon_server_addition(
+            std::make_exception_ptr(std::runtime_error("node stopped during server addition")));
+        lock.unlock();
+        settle();
+    }
+
     // Stop the network server
     _network_server.stop();
 
@@ -3458,8 +3532,10 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
         return future;
     }
 
-    // Check if configuration change is already in progress
-    if (_config_synchronizer.is_configuration_change_in_progress()) {
+    // Check if configuration change is already in progress. A previous
+    // add_server() still catching up its learner counts: its promotion would
+    // otherwise collide with this one.
+    if (membership_change_in_progress()) {
         _logger.warning(
             "Cannot add server: configuration change already in progress",
             {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
@@ -3496,43 +3572,59 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
         return future;
     }
 
-    _logger.info(
-        "Starting server addition with joint consensus",
-        {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
+    // An existing learner skips straight to catch-up: it is already
+    // replicating, and appending a second learner entry for it would list it
+    // twice.
+    const auto& current_learners = _configuration.learners();
+    const bool already_learner = std::find(current_learners.begin(), current_learners.end(),
+                                           new_node) != current_learners.end();
 
-    // Create new configuration with added node
-    std::vector<node_id_type> new_nodes = _configuration.nodes();
-    new_nodes.push_back(new_node);
+    _logger.info("Starting server addition: catching up as a learner first",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"new_node", node_id_to_string(new_node)},
+                  {"already_learner", already_learner ? "true" : "false"}});
 
-    // C_new (final target): non-joint, used by config synchronizer to know when we are done.
-    // Learners are preserved unchanged — add_server() only affects the voting set.
-    cluster_configuration_type new_config{new_nodes, false, std::nullopt,
-                                          _configuration.learners()};
+    const auto now = std::chrono::steady_clock::now();
+    pending_server_addition pending;
+    pending._node = new_node;
+    pending._promise = std::make_shared<promise_type>();
+    pending._round_start = now;
+    pending._rounds = 1;
+    pending._last_progress = now;
 
-    // Start configuration change using ConfigurationSynchronizer
-    auto timeout = _config.append_entries_timeout() * 10;  // Longer timeout for config changes
-    auto config_future = _config_synchronizer.start_configuration_change(new_config, timeout);
+    if (!already_learner) {
+        // Requirement 9.4: the new server joins as a non-voting member. This
+        // is the same plain (non-joint) entry add_learner() appends, without
+        // its placement-capacity check: add_server() is the uncapacitated
+        // administrative path and has never applied one.
+        cluster_configuration_type learner_config = _configuration;
+        learner_config._learners.push_back(new_node);
 
-    // Build C_old+new joint configuration and append it as a configuration log entry.
-    // Setting _configuration = joint_config immediately causes the leader to replicate to
-    // all nodes in C_old ∪ C_new on the next heartbeat, before the entry commits.
-    cluster_configuration_type joint_config{new_nodes, true, _configuration.nodes(),
-                                            _configuration.learners()};
-    auto joint_bytes = serialize_configuration<node_id_type>(joint_config);
-    const auto joint_idx = get_last_log_index() + 1;
-    log_entry_type joint_entry{._term = _current_term,
-                               ._index = joint_idx,
-                               ._command = std::move(joint_bytes),
-                               ._type = entry_type::configuration};
-    // Initialize tracking for the new server before appending so it starts receiving entries
-    _next_index[new_node] = joint_idx;
-    _match_index[new_node] = 0;
-    append_log_entry(joint_entry);
-    // Requirement 1.3: a configuration entry gets exactly what a command entry
-    // gets. One that is lost is worse than a lost command, not better.
-    persist_and_barrier_locked(joint_entry);
-    _configuration = joint_config;
-    sync_peer2peer_membership();
+        auto command = serialize_configuration<node_id_type>(learner_config);
+        const auto entry_index = get_last_log_index() + 1;
+        log_entry_type entry{._term = _current_term,
+                             ._index = entry_index,
+                             ._command = std::move(command),
+                             ._type = entry_type::configuration};
+
+        // Initialize tracking before appending so replication starts on the next heartbeat.
+        _next_index[new_node] = entry_index;
+        _match_index[new_node] = 0;
+        append_log_entry(entry);
+        // Requirement 1.3: a configuration entry gets exactly what a command entry
+        // gets. One that is lost is worse than a lost command, not better.
+        persist_and_barrier_locked(entry);
+        _configuration = learner_config;
+        sync_peer2peer_membership();
+        pending._learner_entry_index = entry_index;
+    }
+
+    // Round one replicates everything up to and including the learner entry.
+    pending._round_target = get_last_log_index();
+    auto match_it = _match_index.find(new_node);
+    pending._last_match = match_it == _match_index.end() ? log_index_type{0} : match_it->second;
+    auto future = pending._promise->getFuture();
+    _server_addition = std::move(pending);
 
     _metrics.set_metric_name("raft_add_server_started");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -3540,45 +3632,10 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
     _metrics.add_one();
     _metrics.emit();
 
-    // Return the future from configuration synchronizer
-    // It will complete when the configuration change is committed
-    return config_future.thenTry([this, new_node, old_config = _configuration, new_config,
-                                  stop_flag = _stop_flag, scope = _async_scope](auto try_result) {
-        // The ticket is what makes this guard load-bearing rather than
-        // advisory: while it is held, stop()'s drain cannot return, so
-        // `this` cannot be destroyed underneath the body below.
-        const auto drain_ticket = scope->enter();
-        if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
-            throw std::runtime_error("node stopped");
-        }
-        if (try_result.hasException()) {
-            _logger.error("Add server failed", {{"node_id", node_id_to_string(_node_id)},
-                                                {"new_node", node_id_to_string(new_node)}});
-
-            _metrics.set_metric_name("raft_add_server_failed");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("new_node", node_id_to_string(new_node));
-            _metrics.add_one();
-            _metrics.emit();
-
-            std::rethrow_exception(try_result.exception());
-        }
-
-        _logger.info(
-            "Add server completed successfully",
-            {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
-
-        // Notify membership manager of configuration change
-        _membership.handle_cluster_membership_change(old_config, new_config);
-
-        _metrics.set_metric_name("raft_add_server_success");
-        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-        _metrics.add_dimension("new_node", node_id_to_string(new_node));
-        _metrics.add_one();
-        _metrics.emit();
-
-        return std::vector<std::byte>{};
-    });
+    // The rest is driven by check_heartbeat_timeout() through
+    // drive_server_addition(): the promotion starts once the learner has
+    // caught up, and the future resolves when C_new commits.
+    return future;
 }
 
 template<raft_types Types>
@@ -3587,6 +3644,147 @@ auto node<Types>::candidate_in_configuration(const node_id_type& candidate) -> b
         return true;
     }
     return _membership.is_node_in_configuration(candidate, _configuration);
+}
+
+template<raft_types Types> auto node<Types>::membership_change_in_progress() -> bool {
+    return _config_synchronizer.is_configuration_change_in_progress() ||
+           _server_addition.has_value();
+}
+
+template<raft_types Types>
+auto node<Types>::abandon_server_addition(std::exception_ptr error) -> std::function<void()> {
+    if (!_server_addition.has_value()) {
+        return [] {};
+    }
+    auto promise = std::move(_server_addition->_promise);
+    const auto new_node = _server_addition->_node;
+    _server_addition.reset();
+
+    _metrics.set_metric_name("raft_add_server_failed");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_dimension("new_node", node_id_to_string(new_node));
+    _metrics.add_one();
+    _metrics.emit();
+
+    // The node is deliberately left in place as a learner. Removing it would
+    // be a second configuration change on a path that is already failing, and
+    // a learner is harmless: it never votes and is never counted toward a
+    // quorum. A retried add_server() resumes from it; remove_learner() drops it.
+    return [promise, error] { promise->setException(error); };
+}
+
+template<raft_types Types> auto node<Types>::drive_server_addition() -> void {
+    std::unique_lock<std::mutex> lock(_mutex);
+    if (!_server_addition.has_value()) {
+        return;
+    }
+    auto& pending = *_server_addition;
+    const auto new_node = pending._node;
+
+    auto fail = [&](const std::string& why) {
+        _logger.warning("Add server abandoned", {{"node_id", node_id_to_string(_node_id)},
+                                                 {"new_node", node_id_to_string(new_node)},
+                                                 {"reason", why}});
+        auto settle = abandon_server_addition(std::make_exception_ptr(std::runtime_error(why)));
+        lock.unlock();
+        settle();
+    };
+
+    if (_state != kythira::server_state::leader) {
+        fail("Not leader - leadership lost while the new server was catching up");
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    auto match_it = _match_index.find(new_node);
+    const auto matched = match_it == _match_index.end() ? log_index_type{0} : match_it->second;
+    if (matched > pending._last_match) {
+        pending._last_match = matched;
+        pending._last_progress = now;
+    }
+
+    // Applied, not merely committed: applying the learner entry assigns
+    // _configuration, and a joint entry appended before that would be
+    // overwritten by it.
+    const bool learner_entry_applied = _last_applied >= pending._learner_entry_index;
+
+    if (matched >= pending._round_target && learner_entry_applied) {
+        const auto round_took =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - pending._round_start);
+        if (round_took < _config.election_timeout_min()) {
+            _logger.info("New server caught up; promoting it with joint consensus",
+                         {{"node_id", node_id_to_string(_node_id)},
+                          {"new_node", node_id_to_string(new_node)},
+                          {"rounds", std::to_string(pending._rounds)},
+                          {"match_index", std::to_string(matched)}});
+            auto promise = std::move(pending._promise);
+            _server_addition.reset();
+            auto promotion = begin_voter_promotion(new_node);
+            lock.unlock();
+
+            std::move(promotion)
+                .thenTry([this, promise, new_node, stop_flag = _stop_flag,
+                          scope = _async_scope](auto try_result) {
+                    const auto drain_ticket = scope->enter();
+                    const bool stopped =
+                        !drain_ticket || stop_flag->load(std::memory_order_acquire);
+                    if (try_result.hasException()) {
+                        if (!stopped) {
+                            _metrics.set_metric_name("raft_add_server_failed");
+                            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                            _metrics.add_dimension("new_node", node_id_to_string(new_node));
+                            _metrics.add_one();
+                            _metrics.emit();
+                        }
+                        promise->setException(try_result.exception());
+                        return;
+                    }
+                    if (!stopped) {
+                        _logger.info("Add server completed successfully",
+                                     {{"node_id", node_id_to_string(_node_id)},
+                                      {"new_node", node_id_to_string(new_node)}});
+                        _metrics.set_metric_name("raft_add_server_success");
+                        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                        _metrics.add_dimension("new_node", node_id_to_string(new_node));
+                        _metrics.add_one();
+                        _metrics.emit();
+                    }
+                    promise->setValue(std::vector<std::byte>{});
+                })
+                // detach() rather than a discard: under stdexec_backend a
+                // discarded continuation never runs, and the caller's future
+                // would never settle.
+                .detach();
+            return;
+        }
+
+        if (pending._rounds >= max_catch_up_rounds) {
+            fail("New server did not catch up within " + std::to_string(max_catch_up_rounds) +
+                 " rounds");
+            return;
+        }
+
+        // The round took longer than an election timeout, so the log grew
+        // meaningfully meanwhile. Chase the new tail.
+        ++pending._rounds;
+        pending._round_start = now;
+        pending._round_target = get_last_log_index();
+        _logger.debug("New server catch-up round started",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"new_node", node_id_to_string(new_node)},
+                       {"round", std::to_string(pending._rounds)},
+                       {"round_target", std::to_string(pending._round_target)},
+                       {"previous_round_ms", std::to_string(round_took.count())}});
+        return;
+    }
+
+    // Same budget a joint-consensus change gets, applied to progress rather
+    // than to the whole catch-up: a large log may take many such intervals,
+    // but one with no progress at all means the server is not answering.
+    const auto stall_limit = _config.append_entries_timeout() * 10;
+    if (now - pending._last_progress >= stall_limit) {
+        fail("New server made no replication progress while catching up");
+    }
 }
 
 template<raft_types Types>
@@ -3615,7 +3813,7 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     }
 
     // Check if configuration change is already in progress
-    if (_config_synchronizer.is_configuration_change_in_progress()) {
+    if (membership_change_in_progress()) {
         _logger.warning(
             "Cannot remove server: configuration change already in progress",
             {{"node_id", node_id_to_string(_node_id)}, {"old_node", node_id_to_string(old_node)}});
@@ -3891,6 +4089,20 @@ auto node<Types>::remove_learner(node_id_type learner) -> future_type {
         return future;
     }
 
+    // A learner that add_server() is still catching up is about to be
+    // promoted; removing it underneath would leave that promotion naming a
+    // node that is no longer in the configuration.
+    if (_server_addition.has_value() && _server_addition->_node == learner) {
+        _logger.warning(
+            "Cannot remove learner: add_server() is catching it up",
+            {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::make_exception_ptr(
+            std::runtime_error("Configuration change already in progress")));
+        return future;
+    }
+
     // Plain (non-joint) configuration change: removing a learner never affects the
     // voting set or quorum, so no joint-consensus phase is needed.
     cluster_configuration_type new_config = _configuration;
@@ -3961,7 +4173,7 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
         return future;
     }
 
-    if (_config_synchronizer.is_configuration_change_in_progress()) {
+    if (membership_change_in_progress()) {
         _logger.warning(
             "Cannot promote to voter: configuration change already in progress",
             {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
@@ -4007,6 +4219,11 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
         return future;
     }
 
+    return begin_voter_promotion(learner);
+}
+
+template<raft_types Types>
+auto node<Types>::begin_voter_promotion(node_id_type learner) -> future_type {
     _logger.info(
         "Starting learner promotion with joint consensus",
         {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
@@ -4179,6 +4396,9 @@ auto node<Types>::check_heartbeat_timeout() -> void {
     // Behind the leader check, a transfer whose leader stepped down would never
     // settle and its caller would wait forever.
     drive_leader_transfer();
+    // Same reason: a pending add_server() must be failed when this node stops
+    // leading, and only the tick notices that.
+    drive_server_addition();
 
     bool should_heartbeat = false;
 
