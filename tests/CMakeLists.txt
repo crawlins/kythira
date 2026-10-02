@@ -2455,6 +2455,10 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_network_test(coap_block_transfer_end_to_end_test coap_block_transfer_end_to_end_test.cpp)
     set_tests_properties(coap_block_transfer_end_to_end_test PROPERTIES
         TIMEOUT 300 LABELS "coap;integration;libcoap")
+    # In-flight request accounting against max_concurrent_sessions (Requirement 8).
+    add_network_test(coap_server_connection_limit_test coap_server_connection_limit_test.cpp)
+    set_tests_properties(coap_server_connection_limit_test PROPERTIES
+        TIMEOUT 180 LABELS "coap;integration;libcoap")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 
 if(KYTHIRA_BUILD_COAP_TRANSPORT)
