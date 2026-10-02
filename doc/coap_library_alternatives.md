@@ -18,7 +18,7 @@ predictions survived contact with the code, because several did not.
 | Sockets / event loop | Provided | **Written here** (~150 lines) |
 | Retransmission / dedup | Provided | **Written here**, over `pending_message` |
 | Block-wise transfer | **Block2 only** — no Block1 at all | **Written here**: Block1 *and* Block2 |
-| DTLS | **PSK + PKI, via its OpenSSL plugin** (`--enable-tls`); no RPK | **You wire it** (reuse `coap_security.hpp`) |
+| DTLS | **PSK + PKI + RPK, via its OpenSSL plugin** (`--enable-tls`; RPK needs OpenSSL >= 3.2) | **You wire it** (reuse `coap_security.hpp`) |
 | OSCORE / EDHOC | Not built in — supplied by kythira's own `raft/oscore.hpp` | Not built in — could reuse `raft/oscore.hpp` |
 | Build system | **autotools** | **none** (source files only) |
 | vcpkg port shape | `vcpkg_configure_make` (hard) | vendored `CMakeLists` (easy) |
@@ -175,20 +175,20 @@ costs worth knowing:
   P-256 is a few hundred bytes and works. This was found the hard way, by
   writing the PKI test with RSA-2048 first.
 
-**What is still refused, with specific reasons rather than a downgrade:**
+**DTLS-RPK works too, and it was refused for a while on a wrong premise.** The
+first assessment said raw public keys (RFC 7250) were not expressible through a
+plugin that exposes nothing but an `SSL_CTX`, and that this toolchain's OpenSSL
+(3.0.13) predated the certificate-type extensions anyway. The 3.0.13 was the
+host's; the vcpkg baseline pins 3.6.0 and libnyoci's port links that. And the
+extensions are `SSL_CTX` settings, which every `SSL` the plugin creates
+inherits, so the `SSL_CTX` was always enough. The adapter offers RPK only in
+both directions and decides trust in a verify callback, by the same
+byte-equality against `trusted_peer_keys` the libcoap backend uses. Against an
+OpenSSL older than 3.2 it still refuses `dtls_rpk` at construction, naming the
+version it found: silently downgrading a node that asked for encryption to
+plaintext Raft traffic is strictly worse than not starting.
 
-- **DTLS-RPK.** Raw public keys (RFC 7250) need the peer to negotiate a
-  non-X.509 certificate type, and OpenSSL only added the certificate-type
-  extensions in 3.2. The plugin exposes nothing but an `SSL_CTX`.
-- **The EDHOC bootstrap**, for now: the handshake is already transport-neutral,
-  but carrying its messages needs a `.well-known/edhoc` exchange this backend
-  does not offer. Static OSCORE provisioning works today.
-
-Refusing at construction is the only safe answer for both: silently downgrading
-a node that asked for encryption to plaintext Raft traffic is strictly worse
-than not starting.
-
-**OSCORE is no longer on that list.** It was, and the reason it came off is
+**OSCORE was once refused as well**, and the reason it stopped being refused is
 worth recording, because the first assessment was wrong in an instructive way.
 libnyoci ships no OSCORE — but neither did kythira: `oscore_provider` delegates
 entirely to libcoap, so there was no AES-CCM, COSE or key derivation anywhere in
@@ -232,8 +232,9 @@ drive; cantcoap is cleartext-only with nothing behind it, so channel security
 would mean running an OpenSSL DTLS BIO over this backend's own socket —
 handshake, retransmission, cookie exchange — which is a transport in its own
 right. It is refused at construction, pointing at OSCORE instead. That is a
-genuinely different refusal from libnyoci's RPK one: there the surface existed
-and OpenSSL lacked the feature; here the surface does not exist.
+genuinely different refusal from libnyoci's old RPK one: there the surface
+existed all along (it only looked like OpenSSL lacked the feature); here the
+surface does not exist.
 
 One prediction that scored well: cantcoap really can do Block1, and does. That
 is the one capability it has that libnyoci does not, exactly as this document

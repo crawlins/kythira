@@ -108,6 +108,16 @@ extern "C" {
 // OpenSSL headers. network_simulator already links OpenSSL::SSL/Crypto, so this
 // costs consumers nothing.
 #include <openssl/ssl.h>
+// RFC 7250 raw public keys: the certificate-type extensions
+// (SSL_CTX_set1_client_cert_type and friends) and X509_STORE_CTX_get0_rpk()
+// arrived in OpenSSL 3.2. The vcpkg baseline pins a newer OpenSSL than that,
+// and libnyoci's port links against it, but a distro build against an older
+// system OpenSSL still compiles -- it just refuses dtls_rpk, as before.
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+#define KYTHIRA_LIBNYOCI_HAS_DTLS_RPK 1
+#endif
 // For reserve_ephemeral_port() — see its comment for why libnyoci leaves us to
 // find a DTLS port ourselves.
 #include <arpa/inet.h>
@@ -292,7 +302,8 @@ enum class channel {
 /// call. There is no seam to sit above.
 ///
 /// What is achievable is libnyoci's own OpenSSL DTLS plugin, which turns out to
-/// be enough for two of the four secured modes. The refusals below are
+/// be enough for all three DTLS modes (RPK only where OpenSSL is >= 3.2);
+/// OSCORE rides plain UDP via raft/oscore.hpp. The refusals below are
 /// deliberate and specific: silently downgrading a node that asked for
 /// encryption to plaintext Raft traffic is strictly worse than not starting.
 ///
@@ -321,15 +332,25 @@ template<typename Config>
         case coap_auth_mode::dtls_rpk:
             // RFC 7250 raw public keys need the peer to negotiate a non-X.509
             // certificate type. libnyoci's plugin hands us nothing but an
-            // SSL_CTX, and OpenSSL only grew raw-public-key support in 3.2
-            // (SSL_CTX_set1_client_cert_type and friends) -- there is no way to
-            // express RPK through the surface available here.
+            // SSL_CTX -- but that turns out to be enough, because the
+            // certificate-type extensions are SSL_CTX-level settings and every
+            // SSL the plugin creates inherits them. What it does need is
+            // OpenSSL >= 3.2, which is where those extensions appeared.
+#ifdef KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
+            return {channel::dtls, std::move(effective)};
+#elif defined(LIBNYOCI_AVAILABLE)
             throw coap_security_error(
                 std::string("the libnyoci CoAP backend cannot provide DTLS-RPK for this ") + role +
                 ". Raw public keys (RFC 7250) require the certificate-type extensions OpenSSL "
-                "only added in 3.2, and libnyoci's DTLS plugin exposes nothing but an SSL_CTX. "
-                "Use dtls_pki here, or the libcoap-backed coap_client/coap_server for RPK. See "
-                ".kiro/specs/coap-transport-libnyoci/ Task 5.");
+                "only added in 3.2, and this build links " OPENSSL_VERSION_TEXT
+                ". Rebuild against OpenSSL >= 3.2 (the vcpkg baseline provides one), use "
+                "dtls_pki here, or use the libcoap-backed coap_client/coap_server.");
+#else
+            throw coap_security_error(
+                std::string("DTLS-RPK (RFC 7250) was requested for this libnyoci CoAP ") + role +
+                ", but the backend was built without libnyoci. Rebuild with the vcpkg "
+                "'coap-libnyoci' feature.");
+#endif
 
         case coap_auth_mode::oscore:
             // Object security rather than channel security, so it rides on
@@ -395,6 +416,9 @@ struct dtls_state {
     std::string psk_identity;
     std::vector<unsigned char> psk_key;
     std::string psk_hint;
+    // DER SubjectPublicKeyInfo of every peer dtls_rpk accepts. Read from the
+    // verify callback, which finds this object through the SSL_CTX's app data.
+    std::vector<std::vector<std::byte>> trusted_peer_keys;
     SSL_CTX* ssl_ctx{nullptr};
 
     dtls_state() = default;
@@ -499,6 +523,127 @@ inline auto apply_pki_credentials(SSL_CTX* ctx, const pki_credentials& creds,
     }
 }
 
+#ifdef KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
+
+/// Parse a PEM buffer as a public key, or failing that as a private key.
+///
+/// The libcoap backend hands rpk_credentials::public_key to libcoap as
+/// COAP_PKI_KEY_PEM_BUF's public_cert, which is normally a PEM PUBLIC KEY block;
+/// accepting a private key there too keeps configs that pass the same buffer
+/// twice working on both backends.
+[[nodiscard]] inline auto read_pem_key(const std::vector<std::byte>& pem, bool private_key)
+    -> EVP_PKEY* {
+    if (pem.empty()) {
+        return nullptr;
+    }
+    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+    if (bio == nullptr) {
+        return nullptr;
+    }
+    EVP_PKEY* key = private_key ? PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr)
+                                : PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    return key;
+}
+
+/// The dtls_rpk trust decision, made where OpenSSL asks for it.
+///
+/// A raw public key carries nothing to chain-validate, so OpenSSL reports every
+/// one as X509_V_ERR_RPK_UNTRUSTED and leaves the verdict to this callback.
+/// "Trusted" means exactly what it means in the libcoap backend's
+/// dtls_rpk_provider::is_trusted_peer_key(): the peer's DER SubjectPublicKeyInfo
+/// is byte-equal to one of rpk_credentials::trusted_peer_keys. In particular an
+/// empty list trusts nobody.
+extern "C" inline auto libnyoci_rpk_verify_trampoline(int preverify_ok, X509_STORE_CTX* store)
+    -> int {
+    EVP_PKEY* peer_key = X509_STORE_CTX_get0_rpk(store);
+    if (peer_key == nullptr) {
+        // An X.509 chain. The cert-type lists below offer RPK only, so a
+        // conforming peer never gets here; if one does, OpenSSL's own verdict
+        // (no CA store is configured, so a refusal) stands.
+        return preverify_ok;
+    }
+    auto* ssl =
+        static_cast<SSL*>(X509_STORE_CTX_get_ex_data(store, SSL_get_ex_data_X509_STORE_CTX_idx()));
+    const auto* state =
+        ssl == nullptr ? nullptr
+                       : static_cast<const dtls_state*>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl)));
+    if (state == nullptr) {
+        return 0;
+    }
+    unsigned char* der = nullptr;
+    const int der_len = i2d_PUBKEY(peer_key, &der);
+    if (der_len <= 0) {
+        return 0;
+    }
+    bool trusted = false;
+    for (const auto& candidate : state->trusted_peer_keys) {
+        if (candidate.size() == static_cast<std::size_t>(der_len) &&
+            std::memcmp(candidate.data(), der, candidate.size()) == 0) {
+            trusted = true;
+            break;
+        }
+    }
+    OPENSSL_free(der);
+    if (trusted) {
+        X509_STORE_CTX_set_error(store, X509_V_OK);
+    }
+    return trusted ? 1 : 0;
+}
+
+/// Apply RPK credentials to `ctx`: own key, RPK-only certificate types in both
+/// directions, and mandatory peer verification.
+///
+/// Mirrors the libcoap backend's dtls_rpk_provider, which always sets
+/// verify_peer_cert: the authentication is mutual, and a server refuses a
+/// client that presents no key at all.
+inline auto apply_rpk_credentials(SSL_CTX* ctx, dtls_state& state, const rpk_credentials& creds,
+                                  coap_security_role role) -> void {
+    EVP_PKEY* private_key = read_pem_key(creds.private_key, true);
+    if (private_key == nullptr) {
+        throw coap_security_error(
+            "failed to load the DTLS-RPK private key: rpk_credentials::private_key must be a "
+            "PEM private key");
+    }
+    if (!creds.public_key.empty()) {
+        EVP_PKEY* public_key = read_pem_key(creds.public_key, false);
+        if (public_key == nullptr) {
+            public_key = read_pem_key(creds.public_key, true);
+        }
+        const bool matches = public_key != nullptr && EVP_PKEY_eq(public_key, private_key) == 1;
+        EVP_PKEY_free(public_key);
+        if (!matches) {
+            EVP_PKEY_free(private_key);
+            throw coap_security_error(
+                "the DTLS-RPK public key does not match the private key, or is not a PEM key");
+        }
+    }
+    // No certificate: with RPK negotiated, OpenSSL presents the public half of
+    // the private key itself.
+    const int used = SSL_CTX_use_PrivateKey(ctx, private_key);
+    EVP_PKEY_free(private_key);
+    if (used != 1) {
+        throw coap_security_error("OpenSSL rejected the DTLS-RPK private key");
+    }
+
+    // RPK only, both ways. Offering X.509 as a fallback would let a peer with
+    // no certificate at all negotiate its way around the trust list.
+    static constexpr unsigned char rpk_only[] = {TLSEXT_cert_type_rpk};
+    if (SSL_CTX_set1_client_cert_type(ctx, rpk_only, sizeof(rpk_only)) != 1 ||
+        SSL_CTX_set1_server_cert_type(ctx, rpk_only, sizeof(rpk_only)) != 1) {
+        throw coap_security_error("failed to restrict DTLS certificate types to raw public keys");
+    }
+
+    state.trusted_peer_keys = creds.trusted_peer_keys;
+    SSL_CTX_set_app_data(ctx, &state);
+    const int mode = (role == coap_security_role::server)
+                         ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT)
+                         : SSL_VERIFY_PEER;
+    SSL_CTX_set_verify(ctx, mode, &libnyoci_rpk_verify_trampoline);
+}
+
+#endif  // KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
+
 /// Build the dtls_state for `security` and install it on `instance`.
 ///
 /// Order matters: nyoci_plat_tls_set_context() must run before the PSK setters,
@@ -517,6 +662,16 @@ inline auto configure_dtls(nyoci_t instance, const coap_security_config& securit
         apply_pki_credentials(state->ssl_ctx, std::get<pki_credentials>(security.credentials),
                               role);
     }
+#ifdef KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
+    if (security.mode == coap_auth_mode::dtls_rpk) {
+        if (!std::holds_alternative<rpk_credentials>(security.credentials)) {
+            throw coap_security_config_error(
+                "security.mode == dtls_rpk requires rpk_credentials in security.credentials");
+        }
+        apply_rpk_credentials(state->ssl_ctx, *state,
+                              std::get<rpk_credentials>(security.credentials), role);
+    }
+#endif
 
     if (nyoci_plat_tls_set_context(instance, state->ssl_ctx) != NYOCI_STATUS_OK) {
         throw coap_security_error("libnyoci rejected the DTLS context");
