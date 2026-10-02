@@ -739,6 +739,55 @@ int run_serve(const serve_options& opts) {
 
         server->Post("/v1/certificates/revoke", [&](const httplib::Request& req,
                                                     httplib::Response& res) {
+#ifdef KYTHIRA_HAS_AWS_ACM_PCA
+            if (opts.provider == "aws-acm-pca") {
+                // Requirement 11.3: 501 only when the CA has neither a CRL nor
+                // an OCSP configuration; otherwise revoke through ACM Private CA.
+                try {
+                    auto body = boost::json::parse(req.body).as_object();
+                    auto* serial_val = body.if_contains("serial");
+                    if (serial_val == nullptr || !serial_val->is_string() ||
+                        serial_val->as_string().empty()) {
+                        res.status = 400;
+                        res.set_content(R"({"error":"serial is required as a hex string"})",
+                                        "application/json");
+                        return;
+                    }
+                    std::string reason;
+                    if (auto* reason_val = body.if_contains("reason")) {
+                        if (!reason_val->is_string()) {
+                            res.status = 400;
+                            res.set_content(R"({"error":"reason must be a string"})",
+                                            "application/json");
+                            return;
+                        }
+                        reason = std::string(reason_val->as_string());
+                    }
+                    if (!std::move(acm_provider->revocation_configured()).get()) {
+                        res.status = 501;
+                        res.set_content(
+                            R"({"error":"not_implemented","detail":"the ACM Private CA has no CRL or OCSP configuration"})",
+                            "application/json");
+                        return;
+                    }
+                    std::move(acm_provider->revoke(std::string(serial_val->as_string()), reason))
+                        .get();
+                    res.status = 200;
+                    res.set_content(R"({"revoked":true})", "application/json");
+                } catch (const std::invalid_argument& ex) {
+                    res.status = 400;
+                    res.set_content(
+                        boost::json::serialize(boost::json::object{{"error", ex.what()}}),
+                        "application/json");
+                } catch (const std::exception& ex) {
+                    res.status = 502;
+                    res.set_content(
+                        boost::json::serialize(boost::json::object{{"error", ex.what()}}),
+                        "application/json");
+                }
+                return;
+            }
+#endif
             if (opts.provider != "local") {
                 res.status = 501;
                 res.set_content(R"({"error":"not_implemented"})", "application/json");

@@ -7,7 +7,9 @@
       "Action": [
         "acm-pca:GetCertificateAuthorityCertificate",
         "acm-pca:IssueCertificate",
-        "acm-pca:GetCertificate"
+        "acm-pca:GetCertificate",
+        "acm-pca:DescribeCertificateAuthority",
+        "acm-pca:RevokeCertificate"
       ],
       "Resource": "arn:aws:acm-pca:REGION:ACCOUNT_ID:certificate-authority/CA_ID"
     }
