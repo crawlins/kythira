@@ -5449,6 +5449,22 @@ else()
     message(STATUS "gRPC transport tests: skipped (raft_grpc_transport target not available)")
 endif()
 
+# ── TLS material sources (.kiro/specs/grpc-tls-reload/, Requirements 5, 6) ──
+# Transport-neutral, so registered outside the gRPC gate: they need only
+# certificate_authority (and, for the issuing source, its provider concept).
+if(TARGET certificate_authority)
+    foreach(source_test tls_material_source_unit_test issuing_tls_material_source_unit_test)
+        add_executable(${source_test} ${source_test}.cpp)
+        target_link_libraries(${source_test} PRIVATE
+            certificate_authority Boost::unit_test_framework OpenSSL::SSL OpenSSL::Crypto)
+        target_compile_features(${source_test} PRIVATE cxx_std_23)
+        add_test(NAME ${source_test} COMMAND ${source_test})
+        set_tests_properties(${source_test} PROPERTIES
+            LABELS "unit;tls_reload;certificate_authority"
+            TIMEOUT 120)
+    endforeach()
+endif()
+
 # ── coap-transport-libnyoci spec: the alternate libnyoci-backed CoAP backend ──
 # Both targets link `network_simulator`, which carries LIBNYOCI_AVAILABLE and
 # libnyoci's include/link flags when the root probe found it (root
