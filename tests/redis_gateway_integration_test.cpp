@@ -171,7 +171,11 @@ auto acl_text() -> std::string {
            redis_acl::hash_secret("reader-secret", k_kdf_iters) + " read_only sccache/\n" +
            "user ops " + redis_acl::hash_secret("ops-secret", k_kdf_iters) + " admin *\n" +
            "user kythira-internal " + redis_acl::hash_secret("internal-secret", k_kdf_iters) +
-           " read_write *\n";
+           " read_write *\n" +
+           // Task 9: client certificates map to users by subject.
+           "user certfarm " + redis_acl::hash_secret("certfarm-secret", k_kdf_iters) +
+           " read_write sccache/ cert=CN=farm\n" +
+           "user gone disabled read_write sccache/ cert=CN=gone\n";
 }
 
 // ── a throwaway PKI for the TLS cases ────────────────────────────────────────
@@ -1166,7 +1170,89 @@ BOOST_AUTO_TEST_CASE(empty_acl_refuses_to_start_unless_anonymous, *boost::unit_t
     BOOST_CHECK(!gw.is_running());
 }
 
-// ── forwarding failure modes ─────────────────────────────────────────────────
+// ── task 8: forwarding failure modes ─────────────────────────────────────────
+
+BOOST_AUTO_TEST_CASE(killing_a_shard_leader_gives_a_retry_error_then_recovers,
+                     *boost::unit_test::timeout(120)) {
+    cluster c;
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto old_leader = c.leader_of(k_sccache_group);
+    const auto survivor = c.a_follower_of(k_sccache_group);
+    BOOST_REQUIRE_NE(survivor, 0u);
+    resp_client client(c.port(survivor));
+    BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
+    BOOST_REQUIRE_EQUAL(client.call({"SET", "sccache/survives", "v"}), "+OK\r\n");
+
+    c.kill(old_leader);
+
+    // The survivor still names the dead node as leader (or no leader at all)
+    // until an election completes; either way the client is told to retry,
+    // promptly, rather than left hanging on a gateway that is gone.
+    const auto started = std::chrono::steady_clock::now();
+    const auto first = client.call({"GET", "sccache/survives"});
+    BOOST_CHECK_MESSAGE(is_retry_error(first), "first reply after the kill: " << first);
+    BOOST_CHECK_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds{5});
+
+    // Then the shard elects a new leader among the survivors and the same
+    // single endpoint answers again, with the committed value intact.
+    bool recovered = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (!recovered && std::chrono::steady_clock::now() < deadline) {
+        auto reply = client.call({"GET", "sccache/survives"});
+        if (reply == bulk("v")) {
+            recovered = true;
+            break;
+        }
+        BOOST_REQUIRE_MESSAGE(is_retry_error(reply), "unexpected reply during failover: " << reply);
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+    BOOST_REQUIRE(recovered);
+    const auto new_leader = c.leader_of(k_sccache_group);
+    BOOST_CHECK_NE(new_leader, 0u);
+    BOOST_CHECK_NE(new_leader, old_leader);
+    BOOST_CHECK_EQUAL(client.call({"SET", "sccache/after", "w"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(client.call({"GET", "sccache/after"}), bulk("w"));
+}
+
+BOOST_AUTO_TEST_CASE(a_poisoned_routing_map_does_not_loop, *boost::unit_test::timeout(120)) {
+    cluster c;
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto leader = c.leader_of(k_sccache_group);
+    node_id_t f = 0;
+    node_id_t g = 0;
+    for (node_id_t id = 1; id <= k_node_count; ++id) {
+        if (id != leader) {
+            (f == 0 ? f : g) = id;
+        }
+    }
+    BOOST_REQUIRE(f != 0 && g != 0);
+    // Both followers believe the other one is the leader's gateway, the
+    // shape that would bounce a command between them forever without the
+    // one-hop rule (Requirement 13.3).
+    c.poison_route(f, leader, g);
+    c.poison_route(g, leader, f);
+
+    resp_client client(c.port(f));
+    BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
+    const auto f_before = c.gateway(f).stats()._forwards.load();
+    const auto g_before = c.gateway(g).stats()._forwards.load();
+    BOOST_CHECK(is_retry_error(client.call({"SET", "sccache/poison", "v"})));
+    BOOST_CHECK(is_retry_error(client.call({"GET", "sccache/poison"})));
+    // Exactly one hop per command: f forwarded each once, and g, which got
+    // them on an internal connection, forwarded nothing.
+    BOOST_CHECK_EQUAL(c.gateway(f).stats()._forwards.load() - f_before, 2u);
+    BOOST_CHECK_EQUAL(c.gateway(g).stats()._forwards.load() - g_before, 0u);
+
+    // A map that points a gateway at itself is the degenerate loop.
+    c.heal_routes();
+    c.poison_route(f, leader, f);
+    BOOST_CHECK(is_retry_error(client.call({"GET", "sccache/poison"})));
+    BOOST_CHECK_EQUAL(c.gateway(f).stats()._forwards.load() - f_before, 3u);
+
+    c.heal_routes();
+    BOOST_CHECK_EQUAL(client.call({"SET", "sccache/poison", "v"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(client.call({"GET", "sccache/poison"}), bulk("v"));
+}
 
 // Requirement 13.4. The old SO_RCVTIMEO deadline never fired, because Asio
 // answers the EAGAIN it causes by polling with no timeout, so this case hung
@@ -1255,6 +1341,43 @@ BOOST_AUTO_TEST_CASE(forwarding_refuses_a_certificate_for_another_host,
     BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
     BOOST_CHECK(is_retry_error(client.call({"GET", "sccache/tls"})));
     BOOST_CHECK_GE(c.gateway(follower).stats()._forward_failures.load(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(mtls_listener_maps_client_certificates_to_users,
+                     *boost::unit_test::timeout(120)) {
+    test_pki pki;
+    cluster c(tls_config(pki), false);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto port = c.tls_port(c.leader_of(k_sccache_group));
+
+    // No certificate: the handshake, or the first exchange after it under
+    // TLS 1.3, fails.
+    bool refused = false;
+    try {
+        resp_client anonymous(port, client_tls(pki));
+        anonymous.call({"PING"});
+    } catch (const std::exception&) {
+        refused = true;
+    }
+    BOOST_CHECK(refused);
+
+    // A certificate whose subject maps to a user authenticates without
+    // AUTH, and is held to that user's key prefixes.
+    resp_client farm(port, client_tls(pki, "farm"));
+    BOOST_CHECK_EQUAL(farm.call({"SET", "sccache/mtls", "v"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(farm.call({"GET", "sccache/mtls"}), bulk("v"));
+    BOOST_CHECK(farm.call({"SET", "other/mtls", "v"}).rfind("-NOPERM", 0) == 0);
+
+    // A certificate for a disabled user establishes nobody.
+    resp_client gone(port, client_tls(pki, "gone"));
+    BOOST_CHECK_EQUAL(gone.call({"GET", "sccache/mtls"}), "-NOAUTH Authentication required.\r\n");
+
+    // A valid certificate no user claims gets the same, and AUTH still works.
+    resp_client stranger(port, client_tls(pki, "stranger"));
+    BOOST_CHECK_EQUAL(stranger.call({"GET", "sccache/mtls"}),
+                      "-NOAUTH Authentication required.\r\n");
+    BOOST_REQUIRE_EQUAL(stranger.auth("reader", "reader-secret"), "+OK\r\n");
+    BOOST_CHECK_EQUAL(stranger.call({"GET", "sccache/mtls"}), bulk("v"));
 }
 
 BOOST_AUTO_TEST_CASE(tls_forwarding_without_a_ca_refuses_to_start, *boost::unit_test::timeout(60)) {
