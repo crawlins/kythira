@@ -563,3 +563,100 @@ for its write path.
   machine still arrives minutes later); it cannot choose instance types; and
   with a manager that carries no metadata, it cannot attribute a machine created
   by a controller that died mid-call — only reap it after its join deadline.
+
+## 15. Amendments made during implementation
+
+Implementation turned up the following departures from the text above. Each one
+is listed with the reason it was needed. The operator-facing consequences are
+documented in `doc/elastic_shard_capacity.md`.
+
+1. **`shard_report::_capacity_refusals`.** §6 said the split gate's refusal
+   "appears in the shard report". That requires one new field on the report,
+   because a refusal happens between heartbeats and the controller has no
+   other channel to learn of it.
+2. **Section 6's "nothing else changes" did not hold.** Admission through the
+   existing operator vocabulary needs four more host-side changes, all in
+   `multi_raft_impl.hpp`:
+   - **Leader membership sync.** On every heartbeat the leader copies its
+     non-joint Raft membership into the group's descriptor
+     (`sync_leader_membership`). Without this, a descriptor never names a
+     learner the controller added, and lazy creation on the new machine has
+     nothing to materialise. The sync **does not bump the epoch**: it is
+     leader-local, and the split apply step compares the parent epoch on every
+     replica, so a leader-only bump would fail every later split.
+   - **Pending replicas.** A shard report lists each voter or learner whose
+     match index trails the leader's last log index by more than
+     `multi_raft_config::replica_catch_up_lag` (default 64). It also lists a
+     learner the leader does not track yet. This is what "caught up" means for
+     Requirement 10.3.
+   - **Group nodes get an unbounded topology.** The no-op quorum manager on a
+     group node now carries a topology with no target. `add_learner` and
+     `promote_to_voter` fail closed without one, which would refuse every
+     admission.
+   - **Learners on lazy creation.** A replica created lazily from a descriptor
+     that names learners seeds them through a new
+     `node::set_cluster_configuration(voters, learners)` overload.
+3. **Promotion is `add_replica{as_learner=false}` naming a current learner.**
+   §4 named promotion as a step without saying which operator carries it. The
+   host now treats that operator on a learner as promotion, so no new operator
+   was added (Requirement 10.1).
+4. **A scale-in decision names its node.** `capacity_decision::scale_in` takes
+   the node to drain. The policy is the one that knows which machine it means,
+   and a controller guessing a different one would undo the policy's
+   reasoning.
+5. **Reconciled intents go through `admitting`.** A reconciled intent whose
+   machine has joined moves to `admitting`. It moves straight to `completed`
+   only if that machine already holds a voter, because a machine that joined
+   under a dead controller has usually not been given any shards yet.
+6. **Attribution by boot time.** Matching "by join deadline" (§7, step 3)
+   attributes a machine to an unkeyed intent only when the machine booted after
+   the intent was created. Boot time comes from the node report's `_uptime`,
+   which the host now fills in. Without that check a successor would claim
+   machines that were always there, since every machine looks first-seen to a
+   controller that just started.
+7. **Keyed and group-target managers are refinements, detected by concepts.**
+   The idempotency key travels through `provision_node_keyed` /
+   `find_by_idempotency_key` (`keyed_quorum_manager`), and group sizes through
+   `set_group_target` (`resizable_quorum_manager`). The controller uses them
+   when present and degrades as §7 describes when not.
+   `docker_quorum_manager` carries the key as a container label. **The cloud
+   managers do not carry it yet**, and the parity table in the operator doc
+   says so rather than the §12 table's "every shipped manager already tags".
+8. **Operator ids start at 2^63 + 1.** This keeps the controller's ids disjoint
+   from an inner driver's, so the decorator can route each outcome to whoever
+   issued it.
+9. **The stable-shard check lives at the single point where operators are
+   emitted.** Requirement 10.5's "not `stable` ⇒ not moved" is enforced once,
+   where every operator leaves the controller. The property suite showed why:
+   a move planned while its shard was stable could otherwise carry a promotion
+   or a rollback into a split that started afterwards.
+10. **Moves prefer shards the source does not lead.** Among equally weighted
+    candidates, `pick_shard_for` takes a shard whose leader is not the source.
+    Moving a replica off its leader costs a leadership transfer, which is an
+    election at best. On a transport without TimeoutNow (cpp-httplib) the host
+    refuses the transfer as `unsupported`, and the move is abandoned with the
+    target already voting. That shard is then left one voter over.
+11. **Task 16 found three pre-existing host bugs, all fixed here because the
+    scenario cannot pass with any of them:**
+    - **Docker over a unix socket answered 400 to every call.** cpp-httplib
+      sends the socket path as the `Host` header. Docker's Go HTTP server
+      rejects a Host containing `/`. `docker_quorum_manager` now sends
+      `Host: localhost` on unix sockets.
+    - **A split or merge with a placement driver attached deadlocked the
+      host.** `apply_split` / `apply_merge` asked `is_leader()` before
+      reporting to the driver. They run inside the node's apply loop with its
+      mutex held, and `is_leader()` takes the same mutex. Reports are now
+      queued and sent from `tick()`, leaders only.
+    - **A split child could never replicate past its starting snapshot.** A
+      child begins at the split index with an empty log and a synthetic
+      snapshot. The term at that index lived only in the snapshot, which
+      `raft.hpp` never consulted, so neither the leader nor a follower could
+      match on `prevLogIndex` equal to the boundary. The leader fell back to
+      InstallSnapshot. The follower, already committed that far, dropped it
+      as stale. The leader then reset `nextIndex` to the same boundary, and
+      this repeated without end. Once a child changed leader it committed
+      nothing more, membership changes included, so admission stalled on
+      learner promotion. The node now records the snapshot's last included
+      index and term and accepts that boundary on both sides (Raft §7).
+      `tests/raft_snapshot_boundary_replication_test.cpp` fails without the
+      fix.

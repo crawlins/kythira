@@ -35,6 +35,15 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
   services. **Read the operating envelope before adopting it** — the write path
   is one HTTP round trip per log entry per node, which bounds both throughput
   and cost: see [doc/cloud_object_persistence.md](https://github.com/crawlins/kythira/blob/main/doc/cloud_object_persistence.md)
+- **Elastic Shard Capacity** — a controller that adds a machine to a
+  multi-Raft cluster when its shards need one, admits it onto shards through
+  the placement-driver channel the hosts already apply, and optionally drains
+  and removes one the cluster no longer needs. It provisions through whichever
+  `quorum_manager` the deployment uses, with no provider as the default, and
+  ships off and in dry run. **Read the operating envelope before adopting
+  it** — a split never waits for capacity, the machine that relieves it
+  arrives 10–30 minutes later, and every shard moved onto it is a snapshot
+  transfer: see [doc/elastic_shard_capacity.md](https://github.com/crawlins/kythira/blob/main/doc/elastic_shard_capacity.md)
 - **stdexec-Backed Future Implementation** (optional, opt-in) — a second,
   sender/receiver-based `Future`/`Promise`/`Executor` family alongside the
   default Folly one, for new code that wants direct access to `stdexec`
