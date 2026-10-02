@@ -56,6 +56,21 @@ struct psk_credentials {
     std::vector<std::byte> key;
 };
 
+// Certificate revocation checking for DTLS peers (coap-transport
+// Requirements 6.5 and 11.3). Off by default. When enabled it fails closed:
+// a CRL that cannot be read, or (unless allow_missing_crl) an issuer with no
+// CRL, rejects the peer just as a listed serial does. See
+// coap_revocation.hpp for what is and is not checked.
+struct certificate_revocation_config {
+    bool enabled{false};
+    // PEM file of one or more CRLs. Empty means CRLs bundled into the CA
+    // file are the only ones consulted.
+    std::string crl_file;
+    // Accept a peer whose issuer has no CRL available. Leave false unless
+    // some issuers in the trust store genuinely publish none.
+    bool allow_missing_crl{false};
+};
+
 struct pki_credentials {
     std::string cert_file;
     std::string key_file;
@@ -68,6 +83,10 @@ struct pki_credentials {
     // translate_legacy_fields(): the default behavior trusts libcoap's
     // cert_chain_validation result, matching COAP_PKI_KEY_PEM's normal use.
     std::function<bool(const std::string& peer_cert_pem)> cn_validator;
+
+    // Last, so the existing positional aggregate initializers above it
+    // keep their meaning.
+    certificate_revocation_config revocation{};
 };
 
 struct rpk_credentials {

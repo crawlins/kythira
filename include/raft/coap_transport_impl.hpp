@@ -28,6 +28,8 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+
+#include <raft/coap_revocation.hpp>
 #else
 // Define CoAP response codes when libcoap is not available
 #define COAP_RESPONSE_CODE_BAD_REQUEST 0x80
@@ -155,6 +157,19 @@ inline void configure_libcoap_block_mode(coap_context_t* ctx, std::size_t max_bl
 // libcoap hands it back here once the transfer completes or fails.
 inline void release_large_body(coap_session_t*, void* body) {
     delete static_cast<std::vector<std::byte>*>(body);
+}
+
+// Loads the transport's CA file as DTLS trust anchors. A file that cannot be
+// loaded is reported rather than thrown: construction has always accepted
+// PKI paths it has not opened yet, and the failure is already fail-closed,
+// since without trust anchors no peer chain verifies.
+template<typename Logger>
+inline void report_trust_anchor_load(coap_context_t* ctx, const std::string& ca_file,
+                                     Logger& logger) {
+    if (!install_pki_trust_anchors(ctx, ca_file)) {
+        logger.error("Failed to load DTLS trust anchors; peer certificates will not verify",
+                     {{"ca_file", ca_file}});
+    }
 }
 }  // namespace detail
 #endif  // LIBCOAP_AVAILABLE
@@ -1178,6 +1193,7 @@ auto coap_client<Types>::setup_dtls_context() -> void {
         if (!coap_context_set_pki(_coap_context, &pki_config)) {
             throw coap_security_error("Failed to configure DTLS PKI context");
         }
+        detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
 
         // Record metrics for certificate-based DTLS setup
         _metrics.add_one();
@@ -1387,6 +1403,7 @@ auto coap_client<Types>::reload_tls_material() -> void {
     if (!coap_context_set_pki(_coap_context, &pki_config)) {
         throw coap_security_error("reload_tls_material: PKI setup rejected");
     }
+    detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
 #else
     // libcoap's real PKI wiring is not compiled into this build (see the
     // KYTHIRA_HAS_OPENSSL comment above setup_dtls_context()'s stub branch) —
@@ -2161,12 +2178,13 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
             _logger.debug("Certificate chain verification successful");
         }
 
-        // Check certificate revocation if enabled and CA is configured
+        // Key usage and signature algorithm sanity checks
         if (_config.verify_peer_cert && !_config.ca_file.empty()) {
-            // Basic certificate sanity checks
-
-            // Check if certificate has required extensions for TLS
-            int key_usage_idx = X509_get_ext_by_NID(cert, NID_key_usage, -1);
+            // Check if certificate has required extensions for TLS. These are
+            // end-entity usages: a CA certificate further up the chain
+            // legitimately carries only keyCertSign/cRLSign, so skip it.
+            int key_usage_idx =
+                X509_check_ca(cert) == 0 ? X509_get_ext_by_NID(cert, NID_key_usage, -1) : -1;
             if (key_usage_idx >= 0) {
                 X509_EXTENSION* key_usage_ext = X509_get_ext(cert, key_usage_idx);
                 if (key_usage_ext) {
@@ -2196,41 +2214,14 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
                     throw coap_security_error("Certificate uses weak signature algorithm");
                 }
             }
+        }
 
-            // Check certificate revocation using CRL if available
-            // Look for CRL distribution points in the certificate
-            STACK_OF(DIST_POINT)* crl_dps = static_cast<STACK_OF(DIST_POINT)*>(
-                X509_get_ext_d2i(cert, NID_crl_distribution_points, nullptr, nullptr));
-
-            if (crl_dps) {
-                _logger.debug("Certificate has CRL distribution points",
-                              {{"num_points", std::to_string(sk_DIST_POINT_num(crl_dps))}});
-
-                // In a full implementation, we would:
-                // 1. Download CRL from distribution points
-                // 2. Verify CRL signature
-                // 3. Check if certificate serial number is in CRL
-                // For now, we just log that CRL checking is available
-
-                sk_DIST_POINT_pop_free(crl_dps, DIST_POINT_free);
-            }
-
-            // Check for OCSP (Online Certificate Status Protocol) information
-            AUTHORITY_INFO_ACCESS* aia = static_cast<AUTHORITY_INFO_ACCESS*>(
-                X509_get_ext_d2i(cert, NID_info_access, nullptr, nullptr));
-
-            if (aia) {
-                int num_aia = sk_ACCESS_DESCRIPTION_num(aia);
-                for (int i = 0; i < num_aia; i++) {
-                    ACCESS_DESCRIPTION* ad = sk_ACCESS_DESCRIPTION_value(aia, i);
-                    if (OBJ_obj2nid(ad->method) == NID_ad_OCSP) {
-                        _logger.debug("Certificate has OCSP responder information");
-                        // In a full implementation, we would query the OCSP responder
-                        break;
-                    }
-                }
-                AUTHORITY_INFO_ACCESS_free(aia);
-            }
+        // Revocation (Requirements 6.5, 11.3). This block used to find the
+        // CRL distribution point and OCSP extensions, log that they existed,
+        // and accept the certificate either way.
+        if (const auto revoked =
+                coap_revocation::check(cert, _config.ca_file, _config.revocation)) {
+            throw coap_security_error("Peer certificate failed revocation check: " + *revoked);
         }
 
         // Cleanup
@@ -3060,6 +3051,7 @@ auto coap_server<Types>::setup_dtls_context() -> void {
         if (!coap_context_set_pki(_coap_context, &pki_config)) {
             throw coap_security_error("Failed to configure server DTLS PKI context");
         }
+        detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
 
         _logger.info("DTLS PKI context configured successfully",
                      {{"cert_file", _config.cert_file},
@@ -3270,6 +3262,7 @@ auto coap_server<Types>::reload_tls_material() -> void {
     if (!coap_context_set_pki(_coap_context, &pki_config)) {
         throw coap_security_error("reload_tls_material: PKI setup rejected");
     }
+    detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
 #else
     // libcoap's real PKI wiring is not compiled into this build — the cert/key
     // pair has already been genuinely validated above; there is no live
@@ -3682,9 +3675,15 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
             _logger.debug("Client certificate chain verification successful");
         }
 
-        // Verify certificate is suitable for client authentication
+        // Verify certificate is suitable for client authentication. The usage
+        // checks below apply to the end-entity certificate only: a CA
+        // certificate further up the chain legitimately carries neither
+        // clientAuth nor digitalSignature.
+        const bool is_ca_certificate = X509_check_ca(cert) != 0;
+
         // Check Extended Key Usage extension
-        int ext_key_usage_idx = X509_get_ext_by_NID(cert, NID_ext_key_usage, -1);
+        int ext_key_usage_idx =
+            is_ca_certificate ? -1 : X509_get_ext_by_NID(cert, NID_ext_key_usage, -1);
         if (ext_key_usage_idx >= 0) {
             X509_EXTENSION* ext_key_usage_ext = X509_get_ext(cert, ext_key_usage_idx);
             if (ext_key_usage_ext) {
@@ -3714,7 +3713,7 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
         }
 
         // Check basic key usage for digital signature
-        int key_usage_idx = X509_get_ext_by_NID(cert, NID_key_usage, -1);
+        int key_usage_idx = is_ca_certificate ? -1 : X509_get_ext_by_NID(cert, NID_key_usage, -1);
         if (key_usage_idx >= 0) {
             X509_EXTENSION* key_usage_ext = X509_get_ext(cert, key_usage_idx);
             if (key_usage_ext) {
@@ -3742,6 +3741,12 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
             if (sig_nid == NID_md5WithRSAEncryption || sig_nid == NID_sha1WithRSAEncryption) {
                 throw coap_security_error("Client certificate uses weak signature algorithm");
             }
+        }
+
+        // Revocation (Requirements 6.5, 11.3).
+        if (const auto revoked =
+                coap_revocation::check(cert, _config.ca_file, _config.revocation)) {
+            throw coap_security_error("Client certificate failed revocation check: " + *revoked);
         }
 
         // Cleanup

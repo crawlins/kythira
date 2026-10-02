@@ -34,11 +34,35 @@
 #include <openssl/bio.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+
+#include <raft/coap_revocation.hpp>
 #endif
 
 namespace kythira {
 
 namespace detail {
+
+#ifdef LIBCOAP_AVAILABLE
+// Makes `ca_file` the trust store DTLS peers are verified against.
+//
+// coap_context_set_pki() alone does not do this. libcoap only loads
+// pki_key.key.pem.ca_file when check_common_ca is set (which also demands
+// that the peer share our own issuer), and nothing here sets it, so with
+// verify_peer_cert on every handshake failed with "unable to get local
+// issuer certificate" -- PKI DTLS had never completed one. Root CAs are
+// what the CA file actually is in this transport's configuration.
+//
+// Returns false if the file could not be loaded. That fails closed on its
+// own -- with no trust anchors every chain verification fails -- so callers
+// choose whether to reject the configuration up front or only report it.
+[[nodiscard]] inline auto install_pki_trust_anchors(coap_context_t* ctx, const std::string& ca_file)
+    -> bool {
+    if (ca_file.empty()) {
+        return true;
+    }
+    return coap_context_set_pki_root_cas(ctx, ca_file.c_str(), nullptr) != 0;
+}
+#endif
 
 inline auto bytes_to_hex(const std::vector<std::byte>& bytes) -> std::string {
     std::ostringstream out;
@@ -208,6 +232,9 @@ public:
         if (coap_context_set_pki(ctx, &pki_config) == 0) {
             throw coap_security_error("Failed to configure DTLS PKI context");
         }
+        if (!detail::install_pki_trust_anchors(ctx, _creds.ca_file)) {
+            throw coap_security_error("Failed to load DTLS trust anchors from: " + _creds.ca_file);
+        }
 #else
         (void)ctx;
 #endif
@@ -240,13 +267,23 @@ public:
     static auto validate_cn(const char*, const uint8_t* asn1_public_cert, std::size_t asn1_length,
                             coap_session_t*, unsigned, int validated, void* arg) -> int {
         auto* self = static_cast<dtls_pki_provider*>(arg);
-        if (!self->_creds.cn_validator) {
+        if (!self->_creds.cn_validator && !self->_creds.revocation.enabled) {
             return validated;
         }
         const uint8_t* cert_data = asn1_public_cert;
         X509* cert = d2i_X509(nullptr, &cert_data, static_cast<long>(asn1_length));
         if (cert == nullptr) {
             return 0;
+        }
+        // Revocation runs on top of libcoap's own chain validation, not in
+        // place of it -- libcoap only sees CRLs bundled into the CA file.
+        if (coap_revocation::check(cert, self->_creds.ca_file, self->_creds.revocation)) {
+            X509_free(cert);
+            return 0;
+        }
+        if (!self->_creds.cn_validator) {
+            X509_free(cert);
+            return validated;
         }
         BIO* bio = BIO_new(BIO_s_mem());
         if (bio == nullptr) {
