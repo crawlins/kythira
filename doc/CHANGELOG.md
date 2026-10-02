@@ -5,6 +5,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 2, 2026)
 
+- **`acme_certificate_provider` no longer trusts what the ACME server sends.**
+  It ran with TLS verification off and published the last block of the
+  downloaded chain as the node's root, so an on-path attacker could make
+  their own CA a trusted mTLS anchor (and with no attacker, a public
+  intermediate became one). It now verifies the server's TLS certificate,
+  refuses plain http off loopback, requires `trust_anchors_pem`, and rejects
+  a certificate that does not chain to those anchors or whose key differs
+  from the CSR's. `root_certificate_pem()` returns the configured anchors.
 - **CI cloud identities trust only the `real-cloud-tests` environment.**
   The AWS, GCP and Alibaba CI roles trusted any workflow in the repository
   (`repo:crawlins/kythira:*`), so a pushed branch could assume them without
