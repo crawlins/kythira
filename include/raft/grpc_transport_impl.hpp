@@ -26,6 +26,7 @@
 #include <raft/grpc_transport.hpp>
 #include <raft/grpc_exceptions.hpp>
 #include <raft/grpc_message_conversion.hpp>
+#include <raft/grpc_target.hpp>
 #include <raft/net_bind.hpp>
 #include <raft/network.hpp>
 #include <raft/future.hpp>
@@ -54,6 +55,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace kythira {
 
@@ -175,6 +177,7 @@ public:
           _metrics(std::move(metrics)),
           _executor(executor) {
         _channel_credentials = build_channel_credentials();
+        check_plaintext_targets();
     }
 
     // ── network_client ──────────────────────────────────────────────────────
@@ -365,11 +368,59 @@ private:
             emit_channel_metric("grpc.client.channel.reused", target_address);
             return it->second;
         }
+        // Bootstrap addresses were never vetted at construction. Refuse before
+        // creating anything, so a refused address leaves no cached channel
+        // behind and a later call with a corrected one is not poisoned.
+        require_plaintext_allowed(target_address);
         auto channel = grpc::CreateCustomChannel(target_address, _channel_credentials,
                                                  make_channel_arguments());
         _address_channels.emplace(target_address, channel);
         emit_channel_metric("grpc.client.channel.created", target_address);
         return channel;
+    }
+
+    // ── Plaintext gate (.kiro/specs/grpc-plaintext-opt-in/, Requirement 3) ────
+    // With TLS off, a channel may only reach this host unless the operator
+    // set allow_plaintext. Plaintext Raft RPC is unauthenticated, so a
+    // missing certificate must not quietly put the log on the network.
+
+    auto require_plaintext_allowed(const std::string& target) const -> void {
+        if (_config.enable_tls || _config.allow_plaintext || grpc_detail::target_is_local(target)) {
+            return;
+        }
+        throw grpc_plaintext_refused_error(
+            target, std::format("grpc_client: refusing plaintext, unauthenticated Raft RPC to '{}' "
+                                "(enable TLS with enable_tls and ca_cert_pem, dial a loopback "
+                                "target, or set allow_plaintext on a network you trust)",
+                                target));
+    }
+
+    // Every configured target is checked once, here, so the node-keyed
+    // channel lookup needs no check of its own. Node IDs are visited in
+    // order, so the target an error names does not depend on hash order.
+    auto check_plaintext_targets() -> void {
+        if (_config.enable_tls) {
+            return;
+        }
+        std::vector<std::uint64_t> ids;
+        ids.reserve(_node_id_to_target.size());
+        for (const auto& [id, target] : _node_id_to_target) {
+            ids.push_back(id);
+        }
+        std::ranges::sort(ids);
+        bool loopback_only = true;
+        for (auto id : ids) {
+            const auto& target = _node_id_to_target.at(id);
+            require_plaintext_allowed(target);
+            loopback_only = loopback_only && grpc_detail::target_is_local(target);
+        }
+        if (_config.allow_plaintext) {
+            auto metric = _metrics;
+            metric.set_metric_name("grpc.client.plaintext.enabled");
+            metric.add_dimension("loopback_only", loopback_only ? "true" : "false");
+            metric.add_one();
+            metric.emit();
+        }
     }
 
     // ── TLS (Requirement 9) ───────────────────────────────────────────────────
@@ -749,6 +800,16 @@ public:
         _bound_port.store(static_cast<std::uint16_t>(selected_ports.front()));
         _running.store(true);
         emit_lifecycle_metric("grpc.server.started");
+        if (!_config.enable_tls && _config.allow_plaintext) {
+            auto metric = _metrics;
+            metric.set_metric_name("grpc.server.plaintext.enabled");
+            metric.add_dimension("bind_address", _bind_address);
+            metric.add_dimension(
+                "loopback_only",
+                kythira::net_bind::is_loopback_bind_address(_bind_address) ? "true" : "false");
+            metric.add_one();
+            metric.emit();
+        }
     }
 
     auto stop() -> void {
@@ -848,6 +909,18 @@ private:
 
     auto build_server_credentials() const -> std::shared_ptr<grpc::ServerCredentials> {
         if (!_config.enable_tls) {
+            // Plaintext Raft RPC is unauthenticated: off loopback it needs an
+            // explicit opt-in (.kiro/specs/grpc-plaintext-opt-in/, Requirement
+            // 2). Checked here, at construction, before any socket exists.
+            if (!_config.allow_plaintext &&
+                !kythira::net_bind::is_loopback_bind_address(_bind_address)) {
+                throw grpc_plaintext_refused_error(
+                    _bind_address,
+                    std::format("grpc_server: refusing plaintext, unauthenticated Raft RPC on '{}' "
+                                "(enable TLS with server_cert_pem/server_key_pem, bind a loopback "
+                                "address, or set allow_plaintext on a network you trust)",
+                                _bind_address));
+            }
             return grpc::InsecureServerCredentials();  // Requirement 9.7 (default off).
         }
         grpc_detail::validate_cert_key_pair(_config.server_cert_pem, _config.server_key_pem,

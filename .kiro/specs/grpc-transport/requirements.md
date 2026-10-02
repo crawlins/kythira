@@ -280,6 +280,9 @@ tampering and reuse this project's existing certificate-issuance stack.
    (matching `cpp_httplib_client_config::enable_ssl`'s default-off behavior), so gRPC
    transport remains usable for local development and the network simulator's already
    trusted environments without requiring certificates.
+   *Note:* the insecure default now reaches only this host. A plaintext listener on a
+   non-loopback address, or a plaintext channel to a non-loopback target, is refused
+   unless `allow_plaintext` is set (`.kiro/specs/grpc-plaintext-opt-in/`).
 
 ### Requirement 10
 

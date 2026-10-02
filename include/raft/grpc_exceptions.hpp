@@ -19,6 +19,7 @@
 #include <chrono>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace kythira {
 
@@ -91,6 +92,31 @@ class grpc_tls_configuration_error : public grpc_transport_error {
 public:
     explicit grpc_tls_configuration_error(const std::string& message)
         : grpc_transport_error(grpc::StatusCode::INVALID_ARGUMENT, message) {}
+
+protected:
+    /// For subclasses whose failure is not an invalid argument.
+    grpc_tls_configuration_error(grpc::StatusCode code, const std::string& message)
+        : grpc_transport_error(code, message) {}
+};
+
+/// @brief Plaintext refused: TLS is off, `allow_plaintext` is not set, and the
+/// server's bind address or a client's target can reach beyond this host
+/// (.kiro/specs/grpc-plaintext-opt-in/, Requirement 4).
+///
+/// Derives from `grpc_tls_configuration_error` so existing `catch` sites for
+/// TLS misconfiguration still handle it, but carries `FAILED_PRECONDITION`:
+/// nothing in the config is malformed, it is the deployment that is unsafe.
+class grpc_plaintext_refused_error : public grpc_tls_configuration_error {
+public:
+    grpc_plaintext_refused_error(std::string address, const std::string& message)
+        : grpc_tls_configuration_error(grpc::StatusCode::FAILED_PRECONDITION, message),
+          _address(std::move(address)) {}
+
+    /// @brief The bind address or target string that was refused.
+    [[nodiscard]] auto address() const -> const std::string& { return _address; }
+
+private:
+    std::string _address;
 };
 
 }  // namespace kythira
