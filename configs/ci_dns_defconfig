@@ -1,0 +1,34 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# ci_dns_defconfig — the feature set the DNS Discovery Build job resolves.
+# That job installs the same vcpkg tree as the g++-13 x64 Build & Test leg
+# (`--x-feature=edhoc`, shared cache key) and adds libldns-dev and bind9 from
+# apt, so this file is ci_full_defconfig with CONFIG_DNS_DISCOVERY turned on
+# and nothing else changed. Written, like ci_full_defconfig, against
+# `-DKYTHIRA_KCONFIG_STRICT=ON`; only the difference is annotated here.
+#
+#   DNS_DISCOVERY           — the point of the job. ci_full_defconfig leaves it
+#                             unset because no image those jobs build has
+#                             libldns; this one does, and strict mode makes
+#                             that an assertion: if libldns-dev ever stops
+#                             being found, the configure FATAL_ERRORs instead
+#                             of quietly dropping every ldns-backed target.
+#                             It also turns on ACME dns-01, which is compiled
+#                             only under KYTHIRA_HAS_LDNS.
+#
+# Everything else is verbatim from ci_full_defconfig and must stay that way —
+# the job builds the DNS targets out of the same tree the main legs build.
+CONFIG_DNS_DISCOVERY=y
+CONFIG_EDHOC=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
+CONFIG_BOOST_BEAST_TRANSPORT=y
+CONFIG_PROXYGEN_TRANSPORT=y
+CONFIG_REDIS_GATEWAY=y
+CONFIG_PROTOBUF_SERIALIZER=y
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
+# CONFIG_POCO_DISCOVERY is not set
