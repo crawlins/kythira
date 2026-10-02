@@ -3921,6 +3921,37 @@ if(TARGET Folly::folly)
 else()
     message(STATUS "http_ssl_mutual_tls_integration_test: skipped (requires Folly)")
 endif()
+# cpp_httplib_client applies cipher_suites and the TLS version bounds to its
+# live SSL_CTX (vulnerability audit 2026-10-02, M18). Real handshakes against
+# a cpp_httplib_server pinned to each setting.
+if(TARGET Folly::folly)
+    add_executable(http_client_tls_settings_integration_test http_client_tls_settings_integration_test.cpp)
+    target_link_libraries(http_client_tls_settings_integration_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        Folly::folly
+    )
+    if(TARGET httplib::httplib)
+        target_link_libraries(http_client_tls_settings_integration_test PRIVATE httplib::httplib)
+    endif()
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(http_client_tls_settings_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(TARGET certificate_authority)
+        target_link_libraries(http_client_tls_settings_integration_test PRIVATE certificate_authority)
+    endif()
+    if(TARGET boost_json)
+        target_link_libraries(http_client_tls_settings_integration_test PRIVATE boost_json)
+    endif()
+    target_compile_features(http_client_tls_settings_integration_test PRIVATE cxx_std_23)
+    add_test(NAME http_client_tls_settings_integration_test COMMAND http_client_tls_settings_integration_test)
+    set_tests_properties(http_client_tls_settings_integration_test PROPERTIES
+        TIMEOUT 120
+        LABELS "integration;ssl;http;transport"
+    )
+else()
+    message(STATUS "http_client_tls_settings_integration_test: skipped (requires Folly)")
+endif()
 # Additional CoAP tests that were missing
 # CONFIG_COAP_TRANSPORT=n means no CoAP target exists, so these are gated on the
 # feature symbol rather than on Folly. They were gated on `TARGET Folly::folly`

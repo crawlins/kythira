@@ -886,21 +886,20 @@ auto cpp_httplib_client<Types>::configure_ssl_client(httplib::Client* client) ->
         // 2. Custom SSL context handling if supported by the cpp-httplib version
     }
 
-    // Configure SSL context parameters
-    // Note: cpp-httplib may not expose direct SSL context configuration
-    // This is a limitation of the library - for full SSL context control,
-    // a different HTTP library or custom SSL context handling would be needed
-
-    // For now, we validate the configuration but note that some advanced
-    // SSL context parameters may not be fully configurable through cpp-httplib
-    if (!_config.cipher_suites.empty() || _config.min_tls_version != "TLSv1.2" ||
-        _config.max_tls_version != "TLSv1.3") {
-        // Log that advanced SSL configuration is validated but may not be fully applied
-        // In a production implementation, this would require either:
-        // 1. Using a different HTTP library with full SSL context control
-        // 2. Patching cpp-httplib to expose SSL context configuration
-        // 3. Using custom SSL context callbacks if supported by the cpp-httplib version
+    // Apply cipher_suites and the TLS version bounds to the live SSL_CTX* the
+    // client's handshakes use, the same way configure_ssl_server() does for
+    // the listener. These settings used to be validated in a scratch context
+    // and then dropped, so a client configured for TLS 1.3 only, or for a
+    // restricted cipher list, still offered cpp-httplib's defaults.
+    // httplib::Client only hands out a context when it wraps an SSLClient,
+    // which every https:// URL does.
+    SSL_CTX* ctx = client->ssl_context();
+    if (ctx == nullptr) {
+        throw kythira::ssl_configuration_error(
+            "HTTPS client has no SSL context to apply cipher and TLS version settings to");
     }
+    configure_ssl_context(ctx, _config.cipher_suites, _config.min_tls_version,
+                          _config.max_tls_version);
 #else
     throw kythira::ssl_configuration_error("SSL support not available (OpenSSL not enabled)");
 #endif
