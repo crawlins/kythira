@@ -159,6 +159,23 @@ inline void release_large_body(coap_session_t*, void* body) {
     delete static_cast<std::vector<std::byte>*>(body);
 }
 
+// Empties this thread's OpenSSL error queue when it leaves scope.
+//
+// libcoap runs the PKI validate_cn callbacks inside SSL_accept()/SSL_read(),
+// and SSL_get_error() answers SSL_ERROR_SSL whenever that queue is not empty,
+// whatever the call itself returned. So an error a callback leaves behind,
+// even one it recovered from, makes libcoap tear down the handshake the
+// callback had just approved. validate_client_certificate() always left one:
+// libcoap hands it DER, and the PEM attempt that fails first queues
+// "no start line" before the DER parse succeeds. Every mutual-PKI session
+// died with a close_notify right after its Finished.
+struct openssl_error_queue_guard {
+    openssl_error_queue_guard() = default;
+    openssl_error_queue_guard(const openssl_error_queue_guard&) = delete;
+    auto operator=(const openssl_error_queue_guard&) -> openssl_error_queue_guard& = delete;
+    ~openssl_error_queue_guard() { ERR_clear_error(); }
+};
+
 // Loads the transport's CA file as DTLS trust anchors. A file that cannot be
 // loaded is reported rather than thrown: construction has always accepted
 // PKI paths it has not opened yet, and the failure is already fail-closed,
@@ -2097,6 +2114,7 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
 
 #ifdef LIBCOAP_AVAILABLE
     // Real X.509 certificate validation using OpenSSL
+    const detail::openssl_error_queue_guard clear_openssl_errors;
     X509* cert = nullptr;
     BIO* bio = nullptr;
     X509_STORE* store = nullptr;
@@ -3591,6 +3609,7 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
 
 #ifdef LIBCOAP_AVAILABLE
     // Real X.509 certificate validation using OpenSSL
+    const detail::openssl_error_queue_guard clear_openssl_errors;
     X509* cert = nullptr;
     BIO* bio = nullptr;
     X509_STORE* store = nullptr;
