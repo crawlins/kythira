@@ -662,12 +662,18 @@ assertions.
 
 1. A new Docker Compose variant `docker/docker-compose.quorum.yml` SHALL
    define a 3-node cluster in which each `chaos_node` container:
-   - Mounts `/var/run/docker.sock:/var/run/docker.sock` so that the container
-     running the Raft leader can call the Docker daemon directly.
+   - Reaches the container API through a `container-api-proxy` service, the
+     only container that mounts `/var/run/docker.sock`, so that the
+     container running the Raft leader can provision and remove nodes
+     without holding the daemon socket itself. The proxy SHALL forward only
+     the calls `docker_quorum_manager` makes, for this cluster's containers,
+     and SHALL refuse any create body carrying a `HostConfig`.
    - Receives the additional environment variables:
      `QUORUM_MANAGER=docker`, `QUORUM_IMAGE=kythira-chaos-node:dev`,
      `QUORUM_CLUSTER=kythira-quorum-test`,
-     `QUORUM_NETWORK=kythira-quorum-net`, `QUORUM_TARGET=3`.
+     `QUORUM_NETWORK=kythira-quorum-net`, `QUORUM_TARGET=3`,
+     `QUORUM_DOCKER_URL=http://container-api-proxy:2375`.
+   - Publishes its ports on `127.0.0.1` only.
 2. The `chaos_node` binary SHALL read these variables at startup and, when
    `QUORUM_MANAGER=docker`, construct a `docker_quorum_manager` and pass it
    as `quorum_manager` in `node_config`. When `QUORUM_MANAGER` is absent or
