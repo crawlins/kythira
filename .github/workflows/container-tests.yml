@@ -1,0 +1,289 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+name: Container Scenario Tests
+
+# Scheduled x64 run of the container scenario suites, under both runtimes
+# CLAUDE.md requires them to work with: rootful Docker and rootless Podman.
+#
+# Before this workflow the only runner for these targets was
+# arm64-docker-smoke-test.yml, which is workflow_dispatch-only, and no
+# workflow anywhere ran Podman. So the docker-chaos spec's "CI can run
+# docker-chaos tests without manual steps" and CLAUDE.md's rootless Podman
+# rule were both true only on the machine of whoever last ran them by hand.
+#
+# They stay out of ci.yml's per-PR gate for the reason the arm64 workflow
+# gives: they are bespoke CMake custom targets rather than ctest entries, need
+# a container runtime, and each leg is a full build plus a dozen compose
+# stacks. A weekly schedule bounds the cost; dispatch runs one on demand. The
+# pull_request trigger fires only when this file changes, so an edit to the
+# workflow is proved by the PR that makes it.
+#
+# Not run here, deliberately:
+#   * docker-poco-discovery-tests: PocoDNSSD's static archives are built by
+#     hand and are not in the vcpkg tree CI restores, so the target cannot
+#     exist (see the arm64 workflow's comment on the same step).
+#   * docker-prometheus-remote-write-tests: no workflow runs it yet; adding it
+#     is a separate decision from adding a schedule.
+
+on:
+  schedule:
+    # Monday 07:00 UTC, an hour after real-cloud-tests.yml's run.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: "Which runtime leg(s) to run"
+        type: choice
+        options: [both, docker, podman]
+        default: both
+  pull_request:
+    paths:
+      - .github/workflows/container-tests.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container-scenarios:
+    name: Container scenarios (${{ matrix.runtime }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both legs unless a dispatch picked one. A job-level `if` cannot read
+        # the matrix context, so the choice is made here.
+        runtime: ${{ fromJSON(inputs.runtime && inputs.runtime != 'both' && format('["{0}"]', inputs.runtime) || '["docker", "podman"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The runner image is ~20 GB short of what a full build plus a dozen
+      # images needs on a bad day; the coverage job in ci.yml has the same
+      # history. Dropping the preinstalled SDKs this project never uses is
+      # the cheap fix.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install system dependencies
+        run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
+          # autoconf/autoconf-archive/automake/libtool: see ci.yml's own
+          # "Install system dependencies" step (vcpkg's gperf port).
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            g++-13 \
+            cmake \
+            ninja-build \
+            libfiu-dev \
+            libavahi-client-dev \
+            libldns-dev \
+            autoconf \
+            autoconf-archive \
+            automake \
+            libtool
+
+      # Rootless Podman as CLAUDE.md describes it: Podman 4.x with netavark and
+      # aardvark-dns, so compose service names resolve. Ubuntu's podman can
+      # fall back to CNI, whose bridge has no DNS without the dnsname plugin,
+      # so the backend is pinned rather than left to whatever the image has.
+      #
+      # Compose runs through `podman compose`, which hands the file to the
+      # runner's docker-compose binary pointed at Podman's API socket. That is
+      # the empty-COMPOSE_COMMAND path in tests/docker_chaos/os_faults.hpp.
+      #
+      # The chaos stacks shape traffic with tc netem and iptables inside the
+      # containers (cap_add NET_ADMIN, which rootless Podman can grant inside
+      # its user namespace). What it cannot do is load a kernel module, so the
+      # modules are loaded on the host here. That is runner setup, not a
+      # privilege granted to any container.
+      - name: Set up rootless Podman
+        if: matrix.runtime == 'podman'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            podman netavark aardvark-dns slirp4netns uidmap
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          provider=""
+          for p in /usr/libexec/docker/cli-plugins/docker-compose \
+                   /usr/local/lib/docker/cli-plugins/docker-compose \
+                   "$(command -v docker-compose || true)"; do
+            if [ -n "$p" ] && [ -x "$p" ]; then provider="$p"; break; fi
+          done
+          test -n "$provider"
+          mkdir -p ~/.config/containers
+          cat > ~/.config/containers/containers.conf <<EOF
+          [network]
+          network_backend = "netavark"
+
+          [engine]
+          compose_providers = ["$provider"]
+          compose_warning_logs = false
+          EOF
+          for m in sch_netem ip_tables iptable_filter iptable_nat nf_tables; do
+            sudo modprobe "$m" || echo "::warning::modprobe $m failed"
+          done
+          # Ubuntu 24.04 can restrict unprivileged user namespaces through
+          # AppArmor. Relax it only if rootless Podman actually cannot start.
+          if ! podman unshare true; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            podman unshare true
+          fi
+          podman system reset --force
+          podman info --format '{{.Host.NetworkBackend}} rootless={{.Host.Security.Rootless}}'
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+          test "$(podman info --format '{{.Host.NetworkBackend}}')" = netavark
+
+          # The Docker-compatible API socket. `podman compose` drives
+          # docker-compose through it, and the elastic-capacity controller and
+          # quorum nodes mount it as their container API.
+          sock="$(podman info --format '{{.Host.RemoteSocket.Path}}')"
+          mkdir -p "$(dirname "$sock")"
+          setsid nohup podman system service --time=0 "unix://$sock" \
+            > "$RUNNER_TEMP/podman-service.log" 2>&1 < /dev/null &
+          for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+          test -S "$sock"
+          echo "CONTAINER_SOCKET=$sock" >> "$GITHUB_ENV"
+
+      - name: Verify the container runtime
+        run: |
+          ${{ matrix.runtime }} version
+          ${{ matrix.runtime }} compose version
+
+      # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
+      # source (vcpkg's "edhoc" feature below).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read. Writer policy lives in the action: only a push to main gets
+      # the read-write key, so these runs are readers. See
+      # .kiro/specs/oci-build-cache/.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          # Same key as ci.yml's g++-13 build-and-test legs, so a warm entry
+          # from main is restored instead of paying a cold vcpkg build.
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pinned to vcpkg.json's builtin-baseline, as in ci.yml; see the
+          # comment on the same step there for the cold-build regression that
+          # an unpinned HEAD caused.
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # CONTAINER_RUNTIME is explicit because the runner has both binaries
+      # and auto-detection prefers docker.
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DCONTAINER_RUNTIME=${{ matrix.runtime }} \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      # Each target builds its image(s) and scenario binaries, then runs the
+      # suite against a live stack. `success() || failure()` keeps later
+      # suites running after an earlier one fails, so one run reports every
+      # verdict; the job still ends red. Never two stacks at once: several
+      # share cluster names.
+      - name: docker-chaos-tests (7 chaos scenarios)
+        run: cmake --build build --target docker-chaos-tests -j"$(nproc)"
+
+      - name: quorum-healing-tests
+        if: success() || failure()
+        run: cmake --build build --target quorum-healing-tests -j"$(nproc)"
+
+      - name: docker-elastic-capacity-tests (controller scale-out)
+        if: success() || failure()
+        run: cmake --build build --target docker-elastic-capacity-tests -j"$(nproc)"
+
+      - name: docker-otlp-collector-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-otlp-collector-tests -j"$(nproc)"
+
+      - name: docker-dns-discovery-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-dns-discovery-tests -j"$(nproc)"
+
+      - name: docker-dns-sd-discovery-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-dns-sd-discovery-tests -j"$(nproc)"
+
+      - name: docker-prometheus-metrics-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-prometheus-metrics-tests -j"$(nproc)"
+
+      - name: docker-victoriametrics-metrics-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-victoriametrics-metrics-tests -j"$(nproc)"
+
+      - name: docker-telegraf-metrics-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-telegraf-metrics-tests -j"$(nproc)"
+
+      - name: docker-netdata-metrics-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-netdata-metrics-tests -j"$(nproc)"
+
+      - name: docker-cloudwatch-metrics-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-cloudwatch-metrics-tests -j"$(nproc)"
+
+      - name: docker-cloud-monitoring-config-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-cloud-monitoring-config-tests -j"$(nproc)"
+
+      - name: docker-sccache-e2e-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-sccache-e2e-tests -j"$(nproc)"
+
+      - name: Podman service log
+        if: always() && matrix.runtime == 'podman'
+        run: tail -n 200 "$RUNNER_TEMP/podman-service.log" || true
+
+      - name: Leftover containers
+        if: always()
+        run: ${{ matrix.runtime }} ps -a
