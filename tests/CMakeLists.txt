@@ -5394,6 +5394,19 @@ else()
     message(STATUS "future_backend_benchmark_test: skipped (requires Folly)")
 endif()
 
+# ── gRPC plaintext gate: target classification (.kiro/specs/grpc-plaintext-opt-in/)
+# Deliberately outside the raft_grpc_transport gate below: raft/grpc_target.hpp
+# is string parsing over net_bind.hpp and needs nothing from gRPC, so the rule
+# that decides whether a plaintext client may dial a target is checked on
+# every build leg, including those without gRPC installed.
+add_executable(grpc_target_classification_unit_test grpc_target_classification_unit_test.cpp)
+target_link_libraries(grpc_target_classification_unit_test PRIVATE Boost::unit_test_framework)
+target_compile_features(grpc_target_classification_unit_test PRIVATE cxx_std_23)
+add_test(NAME grpc_target_classification_unit_test COMMAND grpc_target_classification_unit_test)
+set_tests_properties(grpc_target_classification_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;grpc;transport")
+
 # ── gRPC transport tests (.kiro/specs/grpc-transport/) ───────────────────────
 # Gated on the raft_grpc_transport target existing (i.e. gRPC/Protobuf were
 # found and a future backend is available). When gRPC is absent these simply

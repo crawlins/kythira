@@ -346,10 +346,12 @@ inline auto resolve_bind_addresses(const std::string& address, const char* who,
 }
 
 // True when `address` is accepted by resolve_bind_addresses() and every
-// address it binds is loopback.
-inline auto is_loopback_bind_address(const std::string& address) -> bool {
+// address it binds is loopback. `hosts_path` exists for tests, which point it
+// at a scratch hosts file.
+inline auto is_loopback_bind_address(const std::string& address,
+                                     const std::string& hosts_path = "/etc/hosts") -> bool {
     try {
-        auto eps = resolve_bind_addresses(address, "is_loopback_bind_address");
+        auto eps = resolve_bind_addresses(address, "is_loopback_bind_address", hosts_path);
         for (const auto& e : eps) {
             if (!endpoint_is_loopback(e)) return false;
         }

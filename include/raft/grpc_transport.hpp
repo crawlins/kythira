@@ -86,7 +86,8 @@ inline auto grpc_read_pem_file(const std::string& path) -> std::string {
 
 /// @brief gRPC client configuration (Requirements 9, 12.2, 12.3).
 ///
-/// TLS is off by default (Requirement 9.7); certificate material is supplied as
+/// TLS is off by default (Requirement 9.7), but plaintext reaches only this
+/// host unless `allow_plaintext` is set; certificate material is supplied as
 /// in-memory PEM strings (use `grpc_read_pem_file()` for file-backed material).
 struct grpc_client_config {
     std::size_t max_send_message_size{16 * 1024 * 1024};     ///< 16 MB.
@@ -101,6 +102,11 @@ struct grpc_client_config {
     std::string client_cert_pem{};       ///< Mutual TLS client certificate, PEM.
     std::string client_key_pem{};        ///< Mutual TLS client private key, PEM.
     std::string target_name_override{};  ///< Test-only: bypass SAN hostname check.
+    /// Permit plaintext channels to targets that can reach beyond this host.
+    /// Without it, a client with TLS off refuses any target that is not
+    /// loopback-only or a local socket (grpc_plaintext_refused_error).
+    /// Ignored when enable_tls is true. See .kiro/specs/grpc-plaintext-opt-in/.
+    bool allow_plaintext{false};
 
     std::string user_agent{"kythira-grpc-transport/1.0"};
 };
@@ -123,6 +129,11 @@ struct grpc_server_config {
     std::string server_key_pem{};     ///< Server private key, PEM.
     std::string ca_cert_pem{};        ///< Trusted root for client certs (mTLS).
     bool require_client_cert{false};  ///< Enforce mutual TLS.
+    /// Permit a plaintext listener on a bind address that is not
+    /// loopback-only. Without it, a server with TLS off and such an address
+    /// fails construction with grpc_plaintext_refused_error. Ignored when
+    /// enable_tls is true. See .kiro/specs/grpc-plaintext-opt-in/.
+    bool allow_plaintext{false};
 
     bool enable_health_check_service{true};  ///< Standard grpc.health.v1.Health.
     bool enable_reflection{false};           ///< Opt-in: exposes raft.proto shape to grpcurl.

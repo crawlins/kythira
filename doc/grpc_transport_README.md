@@ -58,6 +58,36 @@ The `.proto` file is checked in; the generated `raft.pb.{h,cc}` /
 - TLS is **off by default** (`enable_tls = false`) so the transport is usable
   for local development and the network simulator's trusted environments
   without certificates.
+- **Plaintext stays on this host unless you opt in.** Plaintext Raft RPC is
+  unauthenticated: anyone who can reach the port can send `AppendEntries` and
+  rewrite the log. So with TLS off:
+  - A `grpc_server` whose bind address is not loopback-only (`0.0.0.0`, `::`,
+    `*`, a routable IP, or a name mapped to one) fails construction with
+    `grpc_plaintext_refused_error`, before any socket is opened.
+  - A `grpc_client` refuses, at construction, any configured target that is
+    neither loopback-only nor a local socket (`unix:`, `unix-abstract:`,
+    `vsock:`). The address-keyed bootstrap calls (`send_cluster_join_request`,
+    `send_cluster_leave_request`) check their address per call and throw the
+    same error without caching a channel.
+  - Set `allow_plaintext = true` on `grpc_server_config` or
+    `grpc_client_config` to accept plaintext anyway, on a network you trust.
+    The server then emits `grpc.server.plaintext.enabled` at `start()` (with
+    `bind_address` and `loopback_only` dimensions) and the client emits
+    `grpc.client.plaintext.enabled` at construction (with `loopback_only`).
+    `allow_plaintext` has no effect when `enable_tls` is set.
+
+  *Loopback-only* means 127.0.0.0/8, `::1`, or a name that `/etc/hosts` maps
+  only to such addresses (`localhost` counts even when the file omits it, per
+  RFC 6761). A client target may also be the IPv4-mapped `::ffff:127.x.y.z`.
+  **The decision never uses DNS**: a name the hosts file does not list counts
+  as not loopback-only, whatever a resolver would say. Client targets are read
+  in every gRPC form (`host:port`, `[v6]:port`, `dns:[//authority/]host:port`,
+  `ipv4:`/`ipv6:` lists, where every address must be loopback); any other
+  scheme, such as `xds:`, counts as not loopback-only.
+
+  `grpc_plaintext_refused_error` derives from `grpc_tls_configuration_error`,
+  so existing handlers still catch it. It carries `FAILED_PRECONDITION` and
+  names the refused address in `address()`.
 - Certificate/key material is accepted as **in-memory PEM strings**
   (`ca_cert_pem`, `server_cert_pem`/`server_key_pem`,
   `client_cert_pem`/`client_key_pem`). Use `kythira::grpc_read_pem_file(path)`

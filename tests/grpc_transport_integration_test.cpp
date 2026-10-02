@@ -9,7 +9,9 @@
 // (handler throws → grpc_server_error), the UNIMPLEMENTED behavior of an
 // unregistered optional service (Property 5), lifecycle safety, mutual TLS with
 // certificates minted by certificate_authority (Requirement 19.6), and
-// concurrent calls with no cross-talk (Requirement 19.3).
+// concurrent calls with no cross-talk (Requirement 19.3), and the plaintext
+// gate that keeps an unauthenticated listener or channel on this host unless
+// allow_plaintext is set (.kiro/specs/grpc-plaintext-opt-in/).
 
 #define BOOST_TEST_MODULE GrpcTransportIntegrationTest
 #include <boost/test/unit_test.hpp>
@@ -17,6 +19,8 @@
 #include <raft/certificate_authority.hpp>
 #include <raft/grpc_exceptions.hpp>
 #include <raft/grpc_transport_impl.hpp>
+
+#include "recording_metrics.hpp"
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
@@ -31,6 +35,14 @@
 namespace {
 using types = kythira::grpc_kythira_transport_types;
 using namespace std::chrono_literals;
+
+// Same bundle with a metrics model that remembers what was emitted, for the
+// cases whose only observable effect is a metric.
+struct recording_types {
+    template<typename T> using future_template = kythira::Future<T>;
+    using metrics_type = kythira::testing::recording_metrics;
+    using executor_type = folly::CPUThreadPoolExecutor;
+};
 
 // Bind port 0 so the kernel allocates a free port, then read it back with
 // `server->bound_port()` after start() to address the server.
@@ -262,7 +274,11 @@ BOOST_AUTO_TEST_CASE(tls_misconfiguration_fails_closed) {
 BOOST_AUTO_TEST_CASE(localhost_and_ipv6_binds_end_to_end) {
     folly::CPUThreadPoolExecutor exec(4);
     for (std::string bind : {"localhost", "*", "::1"}) {
-        kythira::grpc_server<types> server(bind, 0, {}, kythira::noop_metrics{}, exec);
+        kythira::grpc_server_config cfg;
+        // "*" listens on every interface, which plaintext may do only by
+        // explicit opt-in (.kiro/specs/grpc-plaintext-opt-in/).
+        cfg.allow_plaintext = bind == "*";
+        kythira::grpc_server<types> server(bind, 0, cfg, kythira::noop_metrics{}, exec);
         server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
             return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
         });
@@ -288,7 +304,186 @@ BOOST_AUTO_TEST_CASE(localhost_and_ipv6_binds_end_to_end) {
 
 BOOST_AUTO_TEST_CASE(unlisted_bind_name_is_refused) {
     folly::CPUThreadPoolExecutor exec(2);
-    kythira::grpc_server<types> server("kythira-test.invalid", 0, {}, kythira::noop_metrics{},
+    // An unlisted name is not loopback-only, so without the opt-in the
+    // plaintext gate would refuse it in the constructor and the bind-name
+    // check in start() would never run.
+    kythira::grpc_server_config cfg;
+    cfg.allow_plaintext = true;
+    kythira::grpc_server<types> server("kythira-test.invalid", 0, cfg, kythira::noop_metrics{},
                                        exec);
     BOOST_CHECK_THROW(server.start(), kythira::grpc_transport_error);
+}
+
+// ── Plaintext gate (.kiro/specs/grpc-plaintext-opt-in/) ─────────────────────
+
+// A plaintext listener on a wildcard address is refused at construction,
+// before start() -- the only place a listening socket is ever opened -- so
+// the refusal cannot leave a port bound. The error names the address, is
+// FAILED_PRECONDITION, and existing TLS-misconfiguration catch sites still
+// handle it.
+BOOST_AUTO_TEST_CASE(plaintext_server_off_loopback_is_refused) {
+    folly::CPUThreadPoolExecutor exec(1);
+    for (std::string bind : {"0.0.0.0", "*", "::"}) {
+        BOOST_TEST_INFO("bind " << bind);
+        try {
+            kythira::grpc_server<types> server(bind, 0, {}, kythira::noop_metrics{}, exec);
+            BOOST_FAIL("plaintext server on " << bind << " was constructed");
+        } catch (const kythira::grpc_plaintext_refused_error& e) {
+            BOOST_TEST(e.address() == bind);
+            BOOST_TEST(e.status_code() == grpc::StatusCode::FAILED_PRECONDITION);
+            BOOST_TEST(std::string(e.what()).find("allow_plaintext") != std::string::npos);
+        }
+    }
+    BOOST_CHECK_THROW(kythira::grpc_server<types>("0.0.0.0", 0, {}, kythira::noop_metrics{}, exec),
+                      kythira::grpc_tls_configuration_error);
+}
+
+// Loopback-only binds still serve plaintext with no opt-in, exactly as before.
+BOOST_AUTO_TEST_CASE(plaintext_server_on_loopback_needs_no_opt_in) {
+    folly::CPUThreadPoolExecutor exec(4);
+    for (std::string bind : {"127.0.0.1", "localhost", "::1"}) {
+        kythira::testing::recording_metrics metrics;
+        kythira::grpc_server<recording_types> server(bind, 0, {}, metrics, exec);
+        server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+            return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
+        });
+        try {
+            server.start();
+        } catch (const kythira::grpc_transport_error& e) {
+            BOOST_TEST_MESSAGE("bind " << bind << " unavailable here: " << e.what());
+            BOOST_TEST(bind == "::1");  // needs IPv6, which some hosts don't have
+            continue;
+        }
+        BOOST_TEST_INFO("bind " << bind);
+        std::string target =
+            (bind == "::1" ? "[::1]:" : "127.0.0.1:") + std::to_string(server.bound_port());
+        kythira::grpc_client<types> client({{1, target}}, {}, kythira::noop_metrics{}, exec);
+        kythira::request_vote_request<> req{
+            ._term = 4, ._candidate_id = 2, ._last_log_index = 0, ._last_log_term = 0};
+        BOOST_TEST(client.send_request_vote(1, req, 2000ms).get().vote_granted());
+        // No opt-in was used, so none is reported.
+        BOOST_TEST(metrics.recorder()->count_named("grpc.server.plaintext.enabled") == 0U);
+        server.stop();
+    }
+}
+
+// allow_plaintext admits a wildcard listener, and start() says so.
+BOOST_AUTO_TEST_CASE(plaintext_server_opt_in_starts_and_is_reported) {
+    folly::CPUThreadPoolExecutor exec(4);
+    kythira::testing::recording_metrics metrics;
+    kythira::grpc_server_config cfg;
+    cfg.allow_plaintext = true;
+    kythira::grpc_server<recording_types> server("0.0.0.0", 0, cfg, metrics, exec);
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+        return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
+    });
+    server.start();
+    BOOST_TEST(server.is_running());
+
+    const auto& rec = *metrics.recorder();
+    BOOST_TEST(rec.count_named("grpc.server.plaintext.enabled") == 1U);
+    BOOST_TEST(rec.dimension_values("grpc.server.plaintext.enabled", "bind_address") ==
+                   std::vector<std::string>{"0.0.0.0"},
+               boost::test_tools::per_element());
+    BOOST_TEST(rec.dimension_values("grpc.server.plaintext.enabled", "loopback_only") ==
+                   std::vector<std::string>{"false"},
+               boost::test_tools::per_element());
+
+    kythira::grpc_client<types> client({{1, "127.0.0.1:" + std::to_string(server.bound_port())}},
+                                       {}, kythira::noop_metrics{}, exec);
+    kythira::request_vote_request<> req{
+        ._term = 5, ._candidate_id = 2, ._last_log_index = 0, ._last_log_term = 0};
+    BOOST_TEST(client.send_request_vote(1, req, 2000ms).get().vote_granted());
+    server.stop();
+}
+
+// With TLS on, the gate does not apply and allow_plaintext changes nothing
+// (Property 2): a wildcard bind starts either way, and nothing reports
+// plaintext.
+BOOST_AUTO_TEST_CASE(tls_server_off_loopback_is_unaffected) {
+    raft::testing::certificate_authority ca;
+    raft::testing::leaf_certificate_options server_opts;
+    server_opts.subject.common_name = "localhost";
+    server_opts.dns_names = {"localhost"};
+    server_opts.ip_addresses = {"127.0.0.1"};
+    server_opts.server_auth = true;
+    auto server_cert = ca.issue(server_opts);
+
+    folly::CPUThreadPoolExecutor exec(2);
+    for (bool allow_plaintext : {false, true}) {
+        BOOST_TEST_INFO("allow_plaintext " << allow_plaintext);
+        kythira::testing::recording_metrics metrics;
+        kythira::grpc_server_config cfg;
+        cfg.enable_tls = true;
+        cfg.server_cert_pem = server_cert.certificate_pem;
+        cfg.server_key_pem = server_cert.private_key_pem;
+        cfg.allow_plaintext = allow_plaintext;
+        kythira::grpc_server<recording_types> server("0.0.0.0", 0, cfg, metrics, exec);
+        server.start();
+        BOOST_TEST(server.is_running());
+        BOOST_TEST(metrics.recorder()->count_named("grpc.server.plaintext.enabled") == 0U);
+        server.stop();
+    }
+}
+
+// A plaintext client refuses, at construction, any configured target that
+// can leave this host, and names it.
+BOOST_AUTO_TEST_CASE(plaintext_client_to_remote_target_is_refused) {
+    folly::CPUThreadPoolExecutor exec(1);
+    std::unordered_map<std::uint64_t, std::string> book{{1, "127.0.0.1:5000"},
+                                                        {2, "10.0.0.1:5000"}};
+    try {
+        kythira::grpc_client<types> client(book, {}, kythira::noop_metrics{}, exec);
+        BOOST_FAIL("plaintext client to 10.0.0.1 was constructed");
+    } catch (const kythira::grpc_plaintext_refused_error& e) {
+        BOOST_TEST(e.address() == "10.0.0.1:5000");
+        BOOST_TEST(e.status_code() == grpc::StatusCode::FAILED_PRECONDITION);
+    }
+    // Local targets of every form pass without the opt-in.
+    kythira::grpc_client<types> local({{1, "127.0.0.1:5000"},
+                                       {2, "[::1]:5000"},
+                                       {3, "localhost:5000"},
+                                       {4, "unix:/tmp/kythira-raft.sock"}},
+                                      {}, kythira::noop_metrics{}, exec);
+}
+
+// allow_plaintext admits the same remote target, and the client says so.
+BOOST_AUTO_TEST_CASE(plaintext_client_opt_in_constructs_and_is_reported) {
+    folly::CPUThreadPoolExecutor exec(1);
+    kythira::testing::recording_metrics metrics;
+    kythira::grpc_client_config cfg;
+    cfg.allow_plaintext = true;
+    kythira::grpc_client<recording_types> client({{1, "10.0.0.1:5000"}}, cfg, metrics, exec);
+    const auto& rec = *metrics.recorder();
+    BOOST_TEST(rec.count_named("grpc.client.plaintext.enabled") == 1U);
+    BOOST_TEST(rec.dimension_values("grpc.client.plaintext.enabled", "loopback_only") ==
+                   std::vector<std::string>{"false"},
+               boost::test_tools::per_element());
+}
+
+// The bootstrap path dials an address that was never configured, so it is
+// checked per call: a refused address fails that call and caches no channel,
+// and a later call to a loopback address still goes through.
+BOOST_AUTO_TEST_CASE(plaintext_bootstrap_to_remote_address_is_refused) {
+    folly::CPUThreadPoolExecutor exec(4);
+    kythira::grpc_server<types> server("127.0.0.1", 0, {}, kythira::noop_metrics{}, exec);
+    server.register_cluster_join_handler([](const kythira::cluster_join_request<>&) {
+        return kythira::cluster_join_response<>{.accepted = true, .redirect = std::nullopt};
+    });
+    server.start();
+
+    kythira::testing::recording_metrics metrics;
+    kythira::grpc_client<recording_types> client({}, {}, metrics, exec);
+    kythira::cluster_join_request<> req{.node_id = 9, .contact_address = "127.0.0.1:1"};
+
+    BOOST_CHECK_THROW((void)client.send_cluster_join_request("10.0.0.1:5000", req, 2000ms),
+                      kythira::grpc_plaintext_refused_error);
+    BOOST_CHECK_THROW((void)client.send_cluster_join_request("10.0.0.1:5000", req, 2000ms),
+                      kythira::grpc_plaintext_refused_error);
+    BOOST_TEST(metrics.recorder()->count_named("grpc.client.channel.created") == 0U);
+
+    auto addr = "127.0.0.1:" + std::to_string(server.bound_port());
+    BOOST_TEST(client.send_cluster_join_request(addr, req, 2000ms).get().is_accepted());
+    BOOST_TEST(metrics.recorder()->count_named("grpc.client.channel.created") == 1U);
+    server.stop();
 }
