@@ -1,0 +1,189 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# docker-compose.quorum-5.yml — 5-node variant of docker-compose.quorum.yml
+# for the dual_follower_kill_5_node_cluster healing test (quorum-management
+# Req 19.9). Same image, environment and naming scheme; QUORUM_TARGET
+# defaults to 5. Host ports continue the 3-node file's layout (7101-7105,
+# 8181-8185, 9101-9105), so the two files must not run at the same time,
+# exactly as two runs of the 3-node file must not.
+#
+# See docker-compose.quorum.yml for the Podman notes (CONTAINER_SOCKET,
+# KYTHIRA_CONTAINER_RUNTIME, KYTHIRA_COMPOSE_COMMAND) and the reasoning
+# behind each timing value; they apply unchanged here.
+
+services:
+  qnode1:
+    image: kythira-chaos-node:dev
+    container_name: kythira-${QUORUM_CLUSTER:-kythira-quorum-test}-1
+    labels:
+      kythira.cluster: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      kythira.node_id: "1"
+    hostname: qnode1
+    environment:
+      NODE_ID: "1"
+      PEERS: "2:qnode2:7000,3:qnode3:7000,4:qnode4:7000,5:qnode5:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "1000"
+      ELECTION_TIMEOUT_MAX_MS: "2000"
+      HEARTBEAT_INTERVAL_MS: "100"
+      QUORUM_MANAGER: "docker"
+      QUORUM_IMAGE: "kythira-chaos-node:dev"
+      QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
+      QUORUM_TARGET: "${QUORUM_TARGET:-5}"
+      QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
+    ports:
+      - "7101:7000"
+      - "8181:8080"
+      - "9101:9000"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - kythira-quorum-net
+
+  qnode2:
+    image: kythira-chaos-node:dev
+    container_name: kythira-${QUORUM_CLUSTER:-kythira-quorum-test}-2
+    labels:
+      kythira.cluster: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      kythira.node_id: "2"
+    hostname: qnode2
+    environment:
+      NODE_ID: "2"
+      PEERS: "1:qnode1:7000,3:qnode3:7000,4:qnode4:7000,5:qnode5:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "1000"
+      ELECTION_TIMEOUT_MAX_MS: "2000"
+      HEARTBEAT_INTERVAL_MS: "100"
+      QUORUM_MANAGER: "docker"
+      QUORUM_IMAGE: "kythira-chaos-node:dev"
+      QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
+      QUORUM_TARGET: "${QUORUM_TARGET:-5}"
+      QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
+    ports:
+      - "7102:7000"
+      - "8182:8080"
+      - "9102:9000"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - kythira-quorum-net
+
+  qnode3:
+    image: kythira-chaos-node:dev
+    container_name: kythira-${QUORUM_CLUSTER:-kythira-quorum-test}-3
+    labels:
+      kythira.cluster: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      kythira.node_id: "3"
+    hostname: qnode3
+    environment:
+      NODE_ID: "3"
+      PEERS: "1:qnode1:7000,2:qnode2:7000,4:qnode4:7000,5:qnode5:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "1000"
+      ELECTION_TIMEOUT_MAX_MS: "2000"
+      HEARTBEAT_INTERVAL_MS: "100"
+      QUORUM_MANAGER: "docker"
+      QUORUM_IMAGE: "kythira-chaos-node:dev"
+      QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
+      QUORUM_TARGET: "${QUORUM_TARGET:-5}"
+      QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
+    ports:
+      - "7103:7000"
+      - "8183:8080"
+      - "9103:9000"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - kythira-quorum-net
+
+  qnode4:
+    image: kythira-chaos-node:dev
+    container_name: kythira-${QUORUM_CLUSTER:-kythira-quorum-test}-4
+    labels:
+      kythira.cluster: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      kythira.node_id: "4"
+    hostname: qnode4
+    environment:
+      NODE_ID: "4"
+      PEERS: "1:qnode1:7000,2:qnode2:7000,3:qnode3:7000,5:qnode5:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "1000"
+      ELECTION_TIMEOUT_MAX_MS: "2000"
+      HEARTBEAT_INTERVAL_MS: "100"
+      QUORUM_MANAGER: "docker"
+      QUORUM_IMAGE: "kythira-chaos-node:dev"
+      QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
+      QUORUM_TARGET: "${QUORUM_TARGET:-5}"
+      QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
+    ports:
+      - "7104:7000"
+      - "8184:8080"
+      - "9104:9000"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - kythira-quorum-net
+
+  qnode5:
+    image: kythira-chaos-node:dev
+    container_name: kythira-${QUORUM_CLUSTER:-kythira-quorum-test}-5
+    labels:
+      kythira.cluster: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      kythira.node_id: "5"
+    hostname: qnode5
+    environment:
+      NODE_ID: "5"
+      PEERS: "1:qnode1:7000,2:qnode2:7000,3:qnode3:7000,4:qnode4:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "1000"
+      ELECTION_TIMEOUT_MAX_MS: "2000"
+      HEARTBEAT_INTERVAL_MS: "100"
+      QUORUM_MANAGER: "docker"
+      QUORUM_IMAGE: "kythira-chaos-node:dev"
+      QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
+      QUORUM_TARGET: "${QUORUM_TARGET:-5}"
+      QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
+    ports:
+      - "7105:7000"
+      - "8185:8080"
+      - "9105:9000"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - kythira-quorum-net
+
+networks:
+  kythira-quorum-net:
+    name: ${QUORUM_NETWORK:-kythira-quorum-net}
+    driver: bridge
