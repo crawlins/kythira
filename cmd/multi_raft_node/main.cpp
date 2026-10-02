@@ -43,7 +43,13 @@
 
 #include <raft/net_bind.hpp>
 
+// Present in every CMake build, which links folly whatever the future
+// backend; absent only in a folly-free build of the Boost backend, where
+// there is no folly state to initialise.
+#if __has_include(<folly/init/Init.h>)
 #include <folly/init/Init.h>
+#define KYTHIRA_NODE_HAS_FOLLY_INIT 1
+#endif
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -285,10 +291,12 @@ auto main(int argc, char** argv) -> int {
         return 3;
     }
 
+#if defined(KYTHIRA_NODE_HAS_FOLLY_INIT)
     int folly_argc = 1;
     char* folly_argv_storage[] = {argv[0], nullptr};
     char** folly_argv = folly_argv_storage;
     folly::Init init(&folly_argc, &folly_argv);
+#endif
 
     std::signal(SIGINT, kythira::bench::host::on_signal);
     std::signal(SIGTERM, kythira::bench::host::on_signal);

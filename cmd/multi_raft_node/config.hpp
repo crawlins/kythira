@@ -59,6 +59,14 @@ enum class discovery_mode : std::uint8_t {
 /// The same three arms the in-process durability axis sweeps, with the same
 /// names, so a Tier C durability row and a Tier B one are labelled identically.
 /// `file_buffered` is **not durable** and every row carrying it says so.
+/// Whether, and how, this host takes part in elastic shard capacity
+/// (`.kiro/specs/elastic-shard-capacity/` task 16; see `capacity_plane.hpp`).
+enum class capacity_role : std::uint8_t {
+    off = 0,         ///< No placement-driver hooks: the measurement host, unchanged.
+    controller = 1,  ///< Runs the controller and serves its control plane.
+    member = 2,      ///< Reaches a controller over its control plane.
+};
+
 enum class persistence_mode : std::uint8_t {
     memory = 0,
     file_buffered = 1,
@@ -205,6 +213,34 @@ struct node_options {
     /// process learns it unaided; injectable for tests and for a controller
     /// driving this from outside the instance.
     std::string _discovery_instance_id{};
+
+    // ── elastic capacity (off unless `--capacity-role` says otherwise) ───────
+    capacity_role _capacity_role{capacity_role::off};
+    /// The controller's control-plane port.
+    std::uint16_t _capacity_port{7003};
+    /// `host:port` of the controller's control plane, for a member.
+    std::string _capacity_controller{};
+    /// `docker_quorum_manager`'s cluster, network, image and daemon.
+    std::string _capacity_cluster{};
+    std::string _capacity_network{};
+    std::string _capacity_image{};
+    std::string _capacity_docker_url{"unix:///var/run/docker.sock"};
+    /// The controller's ceiling; 0 derives it (design §10).
+    std::size_t _capacity_max_nodes{0};
+    /// The shards-per-node watermarks of the threshold policy.
+    double _capacity_shards_high{200.0};
+    double _capacity_shards_low{80.0};
+    /// The policy's `_sustained_for`, also used as its cooldown and as the
+    /// controller's minimum provider-call interval.
+    std::chrono::milliseconds _capacity_sustained{std::chrono::minutes{5}};
+    /// The host's placement-driver heartbeat; the controller's staleness and
+    /// retry intervals are derived from it.
+    std::chrono::milliseconds _capacity_heartbeat{1000};
+    bool _capacity_dry_run{false};
+    /// `KEY=VALUE` entries handed to every container the controller creates.
+    std::vector<std::string> _capacity_join_env{};
+    /// Split a shard past this many keys. 0 leaves automatic splitting off.
+    std::size_t _split_keys{0};
 };
 
 [[nodiscard]] auto parse_node_options(int argc, char** argv) -> node_options;
