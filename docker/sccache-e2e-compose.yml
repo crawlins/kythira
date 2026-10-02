@@ -50,6 +50,10 @@ x-gateway-env: &gateway-env
   KYTHIRA_REDIS_LISTEN: "0.0.0.0:6379"
   KYTHIRA_REDIS_ACL_FILE: "/etc/kythira/acl.txt"
   KYTHIRA_REDIS_INTERNAL_SECRET: "sccache-e2e-internal"
+  # Forwarding sends that secret in AUTH; with no TLS listener here the
+  # gateway refuses to forward over plaintext without this opt-in. Same
+  # reasoning as the Raft opt-in above.
+  KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING: "true"
   KYTHIRA_REDIS_PEER_GATEWAYS: "1=kv1:6379,2=kv2:6379,3=kv3:6379"
   # Small on purpose: a whole test run is a few hundred KiB, and the log
   # dump on failure should stay readable.

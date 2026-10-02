@@ -555,6 +555,18 @@ auto redis_gateway<Host, Logger, Metrics>::start() -> void {
                     "redis gateway: forwarding is on but no internal secret is configured; "
                     "commands for a shard "
                     "led elsewhere will be answered with a retry error instead of forwarded");
+    } else if (_config._forwarding && !_config._forward_tls &&
+               !_config._allow_plaintext_forwarding) {
+        // Requirement 12.5: the internal identity is a read/write-everything
+        // credential; it never crosses the network in the clear by default.
+        _logger.log(log_level::warning,
+                    "redis gateway: forwarding is on but neither TLS forwarding nor plaintext "
+                    "forwarding is enabled; refusing to send the internal secret unencrypted, so "
+                    "commands for a shard led elsewhere will be answered with a retry error");
+    } else if (_config._forwarding && !_config._forward_tls) {
+        _logger.log(log_level::warning,
+                    "redis gateway: PLAINTEXT forwarding; the internal secret and forwarded "
+                    "commands cross the network unencrypted");
     }
     _started_at = std::chrono::steady_clock::now();
     _io.restart();
@@ -568,6 +580,14 @@ auto redis_gateway<Host, Logger, Metrics>::start() -> void {
     };
 
     try {
+        if (_config._forwarding && !_config._internal_secret.empty() && _config._forward_tls) {
+            _forward_ssl_ctx =
+                std::make_shared<boost::asio::ssl::context>(build_forward_ssl_context());
+            _logger.log(
+                log_level::info, "redis gateway: forwarding over TLS",
+                {{"ca", _config._forward_tls_ca_path.empty() ? _config._tls_ca_path
+                                                             : _config._forward_tls_ca_path}});
+        }
         if (!_config._listen.empty()) {
             _acceptors = bind(_config._listen);
             _port = _acceptors.front()->local_endpoint().port();
@@ -592,6 +612,7 @@ auto redis_gateway<Host, Logger, Metrics>::start() -> void {
         _workers.reset();
         _acceptors.clear();
         _tls_acceptors.clear();
+        _forward_ssl_ctx.reset();
         _running = false;
         throw;
     }
@@ -657,6 +678,7 @@ auto redis_gateway<Host, Logger, Metrics>::stop() -> void {
         std::lock_guard<std::mutex> lock(_forward_mutex);
         _forward_pools.clear();
     }
+    _forward_ssl_ctx.reset();
     _port = 0;
     _tls_port = 0;
 }
@@ -684,6 +706,40 @@ auto redis_gateway<Host, Logger, Metrics>::build_ssl_context() -> boost::asio::s
         ctx.set_verify_mode(ssl::verify_peer);
     } else {
         ctx.set_verify_mode(ssl::verify_none);
+    }
+    return ctx;
+}
+
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::build_forward_ssl_context()
+    -> boost::asio::ssl::context {
+    namespace ssl = boost::asio::ssl;
+    ssl::context ctx(ssl::context::tls_client);
+    // The same TLS 1.2 floor as the listener (Requirement 12.2).
+    ctx.set_options(ssl::context::default_workarounds | ssl::context::no_sslv2 |
+                    ssl::context::no_sslv3 | ssl::context::no_tlsv1 | ssl::context::no_tlsv1_1);
+    SSL_CTX_set_min_proto_version(ctx.native_handle(), TLS1_2_VERSION);
+    const auto& ca =
+        _config._forward_tls_ca_path.empty() ? _config._tls_ca_path : _config._forward_tls_ca_path;
+    if (ca.empty()) {
+        // Without a CA the only options are trusting every certificate or
+        // none; the first hands the secret to whoever answers.
+        throw std::runtime_error(
+            "redis gateway: forwarding over TLS needs a CA to verify peer gateways against");
+    }
+    ctx.load_verify_file(ca);
+    ctx.set_verify_mode(ssl::verify_peer);
+    const bool own_cert =
+        !_config._forward_tls_cert_path.empty() || !_config._forward_tls_key_path.empty();
+    const auto& cert = own_cert ? _config._forward_tls_cert_path : _config._tls_cert_path;
+    const auto& key = own_cert ? _config._forward_tls_key_path : _config._tls_key_path;
+    if (cert.empty() != key.empty()) {
+        throw std::runtime_error(
+            "redis gateway: the forwarding client certificate needs both a certificate and a key");
+    }
+    if (!cert.empty()) {
+        ctx.use_certificate_chain_file(cert);
+        ctx.use_private_key_file(key, ssl::context::pem);
     }
     return ctx;
 }
@@ -953,9 +1009,9 @@ auto redis_gateway<Host, Logger, Metrics>::forward_endpoint(const node_id_type& 
 }
 
 template<typename Host, typename Logger, typename Metrics>
-auto redis_gateway<Host, Logger, Metrics>::forward_socket(const std::string& endpoint)
-    -> std::unique_ptr<boost::asio::ip::tcp::socket> {
-    using tcp = boost::asio::ip::tcp;
+auto redis_gateway<Host, Logger, Metrics>::forward_socket(
+    const std::string& endpoint, std::chrono::steady_clock::time_point deadline)
+    -> std::unique_ptr<redis_forward_link> {
     std::shared_ptr<forward_pool> pool;
     {
         std::lock_guard<std::mutex> lock(_forward_mutex);
@@ -970,30 +1026,23 @@ auto redis_gateway<Host, Logger, Metrics>::forward_socket(const std::string& end
         if (!pool->_idle.empty()) {
             auto sock = std::move(pool->_idle.back());
             pool->_idle.pop_back();
+            sock->set_deadline(deadline);
             return sock;
         }
     }
     auto [host, port] = redis_gateway_detail::parse_listen(endpoint);
-    tcp::resolver resolver(_io);
-    auto endpoints = resolver.resolve(host, std::to_string(port));
-    auto sock = std::make_unique<tcp::socket>(_io);
-    boost::asio::connect(*sock, endpoints);
-    sock->set_option(tcp::no_delay(true));
-    // Deadline propagation on a synchronous socket: the kernel timeouts are
-    // the command timeout, so a hung peer costs one command's budget.
-    timeval tv{};
-    tv.tv_sec = static_cast<decltype(tv.tv_sec)>(_config._command_timeout.count() / 1000);
-    tv.tv_usec =
-        static_cast<decltype(tv.tv_usec)>((_config._command_timeout.count() % 1000) * 1000);
-    ::setsockopt(sock->native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    ::setsockopt(sock->native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    // TLS whenever it is configured; forward() never gets here without TLS
+    // unless plaintext forwarding was explicitly allowed (Requirement 12.5).
+    auto sock = std::make_unique<redis_forward_link>(_forward_ssl_ctx);
+    sock->set_deadline(deadline);
+    sock->connect(host, port);
 
     // Authenticate as the internal identity; the peer never forwards a
     // command that arrives on this connection (one hop, Requirement 9.4).
     resp_writer w;
     auto auth =
         w.array({w.bulk("AUTH"), w.bulk(_config._internal_user), w.bulk(_config._internal_secret)});
-    boost::asio::write(*sock, boost::asio::buffer(auth));
+    sock->write(boost::asio::buffer(auth));
     std::string buf;
     std::array<char, 512> chunk{};
     while (resp_reply_length(buf) == 0) {
@@ -1012,7 +1061,10 @@ auto redis_gateway<Host, Logger, Metrics>::forward_socket(const std::string& end
 
 template<typename Host, typename Logger, typename Metrics>
 auto redis_gateway<Host, Logger, Metrics>::return_forward_socket(
-    const std::string& endpoint, std::unique_ptr<boost::asio::ip::tcp::socket> sock) -> void {
+    const std::string& endpoint, std::unique_ptr<redis_forward_link> sock) -> void {
+    if (!sock->healthy()) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(_forward_mutex);
     auto it = _forward_pools.find(endpoint);
     if (it == _forward_pools.end()) {
@@ -1033,7 +1085,7 @@ auto redis_gateway<Host, Logger, Metrics>::forward(session& s, const resp_comman
                                                    const node_id_type& to)
     -> std::optional<std::string> {
     if (!_config._forwarding || s._internal || _config._internal_secret.empty() ||
-        !_running.load()) {
+        (!_config._forward_tls && !_config._allow_plaintext_forwarding) || !_running.load()) {
         return std::nullopt;
     }
     auto endpoint = forward_endpoint(to);
@@ -1043,7 +1095,14 @@ auto redis_gateway<Host, Logger, Metrics>::forward(session& s, const resp_comman
     ++_stats._forwards;
     emit("redis.forwards", resp_to_upper(cmd._argv[0]));
     try {
-        auto sock = forward_socket(*endpoint);
+        // One budget for the whole exchange, connect and AUTH included, so a
+        // peer that stalls surfaces as the retry error, never a hang
+        // (Requirement 13.4). A zero timeout meant "none" for the old
+        // socket options; keep that meaning with a day-long budget.
+        const auto budget = _config._command_timeout.count() > 0
+                                ? std::chrono::steady_clock::duration{_config._command_timeout}
+                                : std::chrono::steady_clock::duration{std::chrono::hours{24}};
+        auto sock = forward_socket(*endpoint, std::chrono::steady_clock::now() + budget);
         resp_writer w;
         std::vector<std::string> parts;
         parts.reserve(cmd._argv.size());
@@ -1051,7 +1110,7 @@ auto redis_gateway<Host, Logger, Metrics>::forward(session& s, const resp_comman
             parts.push_back(w.bulk(a));
         }
         auto wire = w.array(parts);
-        boost::asio::write(*sock, boost::asio::buffer(wire));
+        sock->write(boost::asio::buffer(wire));
         std::string buf;
         std::array<char, 16 * 1024> chunk{};
         std::size_t len = 0;

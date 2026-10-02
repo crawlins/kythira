@@ -6,6 +6,9 @@
 ///        a real TCP port, driven by a hand-rolled RESP client
 ///        (.kiro/specs/redis-compatible-kv/ tasks 5-9 and 11).
 ///
+/// The TLS cases mint a throwaway CA and certificates per test with OpenSSL,
+/// so they need no fixtures on disk and no network beyond loopback.
+///
 /// The client is deliberately not a Redis library: it sends exactly the bytes
 /// the test names and compares exactly the bytes that come back, so a reply
 /// that redis-rs would tolerate but the spec forbids still fails. The real
@@ -29,14 +32,26 @@
 #endif
 
 #include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
+
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+
+#include <unistd.h>
 
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
@@ -159,14 +174,168 @@ auto acl_text() -> std::string {
            " read_write *\n";
 }
 
+// ── a throwaway PKI for the TLS cases ────────────────────────────────────────
+
+using pkey_ptr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
+using x509_ptr = std::unique_ptr<X509, decltype(&X509_free)>;
+
+auto make_key() -> pkey_ptr {
+    pkey_ptr key(EVP_EC_gen("P-256"), &EVP_PKEY_free);
+    if (!key) {
+        throw std::runtime_error("EVP_EC_gen failed");
+    }
+    return key;
+}
+
+/// A certificate for `cn` signed by `issuer` (self-signed when null). A CA
+/// gets the CA basic constraint; a leaf gets server and client key usage and
+/// `san` (an OpenSSL subjectAltName value, e.g. "IP:127.0.0.1") if non-empty.
+auto make_cert(const std::string& cn, EVP_PKEY* key, X509* issuer, EVP_PKEY* issuer_key, bool ca,
+               const std::string& san) -> x509_ptr {
+    static std::atomic<long> serial{1};
+    x509_ptr cert(X509_new(), &X509_free);
+    X509_set_version(cert.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), serial++);
+    X509_gmtime_adj(X509_getm_notBefore(cert.get()), -3600);
+    X509_gmtime_adj(X509_getm_notAfter(cert.get()), 86400);
+    X509_set_pubkey(cert.get(), key);
+    X509_NAME* name = X509_get_subject_name(cert.get());
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                               reinterpret_cast<const unsigned char*>(cn.c_str()), -1, -1, 0);
+    X509_set_issuer_name(cert.get(), issuer != nullptr ? X509_get_subject_name(issuer) : name);
+    X509V3_CTX ctx;
+    X509V3_set_ctx_nodb(&ctx);
+    X509V3_set_ctx(&ctx, issuer != nullptr ? issuer : cert.get(), cert.get(), nullptr, nullptr, 0);
+    auto add = [&](int nid, const std::string& value) {
+        X509_EXTENSION* ext = X509V3_EXT_conf_nid(nullptr, &ctx, nid, value.c_str());
+        if (ext == nullptr) {
+            throw std::runtime_error("bad certificate extension " + value);
+        }
+        X509_add_ext(cert.get(), ext, -1);
+        X509_EXTENSION_free(ext);
+    };
+    if (ca) {
+        add(NID_basic_constraints, "critical,CA:TRUE");
+        add(NID_key_usage, "critical,keyCertSign,cRLSign");
+    } else {
+        add(NID_basic_constraints, "critical,CA:FALSE");
+        add(NID_ext_key_usage, "serverAuth,clientAuth");
+        if (!san.empty()) {
+            add(NID_subject_alt_name, san);
+        }
+    }
+    if (X509_sign(cert.get(), issuer_key != nullptr ? issuer_key : key, EVP_sha256()) == 0) {
+        throw std::runtime_error("X509_sign failed");
+    }
+    return cert;
+}
+
+/// PEM files under a private temporary directory, removed on destruction:
+/// `ca` and `rogue-ca`, and leaves signed by `ca` — `node` (SAN IP 127.0.0.1,
+/// what every gateway presents), `wrong-host` (SAN DNS kv.invalid only), and
+/// client certificates `farm`, `gone` and `stranger`.
+class test_pki {
+public:
+    test_pki() {
+        static std::atomic<int> counter{0};
+        _dir =
+            std::filesystem::temp_directory_path() /
+            ("kythira-redis-tls-" + std::to_string(::getpid()) + "-" + std::to_string(counter++));
+        std::filesystem::create_directories(_dir);
+        auto ca_key = make_key();
+        auto ca = make_cert("kythira test CA", ca_key.get(), nullptr, nullptr, true, "");
+        write("ca", ca.get(), ca_key.get());
+        auto rogue_key = make_key();
+        auto rogue = make_cert("rogue CA", rogue_key.get(), nullptr, nullptr, true, "");
+        write("rogue-ca", rogue.get(), rogue_key.get());
+        auto leaf = [&](const std::string& file, const std::string& cn, const std::string& san) {
+            auto key = make_key();
+            auto cert = make_cert(cn, key.get(), ca.get(), ca_key.get(), false, san);
+            write(file, cert.get(), key.get());
+        };
+        leaf("node", "kythira-redis-node", "IP:127.0.0.1");
+        leaf("wrong-host", "kythira-redis-node", "DNS:kv.invalid");
+        leaf("farm", "farm", "");
+        leaf("gone", "gone", "");
+        leaf("stranger", "stranger", "");
+    }
+    ~test_pki() {
+        std::error_code ec;
+        std::filesystem::remove_all(_dir, ec);
+    }
+    test_pki(const test_pki&) = delete;
+    auto operator=(const test_pki&) -> test_pki& = delete;
+
+    [[nodiscard]] auto cert(const std::string& name) const -> std::string {
+        return (_dir / (name + ".crt")).string();
+    }
+    [[nodiscard]] auto key(const std::string& name) const -> std::string {
+        return (_dir / (name + ".key")).string();
+    }
+
+private:
+    auto write(const std::string& name, X509* cert, EVP_PKEY* key) -> void {
+        BIO* c = BIO_new_file(this->cert(name).c_str(), "w");
+        BIO* k = BIO_new_file(this->key(name).c_str(), "w");
+        bool ok = c != nullptr && k != nullptr && PEM_write_bio_X509(c, cert) == 1 &&
+                  PEM_write_bio_PrivateKey(k, key, nullptr, nullptr, 0, nullptr, nullptr) == 1;
+        BIO_free(c);
+        BIO_free(k);
+        if (!ok) {
+            throw std::runtime_error("cannot write PEM files for " + name);
+        }
+    }
+
+    std::filesystem::path _dir;
+};
+
+/// Gateways with an mTLS listener presenting `leaf`, forwarding over TLS.
+auto tls_config(const test_pki& pki, const std::string& leaf = "node") -> redis_gateway_config {
+    redis_gateway_config cfg;
+    cfg._tls_listen = "127.0.0.1:0";
+    cfg._tls_cert_path = pki.cert(leaf);
+    cfg._tls_key_path = pki.key(leaf);
+    cfg._tls_ca_path = pki.cert("ca");
+    cfg._require_client_cert = true;
+    cfg._forward_tls = true;
+    return cfg;
+}
+
+/// A TLS client context trusting the test CA, presenting `leaf` if given.
+auto client_tls(const test_pki& pki, const std::string& leaf = "")
+    -> std::shared_ptr<boost::asio::ssl::context> {
+    namespace ssl = boost::asio::ssl;
+    auto ctx = std::make_shared<ssl::context>(ssl::context::tls_client);
+    ctx->load_verify_file(pki.cert("ca"));
+    ctx->set_verify_mode(ssl::verify_peer);
+    if (!leaf.empty()) {
+        ctx->use_certificate_chain_file(pki.cert(leaf));
+        ctx->use_private_key_file(pki.key(leaf), ssl::context::pem);
+    }
+    return ctx;
+}
+
 // ── a minimal RESP client ────────────────────────────────────────────────────
 
 class resp_client {
 public:
-    explicit resp_client(std::uint16_t port) : _socket(_io) {
+    /// Plaintext, or TLS when `tls` is given; a TLS client checks that the
+    /// server certificate names 127.0.0.1.
+    explicit resp_client(std::uint16_t port,
+                         std::shared_ptr<boost::asio::ssl::context> tls = nullptr)
+        : _tls_ctx(std::move(tls)) {
         boost::asio::ip::tcp::endpoint ep(boost::asio::ip::make_address("127.0.0.1"), port);
-        _socket.connect(ep);
-        _socket.set_option(boost::asio::ip::tcp::no_delay(true));
+        if (_tls_ctx) {
+            _tls.emplace(_io, *_tls_ctx);
+            _tls->next_layer().connect(ep);
+            _tls->next_layer().set_option(boost::asio::ip::tcp::no_delay(true));
+            X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(_tls->native_handle()), "127.0.0.1");
+            _tls->handshake(boost::asio::ssl::stream_base::client);
+        } else {
+            _plain.emplace(_io);
+            _plain->connect(ep);
+            _plain->set_option(boost::asio::ip::tcp::no_delay(true));
+        }
     }
 
     static auto encode(const std::vector<std::string>& argv) -> std::string {
@@ -178,7 +347,11 @@ public:
     }
 
     auto send_raw(const std::string& bytes) -> void {
-        boost::asio::write(_socket, boost::asio::buffer(bytes));
+        if (_tls) {
+            boost::asio::write(*_tls, boost::asio::buffer(bytes));
+        } else {
+            boost::asio::write(*_plain, boost::asio::buffer(bytes));
+        }
     }
 
     /// Send one command and return its raw reply.
@@ -192,7 +365,7 @@ public:
         while ((len = resp_reply_length(_buffer)) == 0) {
             std::array<char, 65536> chunk{};
             boost::system::error_code ec;
-            auto n = _socket.read_some(boost::asio::buffer(chunk), ec);
+            auto n = read_some(boost::asio::buffer(chunk), ec);
             if (ec) {
                 throw std::runtime_error("connection closed: " + ec.message());
             }
@@ -208,7 +381,7 @@ public:
         std::array<char, 16> chunk{};
         boost::system::error_code ec;
         while (true) {
-            auto n = _socket.read_some(boost::asio::buffer(chunk), ec);
+            auto n = read_some(boost::asio::buffer(chunk), ec);
             if (ec == boost::asio::error::eof) {
                 return true;
             }
@@ -224,10 +397,21 @@ public:
     }
 
 private:
+    auto read_some(boost::asio::mutable_buffer into, boost::system::error_code& ec) -> std::size_t {
+        return _tls ? _tls->read_some(into, ec) : _plain->read_some(into, ec);
+    }
+
     boost::asio::io_context _io;
-    boost::asio::ip::tcp::socket _socket;
+    std::shared_ptr<boost::asio::ssl::context> _tls_ctx;
+    std::optional<boost::asio::ip::tcp::socket> _plain;
+    std::optional<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>> _tls;
     std::string _buffer;
 };
+
+/// Every reply the gateway gives when a shard's leader cannot be reached.
+auto is_retry_error(const std::string& reply) -> bool {
+    return reply.rfind("-ERR ", 0) == 0 && reply.find("retry") != std::string::npos;
+}
 
 auto bulk(const std::string& s) -> std::string {
     return "$" + std::to_string(s.size()) + "\r\n" + s + "\r\n";
@@ -237,7 +421,10 @@ auto bulk(const std::string& s) -> std::string {
 
 class cluster {
 public:
-    explicit cluster(redis_gateway_config base = {}) {
+    /// `plaintext_forwarding` opts the gateways into forwarding over
+    /// plaintext loopback, which every case not about forwarding security
+    /// relies on; it has no effect once `base._forward_tls` is set.
+    explicit cluster(redis_gateway_config base = {}, bool plaintext_forwarding = true) {
         _acl.reload(acl_text());
         for (node_id_t id = 1; id <= k_node_count; ++id) {
             _hosts.push_back(std::make_unique<host_type>(make_config(id)));
@@ -255,11 +442,20 @@ public:
             cfg._io_threads = 1;
             cfg._worker_threads = 4;
             cfg._command_timeout = std::chrono::milliseconds{3000};
-            auto resolver = [this](const node_id_t& to) -> std::optional<std::string> {
-                if (to < 1 || to > _gateways.size() || !_gateways[to - 1]) {
+            cfg._allow_plaintext_forwarding =
+                base._allow_plaintext_forwarding || plaintext_forwarding;
+            const node_id_t from = static_cast<node_id_t>(i + 1);
+            auto resolver = [this, from](const node_id_t& to) -> std::optional<std::string> {
+                if (auto endpoint = endpoint_override(from, to)) {
+                    return endpoint;
+                }
+                auto target = route(from, to);
+                if (target < 1 || target > _gateways.size() || !_gateways[target - 1]) {
                     return std::nullopt;
                 }
-                return "127.0.0.1:" + std::to_string(_gateways[to - 1]->port());
+                const auto& gw = *_gateways[target - 1];
+                return "127.0.0.1:" +
+                       std::to_string(gw.config()._forward_tls ? gw.tls_port() : gw.port());
             };
             _gateways.push_back(
                 std::make_unique<gateway_type>(*_hosts[i], _acl, _logger, _metrics, cfg, resolver));
@@ -294,9 +490,43 @@ public:
     [[nodiscard]] auto host(node_id_t id) -> host_type& { return *_hosts.at(id - 1); }
     [[nodiscard]] auto gateway(node_id_t id) -> gateway_type& { return *_gateways.at(id - 1); }
     [[nodiscard]] auto port(node_id_t id) -> std::uint16_t { return _gateways.at(id - 1)->port(); }
+    [[nodiscard]] auto tls_port(node_id_t id) -> std::uint16_t {
+        return _gateways.at(id - 1)->tls_port();
+    }
+
+    /// Make node `from`'s gateway resolve node `to` to node `target`'s
+    /// gateway: a stale or poisoned routing map.
+    auto poison_route(node_id_t from, node_id_t to, node_id_t target) -> void {
+        std::lock_guard<std::mutex> lock(_routes_mutex);
+        _routes[{from, to}] = target;
+    }
+    /// Make node `from`'s gateway resolve node `to` to an arbitrary endpoint.
+    auto override_endpoint(node_id_t from, node_id_t to, std::string endpoint) -> void {
+        std::lock_guard<std::mutex> lock(_routes_mutex);
+        _endpoint_overrides[{from, to}] = std::move(endpoint);
+    }
+    auto heal_routes() -> void {
+        std::lock_guard<std::mutex> lock(_routes_mutex);
+        _routes.clear();
+        _endpoint_overrides.clear();
+    }
+
+    /// Crash node `id`: its Raft traffic is dropped, its host stops ticking
+    /// and its gateway closes its listeners and connections.
+    auto kill(node_id_t id) -> void {
+        _alive[id - 1] = false;
+        _fabric.kill(id);
+        if (_drivers[id - 1].joinable()) {
+            _drivers[id - 1].join();
+        }
+        _gateways[id - 1]->stop();
+    }
 
     [[nodiscard]] auto leader_of(group_id_type group) -> node_id_t {
         for (node_id_t id = 1; id <= k_node_count; ++id) {
+            if (!_alive[id - 1]) {
+                continue;  // a crashed node still believes it leads
+            }
             auto* n = _hosts[id - 1]->group_node(group);
             if (n != nullptr && n->is_leader()) {
                 return id;
@@ -308,7 +538,7 @@ public:
     [[nodiscard]] auto a_follower_of(group_id_type group) -> node_id_t {
         auto leader = leader_of(group);
         for (node_id_t id = 1; id <= k_node_count; ++id) {
-            if (id != leader) {
+            if (id != leader && _alive[id - 1]) {
                 return id;
             }
         }
@@ -363,8 +593,23 @@ private:
         return cfg;
     }
 
+    auto endpoint_override(node_id_t from, node_id_t to) -> std::optional<std::string> {
+        std::lock_guard<std::mutex> lock(_routes_mutex);
+        auto it = _endpoint_overrides.find({from, to});
+        if (it == _endpoint_overrides.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    auto route(node_id_t from, node_id_t to) -> node_id_t {
+        std::lock_guard<std::mutex> lock(_routes_mutex);
+        auto it = _routes.find({from, to});
+        return it == _routes.end() ? to : it->second;
+    }
+
     auto drive(std::size_t index) -> void {
-        while (_running.load()) {
+        while (_running.load() && _alive[index].load()) {
             _hosts[index]->tick();
             std::this_thread::sleep_for(std::chrono::milliseconds{5});
         }
@@ -378,6 +623,54 @@ private:
     std::vector<std::unique_ptr<gateway_type>> _gateways;
     std::vector<std::thread> _drivers;
     std::atomic<bool> _running{false};
+    std::array<std::atomic<bool>, k_node_count> _alive{true, true, true};
+    std::mutex _routes_mutex;
+    std::map<std::pair<node_id_t, node_id_t>, node_id_t> _routes;
+    std::map<std::pair<node_id_t, node_id_t>, std::string> _endpoint_overrides;
+};
+
+/// Accepts connections on loopback and never answers: a peer gateway that
+/// hung after accept().
+class silent_peer {
+public:
+    silent_peer() : _acceptor(_io, {boost::asio::ip::make_address("127.0.0.1"), 0}) {
+        _thread = std::thread([this] {
+            while (!_stopping.load()) {
+                boost::system::error_code ec;
+                auto sock = _acceptor.accept(ec);
+                if (ec) {
+                    return;
+                }
+                ++_accepted;
+                _held.push_back(std::move(sock));
+            }
+        });
+    }
+    ~silent_peer() {
+        _stopping = true;
+        boost::system::error_code ec;
+        _acceptor.cancel(ec);
+        // accept() may not wake on cancel; a connection does wake it.
+        boost::asio::ip::tcp::socket wake(_io);
+        wake.connect(_acceptor.local_endpoint(), ec);
+        _acceptor.close(ec);
+        _thread.join();
+    }
+    silent_peer(const silent_peer&) = delete;
+    auto operator=(const silent_peer&) -> silent_peer& = delete;
+
+    [[nodiscard]] auto endpoint() const -> std::string {
+        return "127.0.0.1:" + std::to_string(_acceptor.local_endpoint().port());
+    }
+    [[nodiscard]] auto accepted() const -> int { return _accepted.load(); }
+
+private:
+    boost::asio::io_context _io;
+    boost::asio::ip::tcp::acceptor _acceptor;
+    std::vector<boost::asio::ip::tcp::socket> _held;
+    std::atomic<bool> _stopping{false};
+    std::atomic<int> _accepted{0};
+    std::thread _thread;
 };
 
 }  // namespace
@@ -870,6 +1163,120 @@ BOOST_AUTO_TEST_CASE(empty_acl_refuses_to_start_unless_anonymous, *boost::unit_t
     BOOST_CHECK_EQUAL(client.call({"GET", "x"}),
                       "-LOADING Kythira is loading the dataset in memory\r\n");
     gw.stop();
+    BOOST_CHECK(!gw.is_running());
+}
+
+// ── forwarding failure modes ─────────────────────────────────────────────────
+
+// Requirement 13.4. The old SO_RCVTIMEO deadline never fired, because Asio
+// answers the EAGAIN it causes by polling with no timeout, so this case hung
+// a worker forever.
+BOOST_AUTO_TEST_CASE(a_peer_that_never_answers_costs_one_command_timeout,
+                     *boost::unit_test::timeout(120)) {
+    cluster c;
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto leader = c.leader_of(k_sccache_group);
+    const auto follower = c.a_follower_of(k_sccache_group);
+    silent_peer peer;
+    c.override_endpoint(follower, leader, peer.endpoint());
+
+    resp_client client(c.port(follower));
+    BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
+    const auto failures_before = c.gateway(follower).stats()._forward_failures.load();
+    const auto started = std::chrono::steady_clock::now();
+    BOOST_CHECK(is_retry_error(client.call({"GET", "sccache/hung"})));
+    const auto took = std::chrono::steady_clock::now() - started;
+    BOOST_CHECK_GE(peer.accepted(), 1);
+    BOOST_CHECK_EQUAL(c.gateway(follower).stats()._forward_failures.load() - failures_before, 1u);
+    // The fixture's command timeout is 3 s.
+    BOOST_CHECK_GE(took, std::chrono::milliseconds{2500});
+    BOOST_CHECK_LT(took, std::chrono::seconds{10});
+
+    c.heal_routes();
+    BOOST_CHECK_EQUAL(client.call({"GET", "sccache/hung"}), "$-1\r\n");
+}
+
+// ── Requirement 12.5 / task 9: forwarding and listener security ─────────────
+
+BOOST_AUTO_TEST_CASE(forwarding_without_tls_or_the_plaintext_opt_in_sends_nothing,
+                     *boost::unit_test::timeout(120)) {
+    cluster c({}, false);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto follower = c.a_follower_of(k_sccache_group);
+    resp_client client(c.port(follower));
+    BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
+    BOOST_CHECK(is_retry_error(client.call({"SET", "sccache/clear", "v"})));
+    BOOST_CHECK(is_retry_error(client.call({"GET", "sccache/clear"})));
+    // No forward was even attempted, so the internal secret never left.
+    BOOST_CHECK_EQUAL(c.gateway(follower).stats()._forwards.load(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(forwarding_crosses_mutual_tls, *boost::unit_test::timeout(120)) {
+    test_pki pki;
+    cluster c(tls_config(pki), false);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    BOOST_REQUIRE_NE(c.tls_port(1), 0);
+    // The client speaks plaintext to a follower; the follower forwards to
+    // the leader's mTLS listener, the only endpoint the resolver hands out.
+    // That listener refuses a connection without a client certificate, so a
+    // reply proves the hop was TLS with the node certificate presented.
+    const auto follower = c.a_follower_of(k_sccache_group);
+    resp_client client(c.port(follower));
+    BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
+    BOOST_CHECK_EQUAL(client.call({"SET", "sccache/tls", "sealed"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(client.call({"GET", "sccache/tls"}), bulk("sealed"));
+    BOOST_CHECK_GE(c.gateway(follower).stats()._forwards.load(), 2u);
+    BOOST_CHECK_EQUAL(c.gateway(follower).stats()._forward_failures.load(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(forwarding_refuses_a_peer_the_ca_does_not_vouch_for,
+                     *boost::unit_test::timeout(120)) {
+    test_pki pki;
+    auto cfg = tls_config(pki);
+    cfg._forward_tls_ca_path = pki.cert("rogue-ca");
+    cluster c(cfg, false);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto follower = c.a_follower_of(k_sccache_group);
+    resp_client client(c.port(follower));
+    BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
+    BOOST_CHECK(is_retry_error(client.call({"GET", "sccache/tls"})));
+    BOOST_CHECK_GE(c.gateway(follower).stats()._forward_failures.load(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(forwarding_refuses_a_certificate_for_another_host,
+                     *boost::unit_test::timeout(120)) {
+    test_pki pki;
+    // Every gateway presents a certificate the CA signed, but for
+    // kv.invalid, while the resolver dials 127.0.0.1.
+    cluster c(tls_config(pki, "wrong-host"), false);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto follower = c.a_follower_of(k_sccache_group);
+    resp_client client(c.port(follower));
+    BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
+    BOOST_CHECK(is_retry_error(client.call({"GET", "sccache/tls"})));
+    BOOST_CHECK_GE(c.gateway(follower).stats()._forward_failures.load(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(tls_forwarding_without_a_ca_refuses_to_start, *boost::unit_test::timeout(60)) {
+    message_fabric fabric{2};
+    config_type cfg{
+        .node_id = 1,
+        .network_client = fabric_client{fabric, 1},
+        .network_server = fabric_server{fabric, 1},
+        .store_factory = [](const group_id_type&) { return host_types::persistence_engine_type{}; },
+    };
+    cfg.partitioner = kythira::make_partitioner<key_type>(kythira::redis_kv_partitioner{});
+    host_type host(std::move(cfg));
+    redis_acl acl;
+    acl.reload(acl_text());
+    kythira::console_logger logger{kythira::log_level::error};
+    kythira::noop_metrics metrics;
+    redis_gateway_config gcfg;
+    gcfg._listen = "127.0.0.1:0";
+    gcfg._internal_secret = "internal-secret";
+    gcfg._forward_tls = true;
+    gateway_type gw(host, acl, logger, metrics, gcfg, nullptr);
+    BOOST_CHECK_THROW(gw.start(), std::runtime_error);
     BOOST_CHECK(!gw.is_running());
 }
 

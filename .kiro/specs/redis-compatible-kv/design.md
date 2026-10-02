@@ -504,9 +504,22 @@ resolve(key) → descriptor
 - **Internal identity.** Forwarded commands authenticate as a dedicated
   internal user, never by replaying the client's credentials, and are
   distinguishable in the audit log.
+- **The internal hop is TLS.** The internal user can read and write every
+  key, so its secret never crosses the network in the clear by default. A
+  node with a TLS listener forwards to its peers' TLS listeners, verifying
+  each peer's certificate against the forwarding CA and checking that it
+  names the host dialled (a DNS SAN, or an IP SAN for an address), and
+  presents its own certificate to peers that require one. Plaintext
+  forwarding is an explicit opt-in (`KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING`)
+  for networks private to the cluster; with neither, a command for a shard
+  led elsewhere gets the retry error.
 - **Deadline propagation.** The forwarded command carries what remains of the
   client's budget, so a slow hop surfaces as a timeout at the client's own
-  deadline rather than after two full ones.
+  deadline rather than after two full ones. The whole exchange (connect,
+  handshake, `AUTH`, command, reply) runs against one deadline on the
+  link's own `io_context`; blocking socket calls with `SO_RCVTIMEO` cannot
+  enforce one, because Asio answers the resulting `EAGAIN` by polling with no
+  timeout.
 - **Endpoint resolution** uses the cluster's existing membership and
   peer-discovery information; there is no second address list to maintain.
 - **Pooling.** Internal connections are pooled per peer and subject to the same
@@ -561,6 +574,9 @@ convention, plus a file for the ACL because it holds a list.
 | `KYTHIRA_REDIS_SWEEP_BATCH` | `1024` | Expiry/eviction batch bound |
 | `KYTHIRA_REDIS_IMMUTABLE_VALUES` | `true` | Requirement 11.4 |
 | `KYTHIRA_REDIS_FORWARDING` | `true` | Requirement 13 |
+| `KYTHIRA_REDIS_FORWARD_TLS` | `true` with a TLS listener | Forward to peers' TLS listeners (Requirement 12.5) |
+| `KYTHIRA_REDIS_FORWARD_TLS_CA` / `_CERT` / `_KEY` | `_TLS_CA` / `_TLS_CERT` / `_TLS_KEY` | Peer verification and the client certificate |
+| `KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING` | `false` | Send the internal secret unencrypted |
 
 ### The matching client configuration
 
