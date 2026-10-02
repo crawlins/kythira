@@ -1428,6 +1428,61 @@ auto wait_for_all(std::vector<Future<T>> futures) -> Future<std::vector<Try<T>>>
     return FutureCollector::collectAll(std::move(futures));
 }
 
+//=============================================================================
+// Interoperability Utilities
+//=============================================================================
+
+/**
+ * @brief Public conversions between the kythira wrappers and the Folly types they wrap
+ *
+ * Code that talks to a Folly API directly (a folly::Future from an
+ * AsyncSocket callback, a folly::Try handed back by collectAll) uses these to
+ * cross into and out of the kythira wrappers without reaching for the
+ * wrappers' get_folly_* accessors.
+ *
+ * - Exceptions keep their dynamic type in both directions (Requirement 18.1).
+ * - void maps to folly::Unit on the way out to Folly, and folly::Unit maps
+ *   back to void on the way in, so a folly::Future<folly::Unit> becomes a
+ *   kythira::Future<void> (Requirement 18.2).
+ * - Every Future and Try conversion takes its argument by rvalue and moves
+ *   the underlying Folly object, so the held value is never copied and
+ *   move-only values pass through (Requirement 18.5).
+ */
+namespace interop {
+
+using detail::to_folly_exception_wrapper;
+using detail::to_std_exception_ptr;
+using detail::unit_to_void;
+using detail::unit_to_void_t;
+using detail::void_to_unit;
+using detail::void_to_unit_t;
+
+// folly::Future<T> -> kythira::Future<T> (folly::Future<folly::Unit> -> kythira::Future<void>)
+template<typename T>
+[[nodiscard]] auto from_folly_future(folly::Future<T>&& future) -> Future<unit_to_void_t<T>> {
+    return Future<unit_to_void_t<T>>(std::move(future));
+}
+
+// kythira::Future<T> -> folly::Future<T> (kythira::Future<void> -> folly::Future<folly::Unit>)
+template<typename T>
+[[nodiscard]] auto to_folly_future(Future<T>&& future) -> folly::Future<void_to_unit_t<T>> {
+    return std::move(future).get_folly_future();
+}
+
+// folly::Try<T> -> kythira::Try<T> (folly::Try<folly::Unit> -> kythira::Try<void>)
+template<typename T>
+[[nodiscard]] auto from_folly_try(folly::Try<T>&& folly_try) -> Try<unit_to_void_t<T>> {
+    return Try<unit_to_void_t<T>>(std::move(folly_try));
+}
+
+// kythira::Try<T> -> folly::Try<T> (kythira::Try<void> -> folly::Try<folly::Unit>)
+template<typename T>
+[[nodiscard]] auto to_folly_try(Try<T>&& kythira_try) -> folly::Try<void_to_unit_t<T>> {
+    return std::move(kythira_try.get_folly_try());
+}
+
+}  // namespace interop
+
 }  // namespace kythira
 
 //=============================================================================
