@@ -4187,6 +4187,12 @@ auto node<Types>::check_heartbeat_timeout() -> void {
 
             _last_heartbeat = now;
             should_heartbeat = true;
+
+            // raft-consensus Requirement 19.5, the leader's half of the
+            // follower catch-up in handle_append_entries: retry a halted
+            // apply once per heartbeat rather than only when the commit
+            // index next advances.
+            apply_committed_entries();
         }
     }  // _mutex released before any blocking I/O
 
@@ -4792,6 +4798,13 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
                        {"leader_commit", std::to_string(request.leader_commit())}});
 
         // Apply newly committed entries to state machine
+        apply_committed_entries();
+    } else if (_last_applied < _commit_index) {
+        // raft-consensus Requirement 19.5: an applied index that lags the
+        // commit index catches up. Under application_failure_policy::halt a
+        // failed apply() leaves exactly that lag behind, and without this
+        // branch only a later commit-index advance would retry it, so a
+        // follower stayed behind for as long as the cluster took no writes.
         apply_committed_entries();
     }
 
