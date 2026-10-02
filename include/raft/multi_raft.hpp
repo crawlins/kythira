@@ -215,12 +215,51 @@ template<typename Key, partitioner<Key> P>
 /// Precedence is `admin` ▸ `placement_driver` ▸ `policy`, and a loser is logged
 /// with `preempted_by` rather than silently dropped — an operator debugging
 /// "why didn't my policy fire" needs to see that the placement driver outranked
-/// it (Requirement 15.6).
+/// it (Requirement 17.6).
 enum class signal_channel : std::uint8_t {
     admin = 0,
     placement_driver = 1,
     policy = 2,
 };
+
+/// @brief Whether `a` takes precedence over `b` (Requirement 17.2).
+///
+/// The enumerators are declared highest first, so precedence is their order.
+/// Strict: a channel never outranks itself, and two proposals from the same
+/// channel are decided by the state gate, not by precedence.
+[[nodiscard]] constexpr auto outranks(signal_channel a, signal_channel b) -> bool {
+    return static_cast<std::uint8_t>(a) < static_cast<std::uint8_t>(b);
+}
+
+/// @brief The channel a committed split entry came from, recovered from its
+///        reason.
+///
+/// The entry carries the reason and not the channel, and every replica needs
+/// the channel: a follower that later becomes leader inherits the arbiter's
+/// view of who holds the shard, and it can only learn that from the log.
+[[nodiscard]] constexpr auto channel_of(split_reason r) -> signal_channel {
+    switch (r) {
+        case split_reason::admin:
+        case split_reason::pre_split:
+            return signal_channel::admin;
+        case split_reason::placement_driver:
+            return signal_channel::placement_driver;
+        default:
+            return signal_channel::policy;
+    }
+}
+
+/// @brief The channel a committed merge entry came from. See the split form.
+[[nodiscard]] constexpr auto channel_of(merge_reason r) -> signal_channel {
+    switch (r) {
+        case merge_reason::admin:
+            return signal_channel::admin;
+        case merge_reason::placement_driver:
+            return signal_channel::placement_driver;
+        default:
+            return signal_channel::policy;
+    }
+}
 
 inline auto to_string(signal_channel c) -> std::string {
     switch (c) {
@@ -353,7 +392,18 @@ struct merge_options {
     /// **Off by default.** Colocating replicas moves data. An operator asking
     /// for a merge should not silently trigger replica movement across the
     /// cluster; they should be told alignment is needed and opt in.
+    ///
+    /// With it on, a merge refused only for alignment is not failed: the host
+    /// passes both descriptors to `multi_raft_config::request_merge_alignment`,
+    /// whose driver answers with ordinary add/remove-replica operators on its
+    /// next heartbeats, and re-checks colocation on every tick. The merge is
+    /// proposed as soon as the replica sets line up, and fails with
+    /// `shard_alignment_required_exception` if they have not within
+    /// `_align_timeout`. Any other precondition failure fails immediately —
+    /// alignment cannot make two shards adjacent.
     bool _auto_align{false};
+
+    /// @brief How long `_auto_align` waits for colocation before giving up.
     std::chrono::milliseconds _align_timeout{std::chrono::minutes{5}};
 
     signal_channel _channel{signal_channel::admin};
@@ -368,7 +418,8 @@ template<raft_group_id GroupId> struct arbiter_decision {
     bool _admitted{false};
     arbiter_gate _gate{arbiter_gate::admitted};
     signal_channel _channel{signal_channel::policy};
-    /// Set when `_gate == preempted`: the channel that holds the shard.
+    /// Set when `_gate == preempted`: the higher-precedence channel that holds
+    /// the shard, which is what the loser is logged and counted against.
     std::optional<signal_channel> _preempted_by{};
 
     [[nodiscard]] explicit operator bool() const { return _admitted; }
@@ -566,20 +617,27 @@ struct multi_raft_config {
     /// campaigns immediately if it sits on the parent's leader.
     std::chrono::milliseconds child_election_stagger{std::chrono::milliseconds{50}};
 
-    // ── merge (Requirement 13, design §5.5) ──────────────────────────────────
+    // ── merge (Requirement 15, design §5.5) ──────────────────────────────────
+    //
+    // There is deliberately no lease-based rollback. Requirement 15.5 permits
+    // one as an escape hatch, but it would let the source release itself on a
+    // deadline, which makes "two shards own one range" reachable whenever the
+    // clocks disagree — and nothing else in Kythira assumes bounded clock
+    // skew. A source frozen by `merge_prepare` is released only by observing a
+    // committed `merge_abandoned` in the target's own log (`abandon_merge`).
 
-    /// @brief Enable the timing-based rollback variant.
+    /// @brief Ask the placement driver to colocate two shards' replica sets.
     ///
-    /// **Off by default, and its assumption is stated first: it requires
-    /// bounded clock skew, which nothing else in Kythira assumes.** With it
-    /// off, a source frozen by `merge_prepare` is released only by observing a
-    /// committed `merge_abandoned` in the target's own log. With it on, the
-    /// source releases itself after a deadline — which is faster, and which
-    /// makes "two shards own one range" reachable if the clocks disagree.
-    ///
-    /// An operator who turns this on is taking on an assumption the rest of the
-    /// system does not make.
-    bool merge_lease_mode{false};
+    /// Called once per `merge_options::_auto_align` merge refused for
+    /// alignment, with the source and target descriptors as this host saw
+    /// them. The driver answers asynchronously, with add/remove-replica
+    /// operators on its next heartbeats; the host re-checks colocation every
+    /// tick and proposes the merge once it holds. Returning false means the
+    /// driver declined, and the merge fails at once rather than waiting out
+    /// `_align_timeout` for operators that will never come. Unset means there
+    /// is nobody to ask, which fails the same way.
+    std::function<bool(const descriptor_type& source, const descriptor_type& target)>
+        request_merge_alignment{};
 
     // ── the arbiter (Requirement 15, design §6.6) ────────────────────────────
 
@@ -616,7 +674,9 @@ struct multi_raft_config {
     /// @brief How long a frozen source waits before reporting itself stalled.
     ///
     /// A stuck merge leaves the source unavailable but *correct*. That is the
-    /// right trade, and it is surfaced rather than left to be guessed at.
+    /// right trade, and it is surfaced rather than left to be guessed at: past
+    /// this threshold every policy tick logs a warning naming the target and
+    /// emits `kythira.multiraft.merge.stalled{group, target}`.
     std::chrono::milliseconds merge_stall_warning_after{std::chrono::seconds{30}};
 
     // ── the placement driver, channel (d) (Requirement 14, design §7) ────────
@@ -1071,6 +1131,21 @@ public:
     auto merge_shards(const GroupId& source, const GroupId& target,
                       std::chrono::milliseconds timeout) -> future_type;
 
+    /// @brief Merge with explicit control (design §6.2): the channel it is
+    ///        arbitrated as, and whether to wait for alignment.
+    ///
+    /// With `_auto_align`, a merge refused only because the replica sets are
+    /// not colocated asks the placement driver to align them and resolves
+    /// when the merge is finally proposed and its `merge_prepare` applied, or
+    /// fails once `_align_timeout` passes. An admin merge waiting for
+    /// alignment holds both shards against the automatic channels for the
+    /// whole wait (Requirement 17.3).
+    auto merge_shards(const GroupId& source, const GroupId& target, merge_options options,
+                      std::chrono::milliseconds timeout) -> future_type;
+
+    /// @brief How many `_auto_align` merges are waiting for colocation.
+    [[nodiscard]] auto pending_alignment_count() const -> std::size_t;
+
     /// @brief Abandon a merge this host's source leader started.
     ///
     /// Asks the target to record `merge_abandoned` in its own log; once that is
@@ -1087,7 +1162,8 @@ public:
 
     /// @brief How many times a frozen source has been reported stalled.
     ///
-    /// The host publishes this as `merge.stalled{group, target}`.
+    /// Each report is also emitted as `kythira.multiraft.merge.stalled{group,
+    /// target}`; this is the same count, for a caller without a metrics sink.
     [[nodiscard]] auto stalled_merge_report_count() const -> std::uint64_t;
 
     /// @brief The target a frozen source is merging into, if it is frozen.
@@ -1346,6 +1422,17 @@ private:
         /// split already needs it.
         std::atomic<shard_operation_state> _operation{shard_operation_state::stable};
 
+        /// The channel whose operation holds `_operation`, meaningful only
+        /// while it names an operation. Set by `admit` on the proposing
+        /// replica and by apply on every replica, so a new leader inherits it.
+        std::atomic<signal_channel> _holder{signal_channel::policy};
+
+        /// Admin commands accepted against this shard and not yet resolved
+        /// that do not themselves hold `_operation` — today, an `_auto_align`
+        /// merge waiting for colocation, on both of its shards. Non-zero
+        /// suspends the automatic channels (Requirement 17.3).
+        std::atomic<std::uint32_t> _admin_holds{0};
+
         /// `arbiter_gate::capacity` refusals since this shard's last report.
         /// Exchanged to zero when the report is built, so each refusal reaches
         /// the placement driver exactly once.
@@ -1512,7 +1599,46 @@ private:
                              bool override_cooldown) -> arbiter_decision<GroupId>;
     auto release(group_state& g) -> void;
     auto note_rejection(const GroupId& group, arbiter_gate gate, signal_channel channel,
-                        const char* operation) -> void;
+                        const char* operation,
+                        std::optional<signal_channel> preempted_by = std::nullopt) -> void;
+
+    /// @brief The higher-precedence channel that holds `g` against `channel`,
+    ///        if any (Requirement 17.2/17.3).
+    ///
+    /// An unresolved admin command suspends both automatic channels; an
+    /// operation in flight holds the shard against every channel it outranks.
+    /// A lower-precedence operation already admitted is NOT preempted: admit
+    /// and propose are one synchronous step, and aborting a proposed operation
+    /// is what Requirement 17.4 forbids.
+    [[nodiscard]] auto preempting_channel(const group_state& g, signal_channel channel) const
+        -> std::optional<signal_channel>;
+
+    /// @brief An `_auto_align` merge waiting for its replica sets to line up.
+    struct pending_alignment {
+        GroupId _source{};
+        GroupId _target{};
+        merge_options _options{};
+        std::chrono::milliseconds _timeout{};
+        std::chrono::steady_clock::time_point _deadline{};
+        typename Types::promise_type _promise;
+        /// The merge proposed once the replica sets lined up; the caller's
+        /// promise is settled from it.
+        std::optional<future_type> _proposed;
+        /// The shards this wait holds against the automatic channels; empty
+        /// unless the merge came from the admin channel.
+        std::vector<group_ptr> _held;
+    };
+
+    /// @brief Ask the driver to align `source` and `target`, and park the
+    ///        merge until they are colocated or `_align_timeout` passes.
+    auto await_alignment(const descriptor_type& source, const descriptor_type& target,
+                         const group_ptr& source_state, const group_ptr& target_state,
+                         merge_options options, std::chrono::milliseconds timeout,
+                         std::exception_ptr refusal) -> future_type;
+
+    /// @brief Retry or expire every pending alignment. Called once per tick.
+    auto drive_pending_alignments() -> void;
+    auto drop_admin_holds(const std::vector<group_ptr>& held) -> void;
 
     /// @brief The `policy` metric dimension, with a name for "nobody said".
     ///
@@ -1628,6 +1754,8 @@ private:
     std::atomic<std::uint64_t> _applied_merges{0};
     std::atomic<std::uint64_t> _rolled_back_merges{0};
     std::atomic<std::uint64_t> _stalled_merges{0};
+    mutable std::mutex _alignment_mutex;
+    std::vector<std::shared_ptr<pending_alignment>> _pending_alignments;
 
     std::atomic<bool> _automatic_enabled{true};
     std::chrono::steady_clock::time_point _last_heartbeat{};

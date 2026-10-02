@@ -393,10 +393,15 @@ Phases 6–8, after the mechanics it drives.
     `merge_commit` is already proposed, else commits `merge_abandoned` in the
     **target's** log; source observes that committed record, then proposes
     `merge_rollback` and returns to `stable`.
-  - `merge_lease_mode` escape hatch, **off by default**, whose header
-    documentation opens with its bounded-clock-skew assumption.
+  - ~~`merge_lease_mode` escape hatch, off by default~~ — **not offered.**
+    Requirement 15.5 makes the lease variant a MAY, and the flag was declared
+    but never read. A deadline-based release is exactly the timing argument
+    the Notes below rank second among the risks, so the flag was removed
+    rather than wired; `multi_raft_config`'s merge section says why.
   - A stuck merge (target unreachable) leaves the source frozen and emits
-    `merge.stalled{group, target}` plus a warning naming the target.
+    `merge.stalled{group, target}` plus a warning naming the target. (The
+    metric was only counted internally until the signal-precedence fix;
+    `a_stalled_merge_is_emitted_as_a_metric_naming_the_target` covers it.)
   - Verify: unit test — target epoch changes mid-merge → source rolls back and
     resumes; target leader fails over after committing `merge_abandoned` → the
     new target leader still refuses to commit; a race where `merge_commit` is
@@ -414,6 +419,12 @@ Phases 6–8, after the mechanics it drives.
     right typed exception; a non-colocated pair fails fast rather than
     attempting a cross-network state transfer; `_auto_align = true` issues the
     expected PD operators and then succeeds.
+  - As built: the host asks through `multi_raft_config::request_merge_alignment`
+    (the driver answers with ordinary add/remove-replica operators), parks the
+    merge, re-checks colocation every tick, and fails with
+    `shard_alignment_required_exception` after `_align_timeout`. A refusal
+    alignment cannot fix (adjacency, busy) is never parked. Covered by the
+    four `auto_align_*` cases in `multi_raft_merge_integration_test`.
   - _Requirements: 15.1, 15.2, 12.2_
 
 ---
@@ -468,6 +479,13 @@ Phases 6–8, after the mechanics it drives.
     `thaw_shard`, `set_automatic_split_merge_enabled`, with `split_options` /
     `merge_options` per design §6.2. `_wait_for_apply` defaults true;
     `freeze_shard` blocks automatic channels but not admin commands.
+  - As built: `preempted_by` is produced when the shard is held by a higher
+    channel — an operation in flight (its holder is set on admit and on every
+    replica's apply, from the entry's reason) or an unresolved admin command
+    (`_auto_align`'s wait). A lower channel already admitted is NOT aborted
+    for a higher one, per 17.4: admit and propose are one synchronous step,
+    so the higher channel gets the `state` gate. Policy merges now go through
+    the arbiter as the policy, not as admin.
   - Verify: unit test — concurrent proposals from two channels resolve by
     precedence with the loser logged `preempted_by`; a merge within
     `split_merge_interval` of a split is refused even with a custom policy that

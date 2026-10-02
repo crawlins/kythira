@@ -21,6 +21,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "multi_raft_test_fabric.hpp"
+#include "recording_metrics.hpp"
 
 #include <raft/console_logger.hpp>
 #include <raft/future_default.hpp>
@@ -41,6 +42,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -62,7 +64,10 @@ BOOST_GLOBAL_FIXTURE(folly_init_fixture);
 
 namespace {
 
+using kythira::arbiter_gate;
 using kythira::hibernation_mode;
+using kythira::merge_options;
+using kythira::merge_reason;
 using kythira::multi_raft;
 using kythira::multi_raft_config;
 using kythira::shard_alignment_required_exception;
@@ -74,10 +79,53 @@ using kythira::shard_not_adjacent_exception;
 using kythira::shard_not_leader_exception;
 using kythira::shard_operation_state;
 using kythira::shard_range;
+using kythira::signal_channel;
+using kythira::split_options;
+using kythira::split_reason;
 using kythira::tombstone_reason;
+using kythira::testing::emitted_metric;
 using kythira::testing::fabric_client;
 using kythira::testing::fabric_server;
 using kythira::testing::message_fabric;
+using kythira::testing::metric_recorder;
+
+/// `recording_metrics` with each in-progress emission kept per thread.
+///
+/// A Raft node drives one metrics handle from replication continuations on
+/// several threads at once, and `recording_metrics` builds each emission in a
+/// member, so two threads interleaving `add_dimension` corrupt it — the
+/// three-node failover case crashed on exactly that. Every emission is built
+/// and emitted on a single thread, so a per-thread buffer keeps them apart.
+class concurrent_recording_metrics {
+public:
+    concurrent_recording_metrics() : _recorder(std::make_shared<metric_recorder>()) {}
+    explicit concurrent_recording_metrics(std::shared_ptr<metric_recorder> r)
+        : _recorder(std::move(r)) {}
+
+    auto set_metric_name(std::string_view name) -> void { pending().name = std::string(name); }
+    auto add_dimension(std::string_view name, std::string_view value) -> void {
+        pending().dimensions.emplace(std::string(name), std::string(value));
+    }
+    auto add_one() -> void {}
+    auto add_count(std::int64_t) -> void {}
+    auto add_duration(std::chrono::nanoseconds) -> void {}
+    auto add_value(double) -> void {}
+    auto emit() -> void {
+        if (_recorder && !pending().name.empty()) {
+            _recorder->record(pending());
+        }
+        pending() = {};
+    }
+
+private:
+    static auto pending() -> emitted_metric& {
+        thread_local emitted_metric p;
+        return p;
+    }
+    std::shared_ptr<metric_recorder> _recorder;
+};
+
+static_assert(kythira::metrics<concurrent_recording_metrics>);
 
 using key_type = std::string;
 using group_id_type = std::uint64_t;
@@ -102,7 +150,7 @@ struct host_types {
     using persistence_engine_type =
         kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
     using logger_type = kythira::console_logger;
-    using metrics_type = kythira::noop_metrics;
+    using metrics_type = concurrent_recording_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
     using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
 
@@ -368,7 +416,7 @@ private:
 /// partition to arrange and nothing to time.
 class manual_host {
 public:
-    manual_host() {
+    explicit manual_host(std::function<void(config_type&)> tweak = {}) {
         config_type cfg{
             .node_id = 1,
             .network_client = fabric_client{_fabric, 1},
@@ -382,6 +430,10 @@ public:
         cfg.hibernation = hibernation_mode::off;
         cfg.executor_stripes = 2;
         cfg.route_retry_backoff = std::chrono::milliseconds{1};
+        cfg.metrics = concurrent_recording_metrics{_recorder};
+        if (tweak) {
+            tweak(cfg);
+        }
 
         auto left = left_descriptor();
         left._voters = {1};
@@ -400,6 +452,7 @@ public:
     auto operator=(const manual_host&) -> manual_host& = delete;
 
     [[nodiscard]] auto host() -> host_type& { return *_host; }
+    [[nodiscard]] auto recorder() -> metric_recorder& { return *_recorder; }
 
     auto tick_until(const std::function<bool()>& predicate,
                     std::chrono::milliseconds budget = std::chrono::milliseconds{5000}) -> bool {
@@ -443,8 +496,8 @@ public:
     ///
     /// Stopping there is the point: the commit proposal is deferred to the
     /// apply phase, so the source stays frozen until the caller ticks again.
-    auto freeze_source() -> bool {
-        auto f = _host->merge_shards(k_right, k_left, std::chrono::milliseconds{5000});
+    auto freeze_source(merge_options options = {}) -> bool {
+        auto f = _host->merge_shards(k_right, k_left, options, std::chrono::milliseconds{5000});
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
         while (!f.wait(std::chrono::milliseconds{5}) &&
                std::chrono::steady_clock::now() < deadline) {
@@ -458,7 +511,28 @@ public:
         return _host->operation_state(k_right) == shard_operation_state::merging_source;
     }
 
+    /// @brief Resolve a future while ticking the host underneath it.
+    template<typename Future>
+    auto settle(Future&& f, std::chrono::milliseconds budget = std::chrono::milliseconds{6000})
+        -> std::exception_ptr {
+        const auto deadline = std::chrono::steady_clock::now() + budget;
+        while (!f.wait(std::chrono::milliseconds{5}) &&
+               std::chrono::steady_clock::now() < deadline) {
+            _host->tick();
+        }
+        if (!f.wait(std::chrono::milliseconds{100})) {
+            return std::make_exception_ptr(std::runtime_error("never resolved"));
+        }
+        try {
+            std::ignore = std::move(f).get();
+            return nullptr;
+        } catch (...) {
+            return std::current_exception();
+        }
+    }
+
 private:
+    std::shared_ptr<metric_recorder> _recorder{std::make_shared<metric_recorder>()};
     message_fabric _fabric{2};
     std::unique_ptr<host_type> _host;
 };
@@ -859,6 +933,277 @@ BOOST_AUTO_TEST_CASE(the_merge_survives_a_target_leader_failover, *boost::unit_t
         }
     }
     c.resume();
+}
+
+// ── task 21: the stalled-merge signal ────────────────────────────────────────
+
+BOOST_AUTO_TEST_CASE(a_stalled_merge_is_emitted_as_a_metric_naming_the_target,
+                     *boost::unit_test::timeout(120)) {
+    // A source frozen past the threshold is unavailable but correct, and the
+    // operator is told by name rather than left to guess: a warning AND
+    // `merge.stalled{group, target}`, not merely an internal counter.
+    manual_host h{[](config_type& cfg) {
+        cfg.merge_stall_warning_after = std::chrono::milliseconds{0};
+        cfg.policy_interval = std::chrono::milliseconds{0};
+    }};
+    BOOST_REQUIRE(h.await_both_leaders());
+    for (const auto& k : right_keys()) {
+        BOOST_REQUIRE(h.put(k, "v-" + k) == nullptr);
+    }
+    BOOST_REQUIRE(h.freeze_source());
+    // Every tick that still sees the source frozen reports it.
+    if (h.host().stalled_merge_report_count() == 0) {
+        h.host().tick();
+    }
+    BOOST_REQUIRE_GT(h.host().stalled_merge_report_count(), 0u);
+
+    const auto groups = h.recorder().dimension_values("kythira.multiraft.merge.stalled", "group");
+    const auto targets = h.recorder().dimension_values("kythira.multiraft.merge.stalled", "target");
+    BOOST_REQUIRE_EQUAL(groups.size(), h.host().stalled_merge_report_count());
+    BOOST_CHECK_EQUAL(groups.front(), std::to_string(k_right));
+    BOOST_REQUIRE(!targets.empty());
+    BOOST_CHECK_EQUAL(targets.front(), std::to_string(k_left));
+}
+
+// ── task 25: precedence (Requirement 17.2, 17.3, 17.6) ──────────────────────
+
+BOOST_AUTO_TEST_CASE(an_admin_merge_in_flight_preempts_both_automatic_channels,
+                     *boost::unit_test::timeout(120)) {
+    // An accepted admin command suspends the automatic channels for the shards
+    // it affects until it resolves, and each loser is refused AS preempted,
+    // naming the channel that outranked it: in the count, the log line and the
+    // metric dimension. An operator debugging "why didn't my policy fire" has
+    // to be able to see that they outranked it themselves.
+    manual_host h;
+    BOOST_REQUIRE(h.await_both_leaders());
+    for (const auto& k : right_keys()) {
+        BOOST_REQUIRE(h.put(k, "v-" + k) == nullptr);
+    }
+    BOOST_REQUIRE(h.freeze_source());  // an admin merge, frozen mid-protocol
+
+    for (const auto channel : {signal_channel::policy, signal_channel::placement_driver}) {
+        const auto would = h.host().would_admit(k_right, channel);
+        BOOST_CHECK(would._gate == arbiter_gate::preempted);
+        BOOST_REQUIRE(would._preempted_by.has_value());
+        BOOST_CHECK(*would._preempted_by == signal_channel::admin);
+    }
+
+    const auto before = h.host().rejection_count(arbiter_gate::preempted);
+    split_options policy_split{};
+    policy_split._channel = signal_channel::policy;
+    policy_split._reason = split_reason::size;
+    using busy = shard_busy_exception<group_id_type>;
+    BOOST_CHECK(is_a<busy>(settle(
+        h.host().split_shard(k_right, {"oscar"}, policy_split, std::chrono::milliseconds{500}))));
+
+    merge_options policy_merge{};
+    policy_merge._channel = signal_channel::policy;
+    policy_merge._reason = merge_reason::size;
+    BOOST_CHECK(is_a<busy>(settle(
+        h.host().merge_shards(k_right, k_left, policy_merge, std::chrono::milliseconds{500}))));
+    BOOST_CHECK_EQUAL(h.host().rejection_count(arbiter_gate::preempted), before + 2);
+
+    const auto split_losers =
+        h.recorder().dimension_values("kythira.multiraft.split.rejected", "preempted_by");
+    const auto merge_losers =
+        h.recorder().dimension_values("kythira.multiraft.merge.rejected", "preempted_by");
+    BOOST_REQUIRE_EQUAL(split_losers.size(), 1u);
+    BOOST_CHECK_EQUAL(split_losers.front(), "admin");
+    BOOST_REQUIRE_EQUAL(merge_losers.size(), 1u);
+    BOOST_CHECK_EQUAL(merge_losers.front(), "admin");
+
+    // The operator's own second command is NOT a preemption — admin does not
+    // outrank admin — and is refused by the state gate as before.
+    BOOST_CHECK(is_a<busy>(
+        settle(h.host().split_shard(k_right, {"oscar"}, std::chrono::milliseconds{500}))));
+    BOOST_CHECK_EQUAL(h.host().rejection_count(arbiter_gate::preempted), before + 2);
+
+    // Once the merge resolves, the suspension lifts with it.
+    BOOST_REQUIRE(h.tick_until([&] { return h.host().applied_merge_count() > 0; }));
+    BOOST_CHECK(h.host().would_admit(k_left, signal_channel::policy)._gate !=
+                arbiter_gate::preempted);
+}
+
+BOOST_AUTO_TEST_CASE(a_driver_merge_preempts_the_policy_and_is_not_aborted_for_the_operator,
+                     *boost::unit_test::timeout(120)) {
+    // Admin outranks the driver, but an operation already proposed is never
+    // aborted to make room (Requirement 17.4): the operator is refused by the
+    // state gate. The policy, which the driver DOES outrank, is preempted.
+    manual_host h;
+    BOOST_REQUIRE(h.await_both_leaders());
+    for (const auto& k : right_keys()) {
+        BOOST_REQUIRE(h.put(k, "v-" + k) == nullptr);
+    }
+    merge_options driver{};
+    driver._channel = signal_channel::placement_driver;
+    driver._reason = merge_reason::placement_driver;
+    BOOST_REQUIRE(h.freeze_source(driver));
+
+    const auto policy = h.host().would_admit(k_right, signal_channel::policy);
+    BOOST_CHECK(policy._gate == arbiter_gate::preempted);
+    BOOST_REQUIRE(policy._preempted_by.has_value());
+    BOOST_CHECK(*policy._preempted_by == signal_channel::placement_driver);
+
+    const auto preempted_before = h.host().rejection_count(arbiter_gate::preempted);
+    const auto state_before = h.host().rejection_count(arbiter_gate::state);
+    using busy = shard_busy_exception<group_id_type>;
+    BOOST_CHECK(is_a<busy>(
+        settle(h.host().split_shard(k_right, {"oscar"}, std::chrono::milliseconds{500}))));
+    BOOST_CHECK_EQUAL(h.host().rejection_count(arbiter_gate::state), state_before + 1);
+    BOOST_CHECK_EQUAL(h.host().rejection_count(arbiter_gate::preempted), preempted_before);
+}
+
+BOOST_AUTO_TEST_CASE(a_policy_merge_is_arbitrated_as_the_policy, *boost::unit_test::timeout(120)) {
+    // The policy channel used to reach `merge_shards` as if it were the
+    // operator, which bypassed every gate that exists only for the automatic
+    // channels. A frozen shard proves it: the operator may merge it, the
+    // policy may not.
+    manual_host h;
+    BOOST_REQUIRE(h.await_both_leaders());
+    BOOST_REQUIRE(h.host().freeze_shard(k_right));
+
+    merge_options policy{};
+    policy._channel = signal_channel::policy;
+    policy._reason = merge_reason::size;
+    using busy = shard_busy_exception<group_id_type>;
+    BOOST_CHECK(is_a<busy>(
+        settle(h.host().merge_shards(k_right, k_left, policy, std::chrono::milliseconds{500}))));
+    BOOST_CHECK(h.host().operation_state(k_right) == shard_operation_state::frozen);
+}
+
+// ── task 22: `_auto_align` ───────────────────────────────────────────────────
+
+namespace {
+
+/// The right shard as seen with an extra voter the left one lacks: not
+/// colocated, so a merge needs alignment first.
+auto misaligned_right() -> descriptor_type {
+    auto d = right_descriptor();
+    d._voters = {1, 2};
+    d._epoch._version = 5;
+    return d;
+}
+auto realigned_right() -> descriptor_type {
+    auto d = right_descriptor();
+    d._voters = {1};
+    d._epoch._version = 6;
+    return d;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(auto_align_asks_the_driver_then_merges_once_colocated,
+                     *boost::unit_test::timeout(120)) {
+    std::vector<std::pair<group_id_type, group_id_type>> asked;
+    manual_host h{[&](config_type& cfg) {
+        cfg.request_merge_alignment = [&](const descriptor_type& source,
+                                          const descriptor_type& target) {
+            asked.emplace_back(source._group_id, target._group_id);
+            return true;
+        };
+    }};
+    BOOST_REQUIRE(h.await_both_leaders());
+    for (const auto& k : right_keys()) {
+        BOOST_REQUIRE(h.put(k, "v-" + k) == nullptr);
+    }
+    BOOST_REQUIRE(h.host().set_local_descriptor(k_right, misaligned_right()));
+
+    merge_options options{};
+    options._auto_align = true;
+    options._align_timeout = std::chrono::seconds{10};
+    auto merge = h.host().merge_shards(k_right, k_left, options, std::chrono::milliseconds{5000});
+
+    // Asked exactly once, with the pair the operator named, and parked.
+    BOOST_REQUIRE_EQUAL(asked.size(), 1u);
+    BOOST_CHECK(asked.front() == std::make_pair(k_right, k_left));
+    for (int i = 0; i < 10; ++i) {
+        h.host().tick();
+    }
+    BOOST_CHECK(!merge.isReady());
+    BOOST_CHECK_EQUAL(h.host().pending_alignment_count(), 1u);
+    BOOST_CHECK(h.host().operation_state(k_right) == shard_operation_state::stable);
+
+    // The wait is an accepted admin command: it holds BOTH shards against the
+    // automatic channels (Requirement 17.3).
+    for (const auto group : {k_right, k_left}) {
+        const auto would = h.host().would_admit(group, signal_channel::policy);
+        BOOST_CHECK(would._gate == arbiter_gate::preempted);
+        BOOST_CHECK(would._preempted_by == std::optional{signal_channel::admin});
+    }
+    BOOST_CHECK(h.host().would_admit(k_left, signal_channel::admin)._admitted);
+
+    // The driver's operators land; the next tick sees colocation and proposes.
+    BOOST_REQUIRE(h.host().set_local_descriptor(k_right, realigned_right()));
+    BOOST_CHECK(h.settle(std::move(merge)) == nullptr);
+    BOOST_CHECK_EQUAL(h.host().pending_alignment_count(), 0u);
+    BOOST_REQUIRE(h.tick_until([&] { return h.host().applied_merge_count() > 0; }));
+    BOOST_CHECK(h.host().would_admit(k_left, signal_channel::policy)._gate !=
+                arbiter_gate::preempted);
+}
+
+BOOST_AUTO_TEST_CASE(auto_align_gives_up_after_align_timeout_and_releases_the_shards,
+                     *boost::unit_test::timeout(120)) {
+    manual_host h{[](config_type& cfg) {
+        cfg.request_merge_alignment = [](const descriptor_type&, const descriptor_type&) {
+            return true;  // accepted, and then nothing ever moves
+        };
+    }};
+    BOOST_REQUIRE(h.await_both_leaders());
+    BOOST_REQUIRE(h.host().set_local_descriptor(k_right, misaligned_right()));
+
+    merge_options options{};
+    options._auto_align = true;
+    options._align_timeout = std::chrono::milliseconds{300};
+    const auto before = h.host().rejection_count(arbiter_gate::alignment_required);
+    const auto err =
+        h.settle(h.host().merge_shards(k_right, k_left, options, std::chrono::milliseconds{5000}));
+    using alignment_error = shard_alignment_required_exception<group_id_type, node_id_t>;
+    BOOST_CHECK(is_a<alignment_error>(err));
+    BOOST_CHECK_EQUAL(h.host().rejection_count(arbiter_gate::alignment_required), before + 1);
+    BOOST_CHECK_EQUAL(h.host().pending_alignment_count(), 0u);
+    for (const auto group : {k_right, k_left}) {
+        BOOST_CHECK(h.host().would_admit(group, signal_channel::policy)._gate !=
+                    arbiter_gate::preempted);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(auto_align_with_no_driver_to_ask_fails_at_once,
+                     *boost::unit_test::timeout(120)) {
+    // Nobody to ask means nothing will ever align them; waiting out the
+    // timeout would only delay the same answer.
+    manual_host h;
+    BOOST_REQUIRE(h.await_both_leaders());
+    BOOST_REQUIRE(h.host().set_local_descriptor(k_right, misaligned_right()));
+
+    merge_options options{};
+    options._auto_align = true;
+    auto merge = h.host().merge_shards(k_right, k_left, options, std::chrono::milliseconds{5000});
+    BOOST_REQUIRE(merge.isReady());
+    using alignment_error = shard_alignment_required_exception<group_id_type, node_id_t>;
+    BOOST_CHECK(is_a<alignment_error>(settle(std::move(merge))));
+    BOOST_CHECK_EQUAL(h.host().pending_alignment_count(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(auto_align_does_not_wait_on_a_refusal_alignment_cannot_fix,
+                     *boost::unit_test::timeout(120)) {
+    bool asked = false;
+    manual_host h{[&](config_type& cfg) {
+        cfg.request_merge_alignment = [&](const descriptor_type&, const descriptor_type&) {
+            asked = true;
+            return true;
+        };
+    }};
+    BOOST_REQUIRE(h.await_both_leaders());
+    auto detached = misaligned_right();
+    detached._range._start = key_type{"z"};  // no longer adjacent, as well
+    BOOST_REQUIRE(h.host().set_local_descriptor(k_right, detached));
+
+    merge_options options{};
+    options._auto_align = true;
+    using not_adjacent = shard_not_adjacent_exception<group_id_type, key_type>;
+    BOOST_CHECK(is_a<not_adjacent>(
+        settle(h.host().merge_shards(k_right, k_left, options, std::chrono::milliseconds{5000}))));
+    BOOST_CHECK(!asked);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
