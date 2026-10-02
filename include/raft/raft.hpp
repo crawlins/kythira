@@ -649,6 +649,7 @@ private:
     // With no_op_peer_discovery (empty peers list) this is a no-op that immediately
     // returns, preserving existing single-node-founding behaviour.
     auto run_bootstrap() -> void;
+    auto mark_awaiting_admission() -> void;
 
     // Reconnection loop for restarting nodes: runs as a background thread.
     // Exits immediately when the first AppendEntries/RequestVote arrives, or on stop().
@@ -902,6 +903,13 @@ private:
 
     // Last known leader (populated from incoming AppendEntries)
     std::optional<node_id_type> _known_leader;
+
+    // Set when a leader accepted this node's ClusterJoin; cleared once the
+    // node applies a configuration replicated from the cluster.  Until then
+    // it never campaigns: its configuration is still the {self} it was
+    // constructed with, so an election would make it the leader of a
+    // one-node cluster of its own.
+    bool _awaiting_admission{false};
 
     // Whether stop() was requested before start() completed (cancels bootstrap loop)
     std::atomic<bool> _stop_requested{false};
@@ -4044,6 +4052,12 @@ auto node<Types>::check_election_timeout() -> void {
     // Learners never start an election, regardless of elapsed time since the last
     // heartbeat (.kiro/specs/non-voting-nodes/requirements.md, Requirement 2.1).
     if (is_learner()) {
+        return;
+    }
+
+    // Nor does a node that joined through ClusterJoin and has not yet applied
+    // a configuration replicated from the cluster.
+    if (_awaiting_admission) {
         return;
     }
 
@@ -7206,6 +7220,7 @@ auto node<Types>::apply_committed_entries() -> void {
                 }
             }
             _configuration = new_config;
+            _awaiting_admission = false;
             sync_peer2peer_membership();
             _config_synchronizer.notify_configuration_committed(new_config, entry.index());
             // add_learner()/remove_learner() register on _commit_waiter (not
@@ -7721,6 +7736,7 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
 
         // Restore cluster configuration from the snapshot
         _configuration = snap.configuration();
+        _awaiting_admission = false;
         sync_peer2peer_membership();
 
         // Update last_applied to snapshot's last_included_index
@@ -7849,6 +7865,16 @@ auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
     }
 
     if (is_leader_now) {
+        // The joining node is not in any transport's static peer table, so its
+        // advertised address is the only way this leader can replicate to it.
+        bool has_address = true;
+        if constexpr (requires { req.joining_address().empty(); }) {
+            has_address = !req.joining_address().empty();
+        }
+        if (has_address) {
+            update_peer_addresses({{req.joining_node_id(), req.joining_address()}});
+        }
+
         // Fire-and-forget: add_learner() acquires its own lock, so call it after
         // releasing ours. The joining node is admitted as a learner (non-voting) —
         // it replicates and catches up before an operator or the leader's automatic
@@ -7894,6 +7920,11 @@ auto node<Types>::handle_cluster_leave(const cluster_leave_request_type& req)
     return cluster_leave_response_type{false, redirect};
 }
 
+template<raft_types Types> auto node<Types>::mark_awaiting_admission() -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _awaiting_admission = true;
+}
+
 template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
     while (!_stop_requested.load(std::memory_order_acquire)) {
         auto peers = _peer_discovery.find_peers(bootstrap_peer_find_timeout()).get();
@@ -7931,6 +7962,7 @@ template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
                             _logger.info("Bootstrap: join accepted",
                                          {{"node_id", node_id_to_string(_node_id)},
                                           {"via", std::string(addr)}});
+                            mark_awaiting_admission();
                             return true;
                         }
 
@@ -7948,6 +7980,7 @@ template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
                                 if (resp2.is_accepted()) {
                                     _logger.info("Bootstrap: join accepted via redirect",
                                                  {{"node_id", node_id_to_string(_node_id)}});
+                                    mark_awaiting_admission();
                                     return true;
                                 }
                             } catch (...) {
