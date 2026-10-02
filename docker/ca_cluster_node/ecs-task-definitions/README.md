@@ -37,8 +37,10 @@ connection time, so no application-level change is needed.
 
 ## Prerequisites (fill in before deploying)
 
-1. An ECR repository holding the image built from `docker/ca_cluster_node/Dockerfile`
-   (`ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-cluster-node:latest`).
+1. An ECR repository holding the image built from `docker/ca_cluster_node/Dockerfile`,
+   and that push's digest substituted for `IMAGE_DIGEST` in all three files
+   (`ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-cluster-node@sha256:IMAGE_DIGEST`
+   — see "Pinning the image" below).
 2. A private Cloud Map namespace `ca-cluster.internal` and one ECS Service
    Discovery-enabled service per node, each in its own AZ's subnet.
 3. An EFS file system + access point per node (or one file system, three
@@ -62,6 +64,34 @@ connection time, so no application-level change is needed.
    --provider aws-acm-pca`'s ACM-PCA permissions in `docker/ca_service/ecs-task-role-policy.json`,
    which don't apply here since `ca_cluster_node` only ever uses the local,
    Raft-replicated CA).
+
+## Pinning the image
+
+The task definitions name the image by **digest**, never by a tag such as
+`:latest`. A tag is mutable: anyone who can push to the repository can move
+it, and every task ECS starts afterwards — a restart, a scale-out, a
+replacement after an AZ failure — silently runs the new image, which for a
+CA holding the unseal key and the RPC TLS key is a key-exfiltration path.
+A digest names exactly the bytes you reviewed, and it also keeps the three
+nodes on the same build: with a tag, a push between two task replacements
+leaves the quorum running mixed versions.
+
+Push the image under a version tag, read back its digest, and substitute it
+for `IMAGE_DIGEST` (the value after `sha256:`, 64 hex characters):
+
+```
+docker build -f docker/ca_cluster_node/Dockerfile \
+    -t ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-cluster-node:VERSION .
+docker push ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-cluster-node:VERSION
+aws ecr describe-images --repository-name kythira-ca-cluster-node \
+    --image-ids imageTag=VERSION --query 'imageDetails[0].imageDigest' --output text
+```
+
+Also turn on tag immutability for the repository
+(`aws ecr put-image-tag-mutability --repository-name kythira-ca-cluster-node
+--image-tag-mutability IMMUTABLE`), so a version tag cannot be re-pointed
+either. Upgrading is then a new digest in a new task-definition revision,
+rolled one node at a time.
 
 ## The unseal-key-file requirement
 

@@ -9,7 +9,7 @@
   "containerDefinitions": [
     {
       "name": "ca-service",
-      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-service:latest",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-service@sha256:IMAGE_DIGEST",
       "essential": true,
       "command": [
         "--serve",
