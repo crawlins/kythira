@@ -91,31 +91,66 @@ inline auto session_peer_endpoint(const coap_session_t* session) -> std::string 
 }  // namespace coap_detail
 #endif
 
+namespace detail {
+// The whole of the file at `path`, or nullopt if it cannot be opened.
+inline auto read_pem_file(const std::string& path) -> std::optional<std::string> {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return std::nullopt;
+    }
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// Reads cert_file, key_file and (if set) ca_file in one pass. Throws
+// coap_security_error naming the first file that cannot be opened.
+inline auto read_coap_pki_pem(const std::string& cert_file, const std::string& key_file,
+                              const std::string& ca_file) -> coap_pki_pem {
+    coap_pki_pem pem;
+    auto cert = read_pem_file(cert_file);
+    if (!cert) {
+        throw coap_security_error("cannot open certificate file: " + cert_file);
+    }
+    auto key = read_pem_file(key_file);
+    if (!key) {
+        throw coap_security_error("cannot open key file: " + key_file);
+    }
+    pem.certificate = std::move(*cert);
+    pem.private_key = std::move(*key);
+    if (!ca_file.empty()) {
+        auto ca = read_pem_file(ca_file);
+        if (!ca) {
+            throw coap_security_error("cannot open CA file: " + ca_file);
+        }
+        pem.ca = std::move(*ca);
+    }
+    return pem;
+}
+}  // namespace detail
+
 #ifdef KYTHIRA_HAS_OPENSSL
 namespace detail {
-// Validates that cert_path/key_path parse as a real X.509 certificate and a
-// matching private key. Throws coap_security_error on any failure — used by
+// Validates that `pem` holds a real X.509 certificate and a matching private
+// key. Throws coap_security_error on any failure — used by
 // reload_tls_material() to satisfy Requirement 16.3's validate-before-apply
 // ordering regardless of whether the real libcoap PKI wiring is compiled in.
-inline void validate_pem_cert_key_pair(const std::string& cert_path, const std::string& key_path) {
-    FILE* cert_fp = std::fopen(cert_path.c_str(), "r");
-    if (cert_fp == nullptr) {
-        throw coap_security_error("reload_tls_material: cannot open certificate file: " +
-                                  cert_path);
-    }
-    X509* cert = PEM_read_X509(cert_fp, nullptr, nullptr, nullptr);
-    std::fclose(cert_fp);
+// Works on bytes already read, not on the paths, so what is validated is
+// exactly what is applied even if the files change again mid-reload.
+inline void validate_pem_cert_key_pair(const coap_pki_pem& pem, const std::string& cert_path,
+                                       const std::string& key_path) {
+    BIO* cert_bio =
+        BIO_new_mem_buf(pem.certificate.data(), static_cast<int>(pem.certificate.size()));
+    X509* cert =
+        cert_bio != nullptr ? PEM_read_bio_X509(cert_bio, nullptr, nullptr, nullptr) : nullptr;
+    BIO_free(cert_bio);
     if (cert == nullptr) {
         throw coap_security_error("reload_tls_material: unparseable certificate: " + cert_path);
     }
 
-    FILE* key_fp = std::fopen(key_path.c_str(), "r");
-    if (key_fp == nullptr) {
-        X509_free(cert);
-        throw coap_security_error("reload_tls_material: cannot open key file: " + key_path);
-    }
-    EVP_PKEY* key = PEM_read_PrivateKey(key_fp, nullptr, nullptr, nullptr);
-    std::fclose(key_fp);
+    BIO* key_bio =
+        BIO_new_mem_buf(pem.private_key.data(), static_cast<int>(pem.private_key.size()));
+    EVP_PKEY* key =
+        key_bio != nullptr ? PEM_read_bio_PrivateKey(key_bio, nullptr, nullptr, nullptr) : nullptr;
+    BIO_free(key_bio);
     if (key == nullptr) {
         X509_free(cert);
         throw coap_security_error("reload_tls_material: unparseable private key: " + key_path);
@@ -200,6 +235,40 @@ struct openssl_error_queue_guard {
     auto operator=(const openssl_error_queue_guard&) -> openssl_error_queue_guard& = delete;
     ~openssl_error_queue_guard() { ERR_clear_error(); }
 };
+
+// Points `pki` at the material a transport presents. libcoap does not read
+// PEM *files* when coap_context_set_pki() is called: it opens them again on
+// every new DTLS handshake. Handing it paths made reload_tls_material() a
+// no-op and put whatever was on disk at handshake time live, valid or not —
+// a half-written rotation, or material a reload had just rejected
+// (Requirement 16.3). Handing it in-memory buffers (COAP_PKI_KEY_PEM_BUF)
+// means only material this process has read, and on reload validated, is
+// ever presented; libcoap reads the same leaf-only certificate either way.
+// With no `pem` (construction accepts paths it cannot open yet) it falls back
+// to the paths, so that misconfiguration still surfaces at handshake time.
+// Each length counts the trailing NUL, which spares libcoap a copy.
+inline void set_coap_pki_key(coap_dtls_pki_t& pki, const coap_pki_pem* pem,
+                             const std::string& cert_file, const std::string& key_file,
+                             const std::string& ca_file) {
+    // libcoap's PKI key is a tagged C union; key_type is the tag.
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    if (pem != nullptr) {
+        pki.pki_key.key_type = COAP_PKI_KEY_PEM_BUF;
+        auto& buf = pki.pki_key.key.pem_buf;
+        buf.public_cert = reinterpret_cast<const uint8_t*>(pem->certificate.c_str());
+        buf.public_cert_len = pem->certificate.size() + 1;
+        buf.private_key = reinterpret_cast<const uint8_t*>(pem->private_key.c_str());
+        buf.private_key_len = pem->private_key.size() + 1;
+        buf.ca_cert = pem->ca.empty() ? nullptr : reinterpret_cast<const uint8_t*>(pem->ca.c_str());
+        buf.ca_cert_len = pem->ca.empty() ? 0 : pem->ca.size() + 1;
+        return;
+    }
+    pki.pki_key.key_type = COAP_PKI_KEY_PEM;
+    pki.pki_key.key.pem.public_cert = cert_file.c_str();
+    pki.pki_key.key.pem.private_key = key_file.c_str();
+    pki.pki_key.key.pem.ca_file = ca_file.empty() ? nullptr : ca_file.c_str();
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+}
 
 // Loads the transport's CA file as DTLS trust anchors. A file that cannot be
 // loaded is reported rather than thrown: construction has always accepted
@@ -1221,11 +1290,16 @@ auto coap_client<Types>::setup_dtls_context() -> void {
         pki_config.check_cert_revocation = 1;
         pki_config.allow_no_crl = 1;
         pki_config.allow_expired_crl = 0;
-        pki_config.pki_key.key_type = COAP_PKI_KEY_PEM;
-        pki_config.pki_key.key.pem.public_cert = _config.cert_file.c_str();
-        pki_config.pki_key.key.pem.private_key = _config.key_file.c_str();
-        pki_config.pki_key.key.pem.ca_file =
-            _config.ca_file.empty() ? nullptr : _config.ca_file.c_str();
+        // Present in-memory material when the files are readable now; see
+        // detail::set_coap_pki_key() for why, and for the fallback.
+        try {
+            _pki_pem = std::make_shared<const detail::coap_pki_pem>(
+                detail::read_coap_pki_pem(_config.cert_file, _config.key_file, _config.ca_file));
+        } catch (const coap_security_error&) {
+            _pki_pem.reset();
+        }
+        detail::set_coap_pki_key(pki_config, _pki_pem.get(), _config.cert_file, _config.key_file,
+                                 _config.ca_file);
 
         // Set up certificate validation callback if needed
         if (_config.verify_peer_cert) {
@@ -1425,9 +1499,8 @@ auto coap_client<Types>::setup_dtls_context() -> void {
 // live _coap_context via coap_context_set_pki() (Requirement 16.2), without
 // tearing down the context or any existing DTLS association. This calls the
 // same coap_context_set_pki() entry point setup_dtls_context() already uses
-// at startup, with the (possibly updated) _config file paths — libcoap
-// re-reads and re-parses the PEM files named in pki_config on every call, so
-// no separate "build once, reuse" helper is required.
+// at startup, handing it the freshly read bytes rather than the paths (see
+// detail::set_coap_pki_key()).
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::reload_tls_material() -> void {
@@ -1436,10 +1509,16 @@ auto coap_client<Types>::reload_tls_material() -> void {
             "reload_tls_material() requires cert_file and key_file to be configured");
     }
 
-    // Validate before applying (Requirement 16.3), independent of whether the
-    // real libcoap PKI wiring below is compiled in.
+    std::lock_guard reload_lock(_pki_reload_mutex);
+
+    // Read once, then validate before applying (Requirement 16.3),
+    // independent of whether the real libcoap PKI wiring below is compiled
+    // in. libcoap is handed exactly the bytes that were validated, never the
+    // files again.
+    auto pem = std::make_shared<const detail::coap_pki_pem>(
+        detail::read_coap_pki_pem(_config.cert_file, _config.key_file, _config.ca_file));
 #ifdef KYTHIRA_HAS_OPENSSL
-    detail::validate_pem_cert_key_pair(_config.cert_file, _config.key_file);
+    detail::validate_pem_cert_key_pair(*pem, _config.cert_file, _config.key_file);
 #endif
 
 #ifdef LIBCOAP_AVAILABLE
@@ -1458,11 +1537,8 @@ auto coap_client<Types>::reload_tls_material() -> void {
     pki_config.check_cert_revocation = 1;
     pki_config.allow_no_crl = 1;
     pki_config.allow_expired_crl = 0;
-    pki_config.pki_key.key_type = COAP_PKI_KEY_PEM;
-    pki_config.pki_key.key.pem.public_cert = _config.cert_file.c_str();
-    pki_config.pki_key.key.pem.private_key = _config.key_file.c_str();
-    pki_config.pki_key.key.pem.ca_file =
-        _config.ca_file.empty() ? nullptr : _config.ca_file.c_str();
+    detail::set_coap_pki_key(pki_config, pem.get(), _config.cert_file, _config.key_file,
+                             _config.ca_file);
 
     if (_config.verify_peer_cert) {
         pki_config.validate_cn_call_back = [](const char* cn, const uint8_t* asn1_public_cert,
@@ -1503,11 +1579,16 @@ auto coap_client<Types>::reload_tls_material() -> void {
         throw coap_security_error("reload_tls_material: PKI setup rejected");
     }
     detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
+    if (_pki_pem) {
+        _retired_pki_pem.push_back(std::move(_pki_pem));
+    }
+    _pki_pem = std::move(pem);
 #else
     // libcoap's real PKI wiring is not compiled into this build (see the
     // KYTHIRA_HAS_OPENSSL comment above setup_dtls_context()'s stub branch) —
     // the cert/key pair has already been genuinely validated above; there is
     // no live libcoap context to re-apply it to.
+    _pki_pem = std::move(pem);
 #endif
 }
 
@@ -1525,6 +1606,7 @@ auto coap_client<Types>::enable_auto_reload(std::chrono::seconds poll_interval) 
                     _last_reloaded_cert_mtime = mtime;
                 } catch (const std::exception&) {
                     auto metric = _metrics;
+                    metric.set_metric_name("coap.client.tls_reload.failed");
                     metric.add_dimension("coap.client.tls_reload", "failed");
                     metric.add_one();
                     metric.emit();
@@ -3185,12 +3267,16 @@ auto coap_server<Types>::setup_dtls_context() -> void {
         pki_config.allow_no_crl = 1;
         pki_config.allow_expired_crl = 0;
 
-        // Configure certificate files
-        pki_config.pki_key.key_type = COAP_PKI_KEY_PEM;
-        pki_config.pki_key.key.pem.public_cert = _config.cert_file.c_str();
-        pki_config.pki_key.key.pem.private_key = _config.key_file.c_str();
-        pki_config.pki_key.key.pem.ca_file =
-            _config.ca_file.empty() ? nullptr : _config.ca_file.c_str();
+        // Present in-memory material when the files are readable now; see
+        // detail::set_coap_pki_key() for why, and for the fallback.
+        try {
+            _pki_pem = std::make_shared<const detail::coap_pki_pem>(
+                detail::read_coap_pki_pem(_config.cert_file, _config.key_file, _config.ca_file));
+        } catch (const coap_security_error&) {
+            _pki_pem.reset();
+        }
+        detail::set_coap_pki_key(pki_config, _pki_pem.get(), _config.cert_file, _config.key_file,
+                                 _config.ca_file);
 
         // Set up certificate validation callback if needed
         if (_config.verify_peer_cert) {
@@ -3384,10 +3470,16 @@ auto coap_server<Types>::reload_tls_material() -> void {
             "reload_tls_material() requires cert_file and key_file to be configured");
     }
 
-    // Validate before applying (Requirement 16.3), independent of whether the
-    // real libcoap PKI wiring below is compiled in.
+    std::lock_guard reload_lock(_pki_reload_mutex);
+
+    // Read once, then validate before applying (Requirement 16.3),
+    // independent of whether the real libcoap PKI wiring below is compiled
+    // in. libcoap is handed exactly the bytes that were validated, never the
+    // files again.
+    auto pem = std::make_shared<const detail::coap_pki_pem>(
+        detail::read_coap_pki_pem(_config.cert_file, _config.key_file, _config.ca_file));
 #ifdef KYTHIRA_HAS_OPENSSL
-    detail::validate_pem_cert_key_pair(_config.cert_file, _config.key_file);
+    detail::validate_pem_cert_key_pair(*pem, _config.cert_file, _config.key_file);
 #endif
 
 #ifdef LIBCOAP_AVAILABLE
@@ -3406,11 +3498,8 @@ auto coap_server<Types>::reload_tls_material() -> void {
     pki_config.check_cert_revocation = 1;
     pki_config.allow_no_crl = 1;
     pki_config.allow_expired_crl = 0;
-    pki_config.pki_key.key_type = COAP_PKI_KEY_PEM;
-    pki_config.pki_key.key.pem.public_cert = _config.cert_file.c_str();
-    pki_config.pki_key.key.pem.private_key = _config.key_file.c_str();
-    pki_config.pki_key.key.pem.ca_file =
-        _config.ca_file.empty() ? nullptr : _config.ca_file.c_str();
+    detail::set_coap_pki_key(pki_config, pem.get(), _config.cert_file, _config.key_file,
+                             _config.ca_file);
 
     if (_config.verify_peer_cert) {
         pki_config.validate_cn_call_back = [](const char* cn, const uint8_t* asn1_public_cert,
@@ -3434,10 +3523,15 @@ auto coap_server<Types>::reload_tls_material() -> void {
         throw coap_security_error("reload_tls_material: PKI setup rejected");
     }
     detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
+    if (_pki_pem) {
+        _retired_pki_pem.push_back(std::move(_pki_pem));
+    }
+    _pki_pem = std::move(pem);
 #else
     // libcoap's real PKI wiring is not compiled into this build — the cert/key
     // pair has already been genuinely validated above; there is no live
     // libcoap context to re-apply it to.
+    _pki_pem = std::move(pem);
 #endif
 }
 
@@ -3457,6 +3551,7 @@ auto coap_server<Types>::enable_auto_reload(std::chrono::seconds poll_interval) 
                     // A failed automatic reload is reported, not fatal — the next
                     // poll retries (Requirement 16.7).
                     auto metric = _metrics;
+                    metric.set_metric_name("coap.server.tls_reload.failed");
                     metric.add_dimension("coap.server.tls_reload", "failed");
                     metric.add_one();
                     metric.emit();
