@@ -19,7 +19,9 @@
 #include <exception>
 #include <format>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace kythira {
@@ -222,6 +224,52 @@ auto beast_configure_ssl_context(SSL_CTX* ctx, const std::string& cipher_suites,
     }
     SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
     SSL_CTX_set_verify_depth(ctx, 10);
+}
+
+// Binds one client connection to the peer it is meant to reach: SNI plus the
+// name or address the server's certificate must carry. Without the second
+// half, `verify_peer` only proves the chain ends at a trusted root, so any
+// certificate that root ever issued -- another node's, or a public site's
+// when ca_cert_path is empty and the system store is used -- is accepted for
+// every peer. OpenSSL then checks the subjectAltName as part of chain
+// verification, which also means the check is inert under
+// enable_ssl_verification=false (SSL_VERIFY_NONE ignores the result) and
+// costs nothing on reused connections, since it runs once per handshake.
+//
+// An IP literal gets no SNI (RFC 6066 section 3 forbids it) and is matched
+// against iPAddress entries rather than dNSName ones; it is taken from the
+// parsed address bytes, so a scoped IPv6 literal ("fe80::1%eth0") still
+// matches. Partial wildcards ("n*.example") are refused, per RFC 6125.
+// Returns the failure to report, or nullopt on success.
+auto beast_bind_peer_identity(SSL* ssl, const std::string& host) -> std::optional<std::string> {
+    if (host.empty()) {
+        return std::nullopt;
+    }
+    X509_VERIFY_PARAM* param = SSL_get0_param(ssl);
+    boost::system::error_code not_an_address;
+    const auto address = net::ip::make_address(host, not_an_address);
+    if (!not_an_address) {
+        int ok = 0;
+        if (address.is_v4()) {
+            const auto bytes = address.to_v4().to_bytes();
+            ok = X509_VERIFY_PARAM_set1_ip(param, bytes.data(), bytes.size());
+        } else {
+            const auto bytes = address.to_v6().to_bytes();
+            ok = X509_VERIFY_PARAM_set1_ip(param, bytes.data(), bytes.size());
+        }
+        if (ok != 1) {
+            return std::format("Failed to set expected peer IP address: {}", host);
+        }
+        return std::nullopt;
+    }
+    if (SSL_set_tlsext_host_name(ssl, host.c_str()) == 0) {
+        return std::format("Failed to set SNI host name: {}", host);
+    }
+    X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+    if (SSL_set1_host(ssl, host.c_str()) != 1) {
+        return std::format("Failed to set expected peer host name: {}", host);
+    }
+    return std::nullopt;
 }
 
 // ---------------------------------------------------------------------------
@@ -480,10 +528,9 @@ inline auto tls_beast_connection::set_timeout(std::chrono::milliseconds timeout)
 inline auto tls_beast_connection::connect(const std::vector<net::ip::tcp::endpoint>& eps,
                                           const std::string& host)
     -> kythira::future_default<kythira::unit> {
-    if (!host.empty() && (SSL_set_tlsext_host_name(_stream.native_handle(), host.c_str()) == 0)) {
+    if (auto error = beast_bind_peer_identity(_stream.native_handle(), host)) {
         return beast_exceptional_future<kythira::unit>(
-            std::make_exception_ptr(kythira::ssl_configuration_error(
-                std::format("Failed to set SNI host name: {}", host))));
+            std::make_exception_ptr(kythira::ssl_configuration_error(std::move(*error))));
     }
     // Keeps this connection alive across connect and handshake; see send().
     return async_connect_kf(beast::get_lowest_layer(_stream), eps, _executor.get())
