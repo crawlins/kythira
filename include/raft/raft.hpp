@@ -507,6 +507,23 @@ public:
     /// to decide whether a target has caught up, the target to check that it
     /// really has before spending a term on an election it would lose.
     [[nodiscard]] auto last_log_index() const -> log_index_type;
+
+    /// @brief The voting members and learners of this replica's latest
+    ///        configuration, and whether it is a joint one.
+    struct membership_view {
+        std::vector<node_id_type> voters;
+        std::vector<node_id_type> learners;
+        bool joint{false};
+    };
+
+    /// @brief A copy of the configuration this replica currently runs under,
+    ///        taken under the node's lock.
+    ///
+    /// Read-only. Exists so that a multi-Raft host can report a group's real
+    /// membership to its placement driver after a learner is added or promoted
+    /// (`.kiro/specs/elastic-shard-capacity/` Requirement 10.2), rather than
+    /// the membership it was created with.
+    [[nodiscard]] auto current_membership() const -> membership_view;
     /// @}
 
     /// @name Leadership transfer (Ongaro's dissertation §3.10)
@@ -557,6 +574,15 @@ public:
     /// @brief Overwrite the current cluster configuration (for bootstrap and testing).
     /// @param node_ids Complete list of node IDs in the new configuration.
     auto set_cluster_configuration(const std::vector<node_id_type>& node_ids) -> void;
+
+    /// @brief As above, also naming the configuration's learners.
+    ///
+    /// For a replica created on a machine that joins as a learner: without it
+    /// the replica believes it is an ordinary follower outside the voting set
+    /// until the configuration entry reaches it, and a follower that believes
+    /// that may campaign (`check_election_timeout` exempts only learners).
+    auto set_cluster_configuration(const std::vector<node_id_type>& voters,
+                                   const std::vector<node_id_type>& learners) -> void;
 
     /// @brief Returns the number of nodes in the current cluster configuration.
     [[nodiscard]] auto get_cluster_size() const -> std::size_t;
@@ -1306,6 +1332,16 @@ node<Types>::node(node_id_type node_id, network_client_type network_client,
       }) {}
 
 template<raft_types Types>
+auto node<Types>::set_cluster_configuration(const std::vector<node_id_type>& voters,
+                                            const std::vector<node_id_type>& learners) -> void {
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _configuration._learners = learners;
+    }
+    set_cluster_configuration(voters);
+}
+
+template<raft_types Types>
 
 auto node<Types>::set_cluster_configuration(const std::vector<node_id_type>& node_ids) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -1945,6 +1981,13 @@ auto node<Types>::match_index_of(const node_id_type& node) const -> std::optiona
 template<raft_types Types> auto node<Types>::last_log_index() const -> log_index_type {
     std::lock_guard<std::mutex> lock(_mutex);
     return get_last_log_index();
+}
+
+template<raft_types Types> auto node<Types>::current_membership() const -> membership_view {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return membership_view{.voters = _configuration.nodes(),
+                           .learners = _configuration.learners(),
+                           .joint = _configuration.is_joint_consensus()};
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

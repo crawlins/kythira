@@ -699,6 +699,16 @@ struct multi_raft_config {
     /// (`shard_report::_capacity_refusals`), which is how an elastic capacity
     /// controller learns the cluster is out of room without a second channel.
     std::optional<std::uint64_t> split_capacity_floor_bytes{};
+
+    /// @brief How many entries a replica may trail the leader's log and still
+    ///        count as caught up in `shard_report::_pending_replicas`.
+    ///
+    /// A placement driver promotes a learner only once it is no longer
+    /// pending, so this is "close enough to vote without stalling commits".
+    /// A small positive lag rather than zero: under a steady write load a
+    /// replica is always a heartbeat's worth of entries behind, and a zero
+    /// lag would keep every learner pending forever.
+    std::uint64_t replica_catch_up_lag{64};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -978,6 +988,8 @@ public:
     /// leader's view delayed, so N-1 copies of a stale report would cost
     /// bandwidth to tell the driver nothing it does not already know.
     [[nodiscard]] auto build_shard_reports() const -> std::vector<shard_report_type>;
+    /// Copies each local leader's Raft membership into its descriptor.
+    auto sync_leader_membership() -> void;
 
     /// @brief This machine's own report: capacity, counts, rates, labels.
     [[nodiscard]] auto build_node_report() const -> node_report_type;
@@ -1587,6 +1599,9 @@ private:
     tombstone_set_type _tombstones;
 
     std::atomic<bool> _running{false};
+
+    /// steady_clock ticks at `start()`; zero before. Reported as uptime.
+    std::atomic<std::int64_t> _started_at_ns{0};
     std::chrono::steady_clock::time_point _last_policy_run{};
     std::atomic<std::uint64_t> _applied_splits{0};
     std::atomic<std::uint64_t> _applied_merges{0};
