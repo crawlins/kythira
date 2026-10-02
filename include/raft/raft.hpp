@@ -949,13 +949,40 @@ private:
     // it reaches _config.quorum_heartbeat_failure_threshold().
     std::unordered_map<node_id_type, std::size_t> _heartbeat_failure_counts{};
 
-    // Number of in-flight or pending provision_node calls per placement group.
-    // Prevents over-provisioning across consecutive assessment cycles.
+    // Number of provision_node slots per placement group that are either in
+    // flight or have returned a node that has not yet joined the configuration
+    // (Req 14.3).  Incremented before provision_node is called; decremented
+    // when that call fails (Req 14.6) or when the provisioned node first shows
+    // up in _configuration as a learner or voter (Req 14.5).
     std::map<placement_group_id_type, std::size_t> _pending_provisions{};
 
-    // Tracks which unreachable node ID each pending provision is replacing.
-    // Used to call remove_server + decommission_node after the replacement joins.
-    std::map<placement_group_id_type, std::optional<node_id_type>> _pending_replacing{};
+    // One record per node returned by provision_node, keyed by the new node's
+    // ID, tracking it from provisioning through join, promotion and — when it
+    // replaces a failed node — removal and decommissioning of that node
+    // (Req 14.5, 15.1-15.4).  Leader-local: cleared on step-down (Req 14.7).
+    struct pending_replacement {
+        placement_group_id_type group{};
+        // The failed node this one replaces, if provision_node was called with
+        // a non-nullopt `replacing`.  Only these records drive remove_server +
+        // decommission_node; an operator-initiated remove_server never does
+        // (Req 15.5).
+        std::optional<node_id_type> replacing{};
+        // Set once the node has been seen in _configuration (learner or voter).
+        bool joined{false};
+        // Set once remove_server(replacing) has been issued; the flag is set
+        // by that future's continuation if the removal fails so the next tick
+        // can retry it.  A shared atomic rather than _mutex because the
+        // continuation may run on the thread that is applying the entry.
+        bool removal_requested{false};
+        std::shared_ptr<std::atomic<bool>> removal_failed{
+            std::make_shared<std::atomic<bool>>(false)};
+    };
+    std::map<node_id_type, pending_replacement> _pending_replacements{};
+
+    // Bumped by start_quorum_loop()/stop_quorum_loop() so a provision_node
+    // result that arrives after a step-down (or a step-down and re-election)
+    // is recognised as stale and discarded (Req 14.7).
+    std::uint64_t _quorum_epoch{0};
 
     // When the quorum assessment loop was last run.
     // Reset to epoch by become_leader() to schedule an immediate first assessment.
@@ -1206,12 +1233,28 @@ private:
     // Called by become_follower/candidate — disables the quorum check.
     auto stop_quorum_loop() -> void;
 
+    // Advances every _pending_replacements record one step: notes a
+    // provisioned node joining (Req 14.5), issues remove_server(replacing)
+    // once the replacement is a committed voter (Req 15.1), and calls
+    // decommission_node(replacing) once that removal has committed (Req
+    // 15.2-15.4).  Runs on every leader heartbeat tick.
+    // Must NOT be called with _mutex held (calls remove_server and .get()).
+    auto reconcile_pending_replacements() -> void;
+
     // Req 13.3 — consecutive AppendEntries/heartbeat failures per peer.  A
     // failure that brings a peer to quorum_heartbeat_failure_threshold asks
     // for an immediate assessment; any response from the peer resets it.
     // Must be called with _mutex held.
     auto note_peer_rpc_failure(const node_id_type& peer) -> void;
     auto note_peer_rpc_success(const node_id_type& peer) -> void;
+
+    // The voter `id` was provisioned to replace, if `id` has a pending
+    // replacement record whose `replacing` node is still a voter in the same
+    // placement group.  Such a replacement may be admitted and promoted even
+    // though its group is at target, because the node it replaces is about to
+    // leave.  Must be called with _mutex held.
+    [[nodiscard]] auto voter_replaced_by(const node_id_type& id) const
+        -> std::optional<node_id_type>;
 
     // ── Learner helpers (.kiro/specs/non-voting-nodes/) ──────────────────────
 
@@ -1477,17 +1520,33 @@ auto node<Types>::group_has_promotion_capacity(placement_group_id_type group) co
     return voting_count_in_group(group) < target->target_count;
 }
 
+template<raft_types Types>
+auto node<Types>::voter_replaced_by(const node_id_type& id) const -> std::optional<node_id_type> {
+    auto it = _pending_replacements.find(id);
+    if (it == _pending_replacements.end() || !it->second.replacing) {
+        return std::nullopt;
+    }
+    const auto& replaced = *it->second.replacing;
+    const auto& voters = _configuration.nodes();
+    bool replaced_is_voter = std::find(voters.begin(), voters.end(), replaced) != voters.end();
+    if (!replaced_is_voter || placement_of(replaced) != it->second.group ||
+        placement_of(id) != it->second.group) {
+        return std::nullopt;
+    }
+    return replaced;
+}
+
 template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
     // Build cluster vector under lock, then release for async call
     std::vector<node_placement<node_id_type, placement_group_id_type>> cluster;
+    std::uint64_t epoch = 0;
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if (_state != kythira::server_state::leader) {
-            {
-                return;
-            }
+            return;
         }
         cluster = build_quorum_cluster_vector();
+        epoch = _quorum_epoch;
     }
 
     quorum_health<node_id_type, placement_group_id_type> health;
@@ -1507,10 +1566,8 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
     {
         std::lock_guard<std::mutex> lock(_mutex);
         _last_quorum_check = std::chrono::steady_clock::now();
-        if (_state != kythira::server_state::leader) {
-            {
-                return;
-            }
+        if (_state != kythira::server_state::leader || _quorum_epoch != epoch) {
+            return;
         }
     }
 
@@ -1535,9 +1592,7 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
             }
             std::size_t live = grp_health.live_count;
             if (live >= target) {
-                {
-                    continue;
-                }
+                continue;
             }
 
             std::size_t deficit = target - live;
@@ -1552,9 +1607,7 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
                 }
             }
             if (pending >= deficit) {
-                {
-                    continue;
-                }
+                continue;
             }
             std::size_t to_provision = deficit - pending;
 
@@ -1568,17 +1621,26 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
             // the capacity criterion currently blocks is left completely untouched
             // and is reconsidered fresh on the next assessment cycle; no bookkeeping
             // is needed (Requirement 5).
+            //
+            // A learner that was provisioned to replace a voter of this group is
+            // eligible even when the group is at its voting target: the voter it
+            // replaces is still counted but is about to be removed (Req 15.1).
             std::size_t remaining_to_provision = to_provision;
+            std::vector<node_id_type> promoted;
             while (remaining_to_provision > 0) {
                 std::optional<node_id_type> candidate;
                 {
                     std::lock_guard<std::mutex> lock(_mutex);
-                    if (group_has_promotion_capacity(grp_health.group_id)) {
-                        for (const auto& learner_id : _configuration.learners()) {
-                            if (placement_of(learner_id) == grp_health.group_id) {
-                                candidate = learner_id;
-                                break;
-                            }
+                    bool group_has_room = group_has_promotion_capacity(grp_health.group_id);
+                    for (const auto& learner_id : _configuration.learners()) {
+                        if (placement_of(learner_id) != grp_health.group_id ||
+                            std::find(promoted.begin(), promoted.end(), learner_id) !=
+                                promoted.end()) {
+                            continue;
+                        }
+                        if (group_has_room || voter_replaced_by(learner_id)) {
+                            candidate = learner_id;
+                            break;
                         }
                     }
                 }
@@ -1598,6 +1660,7 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
                 // this promotion. Folly/boost are eager and don't need
                 // this, but detach() is a portable no-op there too.
                 promote_to_voter(*candidate).detach();
+                promoted.push_back(*candidate);
 
                 --remaining_to_provision;
             }
@@ -1606,32 +1669,71 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
                 continue;  // deficit fully covered by promotion(s) this cycle
             }
 
-            // Pick a node to replace from the group's unreachable list
+            // Candidates to replace: the group's unreachable nodes that no
+            // earlier provision is already replacing.
+            std::vector<node_id_type> replaceable;
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                for (const auto& nid : grp_health.unreachable_nodes) {
+                    bool already =
+                        std::any_of(_pending_replacements.begin(), _pending_replacements.end(),
+                                    [&](const auto& kv) { return kv.second.replacing == nid; });
+                    if (!already) {
+                        replaceable.push_back(nid);
+                    }
+                }
+            }
+
             std::size_t replacing_idx = 0;
             for (std::size_t slot = 0; slot < to_provision; ++slot) {
                 std::optional<node_id_type> replacing = std::nullopt;
-                if (replacing_idx < grp_health.unreachable_nodes.size()) {
-                    replacing = grp_health.unreachable_nodes[replacing_idx++];
+                if (replacing_idx < replaceable.size()) {
+                    replacing = replaceable[replacing_idx++];
                 }
 
                 // Mark slot as in-flight
                 {
                     std::lock_guard<std::mutex> lock(_mutex);
+                    if (_quorum_epoch != epoch) {
+                        return;
+                    }
                     _pending_provisions[grp_health.group_id]++;
-                    _pending_replacing[grp_health.group_id] = replacing;
                 }
 
                 auto provision_fut = _quorum_manager.provision_node(grp_health.group_id, replacing);
                 try {
                     auto info = std::move(provision_fut).get();
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    if (_quorum_epoch != epoch) {
+                        // Req 14.7 — stepped down while provisioning.  The
+                        // counters were already cleared by stop_quorum_loop();
+                        // the node will still try to join, and whichever node
+                        // leads by then admits it as an ordinary ClusterJoin.
+                        _logger.info("Discarding provisioned node after step-down",
+                                     {{"new_node_id", node_id_to_string(info.node_id)},
+                                      {"group", grp_health.group_id}});
+                        return;
+                    }
                     _logger.info("Provisioned replacement node",
                                  {
                                      {"new_node_id", node_id_to_string(info.node_id)},
                                      {"group", grp_health.group_id},
+                                     {"replacing", replacing ? node_id_to_string(*replacing)
+                                                             : std::string{"none"}},
                                  });
-                    // The provisioned node joins via ClusterJoin → add_learner(), then
-                    // becomes a promotion candidate on a future assessment cycle once
-                    // it has caught up. (Req 14.4 — nothing further to do here)
+                    // Req 9.4 / 12.3 — record the placement now rather than
+                    // when the node joins: ClusterJoin admits it through
+                    // add_learner(), whose capacity check needs its group.
+                    // Entries for nodes not yet in the configuration are
+                    // ignored by build_quorum_cluster_vector() (Req 12.5).
+                    _placement_map[info.node_id] = grp_health.group_id;
+                    _pending_replacements[info.node_id] = pending_replacement{
+                        .group = grp_health.group_id,
+                        .replacing = replacing,
+                    };
+                    // Req 14.4 — nothing further to do here: the node joins via
+                    // ClusterJoin → add_learner(), reconcile_pending_replacements()
+                    // notices, and a later cycle promotes it.
                 } catch (const std::exception& ex) {
                     _logger.error("provision_node failed", {
                                                                {"group", grp_health.group_id},
@@ -1639,14 +1741,158 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
                                                            });
                     // Req 14.6 — clear the pending slot on failure
                     std::lock_guard<std::mutex> lock(_mutex);
+                    if (_quorum_epoch != epoch) {
+                        return;
+                    }
                     auto& cnt = _pending_provisions[grp_health.group_id];
                     if (cnt > 0) {
-                        {
-                            --cnt;
-                        }
+                        --cnt;
                     }
                 }
             }
+        }
+    }
+}
+
+template<raft_types Types> auto node<Types>::reconcile_pending_replacements() -> void {
+    std::vector<node_id_type> to_remove;
+    std::vector<node_id_type> to_decommission;
+    std::uint64_t epoch = 0;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!_quorum_check_active || _pending_replacements.empty()) {
+            return;
+        }
+        epoch = _quorum_epoch;
+
+        const auto& voters = _configuration.nodes();
+        const auto& learners = _configuration.learners();
+        auto is_voter = [&](const node_id_type& id) {
+            return std::find(voters.begin(), voters.end(), id) != voters.end();
+        };
+        auto is_learner_id = [&](const node_id_type& id) {
+            return std::find(learners.begin(), learners.end(), id) != learners.end();
+        };
+        // A membership change is settled when no joint configuration is
+        // pending and the synchronizer has nothing in flight.
+        bool settled = !_configuration.is_joint_consensus() &&
+                       !_config_synchronizer.is_configuration_change_in_progress();
+
+        for (auto it = _pending_replacements.begin(); it != _pending_replacements.end();) {
+            const auto& new_id = it->first;
+            auto& rec = it->second;
+
+            // Req 14.5 — the provisioned node joined: its slot is no longer
+            // pending, so the next assessment can promote it.
+            if (!rec.joined && (is_voter(new_id) || is_learner_id(new_id))) {
+                rec.joined = true;
+                auto& cnt = _pending_provisions[rec.group];
+                if (cnt > 0) {
+                    --cnt;
+                }
+                _logger.info("Provisioned node joined the configuration",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"new_node_id", node_id_to_string(new_id)},
+                              {"group", rec.group}});
+            }
+            if (!rec.joined) {
+                ++it;
+                continue;
+            }
+
+            if (!rec.replacing) {
+                // Nothing to remove: done once the node is a settled voter.
+                if (is_voter(new_id) && settled) {
+                    it = _pending_replacements.erase(it);
+                } else {
+                    ++it;
+                }
+                continue;
+            }
+
+            const auto replaced = *rec.replacing;
+            if (rec.removal_requested) {
+                if (rec.removal_failed->exchange(false)) {
+                    // Req 15.1 — retry below on this or a later tick.
+                    rec.removal_requested = false;
+                } else {
+                    if (settled && !is_voter(replaced)) {
+                        // Req 15.2 — remove_server(replaced) has committed.
+                        to_decommission.push_back(replaced);
+                        it = _pending_replacements.erase(it);
+                    } else {
+                        ++it;
+                    }
+                    continue;
+                }
+            }
+
+            if (!is_voter(replaced)) {
+                // Removed by someone else (an operator, or a ClusterLeave)
+                // before this flow got to it.  Not ours to decommission
+                // (Req 15.5).
+                _logger.info("Replaced node already left the configuration",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"replaced", node_id_to_string(replaced)}});
+                it = _pending_replacements.erase(it);
+                continue;
+            }
+
+            // Req 15.1 / 15.3 — remove the failed node once its replacement
+            // is a committed voter, and before it is decommissioned.
+            if (is_voter(new_id) && settled) {
+                rec.removal_requested = true;
+                to_remove.push_back(replaced);
+            }
+            ++it;
+        }
+    }
+
+    for (const auto& replaced : to_remove) {
+        std::shared_ptr<std::atomic<bool>> failed;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_quorum_epoch != epoch) {
+                return;
+            }
+            for (auto& [id, rec] : _pending_replacements) {
+                if (rec.replacing == replaced) {
+                    failed = rec.removal_failed;
+                    break;
+                }
+            }
+        }
+        _logger.info(
+            "Removing replaced node from the configuration",
+            {{"node_id", node_id_to_string(_node_id)}, {"replaced", node_id_to_string(replaced)}});
+        // remove_server() commits through the heartbeats this very thread
+        // sends, so it cannot be waited on here; its continuation only flags
+        // a failure for the next tick to retry.
+        remove_server(replaced)
+            .thenTry([failed](auto try_result) {
+                if (try_result.hasException() && failed) {
+                    failed->store(true);
+                }
+                return std::vector<std::byte>{};
+            })
+            .detach();
+    }
+
+    for (const auto& replaced : to_decommission) {
+        // Req 15.4 — a failed decommission is logged only; the configuration
+        // change has committed and is never reversed.
+        try {
+            _quorum_manager.decommission_node(replaced).get();
+            _logger.info("Decommissioned replaced node",
+                         {{"node_id", node_id_to_string(_node_id)},
+                          {"replaced", node_id_to_string(replaced)}});
+        } catch (const std::exception& ex) {
+            _logger.error(
+                "decommission_node failed; the node is out of the configuration but "
+                "its infrastructure may need manual cleanup",
+                {{"node_id", node_id_to_string(_node_id)},
+                 {"replaced", node_id_to_string(replaced)},
+                 {"error", ex.what()}});
         }
     }
 }
@@ -1680,13 +1926,21 @@ template<raft_types Types> auto node<Types>::start_quorum_loop() -> void {
     // the explicit flag: steady_clock counts from boot on Linux, so a default
     // time point is not reliably a full quorum_check_interval in the past.
     _quorum_immediate_check = true;
+    ++_quorum_epoch;
     _last_quorum_check = std::chrono::steady_clock::time_point{};
 }
 
 // stop_quorum_loop — called from become_follower/candidate while _mutex is held.
+// Req 14.7 — pending provisions and replacement records are leader-local and
+// are dropped here; a provision_node call still in flight sees the epoch bump
+// and discards its result.
 template<raft_types Types> auto node<Types>::stop_quorum_loop() -> void {
     _quorum_check_active = false;
     _quorum_immediate_check = false;
+    ++_quorum_epoch;
+    _pending_provisions.clear();
+    _pending_replacements.clear();
+    _heartbeat_failure_counts.clear();
 }
 
 template<raft_types Types>
@@ -3479,8 +3733,11 @@ auto node<Types>::add_learner(node_id_type new_node) -> future_type {
     // (by default) the group's combined voting+learner count below its
     // desired-topology target_count (Requirement 2,
     // .kiro/specs/non-voting-nodes/requirements.md).
+    // A node provisioned to replace a voter of its group is admitted even when
+    // the group is full: the voter it replaces leaves once it is promoted
+    // (Req 15.1, .kiro/specs/quorum-management/).
     auto group = placement_of(new_node);
-    if (!group_has_admission_capacity(group)) {
+    if (!group_has_admission_capacity(group) && !voter_replaced_by(new_node)) {
         _logger.warning(
             "Cannot add learner: placement group at capacity",
             {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
@@ -3676,8 +3933,10 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
     // (Requirement 3.4). A learner blocked here is left completely unaffected: no
     // state is recorded, so it becomes a promotion candidate again the moment its
     // own group's live voting count drops (Requirement 5).
+    // Same exception as add_learner(): a provisioned replacement may take its
+    // group past target_count until the voter it replaces is removed.
     auto group = placement_of(learner);
-    if (!group_has_promotion_capacity(group)) {
+    if (!group_has_promotion_capacity(group) && !voter_replaced_by(learner)) {
         _logger.warning(
             "Cannot promote to voter: placement group at voting capacity",
             {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
@@ -3916,6 +4175,11 @@ auto node<Types>::check_heartbeat_timeout() -> void {
     if (should_assess) {
         run_quorum_assessment();
     }
+
+    // Req 14.5 / 15 — advance provisioned replacements every tick rather than
+    // every quorum_check_interval, so a replaced node is removed as soon as
+    // its replacement's promotion commits.
+    reconcile_pending_replacements();
 }
 
 // Placeholder implementations for private methods
@@ -6925,6 +7189,22 @@ auto node<Types>::apply_committed_entries() -> void {
         // configuration change protocol instead.
         if (entry.type() == entry_type::configuration) {
             auto new_config = deserialize_configuration<node_id_type>(entry.command());
+            // Req 12.4 — voters dropped by a committed joint configuration
+            // (a remove_server()) leave the placement map on every replica.
+            // Done at the joint commit because that is the only committed
+            // entry that still names them, in old_nodes().
+            if (new_config.is_joint_consensus() && new_config.old_nodes()) {
+                for (const auto& old_id : *new_config.old_nodes()) {
+                    bool still_member =
+                        std::find(new_config.nodes().begin(), new_config.nodes().end(), old_id) !=
+                            new_config.nodes().end() ||
+                        std::find(new_config.learners().begin(), new_config.learners().end(),
+                                  old_id) != new_config.learners().end();
+                    if (!still_member) {
+                        _placement_map.erase(old_id);
+                    }
+                }
+            }
             _configuration = new_config;
             sync_peer2peer_membership();
             _config_synchronizer.notify_configuration_committed(new_config, entry.index());
