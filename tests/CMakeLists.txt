@@ -1439,7 +1439,7 @@ add_network_test(http_config_test http_config_test.cpp)
 if(KYTHIRA_BUILD_COAP_TRANSPORT)
     # CoAP transport tests
     add_network_test(coap_transport_initialization_property_test coap_transport_initialization_property_test.cpp)
-    add_network_test(coap_dtls_handshake_stub_test coap_dtls_handshake_stub_test.cpp)
+    add_network_test(coap_dtls_handshake_test coap_dtls_handshake_test.cpp)
     add_network_test(coap_multicast_operation_return_types_property_test coap_multicast_operation_return_types_property_test.cpp)
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 add_network_test(memory_pool_basic_test memory_pool_basic_test.cpp)
