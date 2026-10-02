@@ -226,6 +226,9 @@ struct multicast_response_collector {
     std::chrono::milliseconds timeout;
     std::function<void(std::vector<std::vector<std::byte>>)> resolve_callback;
     std::function<void(std::exception_ptr)> reject_callback;
+    // The UDP session the request went out on. Responses arrive on it, so it
+    // has to outlive the collection window; released when the window closes.
+    coap_session_t* session{nullptr};
 
     multicast_response_collector(
         std::string tok, std::chrono::milliseconds to,
@@ -276,12 +279,14 @@ public:
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{30000})
         -> future_template<kythira::install_snapshot_response<>>;
 
-    // Multicast support
+    // Multicast support. Resolves once `timeout` has elapsed with every
+    // successful response that arrived in that window, one entry per
+    // responding group member -- possibly none.
     auto send_multicast_message(const std::string& multicast_address, std::uint16_t multicast_port,
                                 const std::string& resource_path,
                                 const std::vector<std::byte>& payload,
                                 std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
-        -> future_template<std::vector<std::byte>>;
+        -> future_template<std::vector<std::vector<std::byte>>>;
 
     // Enhanced multicast discovery operations
     auto discover_raft_nodes(const std::string& multicast_address = "224.0.1.187",
@@ -505,6 +510,10 @@ private:
     auto finalize_multicast_response_collection(const std::string& token) -> void;
     auto cleanup_expired_multicast_requests() -> void;
     auto handle_multicast_error(const std::string& token, const std::exception_ptr& error) -> void;
+    // Records `response` if `token` belongs to an open multicast request.
+    // Returns false when it does not, so the caller treats it as unicast.
+    auto collect_multicast_response(coap_session_t* session, const coap_pdu_t* response,
+                                    const std::string& token) -> bool;
 
     // Cipher suite configuration methods
     auto validate_cipher_suites(const std::vector<std::string>& cipher_suites) -> void;

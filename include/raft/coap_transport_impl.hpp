@@ -104,6 +104,19 @@ inline void validate_pem_cert_key_pair(const std::string& cert_path, const std::
 }  // namespace detail
 #endif  // KYTHIRA_HAS_OPENSSL
 
+namespace detail {
+// The message of whatever `error` holds, for a log line.
+inline auto describe_exception(const std::exception_ptr& error) -> std::string {
+    try {
+        std::rethrow_exception(error);
+    } catch (const std::exception& e) {
+        return e.what();
+    } catch (...) {
+        return "unknown exception";
+    }
+}
+}  // namespace detail
+
 #ifdef LIBCOAP_AVAILABLE
 namespace detail {
 // Hands RFC 7959 block-wise transfer to libcoap on `ctx`, for both
@@ -224,6 +237,13 @@ coap_client<Types>::coap_client(
                 coap_bin_const_t token = coap_pdu_get_token(received);
                 std::string token_str(reinterpret_cast<const char*>(token.s), token.length);
 
+                // A multicast request gets one response per group member,
+                // all carrying its token; those are collected, not matched
+                // one-to-one against a pending unicast request.
+                if (client->collect_multicast_response(session, received, token_str)) {
+                    return COAP_RESPONSE_OK;
+                }
+
                 // Handle the response
                 client->handle_response(const_cast<coap_pdu_t*>(received), token_str);
             }
@@ -314,6 +334,9 @@ coap_client<Types>::coap_client(
                     coap_io_process(_coap_context, COAP_IO_NO_WAIT);
                 }
             }
+            // Closes multicast collection windows. Takes _mutex itself and
+            // fulfils promises outside it.
+            cleanup_expired_multicast_requests();
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     });
@@ -384,14 +407,35 @@ coap_client<Types>::~coap_client() {
         _io_thread.join();
     }
 
+    // Multicast collections still open get what they have so far, as if
+    // their window had closed now; their sessions go back to libcoap
+    // before the context does.
+    std::vector<std::shared_ptr<multicast_response_collector>> open_multicast;
     {
         std::lock_guard lock(_mutex);
+        for (auto& [token, collector] : _multicast_requests) {
+#ifdef LIBCOAP_AVAILABLE
+            if (collector->session) {
+                coap_session_release(collector->session);
+                collector->session = nullptr;
+            }
+#endif
+            open_multicast.push_back(collector);
+        }
+        _multicast_requests.clear();
 #ifdef LIBCOAP_AVAILABLE
         for (auto& [endpoint, session] : _dtls_handshake_sessions) {
             coap_session_release(session);
         }
 #endif
         _dtls_handshake_sessions.clear();
+    }
+    for (const auto& collector : open_multicast) {
+        std::vector<std::vector<std::byte>> responses;
+        for (const auto& response : collector->responses) {
+            responses.push_back(response.response_data);
+        }
+        collector->resolve_callback(std::move(responses));
     }
 
     // Cleanup libcoap context
@@ -6485,19 +6529,17 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
                                                 const std::string& resource_path,
                                                 const std::vector<std::byte>& payload,
                                                 std::chrono::milliseconds timeout)
-    -> future_template<std::vector<std::byte>> {
-    // Stub implementation for multicast message sending
-    _logger.info("Sending multicast message (stub implementation)",
-                 {{"multicast_address", multicast_address},
-                  {"multicast_port", std::to_string(multicast_port)},
-                  {"resource_path", resource_path},
-                  {"payload_size", std::to_string(payload.size())},
-                  {"timeout_ms", std::to_string(timeout.count())}});
+    -> future_template<std::vector<std::vector<std::byte>>> {
+    _logger.info("Sending multicast message", {{"multicast_address", multicast_address},
+                                               {"multicast_port", std::to_string(multicast_port)},
+                                               {"resource_path", resource_path},
+                                               {"payload_size", std::to_string(payload.size())},
+                                               {"timeout_ms", std::to_string(timeout.count())}});
 
     // Validate multicast port
     if (multicast_port == 0) {
         _logger.error("Invalid multicast port", {{"port", std::to_string(multicast_port)}});
-        promise_template<std::vector<std::byte>> error_promise;
+        promise_template<std::vector<std::vector<std::byte>>> error_promise;
         auto error_future = error_promise.getFuture();
         error_promise.setException(
             std::make_exception_ptr(coap_network_error("Invalid multicast port: 0")));
@@ -6507,7 +6549,7 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
     // Validate multicast address
     if (!is_valid_multicast_address(multicast_address)) {
         _logger.error("Invalid multicast address", {{"address", multicast_address}});
-        promise_template<std::vector<std::byte>> error_promise;
+        promise_template<std::vector<std::vector<std::byte>>> error_promise;
         auto error_future = error_promise.getFuture();
         error_promise.setException(std::make_exception_ptr(
             coap_network_error("Invalid multicast address: " + multicast_address)));
@@ -6522,52 +6564,92 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
     _metrics.emit();
 
 #ifdef LIBCOAP_AVAILABLE
-    // Real implementation would:
-    // 1. Create multicast CoAP session
-    // 2. Construct CoAP PDU with payload
-    // 3. Send to multicast address
-    // 4. Collect responses from multiple nodes
-    // 5. Return vector of response payloads
+    // RFC 7252 section 8: a multicast request is a NON POST to the group
+    // address; every member that answers does so with a unicast response
+    // carrying the request's token. There is no ACK and no way to know how
+    // many members exist, so the request collects whatever answers arrive
+    // within `timeout` and resolves with all of them -- possibly none, which
+    // is a valid answer ("nobody is listening"), not an error. Collection
+    // ends in cleanup_expired_multicast_requests(), which the I/O thread
+    // runs on every pass.
+    auto promise = std::make_shared<promise_template<std::vector<std::vector<std::byte>>>>();
+    auto future = promise->getFuture();
+    const auto fail = [&](const std::string& reason) {
+        _logger.error("Multicast send failed",
+                      {{"multicast_address", multicast_address}, {"reason", reason}});
+        promise->setException(std::make_exception_ptr(coap_network_error(reason)));
+        return std::move(future);
+    };
 
-    _logger.warning("Real libcoap multicast implementation not yet complete, using stub");
-
-    // Return empty response as stub (single response, not vector of responses)
-    std::vector<std::byte> stub_response;
-
-    // Simulate a mock response for testing
-    std::string mock_data = "mock_multicast_response";
-    stub_response.reserve(mock_data.size());
-    for (char c : mock_data) {
-        stub_response.push_back(static_cast<std::byte>(c));
+    coap_address_t group_addr;
+    coap_address_init(&group_addr);
+    group_addr.addr.sin.sin_family = AF_INET;
+    group_addr.addr.sin.sin_port = htons(multicast_port);
+    group_addr.size = sizeof(group_addr.addr.sin);
+    if (inet_pton(AF_INET, multicast_address.c_str(), &group_addr.addr.sin.sin_addr) != 1) {
+        return fail("Failed to parse multicast address: " + multicast_address);
     }
 
-    _logger.debug("Returning stub multicast response",
-                  {{"response_size", std::to_string(stub_response.size())}});
+    std::lock_guard lock(_mutex);
 
-    promise_template<std::vector<std::byte>> stub_promise;
-    auto stub_future = stub_promise.getFuture();
-    stub_promise.setValue(std::move(stub_response));
-    return stub_future;
+    // Plain UDP whatever the client's own security mode: DTLS is a
+    // point-to-point handshake and has no multicast form.
+    coap_session_t* session =
+        coap_new_client_session(_coap_context, nullptr, &group_addr, COAP_PROTO_UDP);
+    if (!session) {
+        return fail("Failed to create multicast session to " + multicast_address);
+    }
+    coap_session_set_app_data(session, this);
+
+    coap_pdu_t* pdu =
+        coap_pdu_init(COAP_MESSAGE_NON, COAP_REQUEST_CODE_POST, coap_new_message_id(session),
+                      coap_session_max_pdu_size(session));
+    if (!pdu) {
+        coap_session_release(session);
+        return fail("Failed to create multicast PDU");
+    }
+
+    const auto token = generate_message_token();
+    // No block-wise transfer: Block1 needs a 2.31 Continue from one peer
+    // before the next block, which a group cannot give. A body that does not
+    // fit one PDU is refused here rather than truncated.
+    if (!coap_add_token(pdu, token.length(), reinterpret_cast<const uint8_t*>(token.c_str())) ||
+        !add_uri_path_options(pdu, resource_path) ||
+        !coap_add_data(pdu, payload.size(), reinterpret_cast<const uint8_t*>(payload.data()))) {
+        coap_delete_pdu(pdu);
+        coap_session_release(session);
+        return fail("Failed to build multicast request (payload of " +
+                    std::to_string(payload.size()) + " bytes may exceed one PDU)");
+    }
+
+    auto collector = std::make_shared<multicast_response_collector>(
+        token, timeout,
+        [promise](std::vector<std::vector<std::byte>> responses) {
+            promise->setValue(std::move(responses));
+        },
+        [promise](std::exception_ptr error) { promise->setException(std::move(error)); });
+    collector->session = session;
+    _multicast_requests[token] = collector;
+
+    if (coap_send(session, pdu) == COAP_INVALID_MID) {
+        _multicast_requests.erase(token);
+        coap_session_release(session);
+        return fail("Failed to send multicast request to " + multicast_address);
+    }
+
+    _logger.debug("Multicast request sent", {{"multicast_address", multicast_address},
+                                             {"multicast_port", std::to_string(multicast_port)},
+                                             {"resource_path", resource_path},
+                                             {"token", token},
+                                             {"timeout_ms", std::to_string(timeout.count())}});
+    return future;
 #else
-    // Stub implementation when libcoap is not available
-    _logger.warning("libcoap not available, using stub multicast implementation");
-
-    // Return empty response as stub (single response, not vector of responses)
-    std::vector<std::byte> stub_response;
-
-    // Simulate a mock response for testing
-    std::string mock_data = "mock_multicast_response";
-    stub_response.reserve(mock_data.size());
-    for (char c : mock_data) {
-        stub_response.push_back(static_cast<std::byte>(c));
-    }
-
-    _logger.debug("Returning stub multicast response",
-                  {{"response_size", std::to_string(stub_response.size())}});
-
-    promise_template<std::vector<std::byte>> stub_promise;
+    // Without libcoap there is no socket to send on: resolve with no
+    // responses, which is what a real send that nobody answers yields too.
+    _logger.warning("libcoap not available, multicast send is a no-op");
+    promise_template<std::vector<std::vector<std::byte>>> stub_promise;
     auto stub_future = stub_promise.getFuture();
-    stub_promise.setValue(std::move(stub_response));
+    stub_promise.setValue(std::vector<std::vector<std::byte>>{});
     return stub_future;
 #endif
 }
@@ -6618,8 +6700,13 @@ auto coap_client<Types>::discover_raft_nodes(const std::string& multicast_addres
 
             return discovered_nodes;
         })
-        .thenError([this](const std::exception& e) -> std::vector<std::string> {
-            _logger.error("Raft node discovery failed", {{"error", e.what()}});
+        // Takes std::exception_ptr: thenError() only accepts a callable
+        // invocable with an exception_ptr (or folly::exception_wrapper), so
+        // the `const std::exception&` this used to take did not compile the
+        // first time anything instantiated it.
+        .thenError([this](std::exception_ptr error) -> std::vector<std::string> {
+            _logger.error("Raft node discovery failed",
+                          {{"error", detail::describe_exception(error)}});
 
             // Record discovery failure metrics
             _metrics.add_dimension("discovery_type", "raft_nodes");
@@ -6627,7 +6714,7 @@ auto coap_client<Types>::discover_raft_nodes(const std::string& multicast_addres
             _metrics.add_one();
             _metrics.emit();
 
-            throw;
+            std::rethrow_exception(error);
         });
 }
 
@@ -6681,8 +6768,13 @@ auto coap_client<Types>::send_multicast_heartbeat(const std::string& multicast_a
 
             return responding_nodes;
         })
-        .thenError([this](const std::exception& e) -> std::vector<std::string> {
-            _logger.error("Multicast heartbeat failed", {{"error", e.what()}});
+        // Takes std::exception_ptr: thenError() only accepts a callable
+        // invocable with an exception_ptr (or folly::exception_wrapper), so
+        // the `const std::exception&` this used to take did not compile the
+        // first time anything instantiated it.
+        .thenError([this](std::exception_ptr error) -> std::vector<std::string> {
+            _logger.error("Multicast heartbeat failed",
+                          {{"error", detail::describe_exception(error)}});
 
             // Record heartbeat failure metrics
             _metrics.add_dimension("heartbeat_type", "multicast");
@@ -6690,7 +6782,7 @@ auto coap_client<Types>::send_multicast_heartbeat(const std::string& multicast_a
             _metrics.add_one();
             _metrics.emit();
 
-            throw;
+            std::rethrow_exception(error);
         });
 }
 
@@ -6989,6 +7081,12 @@ auto coap_client<Types>::finalize_multicast_response_collection(const std::strin
     collector->resolve_callback(std::move(all_responses));
 
     // Clean up the multicast request
+#ifdef LIBCOAP_AVAILABLE
+    if (collector->session) {
+        coap_session_release(collector->session);
+        collector->session = nullptr;
+    }
+#endif
     _multicast_requests.erase(it);
 
     // Record metrics
@@ -7000,39 +7098,55 @@ auto coap_client<Types>::finalize_multicast_response_collection(const std::strin
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::cleanup_expired_multicast_requests() -> void {
-    // Clean up expired multicast requests
-    std::lock_guard lock(_mutex);
-
-    auto now = std::chrono::steady_clock::now();
-
-    for (auto it = _multicast_requests.begin(); it != _multicast_requests.end();) {
-        auto& collector = it->second;
-
-        if (now - collector->start_time >= collector->timeout) {
-            // Timeout reached, finalize with whatever responses we have
-            _logger.warning("Multicast request timed out",
-                            {{"token", collector->token},
-                             {"responses_collected", std::to_string(collector->responses.size())},
-                             {"timeout_ms", std::to_string(collector->timeout.count())}});
-
-            // Extract response data from collected responses
-            std::vector<std::vector<std::byte>> all_responses;
-            for (const auto& response : collector->responses) {
-                all_responses.push_back(response.response_data);
-            }
-
-            // Resolve the future with partial responses
-            collector->resolve_callback(std::move(all_responses));
-
-            // Record timeout metrics
-            _metrics.add_dimension("multicast_collection", "timeout");
-            _metrics.add_one();
-            _metrics.emit();
-
-            it = _multicast_requests.erase(it);
-        } else {
-            ++it;
+    // Ends every multicast collection whose window has closed, resolving it
+    // with the responses gathered so far. Runs on every I/O-thread pass, so
+    // the common case -- nothing in flight -- has to stay cheap.
+    //
+    // Promises are fulfilled after _mutex is released: a continuation
+    // attached with thenValue() runs inline in the thread that fulfils the
+    // promise, and it must be free to call back into this client.
+    std::vector<std::shared_ptr<multicast_response_collector>> expired;
+    {
+        std::lock_guard lock(_mutex);
+        if (_multicast_requests.empty()) {
+            return;
         }
+
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = _multicast_requests.begin(); it != _multicast_requests.end();) {
+            auto& collector = it->second;
+            if (now - collector->start_time < collector->timeout) {
+                ++it;
+                continue;
+            }
+#ifdef LIBCOAP_AVAILABLE
+            if (collector->session) {
+                coap_session_release(collector->session);
+                collector->session = nullptr;
+            }
+#endif
+            expired.push_back(collector);
+            it = _multicast_requests.erase(it);
+        }
+    }
+
+    for (const auto& collector : expired) {
+        std::vector<std::vector<std::byte>> all_responses;
+        all_responses.reserve(collector->responses.size());
+        for (const auto& response : collector->responses) {
+            all_responses.push_back(response.response_data);
+        }
+
+        _logger.debug("Multicast response collection finished",
+                      {{"token", collector->token},
+                       {"responses_collected", std::to_string(all_responses.size())},
+                       {"timeout_ms", std::to_string(collector->timeout.count())}});
+
+        _metrics.add_dimension("multicast_collection", "completed");
+        _metrics.add_one();
+        _metrics.emit();
+
+        collector->resolve_callback(std::move(all_responses));
     }
 }
 
@@ -7197,12 +7311,77 @@ auto coap_client<Types>::handle_multicast_error(const std::string& token,
     }
 
     // Clean up the multicast request
+#ifdef LIBCOAP_AVAILABLE
+    if (collector->session) {
+        coap_session_release(collector->session);
+        collector->session = nullptr;
+    }
+#endif
     _multicast_requests.erase(it);
 
     // Record error metrics
     _metrics.add_dimension("multicast_operation", "error_handling");
     _metrics.add_one();
     _metrics.emit();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::collect_multicast_response(coap_session_t* session,
+                                                    const coap_pdu_t* response,
+                                                    const std::string& token) -> bool {
+#ifdef LIBCOAP_AVAILABLE
+    std::lock_guard lock(_mutex);
+    auto it = _multicast_requests.find(token);
+    if (it == _multicast_requests.end()) {
+        return false;
+    }
+
+    std::string sender = "unknown";
+    if (const coap_address_t* remote = coap_session_get_addr_remote(session)) {
+        std::array<unsigned char, INET6_ADDRSTRLEN + 8> buf{};
+        if (const auto len = coap_print_addr(remote, buf.data(), buf.size()); len > 0) {
+            sender.assign(reinterpret_cast<const char*>(buf.data()), len);
+        }
+    }
+
+    // Only successful answers are collected. A member that cannot serve the
+    // request may answer 4.xx/5.xx (RFC 7967 lets it stay silent instead);
+    // either way it is not a member that answered.
+    const auto code = coap_pdu_get_code(response);
+    if (COAP_RESPONSE_CLASS(code) != 2) {
+        _logger.debug("Ignoring error response to multicast request",
+                      {{"token", token},
+                       {"sender_address", sender},
+                       {"response_code", std::to_string(code)}});
+        return true;
+    }
+
+    std::size_t len = 0;
+    const std::uint8_t* data = nullptr;
+    std::size_t offset = 0;
+    std::size_t total = 0;
+    multicast_response collected;
+    collected.sender_address = sender;
+    collected.received_time = std::chrono::steady_clock::now();
+    if (coap_get_data_large(response, &len, &data, &offset, &total)) {
+        const auto* bytes = reinterpret_cast<const std::byte*>(data);
+        collected.response_data.assign(bytes, bytes + len);
+    }
+    it->second->responses.push_back(std::move(collected));
+
+    _logger.debug("Multicast response collected",
+                  {{"token", token},
+                   {"sender_address", sender},
+                   {"response_size", std::to_string(len)},
+                   {"total_responses", std::to_string(it->second->responses.size())}});
+    return true;
+#else
+    (void)session;
+    (void)response;
+    (void)token;
+    return false;
+#endif
 }
 
 // Multicast support implementation for CoAP server
