@@ -486,6 +486,7 @@
   - Convert 16 placeholder tests to actual implementation tests
   - _Requirements: 18.1, 18.2, 18.5_
   - _Reference: tests/wrapper_interop_utilities_unit_test.cpp (all tests)_
+  - _Implemented as `kythira::interop` in include/raft/future.hpp: `from_folly_future`, `to_folly_future`, `from_folly_try`, `to_folly_try`, plus the exception and void/Unit helpers re-exported from `detail`. The placeholder ideas for `optimize_move` and `interop::future_type`/`try_type` aliases were dropped: the conversions already move, and the aliases would only rename `kythira::Future`/`kythira::Try`._
 
 - [x] 51. Add integration tests for wrapper interactions
   - Test Promise-Future integration

@@ -5,8 +5,11 @@
 #include <boost/test/unit_test.hpp>
 
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <vector>
 
 #include <folly/futures/Future.h>
 #include <folly/Try.h>
@@ -18,32 +21,20 @@
 namespace {
 constexpr int test_value = 42;
 constexpr const char* test_string = "test_message";
-}
+constexpr std::size_t large_string_size = 1000;
+}  // namespace
 
 // ============================================================================
-// Type Conversion Utilities Unit Tests (NOT YET IMPLEMENTED)
+// Type Conversion Utilities Unit Tests
 // ============================================================================
 
 BOOST_AUTO_TEST_SUITE(type_conversion_tests)
 
-BOOST_AUTO_TEST_CASE(exception_wrapper_conversion_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement exception conversion utilities
-    // Expected functionality:
-
-    // // folly::exception_wrapper to std::exception_ptr
-    // auto folly_ex = folly::exception_wrapper(std::runtime_error(test_string));
-    // auto std_ex_ptr = kythira::interop::to_std_exception_ptr(folly_ex);
-    // BOOST_CHECK(std_ex_ptr != nullptr);
-    //
-    // // std::exception_ptr to folly::exception_wrapper
-    // auto ex_ptr = std::make_exception_ptr(std::runtime_error(test_string));
-    // auto folly_wrapper = kythira::interop::to_folly_exception_wrapper(ex_ptr);
-    // BOOST_CHECK(folly_wrapper.has_exception_ptr());
-
-    // Test current manual conversion
+// Requirement 18.1: exception information survives both directions
+BOOST_AUTO_TEST_CASE(exception_wrapper_conversion, *boost::unit_test::timeout(15)) {
     auto folly_ex = folly::exception_wrapper(std::runtime_error(test_string));
-    auto std_ex_ptr = folly_ex.to_exception_ptr();
-    BOOST_CHECK(std_ex_ptr != nullptr);
+    auto std_ex_ptr = kythira::interop::to_std_exception_ptr(folly_ex);
+    BOOST_REQUIRE(std_ex_ptr != nullptr);
 
     try {
         std::rethrow_exception(std_ex_ptr);
@@ -51,239 +42,211 @@ BOOST_AUTO_TEST_CASE(exception_wrapper_conversion_placeholder, *boost::unit_test
     } catch (const std::runtime_error& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), test_string);
     }
+
+    auto ex_ptr = std::make_exception_ptr(std::invalid_argument(test_string));
+    auto folly_wrapper = kythira::interop::to_folly_exception_wrapper(ex_ptr);
+    BOOST_REQUIRE(static_cast<bool>(folly_wrapper));
+    BOOST_CHECK(folly_wrapper.is_compatible_with<std::invalid_argument>());
+    BOOST_CHECK_EQUAL(std::string(folly_wrapper.get_exception<std::invalid_argument>()->what()),
+                      test_string);
+
+    // Empty in, empty out
+    BOOST_CHECK(kythira::interop::to_std_exception_ptr(folly::exception_wrapper{}) == nullptr);
+    BOOST_CHECK(!kythira::interop::to_folly_exception_wrapper(std::exception_ptr{}));
 }
 
-BOOST_AUTO_TEST_CASE(void_unit_conversion_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement void/Unit conversion utilities
-    // Expected functionality:
+// Requirement 18.2: void and folly::Unit are mapped onto each other
+BOOST_AUTO_TEST_CASE(void_unit_conversion, *boost::unit_test::timeout(15)) {
+    static_assert(std::is_same_v<kythira::interop::void_to_unit_t<void>, folly::Unit>);
+    static_assert(std::is_same_v<kythira::interop::void_to_unit_t<int>, int>);
+    static_assert(std::is_same_v<kythira::interop::unit_to_void_t<folly::Unit>, void>);
+    static_assert(std::is_same_v<kythira::interop::unit_to_void_t<int>, int>);
 
-    // // Test void to Unit conversion
-    // using converted_type = kythira::interop::void_to_unit<void>::type;
-    // static_assert(std::is_same_v<converted_type, folly::Unit>);
-    //
-    // // Test non-void type passthrough
-    // using passthrough_type = kythira::interop::void_to_unit<int>::type;
-    // static_assert(std::is_same_v<passthrough_type, int>);
+    static_assert(std::is_same_v<decltype(kythira::interop::from_folly_future(folly::makeFuture())),
+                                 kythira::Future<void>>);
+    static_assert(
+        std::is_same_v<decltype(kythira::interop::to_folly_future(kythira::Future<void>{})),
+                       folly::Future<folly::Unit>>);
+    static_assert(
+        std::is_same_v<decltype(kythira::interop::from_folly_try(folly::Try<folly::Unit>{})),
+                       kythira::Try<void>>);
+    static_assert(std::is_same_v<decltype(kythira::interop::to_folly_try(kythira::Try<void>{})),
+                                 folly::Try<folly::Unit>>);
 
-    // Test current manual handling
-    static_assert(std::is_same_v<folly::Unit, folly::Unit>);
-    static_assert(!std::is_same_v<void, folly::Unit>);
-
-    folly::Unit unit_value{};
-    (void)unit_value;  // Suppress unused variable warning
-    BOOST_CHECK(true);
+    // A successful void result and a folly::Unit result are the same thing
+    auto void_try = kythira::interop::from_folly_try(folly::Try<folly::Unit>(folly::Unit{}));
+    BOOST_CHECK(void_try.has_value());
+    auto unit_try = kythira::interop::to_folly_try(std::move(void_try));
+    BOOST_REQUIRE(unit_try.hasValue());
+    BOOST_CHECK(unit_try.value() == folly::Unit{});
 }
 
-BOOST_AUTO_TEST_CASE(move_semantics_optimization_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement move semantics optimization helpers
-    // Expected functionality:
+// Requirement 18.5: conversions move the held value instead of copying it
+BOOST_AUTO_TEST_CASE(conversions_preserve_move_semantics, *boost::unit_test::timeout(15)) {
+    // A heap-allocated string keeps its buffer only if every hop moves it
+    std::string large_string(large_string_size, 'x');
+    const auto* original_data = large_string.data();
 
-    // // Test that conversions preserve move semantics
-    // std::string large_string(1000, 'x');
-    // auto original_data = large_string.data();
-    //
-    // auto converted = kythira::interop::optimize_move(std::move(large_string));
-    // BOOST_CHECK_EQUAL(converted.data(), original_data); // Should be moved, not copied
+    kythira::Future<std::string> kythira_future(std::move(large_string));
+    auto folly_future = kythira::interop::to_folly_future(std::move(kythira_future));
+    auto round_tripped = kythira::interop::from_folly_future(std::move(folly_future));
+    auto result = round_tripped.get();
+    BOOST_CHECK_EQUAL(result.size(), large_string_size);
+    BOOST_CHECK_EQUAL(static_cast<const void*>(result.data()),
+                      static_cast<const void*>(original_data));
 
-    // Test current manual move handling
-    std::string large_string(1000, 'x');
-    auto* original_data = large_string.data();
-
-    auto moved_string = std::move(large_string);
-    BOOST_CHECK_EQUAL(moved_string.data(), original_data);
-    BOOST_CHECK(
-        large_string.empty());  // NOLINT(bugprone-use-after-move) - intentional move-semantics test
+    // Move-only values pass through Try conversions in both directions
+    auto owned = std::make_unique<int>(test_value);
+    auto* raw = owned.get();
+    folly::Try<std::unique_ptr<int>> folly_try(std::move(owned));
+    auto kythira_try = kythira::interop::from_folly_try(std::move(folly_try));
+    auto back = kythira::interop::to_folly_try(std::move(kythira_try));
+    BOOST_REQUIRE(back.hasValue());
+    BOOST_CHECK_EQUAL(back.value().get(), raw);
+    BOOST_CHECK_EQUAL(*back.value(), test_value);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
 
 // ============================================================================
-// Future Conversion Utilities Unit Tests (NOT YET IMPLEMENTED)
+// Future Conversion Utilities Unit Tests
 // ============================================================================
 
 BOOST_AUTO_TEST_SUITE(future_conversion_tests)
 
-BOOST_AUTO_TEST_CASE(folly_to_kythira_future_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement folly::Future to kythira::Future conversion
-    // Expected functionality:
-
-    // auto folly_future = folly::makeFuture(test_value);
-    // auto kythira_future = kythira::interop::from_folly_future(std::move(folly_future));
-    //
-    // BOOST_CHECK(kythira_future.isReady());
-    // BOOST_CHECK_EQUAL(kythira_future.get(), test_value);
-
-    // Test current manual conversion
-    auto folly_future = folly::makeFuture(test_value);
-    kythira::Future<int> kythira_future(std::move(folly_future));
+BOOST_AUTO_TEST_CASE(folly_to_kythira_future, *boost::unit_test::timeout(15)) {
+    auto kythira_future = kythira::interop::from_folly_future(folly::makeFuture(test_value));
+    static_assert(std::is_same_v<decltype(kythira_future), kythira::Future<int>>);
 
     BOOST_CHECK(kythira_future.isReady());
     BOOST_CHECK_EQUAL(kythira_future.get(), test_value);
+
+    // A pending folly::Future converts too and completes when its promise does
+    folly::Promise<int> promise;
+    auto pending = kythira::interop::from_folly_future(promise.getFuture());
+    BOOST_CHECK(!pending.isReady());
+    promise.setValue(test_value + 1);
+    BOOST_CHECK_EQUAL(pending.get(), test_value + 1);
 }
 
-BOOST_AUTO_TEST_CASE(kythira_to_folly_future_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement kythira::Future to folly::Future conversion
-    // Expected functionality:
-
-    // kythira::Future<int> kythira_future(test_value);
-    // auto folly_future = kythira::interop::to_folly_future(std::move(kythira_future));
-    //
-    // BOOST_CHECK(folly_future.isReady());
-    // BOOST_CHECK_EQUAL(std::move(folly_future).get(), test_value);
-
-    // Test current manual conversion
+BOOST_AUTO_TEST_CASE(kythira_to_folly_future, *boost::unit_test::timeout(15)) {
     kythira::Future<int> kythira_future(test_value);
-    auto folly_future = std::move(kythira_future).get_folly_future();
+    auto folly_future = kythira::interop::to_folly_future(std::move(kythira_future));
+    static_assert(std::is_same_v<decltype(folly_future), folly::Future<int>>);
 
     BOOST_CHECK(folly_future.isReady());
     BOOST_CHECK_EQUAL(std::move(folly_future).get(), test_value);
+
+    // Exceptions keep their type across the conversion
+    kythira::Future<int> failed{folly::exception_wrapper{std::runtime_error{test_string}}};
+    auto folly_failed = kythira::interop::to_folly_future(std::move(failed));
+    BOOST_CHECK_THROW(std::move(folly_failed).get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(void_future_conversion_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement void/Unit future conversion utilities
-    // Expected functionality:
-
-    // auto folly_unit_future = folly::makeFuture();
-    // auto kythira_void_future =
-    // kythira::interop::from_folly_future_unit(std::move(folly_unit_future));
-    //
-    // BOOST_CHECK(kythira_void_future.isReady());
-    // BOOST_CHECK_NO_THROW(kythira_void_future.get());
-
-    // Test current manual conversion
-    auto folly_unit_future = folly::makeFuture();
-    kythira::Future<void> kythira_void_future(std::move(folly_unit_future));
-
+BOOST_AUTO_TEST_CASE(void_future_conversion, *boost::unit_test::timeout(15)) {
+    auto kythira_void_future = kythira::interop::from_folly_future(folly::makeFuture());
     BOOST_CHECK(kythira_void_future.isReady());
     BOOST_CHECK_NO_THROW(kythira_void_future.get());
+
+    auto folly_unit_future = kythira::interop::to_folly_future(kythira::Future<void>{});
+    BOOST_CHECK(folly_unit_future.isReady());
+    BOOST_CHECK_NO_THROW(std::move(folly_unit_future).get());
+
+    auto failed = kythira::interop::from_folly_future(
+        folly::makeFuture<folly::Unit>(std::logic_error(test_string)));
+    BOOST_CHECK_THROW(failed.get(), std::logic_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
 
 // ============================================================================
-// Try Conversion Utilities Unit Tests (NOT YET IMPLEMENTED)
+// Try Conversion Utilities Unit Tests
 // ============================================================================
 
 BOOST_AUTO_TEST_SUITE(try_conversion_tests)
 
-BOOST_AUTO_TEST_CASE(folly_to_kythira_try_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement folly::Try to kythira::Try conversion
-    // Expected functionality:
-
-    // folly::Try<int> folly_try(test_value);
-    // auto kythira_try = kythira::interop::from_folly_try(std::move(folly_try));
-    //
-    // BOOST_CHECK(kythira_try.has_value());
-    // BOOST_CHECK_EQUAL(kythira_try.value(), test_value);
-
-    // Test current manual conversion
-    folly::Try<int> folly_try(test_value);
-    kythira::Try<int> kythira_try(std::move(folly_try));
+BOOST_AUTO_TEST_CASE(folly_to_kythira_try, *boost::unit_test::timeout(15)) {
+    auto kythira_try = kythira::interop::from_folly_try(folly::Try<int>(test_value));
+    static_assert(std::is_same_v<decltype(kythira_try), kythira::Try<int>>);
 
     BOOST_CHECK(kythira_try.has_value());
     BOOST_CHECK_EQUAL(kythira_try.value(), test_value);
+
+    auto void_try = kythira::interop::from_folly_try(folly::Try<folly::Unit>(folly::Unit{}));
+    BOOST_CHECK(void_try.has_value());
+    BOOST_CHECK_NO_THROW(void_try.value());
 }
 
-BOOST_AUTO_TEST_CASE(kythira_to_folly_try_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement kythira::Try to folly::Try conversion
-    // Expected functionality:
-
-    // kythira::Try<int> kythira_try(test_value);
-    // auto folly_try = kythira::interop::to_folly_try(std::move(kythira_try));
-    //
-    // BOOST_CHECK(folly_try.hasValue());
-    // BOOST_CHECK_EQUAL(folly_try.value(), test_value);
-
-    // Test current manual conversion
-    kythira::Try<int> kythira_try(test_value);
-    auto& folly_try = kythira_try.get_folly_try();
+BOOST_AUTO_TEST_CASE(kythira_to_folly_try, *boost::unit_test::timeout(15)) {
+    auto folly_try = kythira::interop::to_folly_try(kythira::Try<int>(test_value));
+    static_assert(std::is_same_v<decltype(folly_try), folly::Try<int>>);
 
     BOOST_CHECK(folly_try.hasValue());
     BOOST_CHECK_EQUAL(folly_try.value(), test_value);
+
+    auto unit_try = kythira::interop::to_folly_try(kythira::Try<void>{});
+    BOOST_CHECK(unit_try.hasValue());
 }
 
-BOOST_AUTO_TEST_CASE(try_exception_conversion_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement Try exception conversion utilities
-    // Expected functionality:
-
-    // auto ex = folly::exception_wrapper(std::runtime_error(test_string));
-    // folly::Try<int> folly_try(ex);
-    // auto kythira_try = kythira::interop::from_folly_try(std::move(folly_try));
-    //
-    // BOOST_CHECK(!kythira_try.has_value());
-    // BOOST_CHECK(kythira_try.has_exception());
-    //
-    // auto converted_back = kythira::interop::to_folly_try(std::move(kythira_try));
-    // BOOST_CHECK(converted_back.hasException());
-
-    // Test current manual conversion
-    auto ex = folly::exception_wrapper(std::runtime_error(test_string));
-    folly::Try<int> folly_try(ex);
-    kythira::Try<int> kythira_try(std::move(folly_try));
+BOOST_AUTO_TEST_CASE(try_exception_conversion, *boost::unit_test::timeout(15)) {
+    folly::Try<int> folly_try{folly::exception_wrapper{std::runtime_error{test_string}}};
+    auto kythira_try = kythira::interop::from_folly_try(std::move(folly_try));
 
     BOOST_CHECK(!kythira_try.has_value());
-    BOOST_CHECK(kythira_try.has_exception());
+    BOOST_REQUIRE(kythira_try.has_exception());
+    BOOST_CHECK_THROW((void)kythira_try.value(), std::runtime_error);
 
-    auto& converted_back = kythira_try.get_folly_try();
-    BOOST_CHECK(converted_back.hasException());
+    auto converted_back = kythira::interop::to_folly_try(std::move(kythira_try));
+    BOOST_REQUIRE(converted_back.hasException());
+    BOOST_CHECK(converted_back.exception().is_compatible_with<std::runtime_error>());
+    BOOST_CHECK_EQUAL(
+        std::string(converted_back.exception().get_exception<std::runtime_error>()->what()),
+        test_string);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
 
 // ============================================================================
-// Backward Compatibility Aliases Unit Tests (NOT YET IMPLEMENTED)
+// Mixed Folly / kythira Usage Unit Tests
 // ============================================================================
 
-BOOST_AUTO_TEST_SUITE(backward_compatibility_tests)
+BOOST_AUTO_TEST_SUITE(mixed_usage_tests)
 
-BOOST_AUTO_TEST_CASE(type_aliases_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement backward compatibility type aliases
-    // Expected functionality:
+// A value can make a full round trip without changing type or content
+BOOST_AUTO_TEST_CASE(round_trip_preserves_type_and_value, *boost::unit_test::timeout(15)) {
+    kythira::Future<std::string> original{std::string{test_string}};
+    auto round_tripped =
+        kythira::interop::from_folly_future(kythira::interop::to_folly_future(std::move(original)));
+    static_assert(std::is_same_v<decltype(round_tripped), kythira::Future<std::string>>);
+    BOOST_CHECK_EQUAL(round_tripped.get(), test_string);
 
-    // // Test that type aliases work correctly
-    // kythira::interop::future_type<int> future(test_value);
-    // kythira::interop::try_type<int> try_value(test_value);
-    //
-    // BOOST_CHECK(future.isReady());
-    // BOOST_CHECK(try_value.has_value());
-    //
-    // // Test that aliases point to correct types
-    // static_assert(std::is_same_v<kythira::interop::future_type<int>, kythira::Future<int>>);
-    // static_assert(std::is_same_v<kythira::interop::try_type<int>, kythira::Try<int>>);
-
-    // Test current types directly
-    kythira::Future<int> future(test_value);
-    kythira::Try<int> try_value(test_value);
-
-    BOOST_CHECK(future.isReady());
-    BOOST_CHECK(try_value.has_value());
+    auto try_round_tripped = kythira::interop::from_folly_try(
+        kythira::interop::to_folly_try(kythira::Try<std::string>(std::string(test_string))));
+    BOOST_CHECK_EQUAL(try_round_tripped.value(), test_string);
 }
 
-BOOST_AUTO_TEST_CASE(factory_collector_aliases_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Implement factory and collector type aliases
-    // Expected functionality:
+// Futures that started on the Folly side feed kythira's collectors and back
+BOOST_AUTO_TEST_CASE(folly_futures_through_kythira_collector, *boost::unit_test::timeout(15)) {
+    folly::CPUThreadPoolExecutor executor(2);
 
-    // // Test factory alias
-    // auto factory_future = kythira::interop::future_factory_type::makeFuture(test_value);
-    // BOOST_CHECK(factory_future.isReady());
-    // BOOST_CHECK_EQUAL(factory_future.get(), test_value);
-    //
-    // // Test collector alias
-    // std::vector<kythira::Future<int>> futures;
-    // futures.push_back(kythira::Future<int>(test_value));
-    // auto collected = kythira::interop::future_collector_type::collectAll(std::move(futures));
-    // BOOST_CHECK(collected.isReady());
-
-    // Test current collective operations directly
     std::vector<kythira::Future<int>> futures;
-    futures.push_back(kythira::Future<int>(test_value));
-    auto collected = kythira::wait_for_all(std::move(futures));
-    BOOST_CHECK(collected.isReady());
+    for (int i = 0; i < 3; ++i) {
+        futures.push_back(kythira::interop::from_folly_future(
+            folly::via(&executor, [i] { return test_value + i; })));
+    }
 
-    auto results = collected.get();
-    BOOST_CHECK_EQUAL(results.size(), 1);
-    BOOST_CHECK(results[0].has_value());
-    BOOST_CHECK_EQUAL(results[0].value(), test_value);
+    auto collected = kythira::FutureCollector::collectAll(std::move(futures));
+    auto folly_collected = kythira::interop::to_folly_future(std::move(collected));
+    auto results = std::move(folly_collected).get();
+
+    BOOST_REQUIRE_EQUAL(results.size(), 3U);
+    for (std::size_t i = 0; i < results.size(); ++i) {
+        BOOST_REQUIRE(results[i].has_value());
+        BOOST_CHECK_EQUAL(results[i].value(), test_value + static_cast<int>(i));
+        // Each element is a kythira::Try and converts to folly::Try on its own
+        auto folly_element = kythira::interop::to_folly_try(std::move(results[i]));
+        BOOST_CHECK_EQUAL(folly_element.value(), test_value + static_cast<int>(i));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -295,15 +258,11 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(concept_compliance_tests)
 
 BOOST_AUTO_TEST_CASE(current_concept_compliance_status, *boost::unit_test::timeout(15)) {
-    // Document current concept compliance status
-
-    // kythira::Try<int> should satisfy try_type concept (currently does)
     kythira::Try<int> try_val(test_value);
     BOOST_CHECK(try_val.has_value());
     BOOST_CHECK(!try_val.has_exception());
     BOOST_CHECK_EQUAL(try_val.value(), test_value);
 
-    // kythira::Future<int> should satisfy future concept (currently doesn't due to thenValue)
     kythira::Future<int> future_val(test_value);
     BOOST_CHECK(future_val.isReady());
     // Note: Don't call get() multiple times on the same future
@@ -313,24 +272,6 @@ BOOST_AUTO_TEST_CASE(current_concept_compliance_status, *boost::unit_test::timeo
     // Create a new future for wait test
     kythira::Future<int> future_for_wait(test_value);
     BOOST_CHECK(future_for_wait.wait(std::chrono::milliseconds{10}));
-
-    // Note: Future doesn't have thenValue method, only then method
-    // This is why the static assertions fail
-}
-
-BOOST_AUTO_TEST_CASE(missing_concept_implementations, *boost::unit_test::timeout(15)) {
-    // Document which concepts are not yet implemented
-
-    // semi_promise concept - not implemented
-    // promise concept - not implemented
-    // executor concept - not implemented
-    // keep_alive concept - not implemented
-    // future_factory concept - not implemented
-    // future_collector concept - not implemented
-    // future_continuation concept - not implemented
-    // future_transformable concept - not implemented
-
-    BOOST_CHECK(true);  // Placeholder to document missing implementations
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -341,19 +282,21 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(error_handling_tests)
 
-BOOST_AUTO_TEST_CASE(null_pointer_handling_placeholder, *boost::unit_test::timeout(15)) {
-    // TODO: Test null pointer handling in wrapper classes
-    // Expected functionality:
+BOOST_AUTO_TEST_CASE(null_pointer_handling, *boost::unit_test::timeout(15)) {
+    // A default Executor is an explicit "no executor" and refuses work
+    kythira::Executor default_executor;
+    BOOST_CHECK(!default_executor.is_valid());
+    BOOST_CHECK(default_executor.get() == nullptr);
+    BOOST_CHECK_THROW(default_executor.add([] {}), std::runtime_error);
 
-    // // Executor with null pointer
-    // kythira::Executor null_executor(nullptr);
-    // BOOST_CHECK(!null_executor.is_valid());
-    //
-    // // KeepAlive with null
-    // kythira::KeepAlive null_keep_alive;
-    // BOOST_CHECK(null_keep_alive.get() == nullptr);
+    // Wrapping a null folly::Executor* is a programming error, caught at construction
+    BOOST_CHECK_THROW(kythira::Executor{nullptr}, std::invalid_argument);
 
-    BOOST_CHECK(true);  // Placeholder
+    // A default KeepAlive holds nothing and refuses work
+    kythira::KeepAlive null_keep_alive;
+    BOOST_CHECK(!null_keep_alive.is_valid());
+    BOOST_CHECK(null_keep_alive.get() == nullptr);
+    BOOST_CHECK_THROW(null_keep_alive.add([] {}), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(exception_propagation_validation, *boost::unit_test::timeout(15)) {
