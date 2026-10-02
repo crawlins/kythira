@@ -2463,6 +2463,10 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_network_test(coap_multicast_send_test coap_multicast_send_test.cpp)
     set_tests_properties(coap_multicast_send_test PROPERTIES
         TIMEOUT 300 LABELS "coap;integration;libcoap;multicast")
+    # CRL revocation of DTLS peer certificates (Requirements 6.5, 11.3).
+    add_network_test(coap_certificate_revocation_test coap_certificate_revocation_test.cpp)
+    set_tests_properties(coap_certificate_revocation_test PROPERTIES
+        TIMEOUT 180 LABELS "coap;coap-security;libcoap")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 
 if(KYTHIRA_BUILD_COAP_TRANSPORT)

@@ -112,8 +112,9 @@ struct coap_client_config {
     std::string psk_identity;
     std::vector<std::byte> psk_key;
     bool verify_peer_cert{true};
-    std::vector<std::string> cipher_suites;  // Allowed cipher suites for DTLS
-    bool enable_session_resumption{true};    // Enable DTLS session resumption
+    std::vector<std::string> cipher_suites;      // Allowed cipher suites for DTLS
+    bool enable_session_resumption{true};        // Enable DTLS session resumption
+    certificate_revocation_config revocation{};  // CRL checking of the server's cert
 
     // Multicast configuration
     bool enable_multicast{false};
@@ -168,8 +169,9 @@ struct coap_server_config {
     std::string psk_identity;
     std::vector<std::byte> psk_key;
     bool verify_peer_cert{true};
-    std::vector<std::string> cipher_suites;  // Allowed cipher suites for DTLS
-    bool enable_session_resumption{true};    // Enable DTLS session resumption
+    std::vector<std::string> cipher_suites;      // Allowed cipher suites for DTLS
+    bool enable_session_resumption{true};        // Enable DTLS session resumption
+    certificate_revocation_config revocation{};  // CRL checking of client certs
 
     // Multicast configuration
     bool enable_multicast{false};
@@ -230,6 +232,7 @@ inline auto translate_legacy_fields(const LegacyConfig& cfg) -> coap_security_co
         creds.ca_file = cfg.ca_file;
         creds.verify_peer_cert = cfg.verify_peer_cert;
         creds.cipher_suites = cfg.cipher_suites;
+        creds.revocation = cfg.revocation;
         return coap_security_config{coap_auth_mode::dtls_pki, creds, std::nullopt};
     }
     if (legacy_psk) {
