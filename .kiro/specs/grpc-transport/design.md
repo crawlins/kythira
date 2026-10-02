@@ -488,7 +488,6 @@ struct grpc_client_config {
     bool keepalive_permit_without_calls{true};
 
     bool enable_tls{false};
-    bool enable_ssl_verification{true};
     std::string ca_cert_pem{};       // trusted root, PEM
     std::string client_cert_pem{};   // mutual TLS
     std::string client_key_pem{};    // mutual TLS

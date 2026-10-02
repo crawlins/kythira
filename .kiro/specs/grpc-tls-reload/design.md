@@ -151,7 +151,7 @@ public:
     (`GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY` or
     `GRPC_SSL_DONT_REQUEST_CLIENT_CERTIFICATE`).
   - `build_channel_credentials()` returns
-    `bridge.channel_credentials(enable_ssl_verification)`.
+    `bridge.channel_credentials()`; the server is always verified.
     `target_name_override` keeps working through the existing channel
     argument.
 - **`reload_tls_material()`:**

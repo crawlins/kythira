@@ -37,7 +37,7 @@ Implemented, on the design's Path B.
   what the provider watches when credentials are built. Such a reload throws
   like any other invalid material.
 - Client credentials always verify the server, as `SslCredentials` did.
-  `enable_ssl_verification` remains unused, as before this spec.
+  The unused `enable_ssl_verification` option has since been removed.
 - A TLS client with no material at all keeps `SslCredentials` with system
   roots, and its reload is a successful no-op.
 - The transports unsubscribe from a self-refreshing source in their
