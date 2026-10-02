@@ -107,15 +107,12 @@ startup-script          = {rendered startup_script_template}
 enable-guest-attributes = TRUE
 ```
 
-The **heartbeat** is a *guest attribute* (`kythira/last-heartbeat`), written by
-the running kythira process from inside the guest via a local, unauthenticated
-`PUT` to its own metadata server — no IAM permission on the guest's service
-account required. `provision_node` must set `enable-guest-attributes = TRUE` at
-creation (it does, unconditionally) or the guest write silently never appears.
-The quorum manager reads it back externally via `instances.getGuestAttributes`,
-which needs `compute.instances.getGuestAttributes` on the *manager's own*
-credentials — a permission it already holds alongside
-`compute.instances.get`/`.list`/`.insert`/`.delete`.
+There is no heartbeat guest attribute. `assess_quorum` reads instance status
+only, so a RUNNING instance whose kythira process has crashed still looks live
+to the manager. The Raft leader that owns the manager catches it instead: a
+voter that answers no RPC for `quorum_peer_dead_after` (default 30 s) is
+counted unreachable and replaced. `enable-guest-attributes = TRUE` is still set
+so on-instance agents can publish guest attributes; kythira writes none.
 
 ## MIG autohealing guard
 

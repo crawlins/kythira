@@ -239,6 +239,15 @@ instances are detected without relying on an application-level heartbeat.
 9. `assess_quorum` SHALL check the fault injection point
    `"raft/aws/ec2/describe_instance_status"` before calling
    `DescribeInstanceStatus`.
+10. `assess_quorum` reports infrastructure liveness only. A `running`
+    instance whose kythira process has crashed, hung or lost its network is
+    NOT live, but this manager cannot see that and SHALL NOT try: there is
+    no heartbeat tag, no `heartbeat_timeout` field and no instance-side
+    writer. The Raft leader that owns the manager counts such a node
+    unreachable once it has answered no RPC for `quorum_peer_dead_after`
+    (quorum-management Requirement 13 AC 7) and then replaces it through the
+    normal provision → remove → `decommission_node` flow. Requirement 12 AC 1
+    applies the same split to `aws_asg_quorum_manager`.
 
 ---
 
@@ -415,7 +424,9 @@ reflect actual EC2 state rather than application-level heartbeats.
    `DescribeInstanceStatus` using the same algorithm as
    `aws_ec2_quorum_manager::assess_quorum` (Requirement 6): the EC2 instance
    IDs are derived from the cluster vector via `ec2_mgr_t::node_id_to_ec2_id`,
-   and a node is live iff its `InstanceState.Name = running`.
+   and a node is live iff its `InstanceState.Name = running`. As with
+   Requirement 6 AC 10, a dead kythira process on a running instance is
+   caught by the Raft leader, not here.
 2. When the cluster vector is empty `assess_quorum` SHALL return a healthy
    result immediately without making any AWS API call.
 3. `quorum_status` and per-group health SHALL be computed using the same rules
@@ -655,7 +666,7 @@ AWS/LocalStack resource lifecycles, following these rules:
    | PG — partition strategy | `AWS_TEST_PG_PARTITION_NAME` | `CreatePlacementGroup(Strategy=partition, PartitionCount=2)` |
 
    Cluster nodes are in private subnets. The NAT Gateway provides egress for EC2
-   API and STS API calls (heartbeat, peer discovery, status tags). The S3 VPC
+   API and STS API calls (peer discovery, status tags). The S3 VPC
    gateway endpoint handles S3 traffic without passing through the NAT. The bastion
    is the sole public-facing access point for SSH. Placement groups are created on
    demand per test, not unconditionally.
@@ -712,13 +723,11 @@ AWS/LocalStack resource lifecycles, following these rules:
     REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
     INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
 
-    # Start kythira. kythira-node is responsible for writing kythira:last-heartbeat
-    # to EC2 tags at its configured heartbeat interval. No external heartbeat loop.
+    # Start kythira. Process liveness is judged by the Raft leader from
+    # replication traffic (quorum-management Req 13.7); nothing here writes
+    # a heartbeat.
     /usr/local/bin/kythira-node \
-        --node-id={NODE_ID} --port={NODE_PORT} --cluster={CLUSTER} \
-        --ec2-heartbeat-tag=kythira:last-heartbeat \
-        --ec2-instance-id="$INSTANCE_ID" \
-        --ec2-region="$REGION" &
+        --node-id={NODE_ID} --port={NODE_PORT} --cluster={CLUSTER} &
     KYTHIRA_PID=$!
 
     # Wait until the node is accepting connections on its port
@@ -742,14 +751,11 @@ AWS/LocalStack resource lifecycles, following these rules:
         --tags Key=kythira:status,Value=ready
     ```
 
-    The `kythira:last-heartbeat` tag is written exclusively by the kythira
-    process using its built-in EC2 heartbeat mechanism (configured via the
-    `--ec2-heartbeat-tag` / `--ec2-instance-id` / `--ec2-region` flags or
-    equivalent configuration). No shell-level heartbeat loop is used; the
-    quorum manager relies solely on the kythira-native heartbeat. When kythira
-    exits (crash, signal, OOM) or is unable to reach the EC2 API (network
-    quarantine), heartbeat updates stop and `assess_quorum` detects the failure
-    after `heartbeat_timeout`.
+    No heartbeat tag is written. When kythira exits (crash, signal, OOM),
+    hangs, or is cut off from its peers (network quarantine), it stops
+    answering the leader's AppendEntries; the leader counts it unreachable
+    after `quorum_peer_dead_after` (quorum-management Requirement 13 AC 7)
+    even though `assess_quorum` still sees a `running` instance.
 
     The `{S3_BUCKET}` and `{S3_PREFIX}` tokens are substituted by the fixture
     when constructing `user_data_template` (before passing it to
@@ -856,13 +862,14 @@ AWS/LocalStack resource lifecycles, following these rules:
     i. **`on_demand_provision_and_decommission`**: construct fresh manager with
        `spot_options = std::nullopt`; verify `InstanceLifecycle` absent/`"normal"`
        and `kythira:market == "on-demand"`; decommission and verify `terminated`.
-    j. **`heartbeat_timeout_triggers_replacement`**: per Requirement 19.6.
+    j. **`process_crash_triggers_replacement`**: per Requirement 19 AC 7.
     k. **`network_isolation_triggers_replacement`**: assign the quarantine SG
-       to one node (via `ModifyNetworkInterfaceAttribute`); wait for
-       `heartbeat_timeout` to elapse; call `assess_quorum` and verify the
-       node is `unreachable`; call `maintain_quorum`; verify the quarantined
-       instance is terminated and a replacement in the same AZ reaches
-       `kythira:status = ready`. This test exercises the network-issue
+       to one node (via `ModifyNetworkInterfaceAttribute`); verify
+       `assess_quorum` still reports it live (the instance is `running`);
+       wait for the cluster leader's `quorum_peer_dead_after` (30 s) to
+       elapse; verify the leader provisions a replacement in the same AZ,
+       which reaches `kythira:status = ready`, and that the quarantined
+       instance is removed from the configuration and terminated. This test exercises the network-issue
        failure mode: the EC2 instance is alive but completely isolated.
     l. **`host_termination_triggers_replacement`**: call `TerminateInstances`
        on one node directly (bypassing the quorum manager); call
@@ -1057,7 +1064,7 @@ requiring a separate orchestration loop that must understand AWS infrastructure.
    f. Return the `quorum_health` computed in step (b) — the state **before**
       remediation. This lets the caller log what triggered the repair. The
       updated health is visible on the next `maintain_quorum` call after new
-      nodes have started and written their first heartbeats.
+      nodes have started.
 
 3. `maintain_quorum` SHALL honor the node topology declared in
    `config.topology`: it NEVER provisions a replacement in a group other than
@@ -1075,25 +1082,31 @@ requiring a separate orchestration loop that must understand AWS infrastructure.
    SHALL always return the pre-remediation `quorum_health` when `assess_quorum`
    succeeded, regardless of how many provision calls failed. The caller detects
    persistent failures on the next `maintain_quorum` or `assess_quorum` call
-   when the newly launched instances fail to produce heartbeats.
+   when the newly launched instances fail to reach `running`.
 
 6. WHEN `assess_quorum` returns an exceptional Future THEN `maintain_quorum`
    SHALL propagate that exception immediately. No decommission or provision
    calls are made.
 
-6. The integration test suite SHALL include a test
-   `heartbeat_timeout_triggers_replacement` (real-AWS only) that:
+7. The integration test suite SHALL include a test
+   `process_crash_triggers_replacement` (real-AWS only) that checks a
+   crashed kythira process on a `running` instance is not live:
    a. Provisions a 3-node cluster in AZ1 using the default
-      `RealEc2Fixture` (spot, sequential with readiness wait).
+      `RealEc2Fixture` (spot, sequential with readiness wait), whose Raft
+      leader owns an `aws_ec2_quorum_manager` with `quorum_peer_dead_after`
+      set to 30 s.
    b. SSHes through the bastion host to one cluster node and kills the kythira
-      process (`kill $(pgrep kythira-node)`).
-   c. Waits for `heartbeat_timeout` (configured to 30 s for this test).
-   d. Calls `assess_quorum` and verifies the dead node appears in
-      `unreachable_nodes`.
-   e. Calls `maintain_quorum` and verifies:
-      - The dead instance is terminated.
+      process (`kill $(pgrep kythira-node)`), leaving the instance running.
+      `StopInstances` or `TerminateInstances` SHALL NOT be used here; they
+      test the infrastructure path (case l), not this one.
+   c. Verifies `assess_quorum` still reports the node live (instance
+      `running`): the manager alone cannot see a dead process (Requirement 6
+      AC 10).
+   d. Waits for `quorum_peer_dead_after` and verifies, through the leader:
       - A new instance is provisioned in AZ1 (same group as the dead node).
       - The new instance reaches `kythira:status = ready` (120 s timeout).
+      - The dead node leaves the Raft configuration and its instance is
+        terminated.
    f. Calls `GetConsoleOutput` on both the dead instance (before termination)
       and the new instance (after ready) and includes the output in the test
       log for post-mortem analysis.

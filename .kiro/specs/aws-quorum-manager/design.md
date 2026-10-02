@@ -2,6 +2,15 @@
 
 ## Overview
 
+> **Process liveness (decided 2026-10-02).** A running instance whose
+> kythira process has crashed, hung or been isolated is NOT live. Neither
+> manager detects that: there is no `kythira:last-heartbeat` tag, no
+> `heartbeat_timeout` field and no `--ec2-heartbeat-tag` flag. The Raft leader
+> that owns the manager counts a voter unreachable once it has answered no
+> RPC for `quorum_peer_dead_after` (quorum-management Requirement 13 AC 7),
+> and `assess_quorum` reports EC2 state only (requirements.md Requirement 6
+> AC 10). Heartbeat-tag text below that predates this is superseded.
+
 This document describes the design for two AWS-based `quorum_manager`
 implementations. Both satisfy the `quorum_manager<Q, NodeId, Address, GroupId>`
 concept from `include/raft/quorum_management.hpp` with `GroupId = std::string`
@@ -53,15 +62,11 @@ kythira:group               = {az_name}              ; e.g. "us-east-1a"
 kythira:managed-by          = kythira-ec2-quorum-manager
 kythira:placement-strategy  = {strategy}             ; "none", "cluster", "spread", or "partition"
 kythira:market              = {market}               ; "on-demand" or "spot"
-kythira:last-heartbeat      = {unix_timestamp}       ; seconds since epoch; written by kythira process, not by provision_node
 ```
 
-The first seven tags are written by `provision_node` via `CreateTags`. The
-`kythira:last-heartbeat` tag is written and updated by the kythira node
-process itself (via the heartbeat loop in user_data or a future built-in
-mechanism) and is read by `assess_quorum` and `maintain_quorum`. Its absence
-on a recently-launched instance is normal; its absence on an older instance
-indicates the kythira process has not started or has crashed.
+These tags are written by `provision_node`. There is no heartbeat tag:
+whether the kythira process on a `running` instance is alive is the Raft
+leader's call (see the note under Overview).
 
 These tags make both managers stateless across restarts: the mapping from
 kythira `NodeId` to EC2 instance ID is reconstructed from tag filters on every
@@ -656,17 +661,18 @@ capacity, preventing the ASG from automatically launching a replacement. Only
 the quorum manager (driven by the Raft leader's assessment loop) decides when
 to provision a replacement and in which group to place it.
 
-### Property 5: Application-level health detection via heartbeat timeout
-**Validates: Requirements 6.3, 12.3, 19.2**
+### Property 5: A dead kythira process on a running instance is replaced
+**Validates: Requirements 6.10, 19.7; quorum-management Requirement 13.7**
 
-A kythira node running on an EC2 instance in `running` state that has crashed
-(OOM, segfault, SIGKILL) stops updating `kythira:last-heartbeat`. After
-`heartbeat_timeout` seconds without an update, `assess_quorum` classifies the
-node as unreachable regardless of the EC2 instance state. This gives the quorum
-manager accurate application-level health visibility without requiring a direct
-network path from the quorum manager to the instance (which may not exist for
-private-subnet deployments). The subsequent `maintain_quorum` call then
-terminates the stale instance and provisions a replacement.
+A kythira node on an EC2 instance in `running` state that has crashed (OOM,
+segfault, SIGKILL), hung, or lost its network stops answering the leader's
+AppendEntries. `assess_quorum` still reports it live, because EC2 state is
+all it reads. After `quorum_peer_dead_after` without a response the leader
+counts it unreachable anyway, provisions a replacement in the same AZ,
+removes the dead node from the configuration and calls `decommission_node`,
+which terminates the instance. No path from the quorum manager to the
+instance and no instance-side IAM grant are needed: the evidence is the Raft
+traffic the leader already has.
 
 ### Property 6: Spot interruption is detected without special handling
 **Validates: Requirements 18.3**
