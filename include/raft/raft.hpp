@@ -1024,6 +1024,14 @@ private:
     // it reaches _config.quorum_heartbeat_failure_threshold().
     std::unordered_map<node_id_type, std::size_t> _heartbeat_failure_counts{};
 
+    // When each peer last answered an RPC in this leadership term (any
+    // response, success or not, proves the kythira process is running).
+    // Seeded to "now" for every voter when leadership starts and for a voter
+    // first seen later, so no peer is judged before a full
+    // quorum_peer_dead_after window has passed under this leader.  Read by
+    // apply_peer_liveness(); leader-local, cleared on step-down.
+    std::unordered_map<node_id_type, std::chrono::steady_clock::time_point> _peer_last_contact{};
+
     // Number of provision_node slots per placement group that are either in
     // flight or have returned a node that has not yet joined the configuration
     // (Req 14.3).  Incremented before provision_node is called; decremented
@@ -1343,6 +1351,17 @@ private:
     // Must be called with _mutex held.
     auto note_peer_rpc_failure(const node_id_type& peer) -> void;
     auto note_peer_rpc_success(const node_id_type& peer) -> void;
+    // Records that `peer` answered an RPC, whatever the answer.
+    // Must be called with _mutex held.
+    auto note_peer_contact(const node_id_type& peer) -> void;
+
+    // Process-level liveness (quorum-management Req 13.7): moves every voter
+    // the quorum manager reports live but that has not answered an RPC for
+    // quorum_peer_dead_after into the unreachable lists, and worsens the
+    // status to match.  The quorum manager sees only VM or container state,
+    // so without this a crashed or hung kythira process on a running
+    // instance is never replaced.  Must be called with _mutex held.
+    auto apply_peer_liveness(quorum_health<node_id_type, placement_group_id_type>& health) -> void;
 
     // The voter `id` was provisioned to replace, if `id` has a pending
     // replacement record whose `replacing` node is still a voter in the same
@@ -1685,6 +1704,7 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
         if (_state != kythira::server_state::leader || _quorum_epoch != epoch) {
             return;
         }
+        apply_peer_liveness(health);
     }
 
     // Req 14.2 — never provision on quorum loss
@@ -2030,6 +2050,78 @@ auto node<Types>::note_peer_rpc_failure(const node_id_type& peer) -> void {
 template<raft_types Types>
 auto node<Types>::note_peer_rpc_success(const node_id_type& peer) -> void {
     _heartbeat_failure_counts.erase(peer);
+    note_peer_contact(peer);
+}
+
+template<raft_types Types> auto node<Types>::note_peer_contact(const node_id_type& peer) -> void {
+    if (_quorum_check_active) {
+        _peer_last_contact[peer] = std::chrono::steady_clock::now();
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::apply_peer_liveness(quorum_health<node_id_type, placement_group_id_type>& health)
+    -> void {
+    const auto window = _config.quorum_peer_dead_after();
+    if (window <= std::chrono::milliseconds{0}) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    bool demoted = false;
+    for (const auto& nid : _configuration.nodes()) {
+        if (nid == _node_id) {
+            continue;  // the leader is evidently running
+        }
+        // A voter with no record yet joined after this leader took over: its
+        // window starts now.
+        auto [it, inserted] = _peer_last_contact.try_emplace(nid, now);
+        if (inserted || now - it->second < window) {
+            continue;
+        }
+        if (std::find(health.unreachable_nodes.begin(), health.unreachable_nodes.end(), nid) !=
+            health.unreachable_nodes.end()) {
+            continue;  // the quorum manager already counts it unreachable
+        }
+        _logger.warning(
+            "Voter has not answered within quorum_peer_dead_after; counting it "
+            "unreachable although its infrastructure reports running",
+            {{"node_id", node_id_to_string(_node_id)},
+             {"peer", node_id_to_string(nid)},
+             {"silent_ms",
+              std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second)
+                                 .count())}});
+        health.unreachable_nodes.push_back(nid);
+        if (health.live_node_count > 0) {
+            --health.live_node_count;
+        }
+        const auto group = placement_of(nid);
+        auto git = std::find_if(health.groups.begin(), health.groups.end(),
+                                [&](const auto& g) { return g.group_id == group; });
+        if (git != health.groups.end()) {
+            git->unreachable_nodes.push_back(nid);
+            if (git->live_count > 0) {
+                --git->live_count;
+            }
+        }
+        demoted = true;
+    }
+    if (!demoted) {
+        return;
+    }
+    // Only ever worsen the manager's status: at least one voter is now down,
+    // so the cluster is degraded at best.
+    const auto live = health.live_node_count;
+    const auto total = health.total_node_count;
+    const auto majority = total / 2 + 1;
+    auto status = quorum_status::degraded;
+    if (live < majority) {
+        status = quorum_status::lost;
+    } else if (live == majority) {
+        status = quorum_status::critical;
+    }
+    if (static_cast<int>(status) > static_cast<int>(health.status)) {
+        health.status = status;
+    }
 }
 
 // start_quorum_loop — called from become_leader() while _mutex is held.
@@ -2043,6 +2135,13 @@ template<raft_types Types> auto node<Types>::start_quorum_loop() -> void {
     _quorum_immediate_check = true;
     ++_quorum_epoch;
     _last_quorum_check = std::chrono::steady_clock::time_point{};
+    // Req 13.7 — every voter gets a full quorum_peer_dead_after window under
+    // this leader before it can be judged dead.
+    _peer_last_contact.clear();
+    const auto now = std::chrono::steady_clock::now();
+    for (const auto& nid : _configuration.nodes()) {
+        _peer_last_contact[nid] = now;
+    }
 }
 
 // stop_quorum_loop — called from become_follower/candidate while _mutex is held.
@@ -2056,6 +2155,7 @@ template<raft_types Types> auto node<Types>::stop_quorum_loop() -> void {
     _pending_provisions.clear();
     _pending_replacements.clear();
     _heartbeat_failure_counts.clear();
+    _peer_last_contact.clear();
 }
 
 template<raft_types Types>
@@ -5696,6 +5796,9 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
             if (_state != kythira::server_state::leader || response.term() != _current_term) {
                 return;
             }
+
+            // A rejected heartbeat (log mismatch) still proves the process is up.
+            note_peer_contact(target);
 
             if (response.success()) {
                 // Heartbeat succeeded - remove from unresponsive set and reset failure counter

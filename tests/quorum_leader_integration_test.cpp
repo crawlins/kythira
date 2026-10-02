@@ -401,6 +401,15 @@ public:
     // Permanent failure: the node stops, its ticker stops, the network drops
     // every message to and from it, and the mock reports it unreachable.
     auto kill(std::uint64_t id) -> void {
+        kill_process(id);
+        std::lock_guard lock(state->mu);
+        state->unreachable.insert(id);
+    }
+
+    // The kythira process dies but its VM keeps running: everything kill()
+    // does except that the mock, like a cloud quorum manager reading
+    // instance state, still reports the node live.
+    auto kill_process(std::uint64_t id) -> void {
         if (auto it = _ticker_stops.find(id); it != _ticker_stops.end()) {
             it->second->store(true);
         }
@@ -411,10 +420,6 @@ public:
             }
         }
         _killed.insert(id);
-        {
-            std::lock_guard lock(state->mu);
-            state->unreachable.insert(id);
-        }
         _nodes.at(id)->stop();
     }
 
@@ -668,6 +673,94 @@ BOOST_AUTO_TEST_CASE(self_heals_failed_nodes_repeatedly,
     BOOST_CHECK_EQUAL(c.state->provision_count(), 2u);
 }
 
+// Req 13.7 / 16.11 — a voter whose kythira process has died while its VM
+// keeps running is not live: once it has been silent for
+// quorum_peer_dead_after the leader replaces it, removes it and decommissions
+// it, although the quorum manager never reports it unreachable.
+BOOST_AUTO_TEST_CASE(crashed_process_on_running_vm_is_replaced,
+                     *boost::unit_test::timeout(scaled_timeout(30))) {
+    auto cfg = fast_config();
+    cfg._quorum_peer_dead_after = std::chrono::milliseconds{300};
+    test_cluster c{cfg};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 3}}};
+        c.state->provision_ids = {4};
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "g"}, {2, "g"}, {3, "g"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    c.kill_process(3);
+    BOOST_REQUIRE(wait_until([&] { return c.state->provision_count() >= 1; }));
+    {
+        std::lock_guard lock(c.state->mu);
+        BOOST_REQUIRE_EQUAL(c.state->provisions.size(), 1u);
+        BOOST_CHECK_EQUAL(c.state->provisions[0].first, "g");
+        BOOST_CHECK(c.state->provisions[0].second == std::optional<std::uint64_t>{3});
+        // The quorum manager itself never saw the failure.
+        BOOST_CHECK(c.state->unreachable.empty());
+    }
+
+    c.add_node(4, {4});
+    c.start_ticker(4);
+    c.node(1).add_learner(4).detach();
+    BOOST_REQUIRE(
+        wait_until([&] { return !c.state->decommissioned().empty(); }, scaled_deadline(10000)));
+    BOOST_CHECK_EQUAL(c.state->decommissioned().front(), 3u);
+    BOOST_CHECK(c.node(1).is_leader());
+    BOOST_CHECK_EQUAL(c.node(1).get_cluster_size(), 3u);
+}
+
+// Req 13.7 — a voter silent for less than quorum_peer_dead_after is still
+// live, so a process restart or a long pause does not cost an instance.
+BOOST_AUTO_TEST_CASE(silent_peer_inside_window_is_not_replaced,
+                     *boost::unit_test::timeout(scaled_timeout(20))) {
+    auto cfg = fast_config();
+    cfg._quorum_peer_dead_after = std::chrono::minutes{10};
+    test_cluster c{cfg};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 3}}};
+        c.state->provision_ids = {4};
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "g"}, {2, "g"}, {3, "g"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    c.kill_process(3);
+    auto before = c.state->assess_count(1);
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) >= before + 20; }));
+    BOOST_CHECK_EQUAL(c.state->provision_count(), 0u);
+}
+
+// Req 13.7 — quorum_peer_dead_after = 0 turns the rule off: the quorum
+// manager's infrastructure view is the only liveness signal.
+BOOST_AUTO_TEST_CASE(zero_peer_dead_after_disables_process_liveness,
+                     *boost::unit_test::timeout(scaled_timeout(20))) {
+    auto cfg = fast_config();
+    cfg._quorum_peer_dead_after = std::chrono::milliseconds{0};
+    test_cluster c{cfg};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 3}}};
+        c.state->provision_ids = {4};
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "g"}, {2, "g"}, {3, "g"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    c.kill_process(3);
+    std::this_thread::sleep_for(std::chrono::milliseconds{1000});
+    BOOST_CHECK_EQUAL(c.state->provision_count(), 0u);
+}
+
 // Req 16.7 / 15.4 — a decommission failure is logged only; the removal of
 // the failed node from the configuration stands.
 BOOST_AUTO_TEST_CASE(decommission_failure_keeps_removal,
@@ -769,9 +862,12 @@ BOOST_AUTO_TEST_CASE(quorum_config_roundtrip, *boost::unit_test::timeout(5)) {
     kythira::raft_configuration cfg;
     cfg._quorum_check_interval = std::chrono::milliseconds{42000};
     cfg._quorum_heartbeat_failure_threshold = 5;
+    cfg._quorum_peer_dead_after = std::chrono::milliseconds{12000};
 
     BOOST_CHECK_EQUAL(cfg.quorum_check_interval().count(), 42000);
     BOOST_CHECK_EQUAL(cfg.quorum_heartbeat_failure_threshold(), 5u);
+    BOOST_CHECK_EQUAL(cfg.quorum_peer_dead_after().count(), 12000);
+    BOOST_CHECK_EQUAL(kythira::raft_configuration{}.quorum_peer_dead_after().count(), 30000);
 
     auto errors = cfg.get_validation_errors();
     BOOST_CHECK(errors.empty());
@@ -811,6 +907,21 @@ BOOST_AUTO_TEST_CASE(quorum_config_validation_rejects_zero_threshold,
         }
     }
     BOOST_CHECK(found);
+}
+
+// Req 11.5 — a negative quorum_peer_dead_after is rejected; zero is allowed
+// (it disables the rule).
+BOOST_AUTO_TEST_CASE(quorum_config_validation_rejects_negative_peer_dead_after,
+                     *boost::unit_test::timeout(5)) {
+    kythira::raft_configuration cfg;
+    cfg._quorum_peer_dead_after = std::chrono::milliseconds{0};
+    BOOST_CHECK(cfg.get_validation_errors().empty());
+
+    cfg._quorum_peer_dead_after = std::chrono::milliseconds{-1};
+    auto errors = cfg.get_validation_errors();
+    BOOST_CHECK(std::any_of(errors.begin(), errors.end(), [](const std::string& e) {
+        return e.find("quorum_peer_dead_after") != std::string::npos;
+    }));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

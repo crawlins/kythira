@@ -158,6 +158,13 @@ which I can use to decide what remediation action to take.
 5. The implementation decides how to probe liveness (health-check endpoint,
    cloud API describe-instance, ICMP ping, etc.); the concept does not constrain
    the mechanism.
+6. A node counts as live only when its kythira process is running and
+   reachable; a running VM or container whose kythira process has crashed,
+   hung or been isolated is NOT live. A quorum manager that can only see
+   infrastructure state (the cloud managers: instance `running`, not the
+   process) reports such a node live; the Raft leader closes that gap with
+   its own RPC evidence (Requirement 13 AC 7), so the end-to-end answer is
+   still "not live".
 
 ### Requirement 5: `provision_node` Semantics
 
@@ -323,9 +330,13 @@ process.
    - `quorum_heartbeat_failure_threshold` (`std::size_t`, default `3`): the
      number of consecutive heartbeat failures to a single peer that triggers an
      immediate out-of-cycle `assess_quorum` call.
-5. Both new fields SHALL be validated by `raft_configuration::validate()`:
+   - `quorum_peer_dead_after` (`std::chrono::milliseconds`, default `30 s`):
+     how long a voter may go without answering any RPC before the leader
+     counts it unreachable regardless of what `assess_quorum` reports
+     (Requirement 13 AC 7). `0` disables that rule.
+5. These fields SHALL be validated by `raft_configuration::validate()`:
    `quorum_check_interval` must be positive; `quorum_heartbeat_failure_threshold`
-   must be ≥ 1.
+   must be ≥ 1; `quorum_peer_dead_after` must not be negative.
 6. All existing tests SHALL pass without modification after these additions.
 
 ### Requirement 12: Initial Placement Group Assignment
@@ -385,6 +396,34 @@ automatically while I hold leadership.
 6. WHEN `quorum_manager_type` is `no_op_quorum_manager` THEN `assess_quorum`
    always resolves to `quorum_status::healthy`.  The assessment loop SHALL still
    run (it is not suppressed) but no remediation actions will be triggered.
+   (AC 7 does not apply: with `no_op_quorum_manager` no remediation follows
+   from any status, so the overlay changes nothing observable.)
+7. **Process-level liveness.** The leader SHALL record, per voter, the time
+   it last received any response (success or not) to an AppendEntries or
+   heartbeat RPC in its current term. WHEN `assess_quorum` resolves and
+   `quorum_peer_dead_after` is non-zero THEN, before acting on the result,
+   the leader SHALL treat as unreachable every voter other than itself whose
+   last response is older than `quorum_peer_dead_after` and that the result
+   reports live:
+   a. add it to the global and its group's `unreachable_nodes`, and decrement
+      `live_node_count` and its group's `live_count`;
+   b. recompute `status` from the adjusted live and total counts (`lost`
+      below a majority, `critical` at exactly a majority, else `degraded`),
+      keeping the manager's status if that is already more severe.
+   Every voter's window SHALL start when this leader's term starts (or when
+   the voter first appears in the configuration under this leader), so a new
+   leader never judges a peer it has not had a full window to hear from.
+   The window is deliberately much longer than the
+   `quorum_heartbeat_failure_threshold` trigger, so a process restart or a
+   pause shorter than the window does not cost an instance; it SHALL be
+   leader-local state discarded on step-down.
+
+   **Rationale:** the cloud managers read instance state (`running`), not
+   the kythira process. A cloud-side heartbeat (a tag or guest attribute the
+   node writes on a timer) would need a writer, extra IAM and API quota per
+   provider; the leader already has proof of life for every voter from Raft
+   replication traffic, which covers crash, hang and network isolation on
+   every provider at once.
 
 ### Requirement 14: Leader-Driven Node Provisioning
 
@@ -497,6 +536,11 @@ caught before they reach production.
    live nodes when configured with a mock quorum manager that can provision
    nodes, without any operator intervention.
 10. All existing tests SHALL pass without modification.
+11. Unit tests SHALL verify Requirement 13 AC 7 with a quorum manager that
+    keeps reporting the node live: a voter whose process stops answering is
+    replaced, removed and decommissioned after `quorum_peer_dead_after`; a
+    voter silent for less than the window is not replaced; and
+    `quorum_peer_dead_after = 0` disables the rule.
 
 ### Requirement 18: `docker_quorum_manager` Example Implementation
 

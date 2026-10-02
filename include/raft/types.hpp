@@ -748,6 +748,7 @@ concept raft_configuration_type = requires(const T& config) {
     { config.get_validation_errors() } -> std::same_as<std::vector<std::string>>;
     { config.quorum_check_interval() } -> std::same_as<std::chrono::milliseconds>;
     { config.quorum_heartbeat_failure_threshold() } -> std::same_as<std::size_t>;
+    { config.quorum_peer_dead_after() } -> std::same_as<std::chrono::milliseconds>;
 };
 
 /// @brief Policy applied when the state machine's `apply()` call throws.
@@ -820,6 +821,12 @@ struct raft_configuration {
     /// Consecutive heartbeat failures to a single peer that triggers an immediate
     /// out-of-cycle `assess_quorum` call.
     std::size_t _quorum_heartbeat_failure_threshold{3};
+    /// How long a voter may go without a successful RPC response before the
+    /// leader counts it unreachable even though the quorum manager reports its
+    /// VM or container as running: a crashed, hung or isolated kythira process
+    /// is not live. Zero disables the rule, leaving the quorum manager's
+    /// infrastructure view as the only signal.
+    std::chrono::milliseconds _quorum_peer_dead_after{30000};
 
     // ── Peer-to-peer catch-up (.kiro/specs/peer2peer-log-replication/) ───────────
     /// Cadence at which a node advertises its own progress digest via
@@ -854,6 +861,9 @@ struct raft_configuration {
     }
     [[nodiscard]] auto quorum_heartbeat_failure_threshold() const -> std::size_t {
         return _quorum_heartbeat_failure_threshold;
+    }
+    [[nodiscard]] auto quorum_peer_dead_after() const -> std::chrono::milliseconds {
+        return _quorum_peer_dead_after;
     }
     [[nodiscard]] auto progress_gossip_interval() const -> std::chrono::milliseconds {
         return _progress_gossip_interval;
@@ -1008,6 +1018,10 @@ struct raft_configuration {
 
         if (_quorum_heartbeat_failure_threshold < 1) {
             errors.emplace_back("quorum_heartbeat_failure_threshold must be >= 1");
+        }
+
+        if (_quorum_peer_dead_after < std::chrono::milliseconds{0}) {
+            errors.emplace_back("quorum_peer_dead_after must not be negative");
         }
 
         return errors;
