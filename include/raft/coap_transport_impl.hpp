@@ -384,6 +384,16 @@ coap_client<Types>::~coap_client() {
         _io_thread.join();
     }
 
+    {
+        std::lock_guard lock(_mutex);
+#ifdef LIBCOAP_AVAILABLE
+        for (auto& [endpoint, session] : _dtls_handshake_sessions) {
+            coap_session_release(session);
+        }
+#endif
+        _dtls_handshake_sessions.clear();
+    }
+
     // Cleanup libcoap context
 #ifdef LIBCOAP_AVAILABLE
     if (_coap_context) {
@@ -1377,39 +1387,68 @@ auto coap_client<Types>::disable_auto_reload() -> void {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::initiate_dtls_handshake(const std::string& endpoint) -> bool {
-    // Stub implementation for DTLS handshake initiation
-    // In a real implementation, this would:
-    // 1. Create a CoAP session to the endpoint
-    // 2. Initiate the DTLS handshake process
-    // 3. Wait for handshake to begin
-
+    // Starts a DTLS handshake with `endpoint` without waiting for it.
+    // libcoap sends the ClientHello as soon as a COAP_PROTO_DTLS session
+    // exists, and _io_thread drives the rest of the exchange from there;
+    // complete_dtls_handshake() waits for the outcome. The session is kept
+    // in _dtls_handshake_sessions so the second call can find it.
     _logger.debug(
         "Initiating DTLS handshake",
         {{"endpoint", endpoint}, {"dtls_enabled", _config.enable_dtls ? "true" : "false"}});
 
-#ifdef LIBCOAP_AVAILABLE
     if (!_config.enable_dtls) {
         _logger.warning("DTLS not enabled, skipping handshake initiation");
         return false;
     }
 
-    // In a real implementation with libcoap, this would:
-    // - Parse the endpoint URI
-    // - Create a new CoAP session with DTLS enabled
-    // - Trigger the DTLS handshake initiation
-    // For now, return success for mock handshakes
-
-    _logger.info("DTLS handshake initiated successfully (stub)", {{"endpoint", endpoint}});
-
-    return true;
-#else
-    // Stub implementation when libcoap is not available
-    if (!_config.enable_dtls) {
+#ifdef LIBCOAP_AVAILABLE
+    if (endpoint.rfind("coaps://", 0) != 0) {
+        _logger.error("DTLS handshake needs a coaps:// endpoint", {{"endpoint", endpoint}});
         return false;
     }
 
-    _logger.info("DTLS handshake initiated successfully (stub)", {{"endpoint", endpoint}});
+    coap_uri_t uri;
+    if (coap_split_uri(reinterpret_cast<const uint8_t*>(endpoint.c_str()), endpoint.length(),
+                       &uri) < 0) {
+        _logger.error("Failed to parse DTLS endpoint", {{"endpoint", endpoint}});
+        return false;
+    }
 
+    std::lock_guard lock(_mutex);
+
+    // One handshake per endpoint. A session that is still in progress or
+    // already up is reused; one that failed (state NONE) is replaced.
+    if (auto it = _dtls_handshake_sessions.find(endpoint); it != _dtls_handshake_sessions.end()) {
+        if (coap_session_get_state(it->second) != COAP_SESSION_STATE_NONE) {
+            return true;
+        }
+        coap_session_release(it->second);
+        _dtls_handshake_sessions.erase(it);
+    }
+
+    const uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
+    coap_addr_info_t* addr_info = coap_resolve_address_info(
+        &uri.host, uri.port, uri.port, 0, 0, 0, scheme_hint_bits, COAP_RESOLVE_TYPE_REMOTE);
+    if (!addr_info) {
+        _logger.error("Failed to resolve DTLS endpoint", {{"endpoint", endpoint}});
+        return false;
+    }
+    coap_address_t dst_addr = addr_info->addr;
+    coap_free_address_info(addr_info);
+
+    coap_session_t* session = new_dtls_client_session(&dst_addr);
+    if (!session) {
+        _logger.error("Failed to create DTLS session", {{"endpoint", endpoint}});
+        return false;
+    }
+    coap_session_set_app_data(session, this);
+    _dtls_handshake_sessions[endpoint] = session;
+
+    _logger.info("DTLS handshake initiated", {{"endpoint", endpoint}});
+    return true;
+#else
+    // Stub build: there is no DTLS stack to drive.
+    _logger.info("DTLS handshake initiated successfully (stub)", {{"endpoint", endpoint}});
     return true;
 #endif
 }
@@ -1417,45 +1456,66 @@ auto coap_client<Types>::initiate_dtls_handshake(const std::string& endpoint) ->
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::complete_dtls_handshake(const std::string& endpoint) -> bool {
-    // Stub implementation for DTLS handshake completion
-    // In a real implementation, this would:
-    // 1. Wait for the DTLS handshake to complete
-    // 2. Verify the handshake was successful
-    // 3. Validate the peer certificate (if using certificate auth)
-    // 4. Return true if handshake completed successfully
-
+    // Waits for the handshake initiate_dtls_handshake() started (starting
+    // one first if it was not) and reports whether it succeeded. A failed
+    // handshake -- wrong credentials, a rejected certificate, no peer --
+    // returns false; the reason is in libcoap's and this client's logs.
     _logger.debug(
         "Completing DTLS handshake",
         {{"endpoint", endpoint}, {"dtls_enabled", _config.enable_dtls ? "true" : "false"}});
 
-#ifdef LIBCOAP_AVAILABLE
     if (!_config.enable_dtls) {
         _logger.warning("DTLS not enabled, skipping handshake completion");
         return false;
     }
 
-    // In a real implementation with libcoap, this would:
-    // - Check the session state
-    // - Verify the DTLS handshake completed successfully
-    // - Validate certificates if using certificate authentication
-    // - Check cipher suite negotiation
-    // For now, return success for mock handshakes
-
-    _logger.info("DTLS handshake completed successfully (stub)",
-                 {{"endpoint", endpoint},
-                  {"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}});
-
-    return true;
-#else
-    // Stub implementation when libcoap is not available
-    if (!_config.enable_dtls) {
-        return false;
+#ifdef LIBCOAP_AVAILABLE
+    {
+        std::lock_guard lock(_mutex);
+        if (!_dtls_handshake_sessions.contains(endpoint) && !initiate_dtls_handshake(endpoint)) {
+            return false;
+        }
     }
 
+    // _io_thread owns coap_io_process(); this thread only samples the
+    // session state, under the same lock, and sleeps outside it. Calling
+    // coap_io_process() from here as well would run libcoap on two threads
+    // against one context.
+    const auto deadline = std::chrono::steady_clock::now() + dtls_handshake_timeout;
+    while (true) {
+        coap_session_state_t state = COAP_SESSION_STATE_NONE;
+        {
+            std::lock_guard lock(_mutex);
+            auto it = _dtls_handshake_sessions.find(endpoint);
+            if (it == _dtls_handshake_sessions.end()) {
+                return false;
+            }
+            state = coap_session_get_state(it->second);
+            if (state == COAP_SESSION_STATE_ESTABLISHED) {
+                _logger.info("DTLS handshake completed",
+                             {{"endpoint", endpoint},
+                              {"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}});
+                return true;
+            }
+            const bool expired = std::chrono::steady_clock::now() >= deadline;
+            if (state == COAP_SESSION_STATE_NONE || expired) {
+                // libcoap drops a session to NONE when the handshake fails
+                // (alert, ICMP unreachable, retransmits exhausted).
+                _logger.warning(
+                    "DTLS handshake failed",
+                    {{"endpoint", endpoint}, {"reason", expired ? "timed out" : "session closed"}});
+                coap_session_release(it->second);
+                _dtls_handshake_sessions.erase(it);
+                return false;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+#else
+    // Stub build: there is no DTLS stack to drive.
     _logger.info("DTLS handshake completed successfully (stub)",
                  {{"endpoint", endpoint},
                   {"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}});
-
     return true;
 #endif
 }
@@ -1845,13 +1905,14 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
     coap_address_t dst_addr = addr_info->addr;
     coap_free_address_info(addr_info);
 
-    // Create DTLS session. The context was already configured with the
-    // client's PKI/PSK credentials by setup_dtls_context() (called from the
-    // constructor) via coap_context_set_pki()/coap_context_set_psk(), so a
-    // plain coap_new_client_session() with COAP_PROTO_DTLS picks those up --
-    // there is no coap_new_client_session_dtls() in libcoap's public API.
-    coap_session_t* session =
-        coap_new_client_session(_coap_context, nullptr, &dst_addr, COAP_PROTO_DTLS);
+    // Create DTLS session. new_dtls_client_session() attaches a PSK
+    // identity to the session itself; PKI credentials come from the context
+    // that setup_dtls_context() configured in the constructor.
+    coap_session_t* session = nullptr;
+    {
+        std::lock_guard lock(_mutex);
+        session = new_dtls_client_session(&dst_addr);
+    }
     if (!session) {
         throw coap_network_error("Failed to create DTLS session to endpoint: " + endpoint);
     }
@@ -3210,43 +3271,42 @@ auto coap_server<Types>::disable_auto_reload() -> void {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::initiate_dtls_handshake(coap_session_t* session) -> bool {
-    // Stub implementation for server-side DTLS handshake initiation
-    // In a real implementation, this would:
-    // 1. Check if the session requires DTLS
-    // 2. Initiate the DTLS handshake process
-    // 3. Set up handshake callbacks
-
+    // A server never starts a DTLS handshake: the client's ClientHello does,
+    // and libcoap answers it from inside the I/O loop with the credentials
+    // setup_dtls_context() installed. What the server side can say is
+    // whether `session` is a DTLS session that has a handshake under way or
+    // behind it -- which is what this reports, instead of the unconditional
+    // true it used to return.
     _logger.debug("Initiating server-side DTLS handshake",
                   {{"dtls_enabled", _config.enable_dtls ? "true" : "false"}});
 
-#ifdef LIBCOAP_AVAILABLE
     if (!_config.enable_dtls) {
         _logger.warning("DTLS not enabled, skipping handshake initiation");
         return false;
     }
 
+#ifdef LIBCOAP_AVAILABLE
     if (!session) {
         _logger.error("Cannot initiate DTLS handshake: session is null");
         return false;
     }
-
-    // In a real implementation with libcoap, this would:
-    // - Check the session type (DTLS vs plain CoAP)
-    // - Trigger the DTLS handshake initiation
-    // - Set up handshake state tracking
-    // For now, return success for mock handshakes
-
-    _logger.info("Server DTLS handshake initiated successfully (stub)");
-
-    return true;
-#else
-    // Stub implementation when libcoap is not available
-    if (!_config.enable_dtls) {
+    if (coap_session_get_proto(session) != COAP_PROTO_DTLS) {
+        _logger.warning("Cannot initiate DTLS handshake: session is not a DTLS session");
         return false;
     }
 
+    switch (coap_session_get_state(session)) {
+        case COAP_SESSION_STATE_HANDSHAKE:
+        case COAP_SESSION_STATE_CSM:
+        case COAP_SESSION_STATE_ESTABLISHED:
+            return true;
+        default:
+            _logger.warning("DTLS session has no handshake in progress");
+            return false;
+    }
+#else
+    // Stub build: there is no DTLS stack to inspect.
     _logger.info("Server DTLS handshake initiated successfully (stub)");
-
     return true;
 #endif
 }
@@ -3254,47 +3314,39 @@ auto coap_server<Types>::initiate_dtls_handshake(coap_session_t* session) -> boo
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::complete_dtls_handshake(coap_session_t* session) -> bool {
-    // Stub implementation for server-side DTLS handshake completion
-    // In a real implementation, this would:
-    // 1. Wait for the DTLS handshake to complete
-    // 2. Verify the handshake was successful
-    // 3. Validate the client certificate (if using certificate auth)
-    // 4. Return true if handshake completed successfully
-
+    // Reports whether the handshake on `session` has finished successfully.
+    // Deliberately does not wait: the server's I/O thread is what advances
+    // the handshake, and this may well be called from that same thread (a
+    // resource handler is one place a session pointer is available), where
+    // waiting would stop the very progress it was waiting for.
     _logger.debug("Completing server-side DTLS handshake",
                   {{"dtls_enabled", _config.enable_dtls ? "true" : "false"}});
 
-#ifdef LIBCOAP_AVAILABLE
     if (!_config.enable_dtls) {
         _logger.warning("DTLS not enabled, skipping handshake completion");
         return false;
     }
 
+#ifdef LIBCOAP_AVAILABLE
     if (!session) {
         _logger.error("Cannot complete DTLS handshake: session is null");
         return false;
     }
-
-    // In a real implementation with libcoap, this would:
-    // - Check the session state
-    // - Verify the DTLS handshake completed successfully
-    // - Validate client certificates if using certificate authentication
-    // - Check cipher suite negotiation
-    // For now, return success for mock handshakes
-
-    _logger.info("Server DTLS handshake completed successfully (stub)",
-                 {{"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}});
-
-    return true;
-#else
-    // Stub implementation when libcoap is not available
-    if (!_config.enable_dtls) {
+    if (coap_session_get_proto(session) != COAP_PROTO_DTLS) {
+        _logger.warning("Cannot complete DTLS handshake: session is not a DTLS session");
         return false;
     }
 
+    const bool established = coap_session_get_state(session) == COAP_SESSION_STATE_ESTABLISHED;
+    if (established) {
+        _logger.info("Server DTLS handshake completed",
+                     {{"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}});
+    }
+    return established;
+#else
+    // Stub build: there is no DTLS stack to inspect.
     _logger.info("Server DTLS handshake completed successfully (stub)",
                  {{"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}});
-
     return true;
 #endif
 }
@@ -7528,18 +7580,62 @@ auto coap_client<Types>::get_or_create_session(std::uint64_t target, coap_addres
 
 template<typename Types>
 requires kythira::transport_types<Types>
+auto coap_client<Types>::new_dtls_client_session(const coap_address_t* dst_addr)
+    -> coap_session_t* {
+#ifdef LIBCOAP_AVAILABLE
+    // libcoap keeps a *client's* PSK on the session, not the context.
+    // coap_context_set_psk() -- what setup_dtls_context() and
+    // dtls_psk_provider call for the client role -- installs a server-side
+    // hint and key, so a session made with plain coap_new_client_session()
+    // offered no identity at all and every client PSK handshake failed.
+    // coap_new_client_session_psk2() copies the identity and key into the
+    // session, so the setup struct only has to live for this call.
+    const std::string* identity = nullptr;
+    const std::vector<std::byte>* key = nullptr;
+    if (_config.security.mode == coap_auth_mode::dtls_psk) {
+        if (const auto* creds = std::get_if<psk_credentials>(&_config.security.credentials)) {
+            identity = &creds->identity;
+            key = &creds->key;
+        }
+    } else if (_config.security.mode == coap_auth_mode::none && !_config.psk_identity.empty() &&
+               !_config.psk_key.empty()) {
+        identity = &_config.psk_identity;
+        key = &_config.psk_key;
+    }
+
+    if (identity != nullptr && key != nullptr) {
+        coap_dtls_cpsk_t cpsk_config;
+        std::memset(&cpsk_config, 0, sizeof(cpsk_config));
+        cpsk_config.version = COAP_DTLS_CPSK_SETUP_VERSION;
+        cpsk_config.psk_info.identity.s = reinterpret_cast<const uint8_t*>(identity->data());
+        cpsk_config.psk_info.identity.length = identity->size();
+        cpsk_config.psk_info.key.s = reinterpret_cast<const uint8_t*>(key->data());
+        cpsk_config.psk_info.key.length = key->size();
+        return coap_new_client_session_psk2(_coap_context, nullptr, dst_addr, COAP_PROTO_DTLS,
+                                            &cpsk_config);
+    }
+
+    // PKI and RPK credentials are context-wide (coap_context_set_pki()),
+    // and libcoap applies them to client sessions too.
+    return coap_new_client_session(_coap_context, nullptr, dst_addr, COAP_PROTO_DTLS);
+#else
+    (void)dst_addr;
+    return nullptr;
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
 auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t* uri)
     -> coap_session_t* {
 #ifdef LIBCOAP_AVAILABLE
     coap_session_t* session = nullptr;
 
     if (_config.enable_dtls && uri->scheme == COAP_URI_SCHEME_COAPS) {
-        // Create DTLS session with enhanced security. The context's PKI/PSK
-        // credentials were already set by setup_dtls_context() (constructor),
-        // so a plain coap_new_client_session() with COAP_PROTO_DTLS picks
-        // those up -- there is no coap_new_client_session_dtls() in
-        // libcoap's public API.
-        session = coap_new_client_session(_coap_context, nullptr, dst_addr, COAP_PROTO_DTLS);
+        // Create DTLS session with enhanced security. See
+        // new_dtls_client_session() for where each credential type comes
+        // from.
+        session = new_dtls_client_session(dst_addr);
 
         if (session) {
             // Configure DTLS parameters

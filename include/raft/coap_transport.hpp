@@ -383,6 +383,14 @@ private:
     // Session management
     std::unordered_map<std::string, std::vector<coap_session_t*>> _session_pools;
 
+    // Sessions started by initiate_dtls_handshake(), keyed by endpoint URI,
+    // held until complete_dtls_handshake() sees them fail or the client is
+    // destroyed.
+    std::unordered_map<std::string, coap_session_t*> _dtls_handshake_sessions;
+    // How long complete_dtls_handshake() waits, matching
+    // establish_dtls_connection()'s own handshake budget.
+    static constexpr std::chrono::seconds dtls_handshake_timeout{10};
+
     // Performance optimization
     std::unique_ptr<memory_pool> _memory_pool;
     std::unordered_map<std::size_t, cache_entry> _serialization_cache;
@@ -446,6 +454,9 @@ private:
     auto get_or_create_session(std::uint64_t target, coap_address_t* dst_addr, coap_uri_t* uri)
         -> coap_session_t*;
     auto create_new_session(coap_address_t* dst_addr, coap_uri_t* uri) -> coap_session_t*;
+    // A DTLS client session carrying this client's credentials. Caller holds
+    // _mutex.
+    auto new_dtls_client_session(const coap_address_t* dst_addr) -> coap_session_t*;
     auto return_session_to_pool(const std::string& endpoint, coap_session_t* session) -> void;
     auto cleanup_expired_sessions() -> void;
 
