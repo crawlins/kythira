@@ -209,10 +209,16 @@ template<typename Types> auto NetworkSimulator<Types>::start() -> void {
     _started.store(true);
 
     // Note: Using synchronous delivery for both messages and connection data
-    // to avoid threading complexity while maintaining correct behavior
+    // to avoid threading complexity while maintaining correct behavior.
+    // Maintenance (request expiry, pool and keep-alive/idle cleanup) is the
+    // one thing that runs on its own thread, since nothing else would drive it.
+    start_maintenance_thread();
 }
 
 template<typename Types> NetworkSimulator<Types>::~NetworkSimulator() {
+    // The maintenance thread calls back into this object, so it goes first.
+    stop_maintenance_thread();
+
     // Refuse new node calls and wait for those already inside. Deliberately not
     // in stop(): most tests never call stop(), and the destructor is the only
     // point every user is guaranteed to reach.
@@ -230,11 +236,16 @@ template<typename Types> NetworkSimulator<Types>::~NetworkSimulator() {
     // Notified outside the lock: a woken waiter re-acquires `_mutex` on the way
     // out of `wait_for`, and would only block again on the thread notifying it.
     _msg_available.notify_all();
+    // Likewise a connect waiting out its simulated handshake latency.
+    cancel_all_pending_connections();
 
     _scope->close_and_drain();
 }
 
 template<typename Types> auto NetworkSimulator<Types>::stop() -> void {
+    // Joined before taking `_mutex`: a maintenance pass may be waiting on it.
+    stop_maintenance_thread();
+
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
@@ -242,6 +253,10 @@ template<typename Types> auto NetworkSimulator<Types>::stop() -> void {
     }
 
     _started.store(false);
+
+    // Wake connects still waiting out their handshake latency; they see the
+    // simulator stopped and fail instead of finishing.
+    cancel_all_pending_connections();
 
     // Complete pending operations before stopping
     // Close all connections
@@ -265,11 +280,14 @@ template<typename Types> auto NetworkSimulator<Types>::stop() -> void {
 }
 
 template<typename Types> auto NetworkSimulator<Types>::reset() -> void {
+    stop_maintenance_thread();
+
     std::unique_lock lock(_mutex);
 
     // Stop the simulator first
     bool was_started = _started.load();
     _started.store(false);
+    cancel_all_pending_connections();
 
     // Close all connections before clearing
     for (auto& [endpoint, connection] : _connections) {
@@ -579,17 +597,34 @@ template<typename Types>
 auto NetworkSimulator<Types>::establish_connection(address_type src_addr, port_type src_port,
                                                    address_type dst_addr, port_type dst_port)
     -> future_connection_type {
-    // Check if connection pooling is enabled and try to reuse existing connection
+    return establish_connection_tracked(std::move(src_addr), std::move(src_port),
+                                        std::move(dst_addr), std::move(dst_port), std::nullopt);
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::establish_connection_tracked(
+    address_type src_addr, port_type src_port, address_type dst_addr, port_type dst_port,
+    std::optional<std::chrono::milliseconds> timeout) -> future_connection_type {
+    endpoint_type source_endpoint(src_addr, src_port);
     endpoint_type destination_endpoint(dst_addr, dst_port);
 
+    // Registered for the whole attempt so it can be cancelled or expired.
+    auto request = register_connection_request(source_endpoint, destination_endpoint, timeout);
+    struct Unregister {
+        NetworkSimulator* sim;
+        const connection_request_ptr& req;
+        ~Unregister() { sim->unregister_connection_request(req); }
+    } unregister{this, request};
+
+    // Check if connection pooling is enabled and try to reuse existing connection
     if (_connection_config.enable_connection_pooling && _connection_pool) {
         // Use get_or_create_connection which will reuse if available or create new
         return _connection_pool->get_or_create_connection(destination_endpoint, [&]() {
-            return establish_connection_internal(src_addr, src_port, dst_addr, dst_port);
+            return establish_connection_attempt(src_addr, src_port, dst_addr, dst_port, request);
         });
     }
     // Connection pooling disabled, create connection directly
-    return establish_connection_internal(src_addr, src_port, dst_addr, dst_port);
+    return establish_connection_attempt(src_addr, src_port, dst_addr, dst_port, request);
 }
 
 template<typename Types>
@@ -597,6 +632,22 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
                                                             port_type src_port,
                                                             address_type dst_addr,
                                                             port_type dst_port)
+    -> future_connection_type {
+    // Bypasses the pool, but is still registered so it can be cancelled.
+    auto request = register_connection_request(endpoint_type(src_addr, src_port),
+                                               endpoint_type(dst_addr, dst_port), std::nullopt);
+    auto future = establish_connection_attempt(std::move(src_addr), std::move(src_port),
+                                               std::move(dst_addr), std::move(dst_port), request);
+    unregister_connection_request(request);
+    return future;
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::establish_connection_attempt(address_type src_addr,
+                                                           port_type src_port,
+                                                           address_type dst_addr,
+                                                           port_type dst_port,
+                                                           const connection_request_ptr& request)
     -> future_connection_type {
     // First, check basic conditions without holding the lock for too long
     {
@@ -675,17 +726,27 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
         delay = apply_latency(src_addr, dst_addr);
     }
 
-    // For connection establishment, apply the latency delay synchronously
-    if (delay.count() > 0) {
-        std::this_thread::sleep_for(delay);
+    // Wait out the latency synchronously, but on a condition variable rather
+    // than a sleep so cancellation, stop() and the request's timeout end it.
+    auto outcome = await_establishment(request, delay);
 
-        // Check if simulator is still started after the delay
+    if (!_started.load()) {
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<connection_type>>(std::make_exception_ptr(
+            std::runtime_error("Simulator stopped during connection establishment")));
+    }
+    if (outcome == ConnectionRequest::Outcome::CANCELLED) {
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<connection_type>>(
+            std::make_exception_ptr(ConnectionCancelledException{}));
+    }
+    if (outcome == ConnectionRequest::Outcome::TIMED_OUT) {
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<connection_type>>(std::make_exception_ptr(TimeoutException{}));
+    }
+
+    if (delay.count() > 0) {
         std::shared_lock lock(_mutex);
-        if (!_started.load()) {
-            return kythira::future_factory_default::makeExceptionalFuture<
-                std::shared_ptr<connection_type>>(std::make_exception_ptr(
-                std::runtime_error("Simulator stopped during connection establishment")));
-        }
 
         // Re-check listener is still available after delay
         auto listener_it = _listeners.find(server_endpoint);
@@ -996,75 +1057,253 @@ auto NetworkSimulator<Types>::establish_connection_with_timeout(address_type src
                                                                 port_type dst_port,
                                                                 std::chrono::milliseconds timeout)
     -> future_connection_type {
-    // Record the connection request with timeout tracking
-    endpoint_type source_endpoint(src_addr, src_port);
-    endpoint_type destination_endpoint(dst_addr, dst_port);
-
-    ConnectionRequest request{source_endpoint, destination_endpoint,
-                              std::chrono::steady_clock::now(), timeout};
-
-    // Add to pending connections for tracking
-    {
-        std::lock_guard<std::mutex> lock(_connection_requests_mutex);
-        _pending_connections.push_back(request);
-    }
-
-    // Attempt to establish the connection
-    auto connection_future = establish_connection(src_addr, src_port, dst_addr, dst_port);
-
-    // For SimpleFuture, we don't have timeout support built-in
-    // Just return the connection future and let the caller handle timeout
-    // The timeout checking will be done at a higher level
-
-    // Remove from pending connections immediately for SimpleFuture
-    {
-        std::lock_guard<std::mutex> lock(_connection_requests_mutex);
-        _pending_connections.erase(
-            std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-                           [&](const ConnectionRequest& req) {
-                               return req.source == source_endpoint &&
-                                      req.destination == destination_endpoint;
-                           }),
-            _pending_connections.end());
-    }
-
-    return connection_future;
+    return establish_connection_tracked(std::move(src_addr), std::move(src_port),
+                                        std::move(dst_addr), std::move(dst_port), timeout);
 }
 
-template<typename Types> auto NetworkSimulator<Types>::process_connection_timeouts() -> void {
+template<typename Types>
+auto NetworkSimulator<Types>::register_connection_request(
+    endpoint_type source, endpoint_type destination,
+    std::optional<std::chrono::milliseconds> timeout) -> connection_request_ptr {
+    auto request = std::make_shared<ConnectionRequest>(ConnectionRequest{
+        std::move(source), std::move(destination), std::chrono::steady_clock::now(), timeout});
+
     std::lock_guard<std::mutex> lock(_connection_requests_mutex);
-
-    auto now = std::chrono::steady_clock::now();
-
-    // Find and remove expired connection requests
-    _pending_connections.erase(
-        std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-                       [now](const ConnectionRequest& req) { return req.is_expired(); }),
-        _pending_connections.end());
+    _pending_connections.push_back(request);
+    return request;
 }
 
-template<typename Types> auto NetworkSimulator<Types>::cancel_expired_connections() -> void {
+template<typename Types>
+auto NetworkSimulator<Types>::unregister_connection_request(const connection_request_ptr& request)
+    -> void {
     std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+    std::erase(_pending_connections, request);
+}
 
-    auto now = std::chrono::steady_clock::now();
+template<typename Types>
+auto NetworkSimulator<Types>::await_establishment(const connection_request_ptr& request,
+                                                  std::chrono::milliseconds delay) ->
+    typename ConnectionRequest::Outcome {
+    using Outcome = typename ConnectionRequest::Outcome;
 
-    // Identify expired requests
-    std::vector<ConnectionRequest> expired_requests;
-    for (const auto& req : _pending_connections) {
-        if (req.is_expired()) {
-            expired_requests.push_back(req);
+    std::unique_lock<std::mutex> lock(_connection_requests_mutex);
+
+    auto wake_at = std::chrono::steady_clock::now() + delay;
+    bool deadline_first = false;
+    if (request->timeout) {
+        auto deadline = request->start_time + *request->timeout;
+        if (deadline < wake_at) {
+            wake_at = deadline;
+            deadline_first = true;
         }
     }
 
-    // Remove expired requests from pending list
-    _pending_connections.erase(
-        std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-                       [now](const ConnectionRequest& req) { return req.is_expired(); }),
-        _pending_connections.end());
+    _connection_requests_cv.wait_until(lock, wake_at,
+                                       [&] { return request->outcome != Outcome::PENDING; });
 
-    // Note: In a more complete implementation, we would also cancel any
-    // in-flight connection establishment operations here. For now, we just
-    // remove them from tracking.
+    if (request->outcome == Outcome::PENDING) {
+        request->outcome = deadline_first ? Outcome::TIMED_OUT : Outcome::COMMITTED;
+    }
+    return request->outcome;
+}
+
+template<typename Types>
+template<typename Predicate>
+auto NetworkSimulator<Types>::cancel_pending_if(Predicate predicate) -> std::size_t {
+    std::size_t cancelled = 0;
+    {
+        std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+        for (const auto& request : _pending_connections) {
+            if (request->outcome == ConnectionRequest::Outcome::PENDING && predicate(*request)) {
+                request->outcome = ConnectionRequest::Outcome::CANCELLED;
+                ++cancelled;
+            }
+        }
+    }
+    if (cancelled > 0) {
+        _connection_requests_cv.notify_all();
+    }
+    return cancelled;
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::cancel_pending_connections(endpoint_type destination) -> std::size_t {
+    return cancel_pending_if(
+        [&](const ConnectionRequest& request) { return request.destination == destination; });
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::cancel_pending_connections(endpoint_type source,
+                                                         endpoint_type destination) -> std::size_t {
+    return cancel_pending_if([&](const ConnectionRequest& request) {
+        return request.source == source && request.destination == destination;
+    });
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::cancel_all_pending_connections() -> std::size_t {
+    return cancel_pending_if([](const ConnectionRequest&) { return true; });
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::pending_connection_count() const -> std::size_t {
+    std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+    return static_cast<std::size_t>(
+        std::count_if(_pending_connections.begin(), _pending_connections.end(),
+                      [](const connection_request_ptr& request) {
+                          return request->outcome == ConnectionRequest::Outcome::PENDING;
+                      }));
+}
+
+template<typename Types> auto NetworkSimulator<Types>::process_connection_timeouts() -> void {
+    cancel_expired_connections();
+}
+
+template<typename Types> auto NetworkSimulator<Types>::cancel_expired_connections() -> void {
+    // The establishing thread normally notices its own deadline; this catches
+    // anything that did not, and wakes it with the timeout outcome.
+    std::size_t expired = 0;
+    {
+        std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+        auto now = std::chrono::steady_clock::now();
+        for (const auto& request : _pending_connections) {
+            if (request->outcome == ConnectionRequest::Outcome::PENDING &&
+                request->is_expired(now)) {
+                request->outcome = ConnectionRequest::Outcome::TIMED_OUT;
+                ++expired;
+            }
+        }
+        // The establishing thread unregisters its own request; dropping
+        // settled ones here only covers a thread that never got to.
+        std::erase_if(_pending_connections, [now](const connection_request_ptr& request) {
+            return request->outcome != ConnectionRequest::Outcome::PENDING &&
+                   request->is_expired(now);
+        });
+    }
+    if (expired > 0) {
+        _connection_requests_cv.notify_all();
+    }
+}
+
+// Background Maintenance
+
+template<typename Types> auto NetworkSimulator<Types>::run_maintenance() -> void {
+    ConnectionConfig config;
+    {
+        std::shared_lock lock(_mutex);
+        config = _connection_config;
+    }
+
+    cancel_expired_connections();
+
+    if (_connection_pool) {
+        _connection_pool->cleanup_stale_connections();
+    }
+
+    if (config.enable_connection_tracking && _connection_tracker) {
+        if (config.enable_keep_alive) {
+            _connection_tracker->process_keep_alive();
+        }
+        if (config.enable_idle_timeout) {
+            _connection_tracker->process_idle_timeouts();
+        }
+    }
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::probe_keep_alive(const endpoint_type& local,
+                                               const endpoint_type& remote) -> bool {
+    // Exclusive: check_reliability advances the shared RNG.
+    std::unique_lock lock(_mutex);
+
+    if (!_started.load()) {
+        return false;
+    }
+
+    // A probe and its answer: both directions must be routable and survive
+    // each hop's reliability roll.
+    auto hops_pass = [this](const std::vector<address_type>& path) {
+        if (path.empty()) {
+            return false;
+        }
+        for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+            if (!check_reliability(path[i], path[i + 1])) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!hops_pass(find_path(local.address, remote.address)) ||
+        !hops_pass(find_path(remote.address, local.address))) {
+        return false;
+    }
+
+    // The peer's end must still exist and be open to answer.
+    connection_id_type peer_id(remote.address, remote.port, local.address, local.port);
+    auto peer = _connections.find(peer_id);
+    return peer != _connections.end() && peer->second && peer->second->is_open();
+}
+
+template<typename Types> auto NetworkSimulator<Types>::start_maintenance_thread() -> void {
+    std::lock_guard<std::mutex> lifecycle(_maintenance_lifecycle_mutex);
+    if (_maintenance_thread.joinable()) {
+        {
+            std::lock_guard<std::mutex> lock(_maintenance_mutex);
+            if (!_maintenance_stop) {
+                return;  // already running
+            }
+        }
+        // Told to stop from its own callback and not joined yet (see below).
+        _maintenance_thread.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(_maintenance_mutex);
+        _maintenance_stop = false;
+    }
+    _maintenance_thread = std::thread([this] { maintenance_thread_main(); });
+}
+
+template<typename Types> auto NetworkSimulator<Types>::stop_maintenance_thread() -> void {
+    std::lock_guard<std::mutex> lifecycle(_maintenance_lifecycle_mutex);
+    if (!_maintenance_thread.joinable()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_maintenance_mutex);
+        _maintenance_stop = true;
+    }
+    _maintenance_cv.notify_all();
+
+    // stop() from an observer callback runs on the maintenance thread itself,
+    // which cannot join itself. It leaves the thread to see the flag and exit;
+    // the next start() or the destructor joins it.
+    if (_maintenance_thread.get_id() == std::this_thread::get_id()) {
+        return;
+    }
+    _maintenance_thread.join();
+}
+
+template<typename Types> auto NetworkSimulator<Types>::maintenance_thread_main() -> void {
+    while (true) {
+        std::chrono::milliseconds interval;
+        bool enabled = false;
+        {
+            std::shared_lock lock(_mutex);
+            interval = std::max(_connection_config.cleanup_interval, std::chrono::milliseconds{1});
+            enabled = _connection_config.enable_background_cleanup;
+        }
+
+        {
+            std::unique_lock<std::mutex> lock(_maintenance_mutex);
+            if (_maintenance_cv.wait_for(lock, interval, [this] { return _maintenance_stop; })) {
+                return;
+            }
+        }
+
+        if (enabled) {
+            run_maintenance();
+        }
+    }
 }
 
 // Connection Data Routing
@@ -1133,7 +1372,11 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
     // Update connection tracker statistics for data transfer
     if (_connection_config.enable_connection_tracking && _connection_tracker) {
         endpoint_type src_endpoint(conn_id.src_addr, conn_id.src_port);
+        endpoint_type dst_endpoint(conn_id.dst_addr, conn_id.dst_port);
         _connection_tracker->update_connection_stats(src_endpoint, data.size(), true);
+        // The receiving end is active too; without this a connection that
+        // only receives would look idle and be closed by the idle timeout.
+        _connection_tracker->update_connection_stats(dst_endpoint, data.size(), false);
     }
 
     // Deliver data immediately after delay (outside of lock to avoid deadlock)
@@ -1163,6 +1406,16 @@ auto NetworkSimulator<Types>::configure_connection_management(ConnectionConfig c
     if (_connection_pool && config.enable_connection_pooling) {
         _connection_pool->configure_pool(config.pool_config);
     }
+
+    if (_connection_tracker) {
+        _connection_tracker->configure_keep_alive(config.keep_alive_interval,
+                                                  config.keep_alive_max_missed);
+        _connection_tracker->configure_idle_timeout(config.idle_timeout);
+    }
+    lock.unlock();
+
+    // Pick up a changed cleanup_interval now rather than after the old one.
+    _maintenance_cv.notify_all();
 }
 
 template<typename Types>

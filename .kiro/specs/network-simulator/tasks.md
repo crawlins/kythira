@@ -394,12 +394,15 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Create ConnectionRequest struct with timeout tracking
     - Implement pending connection request management
     - Add timer-based cleanup of expired requests
+    - Cleanup runs on the background maintenance thread started by `start()`
     - _Requirements: 15.1, 15.2, 15.3_
 
   - [x] 19.2 Implement connection establishment timeout logic
     - Add proper timeout handling for connection establishment
     - Implement cancellation support for pending operations
     - Add detailed error reporting for timeout conditions
+    - Cancellation API: `cancel_pending_connections(...)`, `cancel_all_pending_connections()`,
+      `pending_connection_count()`; cancelled attempts fail with `ConnectionCancelledException`
     - _Requirements: 15.1, 15.2, 15.3, 15.5_
 
   - [x] 19.3 Write property test for connection establishment timeout
@@ -419,7 +422,7 @@ This implementation plan tracks the development of a C++ network simulator that 
 
   - [x] 20.2 Implement connection pool management
     - Add LRU eviction when pool reaches capacity
-    - Implement background cleanup of stale connections
+    - Implement background cleanup of stale connections (maintenance thread, `cleanup_interval`)
     - Add configurable pool limits and timeouts
     - _Requirements: 16.3, 16.4, 16.5_
 
@@ -466,6 +469,9 @@ This implementation plan tracks the development of a C++ network simulator that 
   - [x] 22.2 Implement connection lifecycle management
     - Add observer pattern for state change notifications
     - Implement keep-alive and idle timeout mechanisms
+    - Keep-alive probes walk the topology and close a connection after
+      `keep_alive_max_missed` unanswered probes; covered by
+      `tests/network_simulator_connection_maintenance_test.cpp`
     - Add proper resource cleanup for closed connections
     - _Requirements: 18.4, 18.5, 18.6_
 

@@ -13,6 +13,7 @@
 #include <optional>
 #include <functional>
 #include <shared_mutex>
+#include <string>
 
 namespace network_simulator {
 
@@ -40,9 +41,17 @@ public:
         std::size_t messages_received = 0;
         std::optional<std::string> last_error;
 
+        // Keep-alive bookkeeping. A probe does not count as activity: it keeps
+        // `last_activity` untouched, so the idle timeout still measures time
+        // since the application last moved data.
+        std::chrono::steady_clock::time_point last_keep_alive;
+        std::size_t keep_alive_probes_sent = 0;
+        std::size_t keep_alive_probes_missed = 0;  // consecutive, reset on success
+
         ConnectionStats()
             : established_time(std::chrono::steady_clock::now()),
-              last_activity(std::chrono::steady_clock::now()) {}
+              last_activity(established_time),
+              last_keep_alive(established_time) {}
     };
 
     struct ConnectionInfo {
@@ -61,6 +70,12 @@ public:
               state(ConnectionState::CONNECTING) {}
     };
 
+    /// Sends one keep-alive probe from `local` to `remote` and reports whether
+    /// the peer answered. The simulator installs one that walks the topology;
+    /// without a probe, `process_keep_alive()` does nothing.
+    using keep_alive_probe_type =
+        std::function<bool(const endpoint_type& local, const endpoint_type& remote)>;
+
     ConnectionTracker();
 
     auto register_connection(endpoint_type local, endpoint_type remote,
@@ -73,8 +88,15 @@ public:
     auto cleanup_connection(endpoint_type local) -> void;
 
     // Keep-alive and idle management
-    auto configure_keep_alive(std::chrono::milliseconds interval) -> void;
+    //
+    // A connected connection that has been quiet for `interval` (no data and
+    // no probe) is probed. After `max_missed` consecutive unanswered probes it
+    // is marked ERROR, closed, and left in CLOSED with the reason in
+    // `last_error`.
+    auto configure_keep_alive(std::chrono::milliseconds interval, std::size_t max_missed = 3)
+        -> void;
     auto configure_idle_timeout(std::chrono::milliseconds timeout) -> void;
+    auto set_keep_alive_probe(keep_alive_probe_type probe) -> void;
     auto process_keep_alive() -> void;
     auto process_idle_timeouts() -> void;
 
@@ -84,12 +106,20 @@ public:
         -> void;
 
 private:
+    // Records `reason`, closes the connection if it is still open, and leaves
+    // the entry CLOSED even when the connection object is already gone.
+    auto close_tracked_connection(const endpoint_type& local,
+                                  const std::weak_ptr<connection_type>& connection,
+                                  const std::string& reason) -> void;
+
     std::unordered_map<endpoint_type, ConnectionInfo> _connection_info;
     mutable std::shared_mutex _info_mutex;
 
     // Keep-alive and idle timeout management
     std::chrono::milliseconds _keep_alive_interval{30000};  // 30 seconds
     std::chrono::milliseconds _idle_timeout{300000};        // 5 minutes
+    std::size_t _keep_alive_max_missed{3};
+    keep_alive_probe_type _keep_alive_probe;
 };
 
 }  // namespace network_simulator
