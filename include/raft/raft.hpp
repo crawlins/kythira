@@ -4331,6 +4331,26 @@ auto node<Types>::check_election_timeout() -> void {
         return;
     }
 
+    // Nor does a server its own latest configuration leaves out (dissertation
+    // §4.2.2). A leader that removed itself steps down once C_new commits, but
+    // its followers may not have applied C_new yet; still running the joint
+    // configuration, they count it as a voter and would elect it, and it would
+    // then lead a cluster it is not part of, its heartbeats keeping the real
+    // members from ever electing one of their own. An empty voter set is a node
+    // that has not been configured yet and keeps the founding behaviour.
+    {
+        const auto& voters = _configuration.nodes();
+        bool listed =
+            voters.empty() || std::find(voters.begin(), voters.end(), _node_id) != voters.end();
+        if (!listed && _configuration.is_joint_consensus() && _configuration.old_nodes()) {
+            const auto& old_voters = *_configuration.old_nodes();
+            listed = std::find(old_voters.begin(), old_voters.end(), _node_id) != old_voters.end();
+        }
+        if (!listed) {
+            return;
+        }
+    }
+
     // A TimeoutNow accepted since the last tick campaigns NOW, without waiting
     // for the election timeout and without a pre-vote round — the leader has
     // already decided, and every other follower would refuse a pre-vote because
