@@ -90,11 +90,13 @@ namespace kythira {
 /// @brief A manager that can tag what it creates with the controller's
 ///        idempotency key, and find a machine by it.
 ///
-/// Detected, never required (Requirement 1.3): every shipped manager already
-/// tags or labels its resources, but the concept has ten implementations and
-/// widening it would mean new code and new live runs for each. Where it is
-/// absent, reconciliation matches on node id and join deadline instead, and
-/// that degradation is documented per provider (design §7).
+/// Detected, never required (Requirement 1.3). The docker manager and the
+/// instance-level cloud managers (`aws_ec2`, `azure_vm`, `gcp_compute`)
+/// implement it, attaching the key in their create call. The group-capacity
+/// managers cannot -- the provider launches their instances, so there is no
+/// create call to attach a key to atomically. Where it is absent,
+/// reconciliation matches on node id and join deadline instead, and that
+/// degradation is documented per provider (design §7, §15 item 7).
 template<typename Q>
 concept keyed_quorum_manager =
     requires(Q& q, typename Q::placement_group_id_type group,

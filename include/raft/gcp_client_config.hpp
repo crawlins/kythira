@@ -17,6 +17,7 @@
 /// embeds an `aws_client_config aws`.
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -179,6 +180,75 @@ struct gcp_client_config {
         return std::string{subnetwork};
     }
     return "regions/" + gcp_zone_to_region(zone) + "/subnetworks/" + std::string{subnetwork};
+}
+
+/// @brief The instance label that carries a capacity controller's idempotency
+///        key (elastic-shard-capacity Requirement 8.2).
+inline constexpr std::string_view gcp_idempotency_key_label = "kythira-idempotency-key";
+
+/// @brief Maps a capacity controller's idempotency key to a value GCP will
+///        accept as a label, deterministically.
+///
+/// A key that already satisfies `is_valid_gcp_label` is used verbatim. The
+/// controller's own keys (`cap-<fencing>-<ms>-<hex>`) are lowercase letters,
+/// digits and `-`, so they normally take this path and the label reads the same
+/// as the ledger. One that does not — too long (a large fencing token pushes a
+/// key past 63 characters), or carrying characters GCP refuses — becomes
+/// `k<16 hex digits>-<sanitised prefix>`: the hex is a 64-bit FNV-1a hash of the
+/// whole key, the prefix is the key lower-cased with every other refused
+/// character replaced by `_`, cut to fit 63 characters.
+///
+/// Determinism is the whole requirement: the successor controller that looks a
+/// key up must arrive at the very value its predecessor wrote, from nothing but
+/// the key in the ledger. The hash keeps two keys that sanitise to the same
+/// prefix apart. FNV-1a is not collision-resistant against an adversary, but the
+/// keys are minted by the controller, not chosen by anyone who could aim for a
+/// collision, and a lookup is further scoped to one cluster's label.
+[[nodiscard]] inline std::string gcp_idempotency_label_value(std::string_view key) {
+    if (is_valid_gcp_label(key)) {
+        return std::string{key};
+    }
+    std::uint64_t h = 0xcbf29ce484222325ULL;
+    for (const char c : key) {
+        h ^= static_cast<unsigned char>(c);
+        h *= 0x100000001b3ULL;
+    }
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string out = "k";
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        out += digits[(h >> shift) & 0xF];
+    }
+    std::string tail;
+    for (const char c : key) {
+        if (out.size() + 1 + tail.size() >= 63) {
+            break;
+        }
+        if (c >= 'A' && c <= 'Z') {
+            tail += static_cast<char>(c - 'A' + 'a');
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+            tail += c;
+        } else {
+            tail += '_';
+        }
+    }
+    if (!tail.empty()) {
+        out += '-';
+        out += tail;
+    }
+    return out;
+}
+
+/// @brief The `instances.list` filter that selects one cluster's instance
+///        carrying @p label_value (a `gcp_idempotency_label_value` result).
+///
+/// Parenthesised expressions, which Compute ANDs together. Both values are
+/// valid GCP labels (the cluster name is validated at construction, the key by
+/// `gcp_idempotency_label_value`), so neither can carry a quote that would need
+/// escaping.
+[[nodiscard]] inline std::string gcp_idempotency_key_filter(std::string_view cluster_name,
+                                                            std::string_view label_value) {
+    return "(labels.kythira-cluster = \"" + std::string{cluster_name} + "\") (labels." +
+           std::string{gcp_idempotency_key_label} + " = \"" + std::string{label_value} + "\")";
 }
 
 }  // namespace kythira

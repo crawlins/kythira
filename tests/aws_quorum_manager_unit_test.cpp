@@ -10,10 +10,13 @@
 
 #include <raft/aws_asg_quorum_manager.hpp>
 #include <raft/aws_ec2_quorum_manager.hpp>
+#include <raft/elastic_capacity_controller.hpp>
 
 #include <aws/core/Aws.h>
 
+#include <map>
 #include <string>
+#include <vector>
 
 #ifdef FIU_ENABLE
 #include <fiu-control.h>
@@ -192,6 +195,96 @@ BOOST_AUTO_TEST_CASE(ec2_id_node_id_round_trip) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// ── EC2 idempotency keys (elastic-shard-capacity Requirement 8.2) ─────────────
+
+namespace {
+
+auto keyed_ec2_config() -> kythira::aws_ec2_quorum_manager_config {
+    kythira::aws_ec2_quorum_manager_config cfg;
+    cfg.cluster_name = "test-cluster";
+    cfg.image_id = "ami-12345678";
+    cfg.node_port = 7000;
+    cfg.topology.groups.push_back({.group_id = "AZ1", .target_count = 3});
+    cfg.subnet_by_group["AZ1"] = "subnet-11";
+    cfg.aws.region = "us-east-1";
+    return cfg;
+}
+
+/// Every value `spec` carries for tag key `key`, in order.
+auto tag_values(const Aws::EC2::Model::TagSpecification& spec, const std::string& key)
+    -> std::vector<std::string> {
+    std::vector<std::string> out;
+    for (const auto& t : spec.GetTags()) {
+        if (std::string(t.GetKey()) == key) {
+            out.emplace_back(t.GetValue());
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(ec2_idempotency_key)
+
+using ec2_mgr_t = kythira::aws_ec2_quorum_manager<std::uint64_t, std::string>;
+
+// The capacity controller detects keyed provisioning by this concept; a
+// signature drift would silently drop the manager back to unkeyed matching.
+static_assert(kythira::keyed_quorum_manager<ec2_mgr_t>);
+
+BOOST_AUTO_TEST_CASE(launch_tags_carry_the_key) {
+    ec2_mgr_t mgr{keyed_ec2_config()};
+    const std::string key = "cap-7-1759363200000-9f86d081884c7d65";
+    auto spec = mgr.launch_tag_specification("AZ1", "on-demand", key);
+    BOOST_CHECK(spec.GetResourceType() == Aws::EC2::Model::ResourceType::instance);
+    BOOST_CHECK(tag_values(spec, "kythira:idempotency-key") == std::vector<std::string>{key});
+    // The rest of the launch set is still there alongside it.
+    BOOST_CHECK(tag_values(spec, "kythira:cluster") == std::vector<std::string>{"test-cluster"});
+}
+
+BOOST_AUTO_TEST_CASE(unkeyed_launch_carries_no_key_tag) {
+    ec2_mgr_t mgr{keyed_ec2_config()};
+    auto spec = mgr.launch_tag_specification("AZ1", "on-demand");
+    BOOST_CHECK(tag_values(spec, "kythira:idempotency-key").empty());
+}
+
+BOOST_AUTO_TEST_CASE(key_tag_wins_over_an_extra_tag_of_the_same_name) {
+    auto cfg = keyed_ec2_config();
+    cfg.extra_tags["kythira:idempotency-key"] = "stale";
+    ec2_mgr_t mgr{cfg};
+    auto spec = mgr.launch_tag_specification("AZ1", "on-demand", std::string("cap-1-2-3"));
+    // Exactly once: EC2 rejects a request naming one tag key twice.
+    BOOST_CHECK(tag_values(spec, "kythira:idempotency-key") ==
+                std::vector<std::string>{"cap-1-2-3"});
+}
+
+BOOST_AUTO_TEST_CASE(lookup_filters_on_cluster_key_and_live_states) {
+    auto req = ec2_mgr_t::idempotency_lookup_request("test-cluster", "cap-1-2-3");
+    std::map<std::string, std::vector<std::string>> filters;
+    for (const auto& f : req.GetFilters()) {
+        auto& values = filters[std::string(f.GetName())];
+        for (const auto& v : f.GetValues()) {
+            values.emplace_back(v);
+        }
+    }
+    BOOST_CHECK(filters["tag:kythira:cluster"] == std::vector<std::string>{"test-cluster"});
+    BOOST_CHECK(filters["tag:kythira:idempotency-key"] == std::vector<std::string>{"cap-1-2-3"});
+    BOOST_CHECK((filters["instance-state-name"] ==
+                 std::vector<std::string>{"pending", "running", "stopping", "stopped"}));
+}
+
+BOOST_AUTO_TEST_CASE(stopped_counts_terminated_does_not) {
+    using S = Aws::EC2::Model::InstanceStateName;
+    BOOST_CHECK(ec2_mgr_t::counts_as_holding_key(S::pending));
+    BOOST_CHECK(ec2_mgr_t::counts_as_holding_key(S::running));
+    BOOST_CHECK(ec2_mgr_t::counts_as_holding_key(S::stopping));
+    BOOST_CHECK(ec2_mgr_t::counts_as_holding_key(S::stopped));
+    BOOST_CHECK(!ec2_mgr_t::counts_as_holding_key(S::shutting_down));
+    BOOST_CHECK(!ec2_mgr_t::counts_as_holding_key(S::terminated));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 // ── ASG manager construction ───────────────────────────────────────────────────
 
 BOOST_FIXTURE_TEST_SUITE(asg_construction, AsgSkipHealthCheckFixture)
@@ -351,6 +444,26 @@ BOOST_AUTO_TEST_CASE(ec2_maintain_quorum_fault_returns_exceptional_future) {
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     auto fut = mgr.maintain_quorum(cluster);
     fiu_disable("raft/aws/ec2/maintain_quorum");
+
+    BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(ec2_find_by_idempotency_key_fault_returns_exceptional_future) {
+    kythira::aws_ec2_quorum_manager<> mgr{keyed_ec2_config()};
+
+    fiu_enable("raft/aws/ec2/find_by_idempotency_key", 1, nullptr, 0);
+    auto fut = mgr.find_by_idempotency_key("cap-1-2-3");
+    fiu_disable("raft/aws/ec2/find_by_idempotency_key");
+
+    BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(ec2_keyed_provision_shares_the_run_instances_fault) {
+    kythira::aws_ec2_quorum_manager<> mgr{keyed_ec2_config()};
+
+    fiu_enable("raft/aws/ec2/run_instances", 1, nullptr, 0);
+    auto fut = mgr.provision_node_keyed("AZ1", std::nullopt, "cap-1-2-3");
+    fiu_disable("raft/aws/ec2/run_instances");
 
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }

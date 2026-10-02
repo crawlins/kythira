@@ -274,7 +274,182 @@ public:
     /// The NodeId is derived from the instance ID returned by RunInstances; replacing is accepted
     /// by the interface but not used (the new instance gets a new ID regardless).
     /// Returns an exceptional Future if RunInstances fails or the provision_timeout is exceeded.
-    auto provision_node(std::string target_group, std::optional<NodeId> /*replacing*/)
+    auto provision_node(std::string target_group, std::optional<NodeId> replacing)
+        -> kythira::future_default<peer_info<NodeId, Address>> {
+        return provision(std::move(target_group), replacing, std::nullopt);
+    }
+
+    // ── idempotency keys (elastic-shard-capacity Requirement 8.2) ────────────
+
+    /// The EC2 tag that carries a capacity controller's idempotency key.
+    static constexpr const char* idempotency_key_tag = "kythira:idempotency-key";
+
+    /// @brief `provision_node`, with `key` carried as the instance tag
+    ///        `kythira:idempotency-key`.
+    ///
+    /// The tag rides in RunInstances' own TagSpecifications, so it exists from
+    /// the instant the instance does: a controller that dies between
+    /// RunInstances answering and recording the instance ID leaves an instance
+    /// its successor can still find by the key it recorded *before* the call.
+    /// A follow-up CreateTags could not promise that -- the window between the
+    /// two calls is exactly the crash this exists to survive.
+    auto provision_node_keyed(std::string target_group, std::optional<NodeId> replacing,
+                              const std::string& key)
+        -> kythira::future_default<peer_info<NodeId, Address>> {
+        return provision(std::move(target_group), replacing, key);
+    }
+
+    /// @brief The instance this cluster launched under `key`, if one still
+    ///        exists.
+    ///
+    /// DescribeInstances, filtered server-side on `kythira:cluster`,
+    /// `kythira:idempotency-key` and instance state. Instances that are
+    /// `pending`, `running`, `stopping` or `stopped` count; `shutting-down` and
+    /// `terminated` do not.
+    ///
+    /// Stopped instances count for the same reason `docker_quorum_manager`
+    /// counts stopped containers: a stopped instance still exists, still holds
+    /// its EBS volumes and its private IP, and still has to be terminated by
+    /// someone. A lookup that hid it would let the controller conclude "no
+    /// machine carries the key", fail the intent, and leak the instance.
+    /// `shutting-down`/`terminated` instances are already on their way out (a
+    /// terminated one stays visible to DescribeInstances for about an hour), so
+    /// reporting one would only bind an intent to a machine that cannot join.
+    ///
+    /// The returned address is `<private-ip>:<node_port>`, or empty when EC2
+    /// has not reported a private IP; the controller reads only the node id
+    /// from a lookup.
+    auto find_by_idempotency_key(const std::string& key)
+        -> kythira::future_default<std::optional<peer_info<NodeId, Address>>> {
+        using result = std::optional<peer_info<NodeId, Address>>;
+        try {
+            fiu_do_on("raft/aws/ec2/find_by_idempotency_key",
+                      throw std::runtime_error("fault: raft/aws/ec2/find_by_idempotency_key"););
+
+            auto req = idempotency_lookup_request(_cfg.cluster_name, key);
+            for (;;) {
+                auto outcome = _ec2->DescribeInstances(req);
+                if (!outcome.IsSuccess()) {
+                    throw std::runtime_error("ec2 DescribeInstances: " +
+                                             std::string(outcome.GetError().GetMessage()));
+                }
+                for (const auto& reservation : outcome.GetResult().GetReservations()) {
+                    for (const auto& inst : reservation.GetInstances()) {
+                        // The server-side filters already applied; re-checked
+                        // here so an endpoint that ignores one (an emulator,
+                        // say) cannot hand back another cluster's machine.
+                        if (!counts_as_holding_key(inst.GetState().GetName()) ||
+                            find_tag(inst.GetTags(), idempotency_key_tag) != key ||
+                            find_tag(inst.GetTags(), "kythira:cluster") != _cfg.cluster_name) {
+                            continue;
+                        }
+                        const std::string ec2_id(inst.GetInstanceId());
+                        const std::string ip(inst.GetPrivateIpAddress());
+                        const std::string addr =
+                            ip.empty() ? std::string{} : ip + ":" + std::to_string(_cfg.node_port);
+                        return future_factory_default::makeFuture(result{peer_info<NodeId, Address>{
+                            ec2_id_to_node_id(ec2_id), static_cast<Address>(addr)}});
+                    }
+                }
+                const std::string next(outcome.GetResult().GetNextToken());
+                if (next.empty()) {
+                    break;
+                }
+                req.SetNextToken(next);
+            }
+            return future_factory_default::makeFuture(result{});
+        } catch (const std::exception& ex) {
+            return future_factory_default::makeExceptionalFuture<result>(
+                std::make_exception_ptr(std::runtime_error(
+                    std::string("aws_ec2_quorum_manager::find_by_idempotency_key: ") + ex.what())));
+        }
+    }
+
+    /// @brief The DescribeInstances request `find_by_idempotency_key` sends:
+    ///        filtered on the cluster tag, the key tag, and the instance states
+    ///        that count as still holding the key. Public for testing.
+    [[nodiscard]] static auto idempotency_lookup_request(const std::string& cluster_name,
+                                                         const std::string& key)
+        -> Aws::EC2::Model::DescribeInstancesRequest {
+        Aws::EC2::Model::DescribeInstancesRequest req;
+        Aws::EC2::Model::Filter cluster;
+        cluster.SetName("tag:kythira:cluster");
+        cluster.AddValues(cluster_name);
+        req.AddFilters(cluster);
+        Aws::EC2::Model::Filter key_filter;
+        key_filter.SetName(std::string("tag:") + idempotency_key_tag);
+        key_filter.AddValues(key);
+        req.AddFilters(key_filter);
+        Aws::EC2::Model::Filter state;
+        state.SetName("instance-state-name");
+        for (const char* s : {"pending", "running", "stopping", "stopped"}) {
+            state.AddValues(s);
+        }
+        req.AddFilters(state);
+        return req;
+    }
+
+    /// @brief Whether an instance in state `st` still counts as the machine a
+    ///        key names (see `find_by_idempotency_key`). Public for testing.
+    [[nodiscard]] static auto counts_as_holding_key(Aws::EC2::Model::InstanceStateName st) -> bool {
+        using S = Aws::EC2::Model::InstanceStateName;
+        return st == S::pending || st == S::running || st == S::stopping || st == S::stopped;
+    }
+
+    /// The kythira:* tags and extra_tags that are known before the instance
+    /// exists, as a TagSpecification for RunInstances so they are applied
+    /// atomically with the launch. `key`, when set, adds
+    /// `kythira:idempotency-key`. Public for testing: it is exactly the
+    /// TagSpecification RunInstances carries.
+    ///
+    /// kythira:managed-by is the one that matters most for being here: the
+    /// post-run leak audit filters instances on that key alone, so an instance
+    /// orphaned before a follow-up CreateTags could run would be invisible to it.
+    [[nodiscard]] auto launch_tag_specification(
+        const std::string& group, const std::string& market,
+        const std::optional<std::string>& key = std::nullopt) const
+        -> Aws::EC2::Model::TagSpecification {
+        std::string placement_strategy_val = "none";
+        if (auto pit = _cfg.placement_by_group.find(group); pit != _cfg.placement_by_group.end()) {
+            switch (pit->second.strategy) {
+                case ec2_placement_group_strategy::cluster:
+                    placement_strategy_val = "cluster";
+                    break;
+                case ec2_placement_group_strategy::spread:
+                    placement_strategy_val = "spread";
+                    break;
+                case ec2_placement_group_strategy::partition:
+                    placement_strategy_val = "partition";
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        Aws::EC2::Model::TagSpecification spec;
+        spec.SetResourceType(Aws::EC2::Model::ResourceType::instance);
+        spec.AddTags(make_ec2_tag("kythira:cluster", _cfg.cluster_name));
+        spec.AddTags(make_ec2_tag("kythira:group", group));
+        spec.AddTags(make_ec2_tag("kythira:managed-by", "ec2_quorum_manager"));
+        spec.AddTags(make_ec2_tag("kythira:placement-strategy", placement_strategy_val));
+        spec.AddTags(make_ec2_tag("kythira:market", market));
+        for (const auto& [k, v] : _cfg.extra_tags) {
+            // EC2 rejects a request that names one tag key twice, and the key
+            // tag is the one reconciliation reads, so it wins.
+            if (key && k == idempotency_key_tag) {
+                continue;
+            }
+            spec.AddTags(make_ec2_tag(k, v));
+        }
+        if (key) {
+            spec.AddTags(make_ec2_tag(idempotency_key_tag, *key));
+        }
+        return spec;
+    }
+
+private:
+    auto provision(std::string target_group, std::optional<NodeId> /*replacing*/,
+                   std::optional<std::string> key)
         -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
             fiu_do_on("raft/aws/ec2/run_instances",
@@ -370,7 +545,7 @@ public:
             // tags the audit actually reads are all in here. Same constraint the
             // user_data block above documents for {NODE_ID}.
             const std::string market_tag = _cfg.spot_options ? "spot" : "on-demand";
-            run_req.AddTagSpecifications(launch_tag_specification(target_group, market_tag));
+            run_req.AddTagSpecifications(launch_tag_specification(target_group, market_tag, key));
 
             auto outcome = _ec2->RunInstances(run_req);
             if (!outcome.IsSuccess()) {
@@ -434,6 +609,7 @@ public:
         }
     }
 
+public:
     /// Terminates the EC2 instance identified by node_id and waits up to 30 s for the
     /// state to leave "running", so a subsequent assess_quorum call sees it as unreachable.
     /// Returns successfully if the instance was already gone (InvalidInstanceID.NotFound).
@@ -632,46 +808,6 @@ private:
         t.SetKey(k);
         t.SetValue(v);
         return t;
-    }
-
-    /// The kythira:* tags and extra_tags that are known before the instance
-    /// exists, as a TagSpecification for RunInstances so they are applied
-    /// atomically with the launch.
-    ///
-    /// kythira:managed-by is the one that matters most for being here: the
-    /// post-run leak audit filters instances on that key alone, so an instance
-    /// orphaned before a follow-up CreateTags could run would be invisible to it.
-    [[nodiscard]] auto launch_tag_specification(const std::string& group,
-                                                const std::string& market) const
-        -> Aws::EC2::Model::TagSpecification {
-        std::string placement_strategy_val = "none";
-        if (auto pit = _cfg.placement_by_group.find(group); pit != _cfg.placement_by_group.end()) {
-            switch (pit->second.strategy) {
-                case ec2_placement_group_strategy::cluster:
-                    placement_strategy_val = "cluster";
-                    break;
-                case ec2_placement_group_strategy::spread:
-                    placement_strategy_val = "spread";
-                    break;
-                case ec2_placement_group_strategy::partition:
-                    placement_strategy_val = "partition";
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        Aws::EC2::Model::TagSpecification spec;
-        spec.SetResourceType(Aws::EC2::Model::ResourceType::instance);
-        spec.AddTags(make_ec2_tag("kythira:cluster", _cfg.cluster_name));
-        spec.AddTags(make_ec2_tag("kythira:group", group));
-        spec.AddTags(make_ec2_tag("kythira:managed-by", "ec2_quorum_manager"));
-        spec.AddTags(make_ec2_tag("kythira:placement-strategy", placement_strategy_val));
-        spec.AddTags(make_ec2_tag("kythira:market", market));
-        for (const auto& [k, v] : _cfg.extra_tags) {
-            spec.AddTags(make_ec2_tag(k, v));
-        }
-        return spec;
     }
 
     /// Applies the two tags that cannot be set at launch, because both derive

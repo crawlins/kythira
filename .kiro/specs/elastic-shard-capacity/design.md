@@ -503,15 +503,15 @@ needs to know about the manager underneath it.
 
 | Manager | Grows by | Idempotency metadata | Placement group means | Live test |
 |---|---|---|---|---|
-| `aws_ec2_quorum_manager` | `RunInstances` | EC2 tags | subnet / AZ | optional |
-| `aws_asg_quorum_manager` | ASG desired capacity | EC2 tags | ASG per group | optional |
-| `azure_vm_quorum_manager` | VM create | resource tags | zone / availability set | optional |
-| `azure_vmss_quorum_manager` | VMSS capacity | resource tags | scale set per group | optional |
-| `gcp_compute_quorum_manager` | instance insert | labels | zone | optional |
-| `gcp_mig_quorum_manager` | MIG target size | labels | MIG per group | optional |
-| `oci_instance_pool_quorum_manager` | pool size | freeform tags | AD / pool | optional |
-| `alibaba_ess_quorum_manager` | ESS capacity | tags | scaling group | optional |
-| `docker_quorum_manager` | container run | labels | logical label | **required (CI)** |
+| `aws_ec2_quorum_manager` | `RunInstances` | EC2 tag `kythira:idempotency-key` (keyed) | subnet / AZ | optional |
+| `aws_asg_quorum_manager` | ASG desired capacity | none — unkeyed (§15 item 7) | ASG per group | optional |
+| `azure_vm_quorum_manager` | VM create | resource tag `kythira:idempotency-key` (keyed) | zone / availability set | optional |
+| `azure_vmss_quorum_manager` | VMSS capacity | none — unkeyed (§15 item 7) | scale set per group | optional |
+| `gcp_compute_quorum_manager` | instance insert | label `kythira-idempotency-key` (keyed) | zone | optional |
+| `gcp_mig_quorum_manager` | MIG target size | none — unkeyed (§15 item 7) | MIG per group | optional |
+| `oci_instance_pool_quorum_manager` | pool size | none — unkeyed (§15 item 7) | AD / pool | optional |
+| `alibaba_ess_quorum_manager` | ESS capacity | none — unkeyed (§15 item 7) | scaling group | optional |
+| `docker_quorum_manager` | container run | label `kythira.idempotency-key` (keyed) | logical label | **required (CI)** |
 | `no_op_quorum_manager` | refuses | — | — | unit |
 
 Group-capacity managers (rows 2, 4, 6, 7, 8) are the candidates for the optional
@@ -619,9 +619,30 @@ documented in `doc/elastic_shard_capacity.md`.
    `find_by_idempotency_key` (`keyed_quorum_manager`), and group sizes through
    `set_group_target` (`resizable_quorum_manager`). The controller uses them
    when present and degrades as §7 describes when not.
-   `docker_quorum_manager` carries the key as a container label. **The cloud
-   managers do not carry it yet**, and the parity table in the operator doc
-   says so rather than the §12 table's "every shipped manager already tags".
+   `docker_quorum_manager` carries the key as a container label. The
+   **instance-level** cloud managers carry it too, attached in the create call
+   itself so it exists from the instant the machine does:
+   `aws_ec2_quorum_manager` as the tag `kythira:idempotency-key` in
+   `RunInstances`' TagSpecifications, `azure_vm_quorum_manager` as the same
+   tag in the VM's `PUT`, and `gcp_compute_quorum_manager` as the label
+   `kythira-idempotency-key` in `instances.insert`. GCP label values allow
+   only lowercase letters, digits, `-` and `_`, up to 63 characters; the
+   controller's own keys (`cap-<fencing>-<ms>-<hex>`) already fit and are
+   written verbatim, and any key that does not is mapped deterministically by
+   `gcp_idempotency_label_value` (FNV-1a hash plus sanitised prefix), so a
+   successor derives the label from the ledger alone. Each lookup counts a
+   machine that is stopped (a stopped EC2 instance, a GCE `TERMINATED`
+   instance, a deallocated VM) — like a stopped container, it still exists and
+   needs reaping, and hiding it would fail the intent and leak it — and skips
+   one already being destroyed (EC2 `shutting-down`/`terminated`, ARM
+   `provisioningState: Deleting`).
+   The **group-capacity** managers (`aws_asg`, `azure_vmss`, `gcp_mig`,
+   `oci_instance_pool`, `alibaba_ess`) still do not: they grow by raising a
+   target size and the provider launches the instance, so there is no create
+   call to attach a key to atomically. Tagging the new instance afterwards
+   would reopen the very window the key exists to close, so those managers
+   stay unkeyed and reconcile by node id and join deadline (§7). The §12 table
+   and the operator doc's parity table say which is which.
 8. **Operator ids start at 2^63 + 1.** This keeps the controller's ids disjoint
    from an inner driver's, so the decorator can route each outcome to whoever
    issued it.

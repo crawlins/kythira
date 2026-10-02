@@ -325,9 +325,13 @@ Read before starting:
     leg, where run, ends with a clean audit.
   - Status: the Docker leg is `docker-elastic-capacity-tests`, a step in the
     arm64 Docker smoke workflow. The optional per-provider live legs are not
-    part of this change. They spend real cloud money, and no cloud manager
-    carries an idempotency key yet (design §15, item 7), so each would be
-    exercising the unkeyed path only.
+    part of this change. They spend real cloud money. The instance-level cloud
+    managers (`aws_ec2`, `azure_vm`, `gcp_compute`) now carry the idempotency
+    key, attached atomically in their create calls and covered by unit tests
+    (and, for EC2, a LocalStack case); the group-capacity managers cannot
+    attach it atomically and stay unkeyed (design §15, item 7). A live leg is
+    therefore worth adding first for an instance-level manager, where it would
+    exercise the keyed path.
   - _Requirements: 1.6, 16.5, 16.6_
 
 - [x] 17. Documentation
