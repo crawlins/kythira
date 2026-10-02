@@ -981,6 +981,9 @@ add_raft_completion_test(multi_raft_arbiter_unit_test multi_raft_arbiter_unit_te
 # capacity gate, the allocation-suggestion counter, operator feedback and the
 # empty-registry heartbeat.
 add_raft_completion_test(multi_raft_capacity_host_test multi_raft_capacity_host_test.cpp)
+# elastic-shard-capacity spec, tasks 3-4: the capacity value types, the
+# capacity_policy concept and threshold_capacity_policy. Pure and clock-free.
+add_raft_completion_test(capacity_policy_unit_test capacity_policy_unit_test.cpp)
 add_raft_completion_test(multi_raft_invariant_property_test
                          multi_raft_invariant_property_test.cpp)
 # Task 34 of .kiro/specs/multi-raft/: 1000 groups across three simulated nodes.
