@@ -51,13 +51,17 @@ static constexpr const char* k_all_dns_faults[] = {
     k_rfc6763_ldns_update_noop,
 };
 
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+// fiu_init() runs on every future backend, not only Folly's: it used to sit
+// inside the Folly-only fixture, so a Boost or stdexec build called
+// fiu_enable() on an uninitialised libfiu and crashed in the first test.
 struct DnsChaosFixture {
     DnsChaosFixture() {
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
         int argc = 1;
         char* argv0[] = {const_cast<char*>("dns_peer_discovery_chaos_test"), nullptr};
         char** argv = argv0;
         _init = std::make_unique<folly::Init>(&argc, &argv);
+#endif
         fiu_init(0);
     }
     ~DnsChaosFixture() {
@@ -65,13 +69,12 @@ struct DnsChaosFixture {
             fiu_disable(name);
         }
     }
-    std::unique_ptr<folly::Init> _init;
-};
-#endif
-
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(DnsChaosFixture);
+    std::unique_ptr<folly::Init> _init;
 #endif
+};
+
+BOOST_GLOBAL_FIXTURE(DnsChaosFixture);
 
 static void clear_faults() {
     for (const auto* name : k_all_dns_faults) {
