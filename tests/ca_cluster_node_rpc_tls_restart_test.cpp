@@ -9,7 +9,13 @@
 // rejoins the cluster and the cluster keeps issuing certificates — proving
 // the persisted peer certificate under --data-dir (Requirement 7.1) is
 // sufficient on its own.
-// **Validates: Requirement 7.1**
+//
+// A second case forces every node's peer certificate into its renewal
+// window (--rpc-renewal-window-secs just under the 30-day peer validity)
+// and confirms each node, leader included, renews it and serves the new
+// certificate on its Raft RPC port without a restart (Requirements 7.2,
+// 7.3).
+// **Validates: Requirements 7.1, 7.2, 7.3**
 
 #define BOOST_TEST_MODULE ca_cluster_node_rpc_tls_restart_test
 
@@ -24,6 +30,10 @@
 #include <httplib.h>
 #include <boost/json.hpp>
 
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+
 #include <arpa/inet.h>
 #include <chrono>
 #include <csignal>
@@ -31,6 +41,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <map>
 #include <netinet/in.h>
 #include <optional>
 #include <sstream>
@@ -79,11 +90,13 @@ struct rpc_tls_node_process {
     std::optional<std::string> bootstrap_cert_path;  // nullopt: no --rpc-tls-cert/key at all
     std::optional<std::string> bootstrap_key_path;
     bool bootstrap;
+    std::vector<std::string> extra_args;  // appended to every spawn
 
     rpc_tls_node_process(std::uint64_t id, int rpc_port_, int http_port_, std::string data_dir_,
                          std::string unseal_key_file_, std::string auth_token_,
                          std::string peers_arg_, std::optional<std::string> bootstrap_cert_path_,
-                         std::optional<std::string> bootstrap_key_path_, bool bootstrap_)
+                         std::optional<std::string> bootstrap_key_path_, bool bootstrap_,
+                         std::vector<std::string> extra_args_ = {})
         : node_id(id),
           http_port(http_port_),
           rpc_port(rpc_port_),
@@ -93,7 +106,8 @@ struct rpc_tls_node_process {
           peers_arg(std::move(peers_arg_)),
           bootstrap_cert_path(std::move(bootstrap_cert_path_)),
           bootstrap_key_path(std::move(bootstrap_key_path_)),
-          bootstrap(bootstrap_) {
+          bootstrap(bootstrap_),
+          extra_args(std::move(extra_args_)) {
         std::filesystem::create_directories(data_dir);
         spawn();
     }
@@ -162,6 +176,7 @@ struct rpc_tls_node_process {
             argv_strs.emplace_back("--rpc-tls-key");
             argv_strs.push_back(*bootstrap_key_path);
         }
+        argv_strs.insert(argv_strs.end(), extra_args.begin(), extra_args.end());
 
         std::vector<char*> argv;
         argv.reserve(argv_strs.size() + 1);
@@ -223,6 +238,16 @@ struct rpc_tls_node_process {
     }
 
     [[nodiscard]] auto is_running() const -> bool { return pid > 0; }
+
+    // Whether the process spawned last is still alive — true across a
+    // renewal is what "without a restart" means.
+    [[nodiscard]] auto still_alive() const -> bool {
+        if (pid <= 0) {
+            return false;
+        }
+        int status = 0;
+        return ::waitpid(pid, &status, WNOHANG) == 0;
+    }
 };
 
 auto wait_healthy(int http_port, std::chrono::seconds timeout) -> bool {
@@ -304,6 +329,114 @@ auto try_issue_certificate(const std::vector<std::unique_ptr<rpc_tls_node_proces
 }
 
 constexpr const char* k_auth_token = "rpc-tls-restart-test-token";
+
+auto read_file(const std::string& path) -> std::string {
+    std::ifstream f(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+}
+
+// Serial of the PEM certificate at `path`, or nullopt when the file is
+// missing or does not parse (a renewal can be rewriting it right now).
+auto persisted_serial(const std::string& path) -> std::optional<std::string> {
+    auto pem = read_file(path);
+    if (pem.empty()) {
+        return std::nullopt;
+    }
+    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (cert == nullptr) {
+        return std::nullopt;
+    }
+    BIGNUM* bn = ASN1_INTEGER_to_BN(X509_get0_serialNumber(cert), nullptr);
+    char* hex = BN_bn2hex(bn);
+    std::string out = hex;
+    OPENSSL_free(hex);
+    BN_free(bn);
+    X509_free(cert);
+    return out;
+}
+
+// Serial of the certificate a running node's Raft RPC listener presents,
+// read off a real TLS handshake. The listener requires a client
+// certificate, so the probe presents `client_cert_path`/`client_key_path`
+// (another node's peer identity) and does not verify the server: only what
+// it presents matters here.
+auto rpc_listener_serial(int rpc_port, const std::string& client_cert_path,
+                         const std::string& client_key_path) -> std::optional<std::string> {
+    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+    if (ctx == nullptr) {
+        return std::nullopt;
+    }
+    std::optional<std::string> out;
+    if (SSL_CTX_use_certificate_chain_file(ctx, client_cert_path.c_str()) == 1 &&
+        SSL_CTX_use_PrivateKey_file(ctx, client_key_path.c_str(), SSL_FILETYPE_PEM) == 1) {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<std::uint16_t>(rpc_port));
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        timeval tv{5, 0};
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        if (fd >= 0 && ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+            SSL* ssl = SSL_new(ctx);
+            SSL_set_fd(ssl, fd);
+            if (SSL_connect(ssl) == 1) {
+                if (X509* peer = SSL_get1_peer_certificate(ssl)) {
+                    BIGNUM* bn = ASN1_INTEGER_to_BN(X509_get0_serialNumber(peer), nullptr);
+                    char* hex = BN_bn2hex(bn);
+                    out = std::string(hex);
+                    OPENSSL_free(hex);
+                    BN_free(bn);
+                    X509_free(peer);
+                }
+                SSL_shutdown(ssl);
+            }
+            SSL_free(ssl);
+        }
+        if (fd >= 0) {
+            ::close(fd);
+        }
+    }
+    SSL_CTX_free(ctx);
+    return out;
+}
+
+// Issues one client certificate through whichever node currently leads,
+// over the nodes' https:// client API verified against `listener_root`.
+auto try_issue_certificate_https(const std::vector<std::unique_ptr<rpc_tls_node_process>>& nodes,
+                                 const std::string& listener_root_path,
+                                 std::chrono::seconds timeout) -> bool {
+    leaf_certificate_options opts;
+    opts.subject.common_name = "rpc-tls-renewal-test-client";
+    opts.dns_names = {"rpc-tls-renewal-test-client.example.com"};
+    auto csr = generate_key_and_csr(opts);
+    boost::json::object body;
+    body["csr_pem"] = csr.csr_pem;
+    body["dns_names"] =
+        boost::json::array{boost::json::string("rpc-tls-renewal-test-client.example.com")};
+    auto payload = boost::json::serialize(body);
+
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        for (const auto& n : nodes) {
+            httplib::SSLClient client("127.0.0.1", n->http_port);
+            client.set_ca_cert_path(listener_root_path.c_str());
+            client.enable_server_certificate_verification(true);
+            client.set_connection_timeout(5, 0);
+            client.set_read_timeout(65, 0);
+            auto res = client.Post("/v1/certificates",
+                                   {{"Authorization", std::string("Bearer ") + k_auth_token}},
+                                   payload, "application/json");
+            if (res && res->status == 200) {
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -468,6 +601,173 @@ BOOST_AUTO_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
     BOOST_REQUIRE_MESSAGE(
         try_issue_certificate(nodes, k_auth_token, std::chrono::seconds(60)),
         "certificate issuance failed after restarting a node without the bootstrap credential");
+
+    for (auto& n : nodes) {
+        n->stop();
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(tmp_root, ec);
+}
+
+BOOST_AUTO_TEST_CASE(near_expiry_peer_certs_renew_without_restart,
+                     *boost::unit_test::timeout(550)) {
+    auto tmp_root = (std::filesystem::temp_directory_path() /
+                     ("ca_cluster_node_rpc_tls_renewal_test_" + std::to_string(::getpid())))
+                        .string();
+    std::filesystem::create_directories(tmp_root);
+    std::string unseal_key_file = tmp_root + "/unseal.key";
+    std::ofstream(unseal_key_file) << "rpc-tls-renewal-test-unseal-passphrase\n";
+
+    certificate_authority bootstrap_cred;
+    std::string bootstrap_cert_path = tmp_root + "/bootstrap.crt";
+    std::string bootstrap_key_path = tmp_root + "/bootstrap.key";
+    std::ofstream(bootstrap_cert_path) << bootstrap_cred.root_certificate_pem();
+    std::ofstream(bootstrap_key_path)
+        << detail_testing::unsafe_extract_ca_private_key_pem(bootstrap_cred);
+
+    // /v1/certificates/renew authenticates by mTLS, so renewal only runs
+    // against an https:// leader: give every node a client-API listener
+    // certificate from one operator CA, as the verified-HTTPS case in
+    // ca_cluster_node_rpc_tls_test.cpp does.
+    certificate_authority listener_ca;
+    std::string listener_root_path = tmp_root + "/listener_root.pem";
+    std::ofstream(listener_root_path) << listener_ca.root_certificate_pem();
+
+    struct info {
+        std::uint64_t id;
+        int rpc_port;
+        int http_port;
+    };
+    std::vector<info> infos = {{1, find_free_port(), find_free_port()},
+                               {2, find_free_port(), find_free_port()},
+                               {3, find_free_port(), find_free_port()}};
+
+    std::ostringstream peers;
+    for (std::size_t i = 0; i < infos.size(); ++i) {
+        if (i > 0) {
+            peers << ",";
+        }
+        peers << infos[i].id << ":127.0.0.1:" << infos[i].rpc_port
+              << "@https://127.0.0.1:" << infos[i].http_port;
+    }
+    std::string peers_arg = peers.str();
+
+    // Peer certificates are valid for 30 days. A window 30 seconds short of
+    // that puts each one inside it about 30 seconds after issuance, so every
+    // node renews repeatedly while the test watches, instead of after weeks.
+    constexpr auto k_peer_validity = std::chrono::hours(24 * 30);
+    const auto renewal_window = std::chrono::duration_cast<std::chrono::seconds>(k_peer_validity) -
+                                std::chrono::seconds(30);
+
+    auto data_dir_of = [&](std::uint64_t id) { return tmp_root + "/node" + std::to_string(id); };
+    auto peer_cert_of = [&](std::uint64_t id) { return data_dir_of(id) + "/rpc_peer_cert.pem"; };
+    auto peer_key_of = [&](std::uint64_t id) { return data_dir_of(id) + "/rpc_peer_key.pem"; };
+
+    auto spawn_node = [&](std::size_t i) {
+        leaf_certificate_options opts;
+        opts.subject.common_name = "ca-node-" + std::to_string(infos[i].id);
+        opts.ip_addresses = {"127.0.0.1"};
+        opts.server_auth = true;
+        opts.client_auth = false;
+        auto leaf = listener_ca.issue(opts);
+        auto dir = tmp_root + "/listener" + std::to_string(infos[i].id);
+        std::filesystem::create_directories(dir);
+        std::ofstream(dir + "/cert.pem") << leaf.chain_pem;
+        std::ofstream(dir + "/key.pem") << leaf.private_key_pem;
+        return std::make_unique<rpc_tls_node_process>(
+            infos[i].id, infos[i].rpc_port, infos[i].http_port, data_dir_of(infos[i].id),
+            unseal_key_file, k_auth_token, peers_arg, bootstrap_cert_path, bootstrap_key_path,
+            /*bootstrap=*/i == 0,
+            std::vector<std::string>{"--tls-cert", dir + "/cert.pem", "--tls-key", dir + "/key.pem",
+                                     "--rpc-renewal-window-secs",
+                                     std::to_string(renewal_window.count())});
+    };
+
+    // Same staged startup as the first case, for the same reason: with all
+    // three up at once a non-bootstrap node can win the first election
+    // before bootstrap_ca commits, and the CA then never exists (seen here
+    // too: node 2 led term 1 at commit index 2 and nothing ever enrolled).
+    std::vector<std::unique_ptr<rpc_tls_node_process>> nodes;
+    nodes.push_back(spawn_node(0));
+    std::this_thread::sleep_for(std::chrono::milliseconds(6000));
+    nodes.push_back(spawn_node(1));
+    BOOST_REQUIRE_MESSAGE(
+        try_issue_certificate_https(nodes, listener_root_path, std::chrono::seconds(120)),
+        "cluster never reached an issuance-capable state with the first two nodes up "
+        "(bootstrap_ca not committed)");
+    nodes.push_back(spawn_node(2));
+
+    // Every node enrolls (persists a peer certificate) and finalizes the
+    // cutover, so from here on the cluster's Raft RPC relies on CA-issued
+    // peer certificates alone.
+    auto all_have = [&](const std::string& file) {
+        return std::ranges::all_of(infos, [&](const info& in) {
+            return std::filesystem::exists(data_dir_of(in.id) + "/" + file);
+        });
+    };
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(240);
+    while (!all_have("rpc_cutover_finalized") && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    BOOST_REQUIRE_MESSAGE(all_have("rpc_peer_cert.pem"), "not every node enrolled a peer identity");
+    BOOST_REQUIRE_MESSAGE(all_have("rpc_cutover_finalized"),
+                          "not every node finalized the RPC TLS cutover");
+
+    // Each node's first peer certificate; a renewal must replace it.
+    std::map<std::uint64_t, std::string> first_serial;
+    for (const auto& in : infos) {
+        auto serial = persisted_serial(peer_cert_of(in.id));
+        BOOST_REQUIRE_MESSAGE(serial.has_value(),
+                              "node " << in.id << "'s persisted peer certificate does not parse");
+        first_serial[in.id] = *serial;
+    }
+
+    // Requirement 7.2: every node, whichever one leads, renews on its own.
+    // The leader has no leader to call /renew on and signs its renewal
+    // in-process; before that, a long-serving leader's certificate expired.
+    auto all_renewed = [&] {
+        return std::ranges::all_of(infos, [&](const info& in) {
+            auto serial = persisted_serial(peer_cert_of(in.id));
+            return serial.has_value() && *serial != first_serial[in.id];
+        });
+    };
+    auto renew_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
+    while (!all_renewed() && std::chrono::steady_clock::now() < renew_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    for (const auto& in : infos) {
+        BOOST_TEST((persisted_serial(peer_cert_of(in.id)) != std::optional(first_serial[in.id])),
+                   "node " << in.id << " never renewed its near-expiry peer certificate");
+    }
+    BOOST_REQUIRE(all_renewed());
+
+    // Requirement 7.2's "without a restart": the same processes are still
+    // running, and each one's live Raft RPC listener already presents a
+    // renewed certificate (hot-reloaded, Requirement 7.3), not the one it
+    // started with.
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        BOOST_TEST(nodes[i]->still_alive(), "node " << infos[i].id << " exited");
+        const auto& prober = infos[(i + 1) % infos.size()];
+        std::optional<std::string> presented;
+        auto probe_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!presented.has_value() && std::chrono::steady_clock::now() < probe_deadline) {
+            presented = rpc_listener_serial(infos[i].rpc_port, peer_cert_of(prober.id),
+                                            peer_key_of(prober.id));
+            if (!presented.has_value()) {
+                // The prober's own files can be mid-rewrite by its renewal.
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+        }
+        BOOST_TEST(presented.has_value(),
+                   "could not complete a TLS handshake with node " << infos[i].id << "'s RPC port");
+        BOOST_TEST(
+            (presented != std::optional(first_serial[infos[i].id])),
+            "node " << infos[i].id << "'s RPC listener still presents its pre-renewal certificate");
+    }
+
+    // The renewed identities still carry Raft: the cluster keeps committing.
+    BOOST_TEST(try_issue_certificate_https(nodes, listener_root_path, std::chrono::seconds(90)),
+               "certificate issuance failed after every node renewed its peer certificate");
 
     for (auto& n : nodes) {
         n->stop();

@@ -80,6 +80,12 @@ struct ca_cluster_node_config {
     // non-loopback --rpc-address. Without it, a node that has no RPC TLS
     // material refuses to start (see plaintext_rpc_permitted()).
     bool allow_plaintext_rpc{false};
+    // How long before its notAfter this node renews its CA-issued RPC peer
+    // certificate (Requirement 7.2). Seven days leaves many maintenance
+    // ticks of retry room against the default 30-day peer-cert validity
+    // when the leader is briefly unreachable. Tests set it close to the
+    // validity itself to force a renewal within seconds of issuance.
+    std::chrono::seconds rpc_renewal_window{std::chrono::hours(24 * 7)};
 #ifdef KYTHIRA_HAS_OPENSSL
     // Resolved (not CLI-facing) transport config main() actually constructs
     // tls_tcp_rpc_client/server with — populated from rpc_tls_cert_path/
@@ -280,6 +286,7 @@ namespace detail {
         << "                       [--tls-cert <path> --tls-key <path>] [--peer-tls-ca <path>]\n"
         << "                       [--rpc-tls-cert <path> --rpc-tls-key <path>]\n"
         << "                       [--allow-plaintext-rpc] [--allow-plaintext-http]\n"
+        << "                       [--rpc-renewal-window-secs <n>]\n"
         << "                       [--auth-token <token>]  (prefer $CA_SERVICE_AUTH_TOKEN)\n"
         << "                       [--print-root-fingerprint]\n";
     std::exit(1);
@@ -340,6 +347,11 @@ namespace detail {
             cfg.allow_plaintext_http = true;
         } else if (arg == "--peer-tls-ca") {
             cfg.peer_tls_ca_path = next();
+        } else if (arg == "--rpc-renewal-window-secs") {
+            cfg.rpc_renewal_window = std::chrono::seconds(std::stoll(next()));
+            if (cfg.rpc_renewal_window <= std::chrono::seconds::zero()) {
+                usage_error("--rpc-renewal-window-secs must be positive");
+            }
         } else if (arg == "--print-root-fingerprint") {
             cfg.print_root_fingerprint = true;
         } else if (arg == "--election-timeout-min-ms") {
