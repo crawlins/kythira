@@ -1599,6 +1599,16 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_test(NAME coap_dtls_rpk_test COMMAND coap_dtls_rpk_test)
     set_tests_properties(coap_dtls_rpk_test PROPERTIES TIMEOUT 60 LABELS "coap;coap-security;unit")
 
+    # Raft RPCs over live DTLS-PSK, DTLS-PKI and DTLS-RPK sessions between a
+    # real coap_client and coap_server. Needs real libcoap (every case is a
+    # network round trip) and OpenSSL for the test's own keys and certs.
+    if(LIBCOAP_FOUND AND TARGET OpenSSL::SSL)
+        add_network_test(coap_dtls_raft_rpc_test coap_dtls_raft_rpc_test.cpp)
+        target_link_libraries(coap_dtls_raft_rpc_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        set_tests_properties(coap_dtls_raft_rpc_test PROPERTIES TIMEOUT 300
+            LABELS "coap;coap-security;integration;libcoap")
+    endif()
+
     # Real-libcoap smoke coverage for the remaining providers' configure_session()/
     # create_client_session()/validation-callback bodies (no_auth, dtls_psk,
     # dtls_pki, plus bonus dtls_rpk/oscore calls) that coap_dtls_rpk_test.cpp and
