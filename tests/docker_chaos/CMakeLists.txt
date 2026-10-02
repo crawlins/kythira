@@ -163,6 +163,14 @@ add_docker_chaos_scenario_test(docker_cloudwatch_metrics_test
 add_docker_chaos_scenario_test(docker_cloud_monitoring_config_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/cloud_monitoring_config_validation_test.cpp")
 
+# ── Elastic shard capacity, end to end ───────────────────────────────────────
+# .kiro/specs/elastic-shard-capacity/ task 16: three multi_raft_node hosts,
+# one running the capacity controller over docker_quorum_manager, scale out
+# by creating a fourth container through the container API.
+
+add_docker_chaos_scenario_test(docker_elastic_capacity_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/elastic_capacity_docker_test.cpp")
+
 # ── Container runtime detection ───────────────────────────────────────────────
 #
 # CONTAINER_RUNTIME  — CMake cache variable; empty = auto-detect (docker then podman).
@@ -212,6 +220,8 @@ if(_RUNTIME_EXE)
     set(_NETDATA_METRICS_COMPOSE_FILE    "${CMAKE_SOURCE_DIR}/docker/netdata-metrics-compose.yml")
     set(_CLOUDWATCH_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/cloudwatch-localstack-compose.yml")
     set(_CLOUD_MONITORING_CONFIG_DIR     "${CMAKE_SOURCE_DIR}/docker/cloud-monitoring")
+    set(_MULTI_RAFT_NODE_DOCKERFILE      "${CMAKE_SOURCE_DIR}/docker/multi_raft_node/Dockerfile")
+    set(_ELASTIC_CAPACITY_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/elastic-capacity-compose.yml")
 
     # Env-var prefix injected into every scenario-test invocation.
     set(_RT_ENV
@@ -283,6 +293,51 @@ if(_RUNTIME_EXE)
             COMMAND ${CMAKE_COMMAND} -E false
         )
     endif()
+
+    # docker-multi-raft-node-image: stage the host-built multi_raft_node and
+    # package it, as scripts/build-tier-e-image.sh does. Unlike chaos_node,
+    # cmd/multi_raft_node is added BEFORE tests/ at the top level, so
+    # `if(TARGET ...)` works here. Podman is told `--format docker`: its
+    # default OCI format silently drops the image's HEALTHCHECK (see that
+    # script's header).
+    if(TARGET multi_raft_node)
+        set(_MULTI_RAFT_NODE_FORMAT_ARGS "")
+        if(CONTAINER_RUNTIME STREQUAL "podman")
+            set(_MULTI_RAFT_NODE_FORMAT_ARGS --format docker)
+        endif()
+        add_custom_target(docker-multi-raft-node-image
+            DEPENDS multi_raft_node
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_SOURCE_DIR}/docker/multi_raft_node/dist"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:multi_raft_node>"
+                    "${CMAKE_SOURCE_DIR}/docker/multi_raft_node/dist/multi_raft_node"
+            COMMAND ${_RUNTIME_EXE} build ${_MULTI_RAFT_NODE_FORMAT_ARGS}
+                    --file "${_MULTI_RAFT_NODE_DOCKERFILE}"
+                    --tag kythira-multi-raft-node:dev
+                    "${CMAKE_SOURCE_DIR}"
+            COMMENT "Staging multi_raft_node binary and building kythira-multi-raft-node:dev image"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    else()
+        add_custom_target(docker-multi-raft-node-image
+            COMMAND ${CMAKE_COMMAND} -E echo
+                    "'docker-multi-raft-node-image' requires multi_raft_node to be buildable (future backend + Boost + httplib)"
+            COMMAND ${CMAKE_COMMAND} -E false
+        )
+    endif()
+
+    add_custom_target(docker-elastic-capacity-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_DOCKER_INTEGRATION_TESTS=1
+                KYTHIRA_ELASTIC_CAPACITY_COMPOSE_FILE=${_ELASTIC_CAPACITY_COMPOSE_FILE}
+                $<TARGET_FILE:docker_elastic_capacity_test>
+                --log_level=message
+        DEPENDS docker-multi-raft-node-image docker_elastic_capacity_test
+        COMMENT "Running elastic shard capacity scale-out scenario test (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
 
     add_custom_target(docker-chaos-tests
         COMMAND ${CMAKE_COMMAND} -E env
@@ -581,7 +636,8 @@ if(_RUNTIME_EXE)
         "docker-prometheus-metrics-tests, docker-prometheus-remote-write-tests, "
         "docker-victoriametrics-metrics-tests, "
         "docker-telegraf-metrics-tests, docker-netdata-metrics-tests, "
-        "docker-cloudwatch-metrics-tests, docker-cloud-monitoring-config-tests targets available")
+        "docker-cloudwatch-metrics-tests, docker-cloud-monitoring-config-tests, "
+        "docker-multi-raft-node-image, docker-elastic-capacity-tests targets available")
     if(KYTHIRA_BUILD_REDIS_GATEWAY)
         message(STATUS
             "Container runtime: docker-redis-gateway-image, docker-sccache-runner-image, "
@@ -604,7 +660,8 @@ else()
         docker-prometheus-metrics-tests docker-prometheus-remote-write-tests
         docker-victoriametrics-metrics-tests
         docker-telegraf-metrics-tests docker-netdata-metrics-tests
-        docker-cloudwatch-metrics-tests docker-cloud-monitoring-config-tests)
+        docker-cloudwatch-metrics-tests docker-cloud-monitoring-config-tests
+        docker-multi-raft-node-image docker-elastic-capacity-tests)
         add_custom_target(${_t}
             COMMAND ${CMAKE_COMMAND} -E echo
                     "'${_t}' requires docker or podman on PATH"

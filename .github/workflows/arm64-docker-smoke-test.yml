@@ -254,6 +254,16 @@ jobs:
         if: success() || failure()
         run: cmake --build build --target docker-cloud-monitoring-config-tests -j$(nproc)
 
+      # Elastic shard capacity end to end (.kiro/specs/elastic-shard-capacity/
+      # task 16): three multi_raft_node hosts, load that splits shards, and a
+      # controller that creates a fourth container through the container API
+      # and admits it. The controller mounts the runtime's API socket — no
+      # privileges, no host networking. New, so not continue-on-error: a
+      # failure here is a finding.
+      - name: Run docker-elastic-capacity-tests (multi_raft_node image, controller scale-out)
+        if: success() || failure()
+        run: cmake --build build --target docker-elastic-capacity-tests -j$(nproc)
+
       # The redis-compatible-kv acceptance tests (.kiro/specs/redis-compatible-kv/
       # tasks 12 and 13): real upstream sccache 0.10 in a container, building a
       # Rust crate against a three-node redis_gateway_node cluster, asserted
