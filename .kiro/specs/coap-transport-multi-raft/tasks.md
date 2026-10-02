@@ -1,6 +1,6 @@
 # Implementation Plan — CoAP under Multi-Raft
 
-## Status: In progress — tasks 1–6, 8 and 12 done; 7 implemented, unverified
+## Status: In progress — tasks 1–6, 8 and 12 done; 7 implemented, unverified; 13 running without OSCORE
 
 **Last Updated**: October 2, 2026
 
@@ -282,6 +282,30 @@ its own review.
     load split scatters (which needs task 6's `TimeoutNow`); the OSCORE
     derivation counter shows one context per (peer, group) and no more.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 4.1, 8.1, 8.2, 8.3, 8.6_
+  - **Progress (October 2, 2026):** `tests/multi_raft_coap_test.cpp` runs
+    two groups over one shared libcoap client and server per host and passes
+    isolation, split, merge and scatter, without OSCORE. The OSCORE variant
+    and its derivation-counter check wait on how tasks 9–11 reach the libcoap
+    backend. Standing it up found three defects, two fixed here:
+    - **Fixed:** the libcoap client opened a new session (a new UDP socket)
+      for every RPC and never released it; multi-Raft exhausted a
+      20,000-descriptor limit in seconds. Sessions are now pooled per peer,
+      with NSTART raised to `max_concurrent_requests` so a shared session
+      does not serialize Raft behind RFC 7252's one-outstanding-CON default.
+    - **Fixed:** `node<Types>` sent InstallSnapshot by blocking on each
+      chunk's future, from inside an AppendEntries reply. On libcoap that
+      reply runs on the client's I/O thread, so the first snapshot froze the
+      client for every peer and every group. The transfer is now a chain of
+      continuations, one in flight per follower.
+    - **Fixed upstream, now asserted here:** after a split, writes to the
+      *non-derived* child never committed, on the in-process fabric as much
+      as on CoAP. Its replicas start from a snapshot with an empty log, and
+      neither side of AppendEntries treated `prevLogIndex` equal to the
+      snapshot's last included index as matching, so the leader re-sent the
+      snapshot forever. `fix(raft): match on the snapshot boundary so split
+      children replicate` (elastic shard capacity) fixed it in Raft core;
+      the split case here now writes to both children and checks each lands
+      only in its own.
 
 ---
 
