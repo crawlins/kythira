@@ -48,10 +48,25 @@ namespace kythira {
 
 namespace tcp_detail {
 
+// send() rather than write(): writing to a socket whose peer has closed it
+// raises SIGPIPE, whose default action kills the process, and a client
+// whose RPC timed out closes its end before the server replies. The flag
+// fixes just these writes instead of changing the process's SIGPIPE
+// disposition. Where MSG_NOSIGNAL does not exist, SO_NOSIGPIPE is set on
+// the socket instead (net_bind::connect_one()).
+#ifdef MSG_NOSIGNAL
+inline constexpr int k_send_flags = MSG_NOSIGNAL;
+#else
+inline constexpr int k_send_flags = 0;
+#endif
+
 inline auto write_all(int fd, const void* buf, std::size_t n) -> bool {
     const auto* p = static_cast<const char*>(buf);
     while (n > 0) {
-        ssize_t w = ::write(fd, p, n);
+        ssize_t w = ::send(fd, p, n, k_send_flags);
+        if (w < 0 && errno == EINTR) {
+            continue;
+        }
         if (w <= 0) {
             return false;
         }
@@ -65,6 +80,9 @@ inline auto read_all(int fd, void* buf, std::size_t n) -> bool {
     auto* p = static_cast<char*>(buf);
     while (n > 0) {
         ssize_t r = ::read(fd, p, n);
+        if (r < 0 && errno == EINTR) {
+            continue;
+        }
         if (r <= 0) {
             return false;
         }
@@ -72,6 +90,27 @@ inline auto read_all(int fd, void* buf, std::size_t n) -> bool {
         n -= static_cast<std::size_t>(r);
     }
     return true;
+}
+
+inline constexpr std::uint32_t k_max_frame_bytes = 64u * 1024u * 1024u;
+inline constexpr std::size_t k_frame_read_chunk = 1024u * 1024u;
+
+// Reads a `len`-byte frame body through `read_chunk(dst, n)` (a read_all
+// over an fd or an SSL*), growing the buffer only as bytes arrive: a peer
+// that announces 64 MiB and then stops costs at most one chunk, instead of
+// a 64 MiB zero-filled allocation made as soon as the 4-byte header lands.
+template<typename ReadChunk>
+auto read_frame_body(std::uint32_t len, ReadChunk&& read_chunk) -> std::optional<std::string> {
+    std::string buf;
+    while (buf.size() < len) {
+        auto n = std::min<std::size_t>(len - buf.size(), k_frame_read_chunk);
+        auto at = buf.size();
+        buf.resize(at + n);
+        if (!read_chunk(buf.data() + at, n)) {
+            return std::nullopt;
+        }
+    }
+    return buf;
 }
 
 inline auto frame_send(int fd, std::string_view payload) -> bool {
@@ -85,14 +124,10 @@ inline auto frame_recv(int fd) -> std::optional<std::string> {
         return std::nullopt;
     }
     std::uint32_t len = ntohl(net_len);
-    if (len == 0 || len > 64u * 1024u * 1024u) {
+    if (len == 0 || len > k_max_frame_bytes) {
         return std::nullopt;
     }
-    std::string buf(len, '\0');
-    if (!read_all(fd, buf.data(), len)) {
-        return std::nullopt;
-    }
-    return buf;
+    return read_frame_body(len, [fd](char* dst, std::size_t n) { return read_all(fd, dst, n); });
 }
 
 // The bind and dial helpers live in net_bind.hpp, shared with the other
