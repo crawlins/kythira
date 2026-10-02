@@ -23,7 +23,7 @@ services:
   ca-service:
     image: kythira-ca-service:dev
     build:
-      context: ../..
+      context: ..
       dockerfile: docker/ca_service/Dockerfile
     networks:
       - ca-provisioning-net
