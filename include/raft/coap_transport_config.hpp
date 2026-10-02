@@ -101,6 +101,23 @@ struct received_message_info {
         : message_id(msg_id), received_time(std::chrono::steady_clock::now()) {}
 };
 
+// How the libcoap client's I/O thread waits between passes
+// (coap-client-event-driven-io spec, Requirement 6.1).
+//  - automatic: readiness when libcoap exposes an epoll descriptor
+//    (coap_context_get_coap_fd() >= 0), paced otherwise.
+//  - readiness: wait in poll() on that descriptor and a wake eventfd;
+//    construction fails if libcoap has no epoll descriptor.
+//  - paced: drain, then sleep io_paced_interval -- the pre-spec loop plus the
+//    drain. Forcing it is how the suite exercises the fallback on a build
+//    that has epoll.
+// Only the libcoap backend reads it; libnyoci and cantcoap have their own
+// loops (Requirement 9.4).
+enum class coap_io_wait_mode {
+    automatic,
+    readiness,
+    paced
+};
+
 // Configuration structures
 struct coap_client_config {
     bool enable_dtls{false};
@@ -148,6 +165,23 @@ struct coap_client_config {
     std::size_t max_cache_entries{100};
     std::chrono::milliseconds cache_ttl{60000};  // 1 minute
     bool enable_certificate_validation{true};
+
+    // I/O thread wait and drain (coap-client-event-driven-io spec, design
+    // §2 and §5). Tuning knobs with safe defaults, deliberately not Kconfig
+    // symbols.
+    coap_io_wait_mode io_wait_mode{coap_io_wait_mode::automatic};
+    // coap_io_process(NO_WAIT) steps per pass at most. Each step reads one
+    // datagram per ready socket, so this bounds one pass while leaving
+    // plenty of headroom over the ~15 replies a 5 ms backlog held at the
+    // multi-Raft matrix's rates.
+    std::size_t io_drain_budget{64};
+    // Longest readiness-mode wait when nothing is due. A safety net only:
+    // libcoap's own timers and open multicast windows are already in the
+    // timeout, so this mostly sets the idle wake rate (10/s).
+    std::chrono::milliseconds io_max_wait{100};
+    // Paced-mode sleep between passes; 5 ms is the pre-spec loop's pacing,
+    // so paced mode is never slower than it was.
+    std::chrono::milliseconds io_paced_interval{5};
 
     // Explicit channel-security mode (coap-transport-security spec). Left at
     // its default (mode == none), the legacy DTLS fields above continue to
