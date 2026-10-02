@@ -27,6 +27,7 @@
 #include <raft/grpc_exceptions.hpp>
 #include <raft/grpc_message_conversion.hpp>
 #include <raft/grpc_target.hpp>
+#include <raft/grpc_tls_bridge.hpp>
 #include <raft/net_bind.hpp>
 #include <raft/network.hpp>
 #include <raft/future.hpp>
@@ -37,11 +38,6 @@
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/security/credentials.h>
 #include <grpcpp/security/server_credentials.h>
-
-#include <openssl/bio.h>
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
 
 #include <algorithm>
 #include <atomic>
@@ -60,78 +56,6 @@
 namespace kythira {
 
 namespace grpc_detail {
-
-// ── In-memory PEM validation (Requirement 9.6) ──────────────────────────────
-// TLS material is validated at construction so an invalid cert/key never
-// silently downgrades to insecure (Property 7); a failure throws
-// grpc_tls_configuration_error rather than surfacing only at handshake time.
-
-/// @brief Parse a PEM certificate, throwing on failure.
-inline auto validate_pem_certificate(const std::string& pem, std::string_view label) -> void {
-    if (pem.empty()) {
-        throw grpc_tls_configuration_error(std::format("{}: certificate PEM is empty", label));
-    }
-    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
-    if (bio == nullptr) {
-        throw grpc_tls_configuration_error(std::format("{}: failed to allocate BIO", label));
-    }
-    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-    BIO_free(bio);
-    if (cert == nullptr) {
-        throw grpc_tls_configuration_error(std::format("{}: not a valid PEM certificate", label));
-    }
-    X509_free(cert);
-}
-
-/// @brief Parse a PEM private key, throwing on failure.
-inline auto validate_pem_private_key(const std::string& pem, std::string_view label) -> void {
-    if (pem.empty()) {
-        throw grpc_tls_configuration_error(std::format("{}: private key PEM is empty", label));
-    }
-    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
-    if (bio == nullptr) {
-        throw grpc_tls_configuration_error(std::format("{}: failed to allocate BIO", label));
-    }
-    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
-    BIO_free(bio);
-    if (key == nullptr) {
-        throw grpc_tls_configuration_error(std::format("{}: not a valid PEM private key", label));
-    }
-    EVP_PKEY_free(key);
-}
-
-/// @brief Verify a certificate and private key form a matching pair.
-inline auto validate_cert_key_pair(const std::string& cert_pem, const std::string& key_pem,
-                                   std::string_view label) -> void {
-    validate_pem_certificate(cert_pem, label);
-    validate_pem_private_key(key_pem, label);
-
-    BIO* cert_bio = BIO_new_mem_buf(cert_pem.data(), static_cast<int>(cert_pem.size()));
-    X509* cert = PEM_read_bio_X509(cert_bio, nullptr, nullptr, nullptr);
-    BIO_free(cert_bio);
-
-    BIO* key_bio = BIO_new_mem_buf(key_pem.data(), static_cast<int>(key_pem.size()));
-    EVP_PKEY* key = PEM_read_bio_PrivateKey(key_bio, nullptr, nullptr, nullptr);
-    BIO_free(key_bio);
-
-    if (cert == nullptr || key == nullptr) {
-        if (cert != nullptr) {
-            X509_free(cert);
-        }
-        if (key != nullptr) {
-            EVP_PKEY_free(key);
-        }
-        throw grpc_tls_configuration_error(std::format("{}: failed to reparse cert/key", label));
-    }
-
-    const int matches = X509_check_private_key(cert, key);
-    X509_free(cert);
-    EVP_PKEY_free(key);
-    if (matches != 1) {
-        throw grpc_tls_configuration_error(
-            std::format("{}: private key does not match certificate", label));
-    }
-}
 
 /// @brief Per-call client state kept alive until the completion callback fires.
 ///
@@ -178,6 +102,43 @@ public:
           _executor(executor) {
         _channel_credentials = build_channel_credentials();
         check_plaintext_targets();
+    }
+
+    ~grpc_client() {
+        _tls.reset();  // Stops reload callbacks and polling before members go.
+    }
+
+    grpc_client(const grpc_client&) = delete;
+    grpc_client& operator=(const grpc_client&) = delete;
+
+    // ── TLS reload (.kiro/specs/grpc-tls-reload/, Requirements 2, 3) ─────────
+
+    /// @brief Re-reads the client's certificate, key and roots, validates
+    /// them and applies them to new handshakes on every channel, cached or
+    /// new, within `tls_refresh_interval`. In-flight RPCs finish on their
+    /// existing connections. Throws `grpc_tls_configuration_error` and keeps
+    /// the old material when the new material is invalid, and
+    /// `std::logic_error` when TLS is off.
+    auto reload_tls_material() -> void {
+        if (!_tls) {
+            throw std::logic_error("grpc_client: reload_tls_material() requires enable_tls");
+        }
+        _tls->reload();
+    }
+
+    /// @brief Polls the `*_path` files every @p poll_interval and reloads when
+    /// one changes. Throws `std::logic_error` when TLS is off or the material
+    /// does not come from files.
+    auto enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+        if (!_tls) {
+            throw std::logic_error("grpc_client: enable_auto_reload() requires enable_tls");
+        }
+        _tls->enable_auto_reload(poll_interval);
+    }
+
+    /// @brief Stops and joins the auto-reload thread, if any.
+    auto disable_auto_reload() -> void {
+        if (_tls) _tls->disable_auto_reload();
     }
 
     // ── network_client ──────────────────────────────────────────────────────
@@ -425,30 +386,40 @@ private:
 
     // ── TLS (Requirement 9) ───────────────────────────────────────────────────
 
-    auto build_channel_credentials() const -> std::shared_ptr<grpc::ChannelCredentials> {
+    // TLS material is validated here, at construction, so an invalid
+    // certificate, key or pair fails closed with grpc_tls_configuration_error
+    // rather than downgrading (Requirement 9.6, Property 7). The credentials
+    // read material through a certificate provider, which is what lets
+    // reload_tls_material() change it under existing channels
+    // (.kiro/specs/grpc-tls-reload/).
+    auto build_channel_credentials() -> std::shared_ptr<grpc::ChannelCredentials> {
         if (!_config.enable_tls) {
             return grpc::InsecureChannelCredentials();  // Requirement 9.7 (default off).
         }
-        grpc::SslCredentialsOptions options;
-        if (!_config.ca_cert_pem.empty()) {
-            grpc_detail::validate_pem_certificate(_config.ca_cert_pem, "grpc_client ca_cert_pem");
-            options.pem_root_certs = _config.ca_cert_pem;
-        }
-        // Mutual TLS: both client cert and key must be present together, or
-        // neither — a half-configured pair is a hard error (Requirement 9.6).
-        const bool has_cert = !_config.client_cert_pem.empty();
-        const bool has_key = !_config.client_key_pem.empty();
-        if (has_cert != has_key) {
-            throw grpc_tls_configuration_error(
-                "grpc_client: client_cert_pem and client_key_pem must both be set for mutual TLS");
-        }
-        if (has_cert) {
-            grpc_detail::validate_cert_key_pair(_config.client_cert_pem, _config.client_key_pem,
-                                                "grpc_client client cert/key");
-            options.pem_private_key = _config.client_key_pem;
-            options.pem_cert_chain = _config.client_cert_pem;
-        }
-        return grpc::SslCredentials(options);
+        _tls = std::make_unique<grpc_detail::grpc_tls_reloader>(
+            grpc_detail::grpc_tls_bridge::role::client, "grpc_client",
+            grpc_detail::grpc_tls_inputs{.cert_pem = _config.client_cert_pem,
+                                         .key_pem = _config.client_key_pem,
+                                         .ca_pem = _config.ca_cert_pem,
+                                         .cert_path = _config.client_cert_path,
+                                         .key_path = _config.client_key_path,
+                                         .ca_path = _config.ca_cert_path,
+                                         .source = _config.material_source,
+                                         .use_ca = true},
+            false, _config.tls_refresh_interval,
+            [this](std::string_view outcome, std::uint64_t generation) {
+                emit_tls_reload_metric("grpc.client.tls_reload.", outcome, generation);
+            });
+        return _tls->channel_credentials();
+    }
+
+    auto emit_tls_reload_metric(std::string_view prefix, std::string_view outcome,
+                                std::uint64_t generation) -> void {
+        auto metric = _metrics;
+        metric.set_metric_name(std::string(prefix) + std::string(outcome));
+        metric.add_dimension("generation", std::to_string(generation));
+        metric.add_one();
+        metric.emit();
     }
 
     // ── status mapping (Requirement 11, Property 3) ───────────────────────────
@@ -592,6 +563,9 @@ private:
     metrics_type _metrics;
     executor_type& _executor;
     std::mutex _mutex;
+    // Null when TLS is off. Declared last so it is destroyed first, but the
+    // destructor resets it explicitly anyway: its callbacks use _metrics.
+    std::unique_ptr<grpc_detail::grpc_tls_reloader> _tls;
 };
 
 // ============================================================================
@@ -632,9 +606,41 @@ public:
     }
 
     ~grpc_server() override {
+        _tls.reset();  // Stops reload callbacks and polling before members go.
         if (is_running()) {
             stop();  // Requirement 7.4: never leak the listening port/threads.
         }
+    }
+
+    // ── TLS reload (.kiro/specs/grpc-tls-reload/, Requirements 1, 3) ─────────
+
+    /// @brief Re-reads the server's certificate, key and (with
+    /// `require_client_cert`) roots, validates them and applies them to every
+    /// handshake that starts within `tls_refresh_interval` of returning.
+    /// Established connections and streams are not closed. Throws
+    /// `grpc_tls_configuration_error` and keeps serving the old material when
+    /// the new material is invalid, and `std::logic_error` when TLS is off.
+    auto reload_tls_material() -> void {
+        if (!_tls) {
+            throw std::logic_error("grpc_server: reload_tls_material() requires enable_tls");
+        }
+        _tls->reload();
+    }
+
+    /// @brief Polls the `*_path` files every @p poll_interval and reloads when
+    /// one changes; a failed reload is reported and retried at the next poll.
+    /// Throws `std::logic_error` when TLS is off or the material does not come
+    /// from files. `stop()` and the destructor turn it off.
+    auto enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+        if (!_tls) {
+            throw std::logic_error("grpc_server: enable_auto_reload() requires enable_tls");
+        }
+        _tls->enable_auto_reload(poll_interval);
+    }
+
+    /// @brief Stops and joins the auto-reload thread, if any.
+    auto disable_auto_reload() -> void {
+        if (_tls) _tls->disable_auto_reload();
     }
 
     grpc_server(const grpc_server&) = delete;
@@ -813,6 +819,7 @@ public:
     }
 
     auto stop() -> void {
+        disable_auto_reload();  // Requirement 3.3.
         std::unique_ptr<grpc::Server> server;
         {
             std::lock_guard<std::mutex> lock(_mutex);
@@ -907,7 +914,7 @@ private:
         return handler;  // copy under lock; the RPC runs against this snapshot.
     }
 
-    auto build_server_credentials() const -> std::shared_ptr<grpc::ServerCredentials> {
+    auto build_server_credentials() -> std::shared_ptr<grpc::ServerCredentials> {
         if (!_config.enable_tls) {
             // Plaintext Raft RPC is unauthenticated: off loopback it needs an
             // explicit opt-in (.kiro/specs/grpc-plaintext-opt-in/, Requirement
@@ -923,23 +930,32 @@ private:
             }
             return grpc::InsecureServerCredentials();  // Requirement 9.7 (default off).
         }
-        grpc_detail::validate_cert_key_pair(_config.server_cert_pem, _config.server_key_pem,
-                                            "grpc_server cert/key");
-        grpc::SslServerCredentialsOptions options(
-            _config.require_client_cert ? GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY
-                                        : GRPC_SSL_DONT_REQUEST_CLIENT_CERTIFICATE);
-        if (_config.require_client_cert) {
-            if (_config.ca_cert_pem.empty()) {
-                throw grpc_tls_configuration_error(
-                    "grpc_server: require_client_cert set but ca_cert_pem is empty");
-            }
-            grpc_detail::validate_pem_certificate(_config.ca_cert_pem, "grpc_server ca_cert_pem");
-            options.pem_root_certs = _config.ca_cert_pem;
-        }
-        grpc::SslServerCredentialsOptions::PemKeyCertPair pair{_config.server_key_pem,
-                                                               _config.server_cert_pem};
-        options.pem_key_cert_pairs.push_back(pair);
-        return grpc::SslServerCredentials(options);
+        // Validated here so bad material fails closed at construction
+        // (Requirement 9.6, Property 7). The credentials read material
+        // through a certificate provider, which is what lets
+        // reload_tls_material() change it under a running server
+        // (.kiro/specs/grpc-tls-reload/). Client roots matter only when
+        // client certificates are required, as before.
+        _tls = std::make_unique<grpc_detail::grpc_tls_reloader>(
+            grpc_detail::grpc_tls_bridge::role::server, "grpc_server",
+            grpc_detail::grpc_tls_inputs{.cert_pem = _config.server_cert_pem,
+                                         .key_pem = _config.server_key_pem,
+                                         .ca_pem = _config.ca_cert_pem,
+                                         .cert_path = _config.server_cert_path,
+                                         .key_path = _config.server_key_path,
+                                         .ca_path = _config.ca_cert_path,
+                                         .source = _config.material_source,
+                                         .use_ca = _config.require_client_cert},
+            _config.require_client_cert, _config.tls_refresh_interval,
+            [this](std::string_view outcome, std::uint64_t generation) {
+                auto metric = _metrics;
+                metric.set_metric_name(std::string("grpc.server.tls_reload.") +
+                                       std::string(outcome));
+                metric.add_dimension("generation", std::to_string(generation));
+                metric.add_one();
+                metric.emit();
+            });
+        return _tls->server_credentials();
     }
 
     // Generic per-RPC handler (Requirement 6.2-6.5, 8.3, 8.4, 11.6). Returns a
@@ -1072,6 +1088,9 @@ private:
     std::unique_ptr<grpc::Server> _server;
     std::atomic<bool> _running{false};
     mutable std::mutex _mutex;
+    // Null when TLS is off; reset first in the destructor because its
+    // callbacks use _metrics.
+    std::unique_ptr<grpc_detail::grpc_tls_reloader> _tls;
 };
 
 // ── concept conformance (Requirements 1.1, 1.2, 15-17; Tasks 4.6/5.7/7.3/8.4/9.4) ──

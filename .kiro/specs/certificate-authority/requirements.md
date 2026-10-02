@@ -713,6 +713,11 @@ node, so certificate rotation doesn't require a maintenance window.
    Requirement 15.1's design) SHALL be retried on the next poll rather than
    permanently disabling reload.
 
+*Note:* the gRPC transport implements the same surface (`reload_tls_material()`,
+`enable_auto_reload()`, `disable_auto_reload()`) through gRPC's certificate
+provider, plus a transport-neutral `tls_material_source` hook. See
+`.kiro/specs/grpc-tls-reload/`.
+
 ### Requirement 17: CA state as a replicated Kythira Raft state machine, persisted to disk
 
 **User Story:** As an operator, I want the CA service's state — its root CA
