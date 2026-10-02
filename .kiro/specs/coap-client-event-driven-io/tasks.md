@@ -1,6 +1,6 @@
 # Implementation Plan — Event-Driven I/O for the libcoap Client
 
-## Status: Not started
+## Status: In progress — tasks 1–6 done; 7 and 8 need CI and the benchmark machine
 
 **Last Updated**: October 2, 2026
 
@@ -46,7 +46,7 @@ does not, and can start before #385 lands.
 
 ## Phase 1: Gate (Task 1)
 
-- [ ] 1. Probe libcoap and record the answers in design §1
+- [x] 1. Probe libcoap and record the answers in design §1
   - Write a standalone probe (a test binary under `tests/`, not shipped) that,
     against a real libcoap context, checks L1–L6 of design §1: the value of
     `coap_context_get_coap_fd()`; whether a zero-timeout `poll()` on it tracks
@@ -65,12 +65,16 @@ does not, and can start before #385 lands.
     the design before phase 2.
   - Verify: the table exists with a measured answer per claim per build.
   - _Requirements: 1.1, 1.3, 2.1, 2.2, 6.1_
+  - **Result:** L1–L6 hold on both builds; the gate passes. Two additions,
+    recorded in design §1: `coap_io_prepare_epoll()` returns 0 for "no timer
+    scheduled" (L4), and with PR #385's per-peer session and raised NSTART a
+    peer's replies queue together on one socket, so L3 is what binds (L7).
 
 ---
 
 ## Phase 2: Configuration and Wake (Tasks 2–3)
 
-- [ ] 2. Add the wait mode, budget and intervals to `coap_client_config`
+- [x] 2. Add the wait mode, budget and intervals to `coap_client_config`
   - `coap_io_wait_mode { automatic, readiness, paced }` and the three fields
     of design §5, with the defaults in design §2's table.
   - Validation in `coap_config_validation.hpp`: zero budget, non-positive
@@ -81,8 +85,13 @@ does not, and can start before #385 lands.
   - Verify: validation unit tests; constructing with each mode on this build
     logs the expected reason.
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
+  - **Done.** `validate_io_wait_config()` is split out of
+    `validate_client_config()` and also run by the constructor, since a zero
+    budget or a non-positive wait would make the loop misbehave rather than
+    fail. Mode selection also honours `KYTHIRA_COAP_IO_WAIT_MODE` when the
+    config says `automatic` (see task 6).
 
-- [ ] 3. Wake fd and `signal_io_wake()`
+- [x] 3. Wake fd and `signal_io_wake()`
   - Create the `eventfd` in readiness mode only; close it after `_io_thread`
     is joined in `~coap_client()`.
   - Coalesce with an atomic pending flag as design §3 shows; the I/O thread
@@ -94,12 +103,19 @@ does not, and can start before #385 lands.
   - Verify: a unit test signals from several threads while the I/O thread is
     and is not waiting, and every signal is followed by a pass.
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 5.1, 5.3_
+  - **Done.** The eventfd is owned by a small RAII member declared before
+    `_io_thread`, so it is closed after the thread is joined even when the
+    constructor throws after starting it. The DTLS wake is in
+    `initiate_dtls_handshake()` and `establish_dtls_connection()`, after the
+    session exists. The multi-thread signal check is
+    `sends_wake_a_waiting_thread` in `tests/coap_io_wait_mode_test.cpp`,
+    through `send_rpc()` rather than the private `signal_io_wake()`.
 
 ---
 
 ## Phase 3: The Loop (Tasks 4–5)
 
-- [ ] 4. Replace the fixed sleep with the readiness loop
+- [x] 4. Replace the fixed sleep with the readiness loop
   - Implement design §2 in the `coap_client` constructor: budget-bounded
     drain with one `_mutex` acquisition per step and a zero-timeout readiness
     `poll()` between steps; multicast cleanup; timeout from
@@ -115,8 +131,17 @@ does not, and can start before #385 lands.
     a test-only hook) confirms `_mutex` is not owned by the I/O thread when
     it enters `poll()` or `sleep_for`.
   - _Requirements: 1.1–1.5, 2.1–2.4, 2.6, 3.1, 3.2, 3.3_
+  - **Done**, in `coap_client::run_io_loop()`. `coap_io_prepare_epoll()`
+    returning 0 means "no timer", so it maps to `io_max_wait` (design §1 L4).
+    The probe line is one aggregate per second per client
+    (`[stall-probe] io_passes ... steps_hist=1:a,2:b,3-4:c,...`), not one per
+    pass, and `scripts/coap-send-probe-summary.py` sums it per cell. The lock
+    check is behavioural rather than an assertion: `std::recursive_mutex`
+    cannot report its owner, so `the_lock_is_free_while_the_thread_waits`
+    times a public call that takes `_mutex` while the thread sits in a 10 s
+    wait.
 
-- [ ] 5. Paced fallback with the same drain
+- [x] 5. Paced fallback with the same drain
   - Implement design §6: `_io_dispatch_count` incremented in the response and
     NACK handlers; drain until a step dispatches nothing or the budget is
     reached; then sleep `io_paced_interval` outside the lock.
@@ -124,18 +149,34 @@ does not, and can start before #385 lands.
     test in place of the readiness `poll()` between steps.
   - Verify: forcing `paced` on this build runs the whole CoAP suite.
   - _Requirements: 2.5, 6.1, 6.5_
+  - **Done.** `_io_dispatches` also feeds `io_loop_stats()`. L2 held, so the
+    readiness loop keeps its `poll()` test.
 
 ---
 
 ## Phase 4: Tests and Measurement (Tasks 6–8)
 
-- [ ] 6. Tests in both modes
+- [x] 6. Tests in both modes
   - The tests of design §8's table, each new file with the copyright header.
   - Run the existing CoAP suite in both modes via a fixture parameter, not a
     second build. No existing test may be weakened, skipped or re-timed.
   - Timing checks are budgets with slack, never latency targets.
   - Verify: `ctest -R coap` passes locally in both modes; CI runs both.
   - _Requirements: 1.5, 2.3, 4.1, 5.4, 6.5, 7.1_
+  - **Done.** `tests/coap_io_wait_mode_test.cpp` covers design §8's table.
+    Two deviations: the burst check allows up to N/4 passes for N = 32
+    rather than ⌈N / budget⌉ + 1, because on loopback the client can start
+    draining before the last reply lands (measured: 1 pass in both modes);
+    and the retransmission check uses a 1 s `ack_timeout`, libcoap's floor
+    (`coap_session_set_ack_timeout()` ignores values under a second).
+  - The "fixture parameter" is an environment variable:
+    `tests/CMakeLists.txt` registers a `<name>_paced` twin of every libcoap
+    CoAP test with `KYTHIRA_COAP_IO_WAIT_MODE=paced`, labelled `paced_io`
+    instead of `coap` so `-L coap` (the flake workflow's selection) is
+    unchanged. One build, both modes, no test edited.
+  - Run in the cloud sandbox against libcoap 4.3.5 with the Boost future
+    backend (no Folly there): every CoAP test that builds without Folly, in
+    both modes. The Folly-only tests run on CI.
 
 - [ ] 7. Flake and lock-wait regression check
   - Run the coap-flake-measure workflow before (on `main`) and after, same

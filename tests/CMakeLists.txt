@@ -1972,6 +1972,34 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     else()
         message(STATUS "coap_raft_rate_profile_test: skipped (requires Folly)")
     endif()
+    # The libcoap client's I/O thread in readiness and paced modes: burst
+    # drain, wake on readiness and on send, retransmission and multicast
+    # deadlines under a long wait cap, idle wake rate, prompt shutdown, and
+    # the lock staying free while the thread waits --
+    # coap-client-event-driven-io task 6. Each case runs both modes itself;
+    # its paced twin below only changes what `automatic` resolves to.
+    if(TARGET Folly::folly AND LIBCOAP_FOUND)
+        add_executable(coap_io_wait_mode_test coap_io_wait_mode_test.cpp)
+        target_link_libraries(coap_io_wait_mode_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        target_compile_features(coap_io_wait_mode_test PRIVATE cxx_std_23)
+        add_test(NAME coap_io_wait_mode_test COMMAND coap_io_wait_mode_test)
+        set_tests_properties(coap_io_wait_mode_test PROPERTIES TIMEOUT 300 LABELS "coap;integration;libcoap")
+    else()
+        message(STATUS "coap_io_wait_mode_test: skipped (requires Folly and libcoap)")
+    endif()
+    # Task 1's gate probe for the same spec: checks design §1's libcoap claims
+    # (L1-L7) against whatever libcoap this build links. A measurement, not a
+    # test, so it is not registered with ctest and not built by default:
+    #   cmake --build build --target coap_io_probe && build/tests/coap_io_probe
+    if(LIBCOAP_FOUND)
+        add_executable(coap_io_probe EXCLUDE_FROM_ALL coap_io_probe.cpp)
+        target_link_libraries(coap_io_probe PRIVATE network_simulator)
+        target_compile_features(coap_io_probe PRIVATE cxx_std_23)
+    endif()
     # oscore_credentials::id_context through libcoap's own OSCORE: matched
     # pair talks, mismatched does not, absent changes nothing --
     # coap-transport-multi-raft task 8.
@@ -5862,6 +5890,53 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(oscore_transport_neutral_test PROPERTIES
         TIMEOUT 60 LABELS "oscore;security;unit")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
+
+# ── libcoap client I/O wait modes: paced twins ───────────────────────────────
+# .kiro/specs/coap-client-event-driven-io/ Requirement 6.5: the libcoap
+# client's I/O thread has two wait modes, and CI must run the whole CoAP suite
+# in both from one build. Every CoAP test above runs in the default mode
+# (readiness wherever libcoap has epoll, which is every build the project
+# uses); this registers a `<name>_paced` twin of each that runs the same
+# binary with KYTHIRA_COAP_IO_WAIT_MODE=paced, which the client honours when
+# its config leaves io_wait_mode at automatic.
+#
+# A twin keeps every label except the CoAP ones and gains `paced_io`, so the
+# CI exclusions (slow, performance, ...) still apply to it, and `-L coap` --
+# the coap-flake-measure workflow's default selection, which is a regex --
+# selects exactly what it selected before. libnyoci and cantcoap tests are
+# skipped: their backends have their own loops and ignore the variable.
+# Placed before the timeout scaling below so twins are scaled too.
+if(KYTHIRA_BUILD_COAP_TRANSPORT AND LIBCOAP_FOUND)
+    get_property(_kythira_coap_tests DIRECTORY PROPERTY TESTS)
+    foreach(_test IN LISTS _kythira_coap_tests)
+        if(_test MATCHES "nyoci|cantcoap" OR NOT TARGET ${_test})
+            continue()
+        endif()
+        get_test_property(${_test} LABELS _labels)
+        if(NOT _labels)
+            set(_labels "")
+        endif()
+        # Not every CoAP test is labelled (several predate the labels), so
+        # the name counts as well.
+        if(NOT _test MATCHES "coap" AND NOT _labels MATCHES "coap")
+            continue()
+        endif()
+        set(_twin_labels paced_io)
+        foreach(_label IN LISTS _labels)
+            if(NOT _label MATCHES "coap")
+                list(APPEND _twin_labels ${_label})
+            endif()
+        endforeach()
+        add_test(NAME ${_test}_paced COMMAND ${_test})
+        set_tests_properties(${_test}_paced PROPERTIES
+            LABELS "${_twin_labels}"
+            ENVIRONMENT "KYTHIRA_COAP_IO_WAIT_MODE=paced")
+        get_test_property(${_test} TIMEOUT _timeout)
+        if(_timeout)
+            set_tests_properties(${_test}_paced PROPERTIES TIMEOUT ${_timeout})
+        endif()
+    endforeach()
+endif()
 
 # ── Test-timeout scaling for slow build configurations ───────────────────────
 # A coverage build (-DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug) runs the
