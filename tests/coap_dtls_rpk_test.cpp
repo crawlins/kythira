@@ -4,14 +4,12 @@
 #include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.3**
 // RPK peer-key match succeeds; mismatch is rejected (Requirement 3.2).
-// dtls_rpk_provider::is_trusted_peer_key() is exercised directly (see its
-// doc comment in coap_security_impl.hpp for why this is sufficient: session
-// establishment itself reuses dtls_pki_provider's already-tested
-// coap_dtls_pki_t machinery — Property 4 — so the only genuinely new logic
-// RPK introduces is this trust-set comparison). When built with
-// LIBCOAP_AVAILABLE (see tests/CMakeLists.txt), an additional test proves
-// configure_session() wires real RPK key material into a live
-// coap_context_t without throwing.
+// dtls_rpk_provider::is_trusted_peer_key() is exercised directly here. The
+// live DTLS-RPK handshake, with Raft RPCs over it and both directions of
+// untrusted key refused, is in coap_dtls_raft_rpc_test.cpp. When built with
+// LIBCOAP_AVAILABLE (see tests/CMakeLists.txt), the last case checks that
+// configure_session() wires real RPK material into a live coap_context_t
+// when the linked libcoap supports RPK, and refuses it when it does not.
 #define BOOST_TEST_MODULE coap_dtls_rpk_test
 #include <boost/test/unit_test.hpp>
 
@@ -131,7 +129,7 @@ BOOST_AUTO_TEST_CASE(mode_selection_via_factory,
 
 #ifdef LIBCOAP_AVAILABLE
 
-BOOST_AUTO_TEST_CASE(configure_session_wires_real_rpk_material,
+BOOST_AUTO_TEST_CASE(configure_session_wires_rpk_material_only_when_supported,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     auto local = generate_ec_keypair();
     auto peer = generate_ec_keypair();
@@ -146,7 +144,13 @@ BOOST_AUTO_TEST_CASE(configure_session_wires_real_rpk_material,
     coap_startup();
     coap_context_t* ctx = coap_new_context(nullptr);
     BOOST_REQUIRE(ctx != nullptr);
-    BOOST_CHECK_NO_THROW(provider.configure_session(ctx));
+    if (coap_dtls_rpk_is_supported() != 0) {
+        BOOST_CHECK_NO_THROW(provider.configure_session(ctx));
+    } else {
+        // libcoap's OpenSSL backend: an RPK context would fail every
+        // handshake, so it must not be built at all.
+        BOOST_CHECK_THROW(provider.configure_session(ctx), coap_unsupported_security_mode_error);
+    }
     coap_free_context(ctx);
 }
 

@@ -330,6 +330,18 @@ public:
 
     auto configure_session(coap_context_t* ctx) -> void override {
 #ifdef LIBCOAP_AVAILABLE
+        // libcoap's OpenSSL backend, the one the vcpkg port builds, has no
+        // RFC 7250 support at all: coap_dtls_rpk_is_supported() is a
+        // hard-coded 0 there. coap_context_set_pki() still accepts the
+        // config, so without this check an RPK transport constructs cleanly
+        // and then fails every handshake.
+        if (coap_dtls_rpk_is_supported() == 0) {
+            throw coap_unsupported_security_mode_error(
+                coap_auth_mode::dtls_rpk,
+                "the linked libcoap's TLS backend has no raw public key (RFC 7250) support; "
+                "libcoap's OpenSSL, Mbed TLS and wolfSSL backends never have it, "
+                "its GnuTLS and TinyDTLS backends do");
+        }
         coap_dtls_pki_t pki_config;
         std::memset(&pki_config, 0, sizeof(pki_config));
         pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;

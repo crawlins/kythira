@@ -189,6 +189,12 @@ already confirmed present in the linked library (≥4.3.2; project pins
   - Verify: unit test — session establishes when peer's raw public key is
     in `trusted_peer_keys`; rejected when it is not.
   - _Requirements: 3.1, 3.2, 3.3_
+  - **Deviation (2026-10-02):** libcoap's OpenSSL backend, which the vcpkg
+    port builds, has no RPK support (`coap_dtls_rpk_is_supported()` is a
+    hard-coded 0), yet `coap_context_set_pki()` accepted the config, so an
+    RPK transport constructed and then failed every handshake.
+    `configure_session()` now throws `coap_unsupported_security_mode_error`
+    on such a backend. RPK works on a GnuTLS- or TinyDTLS-backed libcoap.
 
 ---
 
