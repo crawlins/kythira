@@ -1,18 +1,18 @@
 # Implementation Plan — CoAP Transport (libnyoci backend)
 
-## Status: Implemented (Tasks 1-4, 6, 7 complete; Task 5 partial by necessity)
+## Status: Implemented (Tasks 1-7 complete)
 
 The overlay port is pinned and builds; the adapter is written and tested
 against real loopback sockets. `coap_libnyoci_client`/`coap_libnyoci_server`
 satisfy `network_client`/`network_server` and speak the same wire protocol as
-the libcoap backend. Two limitations are inherent to libnyoci and are handled
-by refusing loudly rather than degrading silently — see Tasks 3.6 and 5.
-DTLS-PSK and DTLS-PKI work over libnyoci's own OpenSSL plugin, and OSCORE
-works over the transport-neutral RFC 8613 implementation in
-`include/raft/oscore.hpp`. Only DTLS-RPK and the EDHOC bootstrap remain
-refused, each with a specific reason.
+the libcoap backend. Block1 is inherently missing from libnyoci and is
+handled by refusing loudly rather than degrading silently — see Task 3.6.
+DTLS-PSK, DTLS-PKI and DTLS-RPK all work over libnyoci's own OpenSSL plugin
+(RPK needs OpenSSL >= 3.2, which the vcpkg baseline provides), and OSCORE,
+including the EDHOC bootstrap where lakers is built, works over the
+transport-neutral RFC 8613 implementation in `include/raft/oscore.hpp`.
 
-**Last Updated**: August 8, 2026
+**Last Updated**: October 2, 2026
 
 ## Major Tasks Overview
 
@@ -149,7 +149,7 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
       own Block2 option, so there is no per-peer transfer state to expire and a
       lost block is simply re-requested.
 
-- [~] 5. Security integration — **DTLS and OSCORE both work; RPK refused**
+- [x] 5. Security integration — **all three DTLS modes and OSCORE work**
   - [x] 5.1 Route DTLS through libnyoci's OpenSSL plugin
     - **Not through `coap_security_provider`, and that is settled rather than
       deferred.** Every method of that interface is expressed in libcoap types
@@ -241,12 +241,35 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
       credentials failing rather than hanging.
     - Still gated on lakers. Without it the request is refused with that
       reason rather than silently treated as static provisioning.
-  - [ ] 5.3 DTLS-RPK — **refused; not expressible through this surface**
-    - Raw public keys (RFC 7250) need the peer to negotiate a non-X.509
-      certificate type. libnyoci's plugin hands the adapter nothing but an
-      `SSL_CTX`, and OpenSSL only grew the certificate-type extensions in 3.2
-      (this toolchain has 3.0.13). Refused with that reason; `dtls_pki` is the
-      supported alternative.
+  - [x] 5.3 DTLS-RPK — **implemented over the plugin's `SSL_CTX`**
+    - The original refusal said RPK was "not expressible through this
+      surface", and blamed the toolchain's OpenSSL 3.0.13. Both halves were
+      wrong. 3.0.13 is the *host's* OpenSSL; the vcpkg baseline pins 3.6.0 and
+      the libnyoci port links that. And the surface is enough: RFC 7250's
+      certificate-type extensions (`SSL_CTX_set1_client_cert_type`,
+      `SSL_CTX_set1_server_cert_type`) are `SSL_CTX` settings, and every `SSL`
+      the plugin creates is `SSL_new()`'d from the context the adapter hands
+      it, so they are inherited without touching libnyoci.
+    - `apply_rpk_credentials()` loads `rpk_credentials::private_key` with no
+      certificate (OpenSSL then presents the key's public half), checks
+      `public_key` against it when given, offers **RPK only** in both
+      directions, and verifies the peer through a callback. Offering X.509 as a
+      fallback would let a peer with no certificate route around the trust
+      list.
+    - The trust decision is the libcoap backend's exactly: OpenSSL reports
+      every raw key as `X509_V_ERR_RPK_UNTRUSTED`, and the callback accepts it
+      only if its DER SubjectPublicKeyInfo is byte-equal to an entry of
+      `trusted_peer_keys`. An empty list trusts nobody. Authentication is
+      mutual: the server sets `SSL_VERIFY_FAIL_IF_NO_PEER_CERT`, as
+      `dtls_rpk_provider`'s unconditional `verify_peer_cert` does.
+    - Against an OpenSSL older than 3.2 the header still compiles and
+      `dtls_rpk` is refused as before, now naming the OpenSSL it found
+      (`KYTHIRA_LIBNYOCI_HAS_DTLS_RPK` is the gate).
+    - Covered by six cases in `tests/coap_libnyoci_dtls_test.cpp`: a mutual
+      round trip, an untrusted server key refused by the client, an untrusted
+      client key refused by the server, an empty trust list, unusable or
+      mismatched key material failing at `start()`, and the wrong credential
+      variant raising `coap_security_config_error`.
   - [x] 5.4 Plain CoAP still works, and invalid configuration surfaces the
         same errors as libcoap
     - `translate_legacy_fields()` is shared *verbatim* (it moved to
@@ -337,7 +360,5 @@ and a translation unit selects a backend by which header it includes.
   value that fails.
 - **Outer block options and proxy support.** Only the inner (end-to-end) form
   is emitted; a CoAP proxy in the path would need the outer form too.
-- **DTLS-RPK** (Task 5.3) would need OpenSSL >= 3.2 and certificate-type
-  negotiation the libnyoci plugin does not expose.
 - **Block1**, if InstallSnapshot over libnyoci ever matters: it would have to be
   implemented in the adapter, since libnyoci has no support to build on.

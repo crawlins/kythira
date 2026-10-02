@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -139,6 +140,91 @@ struct pki_material {
         std::filesystem::remove(key_file, ignored);
     }
 };
+#ifdef KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
+/// A P-256 key pair in the two shapes rpk_credentials wants: PEM for this
+/// side's own key, DER SubjectPublicKeyInfo for what a peer puts in its
+/// trusted_peer_keys. The same shapes tests/coap_dtls_rpk_test.cpp feeds the
+/// libcoap backend, so one config means the same thing on both.
+struct rpk_material {
+    std::vector<std::byte> public_key_pem;
+    std::vector<std::byte> private_key_pem;
+    std::vector<std::byte> public_key_der;
+
+    rpk_material() {
+        EVP_PKEY* pkey = EVP_EC_gen("P-256");
+        BOOST_REQUIRE(pkey != nullptr);
+        public_key_pem = to_pem(pkey, false);
+        private_key_pem = to_pem(pkey, true);
+
+        const int der_len = i2d_PUBKEY(pkey, nullptr);
+        BOOST_REQUIRE(der_len > 0);
+        public_key_der.resize(static_cast<std::size_t>(der_len));
+        auto* der = reinterpret_cast<unsigned char*>(public_key_der.data());
+        BOOST_REQUIRE(i2d_PUBKEY(pkey, &der) == der_len);
+        EVP_PKEY_free(pkey);
+    }
+
+    /// This side's credentials, trusting exactly `trusted`.
+    [[nodiscard]] auto security_trusting(std::vector<std::vector<std::byte>> trusted) const
+        -> kythira::coap_security_config {
+        kythira::rpk_credentials creds;
+        creds.public_key = public_key_pem;
+        creds.private_key = private_key_pem;
+        creds.trusted_peer_keys = std::move(trusted);
+        kythira::coap_security_config config;
+        config.mode = kythira::coap_auth_mode::dtls_rpk;
+        config.credentials = std::move(creds);
+        return config;
+    }
+
+private:
+    [[nodiscard]] static auto to_pem(EVP_PKEY* pkey, bool private_key) -> std::vector<std::byte> {
+        BIO* bio = BIO_new(BIO_s_mem());
+        BOOST_REQUIRE(bio != nullptr);
+        const int written =
+            private_key ? PEM_write_bio_PrivateKey(bio, pkey, nullptr, nullptr, 0, nullptr, nullptr)
+                        : PEM_write_bio_PUBKEY(bio, pkey);
+        BOOST_REQUIRE(written == 1);
+        char* data = nullptr;
+        const long len = BIO_get_mem_data(bio, &data);
+        std::vector<std::byte> pem(static_cast<std::size_t>(len));
+        std::memcpy(pem.data(), data, pem.size());
+        BIO_free(bio);
+        return pem;
+    }
+};
+
+/// Serve one request_vote over `server_security` and send one over
+/// `client_security`. Returns true on a granted vote, false on a rejected
+/// future: the shape every RPK trust test below needs.
+[[nodiscard]] auto request_vote_succeeds(const kythira::coap_security_config& server_security,
+                                         const kythira::coap_security_config& client_security,
+                                         std::chrono::seconds timeout) -> bool {
+    kythira::coap_server_config server_config;
+    server_config.security = server_security;
+    test_server server{loopback, ephemeral_port, server_config, test_metrics{}};
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& request) {
+        return kythira::request_vote_response<>{request.term(), true};
+    });
+    server.start();
+
+    kythira::coap_client_config client_config;
+    client_config.security = client_security;
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, client_config, test_metrics{}};
+
+    bool succeeded = false;
+    try {
+        const kythira::request_vote_request<> request{8, 1, 0, 0};
+        const auto response = client.send_request_vote(peer_node_id, request, timeout).get();
+        succeeded = response.term() == 8U && response.vote_granted();
+    } catch (const kythira::coap_transport_error&) {
+        succeeded = false;
+    }
+    server.stop();
+    return succeeded;
+}
+#endif  // KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
 }
 
 BOOST_AUTO_TEST_SUITE(coap_libnyoci_dtls_tests)
@@ -293,6 +379,93 @@ BOOST_AUTO_TEST_CASE(test_psk_mode_with_pki_credentials_is_a_config_error,
     BOOST_CHECK_THROW(server.start(), kythira::coap_security_config_error);
 }
 
+#ifdef KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
+
+// ── DTLS-RPK (RFC 7250), where OpenSSL is new enough to negotiate it ───────
+
+// Mutual raw-public-key authentication: each side presents a bare key and
+// trusts exactly the other's.
+BOOST_AUTO_TEST_CASE(test_dtls_rpk_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    const rpk_material server_key;
+    const rpk_material client_key;
+    BOOST_TEST(request_vote_succeeds(server_key.security_trusting({client_key.public_key_der}),
+                                     client_key.security_trusting({server_key.public_key_der}),
+                                     std::chrono::seconds{30}));
+}
+
+// The client must refuse a server whose key it does not trust, even though
+// the server is happy to talk to it.
+BOOST_AUTO_TEST_CASE(test_dtls_rpk_untrusted_server_key_is_rejected,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    const rpk_material server_key;
+    const rpk_material client_key;
+    const rpk_material stranger;
+    BOOST_TEST(!request_vote_succeeds(server_key.security_trusting({client_key.public_key_der}),
+                                      client_key.security_trusting({stranger.public_key_der}),
+                                      std::chrono::seconds{5}),
+               "a client must not complete a handshake with an untrusted server key");
+}
+
+// And the server must refuse a client it does not trust: the authentication
+// is mutual, as it is in the libcoap backend.
+BOOST_AUTO_TEST_CASE(test_dtls_rpk_untrusted_client_key_is_rejected,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    const rpk_material server_key;
+    const rpk_material client_key;
+    const rpk_material stranger;
+    BOOST_TEST(!request_vote_succeeds(server_key.security_trusting({stranger.public_key_der}),
+                                      client_key.security_trusting({server_key.public_key_der}),
+                                      std::chrono::seconds{5}),
+               "a server must not serve a client whose key it does not trust");
+}
+
+// An empty trust list trusts nobody, matching dtls_rpk_provider's
+// is_trusted_peer_key() — it is not a "verify nothing" switch.
+BOOST_AUTO_TEST_CASE(test_dtls_rpk_empty_trust_list_trusts_nobody,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    const rpk_material server_key;
+    const rpk_material client_key;
+    BOOST_TEST(!request_vote_succeeds(server_key.security_trusting({client_key.public_key_der}),
+                                      client_key.security_trusting({}), std::chrono::seconds{5}));
+}
+
+// Unusable key material fails at start(), like the PKI path, rather than at
+// the first handshake.
+BOOST_AUTO_TEST_CASE(test_dtls_rpk_bad_key_material_fails_at_start,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    const rpk_material own;
+    const rpk_material other;
+
+    auto garbage = own.security_trusting({});
+    std::get<kythira::rpk_credentials>(garbage.credentials).private_key = {std::byte{'x'}};
+    kythira::coap_server_config garbage_config;
+    garbage_config.security = garbage;
+    test_server garbage_server{loopback, ephemeral_port, garbage_config, test_metrics{}};
+    BOOST_CHECK_THROW(garbage_server.start(), kythira::coap_security_error);
+    BOOST_TEST(!garbage_server.is_running());
+
+    // A public key that is not the private key's other half.
+    auto mismatched = own.security_trusting({});
+    std::get<kythira::rpk_credentials>(mismatched.credentials).public_key = other.public_key_pem;
+    kythira::coap_server_config mismatched_config;
+    mismatched_config.security = mismatched;
+    test_server mismatched_server{loopback, ephemeral_port, mismatched_config, test_metrics{}};
+    BOOST_CHECK_THROW(mismatched_server.start(), kythira::coap_security_error);
+}
+
+BOOST_AUTO_TEST_CASE(test_rpk_mode_with_psk_credentials_is_a_config_error,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::coap_server_config config;
+    config.security.mode = kythira::coap_auth_mode::dtls_rpk;
+    config.security.credentials = kythira::psk_credentials{"id", psk_key()};
+
+    test_server server{loopback, ephemeral_port, config, test_metrics{}};
+    BOOST_CHECK_THROW(server.start(), kythira::coap_security_config_error);
+}
+
+#endif  // KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
+
 // Plain CoAP must keep working unchanged now that DTLS exists — a plaintext
 // client and a plaintext server still talk.
 BOOST_AUTO_TEST_CASE(test_plain_coap_still_works_alongside_dtls,
@@ -326,10 +499,13 @@ BOOST_AUTO_TEST_CASE(test_dtls_tests_skipped_without_libnyoci) {
 
 #endif  // LIBNYOCI_AVAILABLE
 
-// ── The two modes it cannot, refused rather than downgraded ────────────────
-// Compiled either way: these are properties of plan_security(), not of
-// libnyoci, and the refusal is the security-relevant behaviour.
+// ── Modes it cannot provide in this build, refused rather than downgraded ──
+// These are properties of plan_security(), not of libnyoci, and the refusal is
+// the security-relevant behaviour.
 
+#ifndef KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
+// Without libnyoci, or against an OpenSSL older than 3.2, there is no way to
+// negotiate raw public keys, and the refusal must say which mode it refused.
 BOOST_AUTO_TEST_CASE(test_rpk_is_refused_naming_the_reason,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     kythira::coap_client_config config;
@@ -345,6 +521,7 @@ BOOST_AUTO_TEST_CASE(test_rpk_is_refused_naming_the_reason,
                    "the refusal must name the raw-public-key gap: " << message);
     }
 }
+#endif  // KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
 
 BOOST_AUTO_TEST_CASE(test_oscore_is_refused_naming_the_reason,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
