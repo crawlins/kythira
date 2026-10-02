@@ -81,10 +81,21 @@ in-process harness at Tier B — happens before Tier C is claimed.
     `the_data_path_starts_and_stops_repeatedly` exercises it three times per run
     because its failure mode is process termination rather than a failed
     assertion
-  - `--transport proxygen` is **refused loudly** rather than silently
-    substituted: its server needs a caller-owned `IOThreadPoolExecutor` and a
-    shutdown sequence this binary does not implement, and a transport that
-    half-works in a measurement host produces rows nobody can trust
+  - `--transport proxygen` was at first **refused loudly** rather than
+    silently substituted: its server needs a caller-owned
+    `IOThreadPoolExecutor` and a shutdown sequence this binary did not yet
+    implement, and a transport that half-works in a measurement host produces
+    rows nobody can trust
+  - **Proxygen is now wired** (Requirement 1.5: all three transports
+    selectable at run time). `proxygen_stack` in `host_stacks.hpp` mirrors the
+    harness's `proxygen_http_transport` fixture: it owns the executor, server
+    and client, and its `shutdown()` — called by `run_host` only after
+    `host->stop()` — destroys the client, then the server, then joins the
+    executor, the harness's order. Its two instantiations are their own
+    translation units (`run_proxygen_json.cpp`, `run_proxygen_cbor.cpp`), built
+    only under `KYTHIRA_BUILD_PROXYGEN_TRANSPORT`; a binary built without it
+    answers `--transport proxygen` with "was not compiled in" and exit status
+    2, as it already did for Beast
   - Not in any install target, and the usage text says in its first line that
     this is not a supported server
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 4.4, 6.1, 6.2, 6.3_

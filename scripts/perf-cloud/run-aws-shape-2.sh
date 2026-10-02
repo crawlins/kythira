@@ -159,7 +159,8 @@ between the two rows is where the processes are (Requirement 1.4):
   --repetitions N           (default 5; fewer yields no headline at all)
   --scenario NAME           write | read-state | read-log | read-local
   --tick-interval MS        (default 2)
-  --transport NAME          httplib | beast (default httplib)
+  --transport NAME          httplib | beast | proxygen (default httplib;
+                            proxygen needs a host built with it)
   --persistence MODE        memory | file-buffered | file-barrier (memory)
   --data-threads N          Threads serving each host's data path (0 =
                              cpp-httplib's default).
