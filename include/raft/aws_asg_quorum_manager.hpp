@@ -16,6 +16,7 @@
 
 #include <aws/autoscaling/AutoScalingClient.h>
 #include <aws/autoscaling/model/DescribeAutoScalingGroupsRequest.h>
+#include <aws/autoscaling/model/DescribeAutoScalingInstancesRequest.h>
 #include <aws/autoscaling/model/TerminateInstanceInAutoScalingGroupRequest.h>
 #include <aws/autoscaling/model/UpdateAutoScalingGroupRequest.h>
 #include <aws/core/client/ClientConfiguration.h>
@@ -28,6 +29,7 @@
 #include <aws/ec2/model/TerminateInstancesRequest.h>
 
 #include <algorithm>
+#include <string_view>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -400,12 +402,31 @@ public:
         }
     }
 
+    /// @brief True when Auto Scaling no longer counts `ec2_id` as a live member
+    ///        of any group: it is in none, or its lifecycle is already
+    ///        `Terminating`/`Terminated`.  False when it is still a member or the
+    ///        answer could not be read, so the caller reports its own error.
+    [[nodiscard]] auto already_out_of_group(const std::string& ec2_id) const -> bool {
+        Aws::AutoScaling::Model::DescribeAutoScalingInstancesRequest req;
+        req.AddInstanceIds(ec2_id);
+        auto out = _asg->DescribeAutoScalingInstances(req);
+        if (!out.IsSuccess()) {
+            return false;
+        }
+        const auto& members = out.GetResult().GetAutoScalingInstances();
+        return std::ranges::all_of(members, [](const auto& m) {
+            return std::string_view{m.GetLifecycleState()}.starts_with("Terminat");
+        });
+    }
+
     /// @brief Terminates a Raft node via `TerminateInstanceInAutoScalingGroup`.
     ///
     /// Sets `ShouldDecrementDesiredCapacity = true` so the ASG does not launch a
-    /// replacement automatically.  Treats "not found" and `ValidationError` responses
-    /// as idempotent success.  Polls until the EC2 state leaves `running` (up to 30 s);
-    /// success means that was observed, or EC2 no longer knows the instance.
+    /// replacement automatically.  A failed call is idempotent success when
+    /// `DescribeAutoScalingInstances` shows the instance in no group, or already
+    /// `Terminating`/`Terminated`; any other failure is returned.  Polls until the EC2 state leaves
+    /// `running` (up to 30 s); success means that was observed, or EC2 no longer knows the
+    /// instance.
     ///
     /// @param node_id Identifier of the node to terminate.
     /// @return void Future on success, exceptional Future on API error or when the
@@ -421,15 +442,23 @@ public:
             req.SetShouldDecrementDesiredCapacity(true);
             auto outcome = _asg->TerminateInstanceInAutoScalingGroup(req);
             if (!outcome.IsSuccess()) {
+                // Whether the call failed because there is nothing left to
+                // terminate is decided by asking Auto Scaling, not by reading
+                // the error: an instance outside every group is reported as a
+                // ValidationError, an AccessDenied (a role scoped to group
+                // ARNs cannot be authorised against a group that does not
+                // exist) or another text depending on the caller's policy,
+                // while a ValidationError is also what a real refusal such as
+                // dropping below MinSize looks like.
                 const auto& err = outcome.GetError();
-                // Instance already terminated or not found → treat as success.
-                if (std::string(err.GetMessage()).find("not found") != std::string::npos ||
-                    std::string(err.GetExceptionName()).find("ValidationError") !=
-                        std::string::npos) {
+                if (already_out_of_group(ec2_id)) {
                     return future_factory_default::makeFuture();
                 }
-                throw std::runtime_error("TerminateInstanceInAutoScalingGroup: " +
-                                         std::string(err.GetMessage()));
+                std::string msg = "TerminateInstanceInAutoScalingGroup: ";
+                msg += err.GetExceptionName();
+                msg += ": ";
+                msg += err.GetMessage();
+                throw std::runtime_error(msg);
             }
             // Poll until the EC2 state confirms the transition away from running.
             // Success is returned only once that is observed: an expired wait, or
