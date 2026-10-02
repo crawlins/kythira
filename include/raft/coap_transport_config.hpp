@@ -209,6 +209,40 @@ struct coap_server_config {
     std::function<std::unique_ptr<edhoc_transport>()> edhoc_transport_factory;
 };
 
+/// Retransmission tuned for Raft-rate traffic, where the consensus layer
+/// retries on its own schedule and CON would duplicate it
+/// (.kiro/specs/coap-transport-multi-raft/ Requirement 6).
+///
+/// Why it exists: Raft already re-sends AppendEntries every heartbeat, so a
+/// confirmable heartbeat duplicates a reliability mechanism one layer up. And
+/// the defaults' 2000 ms ACK timeout against a ~50 ms heartbeat and a
+/// 150-300 ms election timeout leave the transport still retransmitting a
+/// message the consensus layer abandoned several elections ago. So the profile
+/// sends NON, and for the RPCs that stay CON (InstallSnapshot and TimeoutNow,
+/// see coap_message_reliability) it retransmits twice from a 1 s ACK timeout
+/// rather than four times from 2 s.
+///
+/// Opt-in, and never inferred: a deployment with few groups on a lossy link is
+/// better served by the RFC 7252 defaults, which are unchanged, and "many
+/// groups" and "reliable link" are independent facts the transport cannot
+/// tell apart. Start from this and override fields as for any other config.
+[[nodiscard]] inline auto raft_rate_profile() -> coap_client_config {
+    coap_client_config config;
+    config.use_confirmable_messages = false;
+    // 1 s is the shortest ACK timeout libcoap accepts:
+    // coap_session_set_ack_timeout() ignores a value whose integer part is 0
+    // and keeps its 2 s default, so the 250 ms this profile first asked for
+    // never reached the wire. With max_retransmit 2 the CON RPCs give up after
+    // about 1 + 2 + 4 s (each scaled by libcoap's random factor), against
+    // the defaults' 2 + 4 + 8 + 16 + 32 s.
+    config.ack_timeout = std::chrono::milliseconds{1000};
+    config.ack_random_factor_ms = std::chrono::milliseconds{125};
+    config.max_retransmit = 2;
+    config.retransmission_timeout = std::chrono::milliseconds{250};
+    config.max_retransmissions = 2;
+    return config;
+}
+
 // ── legacy field translation (coap-transport-security Requirement 8) ──────
 // Reproduces today's setup_dtls_context() field-inference exactly when
 // security.mode is left at its default (coap_auth_mode::none): cert_file

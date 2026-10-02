@@ -1932,6 +1932,22 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     else()
         message(STATUS "coap_timeout_now_test: skipped (requires Folly)")
     endif()
+    # The opt-in Raft-rate timer profile: RFC 7252 defaults pinned field by
+    # field, the profile's shorter timers, and InstallSnapshot read off the
+    # wire as CON under it -- coap-transport-multi-raft task 12.
+    if(TARGET Folly::folly)
+        add_executable(coap_raft_rate_profile_test coap_raft_rate_profile_test.cpp)
+        target_link_libraries(coap_raft_rate_profile_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        target_compile_features(coap_raft_rate_profile_test PRIVATE cxx_std_23)
+        add_test(NAME coap_raft_rate_profile_test COMMAND coap_raft_rate_profile_test)
+        set_tests_properties(coap_raft_rate_profile_test PROPERTIES TIMEOUT 60 LABELS "coap;unit")
+    else()
+        message(STATUS "coap_raft_rate_profile_test: skipped (requires Folly)")
+    endif()
     # CoAP DTLS connection establishment property test needs Boost.JSON
     if(TARGET Folly::folly)
         add_executable(coap_dtls_connection_establishment_property_test coap_dtls_connection_establishment_property_test.cpp)
