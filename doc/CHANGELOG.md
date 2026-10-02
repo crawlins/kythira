@@ -25,6 +25,21 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 2, 2026)
 
+- **Losing a whole placement group no longer re-provisions into it**
+  (`include/raft/raft.hpp`, quorum-management Req 9.2). When every voter of
+  a group is unreachable and the rest hold a majority, the leader replaces
+  each one in the surviving group with the fewest members, promotes the
+  replacement past that group's target, then removes and decommissions the
+  dead voter. The emptied group is not refilled while other groups hold
+  surplus voters for it.
+- **The placement map survives a leader change.** Configuration entries now
+  carry each member's placement group (string group ids only), so a node
+  provisioned after bootstrap keeps its group on every replica instead of
+  falling back to the default group under the next leader.
+- The Req 19.9 `dual_follower_kill_5_node_cluster` Docker healing test exists,
+  with `docker/docker-compose.quorum-5.yml`, and the positional `node`
+  constructor is `[[deprecated]]` with all 121 in-tree call sites moved to
+  `node_config` (Req 17.3/17.4).
 - **A crashed kythira on a running VM is no longer live.** The cloud quorum
   managers read instance state only, so a dead, hung or isolated process on
   a `running` instance was never replaced, while the AWS and GCP specs
