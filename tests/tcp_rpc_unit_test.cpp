@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <fstream>
 #include <optional>
@@ -812,4 +813,97 @@ BOOST_AUTO_TEST_CASE(test_inflight_cap_per_endpoint, *boost::unit_test::timeout(
         BOOST_TEST(std::string{e.what()}.find("too many RPCs in flight") == std::string::npos);
     }
     ::close(listener);
+
+// ── SIGPIPE and incremental frame reads ──────────────────────────────────────
+
+namespace {
+
+using namespace std::chrono_literals;
+
+// Restores SIGPIPE's previous disposition on scope exit; the cases below set
+// it to SIG_DFL so that a SIGPIPE would kill the test process.
+struct sigpipe_default {
+    using handler_t = void (*)(int);
+    handler_t previous;
+    sigpipe_default() : previous(std::signal(SIGPIPE, SIG_DFL)) {}
+    ~sigpipe_default() { std::signal(SIGPIPE, previous); }
+    sigpipe_default(const sigpipe_default&) = delete;
+    auto operator=(const sigpipe_default&) -> sigpipe_default& = delete;
+};
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(test_write_all_to_closed_peer_raises_no_sigpipe,
+                     *boost::unit_test::timeout(10)) {
+    sigpipe_default guard;
+    int fds[2];
+    BOOST_REQUIRE_EQUAL(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+    ::close(fds[1]);
+    // With write() this raised SIGPIPE and the default action ended the
+    // test process here.
+    BOOST_TEST(!kythira::tcp_detail::frame_send(fds[0], "payload"));
+    ::close(fds[0]);
+}
+
+BOOST_AUTO_TEST_CASE(test_client_request_to_departed_server_raises_no_sigpipe,
+                     *boost::unit_test::timeout(15)) {
+    sigpipe_default guard;
+    // A raw listener that accepts and immediately closes every connection.
+    int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    BOOST_REQUIRE(lfd >= 0);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    BOOST_REQUIRE(::bind(lfd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
+    BOOST_REQUIRE(::listen(lfd, 8) == 0);
+    socklen_t len = sizeof(a);
+    ::getsockname(lfd, reinterpret_cast<sockaddr*>(&a), &len);
+    std::thread closer([lfd] {
+        int c = ::accept(lfd, nullptr, nullptr);
+        if (c >= 0) ::close(c);
+    });
+
+    kythira::tcp_rpc_client client;
+    client.add_peer(1, "127.0.0.1", ntohs(a.sin_port));
+    // A large request keeps the client writing after the server has gone.
+    kythira::install_snapshot_request<> big{};
+    big._term = 1;
+    big._data.assign(4 * 1024 * 1024, std::byte{0x5a});
+    BOOST_CHECK_THROW(client.send_install_snapshot(1, big, 5000ms).get(), std::exception);
+    closer.join();
+    ::close(lfd);
+}
+
+BOOST_AUTO_TEST_CASE(test_frame_recv_reads_large_frame_in_pieces, *boost::unit_test::timeout(20)) {
+    SockPair sp;
+    std::string big(8 * 1024 * 1024, '\0');
+    for (std::size_t i = 0; i < big.size(); ++i) {
+        big[i] = static_cast<char>('a' + (i * 7) % 26);
+    }
+    std::thread writer([&] {
+        auto len = htonl(static_cast<std::uint32_t>(big.size()));
+        ::send(sp.w, &len, 4, MSG_NOSIGNAL);
+        std::size_t off = 0;
+        std::size_t step = 1;
+        while (off < big.size()) {
+            auto n = std::min(step, big.size() - off);
+            ::send(sp.w, big.data() + off, n, MSG_NOSIGNAL);
+            off += n;
+            step = step * 3 + 17;  // uneven piece sizes
+        }
+    });
+    auto received = kythira::tcp_detail::frame_recv(sp.r);
+    writer.join();
+    BOOST_REQUIRE(received.has_value());
+    BOOST_TEST(received->size() == big.size());
+    BOOST_TEST((*received == big));
+}
+
+BOOST_AUTO_TEST_CASE(test_frame_recv_announced_but_missing_body, *boost::unit_test::timeout(10)) {
+    SockPair sp;
+    auto len = htonl(64u * 1024u * 1024u);
+    ::send(sp.w, &len, 4, MSG_NOSIGNAL);
+    ::send(sp.w, "0123456789", 10, MSG_NOSIGNAL);
+    ::shutdown(sp.w, SHUT_WR);
+    BOOST_TEST(!kythira::tcp_detail::frame_recv(sp.r).has_value());
 }

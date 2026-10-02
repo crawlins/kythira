@@ -311,14 +311,11 @@ inline auto frame_recv(SSL* ssl) -> std::optional<std::string> {
         return std::nullopt;
     }
     std::uint32_t len = ntohl(net_len);
-    if (len == 0 || len > 64u * 1024u * 1024u) {
+    if (len == 0 || len > tcp_detail::k_max_frame_bytes) {
         return std::nullopt;
     }
-    std::string buf(len, '\0');
-    if (!read_all(ssl, buf.data(), len)) {
-        return std::nullopt;
-    }
-    return buf;
+    return tcp_detail::read_frame_body(
+        len, [ssl](char* dst, std::size_t n) { return read_all(ssl, dst, n); });
 }
 
 // SSL_write()/SSL_read() ultimately call send()/recv() on the underlying
