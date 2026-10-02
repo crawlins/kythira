@@ -52,6 +52,7 @@
 #include <raft/oscore_sequence_store.hpp>
 
 #include <openssl/evp.h>
+#include <openssl/crypto.h>
 #include <openssl/hmac.h>
 
 #include <algorithm>
@@ -834,6 +835,15 @@ struct split_options {
 
 }  // namespace detail
 
+/// Overwrites `bytes` with zeros in a way the optimiser may not elide, for key
+/// material that is about to be released (RFC 8613 Requirement 4.9 of the
+/// multi-Raft CoAP spec: destroyed contexts are zeroed, not merely freed).
+inline auto secure_zero(std::vector<std::byte>& bytes) -> void {
+    if (!bytes.empty()) {
+        OPENSSL_cleanse(bytes.data(), bytes.size());
+    }
+}
+
 /// One OSCORE Security Context (RFC 8613 Section 3): the Common Context shared
 /// with the peer, plus this endpoint's Sender and Recipient Contexts.
 ///
@@ -910,12 +920,34 @@ public:
         return out;
     }
 
+    security_context(const security_context&) = delete;
+    auto operator=(const security_context&) -> security_context& = delete;
+    ~security_context() { wipe(); }
+
+    /// Zeroes the keys and the Common IV and makes the context unusable: every
+    /// later protect or verify throws. Called when the group a context belongs
+    /// to is destroyed, so its key material does not merely fall out of a map
+    /// into freed memory. Idempotent.
+    auto wipe() -> void {
+        const std::lock_guard lock(_mutex);
+        secure_zero(_sender_key);
+        secure_zero(_recipient_key);
+        secure_zero(_common_iv);
+        _wiped = true;
+    }
+
+    [[nodiscard]] auto is_wiped() const -> bool {
+        const std::lock_guard lock(_mutex);
+        return _wiped;
+    }
+
     // ── Client side ────────────────────────────────────────────────────────
 
     /// RFC 8613 Section 8.1. Fills `binding` with what verifying the eventual
     /// response will need.
     [[nodiscard]] auto protect_request(const coap_message& message, request_binding& binding) const
         -> coap_message {
+        require_live();
         if (!message.is_request()) {
             throw unsupported_feature_error("protect_request() called with a response");
         }
@@ -963,6 +995,7 @@ public:
     /// RFC 8613 Section 8.4.
     [[nodiscard]] auto unprotect_response(const coap_message& message,
                                           const request_binding& binding) const -> coap_message {
+        require_live();
         const auto fields = extract_option(message);
         // The AAD names the request's kid and Partial IV, which is what binds
         // this response to the request the caller actually sent.
@@ -1016,6 +1049,7 @@ public:
     /// RFC 8613 Section 8.2, including the replay check of Section 7.4.
     [[nodiscard]] auto unprotect_request(const coap_message& message, request_binding& binding)
         -> coap_message {
+        require_live();
         const auto fields = extract_option(message);
         if (fields.partial_iv.empty()) {
             throw verification_error("a protected request must carry a Partial IV");
@@ -1061,6 +1095,7 @@ public:
     /// answer when the server cannot do replay protection (Appendix B.1.2).
     [[nodiscard]] auto protect_response(const coap_message& message, const request_binding& binding,
                                         bool with_own_partial_iv = false) const -> coap_message {
+        require_live();
         if (message.is_request()) {
             throw unsupported_feature_error("protect_response() called with a request");
         }
@@ -1128,6 +1163,13 @@ public:
 
 private:
     static constexpr std::uint64_t max_sender_sequence = 0xFFFFFFFFFFULL;
+
+    auto require_live() const -> void {
+        const std::lock_guard lock(_mutex);
+        if (_wiped) {
+            throw coap_security_error("OSCORE: this Security Context has been destroyed");
+        }
+    }
 
     [[nodiscard]] auto next_sequence() const -> std::uint64_t {
         const std::lock_guard lock(_mutex);
@@ -1278,6 +1320,7 @@ private:
     std::uint64_t _replay_high{0};
     std::uint64_t _replay_bitmap{0};
     bool _seen_any{false};
+    bool _wiped{false};
 };
 
 }  // namespace kythira::oscore
