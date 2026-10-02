@@ -29,6 +29,7 @@
 //   retransmit/dedup   pending_message, received_message_info
 //   block-wise         block_option (coap_block_option.hpp) + our own sequencing
 //   OSCORE             oscore::security_context (raft/oscore.hpp)
+//   EDHOC bootstrap    coap_edhoc_bootstrap.hpp over /.well-known/edhoc
 //
 // So "own the stack" really means "own the socket and the timer, and wire up
 // the pieces" -- not "reimplement CoAP".
@@ -62,6 +63,7 @@
 // raft/coap_transport.hpp -- see above.
 #include <raft/coap_transport_config.hpp>
 #include <raft/coap_block_option.hpp>
+#include <raft/coap_edhoc_bootstrap.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
 #include <raft/coap_utils.hpp>
@@ -138,7 +140,8 @@ namespace cantcoap_detail {
 /// against CoAP message bytes -- which is exactly the shape this backend needs,
 /// since it already owns the bytes on both sides of the socket. That was
 /// written for the libnyoci backend and is inherited here for free, which is
-/// the payoff of having made it transport-neutral.
+/// the payoff of having made it transport-neutral. The EDHOC bootstrap that
+/// derives its context (`coap_edhoc_bootstrap.hpp`) is inherited the same way.
 ///
 /// DTLS is refused. cantcoap is cleartext-only and, unlike libnyoci, there is
 /// no plugin to fall back on: providing it would mean driving an OpenSSL DTLS
@@ -159,16 +162,20 @@ template<typename Config>
         case coap_auth_mode::none:
             return {channel::plain, std::move(effective)};
         case coap_auth_mode::oscore:
+#ifndef LAKERS_AVAILABLE
             if (std::holds_alternative<oscore_credentials>(effective.credentials) &&
                 std::get<oscore_credentials>(effective.credentials).bootstrap_method ==
                     oscore_bootstrap::edhoc) {
+                // The bootstrap is implemented (see coap_edhoc_bootstrap.hpp),
+                // but the handshake itself needs lakers. Refusing beats
+                // silently behaving as if static credentials had been supplied.
                 throw coap_security_error(
-                    std::string("the cantcoap CoAP backend does not implement the EDHOC "
-                                "bootstrap for this ") +
-                    role +
-                    " yet; supply static OSCORE credentials, or use the libnyoci backend, which "
-                    "serves /.well-known/edhoc.");
+                    std::string("the EDHOC bootstrap was requested for this ") + role +
+                    ", but this build has no lakers. Rebuild with the vcpkg 'edhoc' feature, or "
+                    "supply static OSCORE credentials.");
             }
+#endif
+            (void)role;
             return {channel::oscore, std::move(effective)};
         case coap_auth_mode::dtls_psk:
         case coap_auth_mode::dtls_pki:
@@ -182,6 +189,15 @@ template<typename Config>
                 "for DTLS. See .kiro/specs/coap-transport-cantcoap/ Requirement 6.");
     }
     throw coap_security_config_error("unknown coap_auth_mode");
+}
+
+/// True when `config` asks for an OSCORE context derived by EDHOC rather than
+/// supplied.
+[[nodiscard]] inline auto wants_edhoc(const coap_security_config& config) -> bool {
+    return config.mode == coap_auth_mode::oscore &&
+           std::holds_alternative<oscore_credentials>(config.credentials) &&
+           std::get<oscore_credentials>(config.credentials).bootstrap_method ==
+               oscore_bootstrap::edhoc;
 }
 
 /// A peer's socket address, of either family.
@@ -516,6 +532,22 @@ inline auto add_uri_path(CoapPDU& pdu, const std::string& path) -> void {
     return path;
 }
 
+/// Whether `pdu` carries option `number` at all. Used to tell an OSCORE
+/// message (option 9) from the unprotected EDHOC traffic that precedes one.
+[[nodiscard]] inline auto has_option(CoapPDU& pdu, std::uint16_t number) -> bool {
+    CoapPDU::CoapOption* options = pdu.getOptions();
+    if (options == nullptr) {
+        return false;
+    }
+    bool found = false;
+    const int count = pdu.getNumOptions();
+    for (int i = 0; i < count && !found; ++i) {
+        found = options[i].optionNumber == number;
+    }
+    std::free(options);
+    return found;
+}
+
 #endif  // CANTCOAP_AVAILABLE
 
 }  // namespace cantcoap_detail
@@ -543,8 +575,15 @@ public:
         kythira::coap_utils::validate_registry_content_formats(_registry);
         const auto [selected, security] = cantcoap_detail::plan_security(_config, "client");
         if (selected == cantcoap_detail::channel::oscore) {
-            _oscore = std::make_shared<oscore::security_context>(
-                std::get<oscore_credentials>(security.credentials));
+            _security = security;
+            if (cantcoap_detail::wants_edhoc(security)) {
+                // Left null on purpose: the context is derived by the EDHOC
+                // handshake on first use (ensure_edhoc_context).
+                _edhoc_bootstrap = true;
+            } else {
+                _oscore = std::make_shared<oscore::security_context>(
+                    std::get<oscore_credentials>(security.credentials));
+            }
         }
 #ifdef CANTCOAP_AVAILABLE
         // Port 0: the client only originates requests, so any source port will
@@ -643,9 +682,98 @@ private:
         std::vector<std::byte> accumulated;
         std::optional<std::uint16_t> response_format;
         bool settled{false};
+        /// Raw mode: the body is POSTed verbatim with no Content-Format, no
+        /// Accept and no OSCORE, and the response body is handed back as is.
+        /// Used only for the EDHOC bootstrap, which by definition runs before a
+        /// Security Context exists -- and which authenticates on its own, so
+        /// carrying it in the clear is the design rather than a gap.
+        bool raw{false};
+        /// The OSCORE context this exchange is protected under, captured when
+        /// it starts. Pinned per exchange so that a context replaced by a fresh
+        /// EDHOC handshake mid-flight cannot be used to verify a response that
+        /// was protected under the old one.
+        std::shared_ptr<oscore::security_context> context;
         /// What verifying this exchange's response needs, when OSCORE is on.
         oscore::request_binding binding;
     };
+
+    /// POST `payload` verbatim to `resource_path` on `target` and hand back the
+    /// response body. No serializer, no negotiation, no OSCORE -- this exists
+    /// for the EDHOC bootstrap, which runs before any Security Context does.
+    [[nodiscard]] auto post_raw(std::uint64_t target, const std::string& resource_path,
+                                std::vector<std::byte> payload, std::chrono::milliseconds timeout)
+        -> std::vector<std::byte> {
+#ifdef CANTCOAP_AVAILABLE
+        const auto endpoint = _node_id_to_endpoint.find(target);
+        if (endpoint == _node_id_to_endpoint.end()) {
+            throw coap_network_error("no CoAP endpoint configured for node " +
+                                     std::to_string(target));
+        }
+        auto promise = std::make_shared<promise_template<std::vector<std::byte>>>();
+        auto future = promise->getFuture();
+
+        auto exchange = std::make_unique<pending_exchange>();
+        exchange->raw = true;
+        exchange->peers = cantcoap_detail::resolve_endpoint(endpoint->second, _socket.family());
+        exchange->resource_path = resource_path;
+        exchange->full_request = std::move(payload);
+        exchange->block_size = 1024;
+        const auto token = next_token();
+        exchange->message = std::make_unique<pending_message>(
+            token, 0, timeout,
+            [promise](std::vector<std::byte> body, const std::string&) {
+                promise->setValue(std::move(body));
+            },
+            [promise](std::exception_ptr error) { promise->setException(error); },
+            exchange->full_request, endpoint->second, resource_path, true);
+        exchange->expiry = std::chrono::steady_clock::now() + timeout;
+        {
+            const std::lock_guard lock(_mutex);
+            if (_shutting_down) {
+                throw coap_transport_error("cantcoap CoAP client is shutting down");
+            }
+            _pending.emplace(token, std::move(exchange));
+            _to_start.push_back(token);
+        }
+        return std::move(future).get();
+#else
+        (void)target;
+        (void)resource_path;
+        (void)payload;
+        (void)timeout;
+        throw coap_transport_error("cantcoap CoAP backend unavailable");
+#endif
+    }
+
+    /// Run the EDHOC handshake against `target` and install the OSCORE context
+    /// it derives.
+    ///
+    /// Lazy, and deliberately so: the peer may not be listening when this
+    /// client is constructed, and a constructor is the wrong place to block on
+    /// the network. The first RPC pays for the handshake; the rest reuse the
+    /// context. Guarded so concurrent first calls run it once. A handshake
+    /// that fails throws, and leaves no context, so the next RPC tries again.
+    auto ensure_edhoc_context(std::uint64_t target) -> void {
+        const std::lock_guard bootstrap(_bootstrap_mutex);
+        {
+            const std::lock_guard lock(_mutex);
+            if (_oscore) {
+                return;
+            }
+        }
+        const auto& creds = std::get<oscore_credentials>(_security.credentials);
+        edhoc_initiator_transport transport{[this, target](const std::vector<std::byte>& message) {
+            return post_raw(target, edhoc_well_known_path, message,
+                            std::chrono::seconds{edhoc_step_timeout});
+        }};
+        auto derived = run_edhoc_handshake(creds.edhoc, transport);
+        // run_edhoc_handshake() supplies sender/recipient ids, master secret and
+        // salt; the AEAD choice stays whatever the config asked for.
+        derived.aead_algorithm = creds.aead_algorithm;
+        auto context = std::make_shared<oscore::security_context>(derived);
+        const std::lock_guard lock(_mutex);
+        _oscore = std::move(context);
+    }
 
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
@@ -707,10 +835,22 @@ private:
                 _config.use_confirmable_messages);
             exchange->expiry = std::chrono::steady_clock::now() + timeout;
 
+            if (_edhoc_bootstrap) {
+                // First RPC (or the first after the peer forgot the context)
+                // pays for the handshake. Blocks this caller, not the loop.
+                ensure_edhoc_context(target);
+            }
+
             {
                 const std::lock_guard lock(_mutex);
                 if (_shutting_down) {
                     throw coap_transport_error("cantcoap CoAP client is shutting down");
+                }
+                exchange->context = _oscore;
+                if (_edhoc_bootstrap && !exchange->context) {
+                    throw coap_security_error(
+                        "the EDHOC-derived OSCORE context was dropped before the request could "
+                        "be protected; the next request will bootstrap again");
                 }
                 _pending.emplace(token, std::move(exchange));
             }
@@ -856,12 +996,17 @@ private:
         // Options must be added in ascending number order; cantcoap does not
         // sort them for us.
         cantcoap_detail::add_uri_path(pdu, exchange.resource_path);  // 11
-        const auto format =
-            *kythira::coap_utils::media_type_to_coap_content_format(exchange.request_media_type);
-        cantcoap_detail::add_uint_option(pdu, CoapPDU::COAP_OPTION_CONTENT_FORMAT,
-                                         static_cast<std::uint32_t>(format));  // 12
-        for (const auto accepted : exchange.accept_formats) {
-            cantcoap_detail::add_uint_option(pdu, CoapPDU::COAP_OPTION_ACCEPT, accepted);  // 17
+        if (!exchange.raw) {
+            // No Content-Format or Accept on a raw (EDHOC) exchange: the body
+            // is an opaque blob, exactly as the libnyoci backend sends it.
+            const auto format = *kythira::coap_utils::media_type_to_coap_content_format(
+                exchange.request_media_type);
+            cantcoap_detail::add_uint_option(pdu, CoapPDU::COAP_OPTION_CONTENT_FORMAT,
+                                             static_cast<std::uint32_t>(format));  // 12
+            for (const auto accepted : exchange.accept_formats) {
+                cantcoap_detail::add_uint_option(pdu, CoapPDU::COAP_OPTION_ACCEPT,
+                                                 accepted);  // 17
+            }
         }
         if (exchange.response_block > 0) {
             block_option block;
@@ -893,7 +1038,7 @@ private:
         }
 
         auto bytes = to_bytes(pdu);
-        if (_oscore) {
+        if (exchange.context && !exchange.raw) {
             bytes = protect(bytes, exchange);
         }
         return bytes;
@@ -905,7 +1050,7 @@ private:
     [[nodiscard]] auto protect(const std::vector<std::byte>& plain, pending_exchange& exchange)
         -> std::vector<std::byte> {
         const auto inner = oscore::parse_message(plain);
-        const auto outer = _oscore->protect_request(inner, exchange.binding);
+        const auto outer = exchange.context->protect_request(inner, exchange.binding);
         return oscore::serialize_message(outer);
     }
 
@@ -958,12 +1103,35 @@ private:
         auto& exchange = *it->second;
 
         std::vector<std::byte> plain = bytes;
-        if (_oscore) {
+        if (exchange.context && !exchange.raw) {
             try {
                 const auto outer = oscore::parse_message(bytes);
-                const auto inner = _oscore->unprotect_response(outer, exchange.binding);
+                const auto inner = exchange.context->unprotect_response(outer, exchange.binding);
                 plain = oscore::serialize_message(inner);
             } catch (const std::exception&) {
+                if (_edhoc_bootstrap &&
+                    static_cast<int>(probe.getCode()) == CoapPDU::COAP_UNAUTHORIZED &&
+                    !cantcoap_detail::has_option(probe, oscore::coap_option_oscore)) {
+                    // An unprotected 4.01 is how an EDHOC-bootstrapped server
+                    // says it holds no context matching ours -- it restarted,
+                    // or bootstrapped again with someone else. Drop the context
+                    // so the next request runs the handshake again, and fail
+                    // this one now rather than at its timeout.
+                    //
+                    // Unauthenticated, so an on-path attacker can force a
+                    // re-handshake with it; that attacker could equally drop
+                    // every datagram, so it gains nothing it did not have.
+                    if (_oscore == exchange.context) {
+                        _oscore.reset();
+                    }
+                    settle_reject(exchange,
+                                  std::make_exception_ptr(coap_client_error(
+                                      CoapPDU::COAP_UNAUTHORIZED,
+                                      "CoAP request to " + exchange.message->target_endpoint +
+                                          ": the peer holds no matching OSCORE context; the "
+                                          "next request will run the EDHOC bootstrap again")));
+                    _pending.erase(token);
+                }
                 return;  // Undecryptable: drop (Requirement 6.4).
             }
         }
@@ -1016,7 +1184,7 @@ private:
         }
 
         std::string media_type = exchange.request_media_type;
-        if (exchange.response_format) {
+        if (exchange.response_format && !exchange.raw) {
             const auto resolved = kythira::coap_utils::registry_media_type_for_content_format(
                 _registry, kythira::coap_utils::parse_content_format(*exchange.response_format));
             if (!resolved) {
@@ -1112,6 +1280,7 @@ private:
             }
         }
     }
+
 #endif  // CANTCOAP_AVAILABLE
 
     serializer_type _serializer;
@@ -1120,7 +1289,15 @@ private:
     std::unordered_map<std::uint64_t, std::string> _node_id_to_endpoint;
     kythira::coap_client_config _config;
     metrics_type _metrics;
+    coap_security_config _security{};
+    /// Guarded by `_mutex`: replaced by the EDHOC bootstrap from a caller's
+    /// thread, read on the loop thread.
     std::shared_ptr<oscore::security_context> _oscore;
+    /// Set when the OSCORE context is to be derived by EDHOC rather than
+    /// configured.
+    bool _edhoc_bootstrap{false};
+    /// Serialises EDHOC bootstraps, so concurrent first RPCs run one handshake.
+    std::mutex _bootstrap_mutex;
 
     mutable std::mutex _mutex;
     std::unordered_map<std::string, std::unique_ptr<pending_exchange>> _pending;
@@ -1166,6 +1343,10 @@ public:
         kythira::coap_utils::validate_registry_content_formats(_registry);
         auto [selected, security] = cantcoap_detail::plan_security(_config, "server");
         _secure = selected == cantcoap_detail::channel::oscore;
+        // When EDHOC is asked for, the context arrives when a peer runs the
+        // handshake against /.well-known/edhoc. Until then this server serves
+        // that resource and nothing else.
+        _edhoc_bootstrap = _secure && cantcoap_detail::wants_edhoc(security);
         _security = std::move(security);
     }
 
@@ -1204,9 +1385,9 @@ public:
             return;
         }
 #ifdef CANTCOAP_AVAILABLE
-        if (_secure) {
-            _oscore = std::make_shared<oscore::security_context>(
-                std::get<oscore_credentials>(_security.credentials));
+        if (_secure && !_edhoc_bootstrap) {
+            set_oscore(std::make_shared<oscore::security_context>(
+                std::get<oscore_credentials>(_security.credentials)));
         }
         // One AF_INET6 socket with IPV6_V6ONLY off, so v4 peers arrive
         // v4-mapped. _bind_address is recorded for parity with the other
@@ -1224,12 +1405,24 @@ public:
 
     auto stop() -> void {
 #ifdef CANTCOAP_AVAILABLE
+        // Wake an EDHOC responder first: the loop may be blocked handing it a
+        // message, and only the responder giving up releases it.
+        if (const auto channel = current_edhoc_channel()) {
+            channel->abandon();
+        }
         if (_thread.joinable()) {
             _thread.request_stop();
             _thread.join();
         }
+        if (_edhoc_thread.joinable()) {
+            _edhoc_thread.join();
+        }
+        {
+            const std::lock_guard lock(_edhoc_mutex);
+            _edhoc_channel.reset();
+        }
         _socket.close();
-        _oscore.reset();
+        set_oscore(nullptr);
         {
             const std::lock_guard lock(_mutex);
             _block1_assembly.clear();
@@ -1288,12 +1481,52 @@ private:
                                      reinterpret_cast<std::byte*>(data) + length);
         oscore::request_binding binding;
 
-        if (_oscore) {
+        // Snapshot once: the EDHOC responder thread may install a new context
+        // at any moment, and one request must be verified and answered under
+        // the same one.
+        _reply_context = current_oscore();
+
+        if (_edhoc_bootstrap) {
+            CoapPDU probe(data, length);
+            if (probe.validate() != 1) {
+                return;
+            }
+            if (!cantcoap_detail::has_option(probe, oscore::coap_option_oscore)) {
+                // EDHOC runs before any Security Context exists, so its
+                // messages arrive unprotected. That is the *only* thing an
+                // OSCORE server answers in the clear, and only on this one
+                // resource; any other plaintext request gets an unprotected
+                // 4.01, as RFC 8613 Section 8.2 asks.
+                _reply_context = nullptr;
+                if (cantcoap_detail::read_uri_path(probe) == edhoc_well_known_path) {
+                    handle_edhoc_request(probe, from);
+                } else {
+                    send_error(probe, from, binding, CoapPDU::COAP_UNAUTHORIZED);
+                }
+                return;
+            }
+            if (!_reply_context) {
+                // Protected, but under a context this server does not hold --
+                // the client bootstrapped with an earlier incarnation of it.
+                // The unprotected 4.01 is what makes it bootstrap again.
+                send_error(probe, from, binding, CoapPDU::COAP_UNAUTHORIZED);
+                return;
+            }
+        }
+
+        if (_reply_context) {
             try {
                 const auto outer = oscore::parse_message(plain);
-                const auto inner = _oscore->unprotect_request(outer, binding);
+                const auto inner = _reply_context->unprotect_request(outer, binding);
                 plain = oscore::serialize_message(inner);
             } catch (const std::exception&) {
+                if (_edhoc_bootstrap) {
+                    // Same reasoning as above: the client's context is not
+                    // this one, so tell it, unprotected, to bootstrap again.
+                    CoapPDU probe(data, length);
+                    _reply_context = nullptr;
+                    send_error(probe, from, binding, CoapPDU::COAP_UNAUTHORIZED);
+                }
                 return;  // Unverifiable: drop without a handler ever seeing it.
             }
         }
@@ -1445,11 +1678,157 @@ private:
                       const oscore::request_binding& binding) -> void {
         const auto* start = reinterpret_cast<const std::byte*>(reply.getPDUPointer());
         std::vector<std::byte> bytes(start, start + reply.getPDULength());
-        if (_oscore) {
+        if (_reply_context) {
             const auto inner = oscore::parse_message(bytes);
-            bytes = oscore::serialize_message(_oscore->protect_response(inner, binding));
+            bytes = oscore::serialize_message(_reply_context->protect_response(inner, binding));
         }
         _socket.send_to(to, bytes.data(), bytes.size());
+    }
+
+    /// Serve one EDHOC message on `/.well-known/edhoc`.
+    ///
+    /// The responder half of the handshake blocks in receive(), so it runs on
+    /// its own thread and this handler rendezvouses with it: hand the inbound
+    /// message over, wait for the reply, send it back. That blocks this loop
+    /// for as long as the responder's elliptic-curve work takes, which is
+    /// milliseconds; the alternative, a reply sent later from another thread,
+    /// would put a second writer on the socket.
+    auto handle_edhoc_request(CoapPDU& request, const cantcoap_detail::peer_address& from) -> void {
+        const oscore::request_binding no_binding;
+        {
+            // A retransmitted EDHOC message must not reach the responder twice:
+            // it would read a repeated message_1 as message_3.
+            const std::lock_guard lock(_mutex);
+            if (is_duplicate(from, request.getMessageID())) {
+                return;
+            }
+        }
+        if (request.getCode() != CoapPDU::COAP_POST) {
+            send_error(request, from, no_binding, CoapPDU::COAP_METHOD_NOT_ALLOWED);
+            return;
+        }
+#ifdef LAKERS_AVAILABLE
+        const auto* payload = request.getPayloadPointer();
+        const auto payload_length = request.getPayloadLength();
+        if (payload == nullptr || payload_length <= 0) {
+            send_error(request, from, no_binding, CoapPDU::COAP_BAD_REQUEST);
+            return;
+        }
+        const auto* bytes = reinterpret_cast<const std::byte*>(payload);
+        std::vector<std::byte> message(bytes, bytes + payload_length);
+
+        if (!start_edhoc_responder_if_needed(is_edhoc_message_1(message))) {
+            // A message_3 with no handshake waiting for it: the responder that
+            // sent message_2 was replaced or has given up.
+            send_error(request, from, no_binding, CoapPDU::COAP_UNAUTHORIZED);
+            return;
+        }
+        // Not under _mutex: the responder takes it to install the context
+        // before it releases this wait.
+        auto reply = current_edhoc_channel()->exchange(std::move(message));
+        if (!reply) {
+            // The handshake failed or timed out. 4.01 with no detail, matching
+            // how a failed OSCORE verification is answered.
+            send_error(request, from, no_binding, CoapPDU::COAP_UNAUTHORIZED);
+            return;
+        }
+        auto response = begin_reply(request, CoapPDU::COAP_CHANGED);
+        // message_3 has no EDHOC reply, so an empty body here is correct rather
+        // than a failure -- it is what tells the initiator the exchange is done.
+        if (!reply->empty()) {
+            response->setPayload(reinterpret_cast<std::uint8_t*>(reply->data()),
+                                 static_cast<int>(reply->size()));
+        }
+        finish_reply(*response, from, no_binding);
+#else
+        // Unreachable: plan_security() refuses EDHOC without lakers.
+        send_error(request, from, no_binding, CoapPDU::COAP_NOT_IMPLEMENTED);
+#endif
+    }
+
+#ifdef LAKERS_AVAILABLE
+    /// Whether an EDHOC message is a message_1, which opens a handshake.
+    ///
+    /// The CoAP carriage gives no other way to tell: both message_1 and
+    /// message_3 are POSTed to the same resource, and this deployment sends
+    /// them without the RFC 9528 Appendix A.2 connection-identifier prefix.
+    /// The messages themselves differ in their first CBOR item, though:
+    /// message_1 opens with METHOD, an integer (major type 0 or 1), and
+    /// message_3 is a single byte string, CIPHERTEXT_3 (major type 2).
+    [[nodiscard]] static auto is_edhoc_message_1(const std::vector<std::byte>& message) -> bool {
+        const auto major_type = std::to_integer<unsigned>(message.front()) >> 5U;
+        return major_type == 0U || major_type == 1U;
+    }
+
+    /// Make sure a responder is ready for this message. Returns false when
+    /// there is none for it to go to.
+    ///
+    /// One handshake at a time: this server holds a single Security Context,
+    /// so two concurrent bootstraps would race to install theirs. A message_1
+    /// always starts a fresh responder, abandoning one still waiting for a
+    /// message_3 that will never come -- an initiator that failed to verify
+    /// message_2 simply stops, so without this the next client's message_1
+    /// would be fed to the old responder as its message_3. That is what lets a
+    /// restarted client, or one whose first attempt failed, bootstrap again.
+    [[nodiscard]] auto start_edhoc_responder_if_needed(bool opens_handshake) -> bool {
+        const auto previous = current_edhoc_channel();
+        const bool running = previous && !_edhoc_done->load();
+        if (!opens_handshake) {
+            return running;
+        }
+        if (running) {
+            // Its receive() throws, so the thread ends promptly.
+            previous->abandon();
+        }
+        if (_edhoc_thread.joinable()) {
+            _edhoc_thread.join();
+        }
+        auto channel = std::make_shared<edhoc_responder_channel>();
+        _edhoc_done = std::make_shared<std::atomic<bool>>(false);
+        {
+            const std::lock_guard lock(_edhoc_mutex);
+            _edhoc_channel = channel;
+        }
+        auto done = _edhoc_done;
+        const auto& creds = std::get<oscore_credentials>(_security.credentials);
+        _edhoc_thread =
+            std::jthread([this, channel, done, params = creds.edhoc, aead = creds.aead_algorithm] {
+                try {
+                    auto derived = run_edhoc_handshake(params, *channel);
+                    derived.aead_algorithm = aead;
+                    set_oscore(std::make_shared<oscore::security_context>(derived));
+                    // Marked done *before* the handler holding message_3 is
+                    // released, so the next message it reads -- possibly a new
+                    // message_1 -- starts a fresh responder rather than landing in
+                    // this finished one.
+                    done->store(true);
+                    channel->finish();
+                } catch (...) {
+                    // Never leave a handler blocked on a handshake that died.
+                    done->store(true);
+                    channel->fail();
+                }
+            });
+        return true;
+    }
+#endif
+
+    /// stop() reads the channel from the caller's thread while the loop may be
+    /// replacing it, so the pointer itself is guarded; the channel inside is
+    /// already thread-safe.
+    [[nodiscard]] auto current_edhoc_channel() const -> std::shared_ptr<edhoc_responder_channel> {
+        const std::lock_guard lock(_edhoc_mutex);
+        return _edhoc_channel;
+    }
+
+    [[nodiscard]] auto current_oscore() const -> std::shared_ptr<oscore::security_context> {
+        const std::lock_guard lock(_mutex);
+        return _oscore;
+    }
+
+    auto set_oscore(std::shared_ptr<oscore::security_context> context) -> void {
+        const std::lock_guard lock(_mutex);
+        _oscore = std::move(context);
     }
 
     auto send_error(CoapPDU& request, const cantcoap_detail::peer_address& to,
@@ -1541,7 +1920,19 @@ private:
     metrics_type _metrics;
     coap_security_config _security{};
     bool _secure{false};
+    /// Guarded by `_mutex`: installed by the EDHOC responder thread, read on
+    /// the loop thread through current_oscore().
     std::shared_ptr<oscore::security_context> _oscore;
+    /// The context the request being handled was verified under, and so the
+    /// one its reply is protected under; null for a reply that must go out
+    /// unprotected. Loop thread only.
+    std::shared_ptr<oscore::security_context> _reply_context;
+    bool _edhoc_bootstrap{false};
+    /// Guarded by `_edhoc_mutex`; see current_edhoc_channel().
+    std::shared_ptr<edhoc_responder_channel> _edhoc_channel;
+    mutable std::mutex _edhoc_mutex;
+    std::shared_ptr<std::atomic<bool>> _edhoc_done{std::make_shared<std::atomic<bool>>(true)};
+    std::jthread _edhoc_thread;
 
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
