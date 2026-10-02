@@ -4,6 +4,7 @@
 #pragma once
 
 #include <raft/coap_transport.hpp>
+#include <raft/coap_conformance_types.hpp>
 #include <raft/coap_security_impl.hpp>
 #include <raft/net_bind.hpp>
 #include <algorithm>
@@ -8414,6 +8415,46 @@ auto coap_client<Types>::correlate_response_with_request(const std::string& toke
 
     return true;
 }
+
+// ── concept conformance (.kiro/specs/coap-transport-multi-raft/, Requirement 2) ──
+//
+// Which Raft features this backend supports, as a compile-time fact. The
+// negative assertions are as deliberate as the positive ones: node<Types>
+// detects every extension with `if constexpr` and silently does without, so a
+// backend quietly gaining or losing one changes what a deployment can do with
+// no other symptom. Each block below is mirrored by the capability table in
+// design §2 of that specification and by coap_concept_conformance_test.cpp; if
+// one of these fires, the table is stale, not the assertion.
+
+static_assert(kythira::network_client<coap_client<coap_detail::conformance_types>>,
+              "coap_client must satisfy network_client");
+static_assert(kythira::network_server<coap_server<coap_detail::conformance_types>>,
+              "coap_server must satisfy network_server");
+
+static_assert(!kythira::network_client_with_pre_vote<coap_client<coap_detail::conformance_types>>,
+              "coap_client does not implement pre-vote; see design §2's capability table");
+static_assert(!kythira::network_server_with_pre_vote<coap_server<coap_detail::conformance_types>>,
+              "coap_server does not implement pre-vote; see design §2's capability table");
+static_assert(!kythira::network_client_with_log_fetch<coap_client<coap_detail::conformance_types>>,
+              "coap_client does not implement log fetch; see design §2's capability table");
+static_assert(!kythira::network_server_with_log_fetch<coap_server<coap_detail::conformance_types>>,
+              "coap_server does not implement log fetch; see design §2's capability table");
+static_assert(
+    !kythira::network_client_with_cluster_join<coap_client<coap_detail::conformance_types>>,
+    "coap_client does not implement cluster join; see design §2's capability table");
+static_assert(
+    !kythira::network_server_with_cluster_join<coap_server<coap_detail::conformance_types>>,
+    "coap_server does not implement cluster join; see design §2's capability table");
+static_assert(
+    !kythira::network_client_with_cluster_leave<coap_client<coap_detail::conformance_types>>,
+    "coap_client does not implement cluster leave; see design §2's capability table");
+static_assert(
+    !kythira::network_server_with_cluster_leave<coap_server<coap_detail::conformance_types>>,
+    "coap_server does not implement cluster leave; see design §2's capability table");
+static_assert(kythira::network_client_with_timeout_now<coap_client<coap_detail::conformance_types>>,
+              "coap_client must satisfy network_client_with_timeout_now");
+static_assert(kythira::network_server_with_timeout_now<coap_server<coap_detail::conformance_types>>,
+              "coap_server must satisfy network_server_with_timeout_now");
 
 }  // namespace kythira
 

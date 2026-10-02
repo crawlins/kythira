@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Clark Rawlins
 // SPDX-License-Identifier: Apache-2.0
 
+#include "coap_capability_table.hpp"
 #include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_concept_conformance_test
 #include <boost/test/unit_test.hpp>
@@ -12,14 +13,16 @@
 #include <raft/json_serializer.hpp>
 #include <raft/network.hpp>
 
-// Only include CoAP transport if libcoap is available
-#ifdef LIBCOAP_AVAILABLE
+// Included unconditionally, as the libnyoci and cantcoap conformance tests do
+// with their own backends: coap_transport_impl.hpp compiles with or without
+// LIBCOAP_AVAILABLE and keeps its full concept surface either way, so the
+// concept assertions below are a property of the adapter and hold in a build
+// that has no libcoap (.kiro/specs/coap-transport-multi-raft/ Requirement 2).
+// Only the cases that construct a client or server stay behind the gate.
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_types::executor_type below is folly::Executor directly
 #include <raft/coap_transport_impl.hpp>
 #include <raft/serializer_registry.hpp>
-
-#endif
 
 namespace {
 constexpr const char* test_name = "coap_concept_conformance_test";
@@ -40,7 +43,6 @@ constexpr const char* test_endpoint = "coap://127.0.0.1:61030";
 using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
 using test_metrics = kythira::noop_metrics;
 
-#ifdef LIBCOAP_AVAILABLE
 // coap_client has three RPCs with three distinct Response types, so Types::
 // future_template<T> must be genuinely parameterized over T. The deprecated
 // default_transport_types alias always yields the single FutureType it was
@@ -68,12 +70,10 @@ struct test_types {
 };
 using test_client = kythira::coap_client<test_types>;
 using test_server = kythira::coap_server<test_types>;
-#endif
 }
 
 BOOST_AUTO_TEST_SUITE(coap_concept_conformance_tests)
 
-#ifdef LIBCOAP_AVAILABLE
 // Test that coap_client satisfies network_client concept
 BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
@@ -95,7 +95,20 @@ BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept,
     BOOST_TEST_MESSAGE("coap_server satisfies network_server concept");
     BOOST_TEST(true);
 }
-#endif
+
+// Design §2's capability table, both directions: every optional extension the
+// libcoap backend implements and every one it does not (Requirements 2.2, 2.5).
+// This backend is the default (CONFIG_COAP_BACKEND_LIBCOAP=y) and was, until
+// this case existed, the only one of the three with no conformance assertion
+// at all. The row lives in coap_capability_table.hpp beside the other two
+// backends', so the three tests assert one table rather than three copies.
+BOOST_AUTO_TEST_CASE(test_extension_set_matches_the_capability_table,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    static_assert(
+        kythira::testing::assert_coap_capabilities<test_client, test_server,
+                                                   kythira::testing::libcoap_capabilities>());
+    BOOST_TEST(true);
+}
 
 // Test RPC serializer integration with coap_client
 BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration,
