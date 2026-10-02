@@ -78,6 +78,8 @@ enum class redis_role : std::uint8_t {
 struct redis_acl_user {
     std::string _name;
     /// `pbkdf2-sha256$<iters>$<b64 salt>$<b64 dk>`, or empty for `nopass`.
+    /// An empty secret means the user has no password at all: it can only
+    /// authenticate through a mapped client certificate, never via AUTH.
     std::string _secret;
     bool _enabled = true;
     redis_role _role = redis_role::read_only;
@@ -370,20 +372,21 @@ public:
 
     // ---- authentication ----------------------------------------------------
 
-    /// Returns an identity or nullopt. Unknown user, disabled user and wrong
-    /// secret are indistinguishable to the caller — same result, and the
-    /// same KDF work, so timing does not reveal which usernames exist.
+    /// Returns an identity or nullopt. Unknown user, disabled user, `nopass`
+    /// user and wrong secret are indistinguishable to the caller — same
+    /// result, and the same KDF work, so timing does not reveal which
+    /// usernames exist.
+    ///
+    /// A `nopass` user never authenticates here: it is certificate-only, and
+    /// accepting any password for it would hand its role to anyone who can
+    /// reach the plaintext listener and knows the name.
     [[nodiscard]] auto authenticate(std::string_view user, std::string_view secret) const
         -> std::optional<redis_identity> {
         auto table = snapshot();
         const auto* u = table->find(user);
         bool ok = false;
-        if (u != nullptr && u->_enabled) {
-            if (u->_secret.empty()) {
-                ok = true;  // nopass
-            } else {
-                ok = verify_secret(u->_secret, secret);
-            }
+        if (u != nullptr && u->_enabled && !u->_secret.empty()) {
+            ok = verify_secret(u->_secret, secret);
         } else {
             // Burn the same KDF work as a real verification would.
             (void)verify_secret(table->decoy_record(), secret);
@@ -501,6 +504,10 @@ public:
                 } else {
                     u._key_prefixes.push_back(w);
                 }
+            }
+            if (u._enabled && u._secret.empty() && u._cert_subjects.empty()) {
+                fail("'nopass' user '" + u._name +
+                     "' needs a cert=<subject>; it cannot authenticate by password");
             }
             users.push_back(std::move(u));
         }

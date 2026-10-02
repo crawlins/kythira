@@ -38,7 +38,7 @@ auto load_acl(redis_acl& acl) -> void {
         redis_acl::hash_secret("nokeys-secret", test_iters) +
         " read_write\n"
         "user off disabled read_write sccache/\n"
-        "user open nopass read_only public/\n";
+        "user open nopass read_only public/ cert=CN=open.example\n";
     acl.reload(text);
 }
 
@@ -70,8 +70,35 @@ BOOST_AUTO_TEST_CASE(authenticate_accepts_only_correct_pairs, *boost::unit_test:
     BOOST_CHECK(!acl.authenticate("farm", "wrong").has_value());
     BOOST_CHECK(!acl.authenticate("nobody", "farm-secret").has_value());
     BOOST_CHECK(!acl.authenticate("off", "anything").has_value());
-    BOOST_CHECK(acl.authenticate("open", "").has_value());
-    BOOST_CHECK(acl.authenticate("open", "ignored").has_value());
+}
+
+// Audit H1: a `nopass` user is certificate-only. AUTH with any password —
+// empty, arbitrary, or the user's own name — must be refused, or anyone who
+// can reach the plaintext listener gets that user's role.
+BOOST_AUTO_TEST_CASE(nopass_user_rejects_password_auth, *boost::unit_test::timeout(30)) {
+    redis_acl acl;
+    acl.reload("user ops nopass admin * cert=CN=ops\n");
+    BOOST_CHECK(!acl.authenticate("ops", "").has_value());
+    BOOST_CHECK(!acl.authenticate("ops", "x").has_value());
+    BOOST_CHECK(!acl.authenticate("ops", "ops").has_value());
+
+    // The certificate path still works.
+    auto id = acl.authenticate_certificate("CN=ops");
+    BOOST_REQUIRE(id.has_value());
+    BOOST_CHECK_EQUAL(id->_user, "ops");
+    BOOST_CHECK(id->_role == redis_role::admin);
+
+    // A table built directly (bypassing the parser) is held to the same rule.
+    redis_acl direct({redis_acl_user{"raw", "", true, redis_role::admin, {""}, {}}});
+    BOOST_CHECK(!direct.authenticate("raw", "").has_value());
+    BOOST_CHECK(!direct.authenticate("raw", "anything").has_value());
+}
+
+BOOST_AUTO_TEST_CASE(parse_rejects_nopass_without_cert, *boost::unit_test::timeout(30)) {
+    BOOST_CHECK_THROW(redis_acl::parse("user ops nopass admin *\n"), redis_acl_parse_error);
+    BOOST_CHECK_NO_THROW(redis_acl::parse("user ops nopass admin * cert=CN=ops\n"));
+    // `disabled` needs no certificate: nobody can authenticate as it anyway.
+    BOOST_CHECK_NO_THROW(redis_acl::parse("user off disabled read_only\n"));
 }
 
 BOOST_AUTO_TEST_CASE(certificate_subject_maps_to_user, *boost::unit_test::timeout(30)) {
@@ -120,11 +147,11 @@ BOOST_AUTO_TEST_CASE(parse_rejects_malformed_lines, *boost::unit_test::timeout(3
     BOOST_CHECK_THROW(redis_acl::parse("user a plaintext read_only\n"), redis_acl_parse_error);
     BOOST_CHECK_THROW(redis_acl::parse("user a nopass god\n"), redis_acl_parse_error);
     BOOST_CHECK_THROW(redis_acl::parse("user a nopass read_only cert=\n"), redis_acl_parse_error);
-    BOOST_CHECK_THROW(redis_acl::parse("user a nopass read_only\nuser a nopass admin\n"),
+    BOOST_CHECK_THROW(redis_acl::parse("user a disabled read_only\nuser a disabled admin\n"),
                       redis_acl_parse_error);
     // The error names the line.
     try {
-        (void)redis_acl::parse("user a nopass read_only\n\nuser b nopass nope\n");
+        (void)redis_acl::parse("user a disabled read_only\n\nuser b disabled nope\n");
         BOOST_FAIL("expected parse error");
     } catch (const redis_acl_parse_error& e) {
         BOOST_CHECK(std::string(e.what()).find("line 3") != std::string::npos);
@@ -138,9 +165,9 @@ BOOST_AUTO_TEST_CASE(reload_failure_keeps_prior_table, *boost::unit_test::timeou
     BOOST_CHECK(acl.authenticate("farm", "farm-secret").has_value());
 
     // A successful reload swaps in the new table wholesale.
-    acl.reload("user solo nopass read_only x/\n");
+    acl.reload("user solo nopass read_only x/ cert=CN=solo\n");
     BOOST_CHECK(!acl.authenticate("farm", "farm-secret").has_value());
-    BOOST_CHECK(acl.authenticate("solo", "").has_value());
+    BOOST_CHECK(acl.authenticate_certificate("CN=solo").has_value());
 }
 
 BOOST_AUTO_TEST_CASE(empty_acl_denies_everyone, *boost::unit_test::timeout(30)) {
