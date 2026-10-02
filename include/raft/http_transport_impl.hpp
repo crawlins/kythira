@@ -778,7 +778,7 @@ cpp_httplib_client<Types>::cpp_httplib_client(
       _registry{},
       _capability_cache{},
       _node_id_to_url{std::move(node_id_to_url_map)},
-      _http_clients{},
+      _pools{},
       _config{std::move(config)},
       _metrics{std::move(metrics)},
       _mutex{} {
@@ -856,7 +856,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::load_client_certificates() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    // Certificate loading is handled per-client in get_or_create_client
+    // Certificate loading is handled per-client in make_http_client
     // This method validates that certificates can be loaded
     if (!_config.client_cert_path.empty() && !_config.client_key_path.empty()) {
         // Validate that we can load the certificates
@@ -957,16 +957,16 @@ auto cpp_httplib_client<Types>::reload_tls_material() -> void {
     }
 
     std::lock_guard<std::mutex> lock(_mutex);
-    // Retired (not erased): a concurrent in-flight RPC may still hold a raw
-    // pooled_http_client* obtained from get_or_create_client() before this call
-    // acquired the lock — destroying it out from under that call would be a
-    // use-after-free. Keeping it alive (just unreachable for future lookups)
-    // satisfies Requirement 16.4 without requiring the caller to quiesce
-    // in-flight RPCs first.
-    for (auto& [node_id, pooled] : _http_clients) {
-        _retired_clients.push_back(std::move(pooled));
+    // Idle connections are closed now. Leased ones belong to in-flight RPCs
+    // and finish them (Requirement 16.4); the generation bump makes
+    // release_connection() close them on return instead of pooling them.
+    ++_tls_generation;
+    for (auto& [node_id, pool] : _pools) {
+        pool->open -= pool->idle.size();
+        pool->idle.clear();
+        // A waiter at capacity may now have room to open a fresh connection.
+        pool->returned.notify_all();
     }
-    _http_clients.clear();
 #else
     throw kythira::ssl_configuration_error("SSL support not available (OpenSSL not enabled)");
 #endif
@@ -1017,36 +1017,14 @@ auto cpp_httplib_client<Types>::get_base_url(std::uint64_t node_id) const -> std
     return it->second;
 }
 
-// Helper to get or create HTTP client for a node
+// Build one configured client for a peer
 template<typename Types>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::get_or_create_client(std::uint64_t node_id) -> pooled_http_client* {
-    std::lock_guard<std::mutex> lock(_mutex);
-
-    auto it = _http_clients.find(node_id);
-    if (it != _http_clients.end()) {
-        // Emit connection reused metric
-        auto metric = _metrics;
-        metric.set_metric_name("http.client.connection.reused");
-        metric.add_dimension("target_node_id", std::to_string(node_id));
-        metric.add_one();
-        metric.emit();
-
-        return it->second.get();
-    }
-
-    // Get base URL
-    auto url_it = _node_id_to_url.find(node_id);
-    if (url_it == _node_id_to_url.end()) {
-        throw std::runtime_error(std::format("No URL mapping found for node {}", node_id));
-    }
-
-    const auto& base_url = url_it->second;
-
+auto cpp_httplib_client<Types>::make_http_client(const std::string& base_url, std::uint64_t node_id)
+    -> std::unique_ptr<httplib::Client> {
     // Parse URL to determine if HTTPS
     bool is_https = base_url.starts_with("https://");
 
-    // Create new client
     std::unique_ptr<httplib::Client> client;
     try {
         if (is_https) {
@@ -1087,28 +1065,145 @@ auto cpp_httplib_client<Types>::get_or_create_client(std::uint64_t node_id) -> p
         throw kythira::ssl_configuration_error(
             std::format("Failed to create HTTP client for node {}: {}", node_id, e.what()));
     }
+    return client;
+}
 
-    // Store and return
-    auto pooled = std::make_unique<pooled_http_client>();
-    pooled->client = std::move(client);
-    auto* pooled_ptr = pooled.get();
-    _http_clients[node_id] = std::move(pooled);
+// Close idle connections past keep_alive_timeout, in every peer's pool
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_client<Types>::evict_idle_connections_locked(
+    std::chrono::steady_clock::time_point now) -> void {
+    for (auto& [node_id, pool] : _pools) {
+        const auto before = pool->idle.size();
+        std::erase_if(pool->idle, [&](const pooled_connection& conn) {
+            return now - conn.last_used > _config.keep_alive_timeout;
+        });
+        const auto evicted = before - pool->idle.size();
+        if (evicted == 0) {
+            continue;
+        }
+        pool->open -= evicted;
+        pool->returned.notify_all();
 
-    // Emit connection created metric
+        auto metric = _metrics;
+        metric.set_metric_name("http.client.connection.closed");
+        metric.add_dimension("target_node_id", std::to_string(node_id));
+        metric.add_dimension("reason", "idle_timeout");
+        metric.add_value(static_cast<double>(evicted));
+        metric.emit();
+    }
+}
+
+// Lease a connection to a node out of its pool
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_client<Types>::lease_connection(std::uint64_t node_id,
+                                                 std::chrono::steady_clock::time_point deadline)
+    -> std::optional<pooled_connection> {
+    std::unique_lock<std::mutex> lock(_mutex);
+
+    auto url_it = _node_id_to_url.find(node_id);
+    if (url_it == _node_id_to_url.end()) {
+        throw std::runtime_error(std::format("No URL mapping found for node {}", node_id));
+    }
+    const std::string base_url = url_it->second;
+
+    auto& pool_ptr = _pools[node_id];
+    if (!pool_ptr) {
+        pool_ptr = std::make_unique<peer_pool>();
+    }
+    auto& pool = *pool_ptr;
+    const auto capacity = std::max<std::size_t>(1, _config.connection_pool_size);
+
+    // Requirement 11.5: with every connection leased, queue for one rather
+    // than exceed the bound. The wait spends the caller's deadline, so a
+    // queued RPC still gives up on time.
+    while (true) {
+        evict_idle_connections_locked(std::chrono::steady_clock::now());
+
+        if (!pool.idle.empty()) {
+            // Most recently returned first: it is the least likely to have
+            // been closed by the peer's own idle timer.
+            auto conn = std::move(pool.idle.back());
+            pool.idle.pop_back();
+
+            auto metric = _metrics;
+            metric.set_metric_name("http.client.connection.reused");
+            metric.add_dimension("target_node_id", std::to_string(node_id));
+            metric.add_one();
+            metric.emit();
+            return conn;
+        }
+        if (pool.open < capacity) {
+            break;
+        }
+        if (pool.returned.wait_until(lock, deadline) == std::cv_status::timeout &&
+            pool.idle.empty() && pool.open >= capacity) {
+            return std::nullopt;
+        }
+    }
+
+    // Reserve the slot, then build outside the lock: TLS setup reads
+    // certificate files and must not stall RPCs to other peers.
+    ++pool.open;
+    const auto generation = _tls_generation;
+    lock.unlock();
+
+    pooled_connection conn;
+    try {
+        conn.client = make_http_client(base_url, node_id);
+    } catch (...) {
+        lock.lock();
+        --pool.open;
+        pool.returned.notify_one();
+        throw;
+    }
+    conn.tls_generation = generation;
+
     auto metric = _metrics;
     metric.set_metric_name("http.client.connection.created");
     metric.add_dimension("target_node_id", std::to_string(node_id));
     metric.add_one();
     metric.emit();
 
-    // Update pool size metric
+    lock.lock();
     metric = _metrics;
     metric.set_metric_name("http.client.connection.pool_size");
     metric.add_dimension("target_node_id", std::to_string(node_id));
-    metric.add_value(static_cast<double>(_http_clients.size()));
+    metric.add_value(static_cast<double>(pool.open));
     metric.emit();
 
-    return pooled_ptr;
+    return conn;
+}
+
+// Return a leased connection to its pool
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_client<Types>::release_connection(std::uint64_t node_id, pooled_connection conn,
+                                                   bool reusable) -> void {
+    std::unique_lock<std::mutex> lock(_mutex);
+    auto& pool = *_pools.at(node_id);
+
+    if (!reusable || conn.tls_generation != _tls_generation) {
+        --pool.open;
+        pool.returned.notify_one();
+
+        auto metric = _metrics;
+        metric.set_metric_name("http.client.connection.closed");
+        metric.add_dimension("target_node_id", std::to_string(node_id));
+        metric.add_dimension("reason", reusable ? "tls_reload" : "error");
+        metric.add_one();
+        metric.emit();
+
+        // Close the socket after unlocking; nothing else can reach it.
+        lock.unlock();
+        conn.client.reset();
+        return;
+    }
+
+    conn.last_used = std::chrono::steady_clock::now();
+    pool.idle.push_back(std::move(conn));
+    pool.returned.notify_one();
 }
 
 // Generic RPC send implementation
@@ -1119,16 +1214,33 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
                                          const Request& request, std::chrono::milliseconds timeout)
     -> typename Types::template future_template<Response> {
     try {
-        // Get or create HTTP client
-        auto* pooled = this->get_or_create_client(target);
-        auto& client = *pooled->client;
-
         // The caller's timeout bounds the whole RPC, 415 re-encodes included
         // (Requirement 12). A non-positive timeout means the caller has no
         // deadline of its own, so the configured request timeout applies.
         const auto call_timeout =
             timeout > std::chrono::milliseconds::zero() ? timeout : _config.request_timeout;
         const auto deadline = std::chrono::steady_clock::now() + call_timeout;
+
+        // One connection for the whole RPC, 415 re-encodes included. Waiting
+        // for it when the pool is full spends this call's deadline; if that
+        // runs out first, `result` stays empty and the clock check below
+        // reports the timeout.
+        auto lease = this->lease_connection(target, deadline);
+        // Returns the connection on every exit, so a throwing encode never
+        // leaks a pool slot. Only the normal path below marks it reusable.
+        struct lease_return {
+            cpp_httplib_client* self;
+            std::uint64_t target;
+            std::optional<pooled_connection>& lease;
+            bool reusable{false};
+            auto release() -> void {
+                if (lease) {
+                    self->release_connection(target, *std::move(lease), reusable);
+                    lease.reset();
+                }
+            }
+            ~lease_return() { release(); }
+        } lease_guard{this, target, lease};
 
         // Pick the outgoing media type: what this peer last answered in, if the
         // registry still supports it, else our default (Requirement 6.1-6.3).
@@ -1217,16 +1329,10 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             // Send POST request, bounded by what is left of the caller's
             // deadline. `set_max_timeout` caps connect, write and read
             // together; the per-socket-operation read/write timeouts set at
-            // creation stay as the idle bound within it.
-            //
-            // Waiting behind another RPC to the same peer spends this call's
-            // deadline too; if it runs out first, `result` stays empty and the
-            // clock check below reports the timeout.
-            if (pooled->acquire_until(deadline)) {
-                struct release_on_exit {
-                    pooled_http_client* slot;
-                    ~release_on_exit() { slot->release(); }
-                } release{pooled};
+            // creation stay as the idle bound within it. The connection is
+            // leased, so no other request reads these settings mid-flight.
+            if (lease) {
+                auto& client = *lease->client;
                 const auto remaining =
                     std::max(std::chrono::duration_cast<std::chrono::milliseconds>(
                                  deadline - std::chrono::steady_clock::now()),
@@ -1270,6 +1376,11 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
 
             content_type = *std::move(next);
         }
+
+        // A failed exchange's connection is closed rather than pooled, so the
+        // next RPC starts on a fresh one.
+        lease_guard.reusable = static_cast<bool>(result);
+        lease_guard.release();
 
         // Record latency
         auto end_time = std::chrono::steady_clock::now();

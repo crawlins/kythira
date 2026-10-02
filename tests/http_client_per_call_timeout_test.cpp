@@ -65,10 +65,11 @@ struct slow_peer {
     auto operator=(const slow_peer&) -> slow_peer& = delete;
 };
 
-auto make_client(std::uint16_t port, std::chrono::milliseconds request_timeout)
-    -> kythira::cpp_httplib_client<test_types> {
+auto make_client(std::uint16_t port, std::chrono::milliseconds request_timeout,
+                 std::size_t pool_size = 10) -> kythira::cpp_httplib_client<test_types> {
     kythira::cpp_httplib_client_config config;
     config.request_timeout = request_timeout;
+    config.connection_pool_size = pool_size;
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[peer_id] = std::format("http://{}:{}", bind_address, port);
     typename test_types::metrics_type metrics;
@@ -138,13 +139,13 @@ BOOST_AUTO_TEST_CASE(zero_timeout_falls_back_to_request_timeout, *boost::unit_te
     BOOST_TEST(elapsed < std::chrono::milliseconds{1200});
 }
 
-// RPCs to one peer go out one at a time over its cached connection. A call
-// queued behind a slow one must still give up at its own deadline rather than
-// wait for the slow call to finish first.
+// With the peer's connection pool full (one connection here), a call queued
+// for a connection held by a slow one must still give up at its own deadline
+// rather than wait for the slow call to finish first.
 BOOST_AUTO_TEST_CASE(queued_call_keeps_its_own_deadline, *boost::unit_test::timeout(30)) {
     constexpr std::uint16_t port = 18564;
     slow_peer peer(port);
-    auto client = make_client(port, std::chrono::milliseconds{10000});
+    auto client = make_client(port, std::chrono::milliseconds{10000}, 1);
 
     std::thread slow_call([&client] {
         try {

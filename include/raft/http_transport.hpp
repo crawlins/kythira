@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
@@ -85,9 +86,20 @@ struct simple_http_transport_types {
 
 // Client configuration structure
 struct cpp_httplib_client_config {
+    /// @brief Most connections open to any one peer at once (Requirement 11.5).
+    ///
+    /// Each RPC leases a connection for its whole exchange, so this is also
+    /// how many RPCs to one peer can be in flight together. An RPC that finds
+    /// every connection leased waits for one to be returned, bounded by its
+    /// own deadline. Zero is treated as one.
     std::size_t connection_pool_size{10};
     std::chrono::milliseconds connection_timeout{5000};
     std::chrono::milliseconds request_timeout{10000};
+    /// @brief How long a returned connection may sit idle before it is closed
+    ///     instead of reused (Requirement 11.4).
+    ///
+    /// Checked on every lease, across all peers, so an idle connection to a
+    /// peer that is no longer contacted is still closed by traffic to others.
     std::chrono::milliseconds keep_alive_timeout{60000};
     bool enable_ssl_verification{true};
     std::string ca_cert_path{};
@@ -184,13 +196,11 @@ public:
                                std::chrono::milliseconds timeout) ->
         typename Types::template future_template<kythira::install_snapshot_response<>>;
 
-    /// Validates `client_cert_path`/`client_key_path`/`ca_cert_path`, then retires
-    /// every cached per-node `httplib::Client` so subsequent RPCs build fresh
-    /// connections using the reloaded material. Retired clients are kept alive
-    /// (not destroyed) rather than erased outright, since a concurrent in-flight
-    /// RPC may still hold a raw pointer obtained from `get_or_create_client()`
-    /// before the reload — matching Requirement 16.4 (already-established
-    /// sessions are unaffected, never forcibly dropped).
+    /// Validates `client_cert_path`/`client_key_path`/`ca_cert_path`, then
+    /// closes every idle pooled connection so subsequent RPCs build fresh ones
+    /// with the reloaded material. A connection leased by an in-flight RPC
+    /// finishes that RPC and is closed when returned rather than pooled again
+    /// (Requirement 16.4: established sessions are never forcibly dropped).
     auto reload_tls_material() -> void;
 
     /// Starts a background thread that polls `client_cert_path`'s mtime every
@@ -211,46 +221,29 @@ private:
     /// re-choice, never a failure.
     peer_capability_cache<std::uint64_t> _capability_cache;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
-    /// One cached connection to a peer. `call_mutex` is held across setting a
-    /// call's deadline and sending it: the timeout setters are plain stores
-    /// that a concurrent request on the same client would read mid-flight.
-    /// cpp-httplib already serialises requests per client on its own
-    /// `request_mutex_`, so holding this costs no concurrency. Waiting is
-    /// bounded by the caller's deadline, so a call queued behind another still
-    /// gives up on time.
-    ///
-    /// A busy flag under a condition variable rather than `std::timed_mutex`:
-    /// libstdc++'s `try_lock_until` locks through `pthread_mutex_clocklock`,
-    /// which ThreadSanitizer does not intercept, so every unlock was reported
-    /// as unlocking an unlocked mutex.
-    struct pooled_http_client {
+    /// One connection to a peer. An RPC leases it out of its peer's pool and
+    /// owns it exclusively until it is returned, so the per-call timeout
+    /// setters never race another request on the same client.
+    struct pooled_connection {
         std::unique_ptr<httplib::Client> client;
-        std::mutex call_mutex;
-        std::condition_variable call_done;
-        bool call_in_flight{false};
-
-        /// Claims the connection for one call, or returns false if `deadline`
-        /// passes first.
-        auto acquire_until(std::chrono::steady_clock::time_point deadline) -> bool {
-            std::unique_lock<std::mutex> lock(call_mutex);
-            if (!call_done.wait_until(lock, deadline, [this] { return !call_in_flight; })) {
-                return false;
-            }
-            call_in_flight = true;
-            return true;
-        }
-
-        auto release() -> void {
-            {
-                std::lock_guard<std::mutex> lock(call_mutex);
-                call_in_flight = false;
-            }
-            call_done.notify_one();
-        }
+        std::chrono::steady_clock::time_point last_used{};
+        /// `_tls_generation` when the connection was built. One from before
+        /// a TLS reload is closed when returned rather than pooled again.
+        std::uint64_t tls_generation{0};
     };
 
-    std::unordered_map<std::uint64_t, std::unique_ptr<pooled_http_client>> _http_clients;
-    std::vector<std::unique_ptr<pooled_http_client>> _retired_clients;
+    /// Every connection to one peer. `open` counts idle and leased ones and is
+    /// what `connection_pool_size` bounds.
+    struct peer_pool {
+        std::vector<pooled_connection> idle;
+        std::size_t open{0};
+        std::condition_variable returned;
+    };
+
+    /// Held by unique_ptr so a waiter's condition variable stays put while
+    /// other peers' pools are added.
+    std::unordered_map<std::uint64_t, std::unique_ptr<peer_pool>> _pools;
+    std::uint64_t _tls_generation{0};
     cpp_httplib_client_config _config;
     metrics_type _metrics;
     mutable std::mutex _mutex;
@@ -259,7 +252,19 @@ private:
 
     // Helper methods
     auto get_base_url(std::uint64_t node_id) const -> std::string;
-    auto get_or_create_client(std::uint64_t node_id) -> pooled_http_client*;
+    /// Takes an idle connection to `node_id`, or opens one if the pool has
+    /// room, or waits for one to be returned until `deadline`. `nullopt`
+    /// means the deadline passed first.
+    auto lease_connection(std::uint64_t node_id, std::chrono::steady_clock::time_point deadline)
+        -> std::optional<pooled_connection>;
+    /// Returns a leased connection. One that failed (`reusable` false) or was
+    /// built before a TLS reload is closed instead of pooled.
+    auto release_connection(std::uint64_t node_id, pooled_connection conn, bool reusable) -> void;
+    /// Closes idle connections past `keep_alive_timeout` in every pool.
+    /// Caller holds `_mutex`.
+    auto evict_idle_connections_locked(std::chrono::steady_clock::time_point now) -> void;
+    auto make_http_client(const std::string& base_url, std::uint64_t node_id)
+        -> std::unique_ptr<httplib::Client>;
     auto configure_ssl_client(httplib::Client* client) -> void;
     auto load_client_certificates() -> void;
     auto validate_certificate_files() const -> void;

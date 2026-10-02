@@ -2197,6 +2197,23 @@ if(TARGET Folly::folly)
 else()
     message(STATUS "http_client_per_call_timeout_test: skipped (requires Folly)")
 endif()
+# cpp_httplib_client honours connection_pool_size and keep_alive_timeout
+# (http-transport Requirements 11.4, 11.5). Loopback only.
+if(TARGET Folly::folly)
+    add_executable(http_client_connection_pool_test http_client_connection_pool_test.cpp)
+    target_link_libraries(http_client_connection_pool_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        Folly::folly
+    )
+    target_compile_features(http_client_connection_pool_test PRIVATE cxx_std_23)
+    add_test(NAME http_client_connection_pool_test COMMAND http_client_connection_pool_test)
+    set_tests_properties(http_client_connection_pool_test
+        PROPERTIES TIMEOUT 120 LABELS "http;integration")
+else()
+    message(STATUS "http_client_connection_pool_test: skipped (requires Folly)")
+endif()
 # HTTPLib server validation test
 add_executable(httplib_server_validation_test httplib_server_validation_test.cpp)
 target_link_libraries(httplib_server_validation_test PRIVATE
