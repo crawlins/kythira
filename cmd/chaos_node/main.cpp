@@ -13,6 +13,7 @@
 #include <raft/netdata_metrics.hpp>
 #include <raft/otlp_logger.hpp>
 #include <raft/otlp_metrics.hpp>
+#include <raft/peer_discovery.hpp>
 #include <raft/prometheus_metrics.hpp>
 #include <raft/raft.hpp>
 #include <raft/telegraf_metrics.hpp>
@@ -39,6 +40,8 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <type_traits>
+#include <unordered_map>
 
 // ── Signal handling ──────────────────────────────────────────────────────────
 
@@ -55,10 +58,37 @@ static void sigterm_handler(int) {
 
 namespace {
 
-// Inherits all type aliases from tcp_raft_types; adds quorum_manager_type so
-// that _quorum_manager_type_traits picks up docker_quorum_manager instead of
-// the no_op fallback.
-struct tcp_raft_types_with_docker_qm : kythira::tcp_raft_types {
+// Inherits all type aliases from tcp_raft_types; adds seed-list peer discovery
+// so that a node started with JOIN=1 can send a ClusterJoin to PEERS instead of
+// installing them as its configuration (quorum-management Req 19). A node
+// without JOIN gets an empty seed list, which run_bootstrap() treats exactly
+// like the no_op discovery it replaces.
+struct tcp_raft_types_joinable : kythira::tcp_raft_types {
+    using address_type = std::string;
+    using peer_discovery_type = kythira::seed_peer_discovery<node_id_type, address_type>;
+};
+
+using seed_list = std::vector<kythira::peer_info<std::uint64_t, std::string>>;
+
+template<typename RaftTypes>
+constexpr bool is_joinable =
+    std::is_same_v<typename kythira::node_config<RaftTypes>::peer_discovery_type,
+                   kythira::seed_peer_discovery<std::uint64_t, std::string>>;
+
+// PEERS as ClusterJoin seeds when joining, nothing otherwise.
+auto join_seeds(const chaos_node::node_config& cfg) -> seed_list {
+    seed_list seeds;
+    if (cfg.join) {
+        for (const auto& p : cfg.peers) {
+            seeds.push_back({p.node_id, p.host + ':' + std::to_string(p.port)});
+        }
+    }
+    return seeds;
+}
+
+// Adds quorum_manager_type so that _quorum_manager_type_traits picks up
+// docker_quorum_manager instead of the no_op fallback.
+struct tcp_raft_types_with_docker_qm : tcp_raft_types_joinable {
     using quorum_manager_type = kythira::docker_quorum_manager<node_id_type, std::string>;
 };
 
@@ -106,11 +136,22 @@ struct tcp_raft_types_with_netdata : kythira::tcp_raft_types {
 // docker-QM paths share identical timer, signal, and HTTP control logic.
 template<typename RaftTypes>
 int run_node(chaos_node::node_config cfg, kythira::node_config<RaftTypes> ncfg) {
+    if constexpr (!is_joinable<RaftTypes>) {
+        if (cfg.join) {
+            std::cerr << "chaos_node: JOIN=1 is not supported with a telemetry backend\n";
+            return 1;
+        }
+    }
+
     kythira::node<RaftTypes> raft_node(std::move(ncfg));
-    raft_node.set_cluster_configuration(cfg.all_node_ids());
+    // A joiner's configuration arrives from the leader once it is admitted.
+    if (!cfg.join) {
+        raft_node.set_cluster_configuration(cfg.all_node_ids());
+    }
 
     std::cerr << "[info] chaos_node starting: id=" << cfg.node_id << " rpc=" << cfg.rpc_port
-              << " http=" << cfg.http_port << " peers=" << cfg.peers.size() << "\n";
+              << " http=" << cfg.http_port << " peers=" << cfg.peers.size()
+              << (cfg.join ? " join=" + cfg.self_address : std::string{}) << "\n";
 
     raft_node.start();
 
@@ -188,12 +229,19 @@ int main(int argc, char** argv) {
     raft_cfg._election_timeout_min = cfg.election_timeout_min;
     raft_cfg._election_timeout_max = cfg.election_timeout_max;
     raft_cfg._heartbeat_interval = cfg.heartbeat_interval;
+    if (cfg.quorum_check_interval) {
+        raft_cfg._quorum_check_interval = *cfg.quorum_check_interval;
+    }
 
     // ── Components ───────────────────────────────────────────────────────────
     kythira::tcp_rpc_server server(cfg.rpc_port);
     kythira::tcp_rpc_client client;
     for (const auto& p : cfg.peers) {
         client.add_peer(p.node_id, p.host, p.port);
+    }
+    // Members that joined after this node started are not in PEERS.
+    if (cfg.peer_address_template) {
+        client.set_peer_resolver([cfg](const std::uint64_t& id) { return cfg.resolve(id); });
     }
     kythira::file_persistence_engine<> persistence(cfg.data_dir);
 
@@ -403,6 +451,36 @@ int main(int argc, char** argv) {
         qm_cfg.target_count = static_cast<std::size_t>(std::stoul(get_env("QUORUM_TARGET", "3")));
         qm_cfg.node_port = static_cast<std::uint16_t>(cfg.rpc_port);
 
+        // A provisioned replacement starts with JOIN=1 and every current
+        // member as a seed, on the same ports and timings as this node.
+        // It is not handed the container socket, so it runs without a quorum
+        // manager: a cluster whose original members have all been replaced
+        // stops healing.
+        qm_cfg.extra_env = {
+            "JOIN=1",
+            // No NET_ADMIN either, so skip the entrypoint's iptables chain.
+            "CHAOS_NETWORK_FAULTS=0",
+            "PEERS=" + cfg.peers_env(),
+            "RPC_PORT=" + std::to_string(cfg.rpc_port),
+            "HTTP_PORT=" + std::to_string(cfg.http_port),
+            "FIU_PORT=" + std::to_string(cfg.fiu_port),
+            "DATA_DIR=" + cfg.data_dir,
+            "ELECTION_TIMEOUT_MIN_MS=" + std::to_string(cfg.election_timeout_min.count()),
+            "ELECTION_TIMEOUT_MAX_MS=" + std::to_string(cfg.election_timeout_max.count()),
+            "HEARTBEAT_INTERVAL_MS=" + std::to_string(cfg.heartbeat_interval.count()),
+        };
+        if (cfg.peer_address_template) {
+            qm_cfg.extra_env.push_back("PEER_ADDRESS_TEMPLATE=" + *cfg.peer_address_template);
+        }
+
+        // Every bootstrap member belongs to the manager's one group, so a
+        // replacement it provisions for one of them is admitted even though
+        // the group is still full while the failed voter is a member.
+        std::unordered_map<std::uint64_t, std::string> placement;
+        for (auto id : cfg.all_node_ids()) {
+            placement.emplace(id, qm_cfg.group_id);
+        }
+
         std::cerr << "[info] quorum manager: docker (cluster=" << qm_cfg.cluster_name
                   << " target=" << qm_cfg.target_count << ")\n";
 
@@ -415,16 +493,32 @@ int main(int argc, char** argv) {
             .metrics = kythira::noop_metrics{},
             .membership = kythira::default_membership_manager<std::uint64_t>{},
             .config = raft_cfg,
+            .self_address = cfg.self_address,
+            .peer_discovery =
+                kythira::seed_peer_discovery<std::uint64_t, std::string>{join_seeds(cfg)},
             .quorum_manager = tcp_raft_types_with_docker_qm::quorum_manager_type{qm_cfg},
+            .initial_placement = std::move(placement),
         };
 
         return run_node<tcp_raft_types_with_docker_qm>(cfg, std::move(ncfg));
     }
 
-    // Default path — no quorum manager (no_op fallback via detection trait)
-    std::cerr << "[info] quorum manager: no_op\n";
+    // Default path — no quorum manager (no_op fallback via detection trait).
+    // add_learner() admits a joiner only into a placement group with a
+    // declared target, so QUORUM_TARGET, when set, declares one for the
+    // default group; without it this node rejects every ClusterJoin.
+    kythira::desired_topology<std::string> topology;
+    if (const char* target = std::getenv("QUORUM_TARGET"); target != nullptr && *target != '\0') {
+        topology.groups.push_back(
+            {.group_id = "", .target_count = static_cast<std::size_t>(std::stoul(target))});
+    }
+    std::cerr << "[info] quorum manager: no_op"
+              << (topology.groups.empty()
+                      ? std::string{}
+                      : " (target=" + std::to_string(topology.groups.front().target_count) + ")")
+              << "\n";
 
-    kythira::node_config<kythira::tcp_raft_types> ncfg{
+    kythira::node_config<tcp_raft_types_joinable> ncfg{
         .node_id = cfg.node_id,
         .network_client = std::move(client),
         .network_server = std::move(server),
@@ -433,7 +527,11 @@ int main(int argc, char** argv) {
         .metrics = kythira::noop_metrics{},
         .membership = kythira::default_membership_manager<std::uint64_t>{},
         .config = raft_cfg,
+        .self_address = cfg.self_address,
+        .peer_discovery = kythira::seed_peer_discovery<std::uint64_t, std::string>{join_seeds(cfg)},
+        .quorum_manager =
+            kythira::node_config<tcp_raft_types_joinable>::quorum_manager_type{std::move(topology)},
     };
 
-    return run_node<kythira::tcp_raft_types>(cfg, std::move(ncfg));
+    return run_node<tcp_raft_types_joinable>(cfg, std::move(ncfg));
 }

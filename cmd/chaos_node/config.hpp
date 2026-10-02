@@ -8,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -31,6 +32,17 @@ struct node_config {
     std::chrono::milliseconds election_timeout_min{150};
     std::chrono::milliseconds election_timeout_max{300};
     std::chrono::milliseconds heartbeat_interval{50};
+    std::optional<std::chrono::milliseconds> quorum_check_interval;  ///< QUORUM_CHECK_INTERVAL_MS
+
+    // Joining a running cluster (quorum-management Req 19). A node started
+    // with JOIN=1 does not install PEERS as its configuration: it sends a
+    // ClusterJoin to them and waits for the leader to admit it. SELF_ADDRESS
+    // is the host:port it advertises in that request.
+    bool join{false};
+    std::string self_address;
+    // host:port pattern with an "{id}" placeholder, used to reach members
+    // that are not in PEERS (nodes that joined after this one started).
+    std::optional<std::string> peer_address_template;
 
     // OTLP telemetry backend (.kiro/specs/otlp-telemetry-backend/,
     // Requirement 5.2). All optional — chaos_node falls back to
@@ -77,7 +89,12 @@ struct node_config {
             return v ? v : def;
         };
 
-        cfg.node_id = std::stoull(get("NODE_ID"));
+        // docker_quorum_manager passes a provisioned node its ID as
+        // KYTHIRA_NODE_ID, so accept that when NODE_ID is not set.
+        std::string id_str = get_opt("NODE_ID", "");
+        if (id_str.empty()) id_str = get_opt("KYTHIRA_NODE_ID", "");
+        if (id_str.empty()) id_str = get("NODE_ID");  // throws: neither is set
+        cfg.node_id = std::stoull(id_str);
         cfg.rpc_port = static_cast<std::uint16_t>(std::stoul(get_opt("RPC_PORT", "7000")));
         cfg.http_port = static_cast<std::uint16_t>(std::stoul(get_opt("HTTP_PORT", "8080")));
         cfg.fiu_port = static_cast<std::uint16_t>(std::stoul(get_opt("FIU_PORT", "9000")));
@@ -114,6 +131,43 @@ struct node_config {
 
         if (cfg.node_id == 0)
             throw std::invalid_argument("chaos_node: NODE_ID must be a positive integer");
+
+        if (std::string qci = get_opt("QUORUM_CHECK_INTERVAL_MS", ""); !qci.empty()) {
+            cfg.quorum_check_interval = std::chrono::milliseconds(std::stoll(qci));
+        }
+
+        std::string join_str = get_opt("JOIN", "0");
+        if (join_str != "0" && join_str != "1") {
+            throw std::invalid_argument("chaos_node: JOIN must be 0 or 1, got: " + join_str);
+        }
+        cfg.join = (join_str == "1");
+        // A joiner's PEERS may list every member, itself included.
+        std::erase_if(cfg.peers, [&](const peer_info& p) { return p.node_id == cfg.node_id; });
+
+        // Containers in a quorum cluster are named kythira-<cluster>-<id>
+        // (docker_quorum_manager and docker-compose.quorum.yml), and that
+        // name resolves on their shared network under Docker and Podman.
+        std::string cluster = get_opt("QUORUM_CLUSTER", "");
+        if (cluster.empty()) cluster = get_opt("KYTHIRA_CLUSTER", "");
+        std::string port = std::to_string(cfg.rpc_port);
+        if (std::string tmpl = get_opt("PEER_ADDRESS_TEMPLATE", ""); !tmpl.empty()) {
+            cfg.peer_address_template = std::move(tmpl);
+        } else if (!cluster.empty()) {
+            cfg.peer_address_template = "kythira-" + cluster + "-{id}:" + port;
+        }
+        cfg.self_address = get_opt("SELF_ADDRESS", "");
+        if (cfg.self_address.empty() && cfg.peer_address_template) {
+            cfg.self_address = cfg.address_of(cfg.node_id);
+        }
+        if (cfg.join && cfg.self_address.empty()) {
+            throw std::invalid_argument(
+                "chaos_node: JOIN=1 needs SELF_ADDRESS, PEER_ADDRESS_TEMPLATE or "
+                "QUORUM_CLUSTER/KYTHIRA_CLUSTER so the leader can reach this node");
+        }
+        if (cfg.join && cfg.peers.empty()) {
+            throw std::invalid_argument(
+                "chaos_node: JOIN=1 needs at least one other node in PEERS");
+        }
 
         // OTLP_ENDPOINT — unset/empty means OTLP support stays off.
         if (std::string otlp_endpoint_str = get_opt("OTLP_ENDPOINT", "");
@@ -212,6 +266,52 @@ struct node_config {
         }
 
         return cfg;
+    }
+
+    // host:port for a node ID from peer_address_template ("" without one).
+    [[nodiscard]] auto address_of(std::uint64_t id) const -> std::string {
+        if (!peer_address_template) return {};
+        std::string addr = *peer_address_template;
+        static constexpr std::string_view placeholder{"{id}"};
+        for (auto pos = addr.find(placeholder); pos != std::string::npos;
+             pos = addr.find(placeholder, pos)) {
+            addr.replace(pos, placeholder.size(), std::to_string(id));
+        }
+        return addr;
+    }
+
+    // Resolves a node ID with no PEERS entry through peer_address_template.
+    [[nodiscard]] auto resolve(std::uint64_t id) const
+        -> std::optional<std::pair<std::string, std::uint16_t>> {
+        return split_host_port(address_of(id));
+    }
+
+    [[nodiscard]] static auto split_host_port(const std::string& addr)
+        -> std::optional<std::pair<std::string, std::uint16_t>> {
+        auto colon = addr.rfind(':');
+        if (colon == std::string::npos || colon == 0 || colon + 1 == addr.size()) {
+            return std::nullopt;
+        }
+        try {
+            auto port = std::stoul(addr.substr(colon + 1));
+            if (port == 0 || port > 65535) return std::nullopt;
+            return std::pair{addr.substr(0, colon), static_cast<std::uint16_t>(port)};
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+    }
+
+    // PEERS in its own "id:host:port,..." syntax, self included when
+    // self_address is known; what a node this one provisions is given.
+    [[nodiscard]] auto peers_env() const -> std::string {
+        std::string out;
+        auto append = [&](std::uint64_t id, const std::string& host, std::uint16_t port) {
+            if (!out.empty()) out += ',';
+            out += std::to_string(id) + ':' + host + ':' + std::to_string(port);
+        };
+        if (auto self = split_host_port(self_address)) append(node_id, self->first, self->second);
+        for (const auto& p : peers) append(p.node_id, p.host, p.port);
+        return out;
     }
 
     // All node IDs in the cluster (self + peers).
