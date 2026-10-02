@@ -325,10 +325,15 @@ parity with the HTTP and CoAP transports.*
 - [x] 10. Property-based testing
   - [x] 10.1 **Property 1: Every call resolves within its deadline**
     - **Validates: Requirements 10.1, 10.2, 19.1**
+    - Live expiry: `deadline_exceeded_maps_to_timeout_error` in
+      `tests/grpc_transport_integration_test.cpp`
   - [x] 10.2 **Property 2: Protobuf round-trip preserves content**
     - **Validates: Requirements 2.1, 2.4, 2.5, 15.4, 17.3, 19.2**
   - [x] 10.3 **Property 3: Status code maps to the correct exception type**
     - **Validates: Requirements 11.1, 11.2, 11.3, 11.4, 11.5**
+    - Driven through live calls in `tests/grpc_transport_integration_test.cpp`:
+      DEADLINE_EXCEEDED, UNAVAILABLE, UNIMPLEMENTED, INTERNAL, and
+      RESOURCE_EXHAUSTED for the unmapped-status fallback
   - [x] 10.4 **Property 4: Handler invocation for every registered RPC**
     - **Validates: Requirements 6.2, 6.4**
   - [x] 10.5 **Property 5: Unregistered optional RPCs never crash the server**
@@ -352,6 +357,10 @@ parity with the HTTP and CoAP transports.*
       13.3_
   - [x] 11.3 Integration test: client-server end-to-end for all core and optional RPCs
     - Insecure and mutual-TLS variants
+    - TimeoutNow (dissertation §3.10), which has no requirement of its own:
+      `timeout_now_end_to_end` and `timeout_now_without_handler_returns_unimplemented`
+    - A server certificate from an untrusted CA is rejected:
+      `untrusted_server_ca_is_rejected` (Requirement 19.6)
     - _Requirements: 3.2, 3.4, 4.2, 4.4, 5.2, 5.4, 9.3, 9.4, 15.1, 15.2, 16.1, 16.2,
       17.1, 17.2_
   - [x] 11.4 Integration test: concurrent calls

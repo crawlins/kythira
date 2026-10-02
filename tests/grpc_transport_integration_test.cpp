@@ -7,11 +7,13 @@
 // (.kiro/specs/grpc-transport/): a real grpc_server and grpc_client talking
 // over a loopback socket. Covers core-RPC success, server-side error mapping
 // (handler throws → grpc_server_error), the UNIMPLEMENTED behavior of an
-// unregistered optional service (Property 5), lifecycle safety, mutual TLS with
-// certificates minted by certificate_authority (Requirement 19.6), and
-// concurrent calls with no cross-talk (Requirement 19.3), and the plaintext
-// gate that keeps an unauthenticated listener or channel on this host unless
-// allow_plaintext is set (.kiro/specs/grpc-plaintext-opt-in/).
+// unregistered optional service (Property 5), live status mapping for
+// DEADLINE_EXCEEDED, UNAVAILABLE and an unmapped code (Properties 1, 3),
+// TimeoutNow, lifecycle safety, mutual TLS with certificates minted by
+// certificate_authority and rejection of an untrusted server CA
+// (Requirement 19.6), concurrent calls with no cross-talk (Requirement 19.3),
+// and the plaintext gate that keeps an unauthenticated listener or channel on
+// this host unless allow_plaintext is set (.kiro/specs/grpc-plaintext-opt-in/).
 
 #define BOOST_TEST_MODULE GrpcTransportIntegrationTest
 #include <boost/test/unit_test.hpp>
@@ -27,8 +29,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <string>
 #include <thread>
+#include <typeinfo>
 #include <unordered_map>
 #include <vector>
 
@@ -146,6 +150,181 @@ BOOST_AUTO_TEST_CASE(unregistered_extension_returns_unimplemented) {
     server->stop();
 }
 
+// ── Live status mapping (Requirements 10, 11; Properties 1, 3) ──────────────
+//
+// Each case below gets its status from a real call, so it exercises the
+// client's status_to_exception, not just the exception constructors.
+
+// A handler that outlives the caller's deadline surfaces as
+// grpc_timeout_error carrying the configured timeout, and the call resolves
+// near that deadline rather than when the handler finally returns
+// (Property 1, Requirements 10.2, 10.3, 11.2).
+BOOST_AUTO_TEST_CASE(deadline_exceeded_maps_to_timeout_error) {
+    folly::CPUThreadPoolExecutor server_exec(2);
+    folly::CPUThreadPoolExecutor client_exec(2);
+
+    // The handler blocks until released, so the deadline is the only thing
+    // that can finish the call; the bound keeps a broken deadline from
+    // hanging the test.
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    auto server = make_server(server_exec);
+    server->register_request_vote_handler([released](const kythira::request_vote_request<>& req) {
+        released.wait_for(10s);
+        return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
+    });
+    server->start();
+
+    auto client = make_client(server->bound_port(), client_exec);
+    kythira::request_vote_request<> req{
+        ._term = 4, ._candidate_id = 2, ._last_log_index = 0, ._last_log_term = 0};
+    constexpr auto timeout = 200ms;
+    const auto start = std::chrono::steady_clock::now();
+    bool threw = false;
+    try {
+        client->send_request_vote(1, req, timeout).get();
+    } catch (const kythira::grpc_timeout_error& e) {
+        threw = true;
+        BOOST_TEST((e.status_code() == grpc::StatusCode::DEADLINE_EXCEEDED));
+        BOOST_TEST(e.configured_timeout().count() == timeout.count());
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    BOOST_TEST(threw);
+    BOOST_TEST(elapsed < 5s);  // Resolved by the deadline, not the release.
+
+    release.set_value();
+    server->stop();
+}
+
+// Nothing listening at the target → UNAVAILABLE → grpc_connection_error
+// (Requirement 11.1).
+BOOST_AUTO_TEST_CASE(unreachable_peer_maps_to_connection_error) {
+    folly::CPUThreadPoolExecutor exec(2);
+
+    // Take a port the kernel just handed out, then close it, so the call is
+    // refused rather than reaching some unrelated listener.
+    std::uint16_t port = 0;
+    {
+        auto server = make_server(exec);
+        server->register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+            return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
+        });
+        server->start();
+        port = server->bound_port();
+        server->stop();
+    }
+
+    auto client = make_client(port, exec);
+    kythira::request_vote_request<> req{
+        ._term = 1, ._candidate_id = 2, ._last_log_index = 0, ._last_log_term = 0};
+    bool threw = false;
+    try {
+        client->send_request_vote(1, req, 2000ms).get();
+    } catch (const kythira::grpc_connection_error& e) {
+        threw = true;
+        BOOST_TEST((e.status_code() == grpc::StatusCode::UNAVAILABLE));
+    }
+    BOOST_TEST(threw);
+}
+
+// A status in none of the named groups falls through to the base
+// grpc_transport_error with its code preserved (Requirement 11.5). A request
+// larger than the client's send limit fails locally with RESOURCE_EXHAUSTED,
+// so this needs no server behavior beyond being reachable.
+BOOST_AUTO_TEST_CASE(unmapped_status_maps_to_base_transport_error) {
+    folly::CPUThreadPoolExecutor exec(2);
+
+    auto server = make_server(exec);
+    server->register_append_entries_handler([](const kythira::append_entries_request<>& req) {
+        return kythira::append_entries_response<>{
+            ._term = req.term(), ._success = true, ._conflict_index = {}, ._conflict_term = {}};
+    });
+    server->start();
+
+    kythira::grpc_client_config cfg;
+    cfg.max_send_message_size = 64;
+    auto client = make_client(server->bound_port(), exec, cfg);
+
+    kythira::append_entries_request<> req{._term = 1,
+                                          ._leader_id = 1,
+                                          ._prev_log_index = 0,
+                                          ._prev_log_term = 0,
+                                          ._entries = {},
+                                          ._leader_commit = 0};
+    req._entries.push_back(kythira::log_entry<>{
+        ._term = 1, ._index = 1, ._command = std::vector<std::byte>(4096, std::byte{0x5a})});
+
+    bool threw = false;
+    try {
+        client->send_append_entries(1, req, 2000ms).get();
+    } catch (const kythira::grpc_transport_error& e) {
+        threw = true;
+        // Exactly the base class: none of the subclasses claims this code.
+        BOOST_TEST((typeid(e) == typeid(kythira::grpc_transport_error)));
+        BOOST_TEST((e.status_code() == grpc::StatusCode::RESOURCE_EXHAUSTED));
+    }
+    BOOST_TEST(threw);
+
+    server->stop();
+}
+
+// ── TimeoutNow (dissertation §3.10) ──────────────────────────────────────────
+
+// The request reaches the handler intact, the response comes back intact,
+// and the group selector survives the round trip both ways.
+BOOST_AUTO_TEST_CASE(timeout_now_end_to_end) {
+    folly::CPUThreadPoolExecutor exec(4);
+
+    auto server = make_server(exec);
+    std::atomic<std::uint64_t> seen_leader{0};
+    std::atomic<std::uint64_t> seen_last_index{0};
+    server->register_timeout_now_handler([&](const kythira::timeout_now_request<>& req) {
+        seen_leader = req.leader_id();
+        seen_last_index = req.last_log_index();
+        return kythira::timeout_now_response<>{
+            ._term = req.term() + 1, ._success = true, ._group_id = req.group_id()};
+    });
+    server->start();
+
+    auto client = make_client(server->bound_port(), exec);
+    kythira::timeout_now_request<> req{
+        ._term = 11, ._leader_id = 3, ._last_log_index = 42, ._group_id = 7};
+    auto resp = client->send_timeout_now(1, req, 2000ms).get();
+    BOOST_TEST(resp.term() == 12U);
+    BOOST_TEST(resp.success());
+    BOOST_TEST(resp.group_id() == 7U);
+    BOOST_TEST(seen_leader.load() == 3U);
+    BOOST_TEST(seen_last_index.load() == 42U);
+
+    server->stop();
+}
+
+// TimeoutNow shares its service with PreVote, so registering only PreVote
+// puts the service on the server; TimeoutNow must still come back
+// UNIMPLEMENTED rather than hang or crash (Property 5).
+BOOST_AUTO_TEST_CASE(timeout_now_without_handler_returns_unimplemented) {
+    folly::CPUThreadPoolExecutor exec(4);
+
+    auto server = make_server(exec);
+    server->register_request_pre_vote_handler([](const kythira::request_pre_vote_request<>& req) {
+        return kythira::request_pre_vote_response<>{._term = req.term(), ._vote_granted = true};
+    });
+    server->start();
+
+    auto client = make_client(server->bound_port(), exec);
+    kythira::timeout_now_request<> req{._term = 1, ._leader_id = 1, ._last_log_index = 0};
+    bool threw = false;
+    try {
+        client->send_timeout_now(1, req, 2000ms).get();
+    } catch (const kythira::grpc_client_error& e) {
+        threw = true;
+        BOOST_TEST((e.status_code() == grpc::StatusCode::UNIMPLEMENTED));
+    }
+    BOOST_TEST(threw);
+
+    server->stop();
+}
+
 BOOST_AUTO_TEST_CASE(lifecycle_repeated_start_stop_is_safe) {
     folly::CPUThreadPoolExecutor exec(2);
     auto server = make_server(exec);
@@ -248,6 +427,50 @@ BOOST_AUTO_TEST_CASE(mutual_tls_end_to_end) {
     auto resp = client->send_request_vote(1, req, 3000ms).get();
     BOOST_TEST(resp.term() == 9U);
     BOOST_TEST(resp.vote_granted());
+
+    server->stop();
+}
+
+// The client always verifies the server certificate: one minted by a CA the
+// client does not trust fails the handshake, which the caller sees as
+// UNAVAILABLE, and the handler never runs (Requirement 19.6).
+BOOST_AUTO_TEST_CASE(untrusted_server_ca_is_rejected) {
+    raft::testing::certificate_authority server_ca;
+    raft::testing::certificate_authority client_trusted_ca;
+
+    raft::testing::leaf_certificate_options server_opts;
+    server_opts.subject.common_name = "localhost";
+    server_opts.dns_names = {"localhost"};
+    server_opts.ip_addresses = {"127.0.0.1"};
+    server_opts.server_auth = true;
+    auto server_cert = server_ca.issue(server_opts);
+
+    folly::CPUThreadPoolExecutor exec(4);
+
+    kythira::grpc_server_config server_cfg;
+    server_cfg.enable_tls = true;
+    server_cfg.server_cert_pem = server_cert.certificate_pem;
+    server_cfg.server_key_pem = server_cert.private_key_pem;
+
+    std::atomic<int> handled{0};
+    auto server = make_server(exec, server_cfg);
+    server->register_request_vote_handler([&handled](const kythira::request_vote_request<>& req) {
+        ++handled;
+        return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
+    });
+    server->start();
+
+    kythira::grpc_client_config client_cfg;
+    client_cfg.enable_tls = true;
+    client_cfg.ca_cert_pem = client_trusted_ca.root_certificate_pem();
+    client_cfg.target_name_override = "localhost";
+
+    auto client = make_client(server->bound_port(), exec, client_cfg);
+    kythira::request_vote_request<> req{
+        ._term = 2, ._candidate_id = 3, ._last_log_index = 0, ._last_log_term = 0};
+    BOOST_CHECK_THROW(client->send_request_vote(1, req, 3000ms).get(),
+                      kythira::grpc_connection_error);
+    BOOST_TEST(handled.load() == 0);
 
     server->stop();
 }
