@@ -32,14 +32,23 @@ services:
       HTTP_PORT: "8080"
       FIU_PORT: "9000"
       DATA_DIR: "/var/lib/chaos_node"
-      ELECTION_TIMEOUT_MIN_MS: "150"
-      ELECTION_TIMEOUT_MAX_MS: "300"
-      HEARTBEAT_INTERVAL_MS: "50"
+      # A vote request to a dead or paused peer takes about 600 ms to fail
+      # (100 ms RPC timeout, three attempts with backoff), and a candidate
+      # can wait on it before it counts its votes. Below that, a failed leader is followed by split votes
+      # and a second leader change in the middle of provisioning a
+      # replacement, which the new leader then duplicates.
+      ELECTION_TIMEOUT_MIN_MS: "1000"
+      ELECTION_TIMEOUT_MAX_MS: "2000"
+      HEARTBEAT_INTERVAL_MS: "100"
       QUORUM_MANAGER: "docker"
       QUORUM_IMAGE: "kythira-chaos-node:dev"
       QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
       QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
       QUORUM_TARGET: "${QUORUM_TARGET:-3}"
+      # The replacement is promoted, and the failed node removed and
+      # decommissioned, on later quorum checks; the 30 s default would
+      # leave the healing tests waiting minutes for that.
+      QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
     ports:
       - "7101:7000"
       - "8181:8080"
@@ -67,14 +76,23 @@ services:
       HTTP_PORT: "8080"
       FIU_PORT: "9000"
       DATA_DIR: "/var/lib/chaos_node"
-      ELECTION_TIMEOUT_MIN_MS: "150"
-      ELECTION_TIMEOUT_MAX_MS: "300"
-      HEARTBEAT_INTERVAL_MS: "50"
+      # A vote request to a dead or paused peer takes about 600 ms to fail
+      # (100 ms RPC timeout, three attempts with backoff), and a candidate
+      # can wait on it before it counts its votes. Below that, a failed leader is followed by split votes
+      # and a second leader change in the middle of provisioning a
+      # replacement, which the new leader then duplicates.
+      ELECTION_TIMEOUT_MIN_MS: "1000"
+      ELECTION_TIMEOUT_MAX_MS: "2000"
+      HEARTBEAT_INTERVAL_MS: "100"
       QUORUM_MANAGER: "docker"
       QUORUM_IMAGE: "kythira-chaos-node:dev"
       QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
       QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
       QUORUM_TARGET: "${QUORUM_TARGET:-3}"
+      # The replacement is promoted, and the failed node removed and
+      # decommissioned, on later quorum checks; the 30 s default would
+      # leave the healing tests waiting minutes for that.
+      QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
     ports:
       - "7102:7000"
       - "8182:8080"
@@ -102,14 +120,23 @@ services:
       HTTP_PORT: "8080"
       FIU_PORT: "9000"
       DATA_DIR: "/var/lib/chaos_node"
-      ELECTION_TIMEOUT_MIN_MS: "150"
-      ELECTION_TIMEOUT_MAX_MS: "300"
-      HEARTBEAT_INTERVAL_MS: "50"
+      # A vote request to a dead or paused peer takes about 600 ms to fail
+      # (100 ms RPC timeout, three attempts with backoff), and a candidate
+      # can wait on it before it counts its votes. Below that, a failed leader is followed by split votes
+      # and a second leader change in the middle of provisioning a
+      # replacement, which the new leader then duplicates.
+      ELECTION_TIMEOUT_MIN_MS: "1000"
+      ELECTION_TIMEOUT_MAX_MS: "2000"
+      HEARTBEAT_INTERVAL_MS: "100"
       QUORUM_MANAGER: "docker"
       QUORUM_IMAGE: "kythira-chaos-node:dev"
       QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
       QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
       QUORUM_TARGET: "${QUORUM_TARGET:-3}"
+      # The replacement is promoted, and the failed node removed and
+      # decommissioned, on later quorum checks; the 30 s default would
+      # leave the healing tests waiting minutes for that.
+      QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
     ports:
       - "7103:7000"
       - "8183:8080"

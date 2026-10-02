@@ -173,6 +173,17 @@ jobs:
       - name: Run docker-chaos-tests (chaos_node image + 7 scenario tests)
         run: cmake --build build --target docker-chaos-tests -j$(nproc)
 
+      # Quorum-management Req 19: the self-healing loop against a real
+      # daemon. Each case starts docker-compose.quorum.yml with the host's
+      # socket mounted into the three bootstrap nodes, fails one, and waits
+      # for the leader to provision a replacement through
+      # docker_quorum_manager, admit it via ClusterJoin, promote it and
+      # decommission the failed container. Reuses the chaos_node image built
+      # by docker-chaos-tests. Not continue-on-error: a failure is a finding.
+      - name: Run quorum-healing-tests (chaos_node image + docker_quorum_manager)
+        if: success() || failure()
+        run: cmake --build build --target quorum-healing-tests -j$(nproc)
+
       - name: Run docker-poco-discovery-tests (poco_discovery_node image)
         continue-on-error: true
         run: cmake --build build --target docker-poco-discovery-tests -j$(nproc)

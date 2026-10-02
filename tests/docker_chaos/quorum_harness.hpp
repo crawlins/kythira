@@ -95,6 +95,24 @@ public:
         }
     }
 
+    // Polls until the container kythira-{cluster_name}-{node_id} no longer
+    // exists. The leader decommissions a failed node only after its
+    // replacement has joined, been promoted and the failed node removed from
+    // the configuration, so this trails wait_for_cluster_size() by a few
+    // quorum checks.
+    bool wait_for_container_absent(std::uint64_t node_id, std::chrono::milliseconds timeout = 60s) {
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto res = _exec({os::container_runtime(), "inspect", "--format", "{{.State.Status}}",
+                              container_name(node_id)});
+            if (res.code != 0) {
+                return true;
+            }
+            std::this_thread::sleep_for(1s);
+        }
+        return false;
+    }
+
     // Container name for a node ID: kythira-{cluster_name}-{node_id}, the
     // scheme docker_quorum_manager uses for the containers it provisions and
     // docker-compose.quorum.yml uses for the bootstrap nodes.
@@ -138,17 +156,19 @@ public:
                 if (s["role"].as_string() == "leader") {
                     std::int64_t term = s["term"].as_int64();
                     if (term_leaders.contains(term) != 0u) {
-                        throw std::runtime_error(
+                        throw split_brain_detected(
                             "split brain: nodes " + std::to_string(term_leaders[term]) + " and " +
                             std::to_string(id) + " both claim leadership in term " +
                             std::to_string(term));
                     }
                     term_leaders[term] = id;
                 }
-            } catch (const std::runtime_error&) {
+            } catch (const split_brain_detected&) {
                 throw;
             } catch (...) {
-                // Node temporarily unreachable — not a safety violation.
+                // Node temporarily unreachable, e.g. the one the test just
+                // killed: status() throws a plain std::runtime_error for
+                // it, which is not a safety violation.
             }
         }
     }
