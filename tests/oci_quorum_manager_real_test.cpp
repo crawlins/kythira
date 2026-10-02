@@ -38,11 +38,13 @@
 #endif
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <optional>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -91,6 +93,11 @@ struct RealOciFixture : signal_cleanup_target {
     real_test_config cfg{real_test_config::from_environment()};
     oci_instance_pool_quorum_manager_config manager_cfg;
     std::vector<std::uint64_t> provisioned;
+    /// Instances this fixture launched itself, outside the pool, through the
+    /// preemptible-first ladder. Recorded the moment LaunchInstance returns an
+    /// OCID, before anything else can throw, so teardown and the signal path
+    /// both see them.
+    std::vector<std::string> direct_instances;
     std::optional<oci_instance_pool_quorum_manager<>> manager;
     bool usable{false};
 
@@ -165,6 +172,24 @@ struct RealOciFixture : signal_cleanup_target {
         return manager->availability_domains().front();
     }
 
+    /// Every Availability Domain the compartment can see, for the ladder's
+    /// AD dimension (Requirement 13.13).
+    [[nodiscard]] auto all_availability_domains() const -> std::vector<std::string> {
+        kythira::oci_http_client http{manager_cfg.oci};
+        std::vector<std::string> ads;
+        const auto listed = http.request(
+            "identity", "GET",
+            "/20160918/availabilityDomains?compartmentId=" + manager_cfg.compartment_id);
+        if (const auto* arr = listed.if_array(); arr != nullptr) {
+            for (const auto& entry : *arr) {
+                if (auto name = kythira::oci_detail::json_string(entry, "name"); !name.empty()) {
+                    ads.push_back(std::move(name));
+                }
+            }
+        }
+        return ads;
+    }
+
     /// Fill in a @ref BilledResource's rate from the instance OCI actually
     /// launched: its `shape`, and for a flexible shape its `shapeConfig.ocpus`.
     ///
@@ -232,6 +257,19 @@ struct RealOciFixture : signal_cleanup_target {
     /// the signal handler both reach it, and on the signal path the destructor
     /// never runs at all.
     void teardown() noexcept override {
+        auto direct = direct_instances;
+        direct_instances.clear();
+        for (const auto& id : direct) {
+            try {
+                kythira::oci_http_client http{manager_cfg.oci};
+                (void)http.request("iaas", "DELETE",
+                                   "/20160918/instances/" + id + "?preserveBootVolume=false");
+                std::cerr << "[oci-real] terminated directly launched instance " << id << "\n";
+            } catch (const std::exception& e) {
+                std::cerr << "[oci-real] TEARDOWN FAILED for instance " << id << ": " << e.what()
+                          << " — check for a leaked instance in " << cfg.compartment_id << "\n";
+            }
+        }
         if (!manager.has_value()) {
             return;
         }
@@ -457,22 +495,7 @@ BOOST_AUTO_TEST_CASE(the_escalation_ladder_advances_past_a_real_stockout,
 
     // Every AD, so at least one rung meets a genuine shortage if there is one.
     kythira::oci_http_client http{manager_cfg.oci};
-    std::vector<std::string> ads;
-    {
-        const auto listed = http.request(
-            "identity", "GET",
-            "/20160918/availabilityDomains?compartmentId=" + manager_cfg.compartment_id);
-        if (const auto* arr = listed.if_array(); arr != nullptr) {
-            for (const auto& entry : *arr) {
-                if (const auto* eo = entry.if_object(); eo != nullptr) {
-                    if (const auto* name = eo->if_contains("name");
-                        name != nullptr && name->is_string()) {
-                        ads.emplace_back(name->get_string());
-                    }
-                }
-            }
-        }
-    }
+    const auto ads = all_availability_domains();
     BOOST_REQUIRE_MESSAGE(!ads.empty(), "could not list availability domains");
 
     const auto ladder = preemptible_first_launch_options(ads, "VM.Standard.E2.1", 1.0, 6.0);
@@ -553,6 +576,211 @@ BOOST_AUTO_TEST_CASE(the_escalation_ladder_advances_past_a_real_stockout,
                      "advance-past-stockout path was not exercised. That is OCI's state, "
                      "not a defect — re-run when a region is under pressure.\n";
     }
+}
+
+/// Requirements 13.12-13.15 on a **real launch**: the fixture launches an
+/// instance of its own through the preemptible-first (shape, AD) ladder, with
+/// the first rung forced out of capacity, and records the rung that launched
+/// in the cost report.
+///
+/// Why a direct launch and not `provision_assess_decommission`'s pool: the
+/// pool launches whatever its pre-existing Instance Configuration names, in
+/// the one AD the pool is placed in, so the manager path has no shape or AD
+/// to vary — and Requirement 13.11 forbids this fixture creating Instance
+/// Configurations to give it one. The image and subnet come from that same
+/// configuration and pool, so this launches nothing the CI identity's policy
+/// (`policies/instance-pool.txt`, `manage instance-family`) does not already
+/// cover, and the post-run leak audit sweeps the whole compartment.
+///
+/// **The forced stockout.** Task 6's verify step asks for the escalation to be
+/// exercised under the failure it exists for, by forcing the first candidate
+/// to be unavailable. A real stockout cannot be ordered up, so rung 1 is
+/// answered locally with Finding 14's verbatim OCI error and never reaches
+/// OCI; every later rung is a genuine LaunchInstance. The assertions then
+/// check the ladder advanced (rung >= 2), that the instance OCI reports is
+/// the rung the walk chose, and that the cost line names it.
+BOOST_AUTO_TEST_CASE(ladder_launch_advances_past_a_forced_stockout,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(1800))) {
+    using kythira::oci_detail::json_string;
+    using kythira::testing::oci_real::billed_resource_for;
+    using kythira::testing::oci_real::launch_option;
+    using kythira::testing::oci_real::preemptible_first_launch_options;
+    using kythira::testing::oci_real::shape_price_family;
+    using kythira::testing::oci_real::walk_launch_ladder;
+
+    kythira::oci_http_client http{manager_cfg.oci};
+
+    // What the pool would launch: its image, its subnet, its shape. The shape
+    // becomes the on-demand fallback, because it is the one shape known to
+    // boot this image.
+    const auto pool =
+        http.request("iaas", "GET", "/20160918/instancePools/" + manager_cfg.instance_pool_id);
+    const auto config_id = json_string(pool, "instanceConfigurationId");
+    BOOST_REQUIRE_MESSAGE(!config_id.empty(), "the pool names no instance configuration");
+    std::string subnet_id = cfg.subnet_id;
+    if (subnet_id.empty()) {
+        if (const auto* po = pool.if_object(); po != nullptr) {
+            if (const auto* pcs = po->if_contains("placementConfigurations");
+                pcs != nullptr && pcs->is_array() && !pcs->get_array().empty()) {
+                const auto& placement = pcs->get_array().front();
+                subnet_id = json_string(placement, "primarySubnetId");
+                // The newer spelling OCI returns alongside, or instead of, the
+                // deprecated field.
+                if (const auto* pl = placement.if_object(); subnet_id.empty() && pl != nullptr) {
+                    if (const auto* vnics = pl->if_contains("primaryVnicSubnets");
+                        vnics != nullptr) {
+                        subnet_id = json_string(*vnics, "subnetId");
+                    }
+                }
+            }
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(!subnet_id.empty(),
+                          "no subnet: set KYTHIRA_OCI_SUBNET_ID or give the pool a placement "
+                          "configuration with a primarySubnetId");
+
+    const auto config =
+        http.request("iaas", "GET", "/20160918/instanceConfigurations/" + config_id);
+    const boost::json::value* launch_details = nullptr;
+    if (const auto* co = config.if_object(); co != nullptr) {
+        if (const auto* details = co->if_contains("instanceDetails");
+            details != nullptr && details->is_object()) {
+            launch_details = details->get_object().if_contains("launchDetails");
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(launch_details != nullptr,
+                          "the instance configuration carries no launchDetails");
+    const auto pool_shape = json_string(*launch_details, "shape");
+    std::string image_id;
+    if (const auto* lo = launch_details->if_object(); lo != nullptr) {
+        if (const auto* src = lo->if_contains("sourceDetails"); src != nullptr) {
+            image_id = json_string(*src, "imageId");
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(!pool_shape.empty() && !image_id.empty(),
+                          "the instance configuration names no shape or image");
+
+    // Only families the pool's image can boot: an x86 image on an Ampere rung
+    // is a validation error, which Requirement 13.14 rightly treats as fatal.
+    const bool arm = shape_price_family(pool_shape) == "A1";
+    const std::vector<std::string> families =
+        arm ? std::vector<std::string>{"A1"} : std::vector<std::string>{"E4", "E5"};
+    const auto ads = all_availability_domains();
+    BOOST_REQUIRE_MESSAGE(!ads.empty(), "could not list availability domains");
+    const auto ladder = preemptible_first_launch_options(ads, pool_shape, 1.0, 6.0, families);
+    BOOST_REQUIRE_MESSAGE(ladder.size() > 1,
+                          "a one-rung ladder cannot demonstrate escalation at all");
+
+    std::size_t forced = 0;
+    auto launcher = [&](const launch_option& rung) -> std::string {
+        if (forced == 0) {
+            ++forced;
+            throw std::runtime_error(
+                "oci_http_client: POST /20160918/instances failed with HTTP 500: "
+                "InternalError: Out of host capacity. (forced by the test for rung " +
+                rung.describe() + ")");
+        }
+        boost::json::object launch;
+        launch["compartmentId"] = manager_cfg.compartment_id;
+        launch["availabilityDomain"] = rung.availability_domain;
+        launch["shape"] = rung.shape;
+        launch["displayName"] = "kythira-ladder-" + RealOciFixture::run_id();
+        if (rung.shape.ends_with(".Flex")) {
+            boost::json::object shape_config;
+            shape_config["ocpus"] = rung.ocpus;
+            shape_config["memoryInGBs"] = rung.memory_gbs;
+            launch["shapeConfig"] = std::move(shape_config);
+        }
+        boost::json::object source;
+        source["sourceType"] = "image";
+        source["imageId"] = image_id;
+        launch["sourceDetails"] = std::move(source);
+        boost::json::object vnic;
+        vnic["subnetId"] = subnet_id;
+        vnic["assignPublicIp"] = false;
+        launch["createVnicDetails"] = std::move(vnic);
+        if (rung.preemptible) {
+            boost::json::object action;
+            action["type"] = "TERMINATE";
+            action["preserveBootVolume"] = false;
+            boost::json::object preemptible;
+            preemptible["preemptionAction"] = std::move(action);
+            launch["preemptibleInstanceConfig"] = std::move(preemptible);
+        }
+        // Requirement 13.10's run marker, in the launch request itself so
+        // there is no window in which the instance exists untagged.
+        boost::json::object tags;
+        tags["kythira-test-run"] = RealOciFixture::run_id();
+        tags["kythira-role"] = "ladder-launch";
+        launch["freeformTags"] = std::move(tags);
+
+        const auto created =
+            http.request("iaas", "POST", "/20160918/instances", boost::json::serialize(launch));
+        auto id = json_string(created, "id");
+        if (id.empty()) {
+            throw std::runtime_error("LaunchInstance returned no instance id");
+        }
+        direct_instances.push_back(id);
+        return id;
+    };
+
+    const auto outcome = walk_launch_ladder(ladder, launcher);
+    auto billed = billed_resource_for(outcome.chosen);
+    std::cerr << "[oci-real] ladder launched rung " << (outcome.rung_index + 1) << " of "
+              << ladder.size() << ": " << outcome.chosen.describe() << " as " << outcome.launched
+              << " after " << outcome.stockouts.size() << " stockout(s)\n";
+
+    // The forced stockout was walked past rather than failing the case.
+    BOOST_CHECK_GE(outcome.rung_index, 1U);
+    BOOST_REQUIRE_GE(outcome.stockouts.size(), 1U);
+    BOOST_CHECK_MESSAGE(outcome.stockouts.front().starts_with(ladder.front().describe()),
+                        "the first recorded stockout is not rung 1: " << outcome.stockouts.front());
+
+    // What OCI actually launched is what the walk says it chose — the record
+    // Requirement 13.15 asks for is only worth having if it is true.
+    std::string state;
+    const auto running_deadline = std::chrono::steady_clock::now() + std::chrono::minutes{10};
+    boost::json::value instance;
+    while (std::chrono::steady_clock::now() < running_deadline) {
+        instance = http.request("iaas", "GET", "/20160918/instances/" + outcome.launched);
+        state = json_string(instance, "lifecycleState");
+        if (state == "RUNNING" || state == "TERMINATING" || state == "TERMINATED") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds{10});
+    }
+    BOOST_CHECK_EQUAL(state, "RUNNING");
+    BOOST_CHECK_EQUAL(json_string(instance, "shape"), outcome.chosen.shape);
+    BOOST_CHECK_EQUAL(json_string(instance, "availabilityDomain"),
+                      outcome.chosen.availability_domain);
+    bool preemptible = false;
+    if (const auto* io = instance.if_object(); io != nullptr) {
+        const auto* pic = io->if_contains("preemptibleInstanceConfig");
+        preemptible = pic != nullptr && pic->is_object();
+    }
+    BOOST_CHECK_EQUAL(preemptible, outcome.chosen.preemptible);
+    BOOST_CHECK_MESSAGE(
+        billed.label.find(outcome.chosen.shape) != std::string::npos &&
+            billed.label.find(outcome.chosen.availability_domain) != std::string::npos &&
+            billed.label.find(outcome.chosen.preemptible ? "preemptible" : "on-demand") !=
+                std::string::npos,
+        "the cost line does not name the chosen rung: " << billed.label);
+
+    // Terminate here so the test asserts it; teardown still covers a throw
+    // above, and is idempotent once the list is cleared.
+    try {
+        (void)http.request("iaas", "DELETE",
+                           "/20160918/instances/" + outcome.launched + "?preserveBootVolume=false");
+        direct_instances.clear();
+    } catch (const std::exception& e) {
+        // Left in direct_instances, so teardown tries again.
+        BOOST_ERROR("TerminateInstance failed: " << e.what());
+    }
+
+    billed.finalize();
+    TestCostReport cost{.test_name = "ladder_launch_advances_past_a_forced_stockout",
+                        .resources = {billed}};
+    g_cost_accumulator.add(std::move(cost));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

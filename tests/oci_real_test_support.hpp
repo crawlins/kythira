@@ -24,6 +24,8 @@
 /// tenancy rather than by reading documentation (`spike-notes.md` Findings 14
 /// and 15). Each is marked where it appears.
 
+#include <raft/oci_client_config.hpp>
+
 #include <httplib.h>
 
 #include <boost/json.hpp>
@@ -33,14 +35,18 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstdlib>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace kythira::testing::oci_real {
@@ -276,7 +282,12 @@ struct TestCostReport {
                 << std::setw(7) << std::setprecision(1) << r.minutes() << " min"
                 << "   ";
             if (r.rate_known) {
-                oss << "$" << std::setprecision(6) << r.cost_usd() << "\n";
+                // The rate as well as the cost: Requirement 13.15 asks for the
+                // chosen option's hourly price, and a cost alone cannot tell a
+                // cheap rung from a short run.
+                oss << "$" << std::setprecision(6) << r.cost_usd() << "  ($" << std::setprecision(4)
+                    << r.ocpu_hourly_rate << "/OCPU-h x" << std::setprecision(1) << r.ocpus
+                    << ")\n";
             } else {
                 oss << "(rate unknown)\n";
             }
@@ -404,21 +415,34 @@ struct launch_option {
 ///
 /// Requirement 13.12 wants the preemptible run truncated at the cheapest
 /// reliably-available on-demand fallback, which is appended last.
+///
+/// **A zero list price orders as unknown, not as cheapest.** `A1` lists at
+/// USD 0 (the Always Free allocation, see @ref ocpu_hourly_rate_usd), and a
+/// plain sort on rate put it at the head of the ladder — the opposite of what
+/// the family list below intends, and the family Finding 14 found most likely
+/// to be out of capacity. Treating 0 like nullopt for *ordering* keeps it
+/// behind every priced family while still letting it into the ladder.
+///
+/// @param preemptible_families Price-list family tokens tried preemptible.
+///        A caller launching a real image passes only the families that image
+///        can boot on: an x86 image on an Ampere rung fails with a validation
+///        error, which Requirement 13.14 rightly treats as fatal.
+/// @param rate_lookup On-demand OCPU-hour rate per family. Injectable so the
+///        ordering can be checked offline; defaults to Oracle's price list.
 [[nodiscard]] inline auto preemptible_first_launch_options(
     const std::vector<std::string>& availability_domains, const std::string& fallback_shape,
-    double ocpus, double memory_gbs) -> std::vector<launch_option> {
-    // Candidate families, cheapest-looking first. Ampere is deliberately NOT
-    // first despite listing at USD 0: that is the Always Free allocation rather
-    // than a true zero rate, and Finding 14 found it is also the family most
-    // likely to be out of capacity. Leading with it would make the common case
-    // "walk the whole ladder", which is slow and noisy even though it works.
-    static const std::vector<std::string> kPreemptibleFamilies{"E4", "E5", "A1"};
-
+    double ocpus, double memory_gbs,
+    const std::vector<std::string>& preemptible_families = {"E4", "E5", "A1"},
+    const std::function<std::optional<double>(const std::string&)>& rate_lookup =
+        ocpu_hourly_rate_usd) -> std::vector<launch_option> {
     std::vector<launch_option> ladder;
-    const auto fallback_rate = ocpu_hourly_rate_usd(fallback_shape);
+    // By family, not by full shape name: the price list has no entry whose
+    // display name contains `VM.Standard.E2.1`, so passing the shape here left
+    // the fallback permanently unpriced and the 13.12 truncation below inert.
+    const auto fallback_rate = rate_lookup(shape_price_family(fallback_shape));
 
-    for (const auto& family : kPreemptibleFamilies) {
-        const auto rate = ocpu_hourly_rate_usd(family);
+    for (const auto& family : preemptible_families) {
+        const auto rate = rate_lookup(family);
         // Requirement 13.12: stop once a preemptible candidate costs at least
         // as much as the on-demand fallback — there is no reason to keep
         // trying preemptible past that point.
@@ -437,13 +461,15 @@ struct launch_option {
 
     std::stable_sort(ladder.begin(), ladder.end(),
                      [](const launch_option& a, const launch_option& b) {
-                         // Unknown rates sort last rather than as zero, so a
-                         // price-list outage degrades to "try them in the
-                         // listed order" instead of "try the unpriced one
-                         // first because 0 is cheap".
-                         const double ra = a.ocpu_hourly_rate.value_or(1e9);
-                         const double rb = b.ocpu_hourly_rate.value_or(1e9);
-                         return ra < rb;
+                         // Unknown and zero rates sort last rather than as
+                         // zero, so a price-list outage degrades to "try them
+                         // in the listed order" instead of "try the unpriced
+                         // one first because 0 is cheap".
+                         const auto key = [](const launch_option& o) {
+                             const double r = o.ocpu_hourly_rate.value_or(0.0);
+                             return r > 0.0 ? r : 1e9;
+                         };
+                         return key(a) < key(b);
                      });
 
     // The on-demand fallback, last (Requirement 13.12).
@@ -456,6 +482,77 @@ struct launch_option {
                                        .ocpu_hourly_rate = fallback_rate});
     }
     return ladder;
+}
+
+/// What @ref walk_launch_ladder settled on.
+template<typename Launched> struct ladder_outcome {
+    launch_option chosen;
+    std::size_t rung_index{0};
+    Launched launched;
+    /// One line per rung skipped for capacity, in walk order, with OCI's error.
+    std::vector<std::string> stockouts;
+};
+
+/// @brief Launch from the first rung that has capacity (Requirement 13.14).
+///
+/// `launch` is called once per rung, in order, and either returns whatever
+/// identifies the launched thing or throws. An out-of-host-capacity error
+/// advances to the next rung; **any other error aborts immediately**, so a
+/// real defect — a bad image, a missing permission — is never walked past and
+/// masked as a stockout. Running out of rungs throws with the last error.
+///
+/// Kept separate from the HTTP call so the walk can be driven offline with a
+/// scripted launcher (`oci_launch_ladder_unit_test`), which is the only place
+/// the advance path is guaranteed to run: a real stockout is OCI's state on
+/// the day, not something a test can order up.
+template<typename Launcher>
+[[nodiscard]] auto walk_launch_ladder(const std::vector<launch_option>& ladder, Launcher&& launch)
+    -> ladder_outcome<std::invoke_result_t<Launcher&, const launch_option&>> {
+    using launched_t = std::invoke_result_t<Launcher&, const launch_option&>;
+    if (ladder.empty()) {
+        throw std::invalid_argument("walk_launch_ladder: the ladder has no rungs");
+    }
+    std::vector<std::string> stockouts;
+    std::string last_error;
+    for (std::size_t i = 0; i < ladder.size(); ++i) {
+        const auto& rung = ladder[i];
+        try {
+            launched_t launched = launch(rung);
+            return ladder_outcome<launched_t>{.chosen = rung,
+                                              .rung_index = i,
+                                              .launched = std::move(launched),
+                                              .stockouts = std::move(stockouts)};
+        } catch (const std::exception& e) {
+            last_error = e.what();
+            if (!is_out_of_host_capacity(e)) {
+                throw std::runtime_error("launch ladder: rung " + std::to_string(i + 1) + " (" +
+                                         rung.describe() + ") failed with a non-capacity error, " +
+                                         "not walking further: " + last_error);
+            }
+            std::cerr << "[oci-real] rung " << (i + 1) << " (" << rung.describe()
+                      << ") is out of capacity — advancing\n";
+            stockouts.push_back(rung.describe() + ": " + last_error);
+        }
+    }
+    throw std::runtime_error("launch ladder: exhausted all " + std::to_string(ladder.size()) +
+                             " launch options; last error: " + last_error);
+}
+
+/// @brief The cost line for the rung that actually launched (Requirement 13.15).
+///
+/// Shape, Availability Domain and market go in the label and the rate in the
+/// rate, so a run that degraded all the way to on-demand reads as such in the
+/// printed report rather than only in the bill.
+[[nodiscard]] inline auto billed_resource_for(const launch_option& chosen) -> BilledResource {
+    BilledResource billed;
+    billed.label = "instance " + chosen.shape + " " + chosen.availability_domain +
+                   (chosen.preemptible ? " preemptible" : " on-demand");
+    billed.ocpus = chosen.ocpus;
+    if (chosen.ocpu_hourly_rate.has_value()) {
+        billed.ocpu_hourly_rate = *chosen.ocpu_hourly_rate;
+        billed.rate_known = true;
+    }
+    return billed;
 }
 
 // ── Preflight (Requirement 13.9) ───────────────────────────────────────────
