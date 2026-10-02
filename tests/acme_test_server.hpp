@@ -159,6 +159,13 @@ struct acme_test_server_options {
     // — the identifier's own advertised port, supplied per-order by
     // whatever stood up the http-01 responder).
     int http01_validation_port{80};
+    // dns-01 validation queries the system resolver (/etc/resolv.conf) unless
+    // this names a nameserver IP, in which case only that server is asked,
+    // on dns01_resolver_port. Lets a test validate against a local
+    // authoritative server on an unprivileged port, which is how
+    // dns_discovery_bind_integration_test runs dns-01 against real BIND.
+    std::string dns01_resolver_address;
+    std::uint16_t dns01_resolver_port{53};
 };
 
 class acme_test_server {
@@ -560,8 +567,27 @@ private:
             }());
 
             ldns_resolver* res = nullptr;
-            if (ldns_resolver_new_frm_file(&res, nullptr) != LDNS_STATUS_OK || res == nullptr) {
-                return {false, std::nullopt};
+            if (_opts.dns01_resolver_address.empty()) {
+                if (ldns_resolver_new_frm_file(&res, nullptr) != LDNS_STATUS_OK || res == nullptr) {
+                    return {false, std::nullopt};
+                }
+            } else {
+                res = ldns_resolver_new();
+                if (res == nullptr) {
+                    return {false, std::nullopt};
+                }
+                ldns_rdf* ns_rdf = nullptr;
+                if (ldns_str2rdf_a(&ns_rdf, _opts.dns01_resolver_address.c_str()) !=
+                    LDNS_STATUS_OK) {
+                    ldns_str2rdf_aaaa(&ns_rdf, _opts.dns01_resolver_address.c_str());
+                }
+                if (ns_rdf == nullptr) {
+                    ldns_resolver_free(res);
+                    return {false, std::nullopt};
+                }
+                ldns_resolver_push_nameserver(res, ns_rdf);
+                ldns_rdf_deep_free(ns_rdf);
+                ldns_resolver_set_port(res, _opts.dns01_resolver_port);
             }
             std::unique_ptr<ldns_resolver, void (*)(ldns_resolver*)> res_guard{res,
                                                                                ldns_resolver_free};

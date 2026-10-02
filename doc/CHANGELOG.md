@@ -18,6 +18,16 @@ current list of outstanding work, see [TODO.md](TODO.md).
 - The Alibaba CI credentials step no longer passes the vendor action a
   `region` input it does not have, and the 23 MB `aliyun` CLI tarball
   committed to the tree root in August is removed and ignored.
+- **DNS peer discovery and ACME dns-01 now build and run in CI.** A new
+  `DNS Discovery Build (g++-13, x64)` job installs libldns and BIND and builds
+  under `configs/ci_dns_defconfig`; no CI job had compiled this code before.
+  The new `dns_discovery_bind_integration_test` runs TSIG-signed UPDATEs and
+  a full dns-01 issuance against a real `named` started as a CTest fixture
+  (`scripts/dns-test-server.sh`). It found three deletes that never deleted:
+  `rfc6763_ldns_peer_discovery` left all four records behind on
+  deregistration, `rfc2136_dns_sd_discovery` left its browse PTR, and the
+  ACME dns-01 responder left its `_acme-challenge` TXT. All three now send
+  RFC 2136 §2.5.4 CLASS NONE deletes.
 
 ### What Changed (August 19, 2026)
 

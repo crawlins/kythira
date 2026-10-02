@@ -4433,6 +4433,52 @@ set_tests_properties(acme_identifier_type_test PROPERTIES
     TIMEOUT 90
     LABELS "integration;certificate_authority;ca;acme;provider"
 )
+
+# DNS discovery and ACME dns-01 against a real BIND 9 server. Registered only
+# when both libldns and named are present; scripts/dns-test-server.sh starts
+# a throwaway named on 127.0.0.1:KYTHIRA_DNS_TEST_PORT as a CTest fixture and
+# stops it afterwards, so `ctest` alone runs it with no setup by hand. The
+# test fails rather than skips without that fixture.
+if(LIBLDNS_FOUND)
+    find_program(KYTHIRA_NAMED_EXECUTABLE named PATHS /usr/sbin /usr/local/sbin)
+endif()
+if(LIBLDNS_FOUND AND KYTHIRA_NAMED_EXECUTABLE)
+    set(KYTHIRA_DNS_TEST_PORT 15353 CACHE STRING
+        "Loopback UDP/TCP port for the BIND fixture used by dns_discovery_bind_integration_test")
+    set(_dns_test_state_dir "${CMAKE_CURRENT_BINARY_DIR}/dns-test-server")
+
+    add_executable(dns_discovery_bind_integration_test dns_discovery_bind_integration_test.cpp)
+    target_link_libraries(dns_discovery_bind_integration_test PRIVATE
+        certificate_authority
+        Boost::unit_test_framework
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        httplib::httplib
+        boost_json
+        ${LIBLDNS_LIBRARIES}
+    )
+    target_include_directories(dns_discovery_bind_integration_test PRIVATE ${LIBLDNS_INCLUDE_DIRS})
+    target_compile_features(dns_discovery_bind_integration_test PRIVATE cxx_std_23)
+
+    add_test(NAME dns_bind_fixture_start
+        COMMAND "${CMAKE_SOURCE_DIR}/scripts/dns-test-server.sh" start
+                "${_dns_test_state_dir}" ${KYTHIRA_DNS_TEST_PORT} "${KYTHIRA_NAMED_EXECUTABLE}")
+    add_test(NAME dns_bind_fixture_stop
+        COMMAND "${CMAKE_SOURCE_DIR}/scripts/dns-test-server.sh" stop "${_dns_test_state_dir}")
+    add_test(NAME dns_discovery_bind_integration_test COMMAND dns_discovery_bind_integration_test)
+    set_tests_properties(dns_bind_fixture_start PROPERTIES
+        FIXTURES_SETUP dns_bind TIMEOUT 30 LABELS "integration;dns")
+    set_tests_properties(dns_bind_fixture_stop PROPERTIES
+        FIXTURES_CLEANUP dns_bind TIMEOUT 30 LABELS "integration;dns")
+    set_tests_properties(dns_discovery_bind_integration_test PROPERTIES
+        FIXTURES_REQUIRED dns_bind
+        ENVIRONMENT "KYTHIRA_DNS_TEST_PORT=${KYTHIRA_DNS_TEST_PORT};KYTHIRA_DNS_TEST_STATE_DIR=${_dns_test_state_dir}"
+        TIMEOUT 120
+        LABELS "integration;dns;peer_discovery;acme"
+    )
+elseif(LIBLDNS_FOUND)
+    message(STATUS "named not found — dns_discovery_bind_integration_test will not be built")
+endif()
 endif()
 
 # ── ca-cluster-rpc-mtls (.kiro/specs/ca-cluster-rpc-mtls/) ──────────────────

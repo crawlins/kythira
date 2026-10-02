@@ -759,6 +759,179 @@ jobs:
           ctest --test-dir build --output-on-failure --no-tests=error \
             -R '^(ion_binary_decimal_regression_test|ion_serializer_concept_test|ion_serialization_property_test|ion_malformed_message_property_test|ion_json_serializer_equivalence_property_test|shard_group_id_ion_wire_property_test|ion_http_coap_end_to_end_test)$'
 
+  # ── DNS discovery build (libldns + BIND) ─────────────────────────────────────
+  # The only job that builds with CONFIG_DNS_DISCOVERY=y. libldns is in no other
+  # CI image, so before this job the RFC 1035/2136/6763 peer-discovery classes,
+  # the dns_discovery_node/dns_sd_discovery_node binaries and ACME dns-01 (all
+  # behind KYTHIRA_HAS_LDNS) were never compiled in CI at all.
+  #
+  # Same compiler and vcpkg tree as the g++-13 x64 Build & Test leg, under the
+  # same actions/cache key, so on a warm cache the only new work is the DNS
+  # targets themselves. libldns-dev and bind9 come from apt: libldns has no
+  # vcpkg port, and the Dockerfiles that ship these binaries already use
+  # Ubuntu's libldns3.
+  #
+  # bind9 supplies named for dns_discovery_bind_integration_test, which starts
+  # a throwaway server through scripts/dns-test-server.sh (a CTest fixture) and
+  # runs TSIG-signed UPDATEs and ACME dns-01 against it. Two things the package
+  # does on install have to be undone for that: it starts named.service on
+  # port 53, which nothing here needs, and it loads an AppArmor profile that
+  # stops /usr/sbin/named reading a config anywhere outside /etc/bind.
+  dns-discovery-build:
+    name: DNS Discovery Build (g++-13, x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 g++-13 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool \
+                 libldns-dev bind9; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::apt-get install failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          sudo systemctl disable --now named
+          if [ -e /etc/apparmor.d/usr.sbin.named ] && [ -d /sys/kernel/security/apparmor ]; then
+            sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.named
+          fi
+
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      # configs/ci_dns_defconfig keeps CONFIG_EDHOC=y, so this job installs the
+      # edhoc feature too and needs the Rust toolchain the lakers overlay port
+      # builds from source, exactly as the build-and-test legs do.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. The writer policy -- only a
+      # push to main gets the read-write key -- lives in that action and
+      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # Byte-identical to the g++-13 build-and-test legs' key on purpose: the
+      # vcpkg tree is the same (libldns is not in it), so this job restores
+      # their cache rather than keeping a copy of its own.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action as
+          # x-aws against the bucket; see the build-and-test job's comment.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      # sccache, not ccache: its objects live in the OCI bucket. See the
+      # build-and-test job's comment on the same step.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # KYTHIRA_KCONFIG_STRICT=ON is what turns "libldns-dev is installed" into
+      # an assertion: if pkg-config ever stops finding ldns, this configure
+      # FATAL_ERRORs instead of quietly dropping every target below.
+      - name: Configure (Release, DNS discovery)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_KCONFIG=configs/ci_dns_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # Only the targets KYTHIRA_HAS_LDNS changes, not the whole tree: the rest
+      # is byte-identical to what the build-and-test legs already build. The
+      # two discovery nodes are built and not run here; their Docker scenarios
+      # need container images this job does not build.
+      - name: Build DNS targets
+        run: |
+          cmake --build build -j$(nproc) --target \
+            dns_peer_discovery_unit_test \
+            dns_peer_discovery_chaos_test \
+            dns_discovery_bind_integration_test \
+            acme_certificate_provider_test \
+            acme_identifier_type_test \
+            acme_test_server_unit_test \
+            dns_discovery_node \
+            dns_sd_discovery_node
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — dns-discovery-build"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
+
+      # --no-tests=error, not a bare ctest: an empty selection is the exact
+      # failure this job exists to catch, and ctest exits 0 on one by default.
+      # The BIND fixture's start/stop tests join the run on their own because
+      # dns_discovery_bind_integration_test requires that fixture.
+      - name: Run DNS tests
+        run: |
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 900 \
+            -R '^(dns_peer_discovery_unit_test|dns_peer_discovery_chaos_test|dns_discovery_bind_integration_test|acme_certificate_provider_test|acme_identifier_type_test|acme_test_server_unit_test)$'
+
+      - name: Upload BIND fixture log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dns-test-server-log
+          path: build/tests/dns-test-server/named.log
+          if-no-files-found: ignore
+
   # ── Coverage (clang only) ────────────────────────────────────────────────────
   # ENABLE_COVERAGE uses LLVM source-based instrumentation and requires clang.
   # gcovr-based coverage with GCC is not supported by this project's CMakeLists.
