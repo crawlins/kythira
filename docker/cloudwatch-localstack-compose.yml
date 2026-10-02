@@ -86,7 +86,7 @@ services:
       OTLP_ENDPOINT: "http://otel-collector:4318"
       OTLP_SERVICE_NAME: "kythira-chaos-node"
     ports:
-      - "8096:8080"   # HTTP control plane, for the test's health/command probes
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8096:8080"   # HTTP control plane, for the test's health/command probes
     depends_on:
       - otel-collector
     networks:

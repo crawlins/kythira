@@ -26,7 +26,7 @@ services:
       FRESHNESS_INTERVAL: "20"
       SERVICE_TYPE: "_kythira-test._tcp"
     ports:
-      - "9011:9011"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9011:9011"
     volumes:
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
 
@@ -41,7 +41,7 @@ services:
       FRESHNESS_INTERVAL: "20"
       SERVICE_TYPE: "_kythira-test._tcp"
     ports:
-      - "9012:9012"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9012:9012"
     volumes:
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
 
@@ -56,6 +56,6 @@ services:
       FRESHNESS_INTERVAL: "20"
       SERVICE_TYPE: "_kythira-test._tcp"
     ports:
-      - "9013:9013"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9013:9013"
     volumes:
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket

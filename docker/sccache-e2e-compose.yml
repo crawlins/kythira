@@ -64,7 +64,7 @@ services:
       <<: *gateway-env
       KYTHIRA_NODE_ID: "1"
     ports:
-      - "16381:6379"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16381:6379"
 
   kv2:
     <<: *gateway
@@ -74,7 +74,7 @@ services:
       <<: *gateway-env
       KYTHIRA_NODE_ID: "2"
     ports:
-      - "16382:6379"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16382:6379"
 
   kv3:
     <<: *gateway
@@ -84,7 +84,7 @@ services:
       <<: *gateway-env
       KYTHIRA_NODE_ID: "3"
     ports:
-      - "16383:6379"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16383:6379"
 
   # The CI job. Which user it authenticates as, and whether it asks for an
   # expiration, is decided per `run` by the scenario test; these are the

@@ -1,6 +1,12 @@
 # Copyright (c) 2026 Clark Rawlins
 # SPDX-License-Identifier: Apache-2.0
 
+# Published ports bind to 127.0.0.1 here and in every other compose file in
+# this directory: the control plane and fiu_rc_tcp take commands without
+# authentication, so they are for the test on this machine only. Set
+# KYTHIRA_BIND_ADDRESS to publish them elsewhere, on a machine where that is
+# safe.
+
 services:
   node1:
     image: kythira-chaos-node:dev
@@ -25,9 +31,9 @@ services:
       # OTLP_SERVICE_NAME: "kythira-chaos-node"
       # OTLP_HEADERS: "x-api-key=replace-with-a-real-key"
     ports:
-      - "7001:7000"   # RPC
-      - "8081:8080"   # HTTP control plane
-      - "9001:9000"   # fiu_rc_tcp
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7001:7000"   # RPC
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8081:8080"   # HTTP control plane
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9001:9000"   # fiu_rc_tcp
     cap_add:
       - NET_ADMIN     # required for tc and iptables inside the container
     networks:
@@ -48,9 +54,9 @@ services:
       ELECTION_TIMEOUT_MAX_MS: "300"
       HEARTBEAT_INTERVAL_MS: "50"
     ports:
-      - "7002:7000"
-      - "8082:8080"
-      - "9002:9000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7002:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8082:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9002:9000"
     cap_add:
       - NET_ADMIN
     networks:
@@ -71,9 +77,9 @@ services:
       ELECTION_TIMEOUT_MAX_MS: "300"
       HEARTBEAT_INTERVAL_MS: "50"
     ports:
-      - "7003:7000"
-      - "8083:8080"
-      - "9003:9000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7003:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8083:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9003:9000"
     cap_add:
       - NET_ADMIN
     networks:

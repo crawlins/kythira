@@ -60,7 +60,7 @@ services:
       OTLP_ENDPOINT: "http://otel-collector:4318"
       OTLP_SERVICE_NAME: "kythira-chaos-node"
     ports:
-      - "8091:8080"   # HTTP control plane
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8091:8080"   # HTTP control plane
     depends_on:
       - otel-collector
     networks:

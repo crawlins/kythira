@@ -32,7 +32,7 @@ services:
     volumes:
       - ./netdata/netdata.conf:/etc/netdata/netdata.conf:ro
     ports:
-      - "19999:19999"   # REST API, for the test's assertions
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:19999:19999"   # REST API, for the test's assertions
     networks:
       - netdata-metrics-net
 
@@ -58,7 +58,7 @@ services:
       HEARTBEAT_INTERVAL_MS: "50"
       NETDATA_STATSD_ENDPOINT: "netdata:8125"
     ports:
-      - "8095:8080"   # HTTP control plane
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8095:8080"   # HTTP control plane
     depends_on:
       - netdata
     networks:

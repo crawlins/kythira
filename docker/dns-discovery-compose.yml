@@ -31,7 +31,7 @@ services:
       DNS_ZONE: "example.local."
       DNS_SHARED_NAME: "cluster.example.local."
     ports:
-      - "9021:9021"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9021:9021"
     depends_on:
       dns-test-bind9:
         condition: service_healthy
@@ -50,7 +50,7 @@ services:
       DNS_ZONE: "example.local."
       DNS_SHARED_NAME: "cluster.example.local."
     ports:
-      - "9022:9022"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9022:9022"
     depends_on:
       dns-test-bind9:
         condition: service_healthy
@@ -69,7 +69,7 @@ services:
       DNS_ZONE: "example.local."
       DNS_SHARED_NAME: "cluster.example.local."
     ports:
-      - "9023:9023"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9023:9023"
     depends_on:
       dns-test-bind9:
         condition: service_healthy
