@@ -118,6 +118,13 @@ struct oscore_credentials {
     std::vector<std::byte> master_secret;
     std::vector<std::byte> master_salt;
     std::string aead_algorithm{"AES-CCM-16-64-128"};
+    /// RFC 8613 Section 3.1's ID Context. Mixed into the Sender Key, the
+    /// Recipient Key and the Common IV, and carried as the OSCORE option's
+    /// `kid context` on every request when non-empty. Left empty, derivation
+    /// and wire bytes are exactly what they were before the field existed.
+    /// The multi-Raft host sets it to `group_id || boot_nonce`, one context per
+    /// (peer, group): see oscore_group_contexts.hpp.
+    std::vector<std::byte> id_context;
     oscore_bootstrap bootstrap_method{oscore_bootstrap::static_provisioned};
     edhoc_params edhoc;  // used only when bootstrap_method == edhoc
     // Directory that keeps the Sender Sequence Number and replay floor across

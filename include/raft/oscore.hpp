@@ -868,8 +868,13 @@ public:
             throw coap_security_config_error(
                 "OSCORE: sender_id and recipient_id must differ within a Security Context");
         }
+        if (credentials.id_context.size() > 255) {
+            // The OSCORE option's `s` field is one byte (RFC 8613 Section 6.1).
+            throw coap_security_config_error("OSCORE: an ID Context is at most 255 bytes");
+        }
         _sender_id = credentials.sender_id;
         _recipient_id = credentials.recipient_id;
+        _id_context = credentials.id_context;
         _sender_key = hkdf_sha256(credentials.master_salt, credentials.master_secret,
                                   build_info(_sender_id, _id_context, _alg, "Key", aead_key_length),
                                   aead_key_length);
@@ -926,6 +931,13 @@ public:
         fields.partial_iv = partial_iv;
         fields.kid = _sender_id;
         fields.has_kid = true;
+        if (!_id_context.empty()) {
+            // RFC 8613 Section 6.1: carried so the recipient can pick the
+            // matching context before it can decrypt anything. Not part of the
+            // AAD (Section 5.4); it authenticates through the key it selects.
+            fields.kid_context = _id_context;
+            fields.has_kid_context = true;
+        }
 
         coap_message out;
         out.version = message.version;
@@ -1014,6 +1026,11 @@ public:
         if (fields.kid != _recipient_id) {
             throw verification_error("no Recipient Context matches the request's kid");
         }
+        if (fields.has_kid_context && fields.kid_context != _id_context) {
+            // Checked before the replay window is consulted: a request meant
+            // for another context says nothing about this one's window.
+            throw verification_error("no Recipient Context matches the request's kid context");
+        }
         const auto sequence = detail::decode_partial_iv(fields.partial_iv);
         // Section 7.4 orders this check before decryption, and it is only a
         // check: an unauthenticated request must never move the window, or
@@ -1093,6 +1110,11 @@ public:
         return _recipient_key;
     }
     [[nodiscard]] auto common_iv() const -> const std::vector<std::byte>& { return _common_iv; }
+    [[nodiscard]] auto id_context() const -> const std::vector<std::byte>& { return _id_context; }
+    [[nodiscard]] auto sender_id() const -> const std::vector<std::byte>& { return _sender_id; }
+    [[nodiscard]] auto recipient_id() const -> const std::vector<std::byte>& {
+        return _recipient_id;
+    }
 
     /// Forces the next Partial IV, so a test can reproduce a published vector.
     /// Not for production use: rewinding a sequence number reuses a nonce.
