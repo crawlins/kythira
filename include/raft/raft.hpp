@@ -474,6 +474,20 @@ public:
     /// `shard_stats` reports it too.
     [[nodiscard]] auto last_applied_index() const -> log_index_type;
 
+    /// @brief Snapshot the state machine at `last_applied_index()` and compact the log.
+    ///
+    /// Captures `state_machine.get_state()` together with the term of the last
+    /// applied entry and the current configuration, saves that snapshot to the
+    /// persistence engine, then discards the log entries it covers. A node
+    /// restarted on the same persistence engine restores from it.
+    ///
+    /// Nothing inside the node calls this yet — `snapshot_threshold_bytes` is
+    /// not wired to it — so an application that wants a bounded log calls it.
+    /// The overload that accepts caller-supplied state stays private: state
+    /// that did not come from this node's own state machine at
+    /// `last_applied_index()` would make the snapshot lie about what it covers.
+    auto create_snapshot() -> void;
+
     /// @brief Copy the log entries in `[from, to]` out under the node's lock.
     ///
     /// The merge coordinator carries the source's log tail inside
@@ -1164,8 +1178,7 @@ private:
     auto advance_commit_index() -> void;
     auto apply_committed_entries() -> void;
 
-    // Snapshot operations
-    auto create_snapshot() -> void;
+    // Snapshot operations (the no-argument create_snapshot() is public)
     auto create_snapshot(const std::vector<std::byte>& state_machine_state) -> void;
     auto compact_log() -> void;
     auto install_snapshot(const snapshot_type& snap) -> void;
