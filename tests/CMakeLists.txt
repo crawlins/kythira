@@ -4993,6 +4993,35 @@ endif()  # TARGET certificate_authority
 
 endif()  # LIBSSH2_FOUND
 
+# Real-EC2 coverage for aws_ec2_quorum_manager's launch options: placement
+# groups, spot vs on-demand, and provision-timeout cleanup (aws-quorum-manager
+# Requirement 16.19 e-i, 18.10). Its own binary, with a lean fixture (no NAT
+# gateway, bastion or key pair) and its own CI job, because the aws job's
+# worst-case budget is already its full 360 minutes. No libssh2: nothing here
+# connects to an instance.
+add_executable(aws_ec2_launch_options_real_test aws_ec2_launch_options_real_test.cpp)
+target_compile_definitions(aws_ec2_launch_options_real_test PRIVATE
+    KYTHIRA_AWS_REAL_EC2_TESTS
+)
+target_link_libraries(aws_ec2_launch_options_real_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(aws_ec2_launch_options_real_test PRIVATE Folly::folly)
+endif()
+target_compile_features(aws_ec2_launch_options_real_test PRIVATE cxx_std_23)
+add_test(NAME aws_ec2_launch_options_real_test COMMAND aws_ec2_launch_options_real_test)
+set_tests_properties(aws_ec2_launch_options_real_test PROPERTIES
+    # Six cases at a 1500s Boost.Test timeout each (setup, two launches and a
+    # 735s worst-case teardown), plus 300s of slack.
+    TIMEOUT 9300
+    LABELS "integration;raft;quorum;aws;real-ec2;slow"
+    # PreflightSkipFixture exits 77 before any case runs when no AWS region
+    # is set, so ctest reports "Not Run" instead of "Failed".
+    SKIP_RETURN_CODE 77
+)
+
 endif()  # AWSSDK_FOUND
 
 # ── aws_s3_client unit test (cloud object persistence, task 7) ────────────────
