@@ -404,10 +404,12 @@ public:
     ///
     /// Sets `ShouldDecrementDesiredCapacity = true` so the ASG does not launch a
     /// replacement automatically.  Treats "not found" and `ValidationError` responses
-    /// as idempotent success.  Polls until the EC2 state leaves `running` (up to 30 s).
+    /// as idempotent success.  Polls until the EC2 state leaves `running` (up to 30 s);
+    /// success means that was observed, or EC2 no longer knows the instance.
     ///
     /// @param node_id Identifier of the node to terminate.
-    /// @return void Future on success, exceptional Future on API error.
+    /// @return void Future on success, exceptional Future on API error or when the
+    ///         instance is still `running` (or unobservable) when the wait expires.
     auto decommission_node(const NodeId& node_id) -> kythira::future_default<void> {
         try {
             fiu_do_on("raft/aws/asg/terminate_instance",
@@ -430,23 +432,38 @@ public:
                                          std::string(err.GetMessage()));
             }
             // Poll until the EC2 state confirms the transition away from running.
+            // Success is returned only once that is observed: an expired wait, or
+            // one that never got a readable answer, is a failure the caller must
+            // see rather than a removal it assumes (Requirement 7.1 of the
+            // aws-asg-real-cloud-tests spec).
             {
                 auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
-                while (std::chrono::steady_clock::now() < deadline) {
+                std::string last_seen = "no DescribeInstanceStatus answer";
+                while (true) {
                     Aws::EC2::Model::DescribeInstanceStatusRequest poll;
                     poll.AddInstanceIds(ec2_id);
                     poll.SetIncludeAllInstances(true);
                     auto ps = _ec2->DescribeInstanceStatus(poll);
-                    if (!ps.IsSuccess()) {
+                    if (ps.IsSuccess()) {
+                        const auto& sv = ps.GetResult().GetInstanceStatuses();
+                        if (sv.empty() || sv[0].GetInstanceState().GetName() !=
+                                              Aws::EC2::Model::InstanceStateName::running) {
+                            break;
+                        }
+                        last_seen = "state running";
+                    } else if (std::string(ps.GetError().GetExceptionName()) ==
+                               "InvalidInstanceID.NotFound") {
                         break;
+                    } else {
+                        last_seen =
+                            "DescribeInstanceStatus: " + std::string(ps.GetError().GetMessage());
                     }
-                    const auto& sv = ps.GetResult().GetInstanceStatuses();
-                    if (sv.empty()) {
-                        break;
-                    }
-                    if (sv[0].GetInstanceState().GetName() !=
-                        Aws::EC2::Model::InstanceStateName::running) {
-                        break;
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        std::string msg = ec2_id;
+                        msg += " not confirmed out of running 30s after termination (last: ";
+                        msg += last_seen;
+                        msg += ")";
+                        throw std::runtime_error(msg);
                     }
                     std::this_thread::sleep_for(std::chrono::seconds{2});
                 }
