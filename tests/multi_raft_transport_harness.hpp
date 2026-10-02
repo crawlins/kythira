@@ -45,10 +45,10 @@
 /// `capabilities()` descriptor, `server(id)` / `client(id)` accessors, and
 /// `drain()` / `shutdown()` — `drain()` returning only once no request handler
 /// is still running, `shutdown()` releasing the fixture's own threads.
-/// Nothing else in the harness or in the tests changes. A CoAP fixture would
-/// differ in owning a libcoap context instead of an `io_context`, and in
-/// reporting `_pre_vote = false` and `_log_fetch = false`: CoAP carries
-/// TimeoutNow but neither of those.
+/// Nothing else in the harness or in the tests changes. `coap_transport` is
+/// the worked example: it owns libcoap contexts instead of an `io_context`,
+/// and reports `_pre_vote = false` and `_log_fetch = false`, because CoAP
+/// carries TimeoutNow but neither of those.
 
 #include "multi_raft_kv_workload.hpp"
 #include "multi_raft_test_fabric.hpp"
@@ -82,6 +82,11 @@
 #include <folly/executors/IOThreadPoolExecutor.h>
 #endif
 
+#if defined(KYTHIRA_BENCH_HAS_COAP)
+#include <raft/coap_transport.hpp>
+#include <raft/coap_transport_impl.hpp>
+#endif
+
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -94,6 +99,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -734,6 +740,118 @@ private:
     std::unordered_map<std::uint64_t, std::unique_ptr<client_type>> _clients;
 };
 #endif  // KYTHIRA_BENCH_HAS_PROXYGEN
+
+#if defined(KYTHIRA_BENCH_HAS_COAP)
+/// @brief libcoap: one client and one server per host, each with its own
+///        libcoap context and I/O thread.
+///
+/// The matrix's CoAP row (Requirement 17a,
+/// `.kiro/specs/coap-transport-multi-raft/` task 14). Every group a host runs
+/// shares its one `coap_client`, so the row's group-count sweep is exactly the
+/// question that spec asks: what N groups cost when every send serializes on
+/// the client's `_mutex`. That mutex is required — libcoap's C API is not safe
+/// to call concurrently on one context — and this fixture measures it as it
+/// is rather than configuring around it.
+///
+/// UDP, so ports come from `reserve_udp_port`'s logic rather than
+/// `reserve_port`'s TCP bind. TimeoutNow yes, pre-vote and log fetch no —
+/// read off the client by `transport_client_handle`'s `requires` clauses, so
+/// the capability row below is a description, not a switch.
+/// The CoAP backend needs two members the HTTP bundle does not carry: a
+/// promise template, because it completes futures from its own I/O thread,
+/// and a logger type. Everything else is `harness_transport_types`, so the
+/// rows stay comparable.
+template<typename Serializer>
+struct coap_harness_transport_types : harness_transport_types<Serializer> {
+    template<typename T> using promise_template = kythira::promise_default<T>;
+    using logger_type = kythira::console_logger;
+};
+
+template<typename Serializer> class coap_transport {
+public:
+    using transport_bundle = coap_harness_transport_types<Serializer>;
+    using client_type = kythira::coap_client<transport_bundle>;
+    using server_type = kythira::coap_server<transport_bundle>;
+
+    static auto name() -> std::string_view { return "coap"; }
+    static auto tier() -> deployment_tier { return deployment_tier::b_loopback; }
+    static auto capabilities() -> transport_capabilities {
+        return transport_capabilities{._timeout_now = true};
+    }
+
+    explicit coap_transport(const std::vector<std::uint64_t>& nodes) {
+        for (auto id : nodes) {
+            const auto port = reserve_udp_port();
+            _ports.emplace(id, port);
+            _endpoints.emplace(id, "coap://127.0.0.1:" + std::to_string(port));
+        }
+        for (auto id : nodes) {
+            _servers.emplace(
+                id, std::make_unique<server_type>("127.0.0.1", _ports.at(id),
+                                                  kythira::coap_server_config{}, noop_metrics{}));
+            std::unordered_map<std::uint64_t, std::string> peers;
+            for (auto peer : nodes) {
+                if (peer != id) {
+                    peers.emplace(peer, _endpoints.at(peer));
+                }
+            }
+            _clients.emplace(
+                id, std::make_unique<client_type>(std::move(peers), kythira::coap_client_config{},
+                                                  noop_metrics{}));
+        }
+    }
+
+    ~coap_transport() { shutdown(); }
+
+    coap_transport(const coap_transport&) = delete;
+    auto operator=(const coap_transport&) -> coap_transport& = delete;
+
+    [[nodiscard]] auto server(std::uint64_t id) -> server_type& { return *_servers.at(id); }
+    [[nodiscard]] auto client(std::uint64_t id) -> client_type& { return *_clients.at(id); }
+
+    /// @brief Nothing to wait for: request handlers run on each server's own
+    /// I/O thread, which `stop()` joins.
+    auto drain() -> void {}
+
+    /// @brief Released after every host has been stopped. Clients go first, so
+    /// no client I/O thread can still be completing a promise into a server
+    /// that is being torn down.
+    auto shutdown() -> void {
+        _clients.clear();
+        for (auto& [id, server] : _servers) {
+            server->stop();
+        }
+        _servers.clear();
+    }
+
+private:
+    /// A UDP port on loopback that was free a moment ago. The same race
+    /// `reserve_port` accepts, for the same reason.
+    [[nodiscard]] static auto reserve_udp_port() -> std::uint16_t {
+        const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0) {
+            throw std::runtime_error("reserve_udp_port: socket() failed");
+        }
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        socklen_t len = sizeof(addr);
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+            ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+            ::close(fd);
+            throw std::runtime_error("reserve_udp_port: bind()/getsockname() failed");
+        }
+        ::close(fd);
+        return ntohs(addr.sin_port);
+    }
+
+    std::unordered_map<std::uint64_t, std::uint16_t> _ports;
+    std::unordered_map<std::uint64_t, std::string> _endpoints;
+    std::unordered_map<std::uint64_t, std::unique_ptr<server_type>> _servers;
+    std::unordered_map<std::uint64_t, std::unique_ptr<client_type>> _clients;
+};
+#endif  // KYTHIRA_BENCH_HAS_COAP
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Durability
@@ -1758,6 +1876,14 @@ public:
         return _cluster.durability_counts();
     }
 
+    /// @brief Which group a key lands in, from the tiling the cluster was
+    /// built with. What lets a write row report per group (Requirement 17a.2);
+    /// optional in `workload_target` because a driver on the far side of a
+    /// wire does not know the tiling.
+    [[nodiscard]] auto group_of(const std::string& key) const -> std::optional<std::uint64_t> {
+        return _cluster.group_of_key(key);
+    }
+
     auto describe(benchmark_result& row) const -> void {
         typename Transport::transport_bundle::serializer_type serializer{};
         typename kv_cluster<Transport>::types::serializer_type node_serializer{};
@@ -1853,6 +1979,14 @@ auto fill_result(const Target& target, const workload_options& workload,
 template<workload_target Target>
 auto run_put_workload_on(Target& target, const workload_options& workload) -> benchmark_result {
     std::vector<latency_sample_set> per_worker(workload._in_flight);
+    // Requirement 17a.2: the same samples again, keyed by group, when the
+    // target can say which group a key lands in. Per worker so the hot loop
+    // takes no lock; merged after the join exactly as `per_worker` is.
+    constexpr bool k_per_group = requires(Target& t, const std::string& k) {
+        { t.group_of(k) } -> std::same_as<std::optional<std::uint64_t>>;
+    };
+    std::vector<std::map<std::uint64_t, latency_sample_set>> per_worker_group(
+        k_per_group ? workload._in_flight : 0);
     std::vector<operation_tally> tallies(workload._in_flight);
     std::vector<std::chrono::nanoseconds> lag(workload._in_flight, std::chrono::nanoseconds{0});
     const auto per_worker_ops = std::max<std::size_t>(
@@ -1917,9 +2051,15 @@ auto run_put_workload_on(Target& target, const workload_options& workload) -> be
                         // worker was busy with the previous one is added back
                         // here. In closed loop `due` is the window start and
                         // this branch is not taken.
-                        per_worker[w].record(arrival_interval > std::chrono::nanoseconds{0}
-                                                 ? std::chrono::steady_clock::now() - due
-                                                 : *latency);
+                        const auto sample = arrival_interval > std::chrono::nanoseconds{0}
+                                                ? std::chrono::steady_clock::now() - due
+                                                : *latency;
+                        per_worker[w].record(sample);
+                        if constexpr (k_per_group) {
+                            if (const auto group = target.group_of(key)) {
+                                per_worker_group[w][*group].record(sample);
+                            }
+                        }
                     }
                 }
             });
@@ -1945,6 +2085,25 @@ auto run_put_workload_on(Target& target, const workload_options& workload) -> be
     result._mean_schedule_lag = tally._completed == 0
                                     ? std::chrono::nanoseconds{0}
                                     : total_lag / static_cast<std::int64_t>(tally._completed);
+    if constexpr (k_per_group) {
+        std::map<std::uint64_t, latency_sample_set> by_group;
+        for (auto& worker : per_worker_group) {
+            for (auto& [group, samples] : worker) {
+                by_group[group].merge(samples);
+            }
+        }
+        for (auto& [group, samples] : by_group) {
+            samples.sort();
+            result._per_group.push_back(benchmark_result::group_latency{
+                ._group = group,
+                ._completed = samples.count(),
+                ._p50 = samples.p50(),
+                ._p95 = samples.p95(),
+                ._p99 = samples.p99(),
+                ._max = samples.max(),
+            });
+        }
+    }
     return result;
 }
 

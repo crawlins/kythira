@@ -1214,6 +1214,16 @@ function(kythira_wire_multi_raft_bench target)
         message(STATUS "${target}: proxygen rows skipped "
                        "(requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
     endif()
+    # The CoAP row: .kiro/specs/multi-raft-performance/ Requirement 17a and
+    # .kiro/specs/coap-transport-multi-raft/ task 14. libcoap itself and
+    # LIBCOAP_AVAILABLE arrive through network_simulator; this only tells the
+    # harness the row exists.
+    if(LIBCOAP_FOUND)
+        target_compile_definitions(${target} ${_wire_scope} KYTHIRA_BENCH_HAS_COAP)
+        target_link_libraries(${target} ${_wire_scope} network_simulator)
+    else()
+        message(STATUS "${target}: coap row skipped (requires libcoap)")
+    endif()
     if(PROTOBUF_SERIALIZER_FOUND)
         target_compile_definitions(${target} ${_wire_scope} KYTHIRA_BENCH_HAS_PROTOBUF)
         target_link_libraries(${target} ${_wire_scope} raft_protobuf_serializer)
@@ -1312,6 +1322,7 @@ add_library(multi_raft_bench_rows STATIC
     bench_rows/beast_protobuf.cpp
     bench_rows/beast_ion.cpp
     bench_rows/proxygen_json.cpp
+    bench_rows/coap_json.cpp
 )
 target_link_libraries(multi_raft_bench_rows PUBLIC kythira_test_pch)
 target_precompile_headers(multi_raft_bench_rows REUSE_FROM kythira_test_pch)
