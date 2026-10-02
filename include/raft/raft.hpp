@@ -1206,6 +1206,13 @@ private:
     // Called by become_follower/candidate — disables the quorum check.
     auto stop_quorum_loop() -> void;
 
+    // Req 13.3 — consecutive AppendEntries/heartbeat failures per peer.  A
+    // failure that brings a peer to quorum_heartbeat_failure_threshold asks
+    // for an immediate assessment; any response from the peer resets it.
+    // Must be called with _mutex held.
+    auto note_peer_rpc_failure(const node_id_type& peer) -> void;
+    auto note_peer_rpc_success(const node_id_type& peer) -> void;
+
     // ── Learner helpers (.kiro/specs/non-voting-nodes/) ──────────────────────
 
     // Returns true iff _node_id is currently a learner (non-voting member).
@@ -1488,6 +1495,11 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
         health = _quorum_manager.assess_quorum(cluster).get();
     } catch (const std::exception& ex) {
         _logger.error("assess_quorum failed", {{"error", ex.what()}});
+        // Req 13.5 — retry after quorum_check_interval, not on the next
+        // heartbeat tick.  Without this a manager whose backend is down is
+        // re-polled every heartbeat_interval.
+        std::lock_guard<std::mutex> lock(_mutex);
+        _last_quorum_check = std::chrono::steady_clock::now();
         return;
     }
 
@@ -1639,13 +1651,35 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
     }
 }
 
+template<raft_types Types>
+auto node<Types>::note_peer_rpc_failure(const node_id_type& peer) -> void {
+    if (!_quorum_check_active) {
+        return;
+    }
+    // Fire once per outage, when the count reaches the threshold: a peer that
+    // stays down is then covered by the interval timer instead of forcing an
+    // assessment on every failed RPC.
+    auto& count = _heartbeat_failure_counts[peer];
+    ++count;
+    if (count == _config.quorum_heartbeat_failure_threshold()) {
+        _quorum_immediate_check = true;
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::note_peer_rpc_success(const node_id_type& peer) -> void {
+    _heartbeat_failure_counts.erase(peer);
+}
+
 // start_quorum_loop — called from become_leader() while _mutex is held.
 // Initialises quorum loop state so that check_heartbeat_timeout() begins
 // scheduling periodic assessments.
 template<raft_types Types> auto node<Types>::start_quorum_loop() -> void {
     _quorum_check_active = true;
-    _quorum_immediate_check = false;
-    // Set to epoch so the first check_heartbeat_timeout() fires immediately
+    // The first check_heartbeat_timeout() assesses immediately.  This must be
+    // the explicit flag: steady_clock counts from boot on Linux, so a default
+    // time point is not reliably a full quorum_check_interval in the past.
+    _quorum_immediate_check = true;
     _last_quorum_check = std::chrono::steady_clock::time_point{};
 }
 
@@ -5003,14 +5037,7 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
                 _metrics.add_one();
                 _metrics.emit();
 
-                // Req 13.3 — track consecutive heartbeat failures for quorum assessment
-                if (_quorum_check_active) {
-                    auto& count = _heartbeat_failure_counts[target];
-                    ++count;
-                    if (count >= _config.quorum_heartbeat_failure_threshold()) {
-                        _quorum_immediate_check = true;
-                    }
-                }
+                note_peer_rpc_failure(target);
 
                 return;
             }
@@ -5036,7 +5063,7 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
             if (response.success()) {
                 // Heartbeat succeeded - remove from unresponsive set and reset failure counter
                 _unresponsive_followers.erase(target);
-                _heartbeat_failure_counts.erase(target);
+                note_peer_rpc_success(target);
 
                 _logger.debug("Heartbeat succeeded",
                               {{"node_id", node_id_to_string(_node_id)},
@@ -6110,6 +6137,7 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                     }
 
                     _unresponsive_followers.insert(target);
+                    note_peer_rpc_failure(target);
 
                     _metrics.set_metric_name("raft_append_entries_failed");
                     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -6121,6 +6149,8 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                 }
 
                 auto response = try_response.value();
+                // Any response at all means the peer is reachable.
+                note_peer_rpc_success(target);
 
                 // Check if we've been deposed
                 if (response.term() > _current_term) {
