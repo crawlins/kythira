@@ -453,6 +453,12 @@ private:
             // The Docker convention is "unix:///var/run/docker.sock" so path starts with "/"
             auto cli = std::make_unique<httplib::Client>(path);
             cli->set_address_family(AF_UNIX);
+            // cpp-httplib would send the socket path as the Host header, and
+            // the daemon's Go HTTP server rejects a Host containing '/' with
+            // 400 before routing — so every call over the socket failed, and
+            // assess_quorum reported every container unreachable. Any valid
+            // host will do; the socket already chose the daemon.
+            cli->set_default_headers({{"Host", "localhost"}});
             cli->set_connection_timeout(timeout_sec, timeout_ms);
             cli->set_read_timeout(timeout_sec, timeout_ms);
             return cli;
