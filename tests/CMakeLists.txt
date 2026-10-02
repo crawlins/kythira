@@ -994,6 +994,20 @@ add_raft_completion_test(capacity_coordination_test capacity_coordination_test.c
 # every later capacity suite builds on.
 add_raft_completion_test(mock_capacity_quorum_manager_test
                          mock_capacity_quorum_manager_test.cpp)
+# elastic-shard-capacity spec, tasks 8-12: the elastic capacity controller
+# (bounds, reconciliation, admission, drain, observability) over the mock
+# quorum manager and a simulated host cluster. Deterministic.
+add_raft_completion_test(elastic_capacity_controller_test
+                         elastic_capacity_controller_test.cpp)
+# elastic-shard-capacity spec, task 13: the placement-driver decorator.
+add_raft_completion_test(elastic_shard_placement_driver_test
+                         elastic_shard_placement_driver_test.cpp)
+# elastic-shard-capacity spec, task 14: a machine admitted end to end onto
+# real multi-Raft hosts over the in-process message fabric.
+add_raft_completion_test(elastic_capacity_fabric_test elastic_capacity_fabric_test.cpp)
+# elastic-shard-capacity spec, task 15: seeded property runs, lease-holder
+# failover in every intent state, and provider chaos. Manual clock only.
+add_raft_completion_test(elastic_capacity_failover_test elastic_capacity_failover_test.cpp)
 add_raft_completion_test(multi_raft_invariant_property_test
                          multi_raft_invariant_property_test.cpp)
 # Task 34 of .kiro/specs/multi-raft/: 1000 groups across three simulated nodes.
