@@ -1696,6 +1696,26 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(coap_oscore_integration_test PROPERTIES TIMEOUT 60
         LABELS "coap;coap-security;integration")
 
+    # OSCORE layered over DTLS-PSK and DTLS-PKI (Requirement 4.2), and the DTLS
+    # capability check (Requirement 7.2), against real libcoap. Kept apart from
+    # coap_oscore_integration_test so the two can change independently.
+    add_executable(coap_oscore_over_dtls_test coap_oscore_over_dtls_test.cpp)
+    target_link_libraries(coap_oscore_over_dtls_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+    )
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(coap_oscore_over_dtls_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(TARGET libcoap::coap-3)
+        target_compile_definitions(coap_oscore_over_dtls_test PRIVATE LIBCOAP_AVAILABLE)
+        target_link_libraries(coap_oscore_over_dtls_test PRIVATE libcoap::coap-3)
+    endif()
+    target_compile_features(coap_oscore_over_dtls_test PRIVATE cxx_std_23)
+    add_test(NAME coap_oscore_over_dtls_test COMMAND coap_oscore_over_dtls_test)
+    set_tests_properties(coap_oscore_over_dtls_test PROPERTIES TIMEOUT 60
+        LABELS "coap;coap-security;integration")
+
     # EDHOC-to-OSCORE bootstrap (Requirement 9.5) — only meaningful when the
     # optional vcpkg "edhoc" feature is installed (lakers::lakers target
     # present); a no-op fallback test runs otherwise (see the file's own
@@ -2707,6 +2727,12 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_network_test(coap_oscore_only_resources_test coap_oscore_only_resources_test.cpp)
     set_tests_properties(coap_oscore_only_resources_test PROPERTIES
         TIMEOUT 120 LABELS "coap;coap-security;integration;libcoap")
+    # OSCORE over DTLS through coap_client/coap_server (coap-transport-security
+    # Requirements 4.2, 9.4).
+    add_network_test(coap_oscore_over_dtls_transport_test
+        coap_oscore_over_dtls_transport_test.cpp)
+    set_tests_properties(coap_oscore_over_dtls_transport_test PROPERTIES
+        TIMEOUT 180 LABELS "coap;coap-security;integration;libcoap")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 
 if(KYTHIRA_BUILD_COAP_TRANSPORT)

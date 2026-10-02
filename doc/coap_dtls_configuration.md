@@ -248,6 +248,46 @@ auto server = coap_server<json_serializer>(
 server.start();
 ```
 
+## OSCORE over DTLS
+
+OSCORE (RFC 8613) protects each CoAP message end to end; DTLS protects the
+hop. Setting `security.oscore_dtls` alongside `security.mode = oscore` runs
+every OSCORE session inside a DTLS session, so a peer must hold both the
+OSCORE context and the DTLS credentials. This is only available on the
+libcoap backend (cantcoap and libnyoci refuse the setting rather than drop
+the DTLS layer), and only with PSK or certificate DTLS: libcoap has no
+combined constructor for raw public keys.
+
+```cpp
+#include <raft/coap_transport.hpp>
+
+kythira::coap_client_config config;
+config.enable_dtls = true;  // required; endpoints are coaps://
+config.security.mode = kythira::coap_auth_mode::oscore;
+
+kythira::oscore_credentials oscore;
+oscore.sender_id = {std::byte{0x00}};
+oscore.recipient_id = {std::byte{0x01}};
+oscore.master_secret = load_master_secret();
+config.security.credentials = oscore;
+
+// Or kythira::pki_credentials{cert_file, key_file, ca_file, ...}.
+config.security.oscore_dtls = kythira::psk_credentials{"node-1", load_psk()};
+```
+
+The server mirrors this with the sender and recipient IDs swapped. Without
+`enable_dtls` the transport refuses the configuration at construction. In
+OSCORE mode, with or without DTLS, the Raft resources only accept
+OSCORE-protected requests; anything else gets 4.01 Unauthorized.
+
+Each DTLS mode, and OSCORE's DTLS layer, also checks the linked libcoap
+before configuring anything (`coap_dtls_is_supported()` and the per-type
+`coap_dtls_psk/pki/rpk_is_supported()`). A build without the capability
+fails with `coap_unsupported_security_mode_error` naming the mode and what is
+missing. Note that libcoap's OpenSSL backend, which vcpkg's `dtls` feature
+builds, never supports raw public keys, so `dtls_rpk` on the libcoap backend
+fails this check; use the libnyoci or cantcoap backend for RPK.
+
 ## Advanced DTLS Configuration
 
 ### Cipher Suite Selection

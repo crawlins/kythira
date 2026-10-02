@@ -148,12 +148,23 @@ struct ace_oauth_config {
     ace_target_profile target_profile{ace_target_profile::dtls_psk};
 };
 
+// The DTLS session an OSCORE session can be layered over (Requirement 4.2:
+// "defense in depth"). Only PSK and certificate DTLS are offered: libcoap has
+// combined OSCORE constructors for those two and none for RPK.
+using oscore_dtls_credentials = std::variant<psk_credentials, pki_credentials>;
+
 struct coap_security_config {
     coap_auth_mode mode{coap_auth_mode::none};
     std::variant<std::monostate, psk_credentials, pki_credentials, rpk_credentials,
                  oscore_credentials>
         credentials;
     std::optional<ace_oauth_config> ace_bootstrap;
+    // Set only with mode == oscore: run every OSCORE session inside a DTLS
+    // session made from these credentials, so a message is protected end to
+    // end by OSCORE and hop by hop by DTLS. A peer must pass both. The
+    // transport then needs enable_dtls and coaps:// endpoints. Last, so the
+    // positional aggregate initializers above keep their meaning.
+    std::optional<oscore_dtls_credentials> oscore_dtls;
 };
 
 // ── Exceptions (Data Models section of design.md) ─────────────────────────

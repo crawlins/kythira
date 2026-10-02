@@ -161,6 +161,14 @@ template<typename Config>
 [[nodiscard]] inline auto plan_security(const Config& config, const char* role)
     -> std::pair<channel, coap_security_config> {
     coap_security_config effective = kythira::translate_legacy_fields(config);
+    if (effective.oscore_dtls) {
+        // This backend runs OSCORE over plain UDP only. Ignoring the DTLS
+        // layer would quietly drop the outer protection that was asked for.
+        throw coap_security_error(
+            std::string(
+                "OSCORE over DTLS (security.oscore_dtls) was requested for this cantcoap CoAP ") +
+            role + ", but only the libcoap backend provides it.");
+    }
     switch (effective.mode) {
         case coap_auth_mode::none:
             return {channel::plain, std::move(effective)};
