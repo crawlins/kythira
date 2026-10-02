@@ -53,13 +53,22 @@ The ref is pinned in every writer pattern, which is what makes the two added
 events safe: a dispatch names its own ref, so trusting the event alone would
 let any branch write.
 
-This is enforced twice, and the second one is the one that matters:
+This is enforced three times:
 
 1. `.github/actions/oci-build-cache/` picks the read-write key for
    `push:main`, `schedule:main` and `workflow_dispatch:main`, and the
    read-only key for everything else. The match on `main` is exact;
    `main-experiment` gets the read-only key.
-2. IAM refuses the rest. `kythira-build-cache-ro` holds `OBJECT_READ` and
+2. The read-write key is not a repository secret. It is an environment
+   secret of `build-cache-write`, whose deployment branches are `main` only,
+   and a job joins that environment only when it runs on `main`. The case
+   statement above runs in a workflow file the branch itself controls, so on
+   its own it stops honest mistakes, not a branch pusher who edits the
+   workflow to hand the read-write key to a feature branch; GitHub refuses
+   that job the environment, and with it the key. A job on `main` that runs
+   in another environment (the `real-cloud-tests.yml` provider jobs) does not
+   receive the key either, and reads with the read-only one.
+3. IAM refuses the rest. `kythira-build-cache-ro` holds `OBJECT_READ` and
    `OBJECT_INSPECT` and nothing else, so a bug in that case statement is
    answered with a 403 by the service rather than by poisoning a cache other
    builds trust.
@@ -223,8 +232,8 @@ values immediately — OCI returns a customer secret exactly once, and there is
 no way to read it back:
 
 ```bash
-gh secret set OCI_BUILD_CACHE_RW_ACCESS_KEY_ID     --body '...'
-gh secret set OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY --body '...'
+gh secret set OCI_BUILD_CACHE_RW_ACCESS_KEY_ID     --env build-cache-write --body '...'
+gh secret set OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY --env build-cache-write --body '...'
 ```
 
 Rotating the **read-write** key between a push landing and the secret being
@@ -237,8 +246,13 @@ updated means `main` builds without a cache for those runs; nothing breaks.
 | variable | `OCI_BUILD_CACHE_BUCKET` | bucket name |
 | variable | `OCI_BUILD_CACHE_NAMESPACE` | Object Storage namespace, for the endpoint host |
 | variable | `OCI_CI_REGION` | already exists; reused |
-| secret | `OCI_BUILD_CACHE_RW_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | `kythira-build-cache-rw`'s customer secret key |
-| secret | `OCI_BUILD_CACHE_RO_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | `kythira-build-cache-ro`'s customer secret key |
+| environment | `build-cache-write` | deployment branches: `main` only; no reviewers |
+| environment secret (`build-cache-write`) | `OCI_BUILD_CACHE_RW_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | `kythira-build-cache-rw`'s customer secret key |
+| repository secret | `OCI_BUILD_CACHE_RO_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | `kythira-build-cache-ro`'s customer secret key |
+
+The read-write pair must **not** also exist as a repository secret: a
+repository secret reaches every branch's jobs, which is exactly what the
+environment exists to prevent.
 
 A missing **variable** fails the job at the action, with an `::error::` naming
 it. Missing **secrets** are the fork case and disable the caches instead.

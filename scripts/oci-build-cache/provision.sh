@@ -517,8 +517,12 @@ mint_key() {
     secret=$(printf '%s' "$out" | jq -r '.data.key')
     echo
     echo "  ── $user — printed once, never written to disk ──"
-    echo "  gh secret set OCI_BUILD_CACHE_${which^^}_ACCESS_KEY_ID --body '$key_id'"
-    echo "  gh secret set OCI_BUILD_CACHE_${which^^}_SECRET_ACCESS_KEY --body '$secret'"
+    # The read-write key goes in the main-only build-cache-write environment,
+    # never in a repository secret any branch's workflow could read.
+    local scope=""
+    [ "$which" = "rw" ] && scope=" --env build-cache-write"
+    echo "  gh secret set OCI_BUILD_CACHE_${which^^}_ACCESS_KEY_ID${scope} --body '$key_id'"
+    echo "  gh secret set OCI_BUILD_CACHE_${which^^}_SECRET_ACCESS_KEY${scope} --body '$secret'"
     echo
     if [ "$rotating" -eq 1 ] && [ "$existing" != "0" ]; then
         # Delete the old key only after the new one has been printed: a
