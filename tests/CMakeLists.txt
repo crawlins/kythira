@@ -1881,6 +1881,26 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     else()
         message(STATUS "coap_duplicate_detection_peer_test: skipped (requires Folly)")
     endif()
+    # node<Types> over a real CoAP transport: election, replication, leader
+    # failover and TimeoutNow leadership transfer on three loopback nodes --
+    # .kiro/specs/coap-transport-multi-raft/ tasks 5-6. The first test in the
+    # tree to run Raft over CoAP at all. Raft timings and waits are scaled with
+    # KYTHIRA_TEST_TIMEOUT_SCALE (coap_node_cluster.hpp), ports are ephemeral.
+    # TIMEOUT >= the sum of the per-case boost budgets (60+90+120+90).
+    if(TARGET Folly::folly)
+        add_executable(coap_raft_node_integration_test coap_raft_node_integration_test.cpp)
+        target_link_libraries(coap_raft_node_integration_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+            Folly::folly
+        )
+        target_compile_features(coap_raft_node_integration_test PRIVATE cxx_std_23)
+        add_test(NAME coap_raft_node_integration_test COMMAND coap_raft_node_integration_test)
+        set_tests_properties(coap_raft_node_integration_test PROPERTIES TIMEOUT 380 LABELS "coap;integration;raft")
+    else()
+        message(STATUS "coap_raft_node_integration_test: skipped (requires Folly)")
+    endif()
     # TimeoutNow on the libcoap backend's wire: a round trip through every
     # serializer this build has, CON regardless of use_confirmable_messages,
     # and 5.01 without a handler -- coap-transport-multi-raft task 6. TIMEOUT
