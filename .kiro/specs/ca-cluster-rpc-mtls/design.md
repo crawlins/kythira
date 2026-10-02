@@ -43,7 +43,9 @@ Phase 2 — cutover finalized (every node observed the full ready set)
   Node A ──TLS (peer cert only, chains to CA root)── Node C
   Bootstrap credential's fingerprint no longer accepted for new connections
   by any node; each node's own peer cert persisted under --data-dir and
-  self-renews via POST /v1/certificates/renew before expiry.
+  self-renews before expiry (--rpc-renewal-window-secs, default 7 days):
+  followers via the leader's POST /v1/certificates/renew, the leader
+  in-process with its own signer, as it first acquired it (Requirement 5.1).
 ```
 
 ```

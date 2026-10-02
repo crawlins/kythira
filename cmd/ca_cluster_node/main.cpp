@@ -15,6 +15,7 @@
 //                    [--tls-cert <path> --tls-key <path>] [--peer-tls-ca <path>]
 //                    [--rpc-tls-cert <path> --rpc-tls-key <path>]
 //                    [--allow-plaintext-rpc] [--allow-plaintext-http]
+//                    [--rpc-renewal-window-secs <n>]
 //
 // The client bearer token comes from $CA_SERVICE_AUTH_TOKEN (--auth-token
 // still works, but leaves the token in /proc/<pid>/cmdline).
@@ -986,12 +987,10 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         }
     };
 
-    // Requirement 7.2: renew a persisted peer certificate before expiry
-    // (a fixed 7-day window — generous relative to the default 30-day
-    // leaf validity elsewhere in this project, e.g. leaf_certificate_options'
-    // own default, while still leaving multiple maintenance-thread ticks of
-    // retry room if the leader is briefly unreachable).
-    constexpr auto k_renewal_window = std::chrono::hours(24 * 7);
+    // Requirement 7.2: renew a persisted peer certificate once it is within
+    // cfg.rpc_renewal_window (--rpc-renewal-window-secs, default 7 days) of
+    // its notAfter.
+    bool warned_plaintext_renewal = false;
 
     auto maybe_renew_rpc_identity = [&] {
         if constexpr (!k_rpc_tls) {
@@ -1006,48 +1005,91 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             if (cert == nullptr) return;
             auto threshold = static_cast<std::time_t>(
                 std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) +
-                std::chrono::duration_cast<std::chrono::seconds>(k_renewal_window).count());
+                cfg.rpc_renewal_window.count());
             bool near_expiry = X509_cmp_time(X509_get0_notAfter(cert), &threshold) < 0;
             X509_free(cert);
             if (!near_expiry) return;
 
-            auto leader_id = raft_node.known_leader();
-            if (!leader_id.has_value()) return;
-            auto leader_http = cfg.http_address_for(*leader_id);
-            if (!leader_http.has_value()) return;
-            // /renew authenticates by mTLS, which a plaintext peer address
-            // cannot carry.
-            if (!leader_http->starts_with("https://")) return;
-
             auto leaf_opts = rpc_peer_identity_options(cfg.node_id);
             auto csr = raft::testing::generate_key_and_csr(leaf_opts);
+            std::string new_cert_pem;
 
-            std::unique_ptr<httplib::Client> renew_client;
-            try {
-                renew_client = make_peer_client(*leader_http, cfg, rpc_peer_cert_path(cfg.data_dir),
-                                                rpc_peer_key_path(cfg.data_dir));
-            } catch (const std::exception&) {
-                return;
-            }
-            renew_client->set_connection_timeout(5, 0);
-            renew_client->set_read_timeout(30, 0);
+            if (raft_node.is_leader()) {
+                // The leader has no leader to call /renew on —
+                // http_address_for() never names this node itself — so it
+                // used to skip renewal entirely, and a long-serving
+                // leader's peer certificate simply expired. It signs its
+                // own renewal in-process instead, exactly as it acquired
+                // the original (Requirement 5.1), ledger record included.
+                raft::testing::csr_signing_options sign_opts;
+                sign_opts.dns_names = leaf_opts.dns_names;
+                sign_opts.server_auth = leaf_opts.server_auth;
+                sign_opts.client_auth = leaf_opts.client_auth;
+                try {
+                    new_cert_pem = acquire_rpc_peer_certificate(raft_node, cfg, signer_mu, signer,
+                                                                csr.csr_pem, sign_opts)
+                                       .certificate_pem;
+                } catch (const std::exception& ex) {
+                    std::cerr << "[warn] ca_cluster_node: RPC peer identity renewal failed, will "
+                                 "retry: "
+                              << ex.what() << "\n";
+                    return;
+                }
+            } else {
+                auto leader_id = raft_node.known_leader();
+                if (!leader_id.has_value()) return;
+                auto leader_http = cfg.http_address_for(*leader_id);
+                if (!leader_http.has_value()) return;
+                // /renew authenticates by mTLS, which a plaintext peer address
+                // cannot carry.
+                if (!leader_http->starts_with("https://")) {
+                    if (!warned_plaintext_renewal) {
+                        std::cerr << "[warn] ca_cluster_node: RPC peer certificate is due for "
+                                     "renewal, but the leader's client address "
+                                  << *leader_http
+                                  << " is not https:// — renewal needs the mTLS /renew route, "
+                                     "so it will not happen until the cluster serves HTTPS\n";
+                        warned_plaintext_renewal = true;
+                    }
+                    return;
+                }
 
-            boost::json::object body;
-            body["csr_pem"] = csr.csr_pem;
-            auto res = renew_client->Post("/v1/certificates/renew", boost::json::serialize(body),
-                                          "application/json");
-            if (!res || res->status != 200) {
-                std::cerr << "[warn] ca_cluster_node: RPC peer identity renewal failed, will "
-                             "retry\n";
-                return;
+                std::unique_ptr<httplib::Client> renew_client;
+                try {
+                    renew_client =
+                        make_peer_client(*leader_http, cfg, rpc_peer_cert_path(cfg.data_dir),
+                                         rpc_peer_key_path(cfg.data_dir));
+                } catch (const std::exception&) {
+                    return;
+                }
+                renew_client->set_connection_timeout(5, 0);
+                renew_client->set_read_timeout(30, 0);
+
+                boost::json::object body;
+                body["csr_pem"] = csr.csr_pem;
+                auto res = renew_client->Post("/v1/certificates/renew",
+                                              boost::json::serialize(body), "application/json");
+                if (!res || res->status != 200) {
+                    std::cerr << "[warn] ca_cluster_node: RPC peer identity renewal failed, will "
+                                 "retry\n";
+                    return;
+                }
+                try {
+                    new_cert_pem = std::string(boost::json::parse(res->body)
+                                                   .as_object()
+                                                   .at("certificate_pem")
+                                                   .as_string());
+                } catch (const std::exception& ex) {
+                    std::cerr << "[warn] ca_cluster_node: malformed /renew response, will retry: "
+                              << ex.what() << "\n";
+                    return;
+                }
             }
 
             auto trust = fetch_rpc_trust_state(raft_node, cfg);
             if (!trust.has_value()) return;
 
             try {
-                auto parsed = boost::json::parse(res->body).as_object();
-                std::string new_cert_pem = std::string(parsed.at("certificate_pem").as_string());
                 if (!issued_peer_cert_ok(new_cert_pem, trust->root_pem, cfg.node_id)) {
                     std::cerr << "[warn] ca_cluster_node: renewed RPC peer certificate does not "
                                  "chain to the cluster root or lacks this node's peer name — "

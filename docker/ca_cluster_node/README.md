@@ -168,6 +168,14 @@ included, are recorded in the issuance ledger, and revoking one
 connections within one trust refresh (about five seconds). A node whose own
 peer certificate is revoked enrolls a fresh key.
 
+**Peer certificates renew themselves.** Each node renews its peer
+certificate once it is within `--rpc-renewal-window-secs` of expiry (default
+604800, seven days, against a 30-day validity) and hot-reloads it into the
+running RPC transport. A follower renews through the leader's mTLS
+`POST /v1/certificates/renew`, so renewal needs the client API on `https://`;
+on a plaintext API the node logs once that renewal cannot run. The leader
+signs its own renewal in-process.
+
 All nodes must run a release with these checks before any of them is
 restarted onto it: the peer key derivation and the trust-state route changed,
 so a node on the new release and one on an older release cannot enroll

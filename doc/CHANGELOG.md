@@ -29,6 +29,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
     RPC TLS refuses revoked ones. `ca_service` refuses `/renew` on a cloud
     provider, which gives it no revocation status, unless
     `--allow-unchecked-renew` is given.
+- **RPC peer certificates renew on every node, and the window is
+  configurable** (spec-gap item 10). The leader used to skip renewal, since it
+  has no leader to call `/renew` on, so a long-serving leader's peer
+  certificate simply expired; it now signs its own renewal in-process. The
+  seven-day window is `--rpc-renewal-window-secs`, and
+  `ca_cluster_node_rpc_tls_restart_test` forces every node into it and checks
+  each renews and serves the new certificate without a restart (task 13's
+  missing half, Requirements 7.2/7.3).
 - **The Alibaba Cloud spec is closed** (`.kiro/specs/alibaba-cloud-services/`,
   every task ticked, task 4 by descope). The checklist had read 3 of 12 since
   August while the tree held nearly all of it; each task is now ticked against
