@@ -90,6 +90,7 @@
 #include <mutex>
 #include <optional>
 #include <stop_token>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -135,6 +136,7 @@ namespace kythira {
 inline constexpr const char* libnyoci_request_vote_path = "/raft/request_vote";
 inline constexpr const char* libnyoci_append_entries_path = "/raft/append_entries";
 inline constexpr const char* libnyoci_install_snapshot_path = "/raft/install_snapshot";
+inline constexpr const char* libnyoci_timeout_now_path = "/raft/timeout_now";
 
 // How long the process-loop thread blocks in nyoci_plat_wait() before looking
 // at its own queues again. libnyoci has no way to interrupt its poll() from
@@ -993,7 +995,18 @@ public:
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{30000})
         -> future_template<kythira::install_snapshot_response<>> {
         return send_rpc<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
-            target, libnyoci_install_snapshot_path, request, timeout);
+            target, libnyoci_install_snapshot_path, request, timeout,
+            coap_message_reliability::always_confirmable);
+    }
+
+    /// Leadership transfer (Requirement 3). Always sent confirmable, whatever
+    /// `use_confirmable_messages` says, exactly as the libcoap client does.
+    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+                          std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::timeout_now_response<>> {
+        return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+            target, libnyoci_timeout_now_path, request, timeout,
+            coap_message_reliability::always_confirmable);
     }
 
     /// The ephemeral UDP source port libnyoci bound. Exposed for tests; 0 when
@@ -1156,7 +1169,9 @@ private:
 
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
-                  std::chrono::milliseconds timeout) -> future_template<Response> {
+                  std::chrono::milliseconds timeout,
+                  coap_message_reliability reliability = coap_message_reliability::per_config)
+        -> future_template<Response> {
         auto promise = std::make_shared<promise_template<Response>>();
         auto future = promise->getFuture();
 
@@ -1186,7 +1201,8 @@ private:
             rpc->payload = _registry.encode_with(request_media_type, request);
             rpc->request_media_type = request_media_type;
             rpc->timeout = timeout;
-            rpc->confirmable = _config.use_confirmable_messages;
+            rpc->confirmable = reliability == coap_message_reliability::always_confirmable ||
+                               _config.use_confirmable_messages;
             for (const auto& accepted : _registry.preferred_media_types()) {
                 if (const auto format =
                         kythira::coap_utils::media_type_to_coap_content_format(accepted)) {
@@ -1774,6 +1790,18 @@ public:
         _install_snapshot_handler = std::move(handler);
     }
 
+    /// Optional extension (network_server_with_timeout_now). Until one is
+    /// registered, `/raft/timeout_now` answers 5.01 Not Implemented.
+    auto register_timeout_now_handler(
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+            handler) -> void {
+        if (!handler) {
+            throw std::invalid_argument("timeout_now handler must not be empty");
+        }
+        const std::lock_guard lock(_mutex);
+        _timeout_now_handler = std::move(handler);
+    }
+
     auto start() -> void {
         if (_running.load()) {
             return;
@@ -1984,6 +2012,11 @@ private:
                     copy_handler(_install_snapshot_handler), body, request_media_type,
                     response_media_type, options);
             }
+            if (resource_path == libnyoci_timeout_now_path) {
+                return dispatch<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+                    copy_handler(_timeout_now_handler), body, request_media_type,
+                    response_media_type, options);
+            }
         } catch (const std::exception&) {
             // A handler that threw, or a body this registry could not decode.
             // Dropping the response instead would leave the peer retransmitting
@@ -2177,6 +2210,15 @@ private:
                 body = _registry.encode_with(
                     response_media_type,
                     handler(_registry.template decode_with<kythira::install_snapshot_request<>>(
+                        request_media_type, request_body)));
+            } else if (resource_path == libnyoci_timeout_now_path) {
+                auto handler = copy_handler(_timeout_now_handler);
+                if (!handler) {
+                    return respond_oscore(binding, 0xA1, 0, {});
+                }
+                body = _registry.encode_with(
+                    response_media_type,
+                    handler(_registry.template decode_with<kythira::timeout_now_request<>>(
                         request_media_type, request_body)));
             } else {
                 return respond_oscore(binding, 0x84, 0, {});  // 4.04
@@ -2411,6 +2453,8 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        _timeout_now_handler;
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};

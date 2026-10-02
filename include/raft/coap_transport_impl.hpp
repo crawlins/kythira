@@ -545,7 +545,23 @@ auto coap_client<Types>::send_install_snapshot(std::uint64_t target,
     // Send InstallSnapshot RPC using CoAP POST to /raft/install_snapshot. A
     // snapshot chunk too large for one PDU goes block-wise inside send_rpc().
     return send_rpc<install_snapshot_request<>, install_snapshot_response<>>(
-        target, "/raft/install_snapshot", request, timeout);
+        target, "/raft/install_snapshot", request, timeout,
+        coap_message_reliability::always_confirmable);
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::send_timeout_now(std::uint64_t target,
+                                          const kythira::timeout_now_request<>& request,
+                                          std::chrono::milliseconds timeout)
+    -> future_template<kythira::timeout_now_response<>> {
+    // A path beside the other three rather than an option on one of them, so
+    // the server's dispatch stays one resource per RPC and a packet capture
+    // reads the same way for every RPC. Confirmable regardless of
+    // use_confirmable_messages: see the declaration.
+    return send_rpc<timeout_now_request<>, timeout_now_response<>>(
+        target, "/raft/timeout_now", request, timeout,
+        coap_message_reliability::always_confirmable);
 }
 
 // CoAP server implementation
@@ -768,6 +784,24 @@ auto coap_server<Types>::register_install_snapshot_handler(
         // Re-setup resources to include the new handler
         setup_resources();
     }
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::register_timeout_now_handler(
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler)
+    -> void {
+    std::lock_guard lock(_mutex);
+
+    if (!handler) {
+        throw coap_transport_error("TimeoutNow handler cannot be null");
+    }
+
+    _timeout_now_handler = std::move(handler);
+
+    // The /raft/timeout_now resource is registered by setup_resources() with
+    // the other three and dispatches through this member, so a handler
+    // registered after start() is picked up without re-registering anything.
 }
 
 template<typename Types>
@@ -2423,6 +2457,7 @@ requires kythira::transport_types<Types>
 template<typename Request, typename Response>
 auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resource_path,
                                   const Request& request, std::chrono::milliseconds timeout,
+                                  coap_message_reliability reliability,
                                   std::vector<std::string> attempted) -> future_template<Response> {
     // Generic RPC sending implementation with comprehensive error handling
 
@@ -2527,10 +2562,12 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         }
 
         // Create CoAP PDU with proper size calculation
+        const bool confirmable = reliability == coap_message_reliability::always_confirmable ||
+                                 _config.use_confirmable_messages;
         size_t pdu_size = coap_session_max_pdu_size(session);
         coap_pdu_t* pdu =
-            coap_pdu_init(_config.use_confirmable_messages ? COAP_MESSAGE_CON : COAP_MESSAGE_NON,
-                          COAP_REQUEST_CODE_POST, coap_new_message_id(session), pdu_size);
+            coap_pdu_init(confirmable ? COAP_MESSAGE_CON : COAP_MESSAGE_NON, COAP_REQUEST_CODE_POST,
+                          coap_new_message_id(session), pdu_size);
 
         if (!pdu) {
             coap_session_release(session);
@@ -2696,7 +2733,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                     }
                 },
                 [promise](std::exception_ptr ex) { promise->setException(ex); }, serialized_request,
-                endpoint_uri, resource_path, _config.use_confirmable_messages);
+                endpoint_uri, resource_path, confirmable);
 
             _pending_requests[token] = std::move(pending_msg);
         }
@@ -2768,7 +2805,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         // 4.5, pinned by coap_negotiation_failure_test), so the peer did no
         // work. Bounded because `attempted` only grows.
         return std::move(future).thenError(
-            [this, target, resource_path, request, timeout, request_media_type,
+            [this, target, resource_path, request, timeout, reliability, request_media_type,
              attempted](std::exception_ptr e) mutable -> future_template<Response> {
                 try {
                     std::rethrow_exception(e);
@@ -2795,7 +2832,8 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                             retry_metric.add_one();
                             retry_metric.emit();
                             return send_rpc<Request, Response>(target, resource_path, request,
-                                                               timeout, std::move(attempted));
+                                                               timeout, reliability,
+                                                               std::move(attempted));
                         }
                     }
                 } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -2994,6 +3032,42 @@ auto coap_server<Types>::setup_resources() -> void {
         throw coap_transport_error("Failed to create InstallSnapshot resource");
     }
 
+    // Register /raft/timeout_now. Small and rare -- one message per leadership
+    // transfer -- so no block-wise attributes, unlike the two above. Registered
+    // whether or not a handler is yet: an unregistered handler answers 5.01,
+    // which a client can tell apart from the 4.04 an unknown path gets.
+    coap_resource_t* tn_resource =
+        coap_resource_init(coap_make_str_const("raft/timeout_now"), raft_resource_flags);
+    if (tn_resource) {
+        coap_register_handler(
+            tn_resource, COAP_REQUEST_POST,
+            [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
+               const coap_string_t* query, coap_pdu_t* response) -> void {
+                auto* server =
+                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                if (server && server->_timeout_now_handler) {
+                    server->template handle_rpc_resource<timeout_now_request<>,
+                                                         timeout_now_response<>>(
+                        resource, session, request, query, response, server->_timeout_now_handler);
+                } else {
+                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_NOT_IMPLEMENTED);
+                    if (server) {
+                        server->_logger.warning("TimeoutNow handler not registered");
+                    }
+                }
+            });
+
+        coap_resource_set_userdata(tn_resource, this);
+        coap_add_resource(_coap_context, tn_resource);
+
+        _logger.info("Registered TimeoutNow resource with libcoap",
+                     {{"resource_path", "/raft/timeout_now"},
+                      {"handler_registered", _timeout_now_handler ? "true" : "false"}});
+    } else {
+        _logger.error("Failed to create TimeoutNow resource");
+        throw coap_transport_error("Failed to create TimeoutNow resource");
+    }
+
     // No explicit catch-all handler is registered for unknown resources:
     // libcoap already responds 4.04 Not Found by default when a request's
     // URI-Path doesn't match any registered resource. An earlier version of
@@ -3008,8 +3082,8 @@ auto coap_server<Types>::setup_resources() -> void {
         "libcoap not available, using stub resource setup",
         {{"request_vote_handler", _request_vote_handler ? "registered" : "not_registered"},
          {"append_entries_handler", _append_entries_handler ? "registered" : "not_registered"},
-         {"install_snapshot_handler",
-          _install_snapshot_handler ? "registered" : "not_registered"}});
+         {"install_snapshot_handler", _install_snapshot_handler ? "registered" : "not_registered"},
+         {"timeout_now_handler", _timeout_now_handler ? "registered" : "not_registered"}});
 #endif
 
     // Log block transfer configuration

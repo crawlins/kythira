@@ -1900,6 +1900,30 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     else()
         message(STATUS "coap_duplicate_detection_property_test: skipped (requires Folly)")
     endif()
+    # TimeoutNow on the libcoap backend's wire: a round trip through every
+    # serializer this build has, CON regardless of use_confirmable_messages,
+    # and 5.01 without a handler -- coap-transport-multi-raft task 6. TIMEOUT
+    # covers up to four serializer instantiations plus two cases at 30s each.
+    if(TARGET Folly::folly)
+        add_executable(coap_timeout_now_test coap_timeout_now_test.cpp)
+        target_link_libraries(coap_timeout_now_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        if(PROTOBUF_SERIALIZER_FOUND)
+            target_compile_definitions(coap_timeout_now_test PRIVATE KYTHIRA_COAP_TEST_HAS_PROTOBUF)
+            target_link_libraries(coap_timeout_now_test PRIVATE raft_protobuf_serializer)
+        endif()
+        if(TARGET raft_ion_serializer)
+            target_link_libraries(coap_timeout_now_test PRIVATE raft_ion_serializer)
+        endif()
+        target_compile_features(coap_timeout_now_test PRIVATE cxx_std_23)
+        add_test(NAME coap_timeout_now_test COMMAND coap_timeout_now_test)
+        set_tests_properties(coap_timeout_now_test PROPERTIES TIMEOUT 190 LABELS "coap;integration")
+    else()
+        message(STATUS "coap_timeout_now_test: skipped (requires Folly)")
+    endif()
     # CoAP DTLS connection establishment property test needs Boost.JSON
     if(TARGET Folly::folly)
         add_executable(coap_dtls_connection_establishment_property_test coap_dtls_connection_establishment_property_test.cpp)
