@@ -2812,8 +2812,16 @@ auto coap_server<Types>::setup_resources() -> void {
         return;
     }
 
+    // Under OSCORE, libcoap still serves a plaintext request to a resource
+    // unless the resource says otherwise, so a server configured for OSCORE
+    // answered unprotected RPCs from anyone who could reach the port. The
+    // flag makes libcoap refuse them (4.01) before any handler runs.
+    const int raft_resource_flags =
+        _config.security.mode == coap_auth_mode::oscore ? COAP_RESOURCE_FLAGS_OSCORE_ONLY : 0;
+
     // Register /raft/request_vote resource
-    coap_resource_t* rv_resource = coap_resource_init(coap_make_str_const("raft/request_vote"), 0);
+    coap_resource_t* rv_resource =
+        coap_resource_init(coap_make_str_const("raft/request_vote"), raft_resource_flags);
     if (rv_resource) {
         // Set resource handler with proper C-style callback that calls our member function
         coap_register_handler(
@@ -2848,7 +2856,7 @@ auto coap_server<Types>::setup_resources() -> void {
 
     // Register /raft/append_entries resource with block transfer support
     coap_resource_t* ae_resource =
-        coap_resource_init(coap_make_str_const("raft/append_entries"), 0);
+        coap_resource_init(coap_make_str_const("raft/append_entries"), raft_resource_flags);
     if (ae_resource) {
         coap_register_handler(
             ae_resource, COAP_REQUEST_POST,
@@ -2896,7 +2904,7 @@ auto coap_server<Types>::setup_resources() -> void {
 
     // Register /raft/install_snapshot resource with block transfer support
     coap_resource_t* is_resource =
-        coap_resource_init(coap_make_str_const("raft/install_snapshot"), 0);
+        coap_resource_init(coap_make_str_const("raft/install_snapshot"), raft_resource_flags);
     if (is_resource) {
         coap_register_handler(
             is_resource, COAP_REQUEST_POST,
@@ -7834,6 +7842,16 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
                           {{"protocol", "DTLS"},
                            {"certificate_validation",
                             _config.enable_certificate_validation ? "enabled" : "disabled"}});
+        }
+    } else if (_config.security.mode == coap_auth_mode::oscore && _security_provider) {
+        // The path every RPC takes. Without this branch an OSCORE-configured
+        // client opened a plain session here and sent every request in the
+        // clear: the provider's create_client_session() was reachable only
+        // from the session pool's own path, which send_rpc does not use.
+        session = _security_provider->create_client_session(_coap_context, nullptr, dst_addr,
+                                                            COAP_PROTO_UDP);
+        if (session) {
+            _logger.debug("Created new OSCORE session", {{"protocol", "UDP"}});
         }
     } else {
         // Create regular UDP session
