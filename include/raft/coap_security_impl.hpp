@@ -23,6 +23,8 @@
 
 #include <raft/coap_security.hpp>
 #include <raft/coap_transport.hpp>
+#include <raft/oscore.hpp>
+#include <raft/oscore_sequence_store.hpp>
 
 #include <cstring>
 #include <iomanip>
@@ -416,7 +418,10 @@ private:
 class oscore_provider final : public coap_security_provider {
 public:
     oscore_provider(oscore_credentials creds, coap_security_role role)
-        : _creds(std::move(creds)), _role(role) {}
+        : _creds(std::move(creds)),
+          _role(role),
+          _sequence{oscore::sequence_store_for(_creds.sequence_state_dir),
+                    oscore::security_context::state_key(_creds, "SSN", _creds.sender_id, {})} {}
 
     auto configure_session(coap_context_t* ctx) -> void override {
 #ifdef LIBCOAP_AVAILABLE
@@ -485,7 +490,38 @@ public:
     [[nodiscard]] auto credentials() const -> const oscore_credentials& { return _creds; }
 
 private:
+    // Where this provider's libcoap contexts take their Sender Sequence
+    // Numbers from: the same store and key a security_context built from these
+    // credentials would use. Outlives every libcoap context it is handed to,
+    // since the transports free their coap_context_t before their provider.
+    struct sequence_state {
+        std::shared_ptr<oscore::sequence_store> store;
+        std::string key;
+    };
+
+    // Numbers reserved per libcoap OSCORE context. libcoap counts on its own
+    // from the start it is given and cannot be capped, so each context gets a
+    // block large enough that it is not expected to run past it: 2^24 messages
+    // to one peer, and 2^16 contexts before the 40-bit space is spent.
+    static constexpr std::uint64_t libcoap_context_block = std::uint64_t{1} << 24;
+
 #ifdef LIBCOAP_AVAILABLE
+    // libcoap's coap_oscore_save_seq_num_t: called with a value at or above
+    // every Sender Sequence Number the context has used, every ssn_freq
+    // numbers. Inside the reserved block this writes nothing; past it, it
+    // keeps the durable high-water above what was used, so a restart still
+    // starts beyond it.
+    static auto save_sequence(uint64_t sender_seq_num, void* param) -> int {
+        auto* state = static_cast<sequence_state*>(param);
+        try {
+            state->store->raise_to(
+                state->key, oscore::memory_sequence_store::saturating_add(sender_seq_num, 1));
+            return 1;
+        } catch (...) {
+            return 0;
+        }
+    }
+
     static auto check_capability() -> void {
         if (coap_oscore_is_supported() == 0) {
             throw coap_unsupported_security_mode_error(coap_auth_mode::oscore,
@@ -502,23 +538,25 @@ private:
         conf_text << "sender_id,hex,\"" << detail::bytes_to_hex(_creds.sender_id) << "\"\n";
         conf_text << "recipient_id,hex,\"" << detail::bytes_to_hex(_creds.recipient_id) << "\"\n";
         conf_text << "aead_alg,text,\"" << _creds.aead_algorithm << "\"\n";
-        // RFC8613 Appendix B.1.2's "server rebooting replay window" mode
-        // (libcoap default: true) has the server challenge a peer it has no
-        // replay-window state for with a 4.01 + Echo option, expecting the
-        // client to resend the exact same request with that Echo option
-        // copied in. coap_security_provider's protect()/unprotect() hooks
-        // are identity passthroughs (see the class comment above) — there
-        // is no per-PDU hook here to implement that transparently — so
-        // disable it rather than have every oscore_provider client
-        // silently fail its first contact with a freshly-started server.
-        // Ordinary in-session replay protection (replay_window, default 32)
-        // is unaffected.
-        conf_text << "rfc8613_b_1_2,bool,false\n";
+        // RFC 8613 Appendix B.1.2 stays on (libcoap's default). It is not
+        // optional: libcoap's server only runs its replay window once a
+        // recipient has answered an Echo challenge, so with it off every
+        // request is accepted however often it is replayed. The challenge is
+        // a 4.01 + Echo on first contact, which libcoap's own client answers
+        // by resending with the Echo option, below this provider. It is also
+        // what makes a restarted server safe: its window starts empty, and the
+        // Echo round trip re-establishes it before anything is accepted.
+        conf_text << "rfc8613_b_1_2,bool,true\n";
+        // RFC 8613 Appendix B.1.1: start above every number this key has
+        // used, in this process or before a restart, instead of at zero.
+        conf_text << "ssn_freq,integer," << _sequence.store->sequence_block() << "\n";
         auto text = conf_text.str();
         coap_str_const_t conf_mem;
         conf_mem.s = reinterpret_cast<const uint8_t*>(text.c_str());
         conf_mem.length = text.size();
-        auto* conf = coap_new_oscore_conf(conf_mem, nullptr, nullptr, 0);
+        const auto start = _sequence.store->reserve(_sequence.key, libcoap_context_block);
+        auto* conf = coap_new_oscore_conf(conf_mem, &oscore_provider::save_sequence,
+                                          const_cast<sequence_state*>(&_sequence), start);
         if (conf == nullptr) {
             throw coap_security_error("Failed to parse OSCORE configuration");
         }
@@ -527,6 +565,7 @@ private:
 #endif
     oscore_credentials _creds;
     coap_security_role _role;
+    sequence_state _sequence;
 };
 
 // ── factory ────────────────────────────────────────────────────────────────

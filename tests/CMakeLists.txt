@@ -5791,6 +5791,22 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_test(NAME oscore_transport_neutral_test COMMAND oscore_transport_neutral_test)
     set_tests_properties(oscore_transport_neutral_test PROPERTIES
         TIMEOUT 60 LABELS "oscore;security;unit")
+
+    # The OSCORE state that must outlive a Security Context: the Sender Sequence
+    # Number (never reissued across contexts or restarts) and the replay window
+    # (moved only by authenticated requests, and not forgotten on restart).
+    add_executable(oscore_sequence_state_test oscore_sequence_state_test.cpp)
+    target_link_libraries(oscore_sequence_state_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+    )
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(oscore_sequence_state_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    target_compile_features(oscore_sequence_state_test PRIVATE cxx_std_23)
+    add_test(NAME oscore_sequence_state_test COMMAND oscore_sequence_state_test)
+    set_tests_properties(oscore_sequence_state_test PROPERTIES
+        TIMEOUT 60 LABELS "oscore;security;unit")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 
 # ── Test-timeout scaling for slow build configurations ───────────────────────

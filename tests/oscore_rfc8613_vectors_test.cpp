@@ -11,6 +11,7 @@
 #include <raft/oscore.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -352,7 +353,11 @@ BOOST_AUTO_TEST_CASE(test_c4_protected_request_matches_byte_for_byte) {
 
 BOOST_AUTO_TEST_CASE(test_c4_request_verifies_on_the_server) {
     namespace osc = kythira::oscore;
-    osc::security_context server{c1_server_credentials()};
+    // A store of its own: accepting the vector's Partial IV 20 raises the
+    // replay floor, which would otherwise refuse the low Partial IVs the
+    // in-process clients of later cases send under the same credentials.
+    osc::security_context server{c1_server_credentials(),
+                                 std::make_shared<osc::memory_sequence_store>()};
 
     const auto protected_message = osc::parse_message(
         from_hex("44025d1f00003974396c6f63616c686f7374620914ff612f1092f1776f1c1668b3825e"));

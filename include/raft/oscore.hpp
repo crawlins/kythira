@@ -49,6 +49,7 @@
 
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
+#include <raft/oscore_sequence_store.hpp>
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -842,7 +843,16 @@ struct split_options {
 /// the one catastrophic failure mode of an AEAD like AES-CCM.
 class security_context {
 public:
-    explicit security_context(const oscore_credentials& credentials) {
+    explicit security_context(const oscore_credentials& credentials)
+        : security_context(credentials, sequence_store_for(credentials.sequence_state_dir)) {}
+
+    /// As above, keeping the Sender Sequence Number and replay floor in
+    /// `store` instead of the one `credentials.sequence_state_dir` selects.
+    security_context(const oscore_credentials& credentials, std::shared_ptr<sequence_store> store)
+        : _store(std::move(store)) {
+        if (!_store) {
+            throw coap_security_config_error("OSCORE: a sequence store is required");
+        }
         if (credentials.aead_algorithm != "AES-CCM-16-64-128") {
             throw coap_security_config_error(
                 "OSCORE: only AES-CCM-16-64-128 is implemented, not '" +
@@ -869,6 +879,30 @@ public:
         _common_iv = hkdf_sha256(credentials.master_salt, credentials.master_secret,
                                  build_info({}, _id_context, _alg, "IV", aead_nonce_length),
                                  aead_nonce_length);
+        _sender_state_key = state_key(credentials, "SSN", _sender_id, _id_context);
+        _replay_state_key = state_key(credentials, "replay", _recipient_id, _id_context);
+        _replay_floor = _store->load(_replay_state_key);
+        _replay_persisted = _replay_floor;
+    }
+
+    /// The name a context's counters go by in its `sequence_store`: an HKDF of
+    /// the Master Secret over the role and the IDs, so two contexts share a
+    /// counter exactly when they share a key, and the store's file names give
+    /// away neither the IDs nor the secret. A rotated Master Secret starts
+    /// fresh counters, as it should.
+    [[nodiscard]] static auto state_key(const oscore_credentials& credentials,
+                                        std::string_view role, std::span<const std::byte> id,
+                                        std::span<const std::byte> id_context) -> std::string {
+        auto info = build_info(id, id_context, aead_alg_aes_ccm_16_64_128, role, 16);
+        const auto digest =
+            hkdf_sha256(credentials.master_salt, credentials.master_secret, info, 16);
+        static constexpr std::string_view hex = "0123456789abcdef";
+        std::string out = "oscore-" + std::string(role) + "-";
+        for (const auto byte : digest) {
+            out.push_back(hex[std::to_integer<unsigned>(byte) >> 4U]);
+            out.push_back(hex[std::to_integer<unsigned>(byte) & 0x0FU]);
+        }
+        return out;
     }
 
     // ── Client side ────────────────────────────────────────────────────────
@@ -1062,15 +1096,29 @@ public:
 
     /// Forces the next Partial IV, so a test can reproduce a published vector.
     /// Not for production use: rewinding a sequence number reuses a nonce.
+    /// Detaches the sender from its store, so the numbers that follow are
+    /// neither reserved nor persisted.
     auto set_sender_sequence_for_testing(std::uint64_t sequence) -> void {
         const std::lock_guard lock(_mutex);
         _sender_sequence = sequence;
+        _sender_reserved_end = max_sender_sequence + 1;
     }
 
 private:
+    static constexpr std::uint64_t max_sender_sequence = 0xFFFFFFFFFFULL;
+
     [[nodiscard]] auto next_sequence() const -> std::uint64_t {
         const std::lock_guard lock(_mutex);
-        if (_sender_sequence > 0xFFFFFFFFFFULL) {
+        if (_sender_sequence >= _sender_reserved_end) {
+            // RFC 8613 Appendix B.1.1: a block is durably reserved before its
+            // first number is used, so nothing issued here can be issued again
+            // -- by a restart, or by another context on the same key. A failed
+            // reservation throws and issues nothing.
+            const auto block = _store->sequence_block();
+            _sender_sequence = _store->reserve(_sender_state_key, block);
+            _sender_reserved_end = memory_sequence_store::saturating_add(_sender_sequence, block);
+        }
+        if (_sender_sequence > max_sender_sequence) {
             // RFC 8613 Section 7.2.1: when the sequence space is exhausted the
             // context MUST NOT be used again. Refusing beats wrapping.
             throw coap_security_error(
@@ -1090,10 +1138,18 @@ private:
 
     /// Records an authenticated `sequence` in the window, re-checking it first:
     /// two copies of one request can both pass `check_replay` and both verify,
-    /// and only one of them may be accepted.
+    /// and only one of them may be accepted. The floor is persisted before the
+    /// window moves, so a store failure rejects the request rather than
+    /// accepting one a restart would forget.
     auto record_replay(std::uint64_t sequence) -> void {
         const std::lock_guard lock(_mutex);
         check_replay_locked(sequence);
+        if (sequence >= _replay_persisted) {
+            const auto floor =
+                memory_sequence_store::saturating_add(sequence, _store->replay_block());
+            _store->raise_to(_replay_state_key, floor);
+            _replay_persisted = floor;
+        }
         if (!_seen_any) {
             _seen_any = true;
             _replay_high = sequence;
@@ -1111,6 +1167,11 @@ private:
     }
 
     auto check_replay_locked(std::uint64_t sequence) const -> void {
+        if (sequence < _replay_floor) {
+            // Appendix B.1.1's recipient half: everything below the floor may
+            // have been accepted before this context was built.
+            throw verification_error("Partial IV predates the persisted replay floor");
+        }
         if (!_seen_any || sequence > _replay_high) {
             return;
         }
@@ -1181,7 +1242,17 @@ private:
     int _alg{aead_alg_aes_ccm_16_64_128};
 
     mutable std::mutex _mutex;
+    std::shared_ptr<sequence_store> _store;
+    std::string _sender_state_key;
+    std::string _replay_state_key;
     mutable std::uint64_t _sender_sequence{0};
+    // One past the last number of the reserved block; 0 so the first send
+    // reserves.
+    mutable std::uint64_t _sender_reserved_end{0};
+    // Partial IVs below this were possibly accepted by an earlier context.
+    std::uint64_t _replay_floor{0};
+    // What the store holds: the floor a restart would load.
+    std::uint64_t _replay_persisted{0};
     std::uint64_t _replay_high{0};
     std::uint64_t _replay_bitmap{0};
     bool _seen_any{false};
