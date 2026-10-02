@@ -28,7 +28,7 @@ services:
     # (up to ~30s) would force the test to oversleep.
     command: ["--search.latencyOffset=1s"]
     ports:
-      - "8429:8428"   # HTTP API (import + query), for the test's assertions
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8429:8428"   # HTTP API (import + query), for the test's assertions
     networks:
       - victoriametrics-metrics-net
 
@@ -39,7 +39,7 @@ services:
     container_name: victoriametrics-metrics-test-victorialogs
     hostname: victorialogs
     ports:
-      - "9429:9428"   # LogsQL query API, for the test's assertions
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9429:9428"   # LogsQL query API, for the test's assertions
     networks:
       - victoriametrics-metrics-net
 
@@ -66,7 +66,7 @@ services:
       VICTORIAMETRICS_ENDPOINT: "http://victoriametrics:8428"
       VICTORIALOGS_ENDPOINT: "http://victorialogs:9428"
     ports:
-      - "8093:8080"   # HTTP control plane
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8093:8080"   # HTTP control plane
     depends_on:
       - victoriametrics
       - victorialogs

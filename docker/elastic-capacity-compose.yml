@@ -73,9 +73,9 @@ services:
     volumes:
       - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     ports:
-      - "${NODE1_DATA_PORT:-27101}:7001"
-      - "${NODE1_CONTROL_PORT:-27201}:7002"
-      - "${CAPACITY_PUBLISHED_PORT:-27003}:7003"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE1_DATA_PORT:-27101}:7001"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE1_CONTROL_PORT:-27201}:7002"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${CAPACITY_PUBLISHED_PORT:-27003}:7003"
     networks:
       - capacity_net
 
@@ -92,8 +92,8 @@ services:
       CAPACITY_ROLE: "member"
       CAPACITY_CONTROLLER: "kythira-${CAPACITY_CLUSTER}-1:7003"
     ports:
-      - "${NODE2_DATA_PORT:-27102}:7001"
-      - "${NODE2_CONTROL_PORT:-27202}:7002"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE2_DATA_PORT:-27102}:7001"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE2_CONTROL_PORT:-27202}:7002"
     networks:
       - capacity_net
 
@@ -110,8 +110,8 @@ services:
       CAPACITY_ROLE: "member"
       CAPACITY_CONTROLLER: "kythira-${CAPACITY_CLUSTER}-1:7003"
     ports:
-      - "${NODE3_DATA_PORT:-27103}:7001"
-      - "${NODE3_CONTROL_PORT:-27203}:7002"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE3_DATA_PORT:-27103}:7001"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:${NODE3_CONTROL_PORT:-27203}:7002"
     networks:
       - capacity_net
 

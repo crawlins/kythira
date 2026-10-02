@@ -57,7 +57,7 @@ services:
       TELEGRAF_PROTOCOL: "udp"
       TELEGRAF_LOGS: "on"   # Logging leg: log events on the same listener.
     ports:
-      - "8094:8080"   # HTTP control plane
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8094:8080"   # HTTP control plane
     depends_on:
       - telegraf
     networks:

@@ -66,7 +66,7 @@ services:
     volumes:
       - ./prometheus/prometheus-remote-write.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - "9097:9090"   # query API, for the test's assertions
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9097:9090"   # query API, for the test's assertions
     networks:
       - prometheus-remote-write-net
 
@@ -86,7 +86,7 @@ services:
       ALIBABA_CLOUD_ACCESS_KEY_ID: "not-a-real-access-key-id"
       ALIBABA_CLOUD_ACCESS_KEY_SECRET: "not-a-real-access-key-secret"
     ports:
-      - "4319:4318"   # OTLP/HTTP, for the test to post its probe into
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:4319:4318"   # OTLP/HTTP, for the test to post its probe into
     depends_on:
       - prometheus
     networks:

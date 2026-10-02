@@ -66,8 +66,8 @@ services:
       SERIALIZER: "json"
       PERSISTENCE: "memory"
     ports:
-      - "17001:7001"   # data path
-      - "17002:7002"   # control surface — a SEPARATE port, deliberately
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:17001:7001"   # data path
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:17002:7002"   # control surface — a SEPARATE port, deliberately
     networks:
       - raft_net
 
@@ -89,8 +89,8 @@ services:
       SERIALIZER: "json"
       PERSISTENCE: "memory"
     ports:
-      - "27001:7001"
-      - "27002:7002"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:27001:7001"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:27002:7002"
     networks:
       - raft_net
 
@@ -112,8 +112,8 @@ services:
       SERIALIZER: "json"
       PERSISTENCE: "memory"
     ports:
-      - "37001:7001"
-      - "37002:7002"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:37001:7001"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:37002:7002"
     networks:
       - raft_net
 

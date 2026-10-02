@@ -50,9 +50,9 @@ services:
       # leave the healing tests waiting minutes for that.
       QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
     ports:
-      - "7101:7000"
-      - "8181:8080"
-      - "9101:9000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7101:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8181:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9101:9000"
     volumes:
       - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     cap_add:
@@ -94,9 +94,9 @@ services:
       # leave the healing tests waiting minutes for that.
       QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
     ports:
-      - "7102:7000"
-      - "8182:8080"
-      - "9102:9000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7102:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8182:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9102:9000"
     volumes:
       - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     cap_add:
@@ -138,9 +138,9 @@ services:
       # leave the healing tests waiting minutes for that.
       QUORUM_CHECK_INTERVAL_MS: "${QUORUM_CHECK_INTERVAL_MS:-5000}"
     ports:
-      - "7103:7000"
-      - "8183:8080"
-      - "9103:9000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7103:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8183:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9103:9000"
     volumes:
       - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     cap_add:
