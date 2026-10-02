@@ -189,6 +189,22 @@ private:
     coap_auth_mode _mode;
 };
 
+// The Requirement 7.2 decision, apart from the libcoap calls that feed it so
+// it can be tested without a libcoap built without DTLS. `flavour` names the
+// DTLS credential type ("PSK", "PKI" or "RPK"). Throws, naming the mode and
+// what is missing, if the linked libcoap has no DTLS at all or lacks that
+// credential type.
+inline auto require_dtls_capability(coap_auth_mode mode, const std::string& flavour,
+                                    bool dtls_supported, bool flavour_supported) -> void {
+    if (!dtls_supported) {
+        throw coap_unsupported_security_mode_error(mode, "DTLS not compiled into linked libcoap");
+    }
+    if (!flavour_supported) {
+        throw coap_unsupported_security_mode_error(
+            mode, "DTLS-" + flavour + " not supported by linked libcoap's TLS library");
+    }
+}
+
 // Raised when EDHOC or ACE-OAuth credential provisioning fails, before any
 // coap_security_provider is ever constructed for the target mode
 // (Requirements 5.4, 6.3).

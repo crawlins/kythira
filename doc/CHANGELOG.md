@@ -16,6 +16,10 @@ current list of outstanding work, see [TODO.md](TODO.md).
 - **The read-write build-cache key is main-only.** It moves from a repository
   secret to the `build-cache-write` environment, which only `main` may use;
   other refs, and real-cloud jobs on `main`, read with the read-only key.
+- **DTLS modes check the linked libcoap first** (Requirement 7.2). A libcoap
+  without DTLS, or without the configured credential type, now fails at
+  construction with `coap_unsupported_security_mode_error`, where it used to
+  fail every handshake instead.
 - **The ECS task definitions pin their image by digest instead of
   `:latest`** (`docker/ca_service/ecs-task-definition.json`,
   `docker/ca_cluster_node/ecs-task-definitions/*.json`). A mutable tag let

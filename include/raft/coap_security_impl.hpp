@@ -134,6 +134,29 @@ inline auto libcoap_cipher_list_hook(void* tls_session, coap_dtls_pki_t* /*setup
     }
     return SSL_CTX_set_cipher_list(SSL_get_SSL_CTX(ssl), list.c_str()) == 1;
 }
+// Requirement 7.2: asks the linked libcoap whether it can do DTLS with this
+// credential type at all, before any context or session is touched. A libcoap
+// built without DTLS otherwise accepts the credentials and then fails every
+// handshake, or never starts one.
+inline auto check_dtls_capability(coap_auth_mode mode, coap_auth_mode flavour) -> void {
+    switch (flavour) {
+        case coap_auth_mode::dtls_psk:
+            require_dtls_capability(mode, "PSK", coap_dtls_is_supported() != 0,
+                                    coap_dtls_psk_is_supported() != 0);
+            return;
+        case coap_auth_mode::dtls_pki:
+            require_dtls_capability(mode, "PKI", coap_dtls_is_supported() != 0,
+                                    coap_dtls_pki_is_supported() != 0);
+            return;
+        case coap_auth_mode::dtls_rpk:
+            require_dtls_capability(mode, "RPK", coap_dtls_is_supported() != 0,
+                                    coap_dtls_rpk_is_supported() != 0);
+            return;
+        case coap_auth_mode::none:
+        case coap_auth_mode::oscore:
+            return;
+    }
+}
 #endif
 
 inline auto bytes_to_hex(const std::vector<std::byte>& bytes) -> std::string {
@@ -192,6 +215,7 @@ public:
 
     auto configure_session(coap_context_t* ctx) -> void override {
 #ifdef LIBCOAP_AVAILABLE
+        detail::check_dtls_capability(coap_auth_mode::dtls_psk, coap_auth_mode::dtls_psk);
         if (_role == coap_security_role::client) {
             if (coap_context_set_psk(ctx, _creds.identity.c_str(),
                                      reinterpret_cast<const uint8_t*>(_creds.key.data()),
@@ -278,6 +302,7 @@ public:
 
     auto configure_session(coap_context_t* ctx) -> void override {
 #ifdef LIBCOAP_AVAILABLE
+        detail::check_dtls_capability(coap_auth_mode::dtls_pki, coap_auth_mode::dtls_pki);
         coap_dtls_pki_t pki_config;
         std::memset(&pki_config, 0, sizeof(pki_config));
         pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;
@@ -408,13 +433,14 @@ public:
         // hard-coded 0 there. coap_context_set_pki() still accepts the
         // config, so without this check an RPK transport constructs cleanly
         // and then fails every handshake.
-        if (coap_dtls_rpk_is_supported() == 0) {
+        if (coap_dtls_is_supported() != 0 && coap_dtls_rpk_is_supported() == 0) {
             throw coap_unsupported_security_mode_error(
                 coap_auth_mode::dtls_rpk,
                 "the linked libcoap's TLS backend has no raw public key (RFC 7250) support; "
                 "libcoap's OpenSSL, Mbed TLS and wolfSSL backends never have it, "
                 "its GnuTLS and TinyDTLS backends do");
         }
+        detail::check_dtls_capability(coap_auth_mode::dtls_rpk, coap_auth_mode::dtls_rpk);
         coap_dtls_pki_t pki_config;
         std::memset(&pki_config, 0, sizeof(pki_config));
         pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;

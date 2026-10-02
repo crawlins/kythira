@@ -332,6 +332,19 @@ already confirmed present in the linked library (≥4.3.2; project pins
     `coap_unsupported_security_mode_error` before any session mutation.
   - _Requirements: 9.7_
 
+- [x] 18. DTLS capability check (added 2026-10-02; Requirement 7.2 had no
+  task)
+  - Each DTLS provider and the transport's legacy DTLS path call
+    `coap_dtls_is_supported()` and the per-type
+    `coap_dtls_{psk,pki,rpk}_is_supported()` before touching the context,
+    raising `coap_unsupported_security_mode_error` naming the mode and the
+    missing capability. The decision is `require_dtls_capability()` in
+    `coap_security.hpp`.
+  - Verify: `coap_security_capability_check_test` (decision, stubbed);
+    `coap_dtls_rpk_test` (libcoap's OpenSSL backend has no RPK; Task 5's
+    RPK refusal predates this task and keeps its own message).
+  - _Requirements: 7.2, 7.3_
+
 ---
 
 ## Notes

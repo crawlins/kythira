@@ -1208,6 +1208,13 @@ auto coap_client<Types>::setup_dtls_context() -> void {
 
     // Set up DTLS context for secure communication
 #ifdef LIBCOAP_AVAILABLE
+    // Requirement 7.2 for the legacy fields too: a DTLS mode inferred from
+    // cert_file/psk_identity is checked against the linked libcoap as an
+    // explicit one is by its provider.
+    {
+        const auto inferred = translate_legacy_fields(_config).mode;
+        detail::check_dtls_capability(inferred, inferred);
+    }
     if (!_config.cert_file.empty() && !_config.key_file.empty()) {
         // Certificate-based authentication
         coap_dtls_pki_t pki_config;
@@ -3168,6 +3175,12 @@ auto coap_server<Types>::setup_dtls_context() -> void {
 #ifdef LIBCOAP_AVAILABLE
     if (!_coap_context) {
         throw coap_security_error("Cannot setup DTLS: CoAP context is null");
+    }
+    // See the client's setup_dtls_context(): Requirement 7.2 for the legacy
+    // fields.
+    {
+        const auto inferred = translate_legacy_fields(_config).mode;
+        detail::check_dtls_capability(inferred, inferred);
     }
 
     if (!_config.cert_file.empty() && !_config.key_file.empty()) {
