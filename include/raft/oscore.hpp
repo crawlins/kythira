@@ -980,11 +980,17 @@ public:
         if (fields.kid != _recipient_id) {
             throw verification_error("no Recipient Context matches the request's kid");
         }
-        check_and_record_replay(detail::decode_partial_iv(fields.partial_iv));
+        const auto sequence = detail::decode_partial_iv(fields.partial_iv);
+        // Section 7.4 orders this check before decryption, and it is only a
+        // check: an unauthenticated request must never move the window, or
+        // one forged request with a huge Partial IV locks out every genuine
+        // one. The window moves only once the tag has verified.
+        check_replay(sequence);
 
         const auto aad = build_aad(_alg, fields.kid, fields.partial_iv, {});
         const auto nonce = compute_nonce(_common_iv, fields.kid, fields.partial_iv);
         const auto plaintext = aead_decrypt(_recipient_key, nonce, aad, message.payload);
+        record_replay(sequence);
 
         binding.kid = fields.kid;
         binding.partial_iv = fields.partial_iv;
@@ -1075,9 +1081,19 @@ private:
     }
 
     /// RFC 8613 Section 7.4 / Appendix B.1.2: a sliding replay window over the
-    /// highest Partial IV seen.
-    auto check_and_record_replay(std::uint64_t sequence) -> void {
+    /// highest Partial IV seen. Throws if `sequence` would be refused; changes
+    /// nothing either way.
+    auto check_replay(std::uint64_t sequence) const -> void {
         const std::lock_guard lock(_mutex);
+        check_replay_locked(sequence);
+    }
+
+    /// Records an authenticated `sequence` in the window, re-checking it first:
+    /// two copies of one request can both pass `check_replay` and both verify,
+    /// and only one of them may be accepted.
+    auto record_replay(std::uint64_t sequence) -> void {
+        const std::lock_guard lock(_mutex);
+        check_replay_locked(sequence);
         if (!_seen_any) {
             _seen_any = true;
             _replay_high = sequence;
@@ -1091,15 +1107,20 @@ private:
             _replay_high = sequence;
             return;
         }
+        _replay_bitmap |= 1ULL << (_replay_high - sequence);
+    }
+
+    auto check_replay_locked(std::uint64_t sequence) const -> void {
+        if (!_seen_any || sequence > _replay_high) {
+            return;
+        }
         const auto age = _replay_high - sequence;
         if (age >= 64) {
             throw verification_error("Partial IV is older than the replay window");
         }
-        const std::uint64_t bit = 1ULL << age;
-        if ((_replay_bitmap & bit) != 0) {
+        if ((_replay_bitmap & (1ULL << age)) != 0) {
             throw verification_error("replayed Partial IV");
         }
-        _replay_bitmap |= bit;
     }
 
     [[nodiscard]] static auto extract_option(const coap_message& message) -> option_fields {
