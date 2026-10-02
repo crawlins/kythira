@@ -8,7 +8,8 @@
 // since the CA root itself doesn't exist before this traffic creates it),
 // wired into a real 3-node Raft cluster over loopback TCP+TLS, and
 // confirms election/replication succeeds, bootstrap_ca commits, every node
-// reaches rpc_tls_ready, cutover finalizes on all three, and — the property
+// reaches rpc_tls_ready, cutover finalizes on all three (each records it
+// under its data dir, followers included), and — the property
 // this whole spec exists to prove — the cluster keeps operating normally
 // (a certificate issuance still commits) after the bootstrap credential
 // file is deleted on disk post-cutover.
@@ -91,13 +92,15 @@ struct rpc_tls_node_process {
     std::string bootstrap_cert_path;
     std::string bootstrap_key_path;
     bool bootstrap;
-    bool with_bootstrap_cred;  // false simulates "operator omitted the flags"
+    bool with_bootstrap_cred;             // false simulates "operator omitted the flags"
+    std::vector<std::string> extra_args;  // appended to every spawn
 
     rpc_tls_node_process(std::uint64_t id, int rpc_port_, int http_port_, std::string data_dir_,
                          std::string unseal_key_file_, std::string auth_token_,
                          std::string peers_arg_, std::string bootstrap_cert_path_,
                          std::string bootstrap_key_path_, bool bootstrap_,
-                         bool with_bootstrap_cred_ = true)
+                         bool with_bootstrap_cred_ = true,
+                         std::vector<std::string> extra_args_ = {})
         : node_id(id),
           http_port(http_port_),
           rpc_port(rpc_port_),
@@ -108,7 +111,8 @@ struct rpc_tls_node_process {
           bootstrap_cert_path(std::move(bootstrap_cert_path_)),
           bootstrap_key_path(std::move(bootstrap_key_path_)),
           bootstrap(bootstrap_),
-          with_bootstrap_cred(with_bootstrap_cred_) {
+          with_bootstrap_cred(with_bootstrap_cred_),
+          extra_args(std::move(extra_args_)) {
         std::filesystem::create_directories(data_dir);
         spawn();
     }
@@ -157,6 +161,11 @@ struct rpc_tls_node_process {
             // comfortably inside this file's TIMEOUT) for headroom that
             // holds regardless of host load — this test asserts eventual
             // functional convergence, not latency.
+            // No client-API TLS listener here, so keep that API on
+            // loopback, the one plaintext case allowed without
+            // --allow-plaintext-http.
+            "--http-address",
+            "127.0.0.1",
             "--election-timeout-min-ms",
             "3000",
             "--election-timeout-max-ms",
@@ -179,6 +188,7 @@ struct rpc_tls_node_process {
             argv_strs.emplace_back("--rpc-tls-key");
             argv_strs.push_back(bootstrap_key_path);
         }
+        argv_strs.insert(argv_strs.end(), extra_args.begin(), extra_args.end());
 
         std::vector<char*> argv;
         argv.reserve(argv_strs.size() + 1);
@@ -416,6 +426,25 @@ BOOST_AUTO_TEST_CASE(bootstrap_cutover_and_survives_bootstrap_credential_deletio
     }
     BOOST_REQUIRE_MESSAGE(converged, "cluster never reached a stable, issuance-capable state");
 
+    // Every node, not only whichever one led when the last peer enrolled,
+    // must finalize the cutover (drop the bootstrap credential from its RPC
+    // trust policy) and record it, so a restart keeps it dropped. Followers
+    // learn it from the leader's peer-authenticated trust state.
+    auto all_finalized = [&] {
+        for (const auto& info : infos) {
+            if (!std::filesystem::exists(tmp_root + "/node" + std::to_string(info.id) +
+                                         "/rpc_cutover_finalized")) {
+                return false;
+            }
+        }
+        return true;
+    };
+    auto finalize_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (!all_finalized() && std::chrono::steady_clock::now() < finalize_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    BOOST_REQUIRE_MESSAGE(all_finalized(), "not every node finalized the RPC TLS cutover");
+
     // The property this whole spec exists to prove: delete the bootstrap
     // credential files entirely, then confirm the cluster keeps operating
     // normally — every node's RPC transport must by now be relying solely
@@ -426,6 +455,102 @@ BOOST_AUTO_TEST_CASE(bootstrap_cutover_and_survives_bootstrap_credential_deletio
     BOOST_REQUIRE_MESSAGE(
         try_issue_certificate(nodes, k_auth_token, std::chrono::seconds(60)),
         "certificate issuance failed after deleting the bootstrap credential post-cutover");
+
+    for (auto& n : nodes) {
+        n->stop();
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(tmp_root, ec);
+}
+
+// Peer calls (trust-state fetch, enrollment) go over each peer's https://
+// client API with the peer's certificate verified, chain and hostname,
+// against the listener root in this node's own --tls-cert bundle. They
+// used to run with verification off. Followers can only enroll and
+// finalize the cutover through those verified calls, so every node
+// recording the cutover proves they work end to end.
+BOOST_AUTO_TEST_CASE(peers_enroll_and_cut_over_over_verified_https,
+                     *boost::unit_test::timeout(550)) {
+    auto tmp_root = (std::filesystem::temp_directory_path() /
+                     ("ca_cluster_node_rpc_tls_https_test_" + std::to_string(::getpid())))
+                        .string();
+    std::filesystem::create_directories(tmp_root);
+    std::string unseal_key_file = tmp_root + "/unseal.key";
+    std::ofstream(unseal_key_file) << "rpc-tls-https-test-unseal-passphrase\n";
+
+    certificate_authority bootstrap_cred;
+    std::string bootstrap_cert_path = tmp_root + "/bootstrap.crt";
+    std::string bootstrap_key_path = tmp_root + "/bootstrap.key";
+    std::ofstream(bootstrap_cert_path) << bootstrap_cred.root_certificate_pem();
+    std::ofstream(bootstrap_key_path)
+        << detail_testing::unsafe_extract_ca_private_key_pem(bootstrap_cred);
+
+    // The operator's listener CA: one root, a leaf per node naming the
+    // address its peers dial.
+    certificate_authority listener_ca;
+
+    struct info {
+        std::uint64_t id;
+        int rpc_port;
+        int http_port;
+    };
+    std::vector<info> infos = {{1, find_free_port(), find_free_port()},
+                               {2, find_free_port(), find_free_port()},
+                               {3, find_free_port(), find_free_port()}};
+
+    std::ostringstream peers;
+    for (std::size_t i = 0; i < infos.size(); ++i) {
+        if (i > 0) {
+            peers << ",";
+        }
+        peers << infos[i].id << ":127.0.0.1:" << infos[i].rpc_port
+              << "@https://127.0.0.1:" << infos[i].http_port;
+    }
+    std::string peers_arg = peers.str();
+
+    std::vector<std::unique_ptr<rpc_tls_node_process>> nodes;
+    for (std::size_t i = 0; i < infos.size(); ++i) {
+        leaf_certificate_options opts;
+        opts.subject.common_name = "ca-node-" + std::to_string(infos[i].id);
+        opts.ip_addresses = {"127.0.0.1"};
+        opts.server_auth = true;
+        opts.client_auth = false;
+        auto leaf = listener_ca.issue(opts);
+        auto dir = tmp_root + "/listener" + std::to_string(infos[i].id);
+        std::filesystem::create_directories(dir);
+        std::ofstream(dir + "/cert.pem") << leaf.chain_pem;
+        std::ofstream(dir + "/key.pem") << leaf.private_key_pem;
+
+        nodes.push_back(std::make_unique<rpc_tls_node_process>(
+            infos[i].id, infos[i].rpc_port, infos[i].http_port,
+            tmp_root + "/node" + std::to_string(infos[i].id), unseal_key_file, k_auth_token,
+            peers_arg, bootstrap_cert_path, bootstrap_key_path, /*bootstrap=*/i == 0,
+            /*with_bootstrap_cred=*/true,
+            std::vector<std::string>{"--tls-cert", dir + "/cert.pem", "--tls-key",
+                                     dir + "/key.pem"}));
+        if (i == 0) {
+            // Let the --bootstrap-ca node win the first election (see the
+            // test above).
+            std::this_thread::sleep_for(std::chrono::milliseconds(6000));
+        }
+    }
+
+    auto all_have = [&](const std::string& file) {
+        for (const auto& info : infos) {
+            if (!std::filesystem::exists(tmp_root + "/node" + std::to_string(info.id) + "/" +
+                                         file)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(240);
+    while (!all_have("rpc_cutover_finalized") && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    BOOST_TEST(all_have("rpc_peer_cert.pem"), "not every node enrolled a peer identity");
+    BOOST_TEST(all_have("rpc_cutover_finalized"),
+               "not every node finalized the RPC TLS cutover over verified HTTPS");
 
     for (auto& n : nodes) {
         n->stop();

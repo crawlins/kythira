@@ -120,6 +120,11 @@ struct tls_rpc_trust_policy {
     // shared bootstrap credential identifies no particular node, so a
     // connection accepted through it is not bound.
     std::optional<std::map<std::string, std::uint64_t>> peer_node_ids;
+    // Serials of CA-issued certificates that must no longer be accepted
+    // through `ca_root_pem` (revoked peer identities). Chaining to the root
+    // says nothing about revocation; without this, a revoked or leaked peer
+    // certificate stayed a full Raft peer until it expired.
+    std::set<std::uint64_t> revoked_serials;
 
     // false for a null `presented` (no certificate at all — server-side
     // SSL_VERIFY_FAIL_IF_NO_PEER_CERT already rejects this case at the TLS
@@ -144,10 +149,24 @@ struct tls_rpc_trust_policy {
         }
         if (ca_root_pem.has_value() &&
             raft::testing::cert_chains_to_root(presented, *ca_root_pem)) {
+            if (is_revoked(presented)) {
+                return false;
+            }
             return !required_peer_dns_names.has_value() ||
                    raft::testing::cert_has_dns_san_in(presented, *required_peer_dns_names);
         }
         return false;
+    }
+
+    /// Whether `presented`'s serial is in `revoked_serials`. A serial that is
+    /// not a 64-bit value (this CA never issues one) counts as revoked while
+    /// any revocation is in force, so it cannot dodge the check.
+    [[nodiscard]] auto is_revoked(X509* presented) const -> bool {
+        if (revoked_serials.empty()) {
+            return false;
+        }
+        auto serial = raft::testing::cert_serial_u64(presented);
+        return !serial.has_value() || revoked_serials.contains(*serial);
     }
 
     /// The Raft node id `presented` authenticates as, if it was accepted
@@ -158,7 +177,7 @@ struct tls_rpc_trust_policy {
     [[nodiscard]] auto authenticated_node_id(X509* presented) const
         -> std::optional<std::uint64_t> {
         if (presented == nullptr || !peer_node_ids.has_value() || !ca_root_pem.has_value() ||
-            !raft::testing::cert_chains_to_root(presented, *ca_root_pem)) {
+            !raft::testing::cert_chains_to_root(presented, *ca_root_pem) || is_revoked(presented)) {
             return std::nullopt;
         }
         std::optional<std::uint64_t> found;
@@ -212,6 +231,15 @@ struct tls_rpc_trust_policy {
         return copy;
     }
 
+    /// Returns a copy that refuses CA-chained certificates with any of
+    /// `serials` (see `revoked_serials`).
+    [[nodiscard]] auto revoking_serials(std::set<std::uint64_t> serials) const
+        -> tls_rpc_trust_policy {
+        auto copy = *this;
+        copy.revoked_serials = std::move(serials);
+        return copy;
+    }
+
     /// Returns a copy that additionally requires CA-chained certificates to
     /// carry one of `names` as a DNS SAN (see `required_peer_dns_names`).
     [[nodiscard]] auto requiring_peer_names(std::set<std::string> names) const
@@ -223,15 +251,16 @@ struct tls_rpc_trust_policy {
 };
 
 [[nodiscard]] inline auto pinned_fingerprint(std::string hex) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::move(hex), std::nullopt, std::nullopt, std::nullopt};
+    return tls_rpc_trust_policy{std::move(hex), std::nullopt, std::nullopt, std::nullopt, {}};
 }
 
 [[nodiscard]] inline auto ca_root_only(std::string root_pem) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::nullopt, std::move(root_pem), std::nullopt, std::nullopt};
+    return tls_rpc_trust_policy{std::nullopt, std::move(root_pem), std::nullopt, std::nullopt, {}};
 }
 
 [[nodiscard]] inline auto either(std::string hex, std::string root_pem) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::move(hex), std::move(root_pem), std::nullopt, std::nullopt};
+    return tls_rpc_trust_policy{
+        std::move(hex), std::move(root_pem), std::nullopt, std::nullopt, {}};
 }
 
 struct tls_tcp_rpc_config {

@@ -98,10 +98,12 @@ struct cluster_node_process {
     std::string auth_token;
     std::string peers_arg;
     bool bootstrap;
-    // Appended to every spawn. These nodes have no RPC TLS material, so they
-    // bind Raft RPC to loopback, the one plaintext case ca_cluster_node
-    // allows without --allow-plaintext-rpc.
-    std::vector<std::string> extra_args{"--rpc-address", "127.0.0.1"};
+    // Appended to every spawn. These nodes have no RPC TLS material and no
+    // client-API TLS listener, so they bind both Raft RPC and the HTTP API to
+    // loopback, the one plaintext case ca_cluster_node allows without
+    // --allow-plaintext-rpc / --allow-plaintext-http.
+    std::vector<std::string> extra_args{"--rpc-address", "127.0.0.1", "--http-address",
+                                        "127.0.0.1"};
 
     cluster_node_process(std::uint64_t id, int rpc_port_, int http_port_, std::string data_dir_,
                          std::string unseal_key_file_, std::string auth_token_,
@@ -722,7 +724,7 @@ BOOST_AUTO_TEST_CASE(plaintext_rpc_refused_by_default, *boost::unit_test::timeou
     lone_node_env dir("plaintext_refused");
     cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
                               dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
-                              std::vector<std::string>{});
+                              std::vector<std::string>{"--http-address", "127.0.0.1"});
     auto code = node.wait_for_own_exit(std::chrono::seconds(15));
     BOOST_REQUIRE_MESSAGE(code.has_value(), "node did not exit; it started with plaintext RPC");
     BOOST_TEST(*code == 1);
@@ -732,9 +734,10 @@ BOOST_AUTO_TEST_CASE(plaintext_rpc_refused_on_explicit_wildcard_bind,
                      *boost::unit_test::timeout(30)) {
     scoped_plaintext_env env(nullptr);
     lone_node_env dir("plaintext_wildcard");
-    cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
-                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
-                              std::vector<std::string>{"--rpc-address", "0.0.0.0"});
+    cluster_node_process node(
+        1, find_free_port(), find_free_port(), dir.tmp_root + "/node1", dir.unseal_key_file,
+        k_auth_token, dir.peers, /*bootstrap=*/false,
+        std::vector<std::string>{"--rpc-address", "0.0.0.0", "--http-address", "127.0.0.1"});
     auto code = node.wait_for_own_exit(std::chrono::seconds(15));
     BOOST_REQUIRE(code.has_value());
     BOOST_TEST(*code == 1);
@@ -746,7 +749,7 @@ BOOST_AUTO_TEST_CASE(plaintext_rpc_env_zero_is_not_opt_in, *boost::unit_test::ti
     lone_node_env dir("plaintext_env_zero");
     cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
                               dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
-                              std::vector<std::string>{});
+                              std::vector<std::string>{"--http-address", "127.0.0.1"});
     auto code = node.wait_for_own_exit(std::chrono::seconds(15));
     BOOST_REQUIRE(code.has_value());
     BOOST_TEST(*code == 1);
@@ -756,9 +759,10 @@ BOOST_AUTO_TEST_CASE(plaintext_rpc_allowed_with_flag, *boost::unit_test::timeout
     scoped_plaintext_env env(nullptr);
     lone_node_env dir("plaintext_flag");
     int http_port = find_free_port();
-    cluster_node_process node(1, find_free_port(), http_port, dir.tmp_root + "/node1",
-                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
-                              std::vector<std::string>{"--allow-plaintext-rpc"});
+    cluster_node_process node(
+        1, find_free_port(), http_port, dir.tmp_root + "/node1", dir.unseal_key_file, k_auth_token,
+        dir.peers, /*bootstrap=*/false,
+        std::vector<std::string>{"--allow-plaintext-rpc", "--http-address", "127.0.0.1"});
     BOOST_TEST(wait_healthy(http_port, std::chrono::seconds(15)));
     node.stop();
 }
@@ -769,7 +773,7 @@ BOOST_AUTO_TEST_CASE(plaintext_rpc_allowed_with_env, *boost::unit_test::timeout(
     int http_port = find_free_port();
     cluster_node_process node(1, find_free_port(), http_port, dir.tmp_root + "/node1",
                               dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
-                              std::vector<std::string>{});
+                              std::vector<std::string>{"--http-address", "127.0.0.1"});
     BOOST_TEST(wait_healthy(http_port, std::chrono::seconds(15)));
     node.stop();
 }
@@ -780,9 +784,10 @@ BOOST_AUTO_TEST_CASE(plaintext_rpc_allowed_on_localhost_bind, *boost::unit_test:
     scoped_plaintext_env env(nullptr);
     lone_node_env dir("plaintext_localhost");
     int http_port = find_free_port();
-    cluster_node_process node(1, find_free_port(), http_port, dir.tmp_root + "/node1",
-                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
-                              std::vector<std::string>{"--rpc-address", "localhost"});
+    cluster_node_process node(
+        1, find_free_port(), http_port, dir.tmp_root + "/node1", dir.unseal_key_file, k_auth_token,
+        dir.peers, /*bootstrap=*/false,
+        std::vector<std::string>{"--rpc-address", "localhost", "--http-address", "127.0.0.1"});
     BOOST_TEST(wait_healthy(http_port, std::chrono::seconds(15)));
     node.stop();
 }
@@ -801,7 +806,8 @@ BOOST_AUTO_TEST_CASE(unusable_rpc_address_rejected, *boost::unit_test::timeout(3
 }
 
 // --http-address picks what the client API listens on; "*" is both
-// wildcards, so the node still answers on 127.0.0.1.
+// wildcards, so the node still answers on 127.0.0.1. A wildcard plaintext API
+// needs the explicit opt-in.
 BOOST_AUTO_TEST_CASE(http_address_star_serves_ipv4, *boost::unit_test::timeout(30)) {
     scoped_plaintext_env env(nullptr);
     lone_node_env dir("http_address_star");
@@ -809,7 +815,8 @@ BOOST_AUTO_TEST_CASE(http_address_star_serves_ipv4, *boost::unit_test::timeout(3
     cluster_node_process node(
         1, find_free_port(), http_port, dir.tmp_root + "/node1", dir.unseal_key_file, k_auth_token,
         dir.peers, /*bootstrap=*/false,
-        std::vector<std::string>{"--rpc-address", "127.0.0.1", "--http-address", "*"});
+        std::vector<std::string>{"--rpc-address", "127.0.0.1", "--http-address", "*",
+                                 "--allow-plaintext-http"});
     BOOST_TEST(wait_healthy(http_port, std::chrono::seconds(15)));
     node.stop();
 }
@@ -826,4 +833,50 @@ BOOST_AUTO_TEST_CASE(unusable_http_address_rejected, *boost::unit_test::timeout(
     auto code = node.wait_for_own_exit(std::chrono::seconds(15));
     BOOST_REQUIRE(code.has_value());
     BOOST_TEST(*code == 1);
+}
+
+// The bearer token and every issued certificate cross the client API, so
+// without --tls-cert a node whose API is reachable off-host (the default
+// --http-address 0.0.0.0) refuses to start unless plaintext is opted in.
+BOOST_AUTO_TEST_CASE(plaintext_http_refused_by_default, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("plaintext_http_refused");
+    cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
+                              dir.unseal_key_file, k_auth_token, dir.peers, /*bootstrap=*/false,
+                              std::vector<std::string>{"--rpc-address", "127.0.0.1"});
+    auto code = node.wait_for_own_exit(std::chrono::seconds(15));
+    BOOST_REQUIRE_MESSAGE(code.has_value(), "node did not exit; it served a plaintext HTTP API");
+    BOOST_TEST(*code == 1);
+}
+
+BOOST_AUTO_TEST_CASE(plaintext_http_allowed_with_flag, *boost::unit_test::timeout(30)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("plaintext_http_flag");
+    int http_port = find_free_port();
+    cluster_node_process node(
+        1, find_free_port(), http_port, dir.tmp_root + "/node1", dir.unseal_key_file, k_auth_token,
+        dir.peers, /*bootstrap=*/false,
+        std::vector<std::string>{"--rpc-address", "127.0.0.1", "--http-address", "0.0.0.0",
+                                 "--allow-plaintext-http"});
+    BOOST_TEST(wait_healthy(http_port, std::chrono::seconds(15)));
+    node.stop();
+}
+
+// Peer calls carry enrollment and the RPC trust state: a peer address must
+// name its scheme, an http:// one must be loopback (or opted in), and an
+// https:// one needs a CA bundle to verify the peer against.
+BOOST_AUTO_TEST_CASE(insecure_peer_http_addresses_rejected, *boost::unit_test::timeout(60)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("peer_http_insecure");
+    const auto rpc_peer = "2:127.0.0.1:" + std::to_string(find_free_port());
+    for (const std::string& http :
+         {std::string("http://192.0.2.10:8443"), std::string("https://127.0.0.1:8443"),
+          std::string("127.0.0.1:8443")}) {
+        cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
+                                  dir.unseal_key_file, k_auth_token, rpc_peer + "@" + http,
+                                  /*bootstrap=*/false);
+        auto code = node.wait_for_own_exit(std::chrono::seconds(15));
+        BOOST_REQUIRE_MESSAGE(code.has_value(), "node started with peer address " + http);
+        BOOST_TEST(*code == 1);
+    }
 }

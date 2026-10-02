@@ -705,7 +705,9 @@ auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, boo
         << " --peers " << peers_arg << " --auth-token " << TEST_AUTH_TOKEN
         << " --election-timeout-min-ms 3000 --election-timeout-max-ms 5000"
         << " --heartbeat-interval-ms 500 --rpc-timeout-ms 5000"
-        << (bootstrap ? " --bootstrap-ca" : "");
+        // The client API stays plaintext here (this test covers RPC TLS);
+        // across hosts that needs the explicit opt-in.
+        << " --allow-plaintext-http" << (bootstrap ? " --bootstrap-ca" : "");
     if (use_rpc_tls_flags) {
         cmd << " --rpc-tls-cert /etc/ca_cluster_node/rpc_bootstrap.crt"
             << " --rpc-tls-key /etc/ca_cluster_node/rpc_bootstrap.key";

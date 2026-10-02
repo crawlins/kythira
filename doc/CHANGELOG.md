@@ -13,6 +13,22 @@ current list of outstanding work, see [TODO.md](TODO.md).
   builds. The image is now `...@sha256:IMAGE_DIGEST`, a placeholder like
   `ACCOUNT_ID`; `ecs-task-definitions/README.md` shows how to read the digest
   back from ECR and recommends immutable tags.
+- **CA cluster transport hardened** (vulnerability audit M3, M4, M5, M13,
+  M14). `ca_cluster_node` and `ca_service --serve` refuse a plaintext HTTP
+  API off loopback unless `--allow-plaintext-http` is given; node-to-node
+  calls verify the peer's `https://` listener (chain and hostname) instead of
+  turning verification off; the shipped units and ECS tasks pass the bearer
+  token through the environment, not argv, and provision listener TLS.
+  - The peer-enrollment key is PBKDF2 (200,000 iterations) rather than one
+    HMAC of the unseal passphrase, and the response MAC moved from
+    `/v1/root-ca`, where any bearer-token holder could collect it, to a
+    peer-only `/v1/peer/rpc-trust`.
+  - Every node, not only the leader, drops the RPC bootstrap credential once
+    the cutover completes, and remembers it across restarts.
+  - Peer certificates, the leader's own included, are ledgered and revocable;
+    RPC TLS refuses revoked ones. `ca_service` refuses `/renew` on a cloud
+    provider, which gives it no revocation status, unless
+    `--allow-unchecked-renew` is given.
 - **The Alibaba Cloud spec is closed** (`.kiro/specs/alibaba-cloud-services/`,
   every task ticked, task 4 by descope). The checklist had read 3 of 12 since
   August while the tree held nearly all of it; each task is now ticked against
