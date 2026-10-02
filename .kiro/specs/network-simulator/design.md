@@ -738,10 +738,11 @@ private:
 
 #### Timeout Handling Implementation
 
-1. **Request Tracking**: Each connection request is tracked with timestamp and timeout
-2. **Periodic Cleanup**: Timer-based cleanup of expired connection requests
-3. **Cancellation Support**: Ability to cancel pending operations
-4. **Error Propagation**: Detailed timeout errors with context information
+1. **Request Tracking**: Every in-progress establishment (`establish_connection`, `establish_connection_internal` and `establish_connection_with_timeout`) is registered as a shared `ConnectionRequest` for its whole duration, with its start time, optional timeout and outcome (`PENDING`, `CANCELLED`, `TIMED_OUT`, `COMMITTED`).
+2. **Timeout Enforcement**: The handshake latency is waited out on a condition variable rather than a sleep. If the request's timeout falls before the latency ends, the attempt fails with `TimeoutException` at the deadline.
+3. **Periodic Cleanup**: The background maintenance thread calls `cancel_expired_connections()` every `cleanup_interval`, waking any attempt past its deadline with the timeout outcome.
+4. **Cancellation Support** (Req 15.5): `cancel_pending_connections(destination)`, `cancel_pending_connections(source, destination)` and `cancel_all_pending_connections()` wake matching attempts, which fail with `ConnectionCancelledException` before either end of the connection is created or anything is queued on the listener. Each returns the number of attempts it cancelled; an attempt that already finished its handshake is `COMMITTED` and not cancellable. `pending_connection_count()` reports attempts still in progress. `stop()`, `reset()` and the destructor cancel everything in flight.
+5. **Error Propagation**: Detailed timeout errors with context information
 
 ### Connection Pooling and Reuse
 
@@ -911,8 +912,9 @@ public:
 2. **Statistics Collection**: Comprehensive metrics on data transfer and activity
 3. **Error Tracking**: Detailed error information and history
 4. **Observer Pattern**: Optional callbacks for state change notifications
-5. **Keep-Alive Support**: Configurable keep-alive mechanisms
-6. **Idle Timeout**: Automatic cleanup of idle connections
+5. **Keep-Alive Support** (Req 18.5): with `enable_keep_alive`, a connected connection that has moved no data and sent no probe for `keep_alive_interval` is probed. The simulator's probe answers when both directions are routable, every hop passes its reliability roll, and the peer's end is still open. After `keep_alive_max_missed` consecutive unanswered probes the connection goes to `ERROR` (observers see it), is closed, and ends `CLOSED` with the reason in `last_error`. Probes are counted in `keep_alive_probes_sent` / `keep_alive_probes_missed` and do not update `last_activity`.
+6. **Idle Timeout**: with `enable_idle_timeout`, a connection that has moved no data for `idle_timeout` is closed. Both the sending and the receiving end count a transfer as activity.
+7. **Background Maintenance**: `start()` launches one maintenance thread per simulator; `stop()`, `reset()` and the destructor join it. Every `cleanup_interval` it expires timed-out connection requests, drops stale pooled connections, and runs keep-alive and idle timeouts when enabled. `enable_background_cleanup = false` leaves the thread idle, and `run_maintenance()` runs one pass on the caller's thread for deterministic tests.
 
 ### Integration with Core Simulator
 
@@ -934,6 +936,12 @@ private:
         bool enable_connection_pooling = true;
         bool enable_connection_tracking = true;
         bool enable_keep_alive = false;
+        std::chrono::milliseconds keep_alive_interval{30000};
+        std::size_t keep_alive_max_missed = 3;
+        bool enable_idle_timeout = false;
+        std::chrono::milliseconds idle_timeout{300000};
+        bool enable_background_cleanup = true;
+        std::chrono::milliseconds cleanup_interval{1000};
     } _connection_config;
 
 public:
@@ -941,6 +949,13 @@ public:
     auto get_connection_pool() -> ConnectionPool<Types>&;
     auto get_listener_manager() -> ListenerManager<Types>&;
     auto get_connection_tracker() -> ConnectionTracker<Types>&;
+    auto run_maintenance() -> void;
+
+    auto cancel_pending_connections(endpoint_type destination) -> std::size_t;
+    auto cancel_pending_connections(endpoint_type source, endpoint_type destination)
+        -> std::size_t;
+    auto cancel_all_pending_connections() -> std::size_t;
+    auto pending_connection_count() const -> std::size_t;
 };
 ```
 

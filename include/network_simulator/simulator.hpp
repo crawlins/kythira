@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <random>
 #include <shared_mutex>
@@ -68,6 +69,25 @@ public:
         bool enable_connection_tracking = true;
         bool enable_keep_alive = false;
 
+        // Keep-alive: probe a connection quiet for `keep_alive_interval`; close
+        // it after `keep_alive_max_missed` consecutive unanswered probes. A
+        // probe answers when both directions are routable, every hop passes its
+        // reliability roll, and the peer's end is still open. Probes draw from
+        // the simulator RNG, so enabling them shifts seeded drop patterns.
+        std::chrono::milliseconds keep_alive_interval{30000};  // 30 seconds
+        std::size_t keep_alive_max_missed = 3;
+
+        // Idle timeout: close a connection that has moved no data for
+        // `idle_timeout`. Keep-alive probes do not reset it.
+        bool enable_idle_timeout = false;
+        std::chrono::milliseconds idle_timeout{300000};  // 5 minutes
+
+        // Background maintenance, run every `cleanup_interval` while started:
+        // expire timed-out connection requests, drop stale pooled connections,
+        // and run keep-alive and idle timeouts when they are enabled.
+        bool enable_background_cleanup = true;
+        std::chrono::milliseconds cleanup_interval{1000};
+
         // Connection pool configuration
         typename ConnectionPool<Types>::PoolConfig pool_config;
     };
@@ -77,7 +97,12 @@ public:
           _started(false),
           _connection_pool(std::make_unique<ConnectionPool<Types>>()),
           _listener_manager(std::make_unique<ListenerManager<Types>>()),
-          _connection_tracker(std::make_unique<ConnectionTracker<Types>>()) {}
+          _connection_tracker(std::make_unique<ConnectionTracker<Types>>()) {
+        _connection_tracker->set_keep_alive_probe(
+            [this](const endpoint_type& local, const endpoint_type& remote) {
+                return probe_keep_alive(local, remote);
+            });
+    }
 
     /// Drains before any member is destroyed. `NetworkNode` holds a raw
     /// back-pointer here, and roughly 130 call sites construct this on the
@@ -115,6 +140,23 @@ public:
     auto get_connection_pool() -> ConnectionPool<Types>&;
     auto get_listener_manager() -> ListenerManager<Types>&;
     auto get_connection_tracker() -> ConnectionTracker<Types>&;
+
+    /// Runs one background-maintenance pass now: the same work the
+    /// maintenance thread does every `cleanup_interval`. Lets tests drive
+    /// cleanup deterministically instead of waiting on the timer.
+    auto run_maintenance() -> void;
+
+    // Cancellation of in-progress connection establishment (Req 15.5).
+    //
+    // A cancelled `establish_connection` / `connect` fails with
+    // `ConnectionCancelledException` without creating either end of the
+    // connection or queueing anything on the listener. Each call returns how
+    // many attempts it cancelled; an attempt that has already finished its
+    // simulated handshake is past the point of cancellation and not counted.
+    auto cancel_pending_connections(endpoint_type destination) -> std::size_t;
+    auto cancel_pending_connections(endpoint_type source, endpoint_type destination) -> std::size_t;
+    auto cancel_all_pending_connections() -> std::size_t;
+    auto pending_connection_count() const -> std::size_t;
 
     // Internal methods (used by NetworkNode, Connection, Listener)
     auto route_message(message_type msg) -> future_bool_type;
@@ -167,19 +209,55 @@ private:
                                            std::chrono::milliseconds delay) -> void;
     auto process_scheduled_deliveries() -> void;
 
-    // Connection request tracking for timeout handling
+    // Connection request tracking for timeout handling and cancellation.
+    // Shared between the pending list and the establishing thread, which waits
+    // on `_connection_requests_cv` for `outcome` to change.
     struct ConnectionRequest {
+        enum class Outcome : std::uint8_t {
+            PENDING,    // still in progress
+            CANCELLED,  // cancelled by a caller, stop() or reset()
+            TIMED_OUT,  // its timeout passed before the handshake finished
+            COMMITTED   // handshake finished; no longer cancellable
+        };
+
         endpoint_type source;
         endpoint_type destination;
         std::chrono::steady_clock::time_point start_time;
-        std::chrono::milliseconds timeout;
-        [[nodiscard]] bool is_expired() const {
-            return std::chrono::steady_clock::now() - start_time > timeout;
+        std::optional<std::chrono::milliseconds> timeout;  // nullopt: no timeout
+        Outcome outcome{Outcome::PENDING};
+
+        [[nodiscard]] bool is_expired(std::chrono::steady_clock::time_point now) const {
+            return timeout && now - start_time > *timeout;
         }
     };
+    using connection_request_ptr = std::shared_ptr<ConnectionRequest>;
+
+    auto establish_connection_tracked(address_type src_addr, port_type src_port,
+                                      address_type dst_addr, port_type dst_port,
+                                      std::optional<std::chrono::milliseconds> timeout)
+        -> future_connection_type;
+    auto establish_connection_attempt(address_type src_addr, port_type src_port,
+                                      address_type dst_addr, port_type dst_port,
+                                      const connection_request_ptr& request)
+        -> future_connection_type;
+    auto register_connection_request(endpoint_type source, endpoint_type destination,
+                                     std::optional<std::chrono::milliseconds> timeout)
+        -> connection_request_ptr;
+    auto unregister_connection_request(const connection_request_ptr& request) -> void;
+    // Waits out the simulated handshake latency; returns early on cancellation
+    // or timeout. On a full wait the request becomes COMMITTED.
+    auto await_establishment(const connection_request_ptr& request, std::chrono::milliseconds delay)
+        -> typename ConnectionRequest::Outcome;
+    template<typename Predicate> auto cancel_pending_if(Predicate predicate) -> std::size_t;
 
     auto process_connection_timeouts() -> void;
     auto cancel_expired_connections() -> void;
+
+    // Background maintenance
+    auto probe_keep_alive(const endpoint_type& local, const endpoint_type& remote) -> bool;
+    auto start_maintenance_thread() -> void;
+    auto stop_maintenance_thread() -> void;
+    auto maintenance_thread_main() -> void;
 
     // Scheduled message delivery structure
     struct ScheduledMessage {
@@ -254,8 +332,18 @@ private:
     ConnectionConfig _connection_config;
 
     // Pending connection requests with timeout tracking
-    std::vector<ConnectionRequest> _pending_connections;
+    std::vector<connection_request_ptr> _pending_connections;
     mutable std::mutex _connection_requests_mutex;
+    std::condition_variable _connection_requests_cv;
+
+    // Background maintenance thread, running between start() and stop().
+    // `_maintenance_lifecycle_mutex` serialises starting and joining it;
+    // `_maintenance_mutex` guards the stop flag the thread waits on.
+    std::thread _maintenance_thread;
+    std::mutex _maintenance_lifecycle_mutex;
+    std::mutex _maintenance_mutex;
+    std::condition_variable _maintenance_cv;
+    bool _maintenance_stop{false};
 
     // Simulation state
     std::atomic<bool> _started;

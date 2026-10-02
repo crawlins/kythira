@@ -23,6 +23,13 @@ public:
     ConnectionClosedException() : NetworkException("Connection is closed") {}
 };
 
+/// A connection establishment was cancelled while it was still in progress,
+/// through `NetworkSimulator::cancel_pending_connections` and friends.
+class ConnectionCancelledException : public NetworkException {
+public:
+    ConnectionCancelledException() : NetworkException("Connection establishment cancelled") {}
+};
+
 class PortInUseException : public NetworkException {
 public:
     explicit PortInUseException(const std::string& port)
