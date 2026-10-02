@@ -11,6 +11,8 @@
 #include <chrono>
 #include <concepts>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace kythira {
@@ -114,8 +116,44 @@ private:
     std::vector<peer_info<NodeId, Address>> _peers;
 };
 
+/// @brief Seed-list peer discovery for a node that joins a running cluster.
+///
+/// `find_peers` returns the seeds it was given, possibly none, and
+/// `register_node` accepts any node.  Unlike `static_peer_discovery`, the
+/// seeds need not include this node: a replacement the quorum manager
+/// provisions knows the cluster it is joining but is not yet a member of it.
+/// With no seeds a fresh node founds a single-node cluster, as with
+/// `no_op_peer_discovery`, so one type serves both founding and joining nodes.
+///
+/// @tparam NodeId  Node identifier type.
+/// @tparam Address Network address type.
+template<typename NodeId, typename Address> class seed_peer_discovery {
+public:
+    using node_id_type = NodeId;
+    using address_type = Address;
+
+    seed_peer_discovery() = default;
+    explicit seed_peer_discovery(std::vector<peer_info<NodeId, Address>> seeds)
+        : _seeds(std::move(seeds)) {}
+
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
+    }
+
+    [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
+        -> kythira::future_default<std::vector<peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
+            std::vector<peer_info<NodeId, Address>>(_seeds));
+    }
+
+private:
+    std::vector<peer_info<NodeId, Address>> _seeds;
+};
+
 static_assert(
     peer_discovery<no_op_peer_discovery<std::uint64_t, std::string>, std::uint64_t, std::string>);
+static_assert(
+    peer_discovery<seed_peer_discovery<std::uint64_t, std::string>, std::uint64_t, std::string>);
 static_assert(
     peer_discovery<static_peer_discovery<std::uint64_t, std::string>, std::uint64_t, std::string>);
 

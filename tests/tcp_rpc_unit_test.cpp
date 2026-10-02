@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -608,5 +609,159 @@ BOOST_AUTO_TEST_CASE(test_install_snapshot_round_trip, *boost::unit_test::timeou
 
     BOOST_TEST(resp._term == 5u);
 
+    server.stop();
+}
+
+// ── ClusterJoin / ClusterLeave and dynamic peer addresses (Req 19) ───────────
+
+BOOST_AUTO_TEST_CASE(test_parse_host_port, *boost::unit_test::timeout(5)) {
+    using kythira::tcp_detail::parse_host_port;
+    auto hp = parse_host_port("node-4:7000");
+    BOOST_REQUIRE(hp.has_value());
+    BOOST_TEST(hp->first == "node-4");
+    BOOST_TEST(hp->second == 7000);
+    auto v6 = parse_host_port("[::1]:7001");
+    BOOST_REQUIRE(v6.has_value());
+    BOOST_TEST(v6->first == "::1");
+    BOOST_TEST(v6->second == 7001);
+    BOOST_TEST(!parse_host_port("node-4").has_value());
+    BOOST_TEST(!parse_host_port("node-4:").has_value());
+    BOOST_TEST(!parse_host_port(":7000").has_value());
+    BOOST_TEST(!parse_host_port("node-4:70000").has_value());
+    BOOST_TEST(!parse_host_port("node-4:7x").has_value());
+}
+
+BOOST_AUTO_TEST_CASE(test_cluster_join_round_trip_by_address, *boost::unit_test::timeout(15)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    std::optional<kythira::cluster_join_request<>> seen;
+    server.register_cluster_join_handler([&seen](const kythira::cluster_join_request<>& req) {
+        seen = req;
+        return kythira::cluster_join_response<>{true, std::nullopt};
+    });
+    server.start();
+
+    // No add_peer: a joining node knows its seed only by address.
+    kythira::tcp_rpc_client client;
+    kythira::cluster_join_request<> req{.node_id = 4, .contact_address = "node-4:7000"};
+    auto resp = client
+                    .send_cluster_join_request("127.0.0.1:" + std::to_string(port), req,
+                                               std::chrono::milliseconds{5000})
+                    .get();
+
+    BOOST_TEST(resp.is_accepted());
+    BOOST_REQUIRE(seen.has_value());
+    BOOST_TEST(seen->node_id == 4u);
+    BOOST_TEST(seen->contact_address == "node-4:7000");
+    server.stop();
+}
+
+// node<Types> redirects a joiner to the leader as the leader's bare node ID,
+// so a numeric address must resolve through the peer table.
+BOOST_AUTO_TEST_CASE(test_cluster_join_to_node_id_address, *boost::unit_test::timeout(15)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    kythira::cluster_join_response<> redirect{
+        false, kythira::peer_info<std::uint64_t, std::string>{1, "1"}};
+    server.register_cluster_join_handler(
+        [redirect](const kythira::cluster_join_request<>&) { return redirect; });
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    client.add_peer(2, "127.0.0.1", port);
+    kythira::cluster_join_request<> req{.node_id = 4, .contact_address = "node-4:7000"};
+    auto resp = client.send_cluster_join_request("2", req, std::chrono::milliseconds{5000}).get();
+
+    BOOST_TEST(!resp.is_accepted());
+    BOOST_REQUIRE(resp.redirect_peer().has_value());
+    BOOST_TEST(resp.redirect_peer()->address == "1");
+    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_cluster_join_rejects_malformed_address, *boost::unit_test::timeout(5)) {
+    kythira::tcp_rpc_client client;
+    kythira::cluster_join_request<> req{.node_id = 4, .contact_address = ""};
+    BOOST_CHECK_THROW(
+        client.send_cluster_join_request("no-port", req, std::chrono::milliseconds{100}).get(),
+        kythira::network_exception);
+}
+
+BOOST_AUTO_TEST_CASE(test_cluster_leave_round_trip, *boost::unit_test::timeout(15)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    std::optional<std::uint64_t> leaving;
+    server.register_cluster_leave_handler([&leaving](const kythira::cluster_leave_request<>& req) {
+        leaving = req.node_id;
+        return kythira::cluster_leave_response<>{true, std::nullopt};
+    });
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    client.add_peer(1, "127.0.0.1", port);
+    auto resp = client
+                    .send_cluster_leave_request("1", kythira::cluster_leave_request<>{.node_id = 3},
+                                                std::chrono::milliseconds{5000})
+                    .get();
+    BOOST_TEST(resp.is_accepted());
+    BOOST_REQUIRE(leaving.has_value());
+    BOOST_TEST(*leaving == 3u);
+    server.stop();
+}
+
+// update_peer_address() is how a leader learns a joining node's address from
+// its ClusterJoin; RPCs to that node then reach it.
+BOOST_AUTO_TEST_CASE(test_update_peer_address_routes_rpcs, *boost::unit_test::timeout(15)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    kythira::request_vote_response<> canned{};
+    canned._term = 9;
+    server.register_request_vote_handler(
+        [canned](const kythira::request_vote_request<>&) { return canned; });
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    client.update_peer_address(4, "not-an-address");  // ignored
+    kythira::request_vote_request<> req{};
+    BOOST_CHECK_THROW(client.send_request_vote(4, req, std::chrono::milliseconds{100}).get(),
+                      kythira::network_exception);
+
+    client.update_peer_address(4, "127.0.0.1:" + std::to_string(port));
+    auto resp = client.send_request_vote(4, req, std::chrono::milliseconds{5000}).get();
+    BOOST_TEST(resp._term == 9u);
+    server.stop();
+}
+
+// A resolver names peers that joined after this node's peer table was built;
+// a registered address still wins over it.
+BOOST_AUTO_TEST_CASE(test_peer_resolver_fills_registry_misses, *boost::unit_test::timeout(15)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    kythira::request_vote_response<> canned{};
+    canned._term = 11;
+    server.register_request_vote_handler(
+        [canned](const kythira::request_vote_request<>&) { return canned; });
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    std::vector<std::uint64_t> resolved;
+    client.set_peer_resolver(
+        [&resolved,
+         port](const std::uint64_t& id) -> std::optional<std::pair<std::string, std::uint16_t>> {
+            resolved.push_back(id);
+            if (id == 5) {
+                return std::pair{std::string{"127.0.0.1"}, port};
+            }
+            return std::nullopt;
+        });
+
+    kythira::request_vote_request<> req{};
+    auto resp = client.send_request_vote(5, req, std::chrono::milliseconds{5000}).get();
+    BOOST_TEST(resp._term == 11u);
+    BOOST_CHECK_THROW(client.send_request_vote(6, req, std::chrono::milliseconds{100}).get(),
+                      kythira::network_exception);
+
+    client.add_peer(7, "127.0.0.1", port);
+    client.send_request_vote(7, req, std::chrono::milliseconds{5000}).get();
+    BOOST_TEST((resolved == std::vector<std::uint64_t>{5, 6}));
     server.stop();
 }

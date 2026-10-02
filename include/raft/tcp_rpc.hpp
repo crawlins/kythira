@@ -148,10 +148,47 @@ inline auto bytes_to_str(const std::vector<std::byte>& b) -> std::string {
     return s;
 }
 
+// Splits "host:port" on its last ':' and strips the brackets from an IPv6
+// literal ("[::1]:7000").  Returns nullopt for anything else.
+inline auto parse_host_port(const std::string& addr)
+    -> std::optional<std::pair<std::string, std::uint16_t>> {
+    auto colon = addr.rfind(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 == addr.size()) {
+        return std::nullopt;
+    }
+    auto host = addr.substr(0, colon);
+    if (host.size() >= 2 && host.front() == '[' && host.back() == ']') {
+        host = host.substr(1, host.size() - 2);
+    }
+    const auto port_str = addr.substr(colon + 1);
+    if (!std::all_of(port_str.begin(), port_str.end(),
+                     [](unsigned char c) { return std::isdigit(c) != 0; })) {
+        return std::nullopt;
+    }
+    const auto port = std::stoul(port_str);
+    if (port == 0 || port > 65535 || host.empty()) {
+        return std::nullopt;
+    }
+    return std::pair{host, static_cast<std::uint16_t>(port)};
+}
+
+// True when `addr` is a bare node ID, as node<Types> sends for a redirect to
+// a known leader and for leave_cluster().
+inline auto is_node_id_address(const std::string& addr) -> bool {
+    return !addr.empty() && std::all_of(addr.begin(), addr.end(),
+                                        [](unsigned char c) { return std::isdigit(c) != 0; });
+}
+
 template<typename NodeId> class peer_registry {
 public:
+    // Maps a node ID that has no registered address to one, e.g. by a naming
+    // convention every member shares.  Consulted only on a registry miss.
+    using resolver_fn =
+        std::function<std::optional<std::pair<std::string, std::uint16_t>>(const NodeId&)>;
+
     peer_registry() = default;
-    peer_registry(peer_registry&& other) noexcept : _peers(std::move(other._peers)) {}
+    peer_registry(peer_registry&& other) noexcept
+        : _peers(std::move(other._peers)), _resolver(std::move(other._resolver)) {}
     peer_registry& operator=(peer_registry&&) = delete;
     peer_registry(const peer_registry&) = delete;
     peer_registry& operator=(const peer_registry&) = delete;
@@ -160,18 +197,30 @@ public:
         std::lock_guard lock(_mu);
         _peers[id] = {std::move(host), port};
     }
-    auto lookup(NodeId id) const -> std::optional<std::pair<std::string, std::uint16_t>> {
+    void set_resolver(resolver_fn resolver) {
         std::lock_guard lock(_mu);
-        auto it = _peers.find(id);
-        if (it == _peers.end()) {
+        _resolver = std::move(resolver);
+    }
+    auto lookup(NodeId id) const -> std::optional<std::pair<std::string, std::uint16_t>> {
+        resolver_fn resolver;
+        {
+            std::lock_guard lock(_mu);
+            auto it = _peers.find(id);
+            if (it != _peers.end()) {
+                return it->second;
+            }
+            resolver = _resolver;
+        }
+        if (!resolver) {
             return std::nullopt;
         }
-        return it->second;
+        return resolver(id);
     }
 
 private:
     mutable std::mutex _mu;
     std::unordered_map<NodeId, std::pair<std::string, std::uint16_t>> _peers;
+    resolver_fn _resolver;
 };
 
 }  // namespace tcp_detail
@@ -221,6 +270,42 @@ public:
 
     void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
         _peers.add_peer(id, std::move(host), port);
+    }
+
+    // Called by node<Types> with the address a joining node advertised in its
+    // ClusterJoin, and by the reconnect loop with discovered addresses.
+    // `address` is "host:port"; anything else is ignored.
+    void update_peer_address(std::uint64_t id, const std::string& address) {
+        if (auto hp = tcp_detail::parse_host_port(address)) {
+            _peers.add_peer(id, std::move(hp->first), hp->second);
+        }
+    }
+
+    // Supplies an address for a peer that was never registered: a node that
+    // joined after this one started, which the static peer table cannot name.
+    void set_peer_resolver(tcp_detail::peer_registry<std::uint64_t>::resolver_fn resolver) {
+        _peers.set_resolver(std::move(resolver));
+    }
+
+    // ClusterJoin and ClusterLeave are addressed rather than sent to a node
+    // ID: the sender may not know the target's ID.  `addr` is "host:port", or
+    // a bare node ID (a redirect to a known leader) looked up like any peer.
+    auto send_cluster_join_request(const std::string& addr, const cluster_join_request<>& req,
+                                   std::chrono::milliseconds timeout)
+        -> future_default<cluster_join_response<>> {
+        return call_address<cluster_join_response<>>(
+            addr, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
+                return _ser.deserialize_cluster_join_response(d);
+            });
+    }
+
+    auto send_cluster_leave_request(const std::string& addr, const cluster_leave_request<>& req,
+                                    std::chrono::milliseconds timeout)
+        -> future_default<cluster_leave_response<>> {
+        return call_address<cluster_leave_response<>>(
+            addr, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
+                return _ser.deserialize_cluster_leave_response(d);
+            });
     }
 
     auto send_request_vote(std::uint64_t target, const request_vote_request<>& req,
@@ -273,6 +358,21 @@ public:
 
 private:
     template<typename Resp, typename Deser>
+    auto call_address(const std::string& addr, const std::vector<std::byte>& payload,
+                      std::chrono::milliseconds timeout, Deser deser) -> future_default<Resp> {
+        if (tcp_detail::is_node_id_address(addr)) {
+            return call<Resp>(std::stoull(addr), payload, timeout, std::move(deser));
+        }
+        auto hp = tcp_detail::parse_host_port(addr);
+        if (!hp) {
+            return future_factory_default::makeExceptionalFuture<Resp>(std::make_exception_ptr(
+                network_exception("tcp_rpc_client: malformed address " + addr)));
+        }
+        return call_endpoint<Resp>(std::move(hp->first), hp->second, payload, timeout,
+                                   std::move(deser));
+    }
+
+    template<typename Resp, typename Deser>
     auto call(std::uint64_t target, const std::vector<std::byte>& payload,
               std::chrono::milliseconds timeout, Deser deser) -> future_default<Resp> {
         auto peer = _peers.lookup(target);
@@ -280,7 +380,12 @@ private:
             return future_factory_default::makeExceptionalFuture<Resp>(std::make_exception_ptr(
                 network_exception("tcp_rpc_client: unknown peer " + std::to_string(target))));
         }
+        return call_endpoint<Resp>(peer->first, peer->second, payload, timeout, std::move(deser));
+    }
 
+    template<typename Resp, typename Deser>
+    auto call_endpoint(std::string host, std::uint16_t port, const std::vector<std::byte>& payload,
+                       std::chrono::milliseconds timeout, Deser deser) -> future_default<Resp> {
         // Dispatched onto the global CPU executor rather than run inline —
         // see the class comment above for why: this is what lets a caller
         // broadcasting to multiple peers in a loop move on to the next peer
@@ -292,11 +397,7 @@ private:
         // Captured by value: `payload` is a reference to the caller's
         // temporary (e.g. _ser.serialize(req)), which does not outlive this
         // function; copying now, before dispatch, is required for the
-        // background task to see valid data. `host`/`port` are similarly
-        // copied out of `peer` (a pointer into _peers' storage) up front.
-        std::string host = peer->first;
-        std::uint16_t port = peer->second;
-
+        // background task to see valid data.
         _executor->submit(
             [promise = std::move(promise), host, port, payload, timeout, deser]() mutable {
                 int fd = tcp_detail::connect_to(host, port, timeout);
@@ -355,6 +456,8 @@ public:
     using tn_fn = std::function<timeout_now_response<>(const timeout_now_request<>&)>;
     using ae_fn = std::function<append_entries_response<>(const append_entries_request<>&)>;
     using is_fn = std::function<install_snapshot_response<>(const install_snapshot_request<>&)>;
+    using cj_fn = std::function<cluster_join_response<>(const cluster_join_request<>&)>;
+    using cl_fn = std::function<cluster_leave_response<>(const cluster_leave_request<>&)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
     explicit tcp_rpc_server(std::uint16_t port) : _port(port) {}
@@ -381,8 +484,11 @@ public:
           _accept_threads(std::move(other._accept_threads)),
           _rv(std::move(other._rv)),
           _pv(std::move(other._pv)),
+          _tn(std::move(other._tn)),
           _ae(std::move(other._ae)),
           _is(std::move(other._is)),
+          _cj(std::move(other._cj)),
+          _cl(std::move(other._cl)),
           _ser(std::move(other._ser)) {
         other._running = false;
     }
@@ -394,6 +500,9 @@ public:
     void register_timeout_now_handler(tn_fn h) { _tn = std::move(h); }
     void register_append_entries_handler(ae_fn h) { _ae = std::move(h); }
     void register_install_snapshot_handler(is_fn h) { _is = std::move(h); }
+    // Satisfies kythira::network_server_with_cluster_join / _with_cluster_leave.
+    void register_cluster_join_handler(cj_fn h) { _cj = std::move(h); }
+    void register_cluster_leave_handler(cl_fn h) { _cl = std::move(h); }
 
     void start() {
         if (_running.exchange(true)) {
@@ -464,6 +573,10 @@ private:
                 resp = _ser.serialize(_ae(_ser.deserialize_append_entries_request(bytes)));
             } else if (type == "install_snapshot_request" && _is) {
                 resp = _ser.serialize(_is(_ser.deserialize_install_snapshot_request(bytes)));
+            } else if (type == "cluster_join_request" && _cj) {
+                resp = _ser.serialize(_cj(_ser.deserialize_cluster_join_request(bytes)));
+            } else if (type == "cluster_leave_request" && _cl) {
+                resp = _ser.serialize(_cl(_ser.deserialize_cluster_leave_request(bytes)));
             } else {
                 return;
             }
@@ -484,6 +597,8 @@ private:
     tn_fn _tn;
     ae_fn _ae;
     is_fn _is;
+    cj_fn _cj;
+    cl_fn _cl;
     serializer_t _ser;
 };
 
@@ -505,5 +620,17 @@ static_assert(kythira::network_client_with_timeout_now<tcp_rpc_client>,
               "tcp_rpc_client must satisfy network_client_with_timeout_now");
 static_assert(kythira::network_server_with_timeout_now<tcp_rpc_server>,
               "tcp_rpc_server must satisfy network_server_with_timeout_now");
+
+// ClusterJoin/ClusterLeave, without which a node cannot join a running
+// cluster over this transport (quorum-management Req 19: a replacement the
+// quorum manager provisions must be able to join).
+static_assert(kythira::network_client_with_cluster_join<tcp_rpc_client>,
+              "tcp_rpc_client must satisfy network_client_with_cluster_join");
+static_assert(kythira::network_server_with_cluster_join<tcp_rpc_server>,
+              "tcp_rpc_server must satisfy network_server_with_cluster_join");
+static_assert(kythira::network_client_with_cluster_leave<tcp_rpc_client>,
+              "tcp_rpc_client must satisfy network_client_with_cluster_leave");
+static_assert(kythira::network_server_with_cluster_leave<tcp_rpc_server>,
+              "tcp_rpc_server must satisfy network_server_with_cluster_leave");
 
 }  // namespace kythira
