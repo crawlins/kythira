@@ -46,7 +46,13 @@ connection time, so no application-level change is needed.
 3. An EFS file system + access point per node (or one file system, three
    access points — one per node's `/var/lib/ca_cluster_node`), so Raft's
    `file_persistence` survives task replacement (Requirement 17: a restarted
-   node recovers from disk).
+   node recovers from disk). The image runs as the unprivileged
+   `ca-cluster-node` user, UID/GID `10002:10002`, so each access point must
+   hand it a directory it owns: set the access point's POSIX user to
+   `10002:10002` and its root-directory creation info to owner
+   `10002:10002`, permissions `0750`. An access point that leaves the
+   directory owned by root makes the node fail at startup, unable to write
+   its data directory.
 4. A Secrets Manager secret `kythira/ca-cluster-node/auth-token` (bearer
    token, identical across all three nodes),
    `kythira/ca-cluster-node/unseal-key` (the unseal passphrase, byte-identical
@@ -95,16 +101,27 @@ rolled one node at a time.
 
 ## The unseal-key-file requirement
 
-`--unseal-key-file` (and, likewise, `--rpc-tls-cert`/`--rpc-tls-key`) expect
-**file paths**, not environment variables, but ECS `secrets` only injects
-environment variables. Each task definition's `command` is a small `sh -c`
-wrapper that writes the injected `CA_CLUSTER_UNSEAL_KEY`,
-`CA_CLUSTER_RPC_TLS_CERT`, and `CA_CLUSTER_RPC_TLS_KEY` secrets to
-`/tmp/unseal.key`, `/tmp/rpc_bootstrap.crt`, and `/tmp/rpc_bootstrap.key`
-respectively (`chmod 600`, ephemeral container filesystem — never touches
-the EFS-backed persistent volume) before exec'ing `ca_cluster_node
---unseal-key-file /tmp/unseal.key --rpc-tls-cert /tmp/rpc_bootstrap.crt
---rpc-tls-key /tmp/rpc_bootstrap.key`.
+`--unseal-key-file` (and, likewise, `--tls-cert`/`--tls-key` and
+`--rpc-tls-cert`/`--rpc-tls-key`) expect **file paths**, not environment
+variables, but ECS `secrets` only injects environment variables. Each task
+definition's `command` is a small `sh -c` wrapper that writes the injected
+`CA_CLUSTER_UNSEAL_KEY`, `CA_CLUSTER_RPC_TLS_CERT`/`_KEY` and
+`CA_CLUSTER_HTTP_TLS_CERT`/`_KEY` secrets to `unseal.key`,
+`rpc_bootstrap.{crt,key}` and `http_tls.{crt,key}` under
+`/run/ca_cluster_node/` (`umask 077`, so mode 0600) before exec'ing
+`ca_cluster_node` with those paths.
+
+The container's root filesystem is read-only (`readonlyRootFilesystem`), so
+`/run/ca_cluster_node` is the one writable path besides the data directory:
+a task-storage volume (`ca-cluster-node-run`, a volume with no EFS or host
+configuration) that lives and dies with the task and never touches the
+EFS-backed persistent volume. `TMPDIR` points there too. It is not a tmpfs
+because Fargate rejects `linuxParameters.tmpfs`; and it is not `/tmp`
+because Fargate creates a task-storage volume owned by root, mode 0755,
+unless the image declares the path as a `VOLUME`, in which case it copies the
+image directory's ownership. The Dockerfile declares
+`/run/ca_cluster_node` that way, owned by `10002:10002`, mode 0700, so the
+non-root node can write it and nothing else in the task can read it.
 
 ## Deploying
 

@@ -26,9 +26,16 @@
 # nested mountpoint directories already exist inside ca-trust (the runtime
 # created them while ca-service ran, and depends_on orders the nodes after
 # it), so the read-only ca-trust mount needs no directory created in it.
-# Adding a service means adding its <name>-tls volume, a matching mount and
-# --service argument on ca-service, and mounting only that volume on the
-# new node.
+# Adding a service means adding its <name>-tls volume, a matching mount on
+# ca-volume-init and ca-service, a --service argument on ca-service, and
+# mounting only that volume on the new node.
+#
+# ca_service runs as the unprivileged ca-service user (10001:10001). ca-trust
+# takes that ownership from the image's /ca on first use, but the per-service
+# volumes mount on paths the image does not have, so the runtime creates them
+# owned by root and ca_service could not write them. ca-volume-init hands
+# them to 10001 first; it is the only container here that runs as root, and
+# it runs no project code.
 
 networks:
   ca-provisioning-net:
@@ -40,6 +47,14 @@ volumes:
   mtls-node2-tls:
 
 services:
+  ca-volume-init:
+    image: alpine:3.20
+    network_mode: none
+    volumes:
+      - mtls-node1-tls:/v/mtls-node1
+      - mtls-node2-tls:/v/mtls-node2
+    command: ["chown", "10001:10001", "/v/mtls-node1", "/v/mtls-node2"]
+
   ca-service:
     image: kythira-ca-service:dev
     build:
@@ -51,6 +66,9 @@ services:
       - ca-trust:/ca
       - mtls-node1-tls:/ca/mtls-node1
       - mtls-node2-tls:/ca/mtls-node2
+    depends_on:
+      ca-volume-init:
+        condition: service_completed_successfully
     command:
       - "--out-dir=/ca"
       - "--service=mtls-node1"

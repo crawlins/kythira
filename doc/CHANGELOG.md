@@ -48,6 +48,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
   `ca_cluster_node_rpc_tls_restart_test` forces every node into it and checks
   each renews and serves the new certificate without a restart (task 13's
   missing half, Requirements 7.2/7.3).
+- **The `ca_service` and `ca_cluster_node` images no longer run as root.**
+  They run as `ca-service` (10001) and `ca-cluster-node` (10002), matching the
+  systemd units, and the ECS task definitions now set
+  `readonlyRootFilesystem` with a task-local `/run/<service>` volume for the
+  key material and TLS listener keys both services used to write to
+  `/tmp`. Existing data directories
+  owned by root need a one-time `chown -R 10002:10002`, and EFS access points
+  need a matching POSIX user (`docker/ca_cluster_node/README.md`).
 - **The Alibaba Cloud spec is closed** (`.kiro/specs/alibaba-cloud-services/`,
   every task ticked, task 4 by descope). The checklist had read 3 of 12 since
   August while the tree held nearly all of it; each task is now ticked against

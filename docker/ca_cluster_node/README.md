@@ -30,6 +30,14 @@ see `ecs-task-definitions/README.md`'s "Pinning the image".
 (Requires `vcpkg_installed/` already present in the build context, same as
 `docker/ca_service/Dockerfile`.)
 
+The image runs as the unprivileged `ca-cluster-node` user, UID/GID
+`10002:10002`, never root. A named volume on `/var/lib/ca_cluster_node`
+picks that ownership up from the image on first use; a bind-mounted host
+directory or an EFS access point must be owned by `10002:10002` before the
+node starts. A data directory written by an earlier, root-running image is
+owned by root and must be re-owned once (`chown -R 10002:10002`) before the
+upgraded image can open it.
+
 ## Path 1 — manual, 3 EC2 instances (systemd)
 
 See `ca_cluster_node.service`'s header comment for the install steps. Copy
