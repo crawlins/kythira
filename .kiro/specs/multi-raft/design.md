@@ -485,6 +485,18 @@ heard from its leader within the election timeout and has been told the leader
 is hibernating. Wake conditions: any client request, any inbound RPC, any
 configuration change, any placement-driver operator.
 
+A hibernated follower is not ticked, so its election timer cannot fire, and a
+dead leader sends nothing that would wake it. The host therefore adds one
+timer-driven wake condition, `hibernation_check_interval` (default
+10 × `hibernate_after`). A sleeping leader wakes once the interval has passed
+and heartbeats. A sleeping follower wakes one `election_timeout_max` later,
+measured from the last message it received, so a live leader's heartbeat
+always reaches it first. A follower that wakes and still hears nothing
+campaigns. The leader-failure bound under hibernation is the interval, plus
+one maximum election timeout, plus an election. TiKV accepts a much longer
+bound here (`abnormal_leader_missing_duration`, minutes). This design makes
+the bound a knob instead.
+
 TiKV RFC 0082 is candid that hibernation "is not always working as expected"
 under random access, and that it complicates tooling. The mitigation adopted
 here is to make it a *policy knob* (`hibernation_mode:

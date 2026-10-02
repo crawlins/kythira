@@ -447,6 +447,47 @@ auto multi_raft<Types, Key, GroupId>::follower_hibernate_after() const -> std::c
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::hibernation_check_interval() const
+    -> std::chrono::nanoseconds {
+    if (_cfg.hibernation_check_interval) {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            *_cfg.hibernation_check_interval);
+    }
+    return 10 * leader_hibernate_after();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::liveness_check_due(const group_state& g,
+                                                         std::int64_t now) const -> bool {
+    // Task 12: "a leader failure still triggers an election" while
+    // hibernating. A hibernating follower is not ticked, so its election timer
+    // cannot fire, and a dead leader sends nothing that would wake it.
+    //
+    // The two sides are deliberately asymmetric. A sleeping LEADER wakes once
+    // the interval has passed since it fell asleep, and its first tick sends
+    // heartbeats. A sleeping FOLLOWER waits one maximum election timeout
+    // longer, measured from the last message it received. That message came
+    // no later than the moment its leader fell asleep, so a live leader's
+    // heartbeat always arrives first and takes the follower out of
+    // hibernation through the transport's observer, which resets its election
+    // timer too. Only a follower whose leader stayed silent through the grace
+    // period wakes on its own. Its election timer has long expired by then, so
+    // its first tick campaigns.
+    //
+    // A symmetric check would wake both sides together, and the follower's
+    // expired timer would win that race against the leader's first heartbeat
+    // at every interval.
+    const auto interval = hibernation_check_interval().count();
+    if (g._hibernated_as_leader.load(std::memory_order_relaxed)) {
+        return now - g._hibernated_since_ns.load(std::memory_order_relaxed) >= interval;
+    }
+    const auto grace =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(_cfg.config.election_timeout_max())
+            .count();
+    return now - g._last_activity_ns.load(std::memory_order_relaxed) >= interval + grace;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::evaluate_hibernation(const std::vector<group_ptr>& groups)
     -> void {
     if (!hibernation_enabled(groups.size())) {
@@ -497,6 +538,8 @@ auto multi_raft<Types, Key, GroupId>::evaluate_hibernation(const std::vector<gro
         }
         const auto window = role == server_state::leader ? leader_window : follower_window;
         if (idle >= window) {
+            g->_hibernated_since_ns.store(now, std::memory_order_relaxed);
+            g->_hibernated_as_leader.store(role == server_state::leader, std::memory_order_relaxed);
             g->_hibernating.store(true, std::memory_order_relaxed);
         }
     }
@@ -510,7 +553,11 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::select_ready(std::vector<group_ptr>& hibernating_out)
     -> std::vector<group_ptr> {
     std::vector<group_ptr> ready;
+    const auto now = now_ns();
     for (const auto& g : all_groups()) {
+        if (g->_hibernating.load(std::memory_order_relaxed) && liveness_check_due(*g, now)) {
+            note_activity(*g);
+        }
         bool has_deferred = false;
         {
             std::lock_guard lock(g->_deferred_mutex);

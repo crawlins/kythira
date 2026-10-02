@@ -248,6 +248,18 @@ Phases 6–8, after the mechanics it drives.
     `submit_command` wakes exactly one group; a leader failure still triggers
     an election within the expected bound (hibernation must not break
     liveness).
+  - Liveness under hibernation (added after the 2026-10-02 gap audit found
+    the leader-failure case untested and broken): a hibernated follower is
+    never ticked, so with a dead leader nothing ever woke it. The host now
+    runs a periodic check, `hibernation_check_interval` (default
+    10 × `hibernate_after`). A sleeping leader wakes after the interval and
+    heartbeats. A sleeping follower wakes one `election_timeout_max` later
+    than that, measured from its last inbound message, and so is only reached
+    when its leader stayed silent. The bound is the interval, plus one
+    maximum election timeout, plus an election. Tested in
+    `multi_raft_host_unit_test`
+    (`a_leader_failure_while_hibernating_still_triggers_an_election`,
+    `a_live_hibernating_leader_is_not_deposed_by_the_liveness_check`).
   - _Requirements: 5.5, 5.7_
 
 ---
