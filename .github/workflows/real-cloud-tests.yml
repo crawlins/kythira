@@ -168,10 +168,15 @@ jobs:
     # All three bundle ctest steps below can run sequentially in this one
     # job when every bundle is enabled. Sum of their own worst-case CTest
     # TIMEOUT properties (tests/CMakeLists.txt): 10800s (ec2-quorum-manager)
-    # + 900s (ca-cluster-node) + 9000s (ca-cluster-node-rpc-tls) = 345 min,
+    # + 1800s (ca-cluster-node) + 9000s (ca-cluster-node-rpc-tls) = 360 min,
     # plus build/checkout/credential overhead. 360 is GitHub Actions'
     # own default job timeout cap for hosted runners, so this is set
-    # explicitly to that ceiling rather than left implicit. Applies to both
+    # explicitly to that ceiling rather than left implicit. With every
+    # bundle on, a run in which all three hit their worst case at once
+    # would now be cut off by the cap; real runs sit far below it (the
+    # ec2-quorum-manager bundle took 53m43s of its 180 min on run
+    # 36337979088). If that ever binds, move a bundle into its own job
+    # rather than trimming a TIMEOUT below its cases' needs. Applies to both
     # the x64 and arm64 matrix legs — the sequential-bundle math above
     # doesn't depend on architecture.
     timeout-minutes: 360

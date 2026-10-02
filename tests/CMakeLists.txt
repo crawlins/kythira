@@ -4810,6 +4810,9 @@ set_tests_properties(aws_quorum_manager_real_ec2_test PROPERTIES
 
 # Real-EC2 coverage for the ca_cluster_node-specific 3-AZ deployment — see
 # file header for what this verifies beyond aws_quorum_manager_real_ec2_test.cpp.
+# certificate_authority (CSR generation) and boost_json (issuance request
+# bodies): the case issues certificates before and after a node is lost.
+if(TARGET certificate_authority)
 add_executable(ca_cluster_node_real_ec2_test ca_cluster_node_real_ec2_test.cpp)
 target_compile_definitions(ca_cluster_node_real_ec2_test PRIVATE
     KYTHIRA_AWS_REAL_EC2_TESTS
@@ -4817,6 +4820,8 @@ target_compile_definitions(ca_cluster_node_real_ec2_test PRIVATE
 )
 target_link_libraries(ca_cluster_node_real_ec2_test PRIVATE
     network_simulator
+    certificate_authority
+    boost_json
     Boost::unit_test_framework
     ${LIBSSH2_LIBRARIES}
 )
@@ -4829,10 +4834,15 @@ target_include_directories(ca_cluster_node_real_ec2_test PRIVATE
 target_compile_features(ca_cluster_node_real_ec2_test PRIVATE cxx_std_23)
 add_test(NAME ca_cluster_node_real_ec2_test COMMAND ca_cluster_node_real_ec2_test)
 set_tests_properties(ca_cluster_node_real_ec2_test PROPERTIES
-    TIMEOUT 900
+    # Matches the single case's own boost::unit_test::timeout(1800), which
+    # already includes fixture setup and teardown. Raised from 900 when the
+    # case grew from "the cluster forms" to the full task-31 failover
+    # (terminate, same-AZ replacement, rejoin, leader rotation).
+    TIMEOUT 1800
     LABELS "integration;raft;quorum;aws;real-ec2;slow;ca;ca_cluster_node"
     SKIP_RETURN_CODE 77
 )
+endif()  # TARGET certificate_authority
 
 # Real-EC2 coverage for the RPC-TLS-enabled 3-AZ ca_cluster_node deployment
 # (ca-cluster-rpc-mtls-real-aws spec) — see file header for what this
