@@ -2768,13 +2768,31 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             // processing test's own probe lines use, so the two interleave
             // in one log and a test-side send_ms line can be decomposed by
             // matching on the token.
+            // The trailing fields were added for the multi-Raft contention
+            // row (.kiro/specs/coap-transport-multi-raft/ task 14), which
+            // reads this same line rather than adding a second probe. On
+            // loopback every stage above rounds to 0 ms, so the row needs
+            // microseconds; and it reports per group, so the line names the
+            // group when the request carries one. Appended rather than
+            // changed, so a reader of the original five fields still parses.
+            const auto us = [](auto from, auto to) {
+                return std::to_string(
+                    std::chrono::duration_cast<std::chrono::microseconds>(to - from).count());
+            };
+            std::string group_field;
+            if constexpr (requires { std::to_string(request.group_id()); }) {
+                group_field = " group=" + std::to_string(request.group_id());
+            }
             std::cout << ("[stall-probe] send_rpc token=" + token +
                           " target=" + std::to_string(target) +
                           " lock_wait_ms=" + ms(probe_entered, probe_locked) +
                           " resolve_ms=" + ms(probe_locked, probe_resolved) +
                           " session_ms=" + ms(probe_resolved, probe_session) +
                           " encode_pdu_ms=" + ms(probe_session, probe_pdu_built) +
-                          " coap_send_ms=" + ms(probe_pdu_built, probe_sent) + "\n")
+                          " coap_send_ms=" + ms(probe_pdu_built, probe_sent) + group_field +
+                          " path=" + resource_path +
+                          " lock_wait_us=" + us(probe_entered, probe_locked) +
+                          " send_path_us=" + us(probe_entered, probe_sent) + "\n")
                       << std::flush;
         }
         if (mid == COAP_INVALID_MID) {
