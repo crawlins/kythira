@@ -2342,6 +2342,16 @@ target_link_libraries(httplib_server_validation_test PRIVATE
 target_compile_features(httplib_server_validation_test PRIVATE cxx_std_23)
 add_test(NAME httplib_server_validation_test COMMAND httplib_server_validation_test)
 
+# growing_task_queue: the cpp-httplib server's on-demand worker pool,
+# bounded by max_concurrent_connections (http-transport Requirement 14.6).
+add_executable(httplib_task_queue_test httplib_task_queue_test.cpp)
+target_link_libraries(httplib_task_queue_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(httplib_task_queue_test PRIVATE cxx_std_23)
+add_test(NAME httplib_task_queue_test COMMAND httplib_task_queue_test)
+
 # HTTPLib basic understanding test
 add_executable(httplib_basic_understanding_test httplib_basic_understanding_test.cpp)
 target_link_libraries(httplib_basic_understanding_test PRIVATE
