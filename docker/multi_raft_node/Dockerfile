@@ -27,8 +27,9 @@ RUN chmod +x /entrypoint.sh
 
 # Raft, data and control, in that order. Three ports because Requirement 2.4
 # keeps the data path off the control surface, and the surest separation is a
-# separate socket.
-EXPOSE 7000 7001 7002
+# separate socket. 7003 is the elastic capacity control plane, served only by
+# a host started with CAPACITY_ROLE=controller.
+EXPOSE 7000 7001 7002 7003
 
 # Readiness is "every group has a leader", not "the process is up". A driver
 # that starts offering load while the cluster is still electing measures the

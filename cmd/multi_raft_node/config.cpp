@@ -231,12 +231,64 @@ Discovery — how the peer list is obtained
                              AuthFailure and looks like a credentials problem.
   --discovery-instance-id ID This instance's id. Empty asks IMDS.
 
+Elastic shard capacity (.kiro/specs/elastic-shard-capacity/, task 16)
+  --capacity-role ROLE       off | controller | member (default off). Off is
+                             the measurement host, unchanged. A controller runs
+                             the capacity controller over docker_quorum_manager
+                             and serves its control plane; a member's
+                             placement-driver hooks call that control plane.
+                             Needs --transport httplib --serializer json.
+  --capacity-port P          The controller's control-plane port (default 7003).
+  --capacity-controller H:P  Where a member reaches the controller.
+  --capacity-cluster NAME    docker_quorum_manager's cluster name.
+  --capacity-network NAME    The container network new machines join.
+  --capacity-image IMAGE     The image new machines run.
+  --capacity-docker-url URL  The container API (default
+                             unix:///var/run/docker.sock; a rootless Podman
+                             socket mounted there works too).
+  --capacity-max-nodes N     The controller's ceiling; 0 derives 3x the floor.
+  --capacity-shards-high X   Scale out above X shards per node (default 200).
+  --capacity-shards-low X    Scale in at or below X (default 80).
+  --capacity-sustained MS    How long a crossing must last (default 300000).
+  --capacity-heartbeat MS    Placement-driver heartbeat (default 1000).
+  --capacity-dry-run 0|1     Decide and log only (default 0).
+  --capacity-join-env K=V    Environment for each new machine. Repeatable.
+  --split-keys N             Split a shard past N keys; 0 is off (default 0).
+  --groups 0                 Allowed for a member only: a new machine starts
+                             empty and its replicas arrive by lazy creation.
+
   --config FILE              Read any of the above as `key=value` lines.
   --help                     This text.
 )";
 }
 
 namespace {
+
+[[nodiscard]] auto parse_capacity_role(const std::string& value) -> capacity_role {
+    if (value == "off") {
+        return capacity_role::off;
+    }
+    if (value == "controller") {
+        return capacity_role::controller;
+    }
+    if (value == "member") {
+        return capacity_role::member;
+    }
+    throw std::runtime_error(
+        "multi_raft_node: --capacity-role must be off, controller or member, got " + value);
+}
+
+[[nodiscard]] auto to_double(const std::string& s, const char* what) -> double {
+    try {
+        std::size_t used = 0;
+        const double v = std::stod(s, &used);
+        if (used == s.size()) {
+            return v;
+        }
+    } catch (const std::exception&) {
+    }
+    throw std::runtime_error(std::string("multi_raft_node: ") + what + " is not a number: " + s);
+}
 
 [[nodiscard]] auto parse_discovery(const std::string& value) -> discovery_mode {
     if (value == "static" || value == "static-list") {
@@ -326,6 +378,36 @@ auto parse_node_options(int argc, char** argv) -> node_options {
                 o._discovery_instance_id = value;
             } else if (flag == "--advertise") {
                 o._advertise_address = value;
+            } else if (flag == "--capacity-role") {
+                o._capacity_role = parse_capacity_role(value);
+            } else if (flag == "--capacity-port") {
+                o._capacity_port = static_cast<std::uint16_t>(to_u64(value, flag.c_str()));
+            } else if (flag == "--capacity-controller") {
+                o._capacity_controller = value;
+            } else if (flag == "--capacity-cluster") {
+                o._capacity_cluster = value;
+            } else if (flag == "--capacity-network") {
+                o._capacity_network = value;
+            } else if (flag == "--capacity-image") {
+                o._capacity_image = value;
+            } else if (flag == "--capacity-docker-url") {
+                o._capacity_docker_url = value;
+            } else if (flag == "--capacity-max-nodes") {
+                o._capacity_max_nodes = static_cast<std::size_t>(to_u64(value, flag.c_str()));
+            } else if (flag == "--capacity-shards-high") {
+                o._capacity_shards_high = to_double(value, flag.c_str());
+            } else if (flag == "--capacity-shards-low") {
+                o._capacity_shards_low = to_double(value, flag.c_str());
+            } else if (flag == "--capacity-sustained") {
+                o._capacity_sustained = to_ms(value, flag.c_str());
+            } else if (flag == "--capacity-heartbeat") {
+                o._capacity_heartbeat = to_ms(value, flag.c_str());
+            } else if (flag == "--capacity-dry-run") {
+                o._capacity_dry_run = to_u64(value, flag.c_str()) != 0;
+            } else if (flag == "--capacity-join-env") {
+                o._capacity_join_env.push_back(value);
+            } else if (flag == "--split-keys") {
+                o._split_keys = static_cast<std::size_t>(to_u64(value, flag.c_str()));
             } else {
                 throw std::runtime_error("multi_raft_node: unknown option " + flag);
             }
@@ -392,8 +474,28 @@ auto parse_node_options(int argc, char** argv) -> node_options {
             out._voters.push_back(id);
         }
     }
-    if (out._groups == 0) {
-        throw std::runtime_error("multi_raft_node: --groups must be at least 1");
+    // A member may start empty: that is what a machine the controller just
+    // provisioned is, and its replicas arrive by lazy creation.
+    if (out._groups == 0 && out._capacity_role != capacity_role::member) {
+        throw std::runtime_error(
+            "multi_raft_node: --groups must be at least 1 (0 only with --capacity-role member)");
+    }
+    if (out._capacity_role == capacity_role::member && out._capacity_controller.empty()) {
+        throw std::runtime_error(
+            "multi_raft_node: --capacity-role member requires --capacity-controller HOST:PORT");
+    }
+    if (out._capacity_role == capacity_role::controller &&
+        (out._capacity_cluster.empty() || out._capacity_network.empty() ||
+         out._capacity_image.empty())) {
+        throw std::runtime_error(
+            "multi_raft_node: --capacity-role controller requires --capacity-cluster, "
+            "--capacity-network and --capacity-image: they are what a new machine is made of");
+    }
+    if (out._capacity_role != capacity_role::off &&
+        (out._transport != node_transport::httplib || out._serializer != wire_serializer::json)) {
+        throw std::runtime_error(
+            "multi_raft_node: --capacity-role needs --transport httplib --serializer json, the "
+            "one stack the control plane is compiled into");
     }
     if (out._persistence != persistence_mode::memory && out._data_dir.empty()) {
         throw std::runtime_error(

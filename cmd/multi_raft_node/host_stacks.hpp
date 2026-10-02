@@ -241,7 +241,17 @@ template<typename Stack> struct host_types {
 /// terminates the process, because `~group_state` destroys unstopped nodes
 /// through a deferred closure's reference — a failure mode that is a crash
 /// rather than a failed assertion, which is why it has its own test.
-template<typename Stack> auto run_host(const node_options& opt) -> int {
+/// @brief What a host with no elastic capacity adds to its configuration:
+///        nothing. See `capacity_plane.hpp` for the one that adds something,
+///        which only `run_httplib_json.cpp` instantiates — keeping the
+///        controller's templates out of the other three translation units is
+///        the same compile-memory budget the split into four files protects.
+struct no_capacity {
+    template<typename Config> auto configure(Config&, const node_options&) -> void {}
+};
+
+template<typename Stack, typename Capacity = no_capacity>
+auto run_host(const node_options& opt, Capacity capacity = {}) -> int {
     using types = host_types<Stack>;
     using host_type = kythira::multi_raft<types, std::string, std::uint64_t>;
     using config_type = kythira::multi_raft_config<types, std::string, std::uint64_t>;
@@ -272,6 +282,7 @@ template<typename Stack> auto run_host(const node_options& opt) -> int {
     cfg.automatic_split_merge_enabled = false;
     cfg.heartbeat_interval = std::chrono::milliseconds{0};
     cfg.partitioner = kythira::make_partitioner<std::string>(kythira::testing::kv_partitioner{});
+    capacity.configure(cfg, opt);
 
     auto host = std::make_unique<host_type>(std::move(cfg));
 
