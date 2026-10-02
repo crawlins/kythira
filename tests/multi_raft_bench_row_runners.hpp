@@ -118,4 +118,14 @@ auto write_proxygen_json(const write_row_spec& spec, const row_observer& observe
 auto smoke_proxygen_json(const row_observer& observer) -> void;
 #endif
 
+// ── libcoap ──────────────────────────────────────────────────────────────────
+
+#if defined(KYTHIRA_BENCH_HAS_COAP)
+/// The CoAP row (Requirement 17a). JSON only: the question it answers is what
+/// one shared client costs N groups, and the encoding axis is already answered
+/// on the HTTP rows.
+auto write_coap_json(const write_row_spec& spec, const row_observer& observer) -> repeated_result;
+auto smoke_coap_json(const row_observer& observer) -> void;
+#endif
+
 }  // namespace kythira::testing::rows

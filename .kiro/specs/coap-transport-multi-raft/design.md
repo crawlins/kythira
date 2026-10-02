@@ -79,11 +79,15 @@ The capability table, kept in this section and mirrored by the assertions:
 
 | | libcoap | libnyoci | cantcoap |
 |---|---|---|---|
-| `network_client` / `network_server` | yes (asserted by this work) | yes | yes |
+| `network_client` / `network_server` | yes | yes | yes |
 | pre-vote | no | no | no |
 | log fetch | no | no | no |
 | cluster join / leave | no | no | no |
-| timeout-now | **added here** | **added here** | **added here** |
+| timeout-now | yes | yes | yes |
+
+The same rows live in `tests/coap_capability_table.hpp`, checked against each
+backend by its `coap_*_concept_conformance_test`, and as `static_assert`s at the
+foot of each backend header. Change all three together.
 
 Absent extensions are not a defect: `node<Types>` detects them with
 `if constexpr` and does without. They are only a defect when undocumented.
@@ -454,7 +458,8 @@ nothing to stand on.
 
 ## 10. Open questions
 
-1. **Which backends get `TimeoutNow`.** All three is the clean answer, but
+1. **Which backends get `TimeoutNow`.** *Resolved: all three, at
+   `/raft/timeout_now`, always confirmable.* All three is the clean answer, but
    libnyoci and cantcoap are opt-in and own their own reliability and
    block-wise machinery, so the cost is not one-third each. If only libcoap
    ships it in phase 4, the capability table must say so and the negative
@@ -469,7 +474,12 @@ nothing to stand on.
    payloads with more blocks. Whether the existing block transfer pipelines or
    serialises per block was not established here, and it decides whether
    batching helps CoAP or hurts it.
-4. **`EXCHANGE_LIFETIME` retention cost.** 247 s of (peer, Message ID) pairs at
+4. **`EXCHANGE_LIFETIME` retention cost.** *Resolved by task 4: the table
+   holds at most one entry per Message ID per peer, so it is bounded by the
+   16-bit space. Measured at 40N messages per second for one peer, N = 1 holds
+   about 9,900 entries (under 0.5 MB of heap); N = 8 and N = 64 both saturate
+   at 65,536 entries (3 to 4 MB). Sweeps are amortised rather than per message
+   (`coap_exchange_table.hpp`).* 247 s of (peer, Message ID) pairs at
    multi-Raft rates is a large map — 40N per second per peer. A bounded
    structure keyed on the recent window may be needed rather than a plain map
    with a TTL sweep; phase 2's tests should measure the memory before this is

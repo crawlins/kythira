@@ -1207,6 +1207,16 @@ function(kythira_wire_multi_raft_bench target)
         message(STATUS "${target}: proxygen rows skipped "
                        "(requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
     endif()
+    # The CoAP row: .kiro/specs/multi-raft-performance/ Requirement 17a and
+    # .kiro/specs/coap-transport-multi-raft/ task 14. libcoap itself and
+    # LIBCOAP_AVAILABLE arrive through network_simulator; this only tells the
+    # harness the row exists.
+    if(LIBCOAP_FOUND)
+        target_compile_definitions(${target} ${_wire_scope} KYTHIRA_BENCH_HAS_COAP)
+        target_link_libraries(${target} ${_wire_scope} network_simulator)
+    else()
+        message(STATUS "${target}: coap row skipped (requires libcoap)")
+    endif()
     if(PROTOBUF_SERIALIZER_FOUND)
         target_compile_definitions(${target} ${_wire_scope} KYTHIRA_BENCH_HAS_PROTOBUF)
         target_link_libraries(${target} ${_wire_scope} raft_protobuf_serializer)
@@ -1305,6 +1315,7 @@ add_library(multi_raft_bench_rows STATIC
     bench_rows/beast_protobuf.cpp
     bench_rows/beast_ion.cpp
     bench_rows/proxygen_json.cpp
+    bench_rows/coap_json.cpp
 )
 target_link_libraries(multi_raft_bench_rows PUBLIC kythira_test_pch)
 target_precompile_headers(multi_raft_bench_rows REUSE_FROM kythira_test_pch)
@@ -1746,6 +1757,10 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     )
     target_compile_features(coap_concept_conformance_test PRIVATE cxx_std_23)
     add_test(NAME coap_concept_conformance_test COMMAND coap_concept_conformance_test)
+    # >= the sum of the file's per-case boost budgets (eight cases at 15s, two
+    # at 30s), so CTest never kills a run Boost would have let finish; scaled
+    # with them by KYTHIRA_TEST_TIMEOUT_SCALE at the bottom of this file.
+    set_tests_properties(coap_concept_conformance_test PROPERTIES TIMEOUT 180 LABELS "coap;unit")
 
     # CoAP message serialization property test needs Boost.JSON
     add_executable(coap_message_serialization_property_test coap_message_serialization_property_test.cpp)
@@ -1852,6 +1867,154 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
 
     else()
         message(STATUS "coap_duplicate_detection_property_test: skipped (requires Folly)")
+    endif()
+    # Duplicate detection keyed by (peer, Message ID, token) --
+    # .kiro/specs/coap-transport-multi-raft/ tasks 3-4. The table test drives
+    # coap_exchange_table with an injected clock and needs nothing else; the
+    # peer test sends hand-built datagrams from raw sockets to a real server on
+    # an ephemeral port. Each TIMEOUT is >= the sum of its file's per-case
+    # boost budgets and is scaled by KYTHIRA_TEST_TIMEOUT_SCALE below.
+    add_executable(coap_exchange_table_test coap_exchange_table_test.cpp)
+    target_link_libraries(coap_exchange_table_test PRIVATE Boost::unit_test_framework)
+    target_compile_features(coap_exchange_table_test PRIVATE cxx_std_23)
+    add_test(NAME coap_exchange_table_test COMMAND coap_exchange_table_test)
+    set_tests_properties(coap_exchange_table_test PROPERTIES TIMEOUT 270 LABELS "coap;unit")
+    if(TARGET Folly::folly)
+        add_executable(coap_duplicate_detection_peer_test coap_duplicate_detection_peer_test.cpp)
+        target_link_libraries(coap_duplicate_detection_peer_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        target_compile_features(coap_duplicate_detection_peer_test PRIVATE cxx_std_23)
+        add_test(NAME coap_duplicate_detection_peer_test COMMAND coap_duplicate_detection_peer_test)
+        set_tests_properties(coap_duplicate_detection_peer_test PROPERTIES TIMEOUT 100 LABELS "coap;integration")
+    else()
+        message(STATUS "coap_duplicate_detection_peer_test: skipped (requires Folly)")
+    endif()
+    # node<Types> over a real CoAP transport: election, replication, leader
+    # failover and TimeoutNow leadership transfer on three loopback nodes --
+    # .kiro/specs/coap-transport-multi-raft/ tasks 5-6. The first test in the
+    # tree to run Raft over CoAP at all. Raft timings and waits are scaled with
+    # KYTHIRA_TEST_TIMEOUT_SCALE (coap_node_cluster.hpp), ports are ephemeral.
+    # TIMEOUT >= the sum of the per-case boost budgets (60+90+120+90).
+    if(TARGET Folly::folly)
+        add_executable(coap_raft_node_integration_test coap_raft_node_integration_test.cpp)
+        target_link_libraries(coap_raft_node_integration_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+            Folly::folly
+        )
+        target_compile_features(coap_raft_node_integration_test PRIVATE cxx_std_23)
+        add_test(NAME coap_raft_node_integration_test COMMAND coap_raft_node_integration_test)
+        set_tests_properties(coap_raft_node_integration_test PROPERTIES TIMEOUT 380 LABELS "coap;integration;raft")
+    else()
+        message(STATUS "coap_raft_node_integration_test: skipped (requires Folly)")
+    endif()
+    # multi_raft over the libcoap backend: two groups sharing one CoAP client
+    # and server per host, per-group isolation, a split, a merge and a
+    # TimeoutNow-backed scatter -- coap-transport-multi-raft task 13. Raft
+    # timings and waits scale with KYTHIRA_TEST_TIMEOUT_SCALE; ports are
+    # ephemeral. TIMEOUT >= the sum of the per-case boost budgets.
+    if(TARGET Folly::folly)
+        add_executable(multi_raft_coap_test multi_raft_coap_test.cpp)
+        target_link_libraries(multi_raft_coap_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+            Folly::folly
+        )
+        target_compile_features(multi_raft_coap_test PRIVATE cxx_std_23)
+        add_test(NAME multi_raft_coap_test COMMAND multi_raft_coap_test)
+        set_tests_properties(multi_raft_coap_test PROPERTIES TIMEOUT 860
+            LABELS "coap;integration;raft;multi-raft")
+    else()
+        message(STATUS "multi_raft_coap_test: skipped (requires Folly)")
+    endif()
+    # TimeoutNow on the libcoap backend's wire: a round trip through every
+    # serializer this build has, CON regardless of use_confirmable_messages,
+    # and 5.01 without a handler -- coap-transport-multi-raft task 6. TIMEOUT
+    # covers up to four serializer instantiations plus two cases at 30s each.
+    if(TARGET Folly::folly)
+        add_executable(coap_timeout_now_test coap_timeout_now_test.cpp)
+        target_link_libraries(coap_timeout_now_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        if(PROTOBUF_SERIALIZER_FOUND)
+            target_compile_definitions(coap_timeout_now_test PRIVATE KYTHIRA_COAP_TEST_HAS_PROTOBUF)
+            target_link_libraries(coap_timeout_now_test PRIVATE raft_protobuf_serializer)
+        endif()
+        if(TARGET raft_ion_serializer)
+            target_link_libraries(coap_timeout_now_test PRIVATE raft_ion_serializer)
+        endif()
+        target_compile_features(coap_timeout_now_test PRIVATE cxx_std_23)
+        add_test(NAME coap_timeout_now_test COMMAND coap_timeout_now_test)
+        set_tests_properties(coap_timeout_now_test PROPERTIES TIMEOUT 190 LABELS "coap;integration")
+    else()
+        message(STATUS "coap_timeout_now_test: skipped (requires Folly)")
+    endif()
+    # The opt-in Raft-rate timer profile: RFC 7252 defaults pinned field by
+    # field, the profile's shorter timers, and InstallSnapshot read off the
+    # wire as CON under it -- coap-transport-multi-raft task 12.
+    if(TARGET Folly::folly)
+        add_executable(coap_raft_rate_profile_test coap_raft_rate_profile_test.cpp)
+        target_link_libraries(coap_raft_rate_profile_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        target_compile_features(coap_raft_rate_profile_test PRIVATE cxx_std_23)
+        add_test(NAME coap_raft_rate_profile_test COMMAND coap_raft_rate_profile_test)
+        set_tests_properties(coap_raft_rate_profile_test PROPERTIES TIMEOUT 60 LABELS "coap;unit")
+    else()
+        message(STATUS "coap_raft_rate_profile_test: skipped (requires Folly)")
+    endif()
+    # The libcoap client's I/O thread in readiness and paced modes: burst
+    # drain, wake on readiness and on send, retransmission and multicast
+    # deadlines under a long wait cap, idle wake rate, prompt shutdown, and
+    # the lock staying free while the thread waits --
+    # coap-client-event-driven-io task 6. Each case runs both modes itself;
+    # its paced twin below only changes what `automatic` resolves to.
+    if(TARGET Folly::folly AND LIBCOAP_FOUND)
+        add_executable(coap_io_wait_mode_test coap_io_wait_mode_test.cpp)
+        target_link_libraries(coap_io_wait_mode_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        target_compile_features(coap_io_wait_mode_test PRIVATE cxx_std_23)
+        add_test(NAME coap_io_wait_mode_test COMMAND coap_io_wait_mode_test)
+        set_tests_properties(coap_io_wait_mode_test PROPERTIES TIMEOUT 300 LABELS "coap;integration;libcoap")
+    else()
+        message(STATUS "coap_io_wait_mode_test: skipped (requires Folly and libcoap)")
+    endif()
+    # Task 1's gate probe for the same spec: checks design §1's libcoap claims
+    # (L1-L7) against whatever libcoap this build links. A measurement, not a
+    # test, so it is not registered with ctest and not built by default:
+    #   cmake --build build --target coap_io_probe && build/tests/coap_io_probe
+    if(LIBCOAP_FOUND)
+        add_executable(coap_io_probe EXCLUDE_FROM_ALL coap_io_probe.cpp)
+        target_link_libraries(coap_io_probe PRIVATE network_simulator)
+        target_compile_features(coap_io_probe PRIVATE cxx_std_23)
+    endif()
+    # oscore_credentials::id_context through libcoap's own OSCORE: matched
+    # pair talks, mismatched does not, absent changes nothing --
+    # coap-transport-multi-raft task 8.
+    if(TARGET Folly::folly)
+        add_executable(coap_oscore_id_context_test coap_oscore_id_context_test.cpp)
+        target_link_libraries(coap_oscore_id_context_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        target_compile_features(coap_oscore_id_context_test PRIVATE cxx_std_23)
+        add_test(NAME coap_oscore_id_context_test COMMAND coap_oscore_id_context_test)
+        set_tests_properties(coap_oscore_id_context_test PROPERTIES TIMEOUT 100 LABELS "coap;oscore;integration")
+    else()
+        message(STATUS "coap_oscore_id_context_test: skipped (requires Folly)")
     endif()
     # CoAP DTLS connection establishment property test needs Boost.JSON
     if(TARGET Folly::folly)
@@ -5716,6 +5879,27 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(oscore_rfc8613_vectors_test PROPERTIES
         TIMEOUT 60 LABELS "oscore;security;unit")
 
+    # One OSCORE Security Context per (peer, Raft group): ID Context derivation,
+    # bounded recipient-side derivation, zeroization, and the replay-window
+    # property the per-group contexts exist for -- coap-transport-multi-raft
+    # tasks 9-11. Transport-neutral like the vectors test; Folly only for the
+    # placement driver's futures in the group-id reuse case.
+    add_executable(oscore_group_contexts_test oscore_group_contexts_test.cpp)
+    target_link_libraries(oscore_group_contexts_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+    )
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(oscore_group_contexts_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(TARGET Folly::folly)
+        target_link_libraries(oscore_group_contexts_test PRIVATE Folly::folly)
+    endif()
+    target_compile_features(oscore_group_contexts_test PRIVATE cxx_std_23)
+    add_test(NAME oscore_group_contexts_test COMMAND oscore_group_contexts_test)
+    set_tests_properties(oscore_group_contexts_test PROPERTIES
+        TIMEOUT 60 LABELS "oscore;security;unit")
+
     # Everything in oscore.hpp *around* the cryptography the vectors test pins: the
     # message codec, the Class E/U split, inner block options, and the request /
     # response binding. Links no CoAP backend on purpose -- the header is
@@ -5734,6 +5918,53 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(oscore_transport_neutral_test PROPERTIES
         TIMEOUT 60 LABELS "oscore;security;unit")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
+
+# ── libcoap client I/O wait modes: paced twins ───────────────────────────────
+# .kiro/specs/coap-client-event-driven-io/ Requirement 6.5: the libcoap
+# client's I/O thread has two wait modes, and CI must run the whole CoAP suite
+# in both from one build. Every CoAP test above runs in the default mode
+# (readiness wherever libcoap has epoll, which is every build the project
+# uses); this registers a `<name>_paced` twin of each that runs the same
+# binary with KYTHIRA_COAP_IO_WAIT_MODE=paced, which the client honours when
+# its config leaves io_wait_mode at automatic.
+#
+# A twin keeps every label except the CoAP ones and gains `paced_io`, so the
+# CI exclusions (slow, performance, ...) still apply to it, and `-L coap` --
+# the coap-flake-measure workflow's default selection, which is a regex --
+# selects exactly what it selected before. libnyoci and cantcoap tests are
+# skipped: their backends have their own loops and ignore the variable.
+# Placed before the timeout scaling below so twins are scaled too.
+if(KYTHIRA_BUILD_COAP_TRANSPORT AND LIBCOAP_FOUND)
+    get_property(_kythira_coap_tests DIRECTORY PROPERTY TESTS)
+    foreach(_test IN LISTS _kythira_coap_tests)
+        if(_test MATCHES "nyoci|cantcoap" OR NOT TARGET ${_test})
+            continue()
+        endif()
+        get_test_property(${_test} LABELS _labels)
+        if(NOT _labels)
+            set(_labels "")
+        endif()
+        # Not every CoAP test is labelled (several predate the labels), so
+        # the name counts as well.
+        if(NOT _test MATCHES "coap" AND NOT _labels MATCHES "coap")
+            continue()
+        endif()
+        set(_twin_labels paced_io)
+        foreach(_label IN LISTS _labels)
+            if(NOT _label MATCHES "coap")
+                list(APPEND _twin_labels ${_label})
+            endif()
+        endforeach()
+        add_test(NAME ${_test}_paced COMMAND ${_test})
+        set_tests_properties(${_test}_paced PROPERTIES
+            LABELS "${_twin_labels}"
+            ENVIRONMENT "KYTHIRA_COAP_IO_WAIT_MODE=paced")
+        get_test_property(${_test} TIMEOUT _timeout)
+        if(_timeout)
+            set_tests_properties(${_test}_paced PROPERTIES TIMEOUT ${_timeout})
+        endif()
+    endforeach()
+endif()
 
 # ── Test-timeout scaling for slow build configurations ───────────────────────
 # A coverage build (-DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug) runs the

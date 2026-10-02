@@ -119,8 +119,10 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -288,6 +290,13 @@ BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_proxygen,
 }
 #endif
 
+#if defined(KYTHIRA_BENCH_HAS_COAP)
+BOOST_AUTO_TEST_CASE(a_kv_cluster_commits_over_coap,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(600))) {
+    rows::smoke_coap_json(suite_observer());
+}
+#endif
+
 // ── the transport axis ───────────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_CASE(write_throughput_by_transport,
@@ -324,6 +333,157 @@ BOOST_AUTO_TEST_CASE(write_throughput_by_transport,
 #endif
 #if !defined(KYTHIRA_BENCH_HAS_PROXYGEN)
     BOOST_TEST_MESSAGE("  proxygen row: NOT RUN (KYTHIRA_BENCH_HAS_PROXYGEN undefined)");
+#endif
+}
+
+// ── the group-count axis and the shared serialization point ──────────────────
+
+namespace {
+
+/// @brief The median repetition's per-group distribution, printed so that a
+///        starving group is visible beside a healthy mean (Requirement 17a.2).
+///
+/// The one-line summary leads — slowest and fastest group by p50, and how many
+/// groups completed nothing — because at 64 groups the full listing is 64
+/// lines; the listing follows for anyone who needs the group that was slow.
+auto report_per_group(const repeated_result& row, std::size_t groups) -> void {
+    const auto& run = row.median_run();
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1);
+    const std::size_t silent = groups > run._per_group.size() ? groups - run._per_group.size() : 0;
+    if (run._per_group.empty()) {
+        out << "    per group: no group completed a write\n";
+        BOOST_TEST_MESSAGE(out.str());
+        return;
+    }
+    const auto [fastest, slowest] =
+        std::minmax_element(run._per_group.begin(), run._per_group.end(),
+                            [](const auto& a, const auto& b) { return a._p50 < b._p50; });
+    out << "    per group (median run): p50 from " << kythira::testing::us(fastest->_p50)
+        << " us (group " << fastest->_group << ") to " << kythira::testing::us(slowest->_p50)
+        << " us (group " << slowest->_group << "); " << silent << " of " << groups
+        << " groups completed no write\n";
+    for (const auto& g : run._per_group) {
+        out << "      group " << g._group << ": n=" << g._completed
+            << " p50=" << kythira::testing::us(g._p50) << " us p95=" << kythira::testing::us(g._p95)
+            << " us p99=";
+        if (g._p99) {
+            out << kythira::testing::us(*g._p99) << " us";
+        } else {
+            out << "unavailable";
+        }
+        out << " max=" << kythira::testing::us(g._max) << " us\n";
+    }
+    BOOST_TEST_MESSAGE(out.str());
+}
+
+}  // namespace
+
+/// Requirement 17a, and `.kiro/specs/coap-transport-multi-raft/` task 14: the
+/// same write workload at N = 1, 8 and 64 groups on every transport row, with
+/// the latency distribution reported per group as well as in aggregate.
+///
+/// Everything but `_groups` is held at the standard row's values, including
+/// the operation count — 1920, so that at 64 groups each group still sees about
+/// 30 writes. That is enough for a per-group p50 and p95 and deliberately not
+/// for a per-group p99, which the row reports as unavailable rather than
+/// computing from too few samples.
+///
+/// **Time spent waiting on the serialization point** is the transport's own
+/// figure where it has one. CoAP's is `KYTHIRA_COAP_SEND_PROBE`: run this case
+/// with that variable set and every send prints its `lock_wait_us` and its
+/// `group`, which `scripts/coap-send-probe-summary.py` turns into per-group
+/// distributions. The HTTP rows have no such probe, and Requirement 17a.5 has
+/// their contention derived from the sweep itself rather than instrumented.
+BOOST_AUTO_TEST_CASE(write_latency_by_group_count,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10800))) {
+    BOOST_TEST_MESSAGE("write latency by group count, 128B values, JSON on the wire:");
+
+    constexpr std::array<std::size_t, 3> k_group_counts{1, 8, 64};
+    const auto spec_for = [](std::size_t groups, std::chrono::milliseconds tick) {
+        write_row_spec spec;
+        spec._operations = 1920;
+        spec._cluster._groups = groups;
+        spec._cluster._tick_interval = tick;
+        // Not a floor in the usual sense: one committed write per second is
+        // the line below which a row is not a measurement of a working
+        // cluster, and that is the only thing checked.
+        spec._floor_ops_per_second = 1.0;
+        return spec;
+    };
+
+    // Requirement 17a.1: a row that cannot reach a group count says where it
+    // stopped and why. So a failed precondition here ends that cell, not the
+    // case -- `_require` throws instead of `BOOST_REQUIRE`, and the sweep
+    // reports the reason and moves on. `expect_to_stop` is whether failing is
+    // a measured property of the row or a regression: for a row expected to
+    // stop, a missed precondition *or* a missed check is reported as a
+    // message; for the others both stay failures.
+    const auto sweep = [&](const std::string& label, rows::write_runner run,
+                           const std::function<std::chrono::milliseconds(std::size_t)>& tick_for,
+                           bool expect_to_stop) {
+        for (const auto groups : k_group_counts) {
+            const auto tick = tick_for(groups);
+            BOOST_TEST_MESSAGE("  " << label << ", " << groups << " group(s), " << tick.count()
+                                    << " ms tick:");
+            auto observer = suite_observer();
+            observer._require = [](bool ok, const std::string& why) {
+                if (!ok) {
+                    throw std::runtime_error(why);
+                }
+            };
+            if (expect_to_stop) {
+                observer._check = [](bool ok, const std::string& why) {
+                    if (!ok) {
+                        BOOST_TEST_MESSAGE("    not met (expected on this row): " << why);
+                    }
+                };
+            }
+            try {
+                auto row = run(spec_for(groups, tick), observer);
+                report(row);
+                report_per_group(row, groups);
+            } catch (const std::exception& e) {
+                BOOST_TEST_MESSAGE("    STOPPED at " << groups << " group(s): " << e.what());
+                BOOST_CHECK_MESSAGE(expect_to_stop,
+                                    label << " stopped at " << groups << " group(s): " << e.what());
+            }
+        }
+    };
+    const auto standard_tick = [](std::size_t) {
+        return standard_cluster_options()._tick_interval;
+    };
+
+    sweep("cpp-httplib", rows::write_httplib_json, standard_tick, false);
+#if defined(KYTHIRA_BENCH_HAS_BEAST)
+    sweep("beast", rows::write_beast_json, standard_tick, false);
+#else
+    BOOST_TEST_MESSAGE("  beast row: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
+#endif
+#if defined(KYTHIRA_BENCH_HAS_COAP)
+    // Both CoAP passes are expected to stop somewhere, and where is the
+    // finding (`doc/multi_raft_performance_comparison.md`, "The CoAP row").
+    //
+    // At the standard tick first, like every other row. The client drains
+    // replies once per 5 ms, the servers receive a fraction of what a 2 ms
+    // tick sends, and the backlog starves elections: no leader at 8 or 64
+    // groups, and no completed write at 1.
+    sweep("coap", rows::write_coap_json, standard_tick, true);
+    // Then with the tick at 10 ms per group, so the offered AppendEntries rate
+    // per peer is the same at every N. These rows are what the per-group
+    // latency and `lock_wait_us` figures come from, and they are **not
+    // comparable** to the HTTP rows above, which ran at 2 ms. One group still
+    // stops here, for a different reason: with all sixteen writers on one
+    // group its AppendEntries carry eight or more entries, pass the 1 KiB
+    // block size, and go block-wise.
+    sweep(
+        "coap (tick at 10 ms per group)", rows::write_coap_json,
+        [](std::size_t groups) {
+            return std::chrono::milliseconds{static_cast<std::int64_t>(10 * groups)};
+        },
+        true);
+#else
+    BOOST_TEST_MESSAGE("  coap row: NOT RUN (KYTHIRA_BENCH_HAS_COAP undefined)");
 #endif
 }
 

@@ -46,6 +46,17 @@
 
 namespace kythira {
 
+/// Whether one RPC's request travels as CoAP CON or follows the client's
+/// configuration. Raft retries most RPCs itself, so most may follow
+/// `coap_client_config::use_confirmable_messages`; two must not.
+/// InstallSnapshot is large and rare with no cheap retry above it, and
+/// TimeoutNow is one rare message whose loss costs a full election timeout
+/// (.kiro/specs/coap-transport-multi-raft/ Requirements 3.4, 6.4).
+enum class coap_message_reliability {
+    per_config,
+    always_confirmable,
+};
+
 // Message tracking structures - using callbacks to work with generic future types
 struct pending_message {
     std::string token;
@@ -88,6 +99,23 @@ struct received_message_info {
 
     received_message_info(std::uint16_t msg_id)
         : message_id(msg_id), received_time(std::chrono::steady_clock::now()) {}
+};
+
+// How the libcoap client's I/O thread waits between passes
+// (coap-client-event-driven-io spec, Requirement 6.1).
+//  - automatic: readiness when libcoap exposes an epoll descriptor
+//    (coap_context_get_coap_fd() >= 0), paced otherwise.
+//  - readiness: wait in poll() on that descriptor and a wake eventfd;
+//    construction fails if libcoap has no epoll descriptor.
+//  - paced: drain, then sleep io_paced_interval -- the pre-spec loop plus the
+//    drain. Forcing it is how the suite exercises the fallback on a build
+//    that has epoll.
+// Only the libcoap backend reads it; libnyoci and cantcoap have their own
+// loops (Requirement 9.4).
+enum class coap_io_wait_mode {
+    automatic,
+    readiness,
+    paced
 };
 
 // Configuration structures
@@ -137,6 +165,23 @@ struct coap_client_config {
     std::size_t max_cache_entries{100};
     std::chrono::milliseconds cache_ttl{60000};  // 1 minute
     bool enable_certificate_validation{true};
+
+    // I/O thread wait and drain (coap-client-event-driven-io spec, design
+    // §2 and §5). Tuning knobs with safe defaults, deliberately not Kconfig
+    // symbols.
+    coap_io_wait_mode io_wait_mode{coap_io_wait_mode::automatic};
+    // coap_io_process(NO_WAIT) steps per pass at most. Each step reads one
+    // datagram per ready socket, so this bounds one pass while leaving
+    // plenty of headroom over the ~15 replies a 5 ms backlog held at the
+    // multi-Raft matrix's rates.
+    std::size_t io_drain_budget{64};
+    // Longest readiness-mode wait when nothing is due. A safety net only:
+    // libcoap's own timers and open multicast windows are already in the
+    // timeout, so this mostly sets the idle wake rate (10/s).
+    std::chrono::milliseconds io_max_wait{100};
+    // Paced-mode sleep between passes; 5 ms is the pre-spec loop's pacing,
+    // so paced mode is never slower than it was.
+    std::chrono::milliseconds io_paced_interval{5};
 
     // Explicit channel-security mode (coap-transport-security spec). Left at
     // its default (mode == none), the legacy DTLS fields above continue to
@@ -197,6 +242,35 @@ struct coap_server_config {
     // semantics (Requirement 5.2).
     std::function<std::unique_ptr<edhoc_transport>()> edhoc_transport_factory;
 };
+
+/// Retransmission tuned for Raft-rate traffic, where the consensus layer
+/// retries on its own schedule and CON would duplicate it
+/// (.kiro/specs/coap-transport-multi-raft/ Requirement 6).
+///
+/// Why it exists: Raft already re-sends AppendEntries every heartbeat, so a
+/// confirmable heartbeat duplicates a reliability mechanism one layer up. And
+/// the defaults' 2000 ms ACK timeout against a ~50 ms heartbeat and a
+/// 150-300 ms election timeout leave the transport still retransmitting a
+/// message the consensus layer abandoned several elections ago. So the profile
+/// sends NON, and for the RPCs that stay CON (InstallSnapshot and TimeoutNow,
+/// see coap_message_reliability) it gives up in under two seconds rather than
+/// the defaults' tens of seconds.
+///
+/// Opt-in, and never inferred: a deployment with few groups on a lossy link is
+/// better served by the RFC 7252 defaults, which are unchanged, and "many
+/// groups" and "reliable link" are independent facts the transport cannot
+/// tell apart. Start from this and override fields as for any other config.
+[[nodiscard]] inline auto raft_rate_profile() -> coap_client_config {
+    coap_client_config config;
+    config.use_confirmable_messages = false;
+    // 250 + 500 + 1000 ms: three tries inside one InstallSnapshot RPC budget.
+    config.ack_timeout = std::chrono::milliseconds{250};
+    config.ack_random_factor_ms = std::chrono::milliseconds{125};
+    config.max_retransmit = 2;
+    config.retransmission_timeout = std::chrono::milliseconds{250};
+    config.max_retransmissions = 2;
+    return config;
+}
 
 // ── legacy field translation (coap-transport-security Requirement 8) ──────
 // Reproduces today's setup_dtls_context() field-inference exactly when

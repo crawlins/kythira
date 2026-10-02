@@ -1,8 +1,8 @@
 # Implementation Plan — CoAP under Multi-Raft
 
-## Status: Not started
+## Status: In progress — tasks 1–6, 8, 12 and 14 done; 7 implemented, unverified; 13 running without OSCORE
 
-**Last Updated**: August 27, 2026
+**Last Updated**: October 2, 2026
 
 This plan implements `.kiro/specs/coap-transport-multi-raft/design.md`. Seven
 phases, 14 tasks. Phases 1–2 fix defects that exist today and are independent
@@ -48,7 +48,7 @@ its own review.
 
 ## Phase 1: Concept Parity (Tasks 1–2)
 
-- [ ] 1. `static_assert` every backend against the same concept set
+- [x] 1. `static_assert` every backend against the same concept set
   - Add `network_client` / `network_server` assertions to the **libcoap**
     backend, which has none today while the two opt-in backends do — the
     default backend is currently the one whose conformance is unproven.
@@ -63,7 +63,7 @@ its own review.
     the wrong polarity fails the build (check by temporary edit, not by faith).
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
-- [ ] 2. A conformance test per backend
+- [x] 2. A conformance test per backend
   - One test per backend asserting the identical concept set, so a signature
     drift in one fails a test rather than silently narrowing that backend.
   - Follow the shape of the existing `coap_libnyoci_concept_conformance_test`
@@ -78,7 +78,7 @@ its own review.
 
 ## Phase 2: Duplicate Detection (Tasks 3–4)
 
-- [ ] 3. Key duplicate detection on (peer endpoint, Message ID)
+- [x] 3. Key duplicate detection on (peer endpoint, Message ID)
   - `is_duplicate_message()` / `record_received_message()` exist twice — the
     client's copy at coap_transport_impl.hpp:1778 and the server's at `:3482`,
     the one on the request path — and both key on the bare Message ID today.
@@ -99,7 +99,7 @@ its own review.
     and asserts no live message is discarded.
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 8.1, 8.2, 8.3_
 
-- [ ] 4. Bound the exchange table
+- [x] 4. Bound the exchange table
   - `EXCHANGE_LIFETIME` is 247 s, and a process leading N groups emits roughly
     `40N` Message IDs per second per peer, so a plain map with a TTL sweep may
     not be the right structure — measure before assuming it is.
@@ -114,7 +114,7 @@ its own review.
 
 ## Phase 3: The Gate (Task 5)
 
-- [ ] 5. `node<Types>` over a real CoAP transport — the first one
+- [x] 5. `node<Types>` over a real CoAP transport — the first one
   - No test in the repository instantiates a Raft node over any CoAP backend.
     The ~50 CoAP tests exercise the transport standalone: round-trips, DTLS,
     OSCORE vectors, block transfer.
@@ -137,7 +137,7 @@ its own review.
 
 ## Phase 4: Leadership Transfer (Tasks 6–7)
 
-- [ ] 6. `TimeoutNow` on the libcoap backend
+- [x] 6. `TimeoutNow` on the libcoap backend
   - `send_timeout_now` on the client and `register_timeout_now_handler` on the
     server, satisfying `network_client_with_timeout_now` /
     `network_server_with_timeout_now`; resource path `/raft/timeout_now`.
@@ -164,13 +164,20 @@ its own review.
   - Verify: for each backend that ships it, the same two tests as task 6; for
     each that does not, an assertion that the extension concept is *not*
     satisfied and a table row saying why.
+  - **Status (October 2, 2026):** shipped on both, asserted positive, with a
+    round-trip, CON-on-the-wire and 5.01 case in each backend's integration
+    test. Those cases compile but have not run: both backends bind AF_INET6
+    sockets, the machine they were written on has no IPv6, and CI builds
+    neither backend. The node-over-CoAP leadership-transfer test exists for
+    libcoap only. Tick this once both integration tests have passed on a host
+    with IPv6.
   - _Requirements: 3.5, 2.2, 2.3_
 
 ---
 
 ## Phase 5: Per-Group Security Contexts (Tasks 8–11)
 
-- [ ] 8. Wire up the ID Context that the key schedule already consumes
+- [x] 8. Wire up the ID Context that the key schedule already consumes
   - `security_context::_id_context` (oscore.hpp:1156) is fed into all three
     HKDF derivations — Sender Key, Recipient Key, Common IV — and is never
     assigned. Add `id_context` to `oscore_credentials`
@@ -245,7 +252,7 @@ its own review.
 
 ## Phase 6: The Whole Thing (Tasks 12–13)
 
-- [ ] 12. A Raft-rate timer profile, opt-in
+- [x] 12. A Raft-rate timer profile, opt-in
   - `raft_rate_profile()` returning a `coap_client_config` with shorter
     retransmission timers and non-confirmable heartbeats.
   - **Change no default.** `ack_timeout` 2000 ms, `max_retransmit` 4 and
@@ -275,12 +282,36 @@ its own review.
     load split scatters (which needs task 6's `TimeoutNow`); the OSCORE
     derivation counter shows one context per (peer, group) and no more.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 4.1, 8.1, 8.2, 8.3, 8.6_
+  - **Progress (October 2, 2026):** `tests/multi_raft_coap_test.cpp` runs
+    two groups over one shared libcoap client and server per host and passes
+    isolation, split, merge and scatter, without OSCORE. The OSCORE variant
+    and its derivation-counter check wait on how tasks 9–11 reach the libcoap
+    backend. Standing it up found three defects, two fixed here:
+    - **Fixed:** the libcoap client opened a new session (a new UDP socket)
+      for every RPC and never released it; multi-Raft exhausted a
+      20,000-descriptor limit in seconds. Sessions are now pooled per peer,
+      with NSTART raised to `max_concurrent_requests` so a shared session
+      does not serialize Raft behind RFC 7252's one-outstanding-CON default.
+    - **Fixed:** `node<Types>` sent InstallSnapshot by blocking on each
+      chunk's future, from inside an AppendEntries reply. On libcoap that
+      reply runs on the client's I/O thread, so the first snapshot froze the
+      client for every peer and every group. The transfer is now a chain of
+      continuations, one in flight per follower.
+    - **Fixed upstream, now asserted here:** after a split, writes to the
+      *non-derived* child never committed, on the in-process fabric as much
+      as on CoAP. Its replicas start from a snapshot with an empty log, and
+      neither side of AppendEntries treated `prevLogIndex` equal to the
+      snapshot's last included index as matching, so the leader re-sent the
+      snapshot forever. `fix(raft): match on the snapshot boundary so split
+      children replicate` (elastic shard capacity) fixed it in Raft core;
+      the split case here now writes to both children and checks each lands
+      only in its own.
 
 ---
 
 ## Phase 7: Measurement (Task 14)
 
-- [ ] 14. Quantify the shared client, and change nothing
+- [x] 14. Quantify the shared client, and change nothing
   - Drive N groups over one shared CoAP client for N in {1, 8, 64}; report per
     group the send-path latency distribution and the time spent waiting on the
     client's `_mutex`.
@@ -305,6 +336,17 @@ its own review.
     any remedy changes single-group behaviour too and earns its own review.
   - Verify: the benchmark runs at all three N values and the document exists
     with its measurements and its refuted hypotheses.
+  - **Done (October 2, 2026).** `coap_transport` is a fixture in
+    `tests/multi_raft_transport_harness.hpp` and `bench_rows/coap_json.cpp` the
+    row; `write_latency_by_group_count` sweeps 1/8/64 groups beside
+    cpp-httplib with per-group latency; the existing probe gained `group=`
+    and microsecond fields and `scripts/coap-send-probe-summary.py` reads it.
+    Results and five hypotheses in `doc/multi_raft_performance_comparison.md`,
+    "The CoAP row". The short version: the `_mutex` is **not** the binding
+    constraint (median wait 0 µs in every cell, tail not growing with N); the
+    client's 5 ms reply pacing is, at every group count on the standard 2 ms
+    tick; and one group is the worst case, because its batches go
+    block-wise. Nothing in the client was changed.
   - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5_
 
 ---

@@ -13,6 +13,7 @@
 // received_message_info / translate_legacy_fields() live here, deliberately
 // free of any libcoap type so the libnyoci backend can share them.
 #include <raft/coap_transport_config.hpp>
+#include <raft/coap_exchange_table.hpp>
 #include <raft/coap_edhoc.hpp>
 #include <raft/coap_ace_oauth.hpp>
 #include <raft/metrics.hpp>
@@ -26,6 +27,7 @@
 #include <network_simulator/network_simulator.hpp>
 
 #include <string>
+#include <string_view>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +42,8 @@
 #include <filesystem>
 #include <thread>
 #include <stop_token>
+
+#include <unistd.h>
 
 #include <raft/coap_utils.hpp>
 
@@ -241,6 +245,46 @@ struct multicast_response_collector {
           reject_callback(std::move(reject_cb)) {}
 };
 
+// What the libcoap client's I/O thread has done since construction
+// (coap-client-event-driven-io spec). Counters only ever grow; tests read
+// them to check that a burst drains in few passes and that an idle client
+// does not spin.
+struct coap_io_loop_stats {
+    // The mode actually running: readiness or paced, never automatic.
+    coap_io_wait_mode mode{coap_io_wait_mode::paced};
+    // Outer-loop iterations: drain, housekeeping, wait.
+    std::uint64_t passes{0};
+    // coap_io_process(NO_WAIT) calls made by the I/O thread.
+    std::uint64_t drain_steps{0};
+    // Passes that stopped at io_drain_budget with work still ready.
+    std::uint64_t budget_exhausted{0};
+    // Response and NACK handler invocations.
+    std::uint64_t dispatches{0};
+};
+
+// Owns one file descriptor and closes it on destruction. Used for the I/O
+// thread's wake eventfd so that it is closed only after _io_thread, which
+// is declared after it, has been joined -- including when a constructor
+// throws after the thread started (Requirement 5.3).
+class coap_owned_fd {
+public:
+    coap_owned_fd() = default;
+    coap_owned_fd(const coap_owned_fd&) = delete;
+    auto operator=(const coap_owned_fd&) -> coap_owned_fd& = delete;
+    ~coap_owned_fd() { reset(); }
+
+    [[nodiscard]] auto get() const noexcept -> int { return _fd; }
+    auto reset(int fd = -1) noexcept -> void {
+        if (_fd >= 0) {
+            ::close(_fd);
+        }
+        _fd = fd;
+    }
+
+private:
+    int _fd{-1};
+};
+
 // CoAP client class declaration
 template<typename Types>
 requires kythira::transport_types<Types>
@@ -278,6 +322,15 @@ public:
                                const kythira::install_snapshot_request<>& request,
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{30000})
         -> future_template<kythira::install_snapshot_response<>>;
+
+    /// Leadership transfer (Ongaro's dissertation §3.10): POST
+    /// /raft/timeout_now, satisfying network_client_with_timeout_now. Always
+    /// confirmable, whatever use_confirmable_messages says: one rare message
+    /// whose loss costs a whole election timeout is the case CoAP's own
+    /// retransmission is worth paying for.
+    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+                          std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::timeout_now_response<>>;
 
     // Multicast support. Resolves once `timeout` has elapsed with every
     // successful response that arrived in that window, one entry per
@@ -344,6 +397,10 @@ public:
     /// exposed for testing (Requirement 9.1).
     [[nodiscard]] auto security_provider() const -> const coap_security_provider*;
 
+    /// Counters for the I/O thread's passes and drain steps
+    /// (coap-client-event-driven-io spec), exposed for tests and probes.
+    [[nodiscard]] auto io_loop_stats() const -> coap_io_loop_stats;
+
 private:
     /// Retained alongside `_registry` because the multicast and
     /// serialization-cache paths still encode with a fixed serializer;
@@ -366,6 +423,24 @@ private:
     mutable logger_type _logger;
     std::jthread _auto_reload_thread;
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
+    // I/O thread wait state (coap-client-event-driven-io spec). All fixed in
+    // the constructor before _io_thread starts, and declared before it so
+    // that they outlive it. _io_coap_fd is libcoap's epoll descriptor, owned
+    // by the context (never closed here), or -1 in paced mode; _io_wake_fd
+    // is created in readiness mode only.
+    coap_io_wait_mode _io_mode{coap_io_wait_mode::paced};
+    int _io_coap_fd{-1};
+    coap_owned_fd _io_wake_fd;
+    // Set by signal_io_wake() before it writes the eventfd and cleared by the
+    // I/O thread after it drains it, so a burst of sends costs one write.
+    std::atomic<bool> _io_wake_pending{false};
+    std::atomic<std::uint64_t> _io_passes{0};
+    std::atomic<std::uint64_t> _io_drain_steps{0};
+    std::atomic<std::uint64_t> _io_budget_exhausted{0};
+    // Incremented by the response and NACK handlers, which run on the I/O
+    // thread inside coap_io_process(); paced mode's "did that step find
+    // work?" test.
+    std::atomic<std::uint64_t> _io_dispatches{0};
     // Pumps coap_io_process() on _coap_context for the lifetime of this
     // client -- without this, coap_register_response_handler()'s callback
     // (set up in the constructor) is never invoked by libcoap, and every
@@ -376,7 +451,9 @@ private:
 
     // Message tracking
     std::unordered_map<std::string, std::unique_ptr<pending_message>> _pending_requests;
-    std::unordered_map<std::uint16_t, received_message_info> _received_messages;
+    // Keyed on (peer endpoint, Message ID, token), not the Message ID alone:
+    // see coap_exchange_table.hpp for why the bare Message ID conflated peers.
+    coap_exchange_table _received_messages;
     std::unordered_map<std::string, std::unique_ptr<block_transfer_state>> _active_block_transfers;
     std::unordered_map<std::string, std::shared_ptr<multicast_response_collector>>
         _multicast_requests;
@@ -422,10 +499,13 @@ private:
     ///        extended (Requirement 7.3). CoAP needs this for the same reason
     ///        HTTP does — the request `Content-Format` is chosen before the peer
     ///        has said anything, so a wrong first guess has to be recoverable.
+    /// @param reliability Whether this request must travel as CON even when
+    ///        the configuration says NON (see coap_message_reliability).
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
-                  std::chrono::milliseconds timeout, std::vector<std::string> attempted = {})
-        -> future_template<Response>;
+                  std::chrono::milliseconds timeout,
+                  coap_message_reliability reliability = coap_message_reliability::per_config,
+                  std::vector<std::string> attempted = {}) -> future_template<Response>;
 
     auto get_endpoint_uri(std::uint64_t node_id) const -> std::string;
     auto generate_message_token() -> std::string;
@@ -440,8 +520,10 @@ private:
     // itself has internally given up.
     auto handle_nack(const std::string& token, const std::string& reason_description) -> void;
     auto handle_acknowledgment(std::uint16_t message_id) -> void;
-    auto is_duplicate_message(std::uint16_t message_id) -> bool;
-    auto record_received_message(std::uint16_t message_id) -> void;
+    auto is_duplicate_message(const std::string& peer, std::uint16_t message_id,
+                              std::string_view token) -> bool;
+    auto record_received_message(const std::string& peer, std::uint16_t message_id,
+                                 std::string_view token) -> void;
     auto retransmit_message(const std::string& token) -> void;
     auto cleanup_expired_messages() -> void;
     auto calculate_retransmission_timeout(std::size_t attempt) const -> std::chrono::milliseconds;
@@ -509,6 +591,20 @@ private:
                                    const std::string& sender_address) -> void;
     auto finalize_multicast_response_collection(const std::string& token) -> void;
     auto cleanup_expired_multicast_requests() -> void;
+    // Earliest close of an open multicast collection window, as a wait
+    // timeout from now (rounded up, so the window has closed when it
+    // expires); nullopt when none is open. Caller holds _mutex.
+    auto next_multicast_deadline_locked() const -> std::optional<std::chrono::milliseconds>;
+
+    // I/O thread (coap-client-event-driven-io spec, design §2, §3, §6).
+    // Wakes the I/O thread out of its readiness wait. Safe from any thread,
+    // with or without _mutex; a no-op in paced mode.
+    auto signal_io_wake() noexcept -> void;
+    auto run_io_loop(const std::stop_token& stop_token) -> void;
+    // One coap_io_process(NO_WAIT) under _mutex.
+    auto io_drain_step() -> void;
+    // Counts a finished pass; budget_hit when it stopped with work ready.
+    auto record_io_pass(bool budget_hit) -> void;
     auto handle_multicast_error(const std::string& token, const std::exception_ptr& error) -> void;
     // Records `response` if `token` belongs to an open multicast request.
     // Returns false when it does not, so the caller treats it as unicast.
@@ -559,6 +655,12 @@ public:
     auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
                                                const kythira::install_snapshot_request<>&)>
                                                handler) -> void;
+
+    /// Serves POST /raft/timeout_now, satisfying
+    /// network_server_with_timeout_now.
+    auto register_timeout_now_handler(
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+            handler) -> void;
 
     // Server lifecycle
     auto start() -> void;
@@ -641,7 +743,9 @@ private:
     std::atomic<std::size_t> _concurrent_requests{0};
 
     // Message tracking
-    std::unordered_map<std::uint16_t, received_message_info> _received_messages;
+    // Keyed on (peer endpoint, Message ID, token): two peers' independently
+    // numbered requests must never be taken for one another's retransmission.
+    coap_exchange_table _received_messages;
     std::unordered_map<std::string, std::unique_ptr<block_transfer_state>> _active_block_transfers;
     std::unordered_set<std::string> _multicast_groups;
 
@@ -669,6 +773,8 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        _timeout_now_handler;
 
     // Synchronization
     mutable std::mutex _mutex;
@@ -678,8 +784,10 @@ private:
     auto setup_dtls_context() -> void;
     auto send_error_response(coap_pdu_t* response, coap_pdu_code_t code, const std::string& message)
         -> void;
-    auto is_duplicate_message(std::uint16_t message_id) -> bool;
-    auto record_received_message(std::uint16_t message_id) -> void;
+    auto is_duplicate_message(const std::string& peer, std::uint16_t message_id,
+                              std::string_view token) -> bool;
+    auto record_received_message(const std::string& peer, std::uint16_t message_id,
+                                 std::string_view token) -> void;
     auto cleanup_expired_messages() -> void;
 
     // Resource handler template

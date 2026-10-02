@@ -61,6 +61,8 @@
 // received_message_info / translate_legacy_fields(). NOT
 // raft/coap_transport.hpp -- see above.
 #include <raft/coap_transport_config.hpp>
+#include <raft/coap_conformance_types.hpp>
+#include <raft/coap_exchange_table.hpp>
 #include <raft/coap_block_option.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
@@ -83,8 +85,10 @@
 #include <mutex>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -116,6 +120,7 @@ namespace kythira {
 inline constexpr const char* cantcoap_request_vote_path = "/raft/request_vote";
 inline constexpr const char* cantcoap_append_entries_path = "/raft/append_entries";
 inline constexpr const char* cantcoap_install_snapshot_path = "/raft/install_snapshot";
+inline constexpr const char* cantcoap_timeout_now_path = "/raft/timeout_now";
 
 /// How long the loop blocks in poll() before servicing timers. Bounds both
 /// retransmission granularity and how quickly stop() is noticed.
@@ -420,7 +425,24 @@ inline auto add_uri_path(CoapPDU& pdu, const std::string& path) -> void {
     return path;
 }
 
+/// The token of a parsed PDU, for the duplicate-detection key.
+[[nodiscard]] inline auto token_of(CoapPDU& pdu) -> std::string {
+    return {reinterpret_cast<const char*>(pdu.getTokenPointer()),
+            static_cast<std::size_t>(pdu.getTokenLength())};
+}
+
 #endif  // CANTCOAP_AVAILABLE
+
+/// A datagram's source as "[address]:port", the peer half of the
+/// duplicate-detection key (coap_exchange_table.hpp). RFC 7252 Section 4.4
+/// scopes a Message ID to its source endpoint, port included.
+[[nodiscard]] inline auto peer_endpoint(const sockaddr_in6& from) -> std::string {
+    std::array<char, INET6_ADDRSTRLEN> address{};
+    if (::inet_ntop(AF_INET6, &from.sin6_addr, address.data(), address.size()) == nullptr) {
+        return {};
+    }
+    return "[" + std::string{address.data()} + "]:" + std::to_string(ntohs(from.sin6_port));
+}
 
 }  // namespace cantcoap_detail
 
@@ -498,7 +520,18 @@ public:
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{30000})
         -> future_template<kythira::install_snapshot_response<>> {
         return send_rpc<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
-            target, cantcoap_install_snapshot_path, request, timeout);
+            target, cantcoap_install_snapshot_path, request, timeout,
+            coap_message_reliability::always_confirmable);
+    }
+
+    /// Leadership transfer (Requirement 3). Always sent confirmable, whatever
+    /// `use_confirmable_messages` says, exactly as the libcoap client does.
+    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+                          std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::timeout_now_response<>> {
+        return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+            target, cantcoap_timeout_now_path, request, timeout,
+            coap_message_reliability::always_confirmable);
     }
 
     [[nodiscard]] auto bound_port() const -> std::uint16_t {
@@ -553,7 +586,9 @@ private:
 
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
-                  std::chrono::milliseconds timeout) -> future_template<Response> {
+                  std::chrono::milliseconds timeout,
+                  coap_message_reliability reliability = coap_message_reliability::per_config)
+        -> future_template<Response> {
         auto promise = std::make_shared<promise_template<Response>>();
         auto future = promise->getFuture();
 
@@ -608,7 +643,8 @@ private:
                 },
                 [promise](std::exception_ptr error) { promise->setException(error); },
                 exchange->full_request, endpoint->second, resource_path,
-                _config.use_confirmable_messages);
+                reliability == coap_message_reliability::always_confirmable ||
+                    _config.use_confirmable_messages);
             exchange->expiry = std::chrono::steady_clock::now() + timeout;
 
             {
@@ -692,7 +728,7 @@ private:
                 const auto received = ::recvfrom(_socket.fd(), buffer.data(), buffer.size(), 0,
                                                  reinterpret_cast<sockaddr*>(&from), &from_length);
                 if (received > 0) {
-                    handle_datagram(buffer.data(), static_cast<int>(received));
+                    handle_datagram(buffer.data(), static_cast<int>(received), from);
                 }
             }
             service_timers();
@@ -842,7 +878,7 @@ private:
         return static_cast<std::uint16_t>(_message_id_counter.fetch_add(1));
     }
 
-    auto handle_datagram(std::uint8_t* data, int length) -> void {
+    auto handle_datagram(std::uint8_t* data, int length, const sockaddr_in6& from) -> void {
         std::vector<std::byte> bytes(reinterpret_cast<std::byte*>(data),
                                      reinterpret_cast<std::byte*>(data) + length);
         std::optional<oscore::request_binding> binding_for_response;
@@ -877,7 +913,7 @@ private:
         if (pdu.validate() != 1) {
             return;
         }
-        if (is_duplicate(pdu.getMessageID())) {
+        if (is_duplicate(cantcoap_detail::peer_endpoint(from), pdu.getMessageID(), token)) {
             return;  // Requirement 4.4.
         }
         handle_response_locked(exchange, token, pdu);
@@ -959,17 +995,12 @@ private:
         return std::make_exception_ptr(coap_client_error(value, context + ": client error"));
     }
 
-    /// Requirement 4.4: suppress a Message ID seen recently.
-    [[nodiscard]] auto is_duplicate(std::uint16_t message_id) -> bool {
-        const auto now = std::chrono::steady_clock::now();
-        std::erase_if(_seen, [now](const auto& entry) {
-            return now - entry.second.received_time > std::chrono::seconds{60};
-        });
-        if (_seen.contains(message_id)) {
-            return true;
-        }
-        _seen.emplace(message_id, received_message_info{message_id});
-        return false;
+    /// Requirement 4.4: suppress an exchange seen recently. Keyed on (peer,
+    /// Message ID, token), not the Message ID alone: one socket talks to every
+    /// server, and each numbers its separate responses independently.
+    [[nodiscard]] auto is_duplicate(const std::string& peer, std::uint16_t message_id,
+                                    std::string_view token) -> bool {
+        return _seen.check_and_record(peer, message_id, token);
     }
 
     /// Retransmission with exponential backoff, and expiry (Requirements 4.1,
@@ -1031,7 +1062,7 @@ private:
     mutable std::mutex _mutex;
     std::unordered_map<std::string, std::unique_ptr<pending_exchange>> _pending;
     std::vector<std::string> _to_start;
-    std::unordered_map<std::uint16_t, received_message_info> _seen;
+    coap_exchange_table _seen;
     bool _shutting_down{false};
     std::atomic<std::uint64_t> _token_counter{1};
     std::atomic<std::uint16_t> _message_id_counter{1};
@@ -1100,6 +1131,18 @@ public:
                                                handler) -> void {
         const std::lock_guard lock(_mutex);
         _install_snapshot_handler = std::move(handler);
+    }
+
+    /// Optional extension (network_server_with_timeout_now). Until one is
+    /// registered, `/raft/timeout_now` answers 5.01 Not Implemented.
+    auto register_timeout_now_handler(
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+            handler) -> void {
+        if (!handler) {
+            throw std::invalid_argument("timeout_now handler must not be empty");
+        }
+        const std::lock_guard lock(_mutex);
+        _timeout_now_handler = std::move(handler);
     }
 
     auto start() -> void {
@@ -1212,7 +1255,8 @@ private:
         }
 
         const std::lock_guard lock(_mutex);
-        if (is_duplicate(pdu.getMessageID())) {
+        if (is_duplicate(cantcoap_detail::peer_endpoint(from), pdu.getMessageID(),
+                         cantcoap_detail::token_of(pdu))) {
             return;  // Requirement 4.4.
         }
 
@@ -1316,6 +1360,16 @@ private:
                     _install_snapshot_handler(
                         _registry.template decode_with<kythira::install_snapshot_request<>>(
                             request_media_type, body)));
+            } else if (path == cantcoap_timeout_now_path) {
+                if (!_timeout_now_handler) {
+                    send_error(pdu, from, binding, CoapPDU::COAP_NOT_IMPLEMENTED);
+                    return;
+                }
+                encoded = _registry.encode_with(
+                    response_media_type,
+                    _timeout_now_handler(
+                        _registry.template decode_with<kythira::timeout_now_request<>>(
+                            request_media_type, body)));
             } else {
                 send_error(pdu, from, binding, CoapPDU::COAP_NOT_FOUND);
                 return;
@@ -1416,16 +1470,9 @@ private:
         finish_reply(*reply, to, binding);
     }
 
-    [[nodiscard]] auto is_duplicate(std::uint16_t message_id) -> bool {
-        const auto now = std::chrono::steady_clock::now();
-        std::erase_if(_seen, [now](const auto& entry) {
-            return now - entry.second.received_time > std::chrono::seconds{60};
-        });
-        if (_seen.contains(message_id)) {
-            return true;
-        }
-        _seen.emplace(message_id, received_message_info{message_id});
-        return false;
+    [[nodiscard]] auto is_duplicate(const std::string& peer, std::uint16_t message_id,
+                                    std::string_view token) -> bool {
+        return _seen.check_and_record(peer, message_id, token);
     }
 #endif  // CANTCOAP_AVAILABLE
 
@@ -1446,10 +1493,12 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        _timeout_now_handler;
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};
-    std::unordered_map<std::uint16_t, received_message_info> _seen;
+    coap_exchange_table _seen;
     std::vector<std::byte> _block1_assembly;
 
 #ifdef CANTCOAP_AVAILABLE
@@ -1457,5 +1506,52 @@ private:
     std::jthread _thread;
 #endif
 };
+
+// ── concept conformance (.kiro/specs/coap-transport-multi-raft/, Requirement 2) ──
+//
+// The same block every CoAP backend carries, against the same Types bundle, so
+// the three backends' answers can only differ where the backends do. These
+// hold whether or not cantcoap was found at configure time: the adapter keeps its
+// full surface either way. Mirrored by design §2's capability table; if one of
+// these fires, the table is stale, not the assertion.
+
+static_assert(kythira::network_client<coap_cantcoap_client<coap_detail::conformance_types>>,
+              "coap_cantcoap_client must satisfy network_client");
+static_assert(kythira::network_server<coap_cantcoap_server<coap_detail::conformance_types>>,
+              "coap_cantcoap_server must satisfy network_server");
+static_assert(
+    !kythira::network_client_with_pre_vote<coap_cantcoap_client<coap_detail::conformance_types>>,
+    "coap_cantcoap_client does not implement pre-vote; see design §2's capability table");
+static_assert(
+    !kythira::network_server_with_pre_vote<coap_cantcoap_server<coap_detail::conformance_types>>,
+    "coap_cantcoap_server does not implement pre-vote; see design §2's capability table");
+static_assert(
+    !kythira::network_client_with_log_fetch<coap_cantcoap_client<coap_detail::conformance_types>>,
+    "coap_cantcoap_client does not implement log fetch; see design §2's capability table");
+static_assert(
+    !kythira::network_server_with_log_fetch<coap_cantcoap_server<coap_detail::conformance_types>>,
+    "coap_cantcoap_server does not implement log fetch; see design §2's capability table");
+static_assert(
+    !kythira::network_client_with_cluster_join<
+        coap_cantcoap_client<coap_detail::conformance_types>>,
+    "coap_cantcoap_client does not implement cluster join; see design §2's capability table");
+static_assert(
+    !kythira::network_server_with_cluster_join<
+        coap_cantcoap_server<coap_detail::conformance_types>>,
+    "coap_cantcoap_server does not implement cluster join; see design §2's capability table");
+static_assert(
+    !kythira::network_client_with_cluster_leave<
+        coap_cantcoap_client<coap_detail::conformance_types>>,
+    "coap_cantcoap_client does not implement cluster leave; see design §2's capability table");
+static_assert(
+    !kythira::network_server_with_cluster_leave<
+        coap_cantcoap_server<coap_detail::conformance_types>>,
+    "coap_cantcoap_server does not implement cluster leave; see design §2's capability table");
+static_assert(
+    kythira::network_client_with_timeout_now<coap_cantcoap_client<coap_detail::conformance_types>>,
+    "coap_cantcoap_client must implement TimeoutNow; see design §2's capability table");
+static_assert(
+    kythira::network_server_with_timeout_now<coap_cantcoap_server<coap_detail::conformance_types>>,
+    "coap_cantcoap_server must implement TimeoutNow; see design §2's capability table");
 
 }  // namespace kythira

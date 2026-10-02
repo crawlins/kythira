@@ -732,6 +732,9 @@ private:
     // Track unresponsive followers for monitoring
     std::unordered_set<node_id_type> _unresponsive_followers;
 
+    // Followers with an InstallSnapshot transfer under way; at most one each.
+    std::unordered_set<node_id_type> _snapshot_transfers_in_flight;
+
     // ========================================================================
     // Component members using unified types
     // ========================================================================
@@ -1134,6 +1137,8 @@ private:
     auto send_append_entries_to(node_id_type target) -> void;
     auto send_heartbeat_with_retry(node_id_type target) -> void;
     auto send_install_snapshot_to(node_id_type target) -> void;
+    auto send_install_snapshot_chunk(node_id_type target, std::shared_ptr<const snapshot_type> snap,
+                                     std::size_t offset, std::size_t chunk_num) -> void;
     auto advance_commit_index() -> void;
     auto apply_committed_entries() -> void;
 
@@ -6214,6 +6219,17 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
         return;
     }
 
+    // One transfer per follower at a time. Every heartbeat round that finds
+    // the follower still behind the snapshot lands here again; before the
+    // transfer became asynchronous each of those blocked a thread until its
+    // own copy finished, and now each would start another copy.
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!_snapshot_transfers_in_flight.insert(target).second) {
+            return;
+        }
+    }
+
     _logger.info("Sending InstallSnapshot to follower", {{"node_id", node_id_to_string(_node_id)},
                                                          {"target", node_id_to_string(target)},
                                                          {"term", std::to_string(_current_term)}});
@@ -6223,171 +6239,212 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
     if (!snapshot_opt.has_value()) {
         _logger.error("No snapshot available to send", {{"node_id", node_id_to_string(_node_id)},
                                                         {"target", node_id_to_string(target)}});
+        std::lock_guard<std::mutex> lock(_mutex);
+        _snapshot_transfers_in_flight.erase(target);
         return;
     }
 
-    auto& snap = snapshot_opt.value();
-    const auto& snapshot_data = snap.state_machine_state();
-    auto chunk_size = _config.snapshot_chunk_size();
+    auto snap = std::make_shared<const snapshot_type>(std::move(snapshot_opt.value()));
+    const auto chunk_size = _config.snapshot_chunk_size();
 
     _logger.debug("Snapshot details",
                   {{"node_id", node_id_to_string(_node_id)},
-                   {"last_included_index", std::to_string(snap.last_included_index())},
-                   {"last_included_term", std::to_string(snap.last_included_term())},
-                   {"snapshot_size", std::to_string(snapshot_data.size())},
+                   {"last_included_index", std::to_string(snap->last_included_index())},
+                   {"last_included_term", std::to_string(snap->last_included_term())},
+                   {"snapshot_size", std::to_string(snap->state_machine_state().size())},
                    {"chunk_size", std::to_string(chunk_size)}});
 
-    // Send snapshot in chunks
-    std::size_t offset = 0;
-    std::size_t total_chunks = (snapshot_data.size() + chunk_size - 1) / chunk_size;
-    std::size_t chunk_num = 0;
+    send_install_snapshot_chunk(target, std::move(snap), 0, 0);
+}
 
-    while (offset < snapshot_data.size()) {
-        // Calculate chunk size for this iteration
-        auto remaining = snapshot_data.size() - offset;
-        auto current_chunk_size = std::min(remaining, chunk_size);
+template<raft_types Types>
 
-        // Extract chunk data
-        std::vector<std::byte> chunk_data(snapshot_data.begin() + offset,
-                                          snapshot_data.begin() + offset + current_chunk_size);
+auto node<Types>::send_install_snapshot_chunk(node_id_type target,
+                                              std::shared_ptr<const snapshot_type> snap,
+                                              std::size_t offset, std::size_t chunk_num) -> void {
+    // Each chunk is sent from the previous chunk's reply rather than by
+    // waiting on it. The transfer used to block on .get() per chunk, and it
+    // is reached from an AppendEntries reply -- that is, on whichever thread
+    // the transport completes futures on. A transport that completes them on
+    // its own I/O thread (libcoap's) could then never deliver the reply being
+    // waited for; one with a bounded completion pool deadlocked once every
+    // pool thread held a waiting transfer, which multi-Raft reaches as soon
+    // as a split leaves several new groups to snapshot at once.
+    const auto& snapshot_data = snap->state_machine_state();
+    const auto chunk_size = _config.snapshot_chunk_size();
+    const std::size_t total_chunks =
+        snapshot_data.empty() ? 1 : (snapshot_data.size() + chunk_size - 1) / chunk_size;
 
-        // Determine if this is the last chunk
-        bool is_last_chunk = (offset + current_chunk_size >= snapshot_data.size());
+    const auto remaining = snapshot_data.size() - offset;
+    const auto current_chunk_size = std::min(remaining, chunk_size);
+    std::vector<std::byte> chunk_data(snapshot_data.begin() + offset,
+                                      snapshot_data.begin() + offset + current_chunk_size);
+    const bool is_last_chunk = (offset + current_chunk_size >= snapshot_data.size());
 
-        // Create InstallSnapshot request
-        install_snapshot_request_type request{_current_term,
-                                              _node_id,
-                                              snap.last_included_index(),
-                                              snap.last_included_term(),
-                                              offset,
-                                              chunk_data,
-                                              is_last_chunk};
+    install_snapshot_request_type request{_current_term,
+                                          _node_id,
+                                          snap->last_included_index(),
+                                          snap->last_included_term(),
+                                          offset,
+                                          chunk_data,
+                                          is_last_chunk};
 
-        _logger.debug("Sending snapshot chunk", {{"node_id", node_id_to_string(_node_id)},
-                                                 {"target", node_id_to_string(target)},
-                                                 {"chunk", std::to_string(chunk_num + 1)},
-                                                 {"total_chunks", std::to_string(total_chunks)},
-                                                 {"offset", std::to_string(offset)},
-                                                 {"chunk_size", std::to_string(current_chunk_size)},
-                                                 {"is_last", is_last_chunk ? "true" : "false"}});
+    _logger.debug("Sending snapshot chunk", {{"node_id", node_id_to_string(_node_id)},
+                                             {"target", node_id_to_string(target)},
+                                             {"chunk", std::to_string(chunk_num + 1)},
+                                             {"total_chunks", std::to_string(total_chunks)},
+                                             {"offset", std::to_string(offset)},
+                                             {"chunk_size", std::to_string(current_chunk_size)},
+                                             {"is_last", is_last_chunk ? "true" : "false"}});
 
-        // Send RPC with timeout and retry logic using ErrorHandler
-        auto timeout = _config.install_snapshot_timeout();
-        auto start_time = std::chrono::steady_clock::now();
+    // Send RPC with timeout and retry logic using ErrorHandler
+    const auto timeout = _config.install_snapshot_timeout();
+    const auto start_time = std::chrono::steady_clock::now();
 
-        try {
-            // Wrap the RPC call in a lambda for ErrorHandler::execute_with_retry
-            auto rpc_operation =
-                [this, target, request,
-                 timeout]() -> kythira::future_default<install_snapshot_response_type> {
-                return _network_client.send_install_snapshot(target, request, timeout);
-            };
+    // Ends the transfer, successful or not, so the next heartbeat that finds
+    // the follower behind may start a fresh one.
+    const auto finish = [this, target] {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _snapshot_transfers_in_flight.erase(target);
+    };
 
-            // Execute with retry using ErrorHandler (exponential backoff with jitter)
-            // For snapshots, use longer delays and more attempts due to larger data transfers
-            auto response_future = _install_snapshot_error_handler.execute_with_retry(
-                "install_snapshot", rpc_operation);
+    try {
+        auto rpc_operation =
+            [this, target, request, timeout, stop_flag = _stop_flag,
+             scope = _async_scope]() -> kythira::future_default<install_snapshot_response_type> {
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    install_snapshot_response_type>(
+                    std::make_exception_ptr(std::runtime_error("node stopped")));
+            }
+            return _network_client.send_install_snapshot(target, request, timeout);
+        };
 
-            // Wait for response synchronously (snapshot transfer is sequential)
-            // Wrap in try-catch to handle exceptions
-            install_snapshot_response_type response;
-            try {
-                response = std::move(response_future).get();
-            } catch (const std::exception& e) {
-                _logger.error(
-                    std::format("InstallSnapshot RPC failed after retries: node_id={}, target={}, "
-                                "chunk={}/{}, offset={}, error={}",
-                                node_id_to_string(_node_id), node_id_to_string(target),
-                                chunk_num + 1, total_chunks, offset, e.what()));
+        // Execute with retry using ErrorHandler (exponential backoff with jitter)
+        // For snapshots, use longer delays and more attempts due to larger data transfers
+        auto response_future =
+            _install_snapshot_error_handler.execute_with_retry("install_snapshot", rpc_operation);
 
-                _metrics.set_metric_name("raft_install_snapshot_failed");
+        std::move(response_future)
+            .thenTry([this, target, snap, offset, chunk_num, total_chunks, current_chunk_size,
+                      is_last_chunk, start_time, finish, stop_flag = _stop_flag,
+                      scope = _async_scope](auto try_response) {
+                // While the ticket is held, stop()'s drain cannot return, so
+                // `this` cannot be destroyed underneath the body below.
+                const auto drain_ticket = scope->enter();
+                if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+
+                if (try_response.hasException()) {
+                    try {
+                        std::rethrow_exception(try_response.exception());
+                    } catch (const std::exception& e) {
+                        _logger.error(std::format(
+                            "InstallSnapshot RPC failed after retries: node_id={}, target={}, "
+                            "chunk={}/{}, offset={}, error={}",
+                            node_id_to_string(_node_id), node_id_to_string(target), chunk_num + 1,
+                            total_chunks, offset, e.what()));
+                    } catch (...) {  // NOLINT(bugprone-empty-catch)
+                    }
+
+                    _metrics.set_metric_name("raft_install_snapshot_failed");
+                    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                    _metrics.add_dimension("target", node_id_to_string(target));
+                    _metrics.add_dimension("chunk", std::to_string(chunk_num + 1));
+                    _metrics.add_dimension("total_chunks", std::to_string(total_chunks));
+                    _metrics.add_one();
+                    _metrics.emit();
+
+                    // The next heartbeat that still finds the follower behind
+                    // starts the transfer again from the beginning; the
+                    // follower handles duplicate chunks.
+                    finish();
+                    return;
+                }
+
+                const auto response = try_response.value();
+
+                const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start_time);
+                _metrics.set_metric_name("raft_install_snapshot_chunk_latency");
                 _metrics.add_dimension("node_id", node_id_to_string(_node_id));
                 _metrics.add_dimension("target", node_id_to_string(target));
-                _metrics.add_dimension("chunk", std::to_string(chunk_num + 1));
-                _metrics.add_dimension("total_chunks", std::to_string(total_chunks));
-                _metrics.add_one();
+                _metrics.add_duration(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(latency));
                 _metrics.emit();
 
-                // Resume capability: Return here to allow retry from this chunk
-                // The caller can retry send_install_snapshot_to() and it will start from beginning,
-                // but the follower should handle duplicate chunks gracefully
-                return;
-            }
+                {
+                    std::unique_lock<std::mutex> lock(_mutex);
 
-            auto end_time = std::chrono::steady_clock::now();
-            auto latency =
-                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                    // Check if we've been deposed
+                    if (response.term() > _current_term) {
+                        _logger.info(std::format(
+                            "Discovered higher term in InstallSnapshot response, stepping down: "
+                            "node_id={}, old_term={}, new_term={}",
+                            node_id_to_string(_node_id), _current_term, response.term()));
+                        _snapshot_transfers_in_flight.erase(target);
+                        become_follower(response.term());
+                        return;
+                    }
 
-            _metrics.set_metric_name("raft_install_snapshot_chunk_latency");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("target", node_id_to_string(target));
-            _metrics.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(latency));
-            _metrics.emit();
+                    // Only continue if we're still leader in the same term
+                    if (_state != kythira::server_state::leader ||
+                        response.term() != _current_term) {
+                        _snapshot_transfers_in_flight.erase(target);
+                        return;
+                    }
 
-            // Check if we've been deposed
-            if (response.term() > _current_term) {
-                auto msg = std::format(
-                    "Discovered higher term in InstallSnapshot response, stepping down: "
-                    "node_id={}, old_term={}, new_term={}",
-                    node_id_to_string(_node_id), _current_term, response.term());
-                _logger.info(msg);
+                    if (is_last_chunk) {
+                        // Snapshot transfer complete - update next_index and match_index
+                        _next_index[target] = snap->last_included_index() + 1;
+                        _match_index[target] = snap->last_included_index();
+                        _snapshot_transfers_in_flight.erase(target);
+                    }
+                }
 
-                become_follower(response.term());
-                return;
-            }
+                _logger.debug("Snapshot chunk sent successfully",
+                              {{"node_id", node_id_to_string(_node_id)},
+                               {"target", node_id_to_string(target)},
+                               {"chunk", std::to_string(chunk_num + 1)}});
 
-            // Only continue if we're still leader in the same term
-            if (_state != kythira::server_state::leader || response.term() != _current_term) {
-                return;
-            }
+                if (!is_last_chunk) {
+                    send_install_snapshot_chunk(target, snap, offset + current_chunk_size,
+                                                chunk_num + 1);
+                    return;
+                }
 
-            _logger.debug("Snapshot chunk sent successfully",
-                          {{"node_id", node_id_to_string(_node_id)},
-                           {"target", node_id_to_string(target)},
-                           {"chunk", std::to_string(chunk_num + 1)}});
+                _logger.info("InstallSnapshot completed successfully",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"target", node_id_to_string(target)},
+                              {"last_included_index", std::to_string(snap->last_included_index())},
+                              {"total_chunks", std::to_string(total_chunks)},
+                              {"total_bytes", std::to_string(snap->state_machine_state().size())}});
 
-        } catch (const std::exception& e) {
-            _logger.error("Exception sending InstallSnapshot chunk",
-                          {{"node_id", node_id_to_string(_node_id)},
-                           {"target", node_id_to_string(target)},
-                           {"chunk", std::to_string(chunk_num + 1)},
-                           {"total_chunks", std::to_string(total_chunks)},
-                           {"offset", std::to_string(offset)},
-                           {"error", e.what()}});
+                _metrics.set_metric_name("raft_install_snapshot_success");
+                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                _metrics.add_dimension("target", node_id_to_string(target));
+                _metrics.add_value(static_cast<double>(snap->state_machine_state().size()));
+                _metrics.emit();
+            });
+    } catch (const std::exception& e) {
+        _logger.error("Exception sending InstallSnapshot chunk",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"target", node_id_to_string(target)},
+                       {"chunk", std::to_string(chunk_num + 1)},
+                       {"total_chunks", std::to_string(total_chunks)},
+                       {"offset", std::to_string(offset)},
+                       {"error", e.what()}});
 
-            _metrics.set_metric_name("raft_install_snapshot_failed");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("target", node_id_to_string(target));
-            _metrics.add_dimension("chunk", std::to_string(chunk_num + 1));
-            _metrics.add_one();
-            _metrics.emit();
-
-            // Resume capability: Return here to allow retry from this chunk
-            return;
-        }
-
-        // Move to next chunk
-        offset += current_chunk_size;
-        chunk_num++;
+        _metrics.set_metric_name("raft_install_snapshot_failed");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("target", node_id_to_string(target));
+        _metrics.add_dimension("chunk", std::to_string(chunk_num + 1));
+        _metrics.add_one();
+        _metrics.emit();
+        finish();
     }
-
-    // Snapshot transfer complete - update next_index and match_index
-    std::lock_guard<std::mutex> lock(_mutex);
-    _next_index[target] = snap.last_included_index() + 1;
-    _match_index[target] = snap.last_included_index();
-
-    _logger.info("InstallSnapshot completed successfully",
-                 {{"node_id", node_id_to_string(_node_id)},
-                  {"target", node_id_to_string(target)},
-                  {"last_included_index", std::to_string(snap.last_included_index())},
-                  {"total_chunks", std::to_string(total_chunks)},
-                  {"total_bytes", std::to_string(snapshot_data.size())}});
-
-    _metrics.set_metric_name("raft_install_snapshot_success");
-    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-    _metrics.add_dimension("target", node_id_to_string(target));
-    _metrics.add_value(static_cast<double>(snapshot_data.size()));
-    _metrics.emit();
 }
 
 // ============================================================================

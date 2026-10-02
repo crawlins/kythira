@@ -4,9 +4,12 @@
 #pragma once
 
 #include <raft/coap_transport.hpp>
+#include <raft/coap_config_validation.hpp>
+#include <raft/coap_conformance_types.hpp>
 #include <raft/coap_security_impl.hpp>
 #include <raft/net_bind.hpp>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -20,6 +23,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <poll.h>
+#include <sys/eventfd.h>
+
+#include <cerrno>
 
 // OpenSSL includes for certificate validation
 #include <openssl/x509.h>
@@ -65,6 +72,29 @@
 #endif
 
 namespace kythira {
+
+#ifdef LIBCOAP_AVAILABLE
+namespace coap_detail {
+
+/// The remote endpoint of a libcoap session as "address:port", the peer half
+/// of the duplicate-detection key (coap_exchange_table.hpp). RFC 7252 Section
+/// 4.4 scopes a Message ID to its source endpoint, port included: two clients
+/// on one host are two peers with two independent counters.
+inline auto session_peer_endpoint(const coap_session_t* session) -> std::string {
+    if (session == nullptr) {
+        return {};
+    }
+    const coap_address_t* remote = coap_session_get_addr_remote(session);
+    if (remote == nullptr) {
+        return {};
+    }
+    std::array<unsigned char, INET6_ADDRSTRLEN + 16> text{};
+    const std::size_t length = coap_print_addr(remote, text.data(), text.size());
+    return std::string{reinterpret_cast<const char*>(text.data()), length};
+}
+
+}  // namespace coap_detail
+#endif
 
 #ifdef KYTHIRA_HAS_OPENSSL
 namespace detail {
@@ -193,6 +223,9 @@ coap_client<Types>::coap_client(
     // that would otherwise surface as mis-decoded payloads at a peer rather
     // than as a failure attributable to this constructor.
     coap_utils::validate_registry_content_formats(_registry);
+    // The I/O thread's settings, for the same reason: a zero drain budget or
+    // a non-positive wait would make it misbehave rather than fail.
+    coap_utils::validate_io_wait_config(_config);
     // Resolve the explicit-or-legacy channel-security configuration and
     // construct its provider up front (coap-transport-security spec,
     // Requirement 1.2/1.3) — before any libcoap resource is allocated, so
@@ -248,6 +281,7 @@ coap_client<Types>::coap_client(
             // Extract client instance from session user data
             auto* client = static_cast<coap_client<Types>*>(coap_session_get_app_data(session));
             if (client) {
+                client->_io_dispatches.fetch_add(1, std::memory_order_relaxed);
                 // Extract token from received PDU
                 coap_bin_const_t token = coap_pdu_get_token(received);
                 std::string token_str(reinterpret_cast<const char*>(token.s), token.length);
@@ -278,6 +312,7 @@ coap_client<Types>::coap_client(
             if (!client || !sent) {
                 return;
             }
+            client->_io_dispatches.fetch_add(1, std::memory_order_relaxed);
             coap_bin_const_t token = coap_pdu_get_token(sent);
             std::string token_str(reinterpret_cast<const char*>(token.s), token.length);
 
@@ -323,38 +358,77 @@ coap_client<Types>::coap_client(
     // libcoap only reads/writes sockets and dispatches PDUs to registered
     // handlers from inside coap_io_process(), which nothing else here ever
     // calls. Every future send_rpc() returns would otherwise hang forever
-    // regardless of what the peer does.
+    // regardless of what the peer does. run_io_loop() documents the loop.
     //
-    // _mutex must never be held across a *blocking* coap_io_process() call.
-    // An earlier version of this loop held it around coap_io_process(ctx, 20)
-    // -- a 20ms blocking wait -- so this thread owned the lock for ~100% of
-    // wall time and send_rpc() could only win it in the instant between
-    // unlock and relock. A non-fair mutex under a ~100%-duty-cycle holder
-    // produces a geometric waiting-time tail: the send-path probe measured
-    // send_rpc() lock_wait_ms of 35ms-3.6s locally and min 40ms / median
-    // 19,881ms / max 372,109ms on an idle CI runner (run 31457419633), with
-    // every other send step at 0. A yield() after unlock was an earlier
-    // round of the same starvation and only narrowed the window. Instead:
-    // drain ready I/O without blocking under the lock (microseconds when
-    // idle), and pace *outside* it, so the lock is free for essentially the
-    // whole sleep. The trade-off is that an incoming PDU can now sit for up
-    // to the pacing interval before dispatch, where the blocking call woke
-    // on socket activity immediately -- 5ms of bounded response latency
-    // against an unbounded send-path stall.
-    _io_thread = std::jthread([this](std::stop_token stop_token) {
-        while (!stop_token.stop_requested()) {
-            {
-                std::lock_guard lock(_mutex);
-                if (_coap_context) {
-                    coap_io_process(_coap_context, COAP_IO_NO_WAIT);
+    // The wait mode is chosen once, here, after the context exists
+    // (coap-client-event-driven-io Requirement 6.1, 6.4).
+    {
+        const int coap_fd = coap_context_get_coap_fd(_coap_context);
+        std::string reason;
+        // KYTHIRA_COAP_IO_WAIT_MODE=paced|readiness overrides `automatic`
+        // only -- an explicit mode in the config always wins. It is how the
+        // test suite runs every CoAP test in both modes from one build
+        // (Requirement 6.5): tests/CMakeLists.txt registers a paced twin of
+        // each with this variable set.
+        auto requested = _config.io_wait_mode;
+        std::string source = "config";
+        if (requested == coap_io_wait_mode::automatic) {
+            if (const char* env = std::getenv("KYTHIRA_COAP_IO_WAIT_MODE")) {
+                const std::string_view value{env};
+                if (value == "paced") {
+                    requested = coap_io_wait_mode::paced;
+                    source = "KYTHIRA_COAP_IO_WAIT_MODE";
+                } else if (value == "readiness") {
+                    requested = coap_io_wait_mode::readiness;
+                    source = "KYTHIRA_COAP_IO_WAIT_MODE";
+                } else if (!value.empty() && value != "automatic") {
+                    _logger.warning("Ignoring unrecognised KYTHIRA_COAP_IO_WAIT_MODE",
+                                    {{"value", std::string(value)}});
                 }
             }
-            // Closes multicast collection windows. Takes _mutex itself and
-            // fulfils promises outside it.
-            cleanup_expired_multicast_requests();
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-    });
+        switch (requested) {
+            case coap_io_wait_mode::paced:
+                _io_mode = coap_io_wait_mode::paced;
+                reason = "paced: forced by " + source;
+                break;
+            case coap_io_wait_mode::readiness:
+                if (coap_fd < 0) {
+                    coap_free_context(_coap_context);
+                    _coap_context = nullptr;
+                    throw coap_transport_error(
+                        "io_wait_mode readiness (from " + source +
+                        "), but libcoap was built without epoll "
+                        "(coap_context_get_coap_fd() returned -1); use automatic or paced");
+                }
+                _io_mode = coap_io_wait_mode::readiness;
+                reason = "readiness: epoll fd " + std::to_string(coap_fd) + ", forced by " + source;
+                break;
+            case coap_io_wait_mode::automatic:
+                _io_mode = coap_fd >= 0 ? coap_io_wait_mode::readiness : coap_io_wait_mode::paced;
+                reason = coap_fd >= 0 ? "readiness: epoll fd " + std::to_string(coap_fd)
+                                      : std::string("paced: libcoap built without epoll");
+                break;
+        }
+        if (_io_mode == coap_io_wait_mode::readiness) {
+            _io_coap_fd = coap_fd;
+            _io_wake_fd.reset(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
+            if (_io_wake_fd.get() < 0) {
+                const int err = errno;
+                coap_free_context(_coap_context);
+                _coap_context = nullptr;
+                throw coap_transport_error("eventfd() failed for the CoAP client I/O thread: " +
+                                           std::string(std::strerror(err)));
+            }
+        }
+        _logger.info("CoAP client I/O wait mode selected",
+                     {{"transport", "coap"},
+                      {"io_wait_mode", reason},
+                      {"io_drain_budget", std::to_string(_config.io_drain_budget)},
+                      {"io_max_wait_ms", std::to_string(_config.io_max_wait.count())},
+                      {"io_paced_interval_ms", std::to_string(_config.io_paced_interval.count())}});
+    }
+    _io_thread = std::jthread([this](std::stop_token stop_token) { run_io_loop(stop_token); });
 #else
     // Stub implementation when libcoap is not available
     _coap_context = nullptr;  // NOLINT(cppcoreguidelines-prefer-member-initializer)
@@ -517,7 +591,23 @@ auto coap_client<Types>::send_install_snapshot(std::uint64_t target,
     // Send InstallSnapshot RPC using CoAP POST to /raft/install_snapshot. A
     // snapshot chunk too large for one PDU goes block-wise inside send_rpc().
     return send_rpc<install_snapshot_request<>, install_snapshot_response<>>(
-        target, "/raft/install_snapshot", request, timeout);
+        target, "/raft/install_snapshot", request, timeout,
+        coap_message_reliability::always_confirmable);
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::send_timeout_now(std::uint64_t target,
+                                          const kythira::timeout_now_request<>& request,
+                                          std::chrono::milliseconds timeout)
+    -> future_template<kythira::timeout_now_response<>> {
+    // A path beside the other three rather than an option on one of them, so
+    // the server's dispatch stays one resource per RPC and a packet capture
+    // reads the same way for every RPC. Confirmable regardless of
+    // use_confirmable_messages: see the declaration.
+    return send_rpc<timeout_now_request<>, timeout_now_response<>>(
+        target, "/raft/timeout_now", request, timeout,
+        coap_message_reliability::always_confirmable);
 }
 
 // CoAP server implementation
@@ -729,6 +819,24 @@ auto coap_server<Types>::register_install_snapshot_handler(
         // Re-setup resources to include the new handler
         setup_resources();
     }
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::register_timeout_now_handler(
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler)
+    -> void {
+    std::lock_guard lock(_mutex);
+
+    if (!handler) {
+        throw coap_transport_error("TimeoutNow handler cannot be null");
+    }
+
+    _timeout_now_handler = std::move(handler);
+
+    // The /raft/timeout_now resource is registered by setup_resources() with
+    // the other three and dispatches through this member, so a handler
+    // registered after start() is picked up without re-registering anything.
 }
 
 template<typename Types>
@@ -1504,6 +1612,9 @@ auto coap_client<Types>::initiate_dtls_handshake(const std::string& endpoint) ->
     }
     coap_session_set_app_data(session, this);
     _dtls_handshake_sessions[endpoint] = session;
+    // libcoap registers the new socket in its epoll set itself (design §1
+    // L5); the wake is insurance that the handshake's timers are seen.
+    signal_io_wake();
 
     _logger.info("DTLS handshake initiated", {{"endpoint", endpoint}});
     return true;
@@ -1856,22 +1967,22 @@ auto coap_client<Types>::handle_acknowledgment(std::uint16_t message_id) -> void
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::is_duplicate_message(std::uint16_t message_id) -> bool {
-    // Check if we've already received this message ID
+auto coap_client<Types>::is_duplicate_message(const std::string& peer, std::uint16_t message_id,
+                                              std::string_view token) -> bool {
+    // A retransmission of an exchange already seen from this same peer. The
+    // Message ID alone is not enough: every peer numbers its own messages.
     std::lock_guard lock(_mutex);
-    auto it = _received_messages.find(message_id);
-    return it != _received_messages.end();
+    return _received_messages.is_duplicate(peer, message_id, token);
 }
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::record_received_message(std::uint16_t message_id) -> void {
-    // Record that we've received this message ID
+auto coap_client<Types>::record_received_message(const std::string& peer, std::uint16_t message_id,
+                                                 std::string_view token) -> void {
+    // Expiry is amortised inside the table itself; sweeping the whole table on
+    // every record, as this used to, cost O(entries) per received message.
     std::lock_guard lock(_mutex);
-    _received_messages.emplace(message_id, received_message_info{message_id});
-
-    // Clean up old entries periodically
-    cleanup_expired_messages();
+    _received_messages.record(peer, message_id, token);
 }
 
 template<typename Types>
@@ -1909,18 +2020,10 @@ auto coap_client<Types>::retransmit_message(const std::string& token) -> void {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::cleanup_expired_messages() -> void {
-    // Clean up old received message records to prevent memory growth
+    // Clean up old received message records to prevent memory growth. The
+    // horizon is RFC 7252's EXCHANGE_LIFETIME (coap_exchange_lifetime).
     // Note: This method assumes the caller already holds _mutex
-    auto now = std::chrono::steady_clock::now();
-    constexpr auto max_age = std::chrono::minutes(5);  // Keep records for 5 minutes
-
-    for (auto it = _received_messages.begin(); it != _received_messages.end();) {
-        if (now - it->second.received_time > max_age) {
-            it = _received_messages.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    _received_messages.sweep();
 }
 
 template<typename Types>
@@ -1980,6 +2083,7 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
 
     // Set session application data for callbacks
     coap_session_set_app_data(session, this);
+    signal_io_wake();  // as in initiate_dtls_handshake()
 
     // Configure DTLS-specific session parameters
     coap_session_set_max_retransmit(session, _config.max_retransmit);
@@ -2382,6 +2486,7 @@ requires kythira::transport_types<Types>
 template<typename Request, typename Response>
 auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resource_path,
                                   const Request& request, std::chrono::milliseconds timeout,
+                                  coap_message_reliability reliability,
                                   std::vector<std::string> attempted) -> future_template<Response> {
     // Generic RPC sending implementation with comprehensive error handling
 
@@ -2486,10 +2591,12 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         }
 
         // Create CoAP PDU with proper size calculation
+        const bool confirmable = reliability == coap_message_reliability::always_confirmable ||
+                                 _config.use_confirmable_messages;
         size_t pdu_size = coap_session_max_pdu_size(session);
         coap_pdu_t* pdu =
-            coap_pdu_init(_config.use_confirmable_messages ? COAP_MESSAGE_CON : COAP_MESSAGE_NON,
-                          COAP_REQUEST_CODE_POST, coap_new_message_id(session), pdu_size);
+            coap_pdu_init(confirmable ? COAP_MESSAGE_CON : COAP_MESSAGE_NON, COAP_REQUEST_CODE_POST,
+                          coap_new_message_id(session), pdu_size);
 
         if (!pdu) {
             coap_session_release(session);
@@ -2655,7 +2762,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                     }
                 },
                 [promise](std::exception_ptr ex) { promise->setException(ex); }, serialized_request,
-                endpoint_uri, resource_path, _config.use_confirmable_messages);
+                endpoint_uri, resource_path, confirmable);
 
             _pending_requests[token] = std::move(pending_msg);
         }
@@ -2673,13 +2780,31 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             // processing test's own probe lines use, so the two interleave
             // in one log and a test-side send_ms line can be decomposed by
             // matching on the token.
+            // The trailing fields were added for the multi-Raft contention
+            // row (.kiro/specs/coap-transport-multi-raft/ task 14), which
+            // reads this same line rather than adding a second probe. On
+            // loopback every stage above rounds to 0 ms, so the row needs
+            // microseconds; and it reports per group, so the line names the
+            // group when the request carries one. Appended rather than
+            // changed, so a reader of the original five fields still parses.
+            const auto us = [](auto from, auto to) {
+                return std::to_string(
+                    std::chrono::duration_cast<std::chrono::microseconds>(to - from).count());
+            };
+            std::string group_field;
+            if constexpr (requires { std::to_string(request.group_id()); }) {
+                group_field = " group=" + std::to_string(request.group_id());
+            }
             std::cout << ("[stall-probe] send_rpc token=" + token +
                           " target=" + std::to_string(target) +
                           " lock_wait_ms=" + ms(probe_entered, probe_locked) +
                           " resolve_ms=" + ms(probe_locked, probe_resolved) +
                           " session_ms=" + ms(probe_resolved, probe_session) +
                           " encode_pdu_ms=" + ms(probe_session, probe_pdu_built) +
-                          " coap_send_ms=" + ms(probe_pdu_built, probe_sent) + "\n")
+                          " coap_send_ms=" + ms(probe_pdu_built, probe_sent) + group_field +
+                          " path=" + resource_path +
+                          " lock_wait_us=" + us(probe_entered, probe_locked) +
+                          " send_path_us=" + us(probe_entered, probe_sent) + "\n")
                       << std::flush;
         }
         if (mid == COAP_INVALID_MID) {
@@ -2691,12 +2816,24 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             coap_session_release(session);
             throw coap_transport_error("Failed to send CoAP PDU");
         }
+        // The I/O thread may be waiting toward a deadline later than this
+        // exchange's retransmission timer; have it recompute (Requirement
+        // 4.1). The datagram itself has already left: coap_send() writes a
+        // UDP PDU immediately.
+        signal_io_wake();
 
         _logger.debug("CoAP RPC request sent successfully",
                       {{"target_node", std::to_string(target)},
                        {"resource_path", resource_path},
                        {"token", token},
                        {"message_id", std::to_string(mid)}});
+
+        // Give back the reference get_or_create_session() lent this call; the
+        // pool still holds the session for the next one. A fresh session made
+        // with reuse off has no other owner and is left as it always was.
+        if (_config.enable_session_reuse) {
+            coap_session_release(session);
+        }
 
         // Per-RPC request metric carrying the negotiated media type
         // (Requirement 10.1). Emitted as a new metric name rather than by
@@ -2727,7 +2864,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         // 4.5, pinned by coap_negotiation_failure_test), so the peer did no
         // work. Bounded because `attempted` only grows.
         return std::move(future).thenError(
-            [this, target, resource_path, request, timeout, request_media_type,
+            [this, target, resource_path, request, timeout, reliability, request_media_type,
              attempted](std::exception_ptr e) mutable -> future_template<Response> {
                 try {
                     std::rethrow_exception(e);
@@ -2754,7 +2891,8 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                             retry_metric.add_one();
                             retry_metric.emit();
                             return send_rpc<Request, Response>(target, resource_path, request,
-                                                               timeout, std::move(attempted));
+                                                               timeout, reliability,
+                                                               std::move(attempted));
                         }
                     }
                 } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -2812,8 +2950,16 @@ auto coap_server<Types>::setup_resources() -> void {
         return;
     }
 
+    // Under OSCORE, libcoap still serves a plaintext request to a resource
+    // unless the resource says otherwise, so a server configured for OSCORE
+    // answered unprotected RPCs from anyone who could reach the port. The
+    // flag makes libcoap refuse them (4.01) before any handler runs.
+    const int raft_resource_flags =
+        _config.security.mode == coap_auth_mode::oscore ? COAP_RESOURCE_FLAGS_OSCORE_ONLY : 0;
+
     // Register /raft/request_vote resource
-    coap_resource_t* rv_resource = coap_resource_init(coap_make_str_const("raft/request_vote"), 0);
+    coap_resource_t* rv_resource =
+        coap_resource_init(coap_make_str_const("raft/request_vote"), raft_resource_flags);
     if (rv_resource) {
         // Set resource handler with proper C-style callback that calls our member function
         coap_register_handler(
@@ -2848,7 +2994,7 @@ auto coap_server<Types>::setup_resources() -> void {
 
     // Register /raft/append_entries resource with block transfer support
     coap_resource_t* ae_resource =
-        coap_resource_init(coap_make_str_const("raft/append_entries"), 0);
+        coap_resource_init(coap_make_str_const("raft/append_entries"), raft_resource_flags);
     if (ae_resource) {
         coap_register_handler(
             ae_resource, COAP_REQUEST_POST,
@@ -2896,7 +3042,7 @@ auto coap_server<Types>::setup_resources() -> void {
 
     // Register /raft/install_snapshot resource with block transfer support
     coap_resource_t* is_resource =
-        coap_resource_init(coap_make_str_const("raft/install_snapshot"), 0);
+        coap_resource_init(coap_make_str_const("raft/install_snapshot"), raft_resource_flags);
     if (is_resource) {
         coap_register_handler(
             is_resource, COAP_REQUEST_POST,
@@ -2945,6 +3091,42 @@ auto coap_server<Types>::setup_resources() -> void {
         throw coap_transport_error("Failed to create InstallSnapshot resource");
     }
 
+    // Register /raft/timeout_now. Small and rare -- one message per leadership
+    // transfer -- so no block-wise attributes, unlike the two above. Registered
+    // whether or not a handler is yet: an unregistered handler answers 5.01,
+    // which a client can tell apart from the 4.04 an unknown path gets.
+    coap_resource_t* tn_resource =
+        coap_resource_init(coap_make_str_const("raft/timeout_now"), raft_resource_flags);
+    if (tn_resource) {
+        coap_register_handler(
+            tn_resource, COAP_REQUEST_POST,
+            [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
+               const coap_string_t* query, coap_pdu_t* response) -> void {
+                auto* server =
+                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                if (server && server->_timeout_now_handler) {
+                    server->template handle_rpc_resource<timeout_now_request<>,
+                                                         timeout_now_response<>>(
+                        resource, session, request, query, response, server->_timeout_now_handler);
+                } else {
+                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_NOT_IMPLEMENTED);
+                    if (server) {
+                        server->_logger.warning("TimeoutNow handler not registered");
+                    }
+                }
+            });
+
+        coap_resource_set_userdata(tn_resource, this);
+        coap_add_resource(_coap_context, tn_resource);
+
+        _logger.info("Registered TimeoutNow resource with libcoap",
+                     {{"resource_path", "/raft/timeout_now"},
+                      {"handler_registered", _timeout_now_handler ? "true" : "false"}});
+    } else {
+        _logger.error("Failed to create TimeoutNow resource");
+        throw coap_transport_error("Failed to create TimeoutNow resource");
+    }
+
     // No explicit catch-all handler is registered for unknown resources:
     // libcoap already responds 4.04 Not Found by default when a request's
     // URI-Path doesn't match any registered resource. An earlier version of
@@ -2959,8 +3141,8 @@ auto coap_server<Types>::setup_resources() -> void {
         "libcoap not available, using stub resource setup",
         {{"request_vote_handler", _request_vote_handler ? "registered" : "not_registered"},
          {"append_entries_handler", _append_entries_handler ? "registered" : "not_registered"},
-         {"install_snapshot_handler",
-          _install_snapshot_handler ? "registered" : "not_registered"}});
+         {"install_snapshot_handler", _install_snapshot_handler ? "registered" : "not_registered"},
+         {"timeout_now_handler", _timeout_now_handler ? "registered" : "not_registered"}});
 #endif
 
     // Log block transfer configuration
@@ -3503,38 +3685,30 @@ auto coap_server<Types>::send_error_response(coap_pdu_t* response, coap_pdu_code
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::is_duplicate_message(std::uint16_t message_id) -> bool {
-    // Check if we've already received this message ID
+auto coap_server<Types>::is_duplicate_message(const std::string& peer, std::uint16_t message_id,
+                                              std::string_view token) -> bool {
+    // A retransmission of an exchange already seen from this same peer. The
+    // Message ID alone is not enough: every peer numbers its own messages.
     std::lock_guard lock(_mutex);
-    auto it = _received_messages.find(message_id);
-    return it != _received_messages.end();
+    return _received_messages.is_duplicate(peer, message_id, token);
 }
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::record_received_message(std::uint16_t message_id) -> void {
-    // Record that we've received this message ID
+auto coap_server<Types>::record_received_message(const std::string& peer, std::uint16_t message_id,
+                                                 std::string_view token) -> void {
+    // Expiry is amortised inside the table itself; sweeping the whole table on
+    // every record, as this used to, cost O(entries) per received message.
     std::lock_guard lock(_mutex);
-    _received_messages.emplace(message_id, received_message_info{message_id});
-
-    // Clean up old entries periodically
-    cleanup_expired_messages();
+    _received_messages.record(peer, message_id, token);
 }
 
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::cleanup_expired_messages() -> void {
-    // Clean up old received message records to prevent memory growth
-    auto now = std::chrono::steady_clock::now();
-    constexpr auto max_age = std::chrono::minutes(5);  // Keep records for 5 minutes
-
-    for (auto it = _received_messages.begin(); it != _received_messages.end();) {
-        if (now - it->second.received_time > max_age) {
-            it = _received_messages.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    // Clean up old received message records to prevent memory growth. The
+    // horizon is RFC 7252's EXCHANGE_LIFETIME (coap_exchange_lifetime).
+    _received_messages.sweep();
 }
 
 template<typename Types>
@@ -3895,17 +4069,25 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         // Extract message ID from CoAP PDU
         std::uint16_t message_id = coap_pdu_get_mid(request);
 
+        // The exchange's identity: who sent it, which Message ID they chose,
+        // and the token that tells a retransmission from a new request on a
+        // counter that has wrapped (RFC 7252 Sections 4.4 and 5.3.1).
+        const std::string peer = coap_detail::session_peer_endpoint(session);
+        const auto request_token = coap_pdu_get_token(request);
+        const std::string_view token{reinterpret_cast<const char*>(request_token.s),
+                                     request_token.length};
+
         // Check for duplicate messages
-        if (is_duplicate_message(message_id)) {
+        if (is_duplicate_message(peer, message_id, token)) {
             // This is a duplicate message, send cached response or ignore
             _logger.debug("Duplicate message received, ignoring",
-                          {{"message_id", std::to_string(message_id)}});
+                          {{"message_id", std::to_string(message_id)}, {"peer", peer}});
             coap_pdu_set_code(response, COAP_RESPONSE_CODE_VALID);
             return;
         }
 
         // Record this message as received
-        record_received_message(message_id);
+        record_received_message(peer, message_id, token);
 
         // Extract request payload. COAP_BLOCK_SINGLE_BODY (see
         // detail::configure_libcoap_block_mode) means libcoap has already
@@ -4149,14 +4331,15 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
 #else
         // Stub implementation when libcoap is not available
         std::uint16_t message_id = 12345;  // Simulated message ID
+        const std::string peer = "stub";
 
         // Check for duplicate messages
-        if (is_duplicate_message(message_id)) {
+        if (is_duplicate_message(peer, message_id, {})) {
             return;
         }
 
         // Record this message as received
-        record_received_message(message_id);
+        record_received_message(peer, message_id, {});
 
         _logger.debug("CoAP RPC request processed (stub implementation)");
 #endif
@@ -6641,6 +6824,9 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
         coap_session_release(session);
         return fail("Failed to send multicast request to " + multicast_address);
     }
+    // A new collection window is open; the I/O thread's wait must not
+    // outlast it (Requirement 4.1).
+    signal_io_wake();
 
     _logger.debug("Multicast request sent", {{"multicast_address", multicast_address},
                                              {"multicast_port", std::to_string(multicast_port)},
@@ -7153,6 +7339,249 @@ auto coap_client<Types>::cleanup_expired_multicast_requests() -> void {
 
         collector->resolve_callback(std::move(all_responses));
     }
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::next_multicast_deadline_locked() const
+    -> std::optional<std::chrono::milliseconds> {
+    if (_multicast_requests.empty()) {
+        return std::nullopt;
+    }
+    auto earliest = std::chrono::steady_clock::time_point::max();
+    for (const auto& [token, collector] : _multicast_requests) {
+        earliest = std::min(earliest, collector->start_time + collector->timeout);
+    }
+    const auto remaining = earliest - std::chrono::steady_clock::now();
+    if (remaining <= std::chrono::steady_clock::duration::zero()) {
+        return std::chrono::milliseconds{0};
+    }
+    // Rounded up: a wait that ends a fraction early would find the window
+    // still open and go round again for nothing.
+    return std::chrono::ceil<std::chrono::milliseconds>(remaining);
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::signal_io_wake() noexcept -> void {
+    const int fd = _io_wake_fd.get();
+    if (fd < 0) {
+        return;  // paced mode never waits longer than io_paced_interval
+    }
+    // Coalesced: while a wake is pending and not yet drained, a further
+    // signal adds nothing. The flag is cleared by the I/O thread before it
+    // computes its next timeout, and the eventfd counter persists, so a
+    // signal that lands between the drain and the poll() still makes that
+    // poll() return at once (Requirement 4.2, 4.3).
+    if (_io_wake_pending.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    const std::uint64_t one = 1;
+    // Only EAGAIN (counter at its maximum, so already readable) can fail
+    // here; either way the descriptor is readable afterwards.
+    [[maybe_unused]] const auto written = ::write(fd, &one, sizeof one);
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::io_drain_step() -> void {
+#ifdef LIBCOAP_AVAILABLE
+    std::lock_guard lock(_mutex);
+    if (_coap_context) {
+        coap_io_process(_coap_context, COAP_IO_NO_WAIT);
+    }
+#endif
+    _io_drain_steps.fetch_add(1, std::memory_order_relaxed);
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::record_io_pass(bool budget_hit) -> void {
+    _io_passes.fetch_add(1, std::memory_order_relaxed);
+    if (budget_hit) {
+        _io_budget_exhausted.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::io_loop_stats() const -> coap_io_loop_stats {
+    return coap_io_loop_stats{
+        .mode = _io_mode,
+        .passes = _io_passes.load(std::memory_order_relaxed),
+        .drain_steps = _io_drain_steps.load(std::memory_order_relaxed),
+        .budget_exhausted = _io_budget_exhausted.load(std::memory_order_relaxed),
+        .dispatches = _io_dispatches.load(std::memory_order_relaxed),
+    };
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::run_io_loop(const std::stop_token& stop_token) -> void {
+#ifdef LIBCOAP_AVAILABLE
+    // The I/O thread (coap-client-event-driven-io spec). Each pass drains,
+    // does housekeeping, then waits.
+    //
+    // _mutex is never held across a blocking wait. An earlier version of
+    // this loop held it around coap_io_process(ctx, 20) -- a 20ms blocking
+    // wait -- so this thread owned the lock for ~100% of wall time and
+    // send_rpc() could only win it in the instant between unlock and
+    // relock. A non-fair mutex under a ~100%-duty-cycle holder produces a
+    // geometric waiting-time tail: the send-path probe measured send_rpc()
+    // lock_wait_ms of 35ms-3.6s locally and min 40ms / median 19,881ms /
+    // max 372,109ms on an idle CI runner (run 31457419633), with every other
+    // send step at 0. A yield() after unlock was an earlier round of the
+    // same starvation and only narrowed the window. PR #227 replaced it with
+    // a non-blocking step under the lock and a 5 ms sleep outside it.
+    //
+    // That sleep was its own ceiling. One coap_io_process(NO_WAIT) call
+    // reads one datagram per ready socket (measured, design §1 L3), and a
+    // peer's replies all arrive on its one session's socket, so the client
+    // dispatched about one reply per peer per 5 ms however many were
+    // waiting. The multi-Raft matrix ran straight into it at a 2 ms tick.
+    // So now:
+    //
+    //  - Drain: repeat the NO_WAIT step, taking _mutex for each step on its
+    //    own, while work is still ready, up to io_drain_budget steps. In
+    //    readiness mode "ready" is a zero-timeout poll() of libcoap's epoll
+    //    descriptor, made outside the lock -- a system call, which also
+    //    gives a send_rpc() waiting on the lock a real window between
+    //    steps. In paced mode it is "the last step dispatched something".
+    //    A pass that hits the budget leaves the fd readable, so the wait
+    //    below returns at once: the budget bounds a pass, never the backlog.
+    //  - Wait (readiness mode): poll() libcoap's epoll fd and our wake
+    //    eventfd together, outside the lock, until the earliest of
+    //    libcoap's next timer, the next multicast window close, and
+    //    io_max_wait. Sends signal the eventfd so a new, earlier
+    //    retransmission deadline is never slept past. libcoap also arms a
+    //    timerfd inside its epoll set, so its own timers wake the poll()
+    //    even without the computed timeout.
+    //  - Wait (paced mode, libcoap without epoll or forced by config):
+    //    sleep io_paced_interval, as before.
+    //
+    // The trade-off now is lock churn under a flood: one acquisition per
+    // step instead of one per 5 ms. The budget bounds a run of them, and
+    // the send probe's lock_wait_us is what checks it (Requirement 3.4).
+    std::stop_callback wake_on_stop(stop_token, [this] { signal_io_wake(); });
+    const bool readiness = _io_mode == coap_io_wait_mode::readiness;
+    const int coap_fd = _io_coap_fd;
+    const int wake_fd = _io_wake_fd.get();
+    const std::size_t budget = _config.io_drain_budget;
+    const auto ready_now = [coap_fd] {
+        pollfd p{coap_fd, POLLIN, 0};
+        return ::poll(&p, 1, 0) > 0 && (p.revents & POLLIN) != 0;
+    };
+
+    // Steps-per-pass distribution for KYTHIRA_COAP_SEND_PROBE (Requirement
+    // 2.6): the same "[stall-probe]" stream as send_rpc()'s line, one
+    // aggregate line per second per client rather than one per pass, so
+    // an idle client logs once a second and a busy one is not flooded.
+    // Buckets are powers of two: 1, 2, 3-4, 5-8, ..., 65+.
+    static const bool probe_enabled = std::getenv("KYTHIRA_COAP_SEND_PROBE") != nullptr;
+    constexpr std::size_t probe_buckets = 8;
+    std::array<std::uint64_t, probe_buckets> probe_hist{};
+    std::uint64_t probe_passes = 0;
+    std::uint64_t probe_steps = 0;
+    std::uint64_t probe_budget_hits = 0;
+    std::size_t probe_max_steps = 0;
+    auto probe_window_start = std::chrono::steady_clock::now();
+    const auto probe_bucket = [](std::size_t steps) {
+        std::size_t b = 0;
+        for (std::size_t limit = 1; b + 1 < probe_buckets && steps > limit; limit *= 2) {
+            ++b;
+        }
+        return b;
+    };
+    const auto probe_emit = [&](auto now) {
+        static constexpr std::array<const char*, probe_buckets> labels{
+            "1", "2", "3-4", "5-8", "9-16", "17-32", "33-64", "65+"};
+        std::string hist;
+        for (std::size_t b = 0; b < probe_buckets; ++b) {
+            hist +=
+                (b == 0 ? "" : ",") + std::string(labels[b]) + ":" + std::to_string(probe_hist[b]);
+        }
+        std::cout << ("[stall-probe] io_passes mode=" +
+                      std::string(readiness ? "readiness" : "paced") + " window_ms=" +
+                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         now - probe_window_start)
+                                         .count()) +
+                      " passes=" + std::to_string(probe_passes) +
+                      " steps=" + std::to_string(probe_steps) +
+                      " budget_hits=" + std::to_string(probe_budget_hits) + " max_steps=" +
+                      std::to_string(probe_max_steps) + " steps_hist=" + hist + "\n")
+                  << std::flush;
+        probe_hist.fill(0);
+        probe_passes = probe_steps = probe_budget_hits = 0;
+        probe_max_steps = 0;
+        probe_window_start = now;
+    };
+
+    while (!stop_token.stop_requested()) {
+        // Drain.
+        std::size_t steps = 0;
+        bool more = true;
+        while (more && steps < budget) {
+            const auto dispatched_before = _io_dispatches.load(std::memory_order_relaxed);
+            io_drain_step();
+            ++steps;
+            more = readiness ? ready_now()
+                             : _io_dispatches.load(std::memory_order_relaxed) != dispatched_before;
+        }
+        record_io_pass(more);
+        if (probe_enabled) {
+            ++probe_passes;
+            probe_steps += steps;
+            probe_budget_hits += more ? 1 : 0;
+            probe_max_steps = std::max(probe_max_steps, steps);
+            ++probe_hist[probe_bucket(steps)];
+            const auto now = std::chrono::steady_clock::now();
+            if (now - probe_window_start >= std::chrono::seconds(1)) {
+                probe_emit(now);
+            }
+        }
+
+        // Closes multicast collection windows. Takes _mutex itself and
+        // fulfils promises outside it.
+        cleanup_expired_multicast_requests();
+
+        if (!readiness) {
+            std::this_thread::sleep_for(_config.io_paced_interval);
+            continue;
+        }
+
+        // Take the pending wake first, then compute the timeout from the
+        // state it announced: a signal after this point re-arms the eventfd
+        // and makes the poll() below return at once.
+        std::uint64_t wakes = 0;
+        [[maybe_unused]] const auto drained = ::read(wake_fd, &wakes, sizeof wakes);
+        _io_wake_pending.store(false, std::memory_order_release);
+
+        auto timeout = _config.io_max_wait;
+        {
+            std::lock_guard lock(_mutex);
+            if (_coap_context) {
+                coap_tick_t now = 0;
+                coap_ticks(&now);
+                // Runs due timers as a side effect and arms libcoap's
+                // timerfd. Returns milliseconds to the next timer, and 0
+                // for "none scheduled" -- not "due now" (design §1 L4).
+                const unsigned int next_ms = coap_io_prepare_epoll(_coap_context, now);
+                if (next_ms != 0) {
+                    timeout = std::min(timeout, std::chrono::milliseconds{next_ms});
+                }
+            }
+            if (const auto multicast = next_multicast_deadline_locked()) {
+                timeout = std::min(timeout, *multicast);
+            }
+        }
+
+        // Wait, outside the lock.
+        std::array<pollfd, 2> fds{pollfd{coap_fd, POLLIN, 0}, pollfd{wake_fd, POLLIN, 0}};
+        (void)::poll(fds.data(), fds.size(), static_cast<int>(timeout.count()));
+    }
+#else
+    (void)stop_token;
+#endif
 }
 
 // Enhanced multicast helper methods for CoAP client
@@ -7733,28 +8162,47 @@ auto coap_client<Types>::get_or_create_session(std::uint64_t target, coap_addres
 #ifdef LIBCOAP_AVAILABLE
     std::string endpoint_key = std::to_string(target);
 
-    // Check if we have a pooled session for this endpoint
-    if (_config.enable_session_reuse) {
-        std::lock_guard lock(_mutex);
-        auto pool_it = _session_pools.find(endpoint_key);
-        if (pool_it != _session_pools.end() && !pool_it->second.empty()) {
-            auto session = pool_it->second.back();
-            pool_it->second.pop_back();
-
-            // Validate session is still active
-            if (coap_session_get_state(session) == COAP_SESSION_STATE_ESTABLISHED) {
-                _logger.debug("Reusing existing session", {{"target", std::to_string(target)},
-                                                           {"session_state", "established"}});
-                return session;
-            } else {
-                // Session is no longer valid, release it
-                coap_session_release(session);
-            }
+    // One session per peer, held by the pool and lent to each caller.
+    //
+    // This used to pop the session out of the pool and hand it over, and
+    // nothing ever put one back: send_rpc() has no return path, so every RPC
+    // opened a fresh session -- a fresh UDP socket -- and kept it until the
+    // client died. One Raft group at heartbeat rate took minutes to notice;
+    // multi-Raft over one shared client ran a 20,000-descriptor process out
+    // of file descriptors in seconds ("Too many open files").
+    //
+    // So the pool keeps its reference and the caller gets one of its own,
+    // which it gives back with coap_session_release() once coap_send() has
+    // taken the PDU. libcoap holds its own reference for as long as a CON is
+    // awaiting its ACK, and responses are matched by token, so any number of
+    // exchanges can share the session.
+    //
+    // Sharing it puts every request to that peer under NSTART, which libcoap
+    // defaults to RFC 7252's 1: one outstanding CON per peer, the rest held in
+    // libcoap's delay queue until the previous ACK. Per-RPC sessions never hit
+    // that, and Raft has no use for it -- a leader re-sends AppendEntries every
+    // tick while entries are unacknowledged, so at NSTART 1 the queue grew
+    // faster than it drained and followers applied requests seconds stale. So
+    // the session admits max_concurrent_requests outstanding exchanges, the
+    // client's existing bound on concurrency.
+    std::lock_guard lock(_mutex);
+    auto& pool = _session_pools[endpoint_key];
+    while (!pool.empty()) {
+        auto* session = pool.back();
+        if (coap_session_get_state(session) == COAP_SESSION_STATE_ESTABLISHED) {
+            _logger.debug("Reusing existing session",
+                          {{"target", std::to_string(target)}, {"session_state", "established"}});
+            return coap_session_reference(session);
         }
+        pool.pop_back();
+        coap_session_release(session);
     }
 
-    // Create new session
-    return create_new_session(dst_addr, uri);
+    auto* session = create_new_session(dst_addr, uri);
+    coap_session_set_nstart(session, static_cast<uint16_t>(std::clamp<std::size_t>(
+                                         _config.max_concurrent_requests, 1, UINT16_MAX)));
+    pool.push_back(session);
+    return coap_session_reference(session);
 #else
     // Stub implementation
     return reinterpret_cast<coap_session_t*>(
@@ -7834,6 +8282,16 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
                           {{"protocol", "DTLS"},
                            {"certificate_validation",
                             _config.enable_certificate_validation ? "enabled" : "disabled"}});
+        }
+    } else if (_config.security.mode == coap_auth_mode::oscore && _security_provider) {
+        // The path every RPC takes. Without this branch an OSCORE-configured
+        // client opened a plain session here and sent every request in the
+        // clear: the provider's create_client_session() was reachable only
+        // from the session pool's own path, which send_rpc does not use.
+        session = _security_provider->create_client_session(_coap_context, nullptr, dst_addr,
+                                                            COAP_PROTO_UDP);
+        if (session) {
+            _logger.debug("Created new OSCORE session", {{"protocol", "UDP"}});
         }
     } else {
         // Create regular UDP session
@@ -8262,6 +8720,46 @@ auto coap_client<Types>::correlate_response_with_request(const std::string& toke
 
     return true;
 }
+
+// ── concept conformance (.kiro/specs/coap-transport-multi-raft/, Requirement 2) ──
+//
+// Which Raft features this backend supports, as a compile-time fact. The
+// negative assertions are as deliberate as the positive ones: node<Types>
+// detects every extension with `if constexpr` and silently does without, so a
+// backend quietly gaining or losing one changes what a deployment can do with
+// no other symptom. Each block below is mirrored by the capability table in
+// design §2 of that specification and by coap_concept_conformance_test.cpp; if
+// one of these fires, the table is stale, not the assertion.
+
+static_assert(kythira::network_client<coap_client<coap_detail::conformance_types>>,
+              "coap_client must satisfy network_client");
+static_assert(kythira::network_server<coap_server<coap_detail::conformance_types>>,
+              "coap_server must satisfy network_server");
+
+static_assert(!kythira::network_client_with_pre_vote<coap_client<coap_detail::conformance_types>>,
+              "coap_client does not implement pre-vote; see design §2's capability table");
+static_assert(!kythira::network_server_with_pre_vote<coap_server<coap_detail::conformance_types>>,
+              "coap_server does not implement pre-vote; see design §2's capability table");
+static_assert(!kythira::network_client_with_log_fetch<coap_client<coap_detail::conformance_types>>,
+              "coap_client does not implement log fetch; see design §2's capability table");
+static_assert(!kythira::network_server_with_log_fetch<coap_server<coap_detail::conformance_types>>,
+              "coap_server does not implement log fetch; see design §2's capability table");
+static_assert(
+    !kythira::network_client_with_cluster_join<coap_client<coap_detail::conformance_types>>,
+    "coap_client does not implement cluster join; see design §2's capability table");
+static_assert(
+    !kythira::network_server_with_cluster_join<coap_server<coap_detail::conformance_types>>,
+    "coap_server does not implement cluster join; see design §2's capability table");
+static_assert(
+    !kythira::network_client_with_cluster_leave<coap_client<coap_detail::conformance_types>>,
+    "coap_client does not implement cluster leave; see design §2's capability table");
+static_assert(
+    !kythira::network_server_with_cluster_leave<coap_server<coap_detail::conformance_types>>,
+    "coap_server does not implement cluster leave; see design §2's capability table");
+static_assert(kythira::network_client_with_timeout_now<coap_client<coap_detail::conformance_types>>,
+              "coap_client must satisfy network_client_with_timeout_now");
+static_assert(kythira::network_server_with_timeout_now<coap_server<coap_detail::conformance_types>>,
+              "coap_server must satisfy network_server_with_timeout_now");
 
 }  // namespace kythira
 

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Clark Rawlins
 // SPDX-License-Identifier: Apache-2.0
 
+#include "coap_capability_table.hpp"
 #include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_libnyoci_concept_conformance_test
 #include <boost/test/unit_test.hpp>
@@ -130,6 +131,18 @@ BOOST_AUTO_TEST_CASE(test_backend_availability_matches_the_build,
     BOOST_TEST(!test_server::backend_available());
     BOOST_TEST_MESSAGE("libnyoci not available — the runtime backend is compiled out");
 #endif
+}
+
+// Design §2's capability table, both directions: every optional extension this
+// backend implements and every one it does not (Requirements 2.2, 2.5). The
+// row lives in coap_capability_table.hpp beside the other two backends', so the
+// three tests assert one table rather than three copies of it.
+BOOST_AUTO_TEST_CASE(test_extension_set_matches_the_capability_table,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    static_assert(
+        kythira::testing::assert_coap_capabilities<test_client, test_server,
+                                                   kythira::testing::libnyoci_capabilities>());
+    BOOST_TEST(true);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

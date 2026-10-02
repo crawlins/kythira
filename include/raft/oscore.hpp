@@ -51,6 +51,7 @@
 #include <raft/coap_security.hpp>
 
 #include <openssl/evp.h>
+#include <openssl/crypto.h>
 #include <openssl/hmac.h>
 
 #include <algorithm>
@@ -833,6 +834,15 @@ struct split_options {
 
 }  // namespace detail
 
+/// Overwrites `bytes` with zeros in a way the optimiser may not elide, for key
+/// material that is about to be released (RFC 8613 Requirement 4.9 of the
+/// multi-Raft CoAP spec: destroyed contexts are zeroed, not merely freed).
+inline auto secure_zero(std::vector<std::byte>& bytes) -> void {
+    if (!bytes.empty()) {
+        OPENSSL_cleanse(bytes.data(), bytes.size());
+    }
+}
+
 /// One OSCORE Security Context (RFC 8613 Section 3): the Common Context shared
 /// with the peer, plus this endpoint's Sender and Recipient Contexts.
 ///
@@ -858,8 +868,13 @@ public:
             throw coap_security_config_error(
                 "OSCORE: sender_id and recipient_id must differ within a Security Context");
         }
+        if (credentials.id_context.size() > 255) {
+            // The OSCORE option's `s` field is one byte (RFC 8613 Section 6.1).
+            throw coap_security_config_error("OSCORE: an ID Context is at most 255 bytes");
+        }
         _sender_id = credentials.sender_id;
         _recipient_id = credentials.recipient_id;
+        _id_context = credentials.id_context;
         _sender_key = hkdf_sha256(credentials.master_salt, credentials.master_secret,
                                   build_info(_sender_id, _id_context, _alg, "Key", aead_key_length),
                                   aead_key_length);
@@ -871,12 +886,34 @@ public:
                                  aead_nonce_length);
     }
 
+    security_context(const security_context&) = delete;
+    auto operator=(const security_context&) -> security_context& = delete;
+    ~security_context() { wipe(); }
+
+    /// Zeroes the keys and the Common IV and makes the context unusable: every
+    /// later protect or verify throws. Called when the group a context belongs
+    /// to is destroyed, so its key material does not merely fall out of a map
+    /// into freed memory. Idempotent.
+    auto wipe() -> void {
+        const std::lock_guard lock(_mutex);
+        secure_zero(_sender_key);
+        secure_zero(_recipient_key);
+        secure_zero(_common_iv);
+        _wiped = true;
+    }
+
+    [[nodiscard]] auto is_wiped() const -> bool {
+        const std::lock_guard lock(_mutex);
+        return _wiped;
+    }
+
     // ── Client side ────────────────────────────────────────────────────────
 
     /// RFC 8613 Section 8.1. Fills `binding` with what verifying the eventual
     /// response will need.
     [[nodiscard]] auto protect_request(const coap_message& message, request_binding& binding) const
         -> coap_message {
+        require_live();
         if (!message.is_request()) {
             throw unsupported_feature_error("protect_request() called with a response");
         }
@@ -892,6 +929,13 @@ public:
         fields.partial_iv = partial_iv;
         fields.kid = _sender_id;
         fields.has_kid = true;
+        if (!_id_context.empty()) {
+            // RFC 8613 Section 6.1: carried so the recipient can pick the
+            // matching context before it can decrypt anything. Not part of the
+            // AAD (Section 5.4); it authenticates through the key it selects.
+            fields.kid_context = _id_context;
+            fields.has_kid_context = true;
+        }
 
         coap_message out;
         out.version = message.version;
@@ -917,6 +961,7 @@ public:
     /// RFC 8613 Section 8.4.
     [[nodiscard]] auto unprotect_response(const coap_message& message,
                                           const request_binding& binding) const -> coap_message {
+        require_live();
         const auto fields = extract_option(message);
         // The AAD names the request's kid and Partial IV, which is what binds
         // this response to the request the caller actually sent.
@@ -970,6 +1015,7 @@ public:
     /// RFC 8613 Section 8.2, including the replay check of Section 7.4.
     [[nodiscard]] auto unprotect_request(const coap_message& message, request_binding& binding)
         -> coap_message {
+        require_live();
         const auto fields = extract_option(message);
         if (fields.partial_iv.empty()) {
             throw verification_error("a protected request must carry a Partial IV");
@@ -979,6 +1025,11 @@ public:
         }
         if (fields.kid != _recipient_id) {
             throw verification_error("no Recipient Context matches the request's kid");
+        }
+        if (fields.has_kid_context && fields.kid_context != _id_context) {
+            // Checked before the replay window is touched: a request meant for
+            // another context must not advance this one's window.
+            throw verification_error("no Recipient Context matches the request's kid context");
         }
         check_and_record_replay(detail::decode_partial_iv(fields.partial_iv));
 
@@ -1004,6 +1055,7 @@ public:
     /// answer when the server cannot do replay protection (Appendix B.1.2).
     [[nodiscard]] auto protect_response(const coap_message& message, const request_binding& binding,
                                         bool with_own_partial_iv = false) const -> coap_message {
+        require_live();
         if (message.is_request()) {
             throw unsupported_feature_error("protect_response() called with a request");
         }
@@ -1053,6 +1105,11 @@ public:
         return _recipient_key;
     }
     [[nodiscard]] auto common_iv() const -> const std::vector<std::byte>& { return _common_iv; }
+    [[nodiscard]] auto id_context() const -> const std::vector<std::byte>& { return _id_context; }
+    [[nodiscard]] auto sender_id() const -> const std::vector<std::byte>& { return _sender_id; }
+    [[nodiscard]] auto recipient_id() const -> const std::vector<std::byte>& {
+        return _recipient_id;
+    }
 
     /// Forces the next Partial IV, so a test can reproduce a published vector.
     /// Not for production use: rewinding a sequence number reuses a nonce.
@@ -1062,6 +1119,13 @@ public:
     }
 
 private:
+    auto require_live() const -> void {
+        const std::lock_guard lock(_mutex);
+        if (_wiped) {
+            throw coap_security_error("OSCORE: this Security Context has been destroyed");
+        }
+    }
+
     [[nodiscard]] auto next_sequence() const -> std::uint64_t {
         const std::lock_guard lock(_mutex);
         if (_sender_sequence > 0xFFFFFFFFFFULL) {
@@ -1164,6 +1228,7 @@ private:
     std::uint64_t _replay_high{0};
     std::uint64_t _replay_bitmap{0};
     bool _seen_any{false};
+    bool _wiped{false};
 };
 
 }  // namespace kythira::oscore
