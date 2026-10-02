@@ -248,9 +248,26 @@ auto validate_certificate_chain(const std::string& cert_path, const std::string&
 
     BIO* cert_bio = BIO_new_mem_buf(cert_content.c_str(), static_cast<int>(cert_content.length()));
     X509* cert = PEM_read_bio_X509(cert_bio, nullptr, nullptr, nullptr);
+    // Any further PEM certificates after the leaf are its chain (the layout
+    // SSL_CTX_use_certificate_chain_file presents on the wire). They are
+    // offered as untrusted intermediates, so a leaf issued by an intermediate
+    // validates against a root-only trust store the same way the peer will
+    // validate it.
+    struct x509_stack_deleter {
+        auto operator()(STACK_OF(X509) * sk) const -> void { sk_X509_pop_free(sk, X509_free); }
+    };
+    std::unique_ptr<STACK_OF(X509), x509_stack_deleter> intermediates{sk_X509_new_null()};
     if (cert == nullptr) {
         BIO_reset(cert_bio);
         cert = d2i_X509_bio(cert_bio, nullptr);
+    } else {
+        while (X509* extra = PEM_read_bio_X509(cert_bio, nullptr, nullptr, nullptr)) {
+            if (intermediates == nullptr || sk_X509_push(intermediates.get(), extra) == 0) {
+                X509_free(extra);
+            }
+        }
+        // The loop ends on the PEM reader's end-of-input error.
+        ERR_clear_error();
     }
     BIO_free(cert_bio);
 
@@ -315,7 +332,7 @@ auto validate_certificate_chain(const std::string& cert_path, const std::string&
     }
 
     // Initialize context for certificate validation
-    if (X509_STORE_CTX_init(ctx, store, cert, nullptr) != 1) {
+    if (X509_STORE_CTX_init(ctx, store, cert, intermediates.get()) != 1) {
         X509_STORE_CTX_free(ctx);
         X509_STORE_free(store);
         X509_free(cert);
@@ -863,27 +880,44 @@ auto cpp_httplib_client<Types>::configure_ssl_client(httplib::Client* client) ->
     // Enable/disable certificate verification
     client->enable_server_certificate_verification(_config.enable_ssl_verification);
 
-    // Set client certificate and key for mutual TLS
-    if (!_config.client_cert_path.empty() && !_config.client_key_path.empty()) {
-        // Note: cpp-httplib may not support client certificate configuration directly
-        // This would require either:
-        // 1. Using a different HTTP library with full SSL client cert support
-        // 2. Patching cpp-httplib to add client certificate support
-        // 3. Using custom SSL context configuration if supported by cpp-httplib version
-
-        // For now, we validate that the certificates are loadable but note that
-        // client certificate authentication may not be fully functional with cpp-httplib
-        try {
-            validate_certificate_key_pair(_config.client_cert_path, _config.client_key_path);
-        } catch (const std::exception& e) {
+    // Present the client certificate for mutual TLS. Loaded straight into the
+    // client's SSL_CTX rather than through httplib::Client's cert/key
+    // constructor: that one reads only the first certificate in the file, so
+    // a leaf issued by an intermediate would reach the server without its
+    // chain, and on failure it silently nulls the context so the error only
+    // surfaces later as an opaque SSLConnection failure on the first RPC.
+    if (!_config.client_cert_path.empty() || !_config.client_key_path.empty()) {
+        if (_config.client_cert_path.empty() || _config.client_key_path.empty()) {
             throw kythira::ssl_configuration_error(
-                std::format("Client certificate validation failed: {}", e.what()));
+                "Mutual TLS needs both client_cert_path and client_key_path");
         }
-
-        // Log that client certificate is configured but may not be applied
-        // In a production implementation, this would require either:
-        // 1. Using a different HTTP library with full SSL client cert support
-        // 2. Custom SSL context handling if supported by the cpp-httplib version
+        SSL_CTX* ctx = client->ssl_context();
+        if (ctx == nullptr) {
+            throw kythira::ssl_configuration_error(
+                "Client has no SSL context to load the client certificate into");
+        }
+        auto openssl_error = [] {
+            char err_buf[256];
+            ERR_error_string_n(ERR_get_error(), err_buf, sizeof(err_buf));
+            ERR_clear_error();
+            return std::string(err_buf);
+        };
+        if (SSL_CTX_use_certificate_chain_file(ctx, _config.client_cert_path.c_str()) != 1) {
+            throw kythira::ssl_configuration_error(
+                std::format("Failed to load client certificate chain {}: {}",
+                            _config.client_cert_path, openssl_error()));
+        }
+        if (SSL_CTX_use_PrivateKey_file(ctx, _config.client_key_path.c_str(), SSL_FILETYPE_PEM) !=
+            1) {
+            throw kythira::ssl_configuration_error(
+                std::format("Failed to load client private key {}: {}", _config.client_key_path,
+                            openssl_error()));
+        }
+        if (SSL_CTX_check_private_key(ctx) != 1) {
+            throw kythira::ssl_configuration_error(
+                std::format("Client private key {} does not match certificate {}: {}",
+                            _config.client_key_path, _config.client_cert_path, openssl_error()));
+        }
     }
 
     // Apply cipher_suites and the TLS version bounds to the live SSL_CTX* the

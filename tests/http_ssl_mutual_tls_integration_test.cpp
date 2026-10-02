@@ -13,6 +13,8 @@
 #include <fstream>
 #include <thread>
 #include <chrono>
+#include <format>
+#include <memory>
 
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
@@ -79,10 +81,10 @@ BOOST_AUTO_TEST_SUITE(http_ssl_mutual_tls_integration_tests)
 
 // The flagship proof for Requirement 14: start() a real httplib::SSLServer,
 // connect with a real client presenting its certificate, and confirm a
-// mutual-TLS round trip actually completes end-to-end. kythira::cpp_httplib_client
-// does not itself present a client certificate (Requirement 14.6 — a
-// pre-existing, explicitly out-of-scope gap), so this test drives the client
-// side directly with a raw httplib::Client configured with a client cert/key.
+// mutual-TLS round trip actually completes end-to-end. The client side here is a
+// raw httplib::SSLClient so the server is proven independently of
+// kythira::cpp_httplib_client; the two tests after the next one drive the same
+// handshake through the transport's own client.
 BOOST_AUTO_TEST_CASE(mutual_tls_handshake_actually_completes, *boost::unit_test::timeout(60)) {
     using test_types =
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
@@ -171,6 +173,106 @@ BOOST_AUTO_TEST_CASE(server_rejects_connection_with_no_client_certificate,
     BOOST_TEST(!res);  // Handshake itself must fail — no response at all.
 
     server.stop();
+}
+
+namespace {
+using mtls_test_types =
+    kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                  kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
+
+auto make_mtls_server(mtls_material& material, std::uint16_t port)
+    -> std::unique_ptr<kythira::cpp_httplib_server<mtls_test_types>> {
+    const auto& server_files = material.server();
+    kythira::cpp_httplib_server_config server_config;
+    server_config.enable_ssl = true;
+    server_config.ssl_cert_path = server_files.cert_path();
+    server_config.ssl_key_path = server_files.key_path();
+    server_config.ca_cert_path = material.ca_cert_path;
+    server_config.require_client_cert = true;
+
+    typename mtls_test_types::metrics_type server_metrics;
+    auto server = std::make_unique<kythira::cpp_httplib_server<mtls_test_types>>(
+        test_bind_address, port, server_config, server_metrics);
+    server->register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+        kythira::request_vote_response<> response;
+        response._term = req.term();
+        response._vote_granted = true;
+        return response;
+    });
+    return server;
+}
+
+auto make_vote_request() -> kythira::request_vote_request<> {
+    kythira::request_vote_request<> request;
+    request._term = 7;
+    request._candidate_id = 2;
+    request._last_log_index = 0;
+    request._last_log_term = 0;
+    return request;
+}
+}  // namespace
+
+// M18 / http-transport Requirement 14.6: kythira::cpp_httplib_client itself
+// presents client_cert_path/client_key_path, so a server that requires a client
+// certificate accepts a Raft RPC sent through the transport. Before the fix the
+// client only validated the files and never loaded them into its SSL context, so
+// this RPC failed the handshake.
+BOOST_AUTO_TEST_CASE(cpp_httplib_client_presents_client_certificate,
+                     *boost::unit_test::timeout(60)) {
+    constexpr std::uint16_t port = 18544;
+    mtls_material material;
+    const auto& client_files = material.client();
+    auto server = make_mtls_server(material, port);
+    BOOST_REQUIRE_NO_THROW(server->start());
+
+    kythira::cpp_httplib_client_config client_config;
+    client_config.client_cert_path = client_files.cert_path();
+    client_config.client_key_path = client_files.key_path();
+    client_config.ca_cert_path = material.ca_cert_path;
+    client_config.enable_ssl_verification = true;
+
+    std::unordered_map<std::uint64_t, std::string> node_map;
+    node_map[test_node_id] = std::format("https://127.0.0.1:{}", port);
+    typename mtls_test_types::metrics_type client_metrics;
+    kythira::cpp_httplib_client<mtls_test_types> client(std::move(node_map), client_config,
+                                                        client_metrics);
+
+    auto response =
+        client.send_request_vote(test_node_id, make_vote_request(), std::chrono::milliseconds{5000})
+            .get();
+    BOOST_TEST(response.term() == 7U);
+    BOOST_TEST(response.vote_granted());
+
+    server->stop();
+}
+
+// The negative half of the test above, through the same transport: with no
+// client certificate configured the server must refuse the handshake, so the
+// success above is down to the presented certificate and not to a server that
+// never asked for one.
+BOOST_AUTO_TEST_CASE(cpp_httplib_client_without_certificate_is_rejected,
+                     *boost::unit_test::timeout(60)) {
+    constexpr std::uint16_t port = 18545;
+    mtls_material material;
+    auto server = make_mtls_server(material, port);
+    BOOST_REQUIRE_NO_THROW(server->start());
+
+    kythira::cpp_httplib_client_config client_config;
+    client_config.ca_cert_path = material.ca_cert_path;
+    client_config.enable_ssl_verification = true;
+
+    std::unordered_map<std::uint64_t, std::string> node_map;
+    node_map[test_node_id] = std::format("https://127.0.0.1:{}", port);
+    typename mtls_test_types::metrics_type client_metrics;
+    kythira::cpp_httplib_client<mtls_test_types> client(std::move(node_map), client_config,
+                                                        client_metrics);
+
+    BOOST_CHECK_THROW(
+        client.send_request_vote(test_node_id, make_vote_request(), std::chrono::milliseconds{5000})
+            .get(),
+        std::exception);
+
+    server->stop();
 }
 
 BOOST_AUTO_TEST_CASE(test_client_certificate_authentication_end_to_end,
