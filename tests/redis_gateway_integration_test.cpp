@@ -752,6 +752,72 @@ BOOST_AUTO_TEST_CASE(protocol_errors_close_and_limits_hold, *boost::unit_test::t
     BOOST_CHECK_EQUAL(again.read_reply(), "+PONG\r\n");
 }
 
+// Vulnerability audit 2026-10-02 H3: before AUTH the parser runs under
+// Redis's unauthenticated limits, one command at a time, so a stranger cannot
+// park a 32 MiB argument per connection, yet a client that pipelines AUTH and
+// a large SET in one write still gets both executed.
+BOOST_AUTO_TEST_CASE(pre_auth_limits_and_pipelined_auth, *boost::unit_test::timeout(120)) {
+    cluster c;
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    auto port = c.port(c.leader_of(k_sccache_group));
+    {
+        resp_client bad(port);
+        bad.send_raw("*2\r\n$4\r\nAUTH\r\n$20000\r\n");
+        BOOST_CHECK_EQUAL(bad.read_reply(), "-ERR Protocol error: invalid bulk length\r\n");
+        BOOST_CHECK(bad.wait_closed());
+    }
+    {
+        resp_client bad(port);
+        bad.send_raw("*11\r\n");
+        BOOST_CHECK_EQUAL(bad.read_reply(), "-ERR Protocol error: invalid multibulk length\r\n");
+        BOOST_CHECK(bad.wait_closed());
+    }
+    {
+        const std::string value(100000, 'p');
+        resp_client client(port);
+        client.send_raw(resp_client::encode({"AUTH", "farm", "farm-secret"}) +
+                        resp_client::encode({"SET", "sccache/pipelined", value}) +
+                        resp_client::encode({"GET", "sccache/pipelined"}));
+        BOOST_CHECK_EQUAL(client.read_reply(), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.read_reply(), "+OK\r\n");
+        BOOST_CHECK(client.read_reply() == bulk(value));
+    }
+}
+
+// Audit M8: a client that stops reading its replies stalls its own commands
+// once its output buffer is full, instead of growing it without bound, and
+// gets every reply, in order, once it reads again.
+BOOST_AUTO_TEST_CASE(slow_reader_stalls_instead_of_buffering, *boost::unit_test::timeout(120)) {
+    redis_gateway_config cfg;
+    cfg._max_output_buffer_bytes = 1024u * 1024u;
+    cluster c(cfg);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    auto leader = c.leader_of(k_sccache_group);
+    resp_client client(c.port(leader));
+    BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
+    const std::string value(512u * 1024u, 'r');
+    BOOST_REQUIRE_EQUAL(client.call({"SET", "sccache/slow", value}), "+OK\r\n");
+
+    // ~50 MiB of replies, far beyond the socket buffers and the 1 MiB cap.
+    constexpr int k_gets = 100;
+    std::string batch;
+    for (int i = 0; i < k_gets; ++i) {
+        batch += resp_client::encode({"GET", "sccache/slow"});
+    }
+    client.send_raw(batch);
+    auto& stats = c.gateway(leader).stats();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+    while (stats._output_stalls.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    BOOST_CHECK_GE(stats._output_stalls.load(), 1u);
+    const auto expected = bulk(value);
+    for (int i = 0; i < k_gets; ++i) {
+        BOOST_REQUIRE(client.read_reply() == expected);
+    }
+    BOOST_CHECK_EQUAL(client.call({"PING"}), "+PONG\r\n");
+}
+
 BOOST_AUTO_TEST_CASE(pipelined_writes_keep_order, *boost::unit_test::timeout(120)) {
     cluster c;
     BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));

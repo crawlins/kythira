@@ -24,6 +24,7 @@
 /// Definitions live in redis_gateway_impl.hpp, this tree's convention.
 
 #include <raft/redis_acl.hpp>
+#include <raft/redis_auth_limiter.hpp>
 #include <raft/redis_kv_commands.hpp>
 #include <raft/redis_kv_state_machine.hpp>
 #include <raft/resp_protocol.hpp>
@@ -113,10 +114,25 @@ struct redis_gateway_config {
     /// connections; past this, new commands are answered with a retryable
     /// error instead of being queued.
     std::size_t _max_inflight_bytes = 256u * 1024u * 1024u;
-    /// Auth failures per source address per window before AUTH is refused
-    /// without running the KDF.
+    /// Auth failures per source (IPv4 address or IPv6 /64) per window before
+    /// AUTH is refused without running the KDF. An attempt counts against
+    /// this from the moment it starts, so concurrent guesses cannot exceed it.
     std::size_t _auth_failure_limit = 10;
     std::chrono::seconds _auth_failure_window{60};
+    /// PBKDF2 derivations allowed in flight across the gateway; AUTH past it
+    /// is refused with a retryable error. 0 means half the worker pool (at
+    /// least one), which keeps the rest free for authenticated commands.
+    std::size_t _max_concurrent_auth = 0;
+    /// Reply bytes a connection may have queued for its socket before the
+    /// gateway stops executing its commands (and so, via the in-flight queue,
+    /// stops reading from it) until the client drains them. Redis's
+    /// client-output-buffer-limit, but as backpressure rather than a
+    /// disconnect. One reply may overshoot it; the next waits.
+    std::size_t _max_output_buffer_bytes = 32u * 1024u * 1024u;
+    /// The same before the connection has authenticated. Pre-auth replies are
+    /// a few bytes each, so this only ever stops a client that pipelines
+    /// junk and never reads.
+    std::size_t _pre_auth_output_buffer_bytes = 64u * 1024u;
     /// Log every command at debug level. Off by default: at sccache rates it
     /// is a firehose.
     bool _log_commands = false;
@@ -137,6 +153,8 @@ struct redis_gateway_stats {
     std::atomic<std::uint64_t> _evictions{0};
     std::atomic<std::uint64_t> _expirations{0};
     std::atomic<std::uint64_t> _auth_failures{0};
+    /// AUTHs refused because too many KDFs were already running.
+    std::atomic<std::uint64_t> _auth_busy{0};
     std::atomic<std::uint64_t> _authz_denials{0};
     std::atomic<std::uint64_t> _forwards{0};
     std::atomic<std::uint64_t> _forward_failures{0};
@@ -145,6 +163,9 @@ struct redis_gateway_stats {
     std::atomic<std::uint64_t> _connections_current{0};
     std::atomic<std::uint64_t> _commands{0};
     std::atomic<std::uint64_t> _shed{0};
+    /// Times a connection stopped executing because its client was not
+    /// reading replies (`_max_output_buffer_bytes`).
+    std::atomic<std::uint64_t> _output_stalls{0};
     std::atomic<std::uint64_t> _over_budget_ticks{0};
 };
 
@@ -216,10 +237,11 @@ private:
         /// Authenticated as `_internal_user`: never forward again.
         bool _internal = false;
         std::string _source;
-        /// Remote IP address alone — the AUTH rate-limit key. `_source` keeps
-        /// the port for logs, but keying the limit on ip:port made it a
-        /// no-op: every reconnect gets a fresh source port, so a guesser just
-        /// opened a new connection per attempt.
+        /// Remote IPv4 address or IPv6 /64 — the AUTH rate-limit key
+        /// (redis_auth_limiter::rate_key). `_source` keeps the port for logs,
+        /// but keying the limit on ip:port made it a no-op: every reconnect
+        /// gets a fresh source port, so a guesser just opened a new
+        /// connection per attempt.
         std::string _rate_key;
         std::string _client_name;
         std::string _lib_name;
@@ -261,8 +283,6 @@ private:
                 std::optional<node_id_type>& forward_to) -> group_node_type*;
     auto authorize(session& s, std::string_view upper, const std::vector<std::string_view>& keys)
         -> std::optional<std::string>;
-    auto auth_rate_limited(const std::string& source) -> bool;
-    auto note_auth_failure(const std::string& source) -> void;
     auto audit(session& s, std::string_view command, std::string_view outcome) -> void;
     auto emit(std::string_view name, std::string_view command, std::int64_t count = 1) -> void;
     auto emit_duration(std::string_view name, std::string_view command, std::chrono::nanoseconds d)
@@ -314,12 +334,7 @@ private:
     std::unordered_map<connection*, std::weak_ptr<connection>> _connections;
     std::atomic<std::size_t> _inflight_bytes{0};
 
-    std::mutex _auth_mutex;
-    struct auth_failures {
-        std::size_t _count = 0;
-        std::chrono::steady_clock::time_point _window_start{};
-    };
-    std::unordered_map<std::string, auth_failures> _auth_failures;
+    redis_auth_limiter _auth_limiter;
 
     /// Leader-local advisory LRU per shard: never replicated, rebuilt lazily
     /// after a leadership change from whatever the shard holds.

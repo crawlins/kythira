@@ -142,10 +142,23 @@ user ops       pbkdf2-sha256$600000$...$...  admin      *  cert=CN=ops.example
 A refused command answers `-NOPERM ...` and the daemon logs one audit line
 per refusal (`redis audit`, tagged `stream=audit`) naming the user, the source
 address, the command and the reason, and never the secret or the value.
-Failed `AUTH`s are rate-limited per source IP address (not per connection, so
-reconnecting does not reset the count), because each one costs a PBKDF2
-derivation. Clients behind one NAT share a budget; size
-`_auth_failure_limit` accordingly.
+Failed `AUTH`s are rate-limited per source (the IPv4 address, or the IPv6
+/64; not per connection, so reconnecting does not reset the count), because
+each one costs a PBKDF2 derivation. An attempt is counted when it starts and
+refunded if it succeeds, so concurrent guesses cannot overrun the limit.
+Clients behind one NAT share a budget; size `_auth_failure_limit`
+accordingly. At most `_max_concurrent_auth` derivations run at once across
+the gateway (default: half the worker pool); past that `AUTH` answers
+`-ERR too many concurrent authentication attempts, retry later`, which
+keeps the other workers free for authenticated traffic.
+
+Until a connection authenticates it is held to Redis's limits for
+unauthenticated clients: at most 10 arguments of at most 16 KiB each, parsed
+one command at a time. A client that pipelines `AUTH` and a large `SET` in one
+write is fine; the `SET` is parsed after `AUTH` has run. A client that stops
+reading its replies stops having its commands executed once
+`_max_output_buffer_bytes` (32 MiB; 64 KiB before `AUTH`) of replies are
+waiting for it, and the idle timeout eventually closes it.
 
 ## Configuring sccache
 
