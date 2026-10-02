@@ -114,9 +114,10 @@ user <name> <secret-record|nopass> <role> [prefix ...] [cert=<subject>]
 - `<secret-record>` is `pbkdf2-sha256$<iterations>$<base64 salt>$<base64 key>`
   as printed by `redis_gateway_node --hash-secret [iterations]`, which reads
   the secret from stdin so it never appears on a command line or in shell
-  history. `nopass` accepts any password (use it only with `cert=`), and
-  `disabled` in this position keeps the line but lets nobody authenticate
-  as the user.
+  history. `nopass` means the user has no password: it can only connect
+  with a client certificate, so the line must carry a `cert=` (the ACL is
+  rejected otherwise) and `AUTH` as that user always fails. `disabled` in
+  this position keeps the line but lets nobody authenticate as the user.
 - `<role>` is `read_only` (`GET`, `EXISTS`, `STRLEN`, `GETRANGE`, `TTL`,
   `DBSIZE`, `COMMAND` and the connection commands), `read_write` (adds `SET`,
   `SETEX`, `DEL`) or `admin` (adds `INFO`). `ro` and `rw` are accepted
