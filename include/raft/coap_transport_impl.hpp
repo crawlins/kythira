@@ -3766,18 +3766,29 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
     -> void {
     // Generic RPC resource handler with comprehensive error handling
     try {
-        // Check for resource exhaustion before processing
-        handle_resource_exhaustion();
+        // Only at the limit is there anything to reclaim. This used to run
+        // unconditionally, so every request logged a resource-exhaustion
+        // warning, reset the memory pool and switched exhaustion mode on.
+        if (_active_connections.load() >= _config.max_concurrent_sessions) {
+            handle_resource_exhaustion();
+        }
 
         // Enforce connection limits
         enforce_connection_limits();
 
-        // Increment active connections counter
+        // Count this request as in flight for exactly as long as it is.
+        //
+        // This was a std::unique_ptr<void, deleter> holding nullptr, and a
+        // unique_ptr never calls its deleter on a null pointer, so the
+        // decrement never ran. Every request leaked one count, and once
+        // max_concurrent_sessions requests had been served
+        // enforce_connection_limits() rejected every request after it, for
+        // the life of the server.
         _active_connections.fetch_add(1);
-
-        // Ensure connection counter is decremented on exit
-        auto connection_guard = std::unique_ptr<void, std::function<void(void*)>>(
-            nullptr, [this](void*) { _active_connections.fetch_sub(1); });
+        struct connection_guard_t {
+            std::atomic<std::size_t>& counter;
+            ~connection_guard_t() { counter.fetch_sub(1); }
+        } connection_guard{_active_connections};
 
 #ifdef LIBCOAP_AVAILABLE
         // Extract message ID from CoAP PDU
@@ -5551,23 +5562,11 @@ auto coap_server<Types>::handle_resource_exhaustion() -> void {
                 _logger.debug("Reset server memory pool during resource exhaustion");
             }
 
-            // Close oldest connections if we have too many
-            std::size_t current_connections = _active_connections.load();
-            std::size_t max_connections_during_exhaustion = _config.max_concurrent_sessions * 3 / 4;
-
-            if (current_connections > max_connections_during_exhaustion) {
-                std::size_t connections_to_close =
-                    current_connections - max_connections_during_exhaustion;
-                _logger.warning("Closing oldest connections due to resource exhaustion",
-                                {{"connections_to_close", std::to_string(connections_to_close)},
-                                 {"current_connections", std::to_string(current_connections)}});
-
-                // Close oldest sessions (implementation would track session ages)
-                for (std::size_t i = 0; i < connections_to_close && _active_connections.load() > 0;
-                     ++i) {
-                    _active_connections.fetch_sub(1);
-                }
-            }
+            // _active_connections is not adjusted here. It counts requests
+            // that are still inside handle_rpc_resource(), each of which
+            // gives its count back on the way out; subtracting here closed
+            // nothing, and would have wrapped the counter below zero as soon
+            // as those requests returned.
 
             // Enforce stricter limits during resource exhaustion
             _resource_exhaustion_mode = true;
