@@ -158,7 +158,12 @@ private:
 
     // Builds a DELETE-specific-RR-compatible RR: owner/type/rdata are always
     // set so that deletion removes only this node's entry from a shared RRset
-    // (RFC 2136 §2.5.4), never the whole RRset.
+    // (RFC 2136 §2.5.4), never the whole RRset. §2.5.4 also needs CLASS NONE
+    // and TTL 0; with CLASS IN a TTL-0 record is an ordinary add of a record
+    // that already exists, which the server accepts as a no-op, so every
+    // "deregistration" used to leave all four records behind. Found by
+    // dns_discovery_bind_integration_test, the first test to run this
+    // against a real server.
     [[nodiscard]] RrPtr make_rr(const std::string& owner, const std::string& type_str,
                                 const std::string& rdata, bool add) const {
         const uint32_t ttl = add ? _cfg.ttl : 0;
@@ -166,6 +171,9 @@ private:
             owner + " " + std::to_string(ttl) + " IN " + type_str + " " + rdata;
         ldns_rr* raw = nullptr;
         ldns_rr_new_frm_str(&raw, rr_text.c_str(), ttl, nullptr, nullptr);
+        if (raw != nullptr && !add) {
+            ldns_rr_set_class(raw, LDNS_RR_CLASS_NONE);
+        }
         return RrPtr{raw};
     }
 

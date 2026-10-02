@@ -241,16 +241,19 @@ inline void send_rfc2136_txt_update(const acme_dns01_config& cfg, const std::str
     ldns_rr_set_owner(rr, ldns_rdf_clone(owner_rdf));
     ldns_rr_set_ttl(rr, is_delete ? 0 : cfg.ttl);
     ldns_rr_set_type(rr, LDNS_RR_TYPE_TXT);
-    ldns_rr_set_class(rr, LDNS_RR_CLASS_IN);
+    // A delete is RFC 2136 §2.5.4 "Delete An RR From An RRset": CLASS NONE,
+    // TTL 0 and the exact RDATA, so only this challenge's value goes and a
+    // concurrent order's TXT at the same name survives. It used to be CLASS
+    // IN with no RDATA, which BIND rejects as malformed; the destructor
+    // swallowed the error and every challenge record stayed in the zone.
+    ldns_rr_set_class(rr, is_delete ? LDNS_RR_CLASS_NONE : LDNS_RR_CLASS_IN);
 
-    if (!is_delete) {
-        ldns_rdf* txt_rdf = ldns_rdf_new_frm_str(LDNS_RDF_TYPE_STR, txt_value.c_str());
-        if (txt_rdf == nullptr) {
-            ldns_rr_free(rr);
-            throw std::runtime_error("acme_certificate_provider: failed to build TXT rdata");
-        }
-        ldns_rr_push_rdf(rr, txt_rdf);
+    ldns_rdf* txt_rdf = ldns_rdf_new_frm_str(LDNS_RDF_TYPE_STR, txt_value.c_str());
+    if (txt_rdf == nullptr) {
+        ldns_rr_free(rr);
+        throw std::runtime_error("acme_certificate_provider: failed to build TXT rdata");
     }
+    ldns_rr_push_rdf(rr, txt_rdf);
     ldns_rr_list_push_rr(update_list, rr);
 
     ldns_rr_list* prereq_list = ldns_rr_list_new();
@@ -287,14 +290,15 @@ public:
     dns01_responder(acme_dns01_config cfg, std::string identifier, std::string digest_base64url)
         : _cfg(std::move(cfg)),
           _owner_name("_acme-challenge." + identifier + "."),
+          _digest(std::move(digest_base64url)),
           _published(true) {
-        send_rfc2136_txt_update(_cfg, _owner_name, digest_base64url, /*is_delete=*/false);
+        send_rfc2136_txt_update(_cfg, _owner_name, _digest, /*is_delete=*/false);
     }
 
     ~dns01_responder() {
         if (_published) {
             try {
-                send_rfc2136_txt_update(_cfg, _owner_name, "", /*is_delete=*/true);
+                send_rfc2136_txt_update(_cfg, _owner_name, _digest, /*is_delete=*/true);
             } catch (...) {
                 // Best-effort removal (Requirement 18.4) — the record's TTL
                 // still bounds its lifetime even if this delete fails.
@@ -308,6 +312,7 @@ public:
 private:
     acme_dns01_config _cfg;
     std::string _owner_name;
+    std::string _digest;
     bool _published{false};
 };
 

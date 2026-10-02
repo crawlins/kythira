@@ -389,6 +389,13 @@ private:
         RrPtr rr{nullptr};
         ldns_rr* raw = nullptr;
         ldns_rr_new_frm_str(&raw, rr_text.c_str(), 0, nullptr, nullptr);
+        // RFC 2136 §2.5.4 deletes one RR from an RRset only with CLASS NONE.
+        // Parsed as IN, this was a TTL-0 add of the existing PTR, a no-op, so
+        // every departed node left its PTR in the shared browse RRset for
+        // good (find_peers then skipped it only for lack of a fresh TXT).
+        if (raw != nullptr) {
+            ldns_rr_set_class(raw, LDNS_RR_CLASS_NONE);
+        }
         rr.reset(raw);
         return rr;
     }
