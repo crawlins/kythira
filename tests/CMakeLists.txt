@@ -2459,6 +2459,10 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_network_test(coap_server_connection_limit_test coap_server_connection_limit_test.cpp)
     set_tests_properties(coap_server_connection_limit_test PROPERTIES
         TIMEOUT 180 LABELS "coap;integration;libcoap")
+    # Multicast send to a real group with two members (Requirement 13).
+    add_network_test(coap_multicast_send_test coap_multicast_send_test.cpp)
+    set_tests_properties(coap_multicast_send_test PROPERTIES
+        TIMEOUT 300 LABELS "coap;integration;libcoap;multicast")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 
 if(KYTHIRA_BUILD_COAP_TRANSPORT)
