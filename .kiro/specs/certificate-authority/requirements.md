@@ -892,14 +892,16 @@ rate-limited, publicly-routable CA.
    future with a descriptive error on challenge/order failure, an unmet
    challenge, or a timeout — mirroring how `aws_acm_pca_provider::sign_csr()`
    already handles ACM Private CA's own asynchronous issuance.
-6. `root_certificate_pem()` SHALL return the top-most certificate of the
-   chain most recently returned by the ACME server's certificate-download
-   endpoint. Because real-world ACME CAs distribute trust roots out-of-band
-   (e.g. via OS/browser trust stores) rather than through the ACME API
-   itself, this SHALL be documented as best-effort/informational when talking
-   to a real CA, and SHALL only be treated as a full, authoritative trust
-   anchor when talking to the test ACME server (Requirement 18.7), whose
-   chain terminates at its own self-contained root.
+6. `root_certificate_pem()` SHALL return the trust anchors the operator
+   configured (`trust_anchors_pem`, required at construction), never a
+   certificate taken from the server's response: real-world ACME CAs
+   distribute trust roots out-of-band, and a chain's last block may be an
+   intermediate or, over an intercepted connection, an attacker's CA.
+   `sign_csr()` SHALL reject a downloaded certificate whose chain does not
+   verify against those anchors or whose public key differs from the CSR's.
+   Every ACME request SHALL verify the server's TLS certificate (system trust
+   store, or an operator-supplied bundle); plain http SHALL be refused except
+   to a loopback host, where `acme_test_server` listens.
 7. A test ACME server, `acme_test_server`, SHALL be provided as an in-process
    fixture (`tests/acme_test_server.hpp`, mirroring the shape of
    `ca_test_fixture`) implementing the RFC 8555 endpoints needed to drive the

@@ -58,7 +58,27 @@ struct acme_dns01_config {
 };
 
 struct acme_certificate_provider_config {
-    std::string directory_url;  // e.g. "https://acme.example.com/directory"
+    // e.g. "https://acme.example.com/directory". Every URL the provider
+    // contacts (this one and each one the server hands back) must be https,
+    // with the server certificate verified; plain http is accepted only for a
+    // loopback host ("localhost", 127.0.0.0/8, "[::1]"), which is where
+    // acme_test_server listens.
+    std::string directory_url;
+
+    // Required. PEM bundle of the root certificate(s) the issued chain must
+    // verify against, and what root_certificate_pem() publishes as the
+    // node's trust store. ACME carries no trust anchor (RFC 8555 §7.4.2:
+    // the CA's roots are distributed out of band), so the provider never
+    // takes one from the server's chain: a chain's last block may be an
+    // intermediate, and over an intercepted connection it is whatever the
+    // attacker sent.
+    std::string trust_anchors_pem;
+
+    // PEM bundle used to verify the ACME server's TLS certificate, for a
+    // private ACME CA whose HTTPS endpoint the system store does not trust.
+    // The system trust store is used when unset.
+    std::optional<std::string> server_ca_bundle_pem;
+
     std::optional<std::string>
         account_key_pem;               // reuse an existing account; generate (ES256) if empty
     std::vector<std::string> contact;  // e.g. {"mailto:ops@example.com"}, optional
@@ -146,12 +166,9 @@ public:
     acme_certificate_provider(acme_certificate_provider&&) = delete;
     acme_certificate_provider& operator=(acme_certificate_provider&&) = delete;
 
-    /// Returns the top-most certificate of the chain most recently returned
-    /// by the ACME server's certificate-download endpoint — best-effort/
-    /// informational against a real-world CA (Requirement 18.6: real ACME
-    /// CAs distribute trust roots out-of-band), authoritative against
-    /// `acme_test_server`, whose chain terminates at its own root. Rejects
-    /// if no certificate has been obtained yet.
+    /// Returns the configured `trust_anchors_pem` (Requirement 18.6: ACME
+    /// CAs distribute trust roots out-of-band). Never derived from anything
+    /// the server sent.
     [[nodiscard]] auto root_certificate_pem() -> kythira::future_default<std::string>;
 
     /// Drives the full RFC 8555 order lifecycle for the identifiers named in
@@ -159,13 +176,16 @@ public:
     /// are NOT what get certified — the order's identifiers (from `options`)
     /// are authoritative, exactly mirroring how `certificate_authority::sign_csr()`
     /// takes `csr_signing_options` separately from the CSR itself.
+    ///
+    /// The downloaded certificate is accepted only if its chain verifies
+    /// against `trust_anchors_pem` and its public key is the CSR's; the
+    /// future rejects otherwise.
     [[nodiscard]] auto sign_csr(std::string csr_pem, csr_signing_options options)
         -> kythira::future_default<pem_material>;
 
 private:
     acme_jws::evp_pkey_ptr _account_key;
     std::optional<std::string> _account_url;
-    std::string _last_root_pem;
     acme_certificate_provider_config _config;
     std::mutex _mutex;
 };

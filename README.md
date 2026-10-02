@@ -1108,7 +1108,10 @@ for the full design and requirements.
   (via the same RFC 2136 UPDATE mechanism `rfc2136_ldns_discovery` uses) and
   RFC 8738 bare-IP identifiers — IP identifiers always validate via `http-01`
   regardless of the configured challenge type, since `dns-01` isn't defined
-  for them. `tests/acme_test_server.hpp` provides a self-contained mock ACME
+  for them. The issued chain must verify against the operator's
+  `trust_anchors_pem` (also what `root_certificate_pem()` returns) and carry
+  the CSR's key; the ACME server's TLS certificate is always verified.
+  `tests/acme_test_server.hpp` provides a self-contained mock ACME
   server for testing without a real CA.
 - **`ca_bootstrap_client::fetch_trusted_root()`** (`include/raft/ca_bootstrap_client.hpp`)
   — lets a fresh instance establish first-contact trust in a `ca_service`/

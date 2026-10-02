@@ -85,6 +85,7 @@ BOOST_AUTO_TEST_CASE(ip_only_request_uses_http01_even_when_dns01_configured,
 
     acme_certificate_provider_config config;
     config.directory_url = server.directory_url();
+    config.trust_anchors_pem = server.root_certificate_pem();
     // The core Property 21 claim: configuring dns_01 does NOT push an IP
     // identifier's challenge to dns-01 — there's no infrastructure dependency
     // in this path at all, since the IP always uses http-01 regardless.
@@ -127,6 +128,7 @@ BOOST_AUTO_TEST_CASE(mixed_dns_and_ip_request_both_validate_via_http01,
 
     acme_certificate_provider_config config;
     config.directory_url = server.directory_url();
+    config.trust_anchors_pem = server.root_certificate_pem();
     config.challenge = acme_certificate_provider_config::challenge_type::http_01;
     config.http01_bind_address = "127.0.0.1:" + std::to_string(k_base_port + 1);
     config.poll_timeout = std::chrono::seconds(10);
@@ -174,6 +176,7 @@ BOOST_AUTO_TEST_CASE(mixed_request_under_dns01_config_dispatches_ip_to_http01_fi
 
     acme_certificate_provider_config config;
     config.directory_url = server.directory_url();
+    config.trust_anchors_pem = server.root_certificate_pem();
     config.challenge = acme_certificate_provider_config::challenge_type::dns_01;
     config.http01_bind_address = "127.0.0.1:" + std::to_string(k_base_port + 2);
     // Unreachable (RFC 5737 TEST-NET-1) — the DNS identifier's dns-01
@@ -242,6 +245,7 @@ BOOST_AUTO_TEST_CASE(dot_local_validation_fails_distinguishably_when_mdns_forced
 
     acme_certificate_provider_config config;
     config.directory_url = server.directory_url();
+    config.trust_anchors_pem = server.root_certificate_pem();
     config.http01_bind_address = "127.0.0.1:" + std::to_string(k_base_port + 3);
     config.poll_timeout = std::chrono::seconds(5);
     config.poll_interval = std::chrono::milliseconds(200);
@@ -309,6 +313,7 @@ BOOST_AUTO_TEST_CASE(dot_local_validation_succeeds_on_an_mdns_capable_network,
 
     acme_certificate_provider_config config;
     config.directory_url = server.directory_url();
+    config.trust_anchors_pem = server.root_certificate_pem();
     // Bind on all interfaces: the mDNS-resolved address is this machine's
     // real LAN/link-local address, not loopback.
     config.http01_bind_address = "0.0.0.0:" + std::to_string(k_base_port + 4);

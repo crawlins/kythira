@@ -17,6 +17,8 @@
 #include <boost/json.hpp>
 
 #include <openssl/bio.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/sha.h>
 #include <openssl/x509.h>
@@ -43,6 +45,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -67,16 +70,130 @@ struct split_url_result {
     return {url.substr(0, path_start), url.substr(path_start)};
 }
 
+// True for the hosts plain http is tolerated on: an attacker able to
+// intercept loopback traffic already owns the node.
+[[nodiscard]] inline auto is_loopback_host(std::string host) -> bool {
+    if (host.size() >= 2 && host.front() == '[' && host.back() == ']') {
+        host = host.substr(1, host.size() - 2);
+    }
+    if (host == "localhost") {
+        return true;
+    }
+    in_addr v4{};
+    if (inet_pton(AF_INET, host.c_str(), &v4) == 1) {
+        return (ntohl(v4.s_addr) >> 24) == 127;
+    }
+    in6_addr v6{};
+    return inet_pton(AF_INET6, host.c_str(), &v6) == 1 && IN6_IS_ADDR_LOOPBACK(&v6);
+}
+
+// Refuses any origin that is neither https nor plain http to a loopback
+// host. Applied to every URL contacted, including the ones the directory
+// and order objects hand back, so a server cannot steer the client off TLS.
+inline void require_secure_origin(const std::string& origin) {
+    constexpr std::string_view https = "https://";
+    constexpr std::string_view http = "http://";
+    if (origin.starts_with(https)) {
+        return;
+    }
+    if (origin.starts_with(http)) {
+        auto authority = origin.substr(http.size());
+        std::string host;
+        if (authority.starts_with('[')) {
+            host = authority.substr(0, authority.find(']') + 1);
+        } else {
+            host = authority.substr(0, authority.find(':'));
+        }
+        if (is_loopback_host(host)) {
+            return;
+        }
+    }
+    throw std::invalid_argument("acme_certificate_provider: refusing non-https ACME URL " + origin +
+                                " (plain http is only accepted for a loopback host)");
+}
+
 // httplib::Client(scheme_host_port) auto-selects TLS internally when the
 // scheme is "https" and the build has CPPHTTPLIB_OPENSSL_SUPPORT.
-[[nodiscard]] inline auto make_client(const std::string& origin)
+[[nodiscard]] inline auto make_client(const std::string& origin,
+                                      const acme_certificate_provider_config& config)
     -> std::unique_ptr<httplib::Client> {
+    require_secure_origin(origin);
     auto client = std::make_unique<httplib::Client>(origin);
     client->set_connection_timeout(10, 0);
     client->set_read_timeout(30, 0);
-    client->enable_server_certificate_verification(
-        false);  // test server / self-signed intermediate CAs
+    client->enable_server_certificate_verification(true);
+    if (config.server_ca_bundle_pem.has_value()) {
+        client->load_ca_cert_store(config.server_ca_bundle_pem->data(),
+                                   config.server_ca_bundle_pem->size());
+    }
     return client;
+}
+
+using x509_ptr = std::unique_ptr<X509, decltype(&X509_free)>;
+
+// Every certificate in a PEM bundle, in order. Non-certificate text between
+// blocks is skipped.
+[[nodiscard]] inline auto parse_certificates(const std::string& pem) -> std::vector<x509_ptr> {
+    std::vector<x509_ptr> certs;
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio{
+        BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free};
+    while (X509* cert = PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr)) {
+        certs.emplace_back(cert, X509_free);
+    }
+    ERR_clear_error();  // the loop ends on an expected "no start line"
+    return certs;
+}
+
+// Accepts the downloaded chain only when its leaf verifies against the
+// configured trust anchors (the remaining blocks serve as untrusted
+// intermediates) and carries the CSR's public key. Without the key check a
+// CA, or anyone in the path, could hand back a certificate for a key the
+// node does not hold, and the node would publish it as its own.
+inline void verify_issued_chain(const std::vector<std::string>& blocks,
+                                const std::string& trust_anchors_pem, const std::string& csr_pem) {
+    auto leaf = parse_certificates(blocks.front());
+    if (leaf.empty()) {
+        throw std::runtime_error("acme_certificate_provider: unparseable leaf certificate");
+    }
+    std::unique_ptr<STACK_OF(X509), void (*)(STACK_OF(X509)*)> untrusted{
+        sk_X509_new_null(), [](STACK_OF(X509) * s) { sk_X509_pop_free(s, X509_free); }};
+    for (std::size_t i = 1; i < blocks.size(); ++i) {
+        for (auto& cert : parse_certificates(blocks[i])) {
+            sk_X509_push(untrusted.get(), cert.release());
+        }
+    }
+
+    std::unique_ptr<X509_STORE, decltype(&X509_STORE_free)> store{X509_STORE_new(),
+                                                                  X509_STORE_free};
+    for (auto& anchor : parse_certificates(trust_anchors_pem)) {
+        X509_STORE_add_cert(store.get(), anchor.get());  // takes its own reference
+    }
+    std::unique_ptr<X509_STORE_CTX, decltype(&X509_STORE_CTX_free)> ctx{X509_STORE_CTX_new(),
+                                                                        X509_STORE_CTX_free};
+    if (store == nullptr || ctx == nullptr ||
+        X509_STORE_CTX_init(ctx.get(), store.get(), leaf.front().get(), untrusted.get()) != 1) {
+        throw std::runtime_error("acme_certificate_provider: X509_STORE_CTX setup failed");
+    }
+    if (X509_verify_cert(ctx.get()) != 1) {
+        throw std::runtime_error(
+            std::string("acme_certificate_provider: issued certificate does not chain to the "
+                        "configured trust anchors: ") +
+            X509_verify_cert_error_string(X509_STORE_CTX_get_error(ctx.get())));
+    }
+
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio{
+        BIO_new_mem_buf(csr_pem.data(), static_cast<int>(csr_pem.size())), BIO_free};
+    std::unique_ptr<X509_REQ, decltype(&X509_REQ_free)> req{
+        PEM_read_bio_X509_REQ(bio.get(), nullptr, nullptr, nullptr), X509_REQ_free};
+    if (req == nullptr) {
+        throw std::invalid_argument("acme_certificate_provider: unparseable CSR PEM");
+    }
+    EVP_PKEY* csr_key = X509_REQ_get0_pubkey(req.get());
+    EVP_PKEY* leaf_key = X509_get0_pubkey(leaf.front().get());
+    if (csr_key == nullptr || leaf_key == nullptr || EVP_PKEY_eq(csr_key, leaf_key) != 1) {
+        throw std::runtime_error(
+            "acme_certificate_provider: issued certificate's public key does not match the CSR");
+    }
 }
 
 [[nodiscard]] inline auto require_header(const httplib::Result& res, const std::string& name)
@@ -322,6 +439,11 @@ private:
 
 inline acme_certificate_provider::acme_certificate_provider(acme_certificate_provider_config config)
     : _config(std::move(config)) {
+    if (acme_detail::parse_certificates(_config.trust_anchors_pem).empty()) {
+        throw std::invalid_argument(
+            "acme_certificate_provider: trust_anchors_pem must hold at least one certificate");
+    }
+    acme_detail::require_secure_origin(acme_detail::split_url(_config.directory_url).origin);
     if (_config.account_key_pem.has_value()) {
         _account_key = acme_jws::load_private_key(*_config.account_key_pem);
     } else {
@@ -333,14 +455,7 @@ inline acme_certificate_provider::~acme_certificate_provider() = default;
 
 inline auto acme_certificate_provider::root_certificate_pem()
     -> kythira::future_default<std::string> {
-    std::lock_guard lock(_mutex);
-    if (_last_root_pem.empty()) {
-        return kythira::future_factory_default::makeExceptionalFuture<std::string>(
-            std::make_exception_ptr(std::runtime_error(
-                "acme_certificate_provider: no certificate has been obtained yet — "
-                "call sign_csr() first")));
-    }
-    return kythira::future_factory_default::makeReadyFuture(std::string(_last_root_pem));
+    return kythira::future_factory_default::makeReadyFuture(std::string(_config.trust_anchors_pem));
 }
 
 inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing_options options)
@@ -350,7 +465,7 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
 
         // ── Directory discovery ─────────────────────────────────────────────
         auto dir_split = acme_detail::split_url(_config.directory_url);
-        auto dir_client = acme_detail::make_client(dir_split.origin);
+        auto dir_client = acme_detail::make_client(dir_split.origin, _config);
         auto dir_res = dir_client->Get(dir_split.path);
         if (!dir_res || dir_res->status != 200) {
             throw std::runtime_error("acme_certificate_provider: GET directory failed: " +
@@ -363,7 +478,7 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
 
         auto fetch_nonce = [&](const std::string& url) -> std::string {
             auto s = acme_detail::split_url(url);
-            auto client = acme_detail::make_client(s.origin);
+            auto client = acme_detail::make_client(s.origin, _config);
             auto res = client->Get(s.path);
             return acme_detail::require_header(res, "Replay-Nonce");
         };
@@ -393,7 +508,7 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
             flattened["signature"] = compact.substr(dot2 + 1);
 
             auto s = acme_detail::split_url(url);
-            auto client = acme_detail::make_client(s.origin);
+            auto client = acme_detail::make_client(s.origin, _config);
             auto res = client->Post(s.path, boost::json::serialize(flattened), "application/json");
             if (!res) {
                 throw std::runtime_error("acme_certificate_provider: POST " + url +
@@ -588,7 +703,7 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
         flattened["payload"] = compact.substr(dot1 + 1, dot2 - dot1 - 1);
         flattened["signature"] = compact.substr(dot2 + 1);
         auto cert_split = acme_detail::split_url(cert_url);
-        auto cert_client = acme_detail::make_client(cert_split.origin);
+        auto cert_client = acme_detail::make_client(cert_split.origin, _config);
         cert_res = cert_client->Post(cert_split.path, boost::json::serialize(flattened),
                                      "application/json");
         if (!cert_res || cert_res->status != 200) {
@@ -601,10 +716,11 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
                 "acme_certificate_provider: certificate response contained no PEM blocks");
         }
 
+        acme_detail::verify_issued_chain(blocks, _config.trust_anchors_pem, csr_pem);
+
         pem_material result;
         result.certificate_pem = blocks.front();
         result.chain_pem = cert_res->body;
-        _last_root_pem = blocks.back();
 
         return kythira::future_factory_default::makeReadyFuture(std::move(result));
     } catch (const std::exception&) {
