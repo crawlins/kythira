@@ -51,9 +51,12 @@ scripts/ci-cloud-credentials/aws/provision-oidc-role.sh \
 Pass only the bundles you actually want CI to be able to run — a bundle
 left out of `--bundles` grants the CI role none of that bundle's
 permissions. Creates (if absent) the GitHub Actions OIDC provider, the
-`kythira-ci-real-cloud-tests` IAM role trusted only by
-`repo:<org>/<repo>:*`, and an inline policy scoped to exactly the bundles
-given. Prints the resulting role ARN and the exact `gh variable set`
+`kythira-ci-real-cloud-tests` IAM role trusted only by the exact OIDC
+subject `repo:<org>/<repo>:environment:real-cloud-tests`, and an inline
+policy scoped to exactly the bundles given. Only a job that declares
+`environment: real-cloud-tests` can assume the role, so the environment's
+protection rules (required reviewers, deployment branches) gate every use of
+it; pass `--environment NAME` to trust a different environment. Prints the resulting role ARN and the exact `gh variable set`
 commands to run next.
 
 ### 3. Set repository variables
@@ -256,3 +259,25 @@ real-EC2 ones: the job mints one-hour session credentials at the top and the
 EC2 suites re-federate as they go, whereas this one takes those credentials
 as they are. It also runs on both the x64 and arm64 matrix legs — it launches
 nothing, so it costs the job no meaningful wall-clock.
+
+## The `ami-build` bundle: what it leaves out
+
+The bundle grants what `packer/ca_cluster_node/` needs and not the rest of
+Packer's documented example policy. In particular it does **not** grant:
+
+- `ec2:ModifyImageAttribute` / `ec2:ModifySnapshotAttribute`. These are how
+  an AMI or snapshot is shared with another AWS account, and with
+  `ec2:CreateImage` on any instance they would let CI copy any instance's
+  disk out of the account. The template sets no `ami_users`,
+  `snapshot_users` or `ami_description`, which are the only things Packer
+  calls them for.
+- `ec2:ModifyInstanceAttribute`. Together with `ec2:StopInstances` and the
+  `ec2-quorum-manager` bundle's `ec2:StartInstances`, it would let CI
+  rewrite any instance's user data and reboot it into that code. Packer
+  calls it only for `ena_support` / `sriov_support`, which the template
+  leaves unset.
+- `ec2:GetPasswordData`, which only Windows builds use.
+
+If a future template change needs one of these, Packer fails with
+`UnauthorizedOperation` naming it; add it back then, conditioned as narrowly
+as the action allows, rather than restoring the whole list.

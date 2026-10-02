@@ -27,7 +27,7 @@ ROLE_NAME="kythira-ci-real-cloud-tests"
 OIDC_PROVIDER_NAME="github-actions"
 POLICY_NAME_PREFIX="kythira-ci"
 BUCKET=""
-REF_RESTRICTION=""
+ENVIRONMENT="real-cloud-tests"
 PROFILE="${ALIYUN_PROFILE:-}"
 DRY_RUN=0
 
@@ -46,14 +46,15 @@ usage() {
 Usage: provision-oidc-role.sh --github-org ORG --github-repo REPO \
            --bundles BUNDLE[,BUNDLE...] [--bucket NAME] \
            [--role-name NAME] [--oidc-provider-name NAME] \
-           [--ref-restriction SUB] [--profile ALIYUN_PROFILE] [--dry-run]
+           [--environment NAME] [--profile ALIYUN_PROFILE] [--dry-run]
 
   --bundles            ess-quorum-manager,oss-persistence (any non-empty subset)
   --bucket             OSS bucket name; required when the oss-persistence
                        bundle is selected (substituted for {{BUCKET}})
-  --ref-restriction    further restricts the trusted OIDC subject, e.g.
-                       "repo:ORG/REPO:environment:real-cloud-tests".
-                       Default: repo:ORG/REPO:*
+  --environment        GitHub Environment the role trusts (default
+                       real-cloud-tests). The trust policy matches the OIDC
+                       subject repo:ORG/REPO:environment:NAME exactly, so
+                       only a job declaring that environment can assume it.
   --profile            aliyun CLI profile to use (or $ALIYUN_PROFILE)
   --dry-run            print the calls that would run without executing them
 USAGE
@@ -68,7 +69,11 @@ while [[ $# -gt 0 ]]; do
         --bucket) BUCKET="$2"; shift 2 ;;
         --role-name) ROLE_NAME="$2"; shift 2 ;;
         --oidc-provider-name) OIDC_PROVIDER_NAME="$2"; shift 2 ;;
-        --ref-restriction) REF_RESTRICTION="$2"; shift 2 ;;
+        --environment) ENVIRONMENT="$2"; shift 2 ;;
+        --ref-restriction)
+            echo "ERROR: --ref-restriction was removed; the role now trusts one" \
+                 "GitHub Environment (--environment, default real-cloud-tests)." >&2
+            exit 1 ;;
         --fingerprint) FINGERPRINT="$2"; shift 2 ;;
         --profile) PROFILE="$2"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
@@ -150,22 +155,20 @@ OIDC_PROVIDER_ARN="acs:ram::${ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER_NAME}"
 ROLE_ARN="acs:ram::${ACCOUNT_ID}:role/${ROLE_NAME}"
 
 # ── Trust policy ─────────────────────────────────────────────────────────────
-# oidc:iss and oidc:aud are pinned exactly; the subject is pinned exactly when
-# --ref-restriction is given, else matched with a prefix wildcard. Note the
-# policy Version is the string "1" — Alibaba's own versioning, NOT AWS's
-# "2012-10-17" date, and a wrong value here is rejected at create time.
-SUBJECT="repo:${GITHUB_ORG}/${GITHUB_REPO}:*"
-SUBJECT_OP="StringLike"
-if [[ -n "${REF_RESTRICTION}" ]]; then
-    SUBJECT="${REF_RESTRICTION}"
-    SUBJECT_OP="StringEquals"
-fi
+# oidc:iss, oidc:aud and oidc:sub are all pinned exactly. The subject used to
+# default to a repo:ORG/REPO:* wildcard, which let a workflow on any branch
+# assume the role without declaring the environment, so the environment's
+# reviewers and branch rules never ran. GitHub issues the environment subject
+# only to jobs that declare `environment: NAME`. Note the policy Version is the
+# string "1" — Alibaba's own versioning, NOT AWS's "2012-10-17" date, and a
+# wrong value here is rejected at create time.
+SUBJECT="repo:${GITHUB_ORG}/${GITHUB_REPO}:environment:${ENVIRONMENT}"
+echo "[step] Trusted subject: ${SUBJECT}"
 
-TRUST_POLICY="$(python3 - "$OIDC_PROVIDER_ARN" "$ISSUER_URL" "$CLIENT_ID" "$SUBJECT" "$SUBJECT_OP" <<'PY'
+TRUST_POLICY="$(python3 - "$OIDC_PROVIDER_ARN" "$ISSUER_URL" "$CLIENT_ID" "$SUBJECT" <<'PY'
 import json, sys
-arn, issuer, aud, subject, op = sys.argv[1:6]
-cond = {"StringEquals": {"oidc:iss": issuer, "oidc:aud": aud}}
-cond.setdefault(op, {})["oidc:sub"] = subject
+arn, issuer, aud, subject = sys.argv[1:5]
+cond = {"StringEquals": {"oidc:iss": issuer, "oidc:aud": aud, "oidc:sub": subject}}
 print(json.dumps({
     "Version": "1",
     "Statement": [{
