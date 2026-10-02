@@ -15,6 +15,8 @@
 #include <raft/certificate_authority.hpp>
 #include <raft/tls_tcp_rpc.hpp>
 
+#include "tcp_server_hardening_cases.hpp"
+
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -25,6 +27,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <thread>
@@ -470,6 +474,133 @@ BOOST_AUTO_TEST_CASE(reload_identity_and_trust_policy_apply_to_next_connection,
 
     server.stop();
     BOOST_TEST(!server.is_running());
+}
+
+// ── Server hardening (.kiro/specs/tcp-rpc-server-hardening/) ─────────────────
+//
+// The deadline, limit and stop() cases shared with tcp_rpc_server and the
+// gossip listener (tests/tcp_server_hardening_cases.hpp); here the request
+// phase includes the TLS handshake.
+
+namespace {
+
+namespace hardening = tcp_server_hardening;
+
+// One self-signed identity both sides present and pin.
+struct tls_identity {
+    certificate_authority cred;
+    temp_pem_files files{cred.root_certificate_pem(),
+                         detail_testing::unsafe_extract_ca_private_key_pem(cred)};
+    std::string fp = fingerprint_of_root(cred.root_certificate_pem());
+
+    auto config(kythira::tcp_server_limits limits = {}) const -> tls_tcp_rpc_config {
+        tls_tcp_rpc_config cfg{files.cert_path, files.key_path, pinned_fingerprint(fp)};
+        cfg.server_limits = limits;
+        return cfg;
+    }
+};
+
+auto vote_server(const tls_identity& id, std::uint16_t port, kythira::tcp_server_limits limits)
+    -> std::unique_ptr<tls_tcp_rpc_server> {
+    auto server = std::make_unique<tls_tcp_rpc_server>(port, id.config(limits));
+    server->register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+        return kythira::request_vote_response<>{req.term(), true};
+    });
+    server->start();
+    return server;
+}
+
+auto vote_succeeds(const tls_identity& id, std::uint16_t port) -> bool {
+    tls_tcp_rpc_client client(id.config());
+    client.add_peer(1, "127.0.0.1", port);
+    try {
+        auto resp = client
+                        .send_request_vote(1, kythira::request_vote_request<>{7, 1, 0, 0},
+                                           std::chrono::milliseconds(5000))
+                        .get();
+        return resp.vote_granted() && resp.term() == 7;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(server_closes_peer_stalled_before_handshake, *boost::unit_test::timeout(30)) {
+    tls_identity id;
+    auto port = find_free_port();
+    auto limits = hardening::small_limits();
+    auto server = vote_server(id, port, limits);
+    hardening::silent_peer_is_closed(*server, port, limits);
+    BOOST_TEST(vote_succeeds(id, port));
+    server->stop();
+}
+
+BOOST_AUTO_TEST_CASE(server_closes_peer_trickling_a_handshake, *boost::unit_test::timeout(30)) {
+    tls_identity id;
+    auto port = find_free_port();
+    auto limits = hardening::small_limits();
+    auto server = vote_server(id, port, limits);
+    // A TLS handshake record header announcing 512 bytes; OpenSSL waits for
+    // the whole record, which arrives one byte at a time.
+    const std::string record_header{"\x16\x03\x01\x02\x00", 5};
+    hardening::trickling_peer_is_closed(*server, port, limits, record_header);
+    server->stop();
+}
+
+BOOST_AUTO_TEST_CASE(server_connection_limits, *boost::unit_test::timeout(60)) {
+    tls_identity id;
+    auto port = find_free_port();
+    auto limits = hardening::small_limits();
+    limits.request_timeout = std::chrono::milliseconds(2000);
+    auto server = vote_server(id, port, limits);
+    hardening::connection_limits_hold(*server, port, [&] { return vote_succeeds(id, port); });
+    server->stop();
+}
+
+BOOST_AUTO_TEST_CASE(server_stop_waits_for_running_handler, *boost::unit_test::timeout(30)) {
+    tls_identity id;
+    auto port = find_free_port();
+    tls_tcp_rpc_server server(port, id.config(hardening::small_limits()));
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    std::atomic<bool> handler_done{false};
+    server.register_request_vote_handler([&](const kythira::request_vote_request<>& req) {
+        entered.set_value();
+        released.wait();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        handler_done = true;
+        return kythira::request_vote_response<>{req.term(), true};
+    });
+    server.start();
+
+    tls_tcp_rpc_client client(id.config());
+    client.add_peer(1, "127.0.0.1", port);
+    auto reply = client.send_request_vote(1, kythira::request_vote_request<>{7, 1, 0, 0},
+                                          std::chrono::milliseconds(5000));
+    entered.get_future().wait();
+
+    auto stopped = std::async(std::launch::async, [&] { server.stop(); });
+    BOOST_TEST((stopped.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout));
+    release.set_value();
+    stopped.get();
+    BOOST_TEST(handler_done.load());
+    BOOST_TEST(server.connection_stats().active_connections == 0u);
+    try {
+        std::move(reply).get();
+    } catch (const std::exception&) {
+        // stop() shut the connection down before the reply; either is fine.
+    }
+}
+
+BOOST_AUTO_TEST_CASE(server_stop_is_prompt_mid_handshake, *boost::unit_test::timeout(30)) {
+    tls_identity id;
+    auto port = find_free_port();
+    auto limits = hardening::small_limits();
+    limits.request_timeout = std::chrono::seconds(30);
+    auto server = vote_server(id, port, limits);
+    hardening::stop_is_prompt_with_idle_connection(*server, port);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -77,6 +77,29 @@ current list of outstanding work, see [TODO.md](TODO.md).
   `ca_cluster_node_rpc_tls_restart_test` forces every node into it and checks
   each renews and serves the new certificate without a restart (task 13's
   missing half, Requirements 7.2/7.3).
+- **The raw-socket servers can no longer be knocked offline by idle
+  connections** (`tcp_rpc_server`, `tls_tcp_rpc_server`, the tcp_gossip
+  listener; vulnerability audit H4, spec
+  `.kiro/specs/tcp-rpc-server-hardening/`). Their accept loops used to stop
+  for good on any `accept()` error, so about a thousand idle connections
+  (EMFILE) left a node running but deaf, and each connection got an
+  unbounded detached thread that `stop()` never waited for. All three now
+  share `tcp_detail::connection_tracker` (`include/raft/tcp_connection_tracker.hpp`):
+  accept errors are retried with a 10 ms to 1 s back-off; connections are
+  capped overall and per source address and closed on arrival over the cap;
+  a reaper shuts down any connection whose request (TLS handshake included)
+  or reply outlives its deadline; and `stop()` returns only once no
+  connection thread can touch the server. New `tcp_server_limits`, with
+  defaults `request_timeout` 30 s, `reply_timeout` 30 s, `max_connections`
+  256 and `max_connections_per_source` 32, is a `tcp_rpc_server`
+  constructor argument, `tls_tcp_rpc_config::server_limits` and
+  `tcp_gossip_config::listener_limits`; `connection_stats()` reports the
+  counters. `tls_tcp_rpc_server`'s fixed 30 s per-call socket timeouts are
+  replaced by the phase deadlines.
+- Plain-TCP RPC and gossip writes use `MSG_NOSIGNAL`, so a peer that hangs
+  up before the reply no longer kills the process with SIGPIPE, and frame
+  readers grow their buffer as bytes arrive instead of allocating the
+  announced length (up to 64 MiB) up front.
 - **The Alibaba Cloud spec is closed** (`.kiro/specs/alibaba-cloud-services/`,
   every task ticked, task 4 by descope). The checklist had read 3 of 12 since
   August while the tree held nearly all of it; each task is now ticked against

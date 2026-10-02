@@ -12,10 +12,15 @@
 
 #include <raft/tcp_gossip_transport.hpp>
 
+#include "tcp_server_hardening_cases.hpp"
+
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <csignal>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -33,6 +38,7 @@ constexpr std::uint16_t k_port_localhost2 = 19705;
 constexpr std::uint16_t k_port_v6_1 = 19706;
 constexpr std::uint16_t k_port_v6_2 = 19707;
 constexpr std::uint16_t k_port_refused = 19708;
+constexpr std::uint16_t k_port_hardening = 19709;
 
 auto host_has_ipv6() -> bool {
     int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
@@ -167,4 +173,94 @@ BOOST_AUTO_TEST_CASE(split_host_port_accepts_bracketed_ipv6) {
                 (std::pair<std::string, std::uint16_t>{"fe80::1%eth0", 80}));
     BOOST_CHECK(split_host_port(std::string("10.0.0.1:9")) ==
                 (std::pair<std::string, std::uint16_t>{"10.0.0.1", 9}));
+}
+
+// ── Listener hardening (.kiro/specs/tcp-rpc-server-hardening/) ───────────────
+
+namespace {
+
+auto hardened_listener(kythira::tcp_server_limits limits) -> std::unique_ptr<gossip_t> {
+    kythira::tcp_gossip_config<std::uint64_t, std::string> cfg;
+    cfg.listen_address = "127.0.0.1";
+    cfg.listen_port = k_port_hardening;
+    cfg.gossip_round_interval = std::chrono::milliseconds{50};
+    cfg.listener_limits = limits;
+    auto node = std::make_unique<gossip_t>(cfg);
+    node->start();
+    std::move(node->advertise_progress(1, "127.0.0.1:" + std::to_string(k_port_hardening), 1, 1))
+        .get();
+    return node;
+}
+
+// One push-pull exchange against the listener, as a peer would make it.
+auto exchange_succeeds() -> bool {
+    int fd = tcp_server_hardening::dial(k_port_hardening);
+    if (fd < 0) return false;
+    kythira::gossip_exchange_message<std::uint64_t, std::string, std::uint64_t> req{9, {}};
+    bool ok = kythira::tcp_detail::frame_send(fd, kythira::encode_gossip_message(req)) &&
+              kythira::tcp_detail::frame_recv(fd).has_value();
+    ::close(fd);
+    return ok;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(listener_rejects_zero_limits) {
+    kythira::tcp_gossip_config<std::uint64_t, std::string> cfg;
+    cfg.listener_limits.max_connections = 0;
+    BOOST_CHECK_THROW(gossip_t{cfg}, std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(listener_closes_silent_peer, *boost::unit_test::timeout(30)) {
+    auto limits = tcp_server_hardening::small_limits();
+    auto node = hardened_listener(limits);
+    tcp_server_hardening::silent_peer_is_closed(*node, k_port_hardening, limits);
+    BOOST_TEST(exchange_succeeds());
+    node->stop();
+}
+
+BOOST_AUTO_TEST_CASE(listener_closes_trickling_peer, *boost::unit_test::timeout(30)) {
+    auto limits = tcp_server_hardening::small_limits();
+    auto node = hardened_listener(limits);
+    auto header = htonl(1000u);
+    tcp_server_hardening::trickling_peer_is_closed(
+        *node, k_port_hardening, limits, std::string(reinterpret_cast<const char*>(&header), 4));
+    node->stop();
+}
+
+BOOST_AUTO_TEST_CASE(listener_connection_limits, *boost::unit_test::timeout(30)) {
+    auto limits = tcp_server_hardening::small_limits();
+    limits.request_timeout = std::chrono::milliseconds{2000};
+    auto node = hardened_listener(limits);
+    tcp_server_hardening::connection_limits_hold(*node, k_port_hardening, exchange_succeeds);
+    node->stop();
+}
+
+BOOST_AUTO_TEST_CASE(listener_stop_is_prompt_with_idle_connection, *boost::unit_test::timeout(30)) {
+    auto limits = tcp_server_hardening::small_limits();
+    limits.request_timeout = std::chrono::seconds{30};
+    auto node = hardened_listener(limits);
+    tcp_server_hardening::stop_is_prompt_with_idle_connection(*node, k_port_hardening);
+}
+
+// A peer that sends its digests and leaves at once: the listener's reply
+// lands on a closed socket, which used to raise SIGPIPE and end the process.
+BOOST_AUTO_TEST_CASE(listener_reply_to_departed_peer_raises_no_sigpipe,
+                     *boost::unit_test::timeout(30)) {
+    auto previous = std::signal(SIGPIPE, SIG_DFL);
+    {
+        auto node = hardened_listener(tcp_server_hardening::small_limits());
+        for (int i = 0; i < 20; ++i) {
+            int fd = tcp_server_hardening::dial(k_port_hardening);
+            BOOST_REQUIRE(fd >= 0);
+            kythira::gossip_exchange_message<std::uint64_t, std::string, std::uint64_t> req{9, {}};
+            BOOST_REQUIRE(kythira::tcp_detail::frame_send(fd, kythira::encode_gossip_message(req)));
+            ::close(fd);
+        }
+        BOOST_TEST(tcp_server_hardening::wait_until(
+            [&] { return node->connection_stats().active_connections == 0; }));
+        BOOST_TEST(exchange_succeeds());
+        node->stop();
+    }
+    std::signal(SIGPIPE, previous);
 }
