@@ -8,6 +8,7 @@
 #include <raft/future_default.hpp>
 #include <httplib.h>
 #include <raft/httplib_listeners.hpp>
+#include <algorithm>
 #include <format>
 #include <stdexcept>
 #include <thread>
@@ -956,13 +957,13 @@ auto cpp_httplib_client<Types>::reload_tls_material() -> void {
 
     std::lock_guard<std::mutex> lock(_mutex);
     // Retired (not erased): a concurrent in-flight RPC may still hold a raw
-    // httplib::Client* obtained from get_or_create_client() before this call
+    // pooled_http_client* obtained from get_or_create_client() before this call
     // acquired the lock — destroying it out from under that call would be a
     // use-after-free. Keeping it alive (just unreachable for future lookups)
     // satisfies Requirement 16.4 without requiring the caller to quiesce
     // in-flight RPCs first.
-    for (auto& [node_id, client] : _http_clients) {
-        _retired_clients.push_back(std::move(client));
+    for (auto& [node_id, pooled] : _http_clients) {
+        _retired_clients.push_back(std::move(pooled));
     }
     _http_clients.clear();
 #else
@@ -1018,7 +1019,7 @@ auto cpp_httplib_client<Types>::get_base_url(std::uint64_t node_id) const -> std
 // Helper to get or create HTTP client for a node
 template<typename Types>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::get_or_create_client(std::uint64_t node_id) -> httplib::Client* {
+auto cpp_httplib_client<Types>::get_or_create_client(std::uint64_t node_id) -> pooled_http_client* {
     std::lock_guard<std::mutex> lock(_mutex);
 
     auto it = _http_clients.find(node_id);
@@ -1087,8 +1088,10 @@ auto cpp_httplib_client<Types>::get_or_create_client(std::uint64_t node_id) -> h
     }
 
     // Store and return
-    auto* client_ptr = client.get();
-    _http_clients[node_id] = std::move(client);
+    auto pooled = std::make_unique<pooled_http_client>();
+    pooled->client = std::move(client);
+    auto* pooled_ptr = pooled.get();
+    _http_clients[node_id] = std::move(pooled);
 
     // Emit connection created metric
     auto metric = _metrics;
@@ -1104,7 +1107,7 @@ auto cpp_httplib_client<Types>::get_or_create_client(std::uint64_t node_id) -> h
     metric.add_value(static_cast<double>(_http_clients.size()));
     metric.emit();
 
-    return client_ptr;
+    return pooled_ptr;
 }
 
 // Generic RPC send implementation
@@ -1116,7 +1119,15 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
     -> typename Types::template future_template<Response> {
     try {
         // Get or create HTTP client
-        auto* client = this->get_or_create_client(target);
+        auto* pooled = this->get_or_create_client(target);
+        auto& client = *pooled->client;
+
+        // The caller's timeout bounds the whole RPC, 415 re-encodes included
+        // (Requirement 12). A non-positive timeout means the caller has no
+        // deadline of its own, so the configured request timeout applies.
+        const auto call_timeout =
+            timeout > std::chrono::milliseconds::zero() ? timeout : _config.request_timeout;
+        const auto deadline = std::chrono::steady_clock::now() + call_timeout;
 
         // Pick the outgoing media type: what this peer last answered in, if the
         // registry still supports it, else our default (Requirement 6.1-6.3).
@@ -1202,8 +1213,29 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             metric.add_value(static_cast<double>(body.size()));
             metric.emit();
 
-            // Send POST request
-            result = client->Post(endpoint, headers, body, content_type);
+            // Send POST request, bounded by what is left of the caller's
+            // deadline. `set_max_timeout` caps connect, write and read
+            // together; the per-socket-operation read/write timeouts set at
+            // creation stay as the idle bound within it.
+            //
+            // Waiting behind another RPC to the same peer spends this call's
+            // deadline too; if it runs out first, `result` stays empty and the
+            // clock check below reports the timeout.
+            if (pooled->acquire_until(deadline)) {
+                struct release_on_exit {
+                    pooled_http_client* slot;
+                    ~release_on_exit() { slot->release(); }
+                } release{pooled};
+                const auto remaining =
+                    std::max(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 deadline - std::chrono::steady_clock::now()),
+                             std::chrono::milliseconds{1});
+                const auto connect_timeout = std::min(_config.connection_timeout, remaining);
+                client.set_connection_timeout(connect_timeout.count() / 1000,
+                                              (connect_timeout.count() % 1000) * 1000);
+                client.set_max_timeout(remaining);
+                result = client.Post(endpoint, headers, body, content_type);
+            }
 
             // Only 415 triggers a retry. 400 means "we speak this encoding and
             // your bytes were wrong" and re-encoding would send the same bytes
@@ -1245,8 +1277,12 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
         if (!result) {
             // Connection error or timeout
             std::string error_type = "connection_failed";
+            // Running out of the call's deadline surfaces as whichever
+            // operation it interrupted (a write, or the TLS handshake), so the
+            // clock decides as well as the error code.
             if (result.error() == httplib::Error::ConnectionTimeout ||
-                result.error() == httplib::Error::Read) {
+                result.error() == httplib::Error::Read ||
+                std::chrono::steady_clock::now() >= deadline) {
                 error_type = "timeout";
             }
 
@@ -1268,7 +1304,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
 
             if (error_type == "timeout") {
                 return make_future_with_exception<Types, Response>(kythira::http_timeout_error(
-                    std::format("HTTP request timed out after {}ms", timeout.count())));
+                    std::format("HTTP request timed out after {}ms", call_timeout.count())));
             }
             return make_future_with_exception<Types, Response>(std::runtime_error(
                 std::format("HTTP request failed: {}", httplib::to_string(result.error()))));
