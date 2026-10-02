@@ -1310,7 +1310,9 @@ jobs:
       # the target of the same name or, for the coap_*_example tests (named
       # <target>_test), that name without "_test". The executables do not
       # exist yet, so ctest cannot report them itself: --show-only=json-v1
-      # omits the command of a test whose executable is missing.
+      # omits the command of a test whose executable is missing. A
+      # `<name>_paced` twin (tests/CMakeLists.txt, libcoap I/O wait modes)
+      # runs <name>'s binary, so the suffix is dropped before the lookup.
       - name: Build CoAP test targets
         run: |
           set -o pipefail
@@ -1322,6 +1324,7 @@ jobs:
               | sed -nE 's/^ *Test +#[0-9]+: (coap_[A-Za-z0-9_]+)$/\1/p')
           targets=()
           for t in "${tests[@]}"; do
+            t="${t%_paced}"
             if grep -qx "$t" known-targets.txt; then
               targets+=("$t")
             elif grep -qx "${t%_test}" known-targets.txt; then
@@ -1335,6 +1338,7 @@ jobs:
             echo "::error::ctest lists no coap_* tests; nothing to build" >&2
             exit 1
           fi
+          mapfile -t targets < <(printf '%s\n' "${targets[@]}" | sort -u)
           echo "Building ${#targets[@]} coap_* targets"
           cmake --build build -j$(nproc) --target "${targets[@]}"
 
