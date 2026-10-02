@@ -114,14 +114,42 @@ struct test_types {
 using test_node = kythira::node<test_types>;
 using sim_t = network_simulator::NetworkSimulator<test_types::raft_network_types>;
 
+/// The Raft timings this test drives the cluster with, scaled by
+/// `KYTHIRA_TEST_TIMEOUT_SCALE` exactly as the `wait_until` deadlines are.
+///
+/// The scaling is the fix for a long-standing flake, and it is the *protocol*
+/// timings that needed it rather than the test's patience. Raft requires an
+/// election timeout comfortably larger than a round trip: a candidate collects
+/// pre-vote and vote responses with a deadline of the election timeout, and the
+/// next election tick starts a fresh attempt. Once a round trip approaches that
+/// window, attempts race their own successors and a leader is elected only when
+/// an attempt happens to land inside its window.
+///
+/// Unscaled, these were 80-160ms against an `_rpc_timeout` of 200ms, which is
+/// ample on an idle machine (a round trip is well under a millisecond in the
+/// simulator) and marginal on a loaded CI runner, where the in-process round
+/// trip grows. `KYTHIRA_TEST_TIMEOUT_SCALE` exists precisely to accommodate a
+/// slower machine, but it reached only `scaled_deadline()` on the `wait_until`
+/// calls -- so CI waited four times as patiently for a protocol that was
+/// racing itself just as hard. Widening the patience cannot fix a race in the
+/// protocol, which is why `b395bde` touching the waits did not help.
+///
+/// Measured with 30ms of simulated link latency on a `KYTHIRA_TEST_TIMEOUT_SCALE=4`
+/// build, which is what CI uses: unscaled protocol timings fail 5 of 6 runs with
+/// `no new leader elected after L1 crash` -- CI's exact symptom -- while scaled
+/// timings pass 6 of 6. Instrumenting the quorum check showed the elections
+/// node2 did complete were *won* outright (both joint-consensus quorums, votes
+/// from node3 and node4), so the fault was never a quorum it could not reach;
+/// it was how long it took to get one attempt through cleanly.
 kythira::raft_configuration make_fast_config() {
+    using kythira::testing::scaled_deadline;
     kythira::raft_configuration cfg;
-    cfg._election_timeout_min = std::chrono::milliseconds{80};
-    cfg._election_timeout_max = std::chrono::milliseconds{160};
-    cfg._heartbeat_interval = std::chrono::milliseconds{26};
-    cfg._rpc_timeout = std::chrono::milliseconds{200};
-    cfg._bootstrap_retry_interval = std::chrono::milliseconds{200};
-    cfg._bootstrap_peer_find_timeout = std::chrono::milliseconds{100};
+    cfg._election_timeout_min = scaled_deadline(80);
+    cfg._election_timeout_max = scaled_deadline(160);
+    cfg._heartbeat_interval = scaled_deadline(26);
+    cfg._rpc_timeout = scaled_deadline(200);
+    cfg._bootstrap_retry_interval = scaled_deadline(200);
+    cfg._bootstrap_peer_find_timeout = scaled_deadline(100);
     return cfg;
 }
 
