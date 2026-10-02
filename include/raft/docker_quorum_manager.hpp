@@ -151,7 +151,73 @@ public:
 
     // ── provision_node (Req 18 AC 11-15) ─────────────────────────────────────
 
-    auto provision_node(std::string /*target_group*/, std::optional<NodeId> replacing)
+    auto provision_node(std::string target_group, std::optional<NodeId> replacing)
+        -> kythira::future_default<peer_info<NodeId, Address>> {
+        return provision(std::move(target_group), replacing, std::nullopt);
+    }
+
+    // ── idempotency keys (elastic-shard-capacity Requirement 9.2) ────────────
+
+    /// @brief `provision_node`, with `key` carried as the container label
+    ///        `kythira.idempotency-key`.
+    ///
+    /// The label is what lets a capacity controller that died mid-call be
+    /// reconciled by its successor: the container its call created is found
+    /// by the key it recorded before the call, not guessed at by arrival.
+    auto provision_node_keyed(std::string target_group, std::optional<NodeId> replacing,
+                              const std::string& key)
+        -> kythira::future_default<peer_info<NodeId, Address>> {
+        return provision(std::move(target_group), replacing, key);
+    }
+
+    /// @brief The container this cluster created under `key`, running or not.
+    ///
+    /// Stopped containers count: one still exists and still holds its name,
+    /// and a reaper that could not see it could not remove it.
+    auto find_by_idempotency_key(const std::string& key)
+        -> kythira::future_default<std::optional<peer_info<NodeId, Address>>> {
+        using result = std::optional<peer_info<NodeId, Address>>;
+        try {
+            auto cli = make_client();
+            const auto path = "/containers/json?all=1&filters=" +
+                              url_encode(R"({"label":["kythira.cluster=)" + _cfg.cluster_name +
+                                         R"(","kythira.idempotency-key=)" + key + R"("]})");
+            auto res = cli->Get(path);
+            if (!res || res->status != 200) {
+                const auto msg = res ? "HTTP " + std::to_string(res->status) : "connection failed";
+                return future_factory_default::makeExceptionalFuture<result>(
+                    std::make_exception_ptr(std::runtime_error(
+                        "docker_quorum_manager::find_by_idempotency_key: " + msg)));
+            }
+            // Held in a named value: a range-for over `parse(...).as_array()`
+            // would iterate a temporary destroyed before the loop body ran.
+            const auto parsed = boost::json::parse(res->body);
+            for (const auto& ct : parsed.as_array()) {
+                const auto& obj = ct.as_object();
+                if (!obj.contains("Labels") || !obj.at("Labels").is_object()) {
+                    continue;
+                }
+                const auto& labels = obj.at("Labels").as_object();
+                if (!labels.contains("kythira.node_id")) {
+                    continue;
+                }
+                const auto id =
+                    parse_node_id(std::string(labels.at("kythira.node_id").as_string()));
+                return future_factory_default::makeFuture(result{peer_info<NodeId, Address>{
+                    id, static_cast<Address>(container_name(id) + ":" +
+                                             std::to_string(_cfg.node_port))}});
+            }
+            return future_factory_default::makeFuture(result{});
+        } catch (const std::exception& ex) {
+            return future_factory_default::makeExceptionalFuture<result>(
+                std::make_exception_ptr(std::runtime_error(
+                    std::string("docker_quorum_manager::find_by_idempotency_key: ") + ex.what())));
+        }
+    }
+
+private:
+    auto provision(std::string /*target_group*/, std::optional<NodeId> replacing,
+                   std::optional<std::string> key)
         -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
             auto cli = make_client();
@@ -170,7 +236,15 @@ public:
             boost::json::object labels;
             labels["kythira.cluster"] = _cfg.cluster_name;
             labels["kythira.node_id"] = node_id_label(new_id);
+            if (key) {
+                labels["kythira.idempotency-key"] = *key;
+            }
             body["Labels"] = labels;
+            // The container's name is the name its peers dial (Docker's and
+            // aardvark-dns's embedded DNS both resolve it), so make it the
+            // hostname too: a node that advertises its own hostname then
+            // advertises something its peers can resolve.
+            body["Hostname"] = name;
 
             // Environment
             boost::json::array env;
@@ -239,6 +313,7 @@ public:
         }
     }
 
+public:
     // ── decommission_node (Req 18 AC 16-18) ──────────────────────────────────
 
     auto decommission_node(const NodeId& node) -> kythira::future_default<void> {
@@ -349,31 +424,55 @@ private:
         }
     }
 
+    static auto parse_node_id(const std::string& label) -> NodeId {
+        if constexpr (std::is_same_v<NodeId, std::string>) {
+            return label;
+        } else {
+            return static_cast<NodeId>(std::stoull(label));
+        }
+    }
+
+    // Percent-encodes the characters a Docker `filters=` JSON argument uses.
+    static auto url_encode(const std::string& in) -> std::string {
+        std::string out;
+        for (char c : in) {
+            switch (c) {
+                case '{':
+                    out += "%7B";
+                    break;
+                case '}':
+                    out += "%7D";
+                    break;
+                case '"':
+                    out += "%22";
+                    break;
+                case ':':
+                    out += "%3A";
+                    break;
+                case '[':
+                    out += "%5B";
+                    break;
+                case ']':
+                    out += "%5D";
+                    break;
+                case '=':
+                    out += "%3D";
+                    break;
+                case ',':
+                    out += "%2C";
+                    break;
+                default:
+                    out += c;
+            }
+        }
+        return out;
+    }
+
     // Determine the next node ID by finding the highest existing kythira.node_id
     // label and incrementing (Req 18 AC 11)
     auto next_node_id(httplib::Client& cli) const -> NodeId {
-        auto filter = R"({"label":["kythira.cluster=)" + _cfg.cluster_name + R"("]})";
-        // URL-encode curly braces
-        std::string encoded;
-        for (char c : filter) {
-            if (c == '{') {
-                encoded += "%7B";
-            } else if (c == '}') {
-                encoded += "%7D";
-            } else if (c == '"') {
-                encoded += "%22";
-            } else if (c == ':') {
-                encoded += "%3A";
-            } else if (c == '[') {
-                encoded += "%5B";
-            } else if (c == ']') {
-                encoded += "%5D";
-            } else if (c == '=') {
-                encoded += "%3D";
-            } else {
-                encoded += c;
-            }
-        }
+        const auto encoded =
+            url_encode(R"({"label":["kythira.cluster=)" + _cfg.cluster_name + R"("]})");
         auto path = "/containers/json?filters=" + encoded;
         auto res = cli.Get(path);
 
@@ -389,13 +488,8 @@ private:
                 if (!labels.contains("kythira.node_id")) {
                     continue;
                 }
-                auto id_str = std::string(labels.at("kythira.node_id").as_string());
-                NodeId id{};
-                if constexpr (std::is_same_v<NodeId, std::string>) {
-                    id = id_str;
-                } else {
-                    id = static_cast<NodeId>(std::stoull(id_str));
-                }
+                const auto id =
+                    parse_node_id(std::string(labels.at("kythira.node_id").as_string()));
                 if (id > max_id) {
                     max_id = id;
                 }

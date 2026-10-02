@@ -409,3 +409,83 @@ BOOST_FIXTURE_TEST_CASE(provision_node_forwards_extra_env, MockDockerServer) {
     BOOST_CHECK(captured_body.find("FOO=bar") != std::string::npos);
     BOOST_CHECK(captured_body.find("BAZ=qux") != std::string::npos);
 }
+
+// ── idempotency keys (elastic-shard-capacity Requirement 9.2) ────────────────
+
+BOOST_FIXTURE_TEST_CASE(provision_node_keyed_labels_the_container_with_its_key, MockDockerServer) {
+    std::string captured_body;
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("[]", "application/json");
+    });
+    server.Post("/containers/create", [&](const httplib::Request& req, httplib::Response& res) {
+        captured_body = req.body;
+        res.status = 201;
+        res.set_content(R"({"Id":"k"})", "application/json");
+    });
+    server.Post(R"(/containers/kythira-test-cluster-1/start)",
+                [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    const auto peer = mgr.provision_node_keyed("default", std::nullopt, "intent-42").get();
+    BOOST_CHECK_EQUAL(peer.node_id, 1u);
+    const auto body = boost::json::parse(captured_body).as_object();
+    const auto& labels = body.at("Labels").as_object();
+    BOOST_CHECK_EQUAL(std::string(labels.at("kythira.idempotency-key").as_string()), "intent-42");
+    // The hostname is the name peers dial.
+    BOOST_CHECK_EQUAL(std::string(body.at("Hostname").as_string()), "kythira-test-cluster-1");
+}
+
+BOOST_FIXTURE_TEST_CASE(an_unkeyed_provision_carries_no_key_label, MockDockerServer) {
+    std::string captured_body;
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("[]", "application/json");
+    });
+    server.Post("/containers/create", [&](const httplib::Request& req, httplib::Response& res) {
+        captured_body = req.body;
+        res.status = 201;
+        res.set_content(R"({"Id":"u"})", "application/json");
+    });
+    server.Post(R"(/containers/kythira-test-cluster-1/start)",
+                [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    mgr.provision_node("default", std::nullopt).get();
+    const auto body = boost::json::parse(captured_body).as_object();
+    BOOST_CHECK(!body.at("Labels").as_object().contains("kythira.idempotency-key"));
+}
+
+BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_filters_on_cluster_and_key, MockDockerServer) {
+    std::string captured_filters;
+    std::string captured_all;
+    server.Get("/containers/json", [&](const httplib::Request& req, httplib::Response& res) {
+        captured_filters = req.get_param_value("filters");
+        captured_all = req.get_param_value("all");
+        res.set_content(R"([{"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"7",)"
+                        R"("kythira.idempotency-key":"intent-42"}}])",
+                        "application/json");
+    });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    const auto found = mgr.find_by_idempotency_key("intent-42").get();
+    BOOST_REQUIRE(found.has_value());
+    BOOST_CHECK_EQUAL(found->node_id, 7u);
+    BOOST_CHECK_EQUAL(found->address, "kythira-test-cluster-7:7000");
+    BOOST_CHECK(captured_filters.find("kythira.idempotency-key=intent-42") != std::string::npos);
+    BOOST_CHECK(captured_filters.find("kythira.cluster=test-cluster") != std::string::npos);
+    BOOST_CHECK_EQUAL(captured_all, "1");  // a stopped container still exists
+}
+
+BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_returns_nothing_when_absent, MockDockerServer) {
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("[]", "application/json");
+    });
+    docker_quorum_manager<> mgr(make_cfg());
+    BOOST_CHECK(!mgr.find_by_idempotency_key("missing").get().has_value());
+}
+
+BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_fails_on_a_daemon_error, MockDockerServer) {
+    server.Get("/containers/json",
+               [](const httplib::Request&, httplib::Response& res) { res.status = 500; });
+    docker_quorum_manager<> mgr(make_cfg());
+    BOOST_CHECK_THROW(mgr.find_by_idempotency_key("k").get(), std::runtime_error);
+}
