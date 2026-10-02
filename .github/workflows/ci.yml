@@ -1531,7 +1531,11 @@ jobs:
             --target beast_ssl_test \
             --target beast_cross_transport_equivalence_test \
             --target proxygen_transport_test \
-            --target three_way_http_transport_equivalence_test
+            --target three_way_http_transport_equivalence_test \
+            --target tcp_connection_tracker_unit_test \
+            --target tcp_rpc_unit_test \
+            --target tls_tcp_rpc_integration_test \
+            --target tcp_gossip_transport_integration_test
 
       # Asserts the flag was honoured, not merely passed. A TSan job that
       # quietly builds uninstrumented binaries still runs every test and still
@@ -1545,7 +1549,9 @@ jobs:
           uninstrumented=0
           for t in beast_client_test beast_server_test beast_integration_test \
                    beast_ssl_test beast_cross_transport_equivalence_test \
-                   proxygen_transport_test three_way_http_transport_equivalence_test; do
+                   proxygen_transport_test three_way_http_transport_equivalence_test \
+                   tcp_connection_tracker_unit_test tcp_rpc_unit_test \
+                   tls_tcp_rpc_integration_test tcp_gossip_transport_integration_test; do
             bin="build-tsan/tests/$t"
             if [ ! -x "$bin" ]; then
               echo "::error::$t was not built"
@@ -1562,7 +1568,7 @@ jobs:
             fi
           done
           if [ "$uninstrumented" -ne 0 ]; then exit 1; fi
-          echo "confirmed: all 7 targets are ThreadSanitizer-instrumented"
+          echo "confirmed: all 11 targets are ThreadSanitizer-instrumented"
 
       # The numbers Requirement 5.5 wants in the job summary, and the ones
       # Requirement 6 is checked against. `always()` so a failed build still
@@ -1590,7 +1596,7 @@ jobs:
         run: |
           set -o pipefail
           ctest --test-dir build-tsan \
-            -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test|three_way_http_transport_equivalence_test' \
+            -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test|three_way_http_transport_equivalence_test|tcp_connection_tracker_unit_test|^tcp_rpc_unit_test$|tls_tcp_rpc_integration_test|tcp_gossip_transport_integration_test' \
             --output-on-failure \
             --no-tests=error \
             --timeout 1800 \
@@ -1598,17 +1604,17 @@ jobs:
             2>&1 | tee ctest-tsan-out.txt
         continue-on-error: true
 
-      # This job's `-R` is an explicit list of seven target names, which is the
+      # This job's `-R` is an explicit list of eleven target names, which is the
       # shape most prone to silent decay: rename or drop any one of them and
-      # ctest matches six, runs six, and still exits 0.
+      # ctest matches ten, runs ten, and still exits 0.
       #
       # This comment used to claim that deriving the expectation from `ctest -N`
       # made that mismatch fail loudly. It does not, and the claim was the
       # dangerous part: `ctest -N` applies the same `-R` to the same registry,
-      # so it also answers six, the derived expectation becomes six, six run,
+      # so it also answers ten, the derived expectation becomes ten, ten run,
       # and the check passes. The protection being relied on did not exist.
       #
-      # `--floor 7` is what actually holds the list to its length, because 7 is
+      # `--floor 11` is what actually holds the list to its length, because 11 is
       # written here rather than read from the build. Adding a target to the
       # `-R` list means raising it in the same edit.
       - name: Check the ThreadSanitizer run did the work
@@ -1617,8 +1623,8 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build-tsan \
             --log ctest-tsan-out.txt \
-            --floor 7 \
-            -- -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test|three_way_http_transport_equivalence_test'
+            --floor 11 \
+            -- -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test|three_way_http_transport_equivalence_test|tcp_connection_tracker_unit_test|^tcp_rpc_unit_test$|tls_tcp_rpc_integration_test|tcp_gossip_transport_integration_test'
 
       - name: Publish ThreadSanitizer test results
         uses: dorny/test-reporter@v1

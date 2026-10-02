@@ -267,6 +267,9 @@ struct tls_tcp_rpc_config {
     std::string cert_path;  // this node's currently presented identity
     std::string key_path;
     tls_rpc_trust_policy trust_policy;
+    // Server only: connection caps and the request/reply deadlines, which
+    // bound the TLS handshake too. tls_tcp_rpc_client ignores it.
+    tcp_server_limits server_limits{};
 };
 
 namespace tls_detail {
@@ -572,7 +575,11 @@ public:
 
     server_impl(std::uint16_t port, tls_tcp_rpc_config config,
                 std::vector<tcp_detail::bind_endpoint> binds)
-        : _port(port), _binds(std::move(binds)), _config(std::move(config)) {
+        : _port(port),
+          _binds(std::move(binds)),
+          _conns(
+              tcp_detail::connection_tracker::create(config.server_limits, "tls_tcp_rpc_server")),
+          _config(std::move(config)) {
         ignore_sigpipe_once();
         _ctx = SSL_CTX_new(TLS_server_method());
         if (_ctx == nullptr) {
@@ -620,28 +627,51 @@ public:
             _running = false;
             throw;
         }
+        _conns->start_reaper();
         for (int fd : _listen_fds) {
-            _accept_threads.emplace_back([this, fd] { accept_loop(fd); });
+            _accept_threads.emplace_back([this, fd] {
+                tcp_detail::run_accept_loop(
+                    fd, _running, *_conns, _backoff,
+                    [this](tcp_detail::connection_tracker::ticket t) {
+                        std::thread(
+                            [this](tcp_detail::connection_tracker::ticket t) {
+                                handle(std::move(t));
+                            },
+                            std::move(t))
+                            .detach();
+                    });
+            });
         }
     }
 
+    // Same order as tcp_rpc_server::stop(): once this returns, no
+    // connection thread touches this object (Requirement 5 of
+    // .kiro/specs/tcp-rpc-server-hardening/).
     void stop() {
         if (!_running.exchange(false)) {
             return;
         }
+        _backoff.wake();
         std::lock_guard lock(_listen_mu);
         for (int fd : _listen_fds) {
             ::shutdown(fd, SHUT_RDWR);
-            ::close(fd);
         }
-        _listen_fds.clear();
         for (auto& t : _accept_threads) {
             if (t.joinable()) t.join();
         }
         _accept_threads.clear();
+        for (int fd : _listen_fds) {
+            ::close(fd);
+        }
+        _listen_fds.clear();
+        _conns->shutdown_and_drain();
     }
 
     [[nodiscard]] bool is_running() const noexcept { return _running.load(); }
+
+    [[nodiscard]] auto connection_stats() const -> tcp_server_connection_stats {
+        return _conns->stats();
+    }
 
     // Requirement 1.3/6.2/7.2: applied to the live SSL_CTX*, no listener
     // restart. Requirement 6.2's "already-established connections SHALL NOT
@@ -662,41 +692,16 @@ public:
     }
 
 private:
-    void accept_loop(int listen_fd) {
-        while (_running) {
-            int client = ::accept(listen_fd, nullptr, nullptr);
-            if (client < 0) {
-                break;
-            }
-            std::thread([this, client] {
-                handle(client);
-                ::close(client);
-            }).detach();
-        }
-    }
+    using phase = tcp_detail::connection_tracker::phase;
 
-    void handle(int fd) {
-        // Unlike tcp_detail::connect_to() (client side), accept() never
-        // set a read/write deadline on this fd — a plain-TCP handler
-        // returns almost instantly either way, so tcp_rpc_server has
-        // gotten away with the same omission. A TLS handshake plus
-        // trust-policy check is slow enough (real asymmetric crypto, a
-        // freshly spawned thread competing for CPU under host load) that
-        // a client can legitimately give up (its own connect_to() timeout
-        // elapses) and abandon the connection while this thread is still
-        // correctly mid-handshake — and without a deadline here, that
-        // thread then blocks on the next SSL_accept()/SSL_read() forever,
-        // leaking one thread and one fd per stall. Confirmed during this
-        // spec's implementation: under real multi-process contention this
-        // compounded into cascading Raft instability that raising
-        // election/heartbeat timeouts alone never fixed, since the actual
-        // resource leak kept growing regardless of how patient the
-        // *protocol* timeouts were.
-        timeval sock_timeout{};
-        sock_timeout.tv_sec = 30;
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &sock_timeout, sizeof(sock_timeout));
-        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sock_timeout, sizeof(sock_timeout));
-
+    // Runs on the connection's own thread; `t` closes the socket and frees
+    // its slot when this returns. The TLS handshake, the trust-policy check
+    // and the request read all count against the request deadline, which the
+    // tracker's reaper enforces by shutting the socket down, so a peer that
+    // stalls mid-handshake or trickles bytes cannot hold this thread (see
+    // .kiro/specs/tcp-rpc-server-hardening/).
+    void handle(tcp_detail::connection_tracker::ticket t) {
+        const int fd = t.fd();
         SSL* raw_ssl = nullptr;
         tls_rpc_trust_policy policy_snapshot;
         {
@@ -735,6 +740,7 @@ private:
         if (!data.has_value()) {
             return;
         }
+        t.enter(phase::handler);
 
         std::string type = tcp_detail::extract_type_field(*data);
         auto bytes = tcp_detail::str_to_bytes(*data);
@@ -765,6 +771,7 @@ private:
             } else {
                 return;
             }
+            t.enter(phase::reply);
             frame_send(raw_ssl, tcp_detail::bytes_to_str(resp));
         } catch (...) {
         }
@@ -776,6 +783,8 @@ private:
     std::vector<int> _listen_fds;
     std::atomic<bool> _running{false};
     std::vector<std::thread> _accept_threads;
+    tcp_detail::accept_backoff _backoff;
+    std::shared_ptr<tcp_detail::connection_tracker> _conns;
 
     SSL_CTX* _ctx{nullptr};
     std::mutex _ctx_mu;  // guards _ctx's loaded identity AND _config
@@ -903,6 +912,9 @@ public:
     void start() { _impl->start(); }
     void stop() { _impl->stop(); }
     [[nodiscard]] bool is_running() const noexcept { return _impl->is_running(); }
+    [[nodiscard]] auto connection_stats() const -> tcp_server_connection_stats {
+        return _impl->connection_stats();
+    }
 
     auto reload_identity(std::string cert_path, std::string key_path) -> void {
         _impl->reload_identity(std::move(cert_path), std::move(key_path));

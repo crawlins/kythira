@@ -5,6 +5,7 @@
 
 #include <raft/exceptions.hpp>
 #include <raft/net_bind.hpp>
+#include <raft/tcp_connection_tracker.hpp>
 #include <raft/executor_default.hpp>
 #include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
@@ -53,7 +54,7 @@ namespace tcp_detail {
 // whose RPC timed out closes its end before the server replies. The flag
 // fixes just these writes instead of changing the process's SIGPIPE
 // disposition. Where MSG_NOSIGNAL does not exist, SO_NOSIGPIPE is set on
-// the socket instead (net_bind::connect_one()).
+// the socket instead (net_bind::connect_one(), run_accept_loop()).
 #ifdef MSG_NOSIGNAL
 inline constexpr int k_send_flags = MSG_NOSIGNAL;
 #else
@@ -535,7 +536,9 @@ private:
 // ── tcp_rpc_server ────────────────────────────────────────────────────────────
 //
 // Satisfies kythira::network_server.
-// Accepts connections in a background thread; dispatches to registered handlers.
+// Accepts connections in a background thread per listener and serves each on
+// its own thread, bounded and deadlined by a tcp_detail::connection_tracker
+// (tcp_server_limits; .kiro/specs/tcp-rpc-server-hardening/).
 
 class tcp_rpc_server {
 public:
@@ -548,14 +551,18 @@ public:
     using cl_fn = std::function<cluster_leave_response<>(const cluster_leave_request<>&)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
-    explicit tcp_rpc_server(std::uint16_t port) : _port(port) {}
+    explicit tcp_rpc_server(std::uint16_t port, tcp_server_limits limits = {})
+        : _port(port), _conns(tcp_detail::connection_tracker::create(limits, "tcp_rpc_server")) {}
 
     // Listens on `bind_address` only instead of every IPv4 interface: an IPv4
     // or IPv6 literal, or a host name whose addresses all belong to this host
     // (see tcp_detail::resolve_bind_addresses). Throws std::invalid_argument
     // otherwise.
-    tcp_rpc_server(std::uint16_t port, const std::string& bind_address)
-        : _port(port), _binds(tcp_detail::resolve_bind_addresses(bind_address, "tcp_rpc_server")) {}
+    tcp_rpc_server(std::uint16_t port, const std::string& bind_address,
+                   tcp_server_limits limits = {})
+        : _port(port),
+          _binds(tcp_detail::resolve_bind_addresses(bind_address, "tcp_rpc_server")),
+          _conns(tcp_detail::connection_tracker::create(limits, "tcp_rpc_server")) {}
 
     ~tcp_rpc_server() { stop(); }
 
@@ -570,6 +577,7 @@ public:
           _listen_fds(std::move(other._listen_fds)),
           _running(other._running.load()),
           _accept_threads(std::move(other._accept_threads)),
+          _conns(std::move(other._conns)),
           _rv(std::move(other._rv)),
           _pv(std::move(other._pv)),
           _tn(std::move(other._tn)),
@@ -603,48 +611,67 @@ public:
             _running = false;
             throw;
         }
+        _conns->start_reaper();
         for (int fd : _listen_fds) {
-            _accept_threads.emplace_back([this, fd] { accept_loop(fd); });
+            _accept_threads.emplace_back([this, fd] {
+                tcp_detail::run_accept_loop(
+                    fd, _running, *_conns, _backoff,
+                    [this](tcp_detail::connection_tracker::ticket t) {
+                        std::thread(
+                            [this](tcp_detail::connection_tracker::ticket t) {
+                                handle(std::move(t));
+                            },
+                            std::move(t))
+                            .detach();
+                    });
+            });
         }
     }
 
+    // Stops accepting, then waits until no connection thread can touch this
+    // server again: connections still reading or writing are shut down at
+    // once, and one inside a handler is waited for.
     void stop() {
         if (!_running.exchange(false)) {
             return;
         }
+        _backoff.wake();
         std::lock_guard lock(_listen_mu);
+        // shutdown() wakes a thread blocked in accept(); the descriptors are
+        // closed only after the threads are joined so none can be reused
+        // under a running accept().
         for (int fd : _listen_fds) {
             ::shutdown(fd, SHUT_RDWR);
-            ::close(fd);
         }
-        _listen_fds.clear();
         for (auto& t : _accept_threads) {
             if (t.joinable()) t.join();
         }
         _accept_threads.clear();
+        for (int fd : _listen_fds) {
+            ::close(fd);
+        }
+        _listen_fds.clear();
+        _conns->shutdown_and_drain();
     }
 
     [[nodiscard]] bool is_running() const noexcept { return _running.load(); }
 
-private:
-    void accept_loop(int listen_fd) {
-        while (_running) {
-            int client = ::accept(listen_fd, nullptr, nullptr);
-            if (client < 0) {
-                break;
-            }
-            std::thread([this, client] {
-                handle(client);
-                ::close(client);
-            }).detach();
-        }
+    [[nodiscard]] auto connection_stats() const -> tcp_server_connection_stats {
+        return _conns->stats();
     }
 
-    void handle(int fd) {
+private:
+    using phase = tcp_detail::connection_tracker::phase;
+
+    // Runs on the connection's own thread; `t` closes the socket and frees
+    // its slot when this returns.
+    void handle(tcp_detail::connection_tracker::ticket t) {
+        const int fd = t.fd();
         auto data = tcp_detail::frame_recv(fd);
         if (!data) {
             return;
         }
+        t.enter(phase::handler);
 
         std::string type = tcp_detail::extract_type_field(*data);
         auto bytes = tcp_detail::str_to_bytes(*data);
@@ -668,6 +695,7 @@ private:
             } else {
                 return;
             }
+            t.enter(phase::reply);
             tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(resp));
         } catch (...) {
         }
@@ -679,6 +707,8 @@ private:
     std::vector<int> _listen_fds;
     std::atomic<bool> _running{false};
     std::vector<std::thread> _accept_threads;
+    tcp_detail::accept_backoff _backoff;
+    std::shared_ptr<tcp_detail::connection_tracker> _conns;
 
     rv_fn _rv;
     pv_fn _pv;

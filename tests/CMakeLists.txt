@@ -865,6 +865,7 @@ add_raft_completion_test(tcp_cluster_join_test tcp_cluster_join_test.cpp)
 add_raft_completion_test(chaos_node_config_unit_test chaos_node_config_unit_test.cpp)
 target_include_directories(chaos_node_config_unit_test PRIVATE
                            "${CMAKE_SOURCE_DIR}/cmd/chaos_node")
+add_raft_completion_test(tcp_connection_tracker_unit_test tcp_connection_tracker_unit_test.cpp)
 add_raft_completion_test(raft_follower_acknowledgment_tracking_property_test raft_follower_acknowledgment_tracking_property_test.cpp)
 add_raft_completion_test(raft_majority_commit_index_advancement_property_test raft_majority_commit_index_advancement_property_test.cpp)
 add_raft_completion_test(raft_non_blocking_slow_followers_property_test raft_non_blocking_slow_followers_property_test.cpp)
