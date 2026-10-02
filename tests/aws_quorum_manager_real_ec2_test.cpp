@@ -511,9 +511,9 @@ struct RealEc2Fixture : signal_cleanup_target {
     double spot_price_cluster{0.0};  // $/hr per node, queried from DescribeSpotPriceHistory
     double spot_price_bastion{0.0};  // $/hr for bastion, queried from DescribeSpotPriceHistory
 
-    // Track the initial cluster instances provisioned by a test case.
-    // Call immediately after provisioning; maintain_quorum replacements are
-    // not tracked (making this a lower-bound estimate for such tests).
+    // Track cluster instances provisioned by a test case. Call immediately
+    // after provisioning; the maintain_quorum cases call it again with the
+    // replacements they counted through live_cluster().
     void track_instances(std::size_t count) {
         cost_report.resources.push_back({
             std::to_string(count) + "x " + instance_type + " (cluster, spot)",
@@ -1284,6 +1284,57 @@ struct RealEc2Fixture : signal_cleanup_target {
     }
 
     // Terminates all cluster instances (best-effort).
+    // The cluster as EC2 sees it: every pending or running instance the manager
+    // launched for this run, with its group read back from the kythira:group
+    // tag the manager stamps at launch.
+    //
+    // maintain_quorum returns the health it measured *before* remediating and
+    // hands back none of the nodes it provisioned, so this is the only way a
+    // case can check what the remediation did. It reads EC2 directly rather
+    // than asking the manager, so a manager that forgot to provision cannot
+    // vouch for itself.
+    auto live_cluster() -> std::vector<kythira::node_placement<std::uint64_t, std::string>> {
+        Aws::EC2::Model::DescribeInstancesRequest req;
+        for (const auto& [name, value] :
+             {std::pair<std::string, std::string>{"tag:kythira:cluster", uuid},
+              {"tag:kythira:managed-by", "ec2_quorum_manager"}}) {
+            Aws::EC2::Model::Filter f;
+            f.SetName(name);
+            f.AddValues(value);
+            req.AddFilters(f);
+        }
+        {
+            Aws::EC2::Model::Filter f;
+            f.SetName("instance-state-name");
+            f.AddValues("pending");
+            f.AddValues("running");
+            req.AddFilters(f);
+        }
+        std::vector<kythira::node_placement<std::uint64_t, std::string>> live;
+        auto out = ec2->DescribeInstances(req);
+        BOOST_REQUIRE_MESSAGE(out.IsSuccess(), "DescribeInstances (live cluster): " +
+                                                   std::string(out.GetError().GetMessage()));
+        for (const auto& res : out.GetResult().GetReservations()) {
+            for (const auto& inst : res.GetInstances()) {
+                live.push_back({.node_id = kythira::aws_ec2_quorum_manager<>::ec2_id_to_node_id(
+                                    std::string(inst.GetInstanceId())),
+                                .group_id = find_tag_val(inst.GetTags(), "kythira:group")});
+            }
+        }
+        return live;
+    }
+
+    // live_cluster() counted per group.
+    static auto count_by_group(
+        const std::vector<kythira::node_placement<std::uint64_t, std::string>>& cluster)
+        -> std::map<std::string, std::size_t> {
+        std::map<std::string, std::size_t> counts;
+        for (const auto& np : cluster) {
+            ++counts[np.group_id];
+        }
+        return counts;
+    }
+
     void terminate_cluster_instances() {
         Aws::EC2::Model::DescribeInstancesRequest req;
         {
@@ -1663,18 +1714,37 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_restores_full_cluster, *boost::unit_test::t
         auto peer = mgr.provision_node("AZ1", std::nullopt).get();
         cluster.push_back({.node_id = peer.node_id, .group_id = "AZ1"});
     }
-    track_instances(3);  // maintain_quorum may provision 1 more (lower-bound estimate)
+    track_instances(3);
 
-    // Terminate one node.
-    BOOST_CHECK_NO_THROW(mgr.decommission_node(cluster[0].node_id).get());
+    // Terminate one node and drop it from the membership, as a leader would
+    // once it had removed the node from the configuration.
+    const auto removed = cluster[0].node_id;
+    BOOST_CHECK_NO_THROW(mgr.decommission_node(removed).get());
     cluster.erase(cluster.begin());
 
+    // Returns the pre-remediation health: 2 live members, none unreachable,
+    // so the only work is the deficit of one against the target of 3.
     auto pre_health = mgr.maintain_quorum(cluster).get();
     BOOST_CHECK_EQUAL(pre_health.unreachable_nodes.size(), 0u);
+    BOOST_CHECK_EQUAL(pre_health.live_node_count, 2u);
 
-    // After maintain_quorum the topology should reach target 3 again.
-    // Re-assess with the updated cluster (provision_node returns new peer).
-    // For simplicity, just verify maintain_quorum didn't throw.
+    // Requirement 19.2: the group is back at its target, with exactly one new
+    // node, and the terminated one is not counted.
+    auto after = live_cluster();
+    BOOST_CHECK_EQUAL(count_by_group(after)["AZ1"], 3u);
+    std::size_t replacements = 0;
+    for (const auto& np : after) {
+        BOOST_CHECK_NE(np.node_id, removed);
+        if (std::ranges::none_of(cluster, [&](const auto& m) { return m.node_id == np.node_id; })) {
+            ++replacements;
+        }
+    }
+    BOOST_CHECK_EQUAL(replacements, 1u);
+    track_instances(replacements);
+
+    auto post_health = mgr.assess_quorum(after).get();
+    BOOST_CHECK_EQUAL(post_health.live_node_count, 3u);
+    BOOST_CHECK_EQUAL(post_health.status, kythira::quorum_status::healthy);
 }
 
 // 1500s (was 1200s): teardown()'s DeleteVpc/DeleteNetworkAcl retries can now
@@ -1719,7 +1789,7 @@ BOOST_AUTO_TEST_CASE(az_outage_during_rolling_deployment, *boost::unit_test::tim
             by_az[az].push_back(peer.node_id);
         }
     }
-    track_instances(9);  // maintain_quorum provisions 4 more (lower-bound estimate)
+    track_instances(9);
 
     // AZ3: terminate all 3 (decommission_node uses node_id_to_ec2_id internally).
     for (auto nid : by_az["AZ3"]) {
@@ -1734,8 +1804,35 @@ BOOST_AUTO_TEST_CASE(az_outage_during_rolling_deployment, *boost::unit_test::tim
     BOOST_CHECK(pre_health.status == kythira::quorum_status::critical ||
                 pre_health.status == kythira::quorum_status::lost);
 
-    // maintain_quorum: returns pre-remediation health, decommissions 4, provisions 4.
-    BOOST_CHECK_NO_THROW(mgr.maintain_quorum(cluster).get());
+    // maintain_quorum returns the pre-remediation health, decommissions the 4
+    // unreachable nodes (already terminated, so idempotently) and provisions
+    // 3 into AZ3 and 1 into AZ2.
+    auto returned = mgr.maintain_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(returned.live_node_count, 5u);
+    BOOST_CHECK_EQUAL(returned.unreachable_nodes.size(), 4u);
+
+    // Requirement 19.2-19.3 (16.19m v-vi): every group is back at 3, the
+    // replacements went where the losses were, and none of the 4 lost nodes
+    // is counted among them.
+    auto after = live_cluster();
+    auto counts = count_by_group(after);
+    BOOST_CHECK_EQUAL(counts["AZ1"], 3u);
+    BOOST_CHECK_EQUAL(counts["AZ2"], 3u);
+    BOOST_CHECK_EQUAL(counts["AZ3"], 3u);
+    std::map<std::string, std::size_t> new_by_group;
+    for (const auto& np : after) {
+        if (std::ranges::none_of(cluster, [&](const auto& m) { return m.node_id == np.node_id; })) {
+            ++new_by_group[np.group_id];
+        }
+    }
+    BOOST_CHECK_EQUAL(new_by_group["AZ1"], 0u);
+    BOOST_CHECK_EQUAL(new_by_group["AZ2"], 1u);
+    BOOST_CHECK_EQUAL(new_by_group["AZ3"], 3u);
+    track_instances(new_by_group["AZ2"] + new_by_group["AZ3"]);
+
+    auto post_health = mgr.assess_quorum(after).get();
+    BOOST_CHECK_EQUAL(post_health.live_node_count, 9u);
+    BOOST_CHECK_EQUAL(post_health.status, kythira::quorum_status::healthy);
 }
 
 BOOST_AUTO_TEST_CASE(az_outage_provision_fails_in_broken_az, *boost::unit_test::timeout(1500)) {
@@ -1755,7 +1852,7 @@ BOOST_AUTO_TEST_CASE(az_outage_provision_fails_in_broken_az, *boost::unit_test::
             by_az[az].push_back(peer.node_id);
         }
     }
-    track_instances(9);  // AZ2 gets 1 replacement via broken_mgr (lower-bound estimate)
+    track_instances(9);
 
     // AZ3: terminate all 3.
     for (auto nid : by_az["AZ3"]) {
@@ -1769,20 +1866,32 @@ BOOST_AUTO_TEST_CASE(az_outage_provision_fails_in_broken_az, *boost::unit_test::
     broken_cfg.subnet_by_group["AZ3"] = "subnet-00000000000000000";
     kythira::aws_ec2_quorum_manager<> broken_mgr{broken_cfg};
 
-    // maintain_quorum must NOT throw even though AZ3 provisions fail.
-    BOOST_CHECK_NO_THROW(broken_mgr.maintain_quorum(cluster).get());
+    // maintain_quorum must NOT throw even though AZ3 provisions fail
+    // (Requirement 19.5), and still returns the pre-remediation health.
+    auto returned = broken_mgr.maintain_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(returned.live_node_count, 5u);
 
-    // assess_quorum via original mgr → AZ3=0/3, degraded.
-    auto health = mgr.assess_quorum(cluster).get();
-    bool az3_zero = false;
-    for (const auto& g : health.groups) {
-        if (g.group_id == "AZ3" && g.live_count == 0) {
-            az3_zero = true;
-        }
+    // The AZ2 replacement landed; nothing landed in the broken AZ3.
+    auto after = live_cluster();
+    auto counts = count_by_group(after);
+    BOOST_CHECK_EQUAL(counts["AZ1"], 3u);
+    BOOST_CHECK_EQUAL(counts["AZ2"], 3u);
+    BOOST_CHECK_EQUAL(counts["AZ3"], 0u);
+    track_instances(1);
+
+    // Requirement 16.19n vi: against the full 9-member configuration (the 6
+    // live nodes plus the 3 lost AZ3 members, which a leader would still be
+    // counting), the original manager reports 6/9: degraded, AZ3 at 0.
+    auto members = after;
+    for (auto nid : by_az["AZ3"]) {
+        members.push_back({.node_id = nid, .group_id = "AZ3"});
     }
-    BOOST_CHECK(az3_zero);
-    BOOST_CHECK(health.status == kythira::quorum_status::degraded ||
-                health.status == kythira::quorum_status::critical);
+    auto health = mgr.assess_quorum(members).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 6u);
+    BOOST_CHECK_EQUAL(health.status, kythira::quorum_status::degraded);
+    for (const auto& g : health.groups) {
+        BOOST_CHECK_EQUAL(g.live_count, g.group_id == "AZ3" ? 0u : 3u);
+    }
 }
 
 // 2400s: this case alone hit the SIGALRM timeout on two separate real CI
@@ -1808,7 +1917,7 @@ BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_te
             by_az[az].push_back(peer.node_id);
         }
     }
-    track_instances(9);  // maintain_quorum provisions 3 more (lower-bound estimate)
+    track_instances(9);
 
     // Apply deny-all NACL to AZ3 (data plane blocked; control plane still OK).
     apply_deny_nacl_to_az3();
@@ -1830,6 +1939,23 @@ BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_te
     // maintain_quorum provisions 3 new AZ3 instances via the EC2 control plane.
     // RunInstances succeeds despite the data-plane NACL block.
     BOOST_CHECK_NO_THROW(mgr.maintain_quorum(cluster).get());
+
+    // Requirement 16.19o v-vi: the 3 replacements reached `running` in AZ3,
+    // so assess_quorum, which reads only instance state, counts AZ3 live
+    // again even though nothing can reach those instances.
+    auto after = live_cluster();
+    auto counts = count_by_group(after);
+    BOOST_CHECK_EQUAL(counts["AZ1"], 3u);
+    BOOST_CHECK_EQUAL(counts["AZ2"], 3u);
+    BOOST_CHECK_EQUAL(counts["AZ3"], 3u);
+    track_instances(counts["AZ3"]);
+    auto post_health = mgr.assess_quorum(after).get();
+    for (const auto& g : post_health.groups) {
+        if (g.group_id == "AZ3") {
+            BOOST_CHECK_EQUAL(g.live_count, 3u);
+        }
+    }
+    BOOST_CHECK_EQUAL(post_health.status, kythira::quorum_status::healthy);
 
     restore_az3_nacl();
 }
