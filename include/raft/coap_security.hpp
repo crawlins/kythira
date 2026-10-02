@@ -120,6 +120,12 @@ struct oscore_credentials {
     std::string aead_algorithm{"AES-CCM-16-64-128"};
     oscore_bootstrap bootstrap_method{oscore_bootstrap::static_provisioned};
     edhoc_params edhoc;  // used only when bootstrap_method == edhoc
+    // Directory that keeps the Sender Sequence Number and replay floor across
+    // restarts (RFC 8613 Appendix B.1.1), one small file per context. Empty
+    // keeps them only for the life of the process, which is enough to stop
+    // two contexts in one process reusing a nonce but not a restart: set this
+    // for any long-lived static (non-EDHOC) Master Secret.
+    std::string sequence_state_dir;
 };
 
 enum class ace_target_profile {

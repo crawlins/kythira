@@ -91,6 +91,7 @@ struct oscore_server {
         coap_startup();
 
         BOOST_REQUIRE(ctx != nullptr);
+        coap_context_set_block_mode(ctx, COAP_BLOCK_USE_LIBCOAP | COAP_BLOCK_SINGLE_BODY);
         provider.configure_session(ctx);
         register_echo_resource(ctx);
         auto addr = make_loopback_addr(kServerPort);
@@ -149,6 +150,12 @@ auto send_and_await_echo(oscore_credentials client_creds, const std::string& pay
     oscore_provider provider(std::move(client_creds), coap_security_role::client);
     coap_context_t* ctx = coap_new_context(nullptr);
     BOOST_REQUIRE(ctx != nullptr);
+    // As the transport's client does (configure_libcoap_block_mode). Besides
+    // block-wise transfer this is what lets libcoap answer the server's
+    // Appendix B.1.2 Echo challenge itself: it resends from the request state
+    // it keeps only in this mode, and swallows the 4.01, so the handler below
+    // only sees it if libcoap could not.
+    coap_context_set_block_mode(ctx, COAP_BLOCK_USE_LIBCOAP | COAP_BLOCK_SINGLE_BODY);
 
     client_exchange_state state;
     state.payload = payload;
@@ -244,6 +251,26 @@ BOOST_AUTO_TEST_CASE(mismatched_master_secret_is_rejected,
                                         std::chrono::milliseconds(2000));
 
     BOOST_CHECK(!response.has_value());
+}
+
+// Each client session builds its own libcoap OSCORE context. They used to all
+// start at Sender Sequence Number 0, so a second session under the same key
+// reused the first one's nonces, and the server's replay window refused it.
+// Now each session starts above every number the key has already used.
+BOOST_AUTO_TEST_CASE(a_second_session_on_the_same_key_reuses_no_sequence_number,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(25))) {
+    auto secret = std::vector<std::byte>(16, std::byte{0x55});
+    oscore_server server(make_oscore_credentials({std::byte{0x01}}, {std::byte{0x00}}, secret));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    const auto client_creds = make_oscore_credentials({std::byte{0x00}}, {std::byte{0x01}}, secret);
+    const auto first = send_and_await_echo(client_creds, "first", std::chrono::milliseconds(5000));
+    BOOST_REQUIRE(first.has_value());
+    BOOST_CHECK_EQUAL(*first, "first");
+    const auto second =
+        send_and_await_echo(client_creds, "second", std::chrono::milliseconds(5000));
+    BOOST_REQUIRE(second.has_value());
+    BOOST_CHECK_EQUAL(*second, "second");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
