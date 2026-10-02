@@ -378,6 +378,53 @@ BOOST_AUTO_TEST_CASE(a_replayed_request_is_refused,
                       kythira::oscore::verification_error);
 }
 
+// The pre-auth lockout: a forged request carrying the server's Recipient ID as
+// its kid and a huge Partial IV used to advance the window before its tag was
+// checked, after which every genuine request fell "older than the replay
+// window" until the context was rebuilt.
+BOOST_AUTO_TEST_CASE(a_forged_request_does_not_move_the_replay_window,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    namespace osc = kythira::oscore;
+    const osc::security_context client(client_credentials());
+    osc::security_context server(server_credentials());
+
+    osc::request_binding sent;
+    auto forged = client.protect_request(sample_request(), sent);
+    // Rewriting the Partial IV invalidates the tag, as it would for an
+    // attacker without the key.
+    for (auto& option : forged.options) {
+        if (option.number == osc::coap_option_oscore) {
+            auto fields = osc::decode_option(option.value);
+            fields.partial_iv = osc::detail::encode_partial_iv(0xFFFFFFFFFFULL);
+            option.value = osc::encode_option(fields);
+        }
+    }
+    osc::request_binding received;
+    BOOST_CHECK_THROW(static_cast<void>(server.unprotect_request(forged, received)),
+                      osc::verification_error);
+
+    osc::request_binding genuine_binding;
+    const auto genuine = client.protect_request(sample_request(), genuine_binding);
+    BOOST_CHECK_NO_THROW(static_cast<void>(server.unprotect_request(genuine, received)));
+}
+
+// Out-of-order delivery inside the window is still accepted once each.
+BOOST_AUTO_TEST_CASE(reordered_requests_within_the_window_are_accepted_once,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    namespace osc = kythira::oscore;
+    const osc::security_context client(client_credentials());
+    osc::security_context server(server_credentials());
+
+    osc::request_binding binding;
+    const auto first = client.protect_request(sample_request(), binding);
+    const auto second = client.protect_request(sample_request(), binding);
+    osc::request_binding received;
+    BOOST_CHECK_NO_THROW(static_cast<void>(server.unprotect_request(second, received)));
+    BOOST_CHECK_NO_THROW(static_cast<void>(server.unprotect_request(first, received)));
+    BOOST_CHECK_THROW(static_cast<void>(server.unprotect_request(first, received)),
+                      osc::verification_error);
+}
+
 // Each request must consume a fresh sequence number: reuse would repeat a
 // nonce, which is fatal for AES-CCM.
 BOOST_AUTO_TEST_CASE(sequential_requests_use_distinct_partial_ivs,
