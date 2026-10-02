@@ -920,6 +920,87 @@ and the hypothesis each confirms or refutes.
    the finding that most changed as a result of measuring on a second machine,
    and it is the reason Requirement 18.7 asks for that machine.
 
+### The CoAP row, and the shared client it was built to measure
+
+`.kiro/specs/coap-transport-multi-raft/` task 14 and Requirement 17a here: N
+groups over one shared libcoap client at N = 1, 8 and 64, latency per group,
+and time spent waiting on the client's `_mutex` — the serialization point that
+spec singled out. Taken by `write_latency_by_group_count` in
+`multi_raft_http_benchmark_test`, with `KYTHIRA_COAP_SEND_PROBE=1` and the log
+summarised by `scripts/coap-send-probe-summary.py`.
+
+**Provenance.** One development machine, Intel Xeon @ 2.10 GHz, 4 logical
+CPUs; Release; Folly future backend; Tier B (in-process hosts, loopback). 3
+nodes, 1920 operations at 16 in flight, 128 B values, JSON on the wire, memory
+persistence, five repetitions per cell. libcoap is the system 4.3.4, which
+lacks `coap_context_set_max_block_size`; the build stubbed that one call, so
+the block size is libcoap's own default rather than the configured 1024 B. The
+Beast row was not built on this machine and is absent; cpp-httplib is the
+comparison.
+
+**Nothing in the transport's locking, I/O thread or context structure was
+changed** (task 14, and Requirement 17a.7). One experiment changed the client's
+pacing temporarily and was reverted; it is reported as an experiment.
+
+#### Results
+
+Medians of five runs; per-group figures are from the median run.
+
+| Row | Groups | Tick | ops/sec | p50 | Per-group p50 (fastest–slowest) | Outcome |
+|---|---:|---:|---:|---:|---|---|
+| cpp-httplib | 1 | 2 ms | 2813.5 | 5.27 ms | 5.27 ms | every write committed |
+| cpp-httplib | 8 | 2 ms | 3105.4 | 4.99 ms | 2.13–6.68 ms | every write committed |
+| cpp-httplib | 64 | 2 ms | 2701.5 | 5.06 ms | 2.30–9.04 ms | every write committed |
+| CoAP | 1 | 2 ms | 0 | — | — | 1920 of 1920 writes `not_leader`, all five runs |
+| CoAP | 8 | 2 ms | — | — | — | **stopped**: no leader on every shard within the election budget |
+| CoAP | 64 | 2 ms | — | — | — | **stopped**: no leader on every shard within the election budget |
+| CoAP | 1 | 10 ms | 0 | — | — | 0 completed in four runs, 47 in the fifth |
+| CoAP | 8 | 80 ms | 56.2 | 144.7 ms | **5.07–411.4 ms** | 78% committed, 21% `not_leader`; spread 103% |
+| CoAP | 64 | 640 ms | 270.0 | 33.9 ms | 5.25–81.5 ms | every write committed; spread 18.9% |
+
+The two CoAP passes are not comparable to the cpp-httplib rows: the second one
+raises the tick to 10 ms per group so that the AppendEntries offered per peer
+per second is the same at every N, which is the only way this transport
+produces numbers at all. The 8-group row is the case Requirement 17a.2 exists
+to show: one group's median write took 411 ms while another's took 5 ms, and
+the aggregate p50 of 145 ms describes neither.
+
+Lock wait from the probe, all sends in each cell:
+
+| Cell | Sends | `lock_wait_us` p50 | p95 | p99 | max | Per-group p95 range |
+|---|---:|---:|---:|---:|---:|---|
+| 1 group, 2 ms | 26,811 | 0 | 5,466 | 7,800 | 25,973 | — |
+| 8 groups, 2 ms | 82,106 | 0 | 892 | 1,932 | 12,543 | 0–1,982 |
+| 64 groups, 2 ms | 98,184 | 0 | 3,208 | 6,592 | 47,067 | 0–7,509 |
+| 1 group, 10 ms | 25,258 | 0 | 1,747 | 3,718 | 51,279 | — |
+| 8 groups, 80 ms | 51,258 | 0 | 909 | 1,926 | 11,209 | 701–1,048 |
+| 64 groups, 640 ms | 42,255 | 0 | 743 | 1,525 | 10,904 | 482–1,005 |
+
+#### Hypotheses, and what the data did to them
+
+| | Hypothesis | Verdict | The number |
+|---|---|---|---|
+| C1 | The client's `_mutex` is what N groups queue on | **REFUTED** | Median lock wait is 0 µs in every cell. The tail does not grow with N: p95 is 5.5 ms at one group and 3.2 ms at sixty-four on the same tick, and under 1 ms at every working point. A lock that serialized N groups would show its worst wait at the largest N |
+| C2 | CoAP behaves like the HTTP rows at the standard tick | **REFUTED** | cpp-httplib commits every write at every N on a 2 ms tick; CoAP commits none at 1 group and elects no full set of leaders at 8 or 64 |
+| C3 | The binding constraint at 2 ms is the client's I/O pacing | **CONFIRMED by experiment** | At 8 and 64 groups the servers received 692–882 AppendEntries per second between them against 2,488–2,975 sent; the rest queued in libcoap, and at teardown 52,307 and 74,452 queued requests were dropped as undeliverable. RequestVote queues behind them, which is why no full set of leaders forms (1,156 elections started at 64 groups, 866 of them failing). On the four-group smoke check, cutting the client's 5 ms pacing sleep to 1 ms made sends and receipts match at about 1,500 per second and the check passed; the change was reverted |
+| C4 | One group is the cheap case for a shared client | **REFUTED — it is the worst case** | With all sixteen writers on one group, most AppendEntries carry eight or more entries (24,655 of 25,188 sends at the 10 ms tick), the body passes the block size and goes block-wise ("using block-wise transfer" was logged 26,717 and 25,198 times in the two one-group cells, 21,593 times at 8 groups on 80 ms where batches also grew, 74 times at 64 groups on 640 ms, and never at 8 or 64 groups on 2 ms). Servers then receive about 30 AppendEntries a second, heartbeats arrive too late, followers start elections, and every write is rejected `not_leader`. More groups split the batch and keep each AppendEntries in one datagram. The block-wise link is a correlation measured here, not a causal test |
+| C5 | Per-group latency is uniform under a shared client | **REFUTED at 8 groups** | Median-run per-group p50 from 5.07 ms to 411.4 ms on the 80 ms tick, the 8-group row also being the one where 21% of writes lost their leader |
+
+#### What this changes
+
+The finding Requirement 17a.7 asks to be recorded rather than fixed: **the CoAP
+row's binding constraint is not its shared lock but the rate at which its client
+drains replies, and it binds at every group count at the standard tick.** The
+cost, measured: the row cannot run at the cadence every other row runs at, and
+where it does run it needs a tick of about 10 ms per group. Two remedies are
+visible and neither belongs to this specification, because both change
+single-group behaviour too: drain every ready datagram per I/O iteration rather
+than pacing on a sleep, and stop `multi_raft` re-sending unacknowledged
+AppendEntries on every tick (the multi-Raft side of the same backlog, already
+noted under H2). The one-group block-wise collapse is a third, separate item:
+it is the batch size, not the group count, that decides whether an
+AppendEntries needs more than one datagram.
+
 ## What this document could not answer
 
 Requirement 16.5, stated plainly rather than filled in with the nearest

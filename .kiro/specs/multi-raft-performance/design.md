@@ -328,7 +328,7 @@ One scenario implementation, instantiated per cell (Requirement 17.6).
 | Transport | cpp-httplib | always |
 | | Boost.Beast | `KYTHIRA_BENCH_HAS_BEAST` |
 | | Proxygen | `KYTHIRA_BENCH_HAS_PROXYGEN` |
-| | CoAP | once `multi_raft` has a CoAP binding |
+| | CoAP | `KYTHIRA_BENCH_HAS_COAP` (libcoap found); JSON only, see the group-count sweep |
 | RPC provider | JSON, CBOR | always |
 | | protobuf | `KYTHIRA_BENCH_HAS_PROTOBUF` |
 | | Ion | `KYTHIRA_BENCH_HAS_ION` |

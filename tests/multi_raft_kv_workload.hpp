@@ -828,6 +828,22 @@ struct benchmark_result {
     /// says `"not stated"` rather than guessing when nobody supplied one.
     std::string _placement{"not stated"};
 
+    /// @brief One group's slice of the window (Requirement 17a.2).
+    ///
+    /// An aggregate hides the case the group-count axis exists to find — one
+    /// group starving while the mean looks healthy — so a write row reports
+    /// each group's own distribution as well. Empty when the target cannot
+    /// say which group a key belongs to (an out-of-process driver).
+    struct group_latency {
+        std::uint64_t _group{0};
+        std::size_t _completed{0};
+        std::chrono::nanoseconds _p50{0};
+        std::chrono::nanoseconds _p95{0};
+        std::optional<std::chrono::nanoseconds> _p99;
+        std::chrono::nanoseconds _max{0};
+    };
+    std::vector<group_latency> _per_group;
+
     /// @brief Bytes returned per second over the measured window.
     [[nodiscard]] auto bytes_per_second() const -> double {
         const auto seconds = std::chrono::duration<double>(_duration).count();

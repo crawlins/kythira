@@ -1,6 +1,6 @@
 # Implementation Plan — CoAP under Multi-Raft
 
-## Status: In progress — tasks 1–6, 8 and 12 done; 7 implemented, unverified; 13 running without OSCORE
+## Status: In progress — tasks 1–6, 8, 12 and 14 done; 7 implemented, unverified; 13 running without OSCORE
 
 **Last Updated**: October 2, 2026
 
@@ -311,7 +311,7 @@ its own review.
 
 ## Phase 7: Measurement (Task 14)
 
-- [ ] 14. Quantify the shared client, and change nothing
+- [x] 14. Quantify the shared client, and change nothing
   - Drive N groups over one shared CoAP client for N in {1, 8, 64}; report per
     group the send-path latency distribution and the time spent waiting on the
     client's `_mutex`.
@@ -336,6 +336,17 @@ its own review.
     any remedy changes single-group behaviour too and earns its own review.
   - Verify: the benchmark runs at all three N values and the document exists
     with its measurements and its refuted hypotheses.
+  - **Done (October 2, 2026).** `coap_transport` is a fixture in
+    `tests/multi_raft_transport_harness.hpp` and `bench_rows/coap_json.cpp` the
+    row; `write_latency_by_group_count` sweeps 1/8/64 groups beside
+    cpp-httplib with per-group latency; the existing probe gained `group=`
+    and microsecond fields and `scripts/coap-send-probe-summary.py` reads it.
+    Results and five hypotheses in `doc/multi_raft_performance_comparison.md`,
+    "The CoAP row". The short version: the `_mutex` is **not** the binding
+    constraint (median wait 0 µs in every cell, tail not growing with N); the
+    client's 5 ms reply pacing is, at every group count on the standard 2 ms
+    tick; and one group is the worst case, because its batches go
+    block-wise. Nothing in the client was changed.
   - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5_
 
 ---
