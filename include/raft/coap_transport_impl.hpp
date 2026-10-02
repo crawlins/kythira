@@ -104,6 +104,48 @@ inline void validate_pem_cert_key_pair(const std::string& cert_path, const std::
 }  // namespace detail
 #endif  // KYTHIRA_HAS_OPENSSL
 
+#ifdef LIBCOAP_AVAILABLE
+namespace detail {
+// Hands RFC 7959 block-wise transfer to libcoap on `ctx`, for both
+// directions: Block1 on requests and Block2 on responses.
+//
+// This used to be done by hand. The Block1/Block2 option values were written
+// as the host-order bytes of a uint32_t (sizeof(value) bytes of &value)
+// rather than as a CoAP minimum-length network-order integer, so on a
+// little-endian machine block 0 with SZX=6 went on the wire as 06 00 00 00
+// and the receiver decoded block number 0x60000. On top of that the server
+// context already ran with COAP_BLOCK_USE_LIBCOAP, which makes libcoap
+// consume Block1 itself, so the hand-rolled reassembly on the server and the
+// hand-rolled continuation on the client were each answering a protocol the
+// other side was not speaking. Nothing caught it because no test ever put a
+// second block on the wire.
+//
+// COAP_BLOCK_SINGLE_BODY makes libcoap reassemble a multi-block body before
+// calling the handler, so request and response handlers read one complete
+// body with coap_get_data_large() and never see an individual block.
+template<typename Logger>
+inline void configure_libcoap_block_mode(coap_context_t* ctx, std::size_t max_block_size,
+                                         Logger& logger) {
+    coap_context_set_block_mode(ctx, COAP_BLOCK_USE_LIBCOAP | COAP_BLOCK_SINGLE_BODY);
+    // libcoap only accepts the RFC 7959 sizes (16..1024, powers of two). An
+    // out-of-range configured size keeps libcoap's own default rather than
+    // failing construction: block size is a tuning knob, not a correctness one.
+    if (coap_context_set_max_block_size(ctx, max_block_size) == 0) {
+        logger.warning("max_block_size is not an RFC 7959 block size, using libcoap's default",
+                       {{"max_block_size", std::to_string(max_block_size)}});
+    }
+}
+
+// coap_add_data_large_request()/_response() keep a pointer to the body until
+// the last block is acknowledged, which is long after the stack frame that
+// built it is gone. Each body therefore goes out as its own heap copy, and
+// libcoap hands it back here once the transfer completes or fails.
+inline void release_large_body(coap_session_t*, void* body) {
+    delete static_cast<std::vector<std::byte>*>(body);
+}
+}  // namespace detail
+#endif  // LIBCOAP_AVAILABLE
+
 // CoAP client implementation
 template<typename Types>
 requires kythira::transport_types<Types>
@@ -165,6 +207,10 @@ coap_client<Types>::coap_client(
     coap_context_set_max_idle_sessions(_coap_context, _config.max_sessions);
     coap_context_set_session_timeout(_coap_context,
                                      static_cast<unsigned int>(_config.session_timeout.count()));
+
+    // Block-wise transfer (RFC 7959) is libcoap's job, not ours. Must precede
+    // any session creation: the mode is copied into each session as it is made.
+    detail::configure_libcoap_block_mode(_coap_context, _config.max_block_size, _logger);
 
     // Set up response handler
     coap_register_response_handler(
@@ -387,16 +433,8 @@ auto coap_client<Types>::send_append_entries(std::uint64_t target,
                                              const kythira::append_entries_request<>& request,
                                              std::chrono::milliseconds timeout)
     -> future_template<kythira::append_entries_response<>> {
-    // Send AppendEntries RPC using CoAP POST to /raft/append_entries
-    // Handle large message payloads with block transfer consideration
-
-    // Check if block transfer is needed based on serialized size
-    auto serialized_request = _serializer.serialize(request);
-    if (_config.enable_block_transfer && serialized_request.size() > _config.max_block_size) {
-        // In a real implementation, this would handle block-wise transfer
-        // For now, proceed with regular transfer
-    }
-
+    // Send AppendEntries RPC using CoAP POST to /raft/append_entries. A
+    // request too large for one PDU goes block-wise inside send_rpc().
     return send_rpc<append_entries_request<>, append_entries_response<>>(
         target, "/raft/append_entries", request, timeout);
 }
@@ -407,15 +445,8 @@ auto coap_client<Types>::send_install_snapshot(std::uint64_t target,
                                                const kythira::install_snapshot_request<>& request,
                                                std::chrono::milliseconds timeout)
     -> future_template<kythira::install_snapshot_response<>> {
-    // Send InstallSnapshot RPC using CoAP POST to /raft/install_snapshot
-    // Handle snapshot data transfer with block-wise transfer
-
-    // Check if block transfer is needed for snapshot data
-    if (_config.enable_block_transfer && request.data().size() > _config.max_block_size) {
-        // In a real implementation, this would handle block-wise transfer
-        // for large snapshot data chunks
-    }
-
+    // Send InstallSnapshot RPC using CoAP POST to /raft/install_snapshot. A
+    // snapshot chunk too large for one PDU goes block-wise inside send_rpc().
     return send_rpc<install_snapshot_request<>, install_snapshot_response<>>(
         target, "/raft/install_snapshot", request, timeout);
 }
@@ -477,6 +508,10 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
     coap_context_set_max_idle_sessions(_coap_context, _config.max_concurrent_sessions);
     coap_context_set_session_timeout(_coap_context,
                                      static_cast<unsigned int>(_config.session_timeout.count()));
+
+    // See the client constructor: libcoap does block-wise transfer, and the
+    // mode has to be on the context before any peer session exists.
+    detail::configure_libcoap_block_mode(_coap_context, _config.max_block_size, _logger);
 
     // Per-resource POST handlers (request_vote/append_entries/install_snapshot)
     // are registered on the real coap_resource_t objects by setup_resources(),
@@ -766,10 +801,6 @@ auto coap_server<Types>::start() -> void {
     if (_config.enable_multicast) {
         setup_multicast_listener();
     }
-
-    // Configure I/O processing
-    // Set up event handling for the context
-    coap_context_set_block_mode(_coap_context, COAP_BLOCK_USE_LIBCOAP);
 
     // Enable keepalive for sessions
     coap_context_set_keepalive(_coap_context, 30);  // 30 second keepalive
@@ -1644,132 +1675,25 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
             }
         }
 
-        // Extract response payload
-        size_t payload_len;
-        const uint8_t* payload_data;
+        // Extract response payload. COAP_BLOCK_SINGLE_BODY (see
+        // detail::configure_libcoap_block_mode) means libcoap has already
+        // fetched and reassembled every Block2 of a large response before
+        // this handler runs, so this is always the complete body; the
+        // offset/total pair is only meaningful without that flag.
+        size_t payload_len = 0;
+        const uint8_t* payload_data = nullptr;
+        size_t payload_offset = 0;
+        size_t payload_total = 0;
         std::vector<std::byte> response_data;
 
-        if (coap_get_data(response, &payload_len, &payload_data)) {
+        if (coap_get_data_large(response, &payload_len, &payload_data, &payload_offset,
+                                &payload_total)) {
             response_data.resize(payload_len);
             std::memcpy(response_data.data(), payload_data, payload_len);
         }
 
-        // Check for block-wise transfer (Block2 for response)
-        coap_opt_iterator_t opt_iter;
-        coap_opt_t* block2_option = coap_check_option(response, COAP_OPTION_BLOCK2, &opt_iter);
-        if (block2_option) {
-            // Handle Block2 response transfer
-            uint32_t block_option_value = coap_decode_var_bytes(coap_opt_value(block2_option),
-                                                                coap_opt_length(block2_option));
-            auto block_opt = kythira::block_option::parse(block_option_value);
-
-            _logger.debug("Received Block2 response",
-                          {{"token", token},
-                           {"block_number", std::to_string(block_opt.block_number)},
-                           {"more_blocks", block_opt.more_blocks ? "true" : "false"},
-                           {"block_size", std::to_string(block_opt.block_size)}});
-
-            if (block_opt.more_blocks) {
-                // More blocks expected, handle block reassembly
-                auto complete_payload = reassemble_blocks(token, response_data, block_opt);
-                if (complete_payload) {
-                    // Block transfer complete
-                    it->second->resolve_callback(std::move(*complete_payload), response_media_type);
-                    _pending_requests.erase(it);
-                } else {
-                    // Request next block
-                    // In a real implementation, this would send a GET request with Block2 option
-                    // for the next block number
-                    _logger.debug("Requesting next Block2",
-                                  {{"token", token},
-                                   {"next_block", std::to_string(block_opt.block_number + 1)}});
-                }
-                return;
-            } else {
-                // Final block - complete the reassembly
-                auto complete_payload = reassemble_blocks(token, response_data, block_opt);
-                if (complete_payload) {
-                    it->second->resolve_callback(std::move(*complete_payload), response_media_type);
-                } else {
-                    // Just use the current block if reassembly fails
-                    it->second->resolve_callback(std::move(response_data), response_media_type);
-                }
-                _pending_requests.erase(it);
-                return;
-            }
-        }
-
-        // Check for Block1 continuation request (server requesting more blocks)
-        coap_opt_t* block1_option = coap_check_option(response, COAP_OPTION_BLOCK1, &opt_iter);
-        if (block1_option) {
-            uint32_t block_option_value = coap_decode_var_bytes(coap_opt_value(block1_option),
-                                                                coap_opt_length(block1_option));
-            auto block_opt = kythira::block_option::parse(block_option_value);
-
-            _logger.debug("Received Block1 continuation request",
-                          {{"token", token},
-                           {"block_number", std::to_string(block_opt.block_number)},
-                           {"block_size", std::to_string(block_opt.block_size)}});
-
-            // Server is requesting the next block
-            auto transfer_it = _active_block_transfers.find(token);
-            if (transfer_it != _active_block_transfers.end()) {
-                auto& state = transfer_it->second;
-
-                // Send next block
-                auto blocks = split_payload_into_blocks(state->complete_payload);
-                std::uint32_t next_block_num = block_opt.block_number + 1;
-
-                if (next_block_num < blocks.size()) {
-                    // Create PDU for next block
-                    coap_pdu_t* next_pdu = coap_pdu_init(
-                        _config.use_confirmable_messages ? COAP_MESSAGE_CON : COAP_MESSAGE_NON,
-                        COAP_REQUEST_CODE_POST, coap_new_message_id(state->session),
-                        coap_session_max_pdu_size(state->session));
-
-                    if (next_pdu) {
-                        // Add token
-                        coap_add_token(next_pdu, token.length(),
-                                       reinterpret_cast<const uint8_t*>(token.c_str()));
-
-                        // Add URI path
-                        add_uri_path_options(next_pdu, state->resource_path);
-
-                        // Add Block1 option for next block
-                        kythira::block_option next_block;
-                        next_block.block_number = next_block_num;
-                        next_block.more_blocks = (next_block_num + 1 < blocks.size());
-                        next_block.block_size = static_cast<std::uint32_t>(_config.max_block_size);
-
-                        std::uint32_t next_block1_value = next_block.encode();
-                        coap_add_option(next_pdu, COAP_OPTION_BLOCK1, sizeof(next_block1_value),
-                                        reinterpret_cast<const uint8_t*>(&next_block1_value));
-
-                        // Add block data
-                        coap_add_data(
-                            next_pdu, blocks[next_block_num].size(),
-                            reinterpret_cast<const uint8_t*>(blocks[next_block_num].data()));
-
-                        // Send next block
-                        coap_send(state->session, next_pdu);
-
-                        state->next_block_num = next_block_num;
-                        state->last_activity = std::chrono::steady_clock::now();
-
-                        _logger.debug("Sent next Block1",
-                                      {{"token", token},
-                                       {"block_number", std::to_string(next_block_num)},
-                                       {"more_blocks", next_block.more_blocks ? "true" : "false"}});
-                    }
-                } else {
-                    // All blocks sent, clean up transfer state
-                    _active_block_transfers.erase(transfer_it);
-                }
-            }
-            return;
-        }
-
-        // Single block or final block - resolve the future
+        // libcoap delivers only the final response of a block-wise exchange,
+        // so whatever arrives here completes the request.
         it->second->resolve_callback(std::move(response_data), response_media_type);
         _pending_requests.erase(it);
 
@@ -2572,52 +2496,27 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             }
         }
 
-        // Handle block-wise transfer for large payloads
-        if (should_use_block_transfer(serialized_request)) {
-            _logger.debug("Using block-wise transfer for large payload",
-                          {{"payload_size", std::to_string(serialized_request.size())},
-                           {"max_block_size", std::to_string(_config.max_block_size)}});
-
-            // Split payload into blocks
-            auto blocks = split_payload_into_blocks(serialized_request);
-
-            // Send first block with Block1 option
-            if (!blocks.empty()) {
-                kythira::block_option first_block;
-                first_block.block_number = 0;
-                first_block.more_blocks = (blocks.size() > 1);
-                first_block.block_size = static_cast<std::uint32_t>(_config.max_block_size);
-
-                std::uint32_t block1_value = first_block.encode();
-                if (!coap_add_option(pdu, COAP_OPTION_BLOCK1, sizeof(block1_value),
-                                     reinterpret_cast<const uint8_t*>(&block1_value))) {
-                    coap_delete_pdu(pdu);
-                    coap_session_release(session);
-                    throw coap_transport_error("Failed to add Block1 option");
-                }
-
-                // Add first block data
-                if (!coap_add_data(pdu, blocks[0].size(),
-                                   reinterpret_cast<const uint8_t*>(blocks[0].data()))) {
-                    coap_delete_pdu(pdu);
-                    coap_session_release(session);
-                    throw coap_transport_error("Failed to add first block data to PDU");
-                }
-
-                // Store remaining blocks for continuation
-                if (blocks.size() > 1) {
-                    std::lock_guard lock(_mutex);
-                    auto transfer_state =
-                        std::make_unique<block_transfer_state>(token, _config.max_block_size);
-                    transfer_state->complete_payload = serialized_request;
-                    transfer_state->next_block_num = 1;
-                    transfer_state->session = session;
-                    transfer_state->resource_path = resource_path;
-                    _active_block_transfers[token] = std::move(transfer_state);
-                }
+        // Body last: coap_add_data_large_request() must be the final change
+        // to the PDU. libcoap splits it into Block1 transfers when it does not
+        // fit one PDU and adds Size1/Request-Tag itself; a body that fits goes
+        // out exactly as coap_add_data() would send it.
+        if (_config.enable_block_transfer) {
+            if (should_use_block_transfer(serialized_request)) {
+                _logger.debug("Using block-wise transfer for large payload",
+                              {{"payload_size", std::to_string(serialized_request.size())},
+                               {"max_block_size", std::to_string(_config.max_block_size)}});
+            }
+            auto* body = new std::vector<std::byte>(serialized_request);
+            if (!coap_add_data_large_request(session, pdu, body->size(),
+                                             reinterpret_cast<const uint8_t*>(body->data()),
+                                             &detail::release_large_body, body)) {
+                // libcoap calls release_func on failure too, so `body` is
+                // already gone here.
+                coap_delete_pdu(pdu);
+                coap_session_release(session);
+                throw coap_transport_error("Failed to add payload to PDU");
             }
         } else {
-            // Regular single-block payload
             if (!coap_add_data(pdu, serialized_request.size(),
                                reinterpret_cast<const uint8_t*>(serialized_request.data()))) {
                 coap_delete_pdu(pdu);
@@ -3896,10 +3795,17 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         // Record this message as received
         record_received_message(message_id);
 
-        // Extract request payload (handling block transfer)
-        std::size_t payload_len;
-        const std::uint8_t* payload_data;
-        if (!coap_get_data(request, &payload_len, &payload_data)) {
+        // Extract request payload. COAP_BLOCK_SINGLE_BODY (see
+        // detail::configure_libcoap_block_mode) means libcoap has already
+        // collected every Block1 of a large request and answered the
+        // intermediate ones with 2.31 Continue itself, so this handler runs
+        // once, on the complete body.
+        std::size_t payload_len = 0;
+        const std::uint8_t* payload_data = nullptr;
+        std::size_t payload_offset = 0;
+        std::size_t payload_total = 0;
+        if (!coap_get_data_large(request, &payload_len, &payload_data, &payload_offset,
+                                 &payload_total)) {
             reject_malformed_request(response, "Missing request payload");
             return;
         }
@@ -3926,36 +3832,6 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         // already rejected any genuinely malformed raw CoAP message before
         // this handler could ever be invoked; deserialization below (which
         // does understand the payload's actual format) is what validates it.
-
-        // Handle block transfer if present
-        coap_opt_iterator_t opt_iter;
-        coap_opt_t* block1_option = coap_check_option(request, COAP_OPTION_BLOCK1, &opt_iter);
-        if (block1_option && _config.enable_block_transfer) {
-            // Extract token for block transfer correlation
-            coap_bin_const_t token = coap_pdu_get_token(request);
-            std::string token_str(reinterpret_cast<const char*>(token.s), token.length);
-
-            // Parse block option
-            uint32_t block_option_value = coap_decode_var_bytes(coap_opt_value(block1_option),
-                                                                coap_opt_length(block1_option));
-            auto block_opt = kythira::block_option::parse(block_option_value);
-
-            // Handle block reassembly
-            auto complete_payload = reassemble_blocks(token_str, request_data, block_opt);
-            if (!complete_payload) {
-                // More blocks expected, send continue response
-                coap_pdu_set_code(response, COAP_RESPONSE_CODE_CONTINUE);
-
-                // Echo back the Block1 option to acknowledge
-                uint32_t ack_block_value = block_opt.encode();
-                coap_add_option(response, COAP_OPTION_BLOCK1, sizeof(ack_block_value),
-                                reinterpret_cast<const uint8_t*>(&ack_block_value));
-                return;
-            }
-
-            // Use complete payload for processing
-            request_data = std::move(*complete_payload);
-        }
 
         // Resolve the request's declared encoding. Absent option means the
         // registry default, matching today's behaviour (Requirement 4.6).
@@ -4105,78 +3981,52 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         coap_pdu_set_code(response, COAP_RESPONSE_CODE_CONTENT);
 
         // Exactly one Content-Format option, naming the type we encoded in
-        // (Requirement 5.5). See the client's send path for why this uses
-        // coap_encode_var_safe rather than a raw uint16_t memcpy.
-        if (const auto response_format =
-                coap_utils::media_type_to_coap_content_format(*output_media_type)) {
+        // (Requirement 5.5). coap_add_data_large_response() inserts it itself
+        // from `media_type`, so it is only added by hand on the path that does
+        // not go through that call; adding it on both would put two on the
+        // wire. Either way it is encoded with coap_encode_var_safe -- see the
+        // client's send path for why a raw uint16_t memcpy is wrong.
+        const auto response_format =
+            coap_utils::media_type_to_coap_content_format(*output_media_type);
+
+        if (_config.enable_block_transfer && response_format) {
+            if (should_use_block_transfer(serialized_response)) {
+                _logger.debug("Using Block2 transfer for large response",
+                              {{"response_size", std::to_string(serialized_response.size())},
+                               {"max_block_size", std::to_string(_config.max_block_size)}});
+            }
+            // libcoap serves the Block2 sequence (including any block the
+            // client asks for out of order) from this one body.
+            auto* body = new std::vector<std::byte>(std::move(serialized_response));
+            const auto body_size = body->size();
+            if (!coap_add_data_large_response(resource, session, request, response, query,
+                                              static_cast<std::uint16_t>(*response_format), -1, 0,
+                                              body->size(),
+                                              reinterpret_cast<const uint8_t*>(body->data()),
+                                              &detail::release_large_body, body)) {
+                // release_func has already freed `body`.
+                _logger.error("Failed to add response payload to CoAP PDU");
+                coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
+                return;
+            }
+            _logger.debug("CoAP RPC request processed successfully",
+                          {{"message_id", std::to_string(message_id)},
+                           {"request_size", std::to_string(request_data.size())},
+                           {"response_size", std::to_string(body_size)}});
+            return;
+        }
+
+        if (response_format) {
             std::array<std::uint8_t, 2> format_buf{};
             const auto format_len = coap_encode_var_safe(
                 format_buf.data(), format_buf.size(), static_cast<unsigned int>(*response_format));
             coap_add_option(response, COAP_OPTION_CONTENT_FORMAT, format_len, format_buf.data());
         }
-
-        // Handle block transfer for large responses
-        if (_config.enable_block_transfer && should_use_block_transfer(serialized_response)) {
-            _logger.debug("Using Block2 transfer for large response",
-                          {{"response_size", std::to_string(serialized_response.size())},
-                           {"max_block_size", std::to_string(_config.max_block_size)}});
-
-            // Check if client requested specific Block2
-            coap_opt_t* block2_option = coap_check_option(request, COAP_OPTION_BLOCK2, &opt_iter);
-            std::uint32_t requested_block = 0;
-            std::uint32_t block_size = _config.max_block_size;
-
-            if (block2_option) {
-                uint32_t block_option_value = coap_decode_var_bytes(coap_opt_value(block2_option),
-                                                                    coap_opt_length(block2_option));
-                auto block_opt = kythira::block_option::parse(block_option_value);
-                requested_block = block_opt.block_number;
-                block_size = block_opt.block_size;
-            }
-
-            // Split response into blocks
-            auto blocks = split_payload_into_blocks(serialized_response);
-
-            if (requested_block < blocks.size()) {
-                // Send requested block
-                kythira::block_option response_block;
-                response_block.block_number = requested_block;
-                response_block.more_blocks = (requested_block + 1 < blocks.size());
-                response_block.block_size = block_size;
-
-                std::uint32_t block2_value = response_block.encode();
-                coap_add_option(response, COAP_OPTION_BLOCK2, sizeof(block2_value),
-                                reinterpret_cast<const uint8_t*>(&block2_value));
-
-                // Add block data
-                if (!coap_add_data(
-                        response, blocks[requested_block].size(),
-                        reinterpret_cast<const uint8_t*>(blocks[requested_block].data()))) {
-                    _logger.error("Failed to add Block2 response payload to CoAP PDU");
-                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
-                    return;
-                }
-
-                _logger.debug("Sent Block2 response",
-                              {{"block_number", std::to_string(requested_block)},
-                               {"block_size", std::to_string(blocks[requested_block].size())},
-                               {"more_blocks", response_block.more_blocks ? "true" : "false"}});
-            } else {
-                // Invalid block number requested
-                coap_pdu_set_code(response, COAP_RESPONSE_CODE_BAD_REQUEST);
-                std::string error_msg = "Invalid Block2 number: " + std::to_string(requested_block);
-                coap_add_data(response, error_msg.length(),
-                              reinterpret_cast<const uint8_t*>(error_msg.c_str()));
-                return;
-            }
-        } else {
-            // Regular single-block response
-            if (!coap_add_data(response, serialized_response.size(),
-                               reinterpret_cast<const uint8_t*>(serialized_response.data()))) {
-                _logger.error("Failed to add response payload to CoAP PDU");
-                coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
-                return;
-            }
+        if (!coap_add_data(response, serialized_response.size(),
+                           reinterpret_cast<const uint8_t*>(serialized_response.data()))) {
+            _logger.error("Failed to add response payload to CoAP PDU");
+            coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
+            return;
         }
 
         _logger.debug("CoAP RPC request processed successfully",
