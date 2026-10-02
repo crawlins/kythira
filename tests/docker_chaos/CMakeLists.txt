@@ -223,6 +223,18 @@ if(_RUNTIME_EXE)
     set(_MULTI_RAFT_NODE_DOCKERFILE      "${CMAKE_SOURCE_DIR}/docker/multi_raft_node/Dockerfile")
     set(_ELASTIC_CAPACITY_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/elastic-capacity-compose.yml")
 
+    # Podman defaults to the OCI image format, which has no HEALTHCHECK
+    # field: it warns and hands back an image whose health check is gone, so
+    # a readiness gate on it (compose `service_healthy`, or a harness polling
+    # .State.Health.Status) waits forever. Every image here carries a
+    # HEALTHCHECK, so every Podman build asks for the Docker format. Docker's
+    # builder emits that format anyway and does not take the flag. See
+    # scripts/build-tier-e-image.sh for the measurement that found this.
+    set(_IMAGE_FORMAT_ARGS "")
+    if(CONTAINER_RUNTIME STREQUAL "podman")
+        set(_IMAGE_FORMAT_ARGS --format docker)
+    endif()
+
     # Env-var prefix injected into every scenario-test invocation.
     set(_RT_ENV
         KYTHIRA_CONTAINER_RUNTIME=${CONTAINER_RUNTIME}
@@ -249,7 +261,7 @@ if(_RUNTIME_EXE)
             COMMAND ${CMAKE_COMMAND} -E copy
                     "$<TARGET_FILE:chaos_node>"
                     "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist/chaos_node"
-            COMMAND ${_RUNTIME_EXE} build
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_CHAOS_DOCKERFILE}"
                     --tag kythira-chaos-node:dev
                     "${CMAKE_SOURCE_DIR}"
@@ -279,7 +291,7 @@ if(_RUNTIME_EXE)
             COMMAND ${CMAKE_COMMAND} -E copy
                     "$<TARGET_FILE:poco_discovery_node>"
                     "${CMAKE_SOURCE_DIR}/docker/poco_discovery_node/dist/poco_discovery_node"
-            COMMAND ${_RUNTIME_EXE} build
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_POCO_DISCOVERY_DOCKERFILE}"
                     --tag kythira-poco-discovery:dev
                     "${CMAKE_SOURCE_DIR}"
@@ -297,14 +309,8 @@ if(_RUNTIME_EXE)
     # docker-multi-raft-node-image: stage the host-built multi_raft_node and
     # package it, as scripts/build-tier-e-image.sh does. Unlike chaos_node,
     # cmd/multi_raft_node is added BEFORE tests/ at the top level, so
-    # `if(TARGET ...)` works here. Podman is told `--format docker`: its
-    # default OCI format silently drops the image's HEALTHCHECK (see that
-    # script's header).
+    # `if(TARGET ...)` works here.
     if(TARGET multi_raft_node)
-        set(_MULTI_RAFT_NODE_FORMAT_ARGS "")
-        if(CONTAINER_RUNTIME STREQUAL "podman")
-            set(_MULTI_RAFT_NODE_FORMAT_ARGS --format docker)
-        endif()
         add_custom_target(docker-multi-raft-node-image
             DEPENDS multi_raft_node
             COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -312,7 +318,7 @@ if(_RUNTIME_EXE)
             COMMAND ${CMAKE_COMMAND} -E copy
                     "$<TARGET_FILE:multi_raft_node>"
                     "${CMAKE_SOURCE_DIR}/docker/multi_raft_node/dist/multi_raft_node"
-            COMMAND ${_RUNTIME_EXE} build ${_MULTI_RAFT_NODE_FORMAT_ARGS}
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_MULTI_RAFT_NODE_DOCKERFILE}"
                     --tag kythira-multi-raft-node:dev
                     "${CMAKE_SOURCE_DIR}"
@@ -404,7 +410,7 @@ if(_RUNTIME_EXE)
     )
 
     add_custom_target(docker-bind9-image
-        COMMAND ${_RUNTIME_EXE} build
+        COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                 --file "${_BIND9_DOCKERFILE}"
                 --tag kythira-bind9:dev
                 "${CMAKE_SOURCE_DIR}/docker/bind9"
@@ -425,7 +431,7 @@ if(_RUNTIME_EXE)
             COMMAND ${CMAKE_COMMAND} -E copy
                     "$<TARGET_FILE:dns_discovery_node>"
                     "${CMAKE_SOURCE_DIR}/docker/dns_discovery_node/dist/dns_discovery_node"
-            COMMAND ${_RUNTIME_EXE} build
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_DNS_DISCOVERY_DOCKERFILE}"
                     --tag kythira-dns-discovery:dev
                     "${CMAKE_SOURCE_DIR}"
@@ -439,7 +445,7 @@ if(_RUNTIME_EXE)
             COMMAND ${CMAKE_COMMAND} -E copy
                     "$<TARGET_FILE:dns_sd_discovery_node>"
                     "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/dist/dns_sd_discovery_node"
-            COMMAND ${_RUNTIME_EXE} build
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_DNS_SD_DISCOVERY_DOCKERFILE}"
                     --tag kythira-dns-sd-discovery:dev
                     "${CMAKE_SOURCE_DIR}"
@@ -507,7 +513,7 @@ if(_RUNTIME_EXE)
                 COMMAND ${CMAKE_COMMAND} -E copy
                         "$<TARGET_FILE:redis_gateway_node>"
                         "${CMAKE_SOURCE_DIR}/docker/redis_gateway_node/dist/redis_gateway_node"
-                COMMAND ${_RUNTIME_EXE} build
+                COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                         --file "${_REDIS_GATEWAY_DOCKERFILE}"
                         --tag kythira-redis-gateway:dev
                         "${CMAKE_SOURCE_DIR}"
@@ -523,7 +529,7 @@ if(_RUNTIME_EXE)
         endif()
 
         add_custom_target(docker-sccache-runner-image
-            COMMAND ${_RUNTIME_EXE} build
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_SCCACHE_RUNNER_DOCKERFILE}"
                     --tag kythira-sccache-runner:dev
                     "${CMAKE_SOURCE_DIR}"
