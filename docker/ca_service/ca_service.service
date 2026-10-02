@@ -11,7 +11,11 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now ca_service
 #
-# EnvironmentFile must define CA_SERVICE_AUTH_TOKEN (Requirement 11.4) and, when
+# EnvironmentFile must define CA_SERVICE_AUTH_TOKEN (Requirement 11.4), which
+# systemd exports to the process (it is deliberately not on the command line,
+# where /proc/<pid>/cmdline and `ps` would show it), CA_SERVICE_TLS_CERT /
+# CA_SERVICE_TLS_KEY (the listener identity; --serve refuses plaintext off
+# loopback) and, when
 # --provider aws-acm-pca is used, CA_SERVICE_ACM_PCA_ARN / AWS_REGION — AWS
 # credentials themselves are resolved via the standard instance-profile /
 # default-credentials-provider chain, not this file (Requirement 12.4).
@@ -26,7 +30,8 @@ Type=simple
 EnvironmentFile=/etc/default/ca_service
 ExecStart=/usr/local/bin/ca_service --serve 0.0.0.0:8443 \
     --provider ${CA_SERVICE_PROVIDER:-local} \
-    --auth-token ${CA_SERVICE_AUTH_TOKEN} \
+    --tls-cert ${CA_SERVICE_TLS_CERT} \
+    --tls-key ${CA_SERVICE_TLS_KEY} \
     ${CA_SERVICE_EXTRA_ARGS}
 Restart=on-failure
 RestartSec=5s

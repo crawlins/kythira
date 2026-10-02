@@ -19,11 +19,23 @@
 //   ca_service --serve <bind-address>:<port> [--provider local|aws-acm-pca|azure-key-vault]
 //              [--acm-pca-arn <arn>] [--aws-region <region>] [--aws-endpoint-override <url>]
 //              [--key-vault-url <url>] [--key-vault-key-name <name>] [--ca-cert-file <path>]
-//              [--auth-token <token>] [--tls-cert <path> --tls-key <path>]
+//              [--tls-cert <path> --tls-key <path>] [--allow-plaintext-http]
+//              [--allow-unchecked-renew] [--auth-token <token>]
 //
 // --serve is mutually exclusive with --out-dir/--service. Every request must
-// carry `Authorization: Bearer <token>` (from --auth-token or
-// $CA_SERVICE_AUTH_TOKEN); --serve refuses to start with no token configured.
+// carry `Authorization: Bearer <token>` (from $CA_SERVICE_AUTH_TOKEN, or
+// --auth-token, which leaves the token in /proc/<pid>/cmdline); --serve
+// refuses to start with no token configured.
+//
+// Without --tls-cert/--tls-key, --serve refuses to start unless the bind
+// address is loopback or the operator passes --allow-plaintext-http (or sets
+// CA_SERVICE_ALLOW_PLAINTEXT_HTTP=1): the bearer token and every issued
+// certificate cross this API.
+//
+// POST /v1/certificates/renew refuses a revoked certificate. Only the local
+// provider can answer "is this revoked?", so for a cloud provider renewal is
+// disabled (501) unless --allow-unchecked-renew accepts that a certificate
+// revoked in the cloud CA can still renew itself here.
 //
 //   GET  /healthz                     -> 200 once the provider is ready
 //   GET  /v1/root-ca                  -> 200, body = root/CA certificate PEM
@@ -121,6 +133,9 @@ struct serve_options {
     std::string tls_cert_path;
     std::string tls_key_path;
     bool print_root_fingerprint{false};
+    bool auth_token_from_argv{false};
+    bool allow_plaintext_http{false};
+    bool allow_unchecked_renew{false};
 };
 
 [[noreturn]] void usage_error(const std::string& message) {
@@ -136,8 +151,10 @@ struct serve_options {
         << "                  [--gcp-project <id>] [--gcp-location <region>] [--gcp-ca-pool <id>]\n"
         << "                  [--gcp-endpoint-override <url>]\n"
         << "                  [--key-vault-url <url>] [--key-vault-key-name <name>]\n"
-        << "                  [--ca-cert-file <path>] [--auth-token <token>]\n"
-        << "                  [--tls-cert <path> --tls-key <path>] [--print-root-fingerprint]\n";
+        << "                  [--ca-cert-file <path>]\n"
+        << "                  [--tls-cert <path> --tls-key <path>] [--print-root-fingerprint]\n"
+        << "                  [--allow-plaintext-http] [--allow-unchecked-renew]\n"
+        << "                  [--auth-token <token>]  (prefer $CA_SERVICE_AUTH_TOKEN)\n";
     std::exit(1);
 }
 
@@ -363,12 +380,17 @@ serve_options parse_serve_args(int argc, char** argv, int start) {
             opts.ca_cert_file = next();
         } else if (arg == "--auth-token") {
             opts.auth_token = next();
+            opts.auth_token_from_argv = true;
         } else if (arg == "--tls-cert") {
             opts.tls_cert_path = next();
         } else if (arg == "--tls-key") {
             opts.tls_key_path = next();
         } else if (arg == "--print-root-fingerprint") {
             opts.print_root_fingerprint = true;
+        } else if (arg == "--allow-plaintext-http") {
+            opts.allow_plaintext_http = true;
+        } else if (arg == "--allow-unchecked-renew") {
+            opts.allow_unchecked_renew = true;
         } else if (arg == "--out-dir" || arg == "--service") {
             usage_error(arg + " cannot be combined with --serve");
         } else if (arg == "-h" || arg == "--help") {
@@ -403,7 +425,11 @@ serve_options parse_serve_args(int argc, char** argv, int start) {
         opts.auth_token = env_or("CA_SERVICE_AUTH_TOKEN", "");
     }
     if (opts.auth_token.empty()) {
-        usage_error("--serve requires --auth-token or $CA_SERVICE_AUTH_TOKEN (fail closed)");
+        usage_error("--serve requires $CA_SERVICE_AUTH_TOKEN or --auth-token (fail closed)");
+    }
+    if (!opts.allow_plaintext_http) {
+        opts.allow_plaintext_http =
+            std::string(env_or("CA_SERVICE_ALLOW_PLAINTEXT_HTTP", "")) == "1";
     }
     return opts;
 }
@@ -552,6 +578,23 @@ int run_serve(const serve_options& opts) {
 
     auto [host, port] = split_bind_address(opts.bind_address_and_port);
 
+    if (opts.auth_token_from_argv) {
+        std::cerr << "ca_service: WARNING: --auth-token puts the bearer token in the process "
+                     "command line, readable by any local user via /proc or ps; set "
+                     "$CA_SERVICE_AUTH_TOKEN instead\n";
+    }
+    // The bearer token and every issued certificate cross this API, so a
+    // plaintext listener reachable off-host is refused unless asked for.
+    if (opts.tls_cert_path.empty() && !opts.allow_plaintext_http &&
+        !kythira::net_bind::is_loopback_bind_address(host)) {
+        std::cerr << "ca_service: refusing to start: --serve " << opts.bind_address_and_port
+                  << " would be plaintext HTTP off loopback (no --tls-cert/--tls-key given).\n"
+                     "  Pass --tls-cert/--tls-key, bind to loopback, or pass "
+                     "--allow-plaintext-http (or set CA_SERVICE_ALLOW_PLAINTEXT_HTTP=1) on a "
+                     "trusted private network.\n";
+        return 1;
+    }
+
     // One httplib server per address the --serve host resolves to ("*" is
     // IPv4 and IPv6; see net_bind::httplib_listeners), each built by
     // make_server and given the same routes by configure_server.
@@ -585,9 +628,10 @@ int run_serve(const serve_options& opts) {
 #endif
     } else {
         make_server = [] { return std::make_unique<httplib::Server>(); };
-        std::cerr
-            << "ca_service: WARNING: --serve running without TLS (no --tls-cert/--tls-key given) — "
-               "suitable only for a private network (e.g. inside one docker-compose network)\n";
+        std::cerr << "ca_service: WARNING: --serve running without TLS (no --tls-cert/--tls-key "
+                     "given)"
+                  << (opts.allow_plaintext_http ? " (plaintext opted in)" : " (loopback only)")
+                  << "; the bearer token and issued certificates cross it in the clear\n";
     }
 
     kythira::net_bind::httplib_listeners<> listeners;
@@ -688,7 +732,17 @@ int run_serve(const serve_options& opts) {
                 // A revoked certificate must not renew itself into a fresh,
                 // unrevoked serial. Only the local provider tracks revocation
                 // here (/v1/certificates/revoke is local-only); an unparseable
-                // CRL fails closed inside cert_revoked_in_crl().
+                // CRL fails closed inside cert_revoked_in_crl(). A cloud
+                // provider gives this service no revocation status, so
+                // renewal there is refused unless the operator accepted
+                // that with --allow-unchecked-renew.
+                if (local_ca == nullptr && !opts.allow_unchecked_renew) {
+                    res.status = 501;
+                    res.set_content(
+                        R"({"error":"renewal needs a revocation check this provider cannot give; start with --allow-unchecked-renew to accept that"})",
+                        "application/json");
+                    return;
+                }
                 if (local_ca != nullptr &&
                     raft::testing::cert_revoked_in_crl(peer_cert, local_ca->crl_pem())) {
                     res.status = 401;

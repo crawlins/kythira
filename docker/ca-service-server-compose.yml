@@ -27,13 +27,16 @@ services:
       CA_SERVICE_AUTH_TOKEN: "${CA_SERVICE_AUTH_TOKEN:?CA_SERVICE_AUTH_TOKEN must be set}"
     # Overrides the image's default oneshot ENTRYPOINT invocation with the
     # long-running --serve command; the same image is reused unmodified.
+    # The token reaches ca_service through CA_SERVICE_AUTH_TOKEN above, not
+    # the command line (where /proc/<pid>/cmdline would expose it). Plaintext
+    # HTTP is an explicit opt-in: this demo listener lives on the private
+    # compose network; publish the port only after adding --tls-cert/--tls-key.
     command:
       - "--serve"
       - "0.0.0.0:8443"
       - "--provider"
       - "local"
-      - "--auth-token"
-      - "${CA_SERVICE_AUTH_TOKEN}"
+      - "--allow-plaintext-http"
     healthcheck:
       # /healthz requires the bearer token too (Requirement 11.4: every
       # request, no stated exception for health checks).
