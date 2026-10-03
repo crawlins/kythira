@@ -1466,6 +1466,9 @@ private:
     // Records that `peer` answered an RPC, whatever the answer.
     // Must be called with _mutex held.
     auto note_peer_contact(const node_id_type& peer) -> void;
+    // Whether a majority of voters, counting this node, answered it within the
+    // current election timeout. Leader-only; caller holds _mutex.
+    auto leader_has_recent_quorum_contact() const -> bool;
 
     // Process-level liveness (quorum-management Req 13.7): moves every voter
     // the quorum manager reports live but that has not answered an RPC for
@@ -2479,6 +2482,24 @@ template<raft_types Types> auto node<Types>::note_peer_contact(const node_id_typ
     if (_quorum_check_active) {
         _peer_last_contact[peer] = std::chrono::steady_clock::now();
     }
+}
+
+template<raft_types Types> auto node<Types>::leader_has_recent_quorum_contact() const -> bool {
+    const auto now = std::chrono::steady_clock::now();
+    std::size_t voters = 0;
+    std::size_t in_touch = 0;
+    for (const auto& nid : _configuration.nodes()) {
+        ++voters;
+        if (nid == _node_id) {
+            ++in_touch;
+            continue;
+        }
+        auto it = _peer_last_contact.find(nid);
+        if (it != _peer_last_contact.end() && now - it->second < _election_timeout) {
+            ++in_touch;
+        }
+    }
+    return in_touch >= voters / 2 + 1;
 }
 
 template<raft_types Types>
@@ -5427,6 +5448,25 @@ auto node<Types>::handle_request_pre_vote(const request_pre_vote_request_type& r
     // would only lead to a real RequestVote that is refused anyway.
     if (!candidate_in_configuration(request.candidate_id())) {
         _logger.debug("Denying pre-vote: candidate is outside the configuration",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"candidate", node_id_to_string(request.candidate_id())}});
+        return request_pre_vote_response_type{_current_term, false};
+    }
+
+    // A leader still in touch with a majority refuses, the way a follower
+    // that heard from a leader recently does. `_last_leader_contact` only
+    // records contact from *another* leader, so without this a leader granted
+    // any pre-vote whose log check passed: one grant plus the candidate's own
+    // vote is a majority of three, and a follower cut off from the leader's
+    // heartbeats could pass its pre-vote round, campaign at a higher term and
+    // depose a healthy leader on rejoining (found by
+    // http_pre_vote_timeout_now_test). "In touch" means a majority of voters,
+    // counting itself, answered it within an election timeout
+    // (`_peer_last_contact`), which is etcd's CheckQuorum lease. A leader
+    // that can no longer reach a majority still grants, so it can be replaced
+    // when it can hear peers but not reach them.
+    if (_state == kythira::server_state::leader && leader_has_recent_quorum_contact()) {
+        _logger.debug("Denying pre-vote: this node leads with a live quorum",
                       {{"node_id", node_id_to_string(_node_id)},
                        {"candidate", node_id_to_string(request.candidate_id())}});
         return request_pre_vote_response_type{_current_term, false};
