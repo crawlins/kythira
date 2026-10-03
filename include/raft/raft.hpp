@@ -31,6 +31,7 @@
 #include <vector>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <map>
 #include <set>
 #include <limits>
@@ -872,6 +873,17 @@ private:
     request_vote_error_handler_t _request_vote_error_handler;
     request_pre_vote_error_handler_t _request_pre_vote_error_handler;
     install_snapshot_error_handler_t _install_snapshot_error_handler;
+
+    // Peers that have answered a pre-vote with "not implemented" (an older
+    // build mid rolling upgrade), so the warning is logged once per peer per
+    // process rather than every round; the counter carries the rate.
+    // Guarded by _mutex. Never cleared: a peer that later upgrades simply
+    // stops appearing in the counter.
+    std::unordered_set<node_id_type> _pre_vote_not_implemented_warned;
+
+    // Records one pre-vote answered "not implemented" by `peer`: the counter
+    // every time, the warning the first time. Called without _mutex held.
+    auto note_pre_vote_not_implemented(const node_id_type& peer) -> void;
 
     // ========================================================================
     // Configuration and timing using unified types
@@ -3165,6 +3177,24 @@ template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
                 }
                 std::exception_ptr error;
                 if (result.hasException()) {
+                    // A target running a build without TimeoutNow will refuse
+                    // every retry the same way, so end the transfer now and
+                    // report it as the transport-level gap it is: the
+                    // multi-Raft host records `unsupported` for this type,
+                    // exactly as for a Types bundle without the concept.
+                    try {
+                        std::rethrow_exception(result.exception());
+                    } catch (const kythira::rpc_not_implemented_exception& e) {
+                        _logger.warning("Leadership transfer target does not implement TimeoutNow",
+                                        {{"node_id", node_id_to_string(_node_id)},
+                                         {"target", node_id_to_string(target)}});
+                        auto settle = finish_leader_transfer(std::make_exception_ptr(
+                            kythira::leader_transfer_unsupported_exception(e.what())));
+                        inner.unlock();
+                        settle();
+                        return;
+                    } catch (...) {
+                    }
                     error = std::make_exception_ptr(
                         kythira::leader_transfer_exception("TimeoutNow RPC failed"));
                 } else if (!result.value().success()) {
@@ -6701,6 +6731,29 @@ auto node<Types>::start_election() -> void {
 }
 
 template<raft_types Types>
+auto node<Types>::note_pre_vote_not_implemented(const node_id_type& peer) -> void {
+    bool first = false;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        first = _pre_vote_not_implemented_warned.insert(peer).second;
+
+        // `_metrics` itself, as every other emission here does: some
+        // metrics backends (otlp_metrics) are move-only.
+        _metrics.set_metric_name("raft.pre_vote.peer_not_implemented");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("peer_id", node_id_to_string(peer));
+        _metrics.add_one();
+        _metrics.emit();
+    }
+    if (first) {
+        _logger.warning(
+            "Peer does not implement PreVote; counting its pre-vote as granted until it is "
+            "upgraded",
+            {{"node_id", node_id_to_string(_node_id)}, {"peer_id", node_id_to_string(peer)}});
+    }
+}
+
+template<raft_types Types>
 
 // `.kiro/specs/raft-pre-vote/`. Only instantiated for Types bundles whose
 // network_client_type satisfies network_client_with_pre_vote — see
@@ -6802,7 +6855,8 @@ auto node<Types>::start_pre_vote() -> void {
                                                                      _config.rpc_timeout());
                     },
                     pre_vote_retry_policy)
-                .thenTry([peer_id, stop_flag = _stop_flag, scope = _async_scope](
+                .thenTry([this, peer_id, prospective_term, stop_flag = _stop_flag,
+                          scope = _async_scope](
                              kythira::try_default<request_pre_vote_response_type> result)
                              -> tagged_pre_vote_t {
                     // The ticket is what makes this guard load-bearing rather than
@@ -6813,7 +6867,22 @@ auto node<Types>::start_pre_vote() -> void {
                         throw std::runtime_error("node stopped");
                     }
                     if (result.hasException()) {
-                        std::rethrow_exception(result.exception());
+                        // A peer running a build without PreVote answers
+                        // "not implemented". Count it as a grant: a pre-vote
+                        // grant changes no state on either node, and the real
+                        // election that follows still needs that peer's real
+                        // RequestVote, so for this peer the outcome is
+                        // exactly what it was before PreVote existed.
+                        // Counting it as a refusal instead would let a
+                        // rolling upgrade leave a live quorum with no leader
+                        // (design §3). Every other error stays a refusal.
+                        try {
+                            std::rethrow_exception(result.exception());
+                        } catch (const kythira::rpc_not_implemented_exception&) {
+                            note_pre_vote_not_implemented(peer_id);
+                            return {peer_id, request_pre_vote_response_type{
+                                                 ._term = prospective_term, ._vote_granted = true}};
+                        }
                     }
                     return {peer_id, result.value()};
                 });

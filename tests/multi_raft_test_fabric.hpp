@@ -26,8 +26,9 @@
 /// per-group-serial invariant `striped_serial_executor` exists to hold. So a
 /// small worker pool carries every message across.
 ///
-/// The fabric also models the two failures the tests need: an unreachable node
-/// and a one-way partition.
+/// The fabric also models the failures the tests need: an unreachable node, a
+/// one-way partition, and a node running an older build that answers "not
+/// implemented" for an extension RPC.
 
 #include <raft/exceptions.hpp>
 #include <raft/future_default.hpp>
@@ -149,6 +150,15 @@ public:
         std::lock_guard lock(_mutex);
         _cut.clear();
         _dead.clear();
+        _not_implemented.clear();
+    }
+
+    /// @brief Make `node` answer `rpc` the way a peer on an older build does:
+    /// with `rpc_not_implemented_exception`, which is what the HTTP and CoAP
+    /// transports turn a 404/501 (4.04/5.01) on an extension RPC into.
+    auto set_not_implemented(std::uint64_t node, std::string rpc) -> void {
+        std::lock_guard lock(_mutex);
+        _not_implemented.insert({node, std::move(rpc)});
     }
 
     [[nodiscard]] auto delivered() const -> std::uint64_t {
@@ -168,7 +178,7 @@ public:
     /// RPC the same way, and failing fast keeps the tests from paying real
     /// timeouts.
     template<typename Response, typename Request, typename Select>
-    auto deliver(std::uint64_t from, std::uint64_t to, Request req, Select select)
+    auto deliver(std::uint64_t from, std::uint64_t to, const char* rpc, Request req, Select select)
         -> kythira::future_default<Response> {
         auto promise = std::make_shared<kythira::promise_default<Response>>();
         auto future = promise->getFuture();
@@ -179,6 +189,11 @@ public:
                 _dropped.fetch_add(1, std::memory_order_relaxed);
                 promise->setException(std::make_exception_ptr(
                     kythira::network_exception("fabric: unreachable node")));
+                return future;
+            }
+            if (_not_implemented.contains({to, rpc})) {
+                promise->setException(
+                    std::make_exception_ptr(kythira::rpc_not_implemented_exception(rpc, to)));
                 return future;
             }
             _queue.push_back([this, to, req = std::move(req), select, promise]() mutable {
@@ -232,6 +247,7 @@ private:
     std::unordered_map<std::uint64_t, fabric_endpoint> _endpoints;
     std::set<std::uint64_t> _dead;
     std::set<std::pair<std::uint64_t, std::uint64_t>> _cut;
+    std::set<std::pair<std::uint64_t, std::string>> _not_implemented;
     std::vector<std::thread> _workers;
     std::atomic<bool> _stopping{false};
     std::atomic<std::uint64_t> _delivered{0};
@@ -252,7 +268,8 @@ public:
                            std::chrono::milliseconds)
         -> kythira::future_default<fabric_messages::request_vote_response_type> {
         return _fabric->deliver<fabric_messages::request_vote_response_type>(
-            _self, target, req, [](const fabric_endpoint& e) { return e._request_vote; });
+            _self, target, "request_vote", req,
+            [](const fabric_endpoint& e) { return e._request_vote; });
     }
 
     auto send_request_pre_vote(std::uint64_t target,
@@ -260,7 +277,8 @@ public:
                                std::chrono::milliseconds)
         -> kythira::future_default<fabric_messages::request_pre_vote_response_type> {
         return _fabric->deliver<fabric_messages::request_pre_vote_response_type>(
-            _self, target, req, [](const fabric_endpoint& e) { return e._request_pre_vote; });
+            _self, target, "request_pre_vote", req,
+            [](const fabric_endpoint& e) { return e._request_pre_vote; });
     }
 
     auto send_append_entries(std::uint64_t target,
@@ -268,7 +286,8 @@ public:
                              std::chrono::milliseconds)
         -> kythira::future_default<fabric_messages::append_entries_response_type> {
         return _fabric->deliver<fabric_messages::append_entries_response_type>(
-            _self, target, req, [](const fabric_endpoint& e) { return e._append_entries; });
+            _self, target, "append_entries", req,
+            [](const fabric_endpoint& e) { return e._append_entries; });
     }
 
     auto send_install_snapshot(std::uint64_t target,
@@ -276,7 +295,8 @@ public:
                                std::chrono::milliseconds)
         -> kythira::future_default<fabric_messages::install_snapshot_response_type> {
         return _fabric->deliver<fabric_messages::install_snapshot_response_type>(
-            _self, target, req, [](const fabric_endpoint& e) { return e._install_snapshot; });
+            _self, target, "install_snapshot", req,
+            [](const fabric_endpoint& e) { return e._install_snapshot; });
     }
 
     auto send_fetch_log_entries(std::uint64_t target,
@@ -284,7 +304,8 @@ public:
                                 std::chrono::milliseconds)
         -> kythira::future_default<fabric_messages::fetch_log_entries_response_type> {
         return _fabric->deliver<fabric_messages::fetch_log_entries_response_type>(
-            _self, target, req, [](const fabric_endpoint& e) { return e._fetch_log_entries; });
+            _self, target, "fetch_log_entries", req,
+            [](const fabric_endpoint& e) { return e._fetch_log_entries; });
     }
 
     auto send_timeout_now(std::uint64_t target,
@@ -292,7 +313,8 @@ public:
                           std::chrono::milliseconds)
         -> kythira::future_default<fabric_messages::timeout_now_response_type> {
         return _fabric->deliver<fabric_messages::timeout_now_response_type>(
-            _self, target, req, [](const fabric_endpoint& e) { return e._timeout_now; });
+            _self, target, "timeout_now", req,
+            [](const fabric_endpoint& e) { return e._timeout_now; });
     }
 
 private:
