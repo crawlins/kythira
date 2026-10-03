@@ -31,7 +31,7 @@ struct coap_capabilities {
 };
 
 inline constexpr coap_capabilities libcoap_capabilities{
-    .pre_vote = false,
+    .pre_vote = true,
     .log_fetch = true,
     .cluster_join = false,
     .cluster_leave = false,
@@ -39,7 +39,7 @@ inline constexpr coap_capabilities libcoap_capabilities{
 };
 
 inline constexpr coap_capabilities libnyoci_capabilities{
-    .pre_vote = false,
+    .pre_vote = true,
     .log_fetch = true,
     .cluster_join = false,
     .cluster_leave = false,
@@ -47,7 +47,7 @@ inline constexpr coap_capabilities libnyoci_capabilities{
 };
 
 inline constexpr coap_capabilities cantcoap_capabilities{
-    .pre_vote = false,
+    .pre_vote = true,
     .log_fetch = true,
     .cluster_join = false,
     .cluster_leave = false,
