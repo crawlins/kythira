@@ -1,6 +1,6 @@
 # Implementation Plan — CoAP under Multi-Raft
 
-## Status: In progress — tasks 1–6, 8, 12 and 14 done; 7 implemented, unverified; 13 running without OSCORE
+## Status: In progress — tasks 1–6 and 8–14 done; 7 implemented, unverified
 
 **Last Updated**: October 2, 2026
 
@@ -194,7 +194,7 @@ its own review.
     `kid context` appears on the wire when set and is absent when not.
   - _Requirements: 4.2, 4.7, 4.11_
 
-- [ ] 9. Derive a context per (peer, group)
+- [x] 9. Derive a context per (peer, group)
   - `id_context = group_id_bytes || boot_nonce`, the boot nonce being at least
     8 random bytes generated once per process.
   - The boot nonce is the load-bearing part: the SSN lives in memory and
@@ -215,7 +215,7 @@ its own review.
     exactly one bootstrap occurs for N groups.
   - _Requirements: 4.1, 4.3, 4.4, 4.5, 4.6, 4.10_
 
-- [ ] 10. Recipient-side selection and bounded on-demand derivation
+- [x] 10. Recipient-side selection and bounded on-demand derivation
   - Select the context by (`kid`, `kid context`); derive a Recipient Context on
     first sight of an unknown `kid context`, under three bounds: only for a
     group this node hosts, under a configurable per-peer cap with LRU
@@ -233,7 +233,7 @@ its own review.
     inside the TTL.
   - _Requirements: 4.8, 4.9_
 
-- [ ] 11. Lifecycle, zeroization, and the replay-window property
+- [x] 11. Lifecycle, zeroization, and the replay-window property
   - Destroy a group's context when its replica is destroyed — merge,
     tombstone, or host shutdown — zeroing key material rather than letting it
     fall out of a map. Split creates a context lazily at first message.
@@ -247,6 +247,37 @@ its own review.
     never reused (assert against the placement driver's allocator, since this
     design depends on it).
   - _Requirements: 4.9, 4.10, 4.12, 4.1_
+
+- **Backend wiring (October 2, 2026), tasks 9–11.** The registry's own
+  properties are pinned by `oscore_group_contexts_test`; the libcoap backend
+  now carries them on the wire, checked by `coap_oscore_group_libcoap_test`.
+  Turning it on is `oscore_groups.enabled` on the client and server config;
+  a server must also supply `hosts_group`, or construction fails, since
+  without it any invented `kid context` would be derived.
+  - **libcoap is built without its own OSCORE.** libcoap with OSCORE compiled
+    in decrypts every request carrying the OSCORE option inside
+    `coap_dispatch()`, before any handler, and drops it when none of its fixed
+    contexts matches. 4.3.5 has no hook to derive one for an unknown
+    `kid context` (`coap_oscore_register_external_handlers()` is on
+    `develop` only). `vcpkg-overlays/libcoap` builds it with
+    `-DENABLE_OSCORE=OFF`, and the backend now protects and verifies with
+    Kythira's own `raft/oscore.hpp`, as libnyoci and cantcoap already do. In
+    OSCORE mode it refuses to start against a libcoap that has OSCORE
+    compiled in rather than lose every request.
+  - **Sender contexts are per group, not per (peer, group).** The provider
+    has one credential set for every peer, so per-peer sender contexts would
+    reuse (key, nonce) pairs across peers. One registry key stands in for all
+    peers; a node's boot nonce still separates its contexts from every other
+    node's, and the server checks `kid` against its recipient id before
+    deriving anything.
+  - **Group consistency.** The server answers 4.01 when the decoded RPC's
+    `group_id` differs from the group of the context that verified it, so a
+    member of group A cannot speak for group B under A's keys.
+  - **Lifecycle.** `multi_raft_config::on_group_destroyed` fires after a
+    replica is torn down, by `destroy_group()` or a merge commit, and the
+    test wires it to `forget_oscore_group()` on both client and server.
+    `multi_raft::is_member_of()` backs `hosts_group`, so a split child's
+    first message is accepted once the split entry has applied.
 
 ---
 
@@ -270,7 +301,7 @@ its own review.
     an `InstallSnapshot` under the profile is still confirmable.
   - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5_
 
-- [ ] 13. Multi-Raft over CoAP, end to end
+- [x] 13. Multi-Raft over CoAP, end to end
   - Several groups across a three-node cluster over one shared CoAP client per
     node, asserting per-group isolation: each group's handler sees only its own
     traffic, and a split child's messages never reach its parent's handler.
@@ -284,9 +315,12 @@ its own review.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 4.1, 8.1, 8.2, 8.3, 8.6_
   - **Progress (October 2, 2026):** `tests/multi_raft_coap_test.cpp` runs
     two groups over one shared libcoap client and server per host and passes
-    isolation, split, merge and scatter, without OSCORE. The OSCORE variant
-    and its derivation-counter check wait on how tasks 9–11 reach the libcoap
-    backend. Standing it up found three defects, two fixed here:
+    isolation, split, merge and scatter. A fifth case,
+    `a_split_and_merge_complete_under_per_group_oscore`, runs a split and a
+    merge with per-group OSCORE on and checks every host derived at most one
+    sender context per group and one recipient context per (peer, group),
+    and that the merged-away group's keys were wiped. Standing it up found
+    three defects, two fixed here:
     - **Fixed:** the libcoap client opened a new session (a new UDP socket)
       for every RPC and never released it; multi-Raft exhausted a
       20,000-descriptor limit in seconds. Sessions are now pooled per peer,
