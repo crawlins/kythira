@@ -81,7 +81,7 @@ The capability table, kept in this section and mirrored by the assertions:
 |---|---|---|---|
 | `network_client` / `network_server` | yes | yes | yes |
 | pre-vote | no | no | no |
-| log fetch | no | no | no |
+| log fetch | yes | yes | yes |
 | cluster join / leave | no | no | no |
 | timeout-now | yes | yes | yes |
 
