@@ -74,11 +74,37 @@ auto compute_install_snapshot_response(const kythira::install_snapshot_request<>
     return resp;
 }
 
+// Serves [from_index, to_index] with entries whose term and payload both
+// depend on the index, so a dropped, reordered or truncated entry shows.
+auto compute_fetch_log_entries_response(const kythira::fetch_log_entries_request<>& req)
+    -> kythira::fetch_log_entries_response<> {
+    kythira::fetch_log_entries_response<> resp{};
+    resp._responder_id = req.requester_id() + 100;
+    resp._available = req.from_index() > 0;
+    resp._prev_log_term = req.from_index() / 2;
+    for (auto idx = req.from_index(); idx <= req.to_index(); ++idx) {
+        resp._entries.push_back({idx / 2 + 1, idx, {static_cast<std::byte>(idx & 0xffU)}});
+    }
+    return resp;
+}
+
 template<typename Server> auto register_equivalence_handlers(Server& server) -> void {
     server.register_request_vote_handler(compute_request_vote_response);
     server.register_append_entries_handler(compute_append_entries_response);
     server.register_install_snapshot_handler(compute_install_snapshot_response);
+    server.register_fetch_log_entries_handler(compute_fetch_log_entries_response);
 }
+
+// Both transports carry peer-to-peer catch-up, so node<Types> registers and
+// sends fetch_log_entries over either one.
+static_assert(
+    kythira::network_client_with_log_fetch<kythira::cpp_httplib_client<httplib_transport_types>>);
+static_assert(
+    kythira::network_server_with_log_fetch<kythira::cpp_httplib_server<httplib_transport_types>>);
+static_assert(
+    kythira::network_client_with_log_fetch<kythira::boost_beast_client<beast_transport_types>>);
+static_assert(
+    kythira::network_server_with_log_fetch<kythira::boost_beast_server<beast_transport_types>>);
 
 }  // namespace
 
@@ -182,6 +208,35 @@ BOOST_AUTO_TEST_CASE(identical_rpc_sequence_produces_equivalent_responses) {
 
         BOOST_TEST(httplib_resp.term() == beast_resp.term());
         BOOST_TEST(httplib_resp.term() == 12);
+    }
+
+    // FetchLogEntries (peer-to-peer catch-up).
+    {
+        kythira::fetch_log_entries_request<> req{};
+        req._requester_id = 3;
+        req._from_index = 40;
+        req._to_index = 43;
+
+        auto httplib_resp = std::move(httplib_client.send_fetch_log_entries(
+                                          test_node_id, req, std::chrono::milliseconds(30000)))
+                                .get();
+        auto beast_resp = std::move(beast_client.send_fetch_log_entries(
+                                        test_node_id, req, std::chrono::milliseconds(30000)))
+                              .get();
+
+        for (const auto& resp : {httplib_resp, beast_resp}) {
+            BOOST_TEST(resp.responder_id() == 103u);
+            BOOST_TEST(resp.available());
+            BOOST_TEST(resp.prev_log_term() == 20u);
+            BOOST_REQUIRE_EQUAL(resp.entries().size(), 4u);
+            for (std::size_t i = 0; i < 4; ++i) {
+                const auto idx = 40U + i;
+                BOOST_TEST(resp.entries()[i].index() == idx);
+                BOOST_TEST(resp.entries()[i].term() == idx / 2 + 1);
+                BOOST_TEST((resp.entries()[i].command() ==
+                            std::vector<std::byte>{static_cast<std::byte>(idx & 0xffU)}));
+            }
+        }
     }
 
     beast_server.stop();

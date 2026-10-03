@@ -972,6 +972,82 @@ BOOST_AUTO_TEST_CASE(test_timeout_now_without_a_handler_is_not_implemented,
     BOOST_TEST(*code == 0xA1U);  // 5.01
 }
 
+// ── FetchLogEntries (peer2peer-log-replication Req 4.1/4.2) ────────────────
+
+// A peer-to-peer catch-up fetch carries every field both ways, group_id
+// included. Sixty-four 100-byte entries make the response several times
+// max_block_size, so it only arrives whole if the Block2 path works.
+BOOST_AUTO_TEST_CASE(test_fetch_log_entries_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    kythira::fetch_log_entries_request<> seen{};
+    server.register_fetch_log_entries_handler(
+        [&seen](const kythira::fetch_log_entries_request<>& request) {
+            seen = request;
+            kythira::fetch_log_entries_response<> response{};
+            response._responder_id = 2;
+            response._available = true;
+            response._prev_log_term = 4;
+            response._group_id = request.group_id();
+            for (auto index = request.from_index(); index <= request.to_index(); ++index) {
+                response._entries.push_back(
+                    {5, index, std::vector<std::byte>(100, static_cast<std::byte>(index))});
+            }
+            return response;
+        });
+    server.start();
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, fast_client_config(), test_metrics{}};
+
+    kythira::fetch_log_entries_request<> request{};
+    request._requester_id = 3;
+    request._from_index = 11;
+    request._to_index = 74;
+    request._group_id = 9001;
+    const auto response =
+        client.send_fetch_log_entries(peer_node_id, request, std::chrono::seconds{10}).get();
+    server.stop();
+
+    BOOST_TEST(seen.requester_id() == 3U);
+    BOOST_TEST(seen.from_index() == 11U);
+    BOOST_TEST(seen.to_index() == 74U);
+    BOOST_TEST(seen.group_id() == 9001U);
+    BOOST_TEST(response.responder_id() == 2U);
+    BOOST_TEST(response.available());
+    BOOST_TEST(response.prev_log_term() == 4U);
+    BOOST_TEST(response.group_id() == 9001U);
+    BOOST_REQUIRE_EQUAL(response.entries().size(), 64U);
+    BOOST_TEST(response.entries().front().index() == 11U);
+    BOOST_TEST(response.entries().back().index() == 74U);
+    BOOST_TEST(response.entries().back().term() == 5U);
+    BOOST_TEST((response.entries().back().command() ==
+                std::vector<std::byte>(100, static_cast<std::byte>(74))));
+}
+
+// No fetch handler is 5.01 Not Implemented, as for TimeoutNow.
+BOOST_AUTO_TEST_CASE(test_fetch_log_entries_without_a_handler_is_not_implemented,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    server.start();
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, fast_client_config(), test_metrics{}};
+
+    std::optional<std::uint8_t> code;
+    try {
+        (void)client
+            .send_fetch_log_entries(peer_node_id, kythira::fetch_log_entries_request<>{},
+                                    std::chrono::seconds{10})
+            .get();
+    } catch (const kythira::coap_server_error& error) {
+        code = error.response_code();
+    } catch (const kythira::coap_transport_error&) {  // NOLINT(bugprone-empty-catch)
+    }
+    server.stop();
+    BOOST_REQUIRE(code.has_value());
+    BOOST_TEST(*code == 0xA1U);  // 5.01
+}
+
 #else  // CANTCOAP_AVAILABLE
 
 BOOST_AUTO_TEST_CASE(test_cantcoap_backend_unavailable_is_skipped) {

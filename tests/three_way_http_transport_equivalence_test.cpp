@@ -119,6 +119,17 @@ template<typename Server> auto register_echo_handlers(Server& server) -> void {
             resp._term = req.term();
             return resp;
         });
+    server.register_fetch_log_entries_handler([](const kythira::fetch_log_entries_request<>& req)
+                                                  -> kythira::fetch_log_entries_response<> {
+        kythira::fetch_log_entries_response<> resp{};
+        resp._responder_id = req.requester_id();
+        resp._available = true;
+        resp._prev_log_term = req.from_index();
+        for (auto idx = req.from_index(); idx <= req.to_index(); ++idx) {
+            resp._entries.push_back({idx, idx, {}});
+        }
+        return resp;
+    });
 }
 
 }  // namespace
@@ -196,6 +207,25 @@ BOOST_AUTO_TEST_CASE(request_vote_success_is_equivalent_across_all_three_transpo
     BOOST_TEST(proxygen_ae.term() == http_ae.term());
     BOOST_TEST(beast_ae.success() == http_ae.success());
     BOOST_TEST(proxygen_ae.success() == http_ae.success());
+
+    kythira::fetch_log_entries_request<> fl_req{};
+    fl_req._requester_id = 9;
+    fl_req._from_index = 5;
+    fl_req._to_index = 7;
+    auto http_fl =
+        std::move(http_client.send_fetch_log_entries(test_node_id, fl_req, rpc_timeout)).get();
+    auto beast_fl =
+        std::move(beast_client.send_fetch_log_entries(test_node_id, fl_req, rpc_timeout)).get();
+    auto proxygen_fl =
+        std::move(proxygen_client_inst.send_fetch_log_entries(test_node_id, fl_req, rpc_timeout))
+            .get();
+    for (const auto& fl : {http_fl, beast_fl, proxygen_fl}) {
+        BOOST_TEST(fl.responder_id() == 9u);
+        BOOST_TEST(fl.available());
+        BOOST_TEST(fl.prev_log_term() == 5u);
+        BOOST_REQUIRE_EQUAL(fl.entries().size(), 3u);
+        BOOST_TEST(fl.entries().back().index() == 7u);
+    }
 
     http_server.stop();
     beast_server.stop();

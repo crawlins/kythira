@@ -30,6 +30,7 @@ namespace {
 constexpr const char* beast_endpoint_request_vote = "/v1/raft/request_vote";
 constexpr const char* beast_endpoint_append_entries = "/v1/raft/append_entries";
 constexpr const char* beast_endpoint_install_snapshot = "/v1/raft/install_snapshot";
+constexpr const char* beast_endpoint_fetch_log_entries = "/v1/raft/fetch_log_entries";
 
 // NOTE: `beast_content_type_for_serializer` lived here, deriving the
 // Content-Type from the serializer's `name()` by substring match. Removed with
@@ -912,6 +913,8 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         rpc_type = "append_entries";
     } else if (endpoint == beast_endpoint_install_snapshot) {
         rpc_type = "install_snapshot";
+    } else if (endpoint == beast_endpoint_fetch_log_entries) {
+        rpc_type = "fetch_log_entries";
     }
 
     try {
@@ -1185,6 +1188,15 @@ auto boost_beast_client<Types>::send_install_snapshot(
     std::chrono::milliseconds timeout) -> future_template<kythira::install_snapshot_response<>> {
     return send_rpc<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
         target, beast_endpoint_install_snapshot, request, timeout);
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_client<Types>::send_fetch_log_entries(
+    std::uint64_t target, const kythira::fetch_log_entries_request<>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::fetch_log_entries_response<>> {
+    return send_rpc<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
+        target, beast_endpoint_fetch_log_entries, request, timeout);
 }
 
 // ---------------------------------------------------------------------------
@@ -1610,6 +1622,16 @@ auto boost_beast_server<Types>::register_install_snapshot_handler(
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
+auto boost_beast_server<Types>::register_fetch_log_entries_handler(
+    std::function<
+        kythira::fetch_log_entries_response<>(const kythira::fetch_log_entries_request<>&)>
+        handler) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _fetch_log_entries_handler = std::move(handler);
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
 auto boost_beast_server<Types>::start() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     if (_running.load()) {
@@ -1827,6 +1849,10 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
         handle.template
         operator()<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
             _install_snapshot_handler, "install_snapshot");
+    } else if (target == beast_endpoint_fetch_log_entries) {
+        handle.template
+        operator()<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
+            _fetch_log_entries_handler, "fetch_log_entries");
     } else {
         status_code = 404;
         response_body = "Not Found";

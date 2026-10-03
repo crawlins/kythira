@@ -164,6 +164,10 @@ auto try_all_rpc_types_round_trip(tls_tcp_rpc_config server_config,
     server.register_install_snapshot_handler([](const kythira::install_snapshot_request<>& req) {
         return kythira::install_snapshot_response<>{req.term()};
     });
+    server.register_fetch_log_entries_handler([](const kythira::fetch_log_entries_request<>& req) {
+        return kythira::fetch_log_entries_response<>{
+            1, true, 2, {{3, req.from_index(), {std::byte{0x2a}}}}};
+    });
     server.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -179,7 +183,13 @@ auto try_all_rpc_types_round_trip(tls_tcp_rpc_config server_config,
         auto is_resp =
             client.send_install_snapshot(1, is_req, std::chrono::milliseconds(5000)).get();
 
-        ok = ae_resp.success() && ae_resp.term() == 3 && is_resp.term() == 3;
+        kythira::fetch_log_entries_request<> fl_req{42, 7, 7};
+        auto fl_resp =
+            client.send_fetch_log_entries(1, fl_req, std::chrono::milliseconds(5000)).get();
+
+        ok = ae_resp.success() && ae_resp.term() == 3 && is_resp.term() == 3 &&
+             fl_resp.available() && fl_resp.prev_log_term() == 2 && fl_resp.entries().size() == 1 &&
+             fl_resp.entries()[0].index() == 7;
     } catch (const std::exception&) {
         ok = false;
     }
@@ -307,6 +317,47 @@ BOOST_AUTO_TEST_CASE(round_trip_under_ca_root_only_policy, *boost::unit_test::ti
 // answer as, any other.
 namespace {
 
+// Same certificates and policy as bound_round_trip below, but the RPC is a
+// peer-to-peer fetch claiming to come from `claimed_requester`.
+auto bound_fetch_round_trip(std::uint64_t claimed_requester) -> bool {
+    certificate_authority ca;
+    leaf_certificate_options server_opts;
+    server_opts.dns_names = {"ca-cluster-node-1"};
+    auto server_leaf = ca.issue(server_opts);
+    temp_pem_files server_files(server_leaf.certificate_pem, server_leaf.private_key_pem);
+    leaf_certificate_options client_opts;
+    client_opts.dns_names = {"ca-cluster-node-2"};
+    auto client_leaf = ca.issue(client_opts);
+    temp_pem_files client_files(client_leaf.certificate_pem, client_leaf.private_key_pem);
+
+    auto policy =
+        ca_root_only(ca.root_certificate_pem())
+            .binding_peer_node_ids(
+                {{"ca-cluster-node-1", 1}, {"ca-cluster-node-2", 2}, {"ca-cluster-node-3", 3}});
+
+    auto port = find_free_port();
+    tls_tcp_rpc_server server(port, {server_files.cert_path, server_files.key_path, policy});
+    server.register_fetch_log_entries_handler([](const kythira::fetch_log_entries_request<>&) {
+        return kythira::fetch_log_entries_response<>{1, true, 0, {}};
+    });
+    server.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    tls_tcp_rpc_client client({client_files.cert_path, client_files.key_path, policy});
+    client.add_peer(1, "127.0.0.1", port);
+    kythira::fetch_log_entries_request<> req{claimed_requester, 1, 1};
+    bool ok = false;
+    try {
+        ok = client.send_fetch_log_entries(1, req, std::chrono::milliseconds(5000))
+                 .get()
+                 .available();
+    } catch (const std::exception&) {
+        ok = false;
+    }
+    server.stop();
+    return ok;
+}
+
 auto bound_round_trip(std::uint64_t dial_as_target, std::uint64_t claimed_candidate) -> bool {
     certificate_authority ca;
     leaf_certificate_options server_opts;
@@ -352,6 +403,12 @@ BOOST_AUTO_TEST_CASE(bound_peer_may_speak_only_as_itself, *boost::unit_test::tim
     BOOST_TEST(bound_round_trip(/*dial_as_target=*/1, /*claimed_candidate=*/2));
     // Node 2's certificate claiming to be node 3: dropped by the server.
     BOOST_TEST(!bound_round_trip(1, 3));
+}
+
+BOOST_AUTO_TEST_CASE(bound_peer_may_fetch_only_as_itself, *boost::unit_test::timeout(60)) {
+    BOOST_TEST(bound_fetch_round_trip(/*claimed_requester=*/2));
+    // Node 2's certificate fetching as node 3: dropped by the server.
+    BOOST_TEST(!bound_fetch_round_trip(3));
 }
 
 BOOST_AUTO_TEST_CASE(client_refuses_server_that_is_not_the_dialled_node,

@@ -290,6 +290,15 @@ public:
                           std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::timeout_now_response<>>;
 
+    /// Peer-to-peer catch-up: POST /raft/fetch_log_entries, satisfying
+    /// network_client_with_log_fetch. A follower asks a peer for a range of
+    /// committed entries; the response can be large, so it travels
+    /// block-wise when enable_block_transfer is set.
+    auto send_fetch_log_entries(std::uint64_t target,
+                                const kythira::fetch_log_entries_request<>& request,
+                                std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::fetch_log_entries_response<>>;
+
     // Multicast support. Resolves once `timeout` has elapsed with every
     // successful response that arrived in that window, one entry per
     // responding group member -- possibly none.
@@ -588,6 +597,12 @@ public:
         std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
             handler) -> void;
 
+    /// Serves POST /raft/fetch_log_entries, satisfying
+    /// network_server_with_log_fetch.
+    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
+                                                const kythira::fetch_log_entries_request<>&)>
+                                                handler) -> void;
+
     // Server lifecycle
     auto start() -> void;
     auto stop() -> void;
@@ -705,6 +720,9 @@ private:
         _install_snapshot_handler;
     std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
         _timeout_now_handler;
+    std::function<kythira::fetch_log_entries_response<>(
+        const kythira::fetch_log_entries_request<>&)>
+        _fetch_log_entries_handler;
 
     // Synchronization
     mutable std::mutex _mutex;

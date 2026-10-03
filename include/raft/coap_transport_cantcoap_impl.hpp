@@ -126,6 +126,7 @@ inline constexpr const char* cantcoap_request_vote_path = "/raft/request_vote";
 inline constexpr const char* cantcoap_append_entries_path = "/raft/append_entries";
 inline constexpr const char* cantcoap_install_snapshot_path = "/raft/install_snapshot";
 inline constexpr const char* cantcoap_timeout_now_path = "/raft/timeout_now";
+inline constexpr const char* cantcoap_fetch_log_entries_path = "/raft/fetch_log_entries";
 
 /// How long the loop blocks in poll() before servicing timers. Bounds both
 /// retransmission granularity and how quickly stop() is noticed.
@@ -619,6 +620,18 @@ public:
         return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
             target, cantcoap_timeout_now_path, request, timeout,
             coap_message_reliability::always_confirmable);
+    }
+
+    /// Peer-to-peer catch-up (network_client_with_log_fetch). Follows
+    /// `use_confirmable_messages` like AppendEntries; a large response comes
+    /// back block-wise.
+    auto send_fetch_log_entries(std::uint64_t target,
+                                const kythira::fetch_log_entries_request<>& request,
+                                std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::fetch_log_entries_response<>> {
+        return send_rpc<kythira::fetch_log_entries_request<>,
+                        kythira::fetch_log_entries_response<>>(
+            target, cantcoap_fetch_log_entries_path, request, timeout);
     }
 
     [[nodiscard]] auto bound_port() const -> std::uint16_t {
@@ -1441,6 +1454,18 @@ public:
         _timeout_now_handler = std::move(handler);
     }
 
+    /// Optional extension (network_server_with_log_fetch). Until one is
+    /// registered, `/raft/fetch_log_entries` answers 5.01 Not Implemented.
+    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
+                                                const kythira::fetch_log_entries_request<>&)>
+                                                handler) -> void {
+        if (!handler) {
+            throw std::invalid_argument("fetch_log_entries handler must not be empty");
+        }
+        const std::lock_guard lock(_mutex);
+        _fetch_log_entries_handler = std::move(handler);
+    }
+
     auto start() -> void {
         if (_running.load()) {
             return;
@@ -1506,6 +1531,7 @@ public:
         {
             const std::lock_guard lock(_mutex);
             _block1_assembly.clear();
+            _block2_responses.clear();
             _seen.clear();
         }
 #endif
@@ -1678,6 +1704,29 @@ private:
             _block1_assembly.clear();
         }
 
+        // Block2 continuation (Requirement 5.1). The client asks for block N>0
+        // without repeating the request body, so the response encoded for
+        // block 0 is served from _block2_responses rather than by running the
+        // handler again on an empty body -- which also keeps every slice from
+        // the same response even if the handler's answer would have changed.
+        const auto block2_key = from.key() + '\0' + cantcoap_detail::token_of(pdu);
+        if (options.block2 && options.block2->block_number > 0) {
+            const auto stored = _block2_responses.find(block2_key);
+            if (stored == _block2_responses.end()) {
+                // 4.08 Request Entity Incomplete; cantcoap's enum stops short.
+                send_error(pdu, from, binding, static_cast<CoapPDU::Code>(0x88));
+                return;
+            }
+            send_content(pdu, from, binding, stored->second.body, stored->second.media_type,
+                         options.block2->block_number);
+            const auto served_to = (static_cast<std::size_t>(options.block2->block_number) + 1) *
+                                   response_block_size();
+            if (served_to >= stored->second.body.size()) {
+                _block2_responses.erase(stored);
+            }
+            return;
+        }
+
         // Content negotiation, exactly as the other two backends do it.
         std::string request_media_type = _registry.default_media_type();
         if (options.content_format) {
@@ -1749,6 +1798,16 @@ private:
                     _timeout_now_handler(
                         _registry.template decode_with<kythira::timeout_now_request<>>(
                             request_media_type, body)));
+            } else if (path == cantcoap_fetch_log_entries_path) {
+                if (!_fetch_log_entries_handler) {
+                    send_error(pdu, from, binding, CoapPDU::COAP_NOT_IMPLEMENTED);
+                    return;
+                }
+                encoded = _registry.encode_with(
+                    response_media_type,
+                    _fetch_log_entries_handler(
+                        _registry.template decode_with<kythira::fetch_log_entries_request<>>(
+                            request_media_type, body)));
             } else {
                 send_error(pdu, from, binding, CoapPDU::COAP_NOT_FOUND);
                 return;
@@ -1758,8 +1817,35 @@ private:
             return;
         }
 
-        send_content(pdu, from, binding, encoded, response_media_type,
-                     options.block2 ? options.block2->block_number : 0);
+        if (encoded.size() > response_block_size()) {
+            remember_block2_response(block2_key, encoded, response_media_type);
+        }
+        send_content(pdu, from, binding, encoded, response_media_type, 0);
+    }
+
+    /// The Block2 slice size send_content() uses.
+    [[nodiscard]] auto response_block_size() const -> std::size_t {
+        return _config.enable_block_transfer &&
+                       kythira::coap_utils::is_valid_block_size(_config.max_block_size)
+                   ? _config.max_block_size
+                   : 1024;
+    }
+
+    /// Keep a multi-block response for its continuations. Bounded: entries a
+    /// client abandoned age out after block2_response_lifetime, and past
+    /// max_block2_responses the oldest goes first.
+    auto remember_block2_response(const std::string& key, const std::vector<std::byte>& body,
+                                  const std::string& media_type) -> void {
+        const auto now = std::chrono::steady_clock::now();
+        std::erase_if(_block2_responses, [now](const auto& entry) {
+            return now - entry.second.stored_at > block2_response_lifetime;
+        });
+        if (_block2_responses.size() >= max_block2_responses) {
+            const auto oldest = std::ranges::min_element(
+                _block2_responses, {}, [](const auto& entry) { return entry.second.stored_at; });
+            _block2_responses.erase(oldest);
+        }
+        _block2_responses.insert_or_assign(key, block2_response{body, media_type, now});
     }
 
     /// Build a reply that echoes the request's token and Message ID, as a
@@ -1972,11 +2058,7 @@ private:
         cantcoap_detail::add_uint_option(*reply, CoapPDU::COAP_OPTION_CONTENT_FORMAT,
                                          static_cast<std::uint32_t>(*format));
 
-        const std::size_t block_size =
-            _config.enable_block_transfer &&
-                    kythira::coap_utils::is_valid_block_size(_config.max_block_size)
-                ? _config.max_block_size
-                : 1024;
+        const std::size_t block_size = response_block_size();
         if (body.size() > block_size) {
             const std::size_t offset = static_cast<std::size_t>(block_number) * block_size;
             if (offset >= body.size()) {
@@ -2040,11 +2122,25 @@ private:
         _install_snapshot_handler;
     std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
         _timeout_now_handler;
+    std::function<kythira::fetch_log_entries_response<>(
+        const kythira::fetch_log_entries_request<>&)>
+        _fetch_log_entries_handler;
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};
     coap_exchange_table _seen;
     std::vector<std::byte> _block1_assembly;
+
+    /// A response larger than one block, kept for the Block2 continuations
+    /// that ask for the rest of it. Keyed by peer address and token.
+    struct block2_response {
+        std::vector<std::byte> body;
+        std::string media_type;
+        std::chrono::steady_clock::time_point stored_at;
+    };
+    static constexpr auto block2_response_lifetime = std::chrono::seconds{60};
+    static constexpr std::size_t max_block2_responses = 64;
+    std::unordered_map<std::string, block2_response> _block2_responses;
 
 #ifdef CANTCOAP_AVAILABLE
     cantcoap_detail::udp_socket _socket;
@@ -2071,12 +2167,6 @@ static_assert(
     !kythira::network_server_with_pre_vote<coap_cantcoap_server<coap_detail::conformance_types>>,
     "coap_cantcoap_server does not implement pre-vote; see design §2's capability table");
 static_assert(
-    !kythira::network_client_with_log_fetch<coap_cantcoap_client<coap_detail::conformance_types>>,
-    "coap_cantcoap_client does not implement log fetch; see design §2's capability table");
-static_assert(
-    !kythira::network_server_with_log_fetch<coap_cantcoap_server<coap_detail::conformance_types>>,
-    "coap_cantcoap_server does not implement log fetch; see design §2's capability table");
-static_assert(
     !kythira::network_client_with_cluster_join<
         coap_cantcoap_client<coap_detail::conformance_types>>,
     "coap_cantcoap_client does not implement cluster join; see design §2's capability table");
@@ -2098,5 +2188,11 @@ static_assert(
 static_assert(
     kythira::network_server_with_timeout_now<coap_cantcoap_server<coap_detail::conformance_types>>,
     "coap_cantcoap_server must implement TimeoutNow; see design §2's capability table");
+static_assert(
+    kythira::network_client_with_log_fetch<coap_cantcoap_client<coap_detail::conformance_types>>,
+    "coap_cantcoap_client must implement log fetch; see design §2's capability table");
+static_assert(
+    kythira::network_server_with_log_fetch<coap_cantcoap_server<coap_detail::conformance_types>>,
+    "coap_cantcoap_server must implement log fetch; see design §2's capability table");
 
 }  // namespace kythira
