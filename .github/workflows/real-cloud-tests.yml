@@ -24,11 +24,14 @@ on:
         description: "AWS (overrides REAL_CLOUD_TESTS_AWS_ENABLED for this run only)"
         type: boolean
         required: false
-      # Also selects the asg-quorum-manager suite (the aws-asg job), which
-      # has no input of its own because this file is at GitHub's 25-input
-      # cap. Its schedule toggle is REAL_CLOUD_TESTS_AWS_ASG_QUORUM_ENABLED.
+      # Also selects the asg-quorum-manager suite (the aws-asg job) and the
+      # EC2 launch-options suite (the aws-ec2-launch-options job), which
+      # have no inputs of their own because this file is at GitHub's
+      # 25-input cap. Their schedule toggles are
+      # REAL_CLOUD_TESTS_AWS_ASG_QUORUM_ENABLED and
+      # REAL_CLOUD_TESTS_AWS_EC2_LAUNCH_OPTIONS_ENABLED.
       aws_bundle_ec2_quorum:
-        description: "AWS bundle: ec2-quorum-manager (+ asg-quorum-manager)"
+        description: "AWS bundle: ec2-quorum-manager (+ asg, ec2 launch options)"
         type: boolean
         required: false
       aws_bundle_ca_cluster:
@@ -1118,6 +1121,277 @@ jobs:
           AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
         run: scripts/aws-asg-leaks.sh sweep
 
+  # ── AWS: aws_ec2_launch_options_real_test ───────────────────────────────
+  # Placement groups, spot vs on-demand and provision-timeout cleanup for
+  # aws_ec2_quorum_manager (aws-quorum-manager Requirement 16.19 e-i). Its
+  # own job for the same two reasons as `aws-asg` above: `aws` has no time
+  # left under its 360-minute cap for another 155 minutes of worst-case
+  # CTest TIMEOUT, and the tag-scoped sweep is only safe with no second run
+  # of this suite live, hence its own concurrency group.
+  #
+  # It needs only the ec2-quorum-manager bundle. Like `aws-asg` it has no
+  # workflow_dispatch input (the file is at GitHub's 25-input cap):
+  # `aws_bundle_ec2_quorum` selects it on dispatch, and on a schedule it
+  # follows its own REAL_CLOUD_TESTS_AWS_EC2_LAUNCH_OPTIONS_ENABLED
+  # variable, so turning it on is a separate decision from the existing
+  # weekly ec2-quorum-manager run.
+  aws-ec2-launch-options:
+    name: Real Cloud Tests (AWS EC2 launch options, ${{ matrix.arch_label }})
+    needs: aws
+    concurrency:
+      group: real-cloud-aws-ec2-launch-options-${{ github.repository }}
+      # A run already holding real instances must reach its own teardown.
+      cancel-in-progress: false
+    runs-on: ${{ matrix.os }}
+    # 155 minutes of worst-case CTest TIMEOUT (tests/CMakeLists.txt), the
+    # build, and the audit and sweep.
+    timeout-minutes: 300
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
+    # always(): `needs: aws` is for ordering only. Without it this job is
+    # skipped whenever `aws` fails or is itself skipped.
+    if: |
+      always()
+      && (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.aws_enabled == 'true'
+        || (github.event.inputs.aws_enabled == null && vars.REAL_CLOUD_TESTS_AWS_ENABLED == 'true'))
+      && (github.event.inputs.aws_bundle_ec2_quorum == 'true'
+        || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_EC2_LAUNCH_OPTIONS_ENABLED == 'true'))
+    strategy:
+      fail-fast: false
+      # One leg at a time: each leg's sweep would delete the other's live
+      # resources, since both carry the same suite tag.
+      max-parallel: 1
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch_label: x64
+          - os: ubuntu-24.04-arm
+            arch_label: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail closed if AWS_CI_ROLE_ARN is unset
+        if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
+        run: |
+          echo "::error::The EC2 launch-options suite is enabled but the AWS_CI_ROLE_ARN repository variable is unset. See scripts/ci-cloud-credentials/aws/README.md." >&2
+          exit 1
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-real-cloud-tests-ec2lo
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
+      # Fail before the build, not after an hour of compiling, when the role
+      # predates the placement-group grants this suite added to the
+      # ec2-quorum-manager bundle.
+      - name: Fail closed if the CI role lacks the placement-group grants
+        run: |
+          if ! out=$(aws ec2 describe-placement-groups --filters 'Name=tag:kythira:suite,Values=aws-ec2-launch-options' 2>&1); then
+            echo "::error::The CI role cannot call ec2:DescribePlacementGroups: ${out}. Re-run scripts/ci-cloud-credentials/aws/provision-oidc-role.sh with the current ec2-quorum-manager bundle." >&2
+            exit 1
+          fi
+
+      # ── System dependencies (identical to ci.yml's build-and-test job) ────
+      # Retries the whole update+install cycle: the ubuntu-24.04-arm runner
+      # image has been observed losing outbound HTTP(S) route to
+      # ports.ubuntu.com for a minute or more at a time, well past what
+      # apt's own per-package retry window covers.
+      - name: Install system dependencies
+        run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
+          # autoconf/autoconf-archive/automake/libtool: see ci.yml's own
+          # "Install system dependencies" step for why (vcpkg's gperf port,
+          # a host-tool dependency of proxygen -- now an unconditional
+          # vcpkg.json dependency like boost-beast, so any workflow running
+          # `vcpkg install` against this manifest needs these regardless of
+          # which Kconfig transports it actually builds).
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 \
+                 cmake \
+                 ninja-build \
+                 libfiu-dev \
+                 ccache \
+                 autoconf \
+                 autoconf-archive \
+                 automake \
+                 libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            echo "value=arm64-linux" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Exports the environment vcpkg's x-aws backend reads. Writer policy is
+      # in the action: only a push to main gets the read-write key.
+      # See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          # runner.arch keeps the x64 and arm64 legs' caches isolated from
+          # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
+      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
+      # to `run:` steps. This re-exports them so the vcpkg invocation below can
+      # reach the cache.
+      - name: Export Actions cache credentials for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          # Per-package binary cache keyed on vcpkg's own ABI hash (port version,
+          # triplet, compiler, features, patches). Unlike the whole-tree
+          # actions/cache above, jobs with different feature sets share every
+          # package they have in common -- the gcp tree is the edhoc tree plus
+          # google-cloud-cpp, so only the delta is ever built.
+          # From the OCI build cache action (x-aws); x-gha no longer exists.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      # ccache: lower priority than ci.yml's own jobs since this workflow only
+      # runs weekly/on-demand (a longer cache-reuse window, smaller practical
+      # benefit), but the same restore-broad/save-unique mechanism as
+      # ci.yml's build-and-test/coverage jobs. runner.arch is part of the key
+      # for the same reason as the vcpkg cache key above — this job now has
+      # both x64 and arm64 legs, and runner.os alone is "Linux" for both.
+      # See .kiro/specs/ccache-adoption/ and
+      # .kiro/specs/arm64-ci-verification/ Requirement 4.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      - name: Configure (Release, real-cloud tests enabled)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_AWS_REAL_EC2_TESTS=ON
+
+      # One target, not the whole tree: nothing else in this job runs.
+      - name: Build
+        run: cmake --build build -j$(nproc) --target aws_ec2_launch_options_real_test
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — aws-ec2-launch-options"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
+
+      # See the identically named steps in the `aws` job for why both exist.
+      - name: Clear the build cache's Oracle endpoint
+        run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
+
+      - name: Re-configure AWS credentials for the test step (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-real-cloud-tests-ec2lo
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
+      - name: Fail closed if the launch-options test binary is missing
+        run: |
+          if [ ! -x build/tests/aws_ec2_launch_options_real_test ]; then
+            echo "::error::aws_ec2_launch_options_real_test was not built — check AWSSDK_FOUND at configure time." >&2
+            exit 1
+          fi
+
+      # KYTHIRA_AWS_WEB_IDENTITY_ROLE_ARN lets the suite re-federate through
+      # GitHub OIDC on its own, because its worst case far outlasts the one
+      # hour the credentials above are good for. The suite resolves its own
+      # Amazon Linux 2023 AMI for the runner's architecture.
+      - name: Run EC2 launch-options suite
+        env:
+          KYTHIRA_AWS_WEB_IDENTITY_ROLE_ARN: ${{ vars.AWS_CI_ROLE_ARN }}
+        run: |
+          scripts/run-real-cloud-suite.sh 'real-ec2' '^aws_ec2_launch_options_real_test$' \
+            "Check that AWS_CI_ROLE_ARN is assumable via OIDC and carries the ec2-quorum-manager policy."
+
+      # The test step can outlast the credentials configured before it; see
+      # the `aws` job's audit refresh for the run that proved it.
+      - name: Re-configure AWS credentials for the audit (OIDC)
+        if: always()
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-real-cloud-tests-ec2lo-audit
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
+      # Instances, placement groups and network, re-checked for a bounded
+      # wait before a finding counts. Fails the job on a leak or when it
+      # cannot look.
+      - name: Audit for leaked launch-options resources
+        if: always()
+        env:
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+        run: scripts/aws-ec2-launch-options-leaks.sh audit
+
+      # After the audit, so a leak is reported before it is removed and the
+      # job stays red for it.
+      - name: Sweep launch-options resources that outlived teardown
+        if: always()
+        env:
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+        run: scripts/aws-ec2-launch-options-leaks.sh sweep
 
   # ── AWS: ca_cluster_node AMI build (Packer) ─────────────────────────────
   # Independent of the `aws` job above: builds a new AMI (and its backing
