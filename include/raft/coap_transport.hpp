@@ -221,6 +221,18 @@ struct multicast_response {
 };
 
 // Multicast response collector
+namespace detail {
+// The PEM text of a transport's own certificate, private key and (optional)
+// CA bundle, as handed to libcoap. See set_coap_pki_key() in
+// coap_transport_impl.hpp for why the transports hand libcoap bytes rather
+// than file paths.
+struct coap_pki_pem {
+    std::string certificate;
+    std::string private_key;
+    std::string ca;  // empty when no ca_file is configured
+};
+}  // namespace detail
+
 struct multicast_response_collector {
     std::string token;
     std::vector<multicast_response> responses;
@@ -381,6 +393,15 @@ private:
     mutable logger_type _logger;
     std::jthread _auto_reload_thread;
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
+    // The PEM bytes libcoap's PKI setup currently points into. libcoap reads
+    // them on each new DTLS handshake, so a reload installs a fresh set and
+    // retires (never frees) the old one: a handshake racing the reload may
+    // still be reading it. Rotations are rare and the material is a few KB.
+    std::shared_ptr<const detail::coap_pki_pem> _pki_pem;
+    std::vector<std::shared_ptr<const detail::coap_pki_pem>> _retired_pki_pem;
+    // Serializes reload_tls_material() between a caller and the auto-reload
+    // poller, which would otherwise race on _pki_pem.
+    std::mutex _pki_reload_mutex;
     // Pumps coap_io_process() on _coap_context for the lifetime of this
     // client -- without this, coap_register_response_handler()'s callback
     // (set up in the constructor) is never invoked by libcoap, and every
@@ -658,6 +679,15 @@ private:
     mutable logger_type _logger;
     std::jthread _auto_reload_thread;
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
+    // The PEM bytes libcoap's PKI setup currently points into. libcoap reads
+    // them on each new DTLS handshake, so a reload installs a fresh set and
+    // retires (never frees) the old one: a handshake racing the reload may
+    // still be reading it. Rotations are rare and the material is a few KB.
+    std::shared_ptr<const detail::coap_pki_pem> _pki_pem;
+    std::vector<std::shared_ptr<const detail::coap_pki_pem>> _retired_pki_pem;
+    // Serializes reload_tls_material() between a caller and the auto-reload
+    // poller, which would otherwise race on _pki_pem.
+    std::mutex _pki_reload_mutex;
     // Pumps coap_io_process() on _coap_context while the server is running
     // -- without this, the resource handlers coap_register_handler() wires
     // up in setup_resources() are never invoked by libcoap (they only ever
