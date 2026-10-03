@@ -6,12 +6,21 @@
 
 #include "object_store_conformance.hpp"
 
+#include <raft/oci_client_config_env.hpp>
 #include <raft/oci_object_storage_client.hpp>
 
 #include "oci_mock_server.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <optional>
+#include <string>
+#include <string_view>
 
 // The engine's conformance suite, run over OCI Object Storage's mock tier
 // (cloud-object-persistence task 15.4).
@@ -153,3 +162,86 @@ struct oci_mock_harness {
 }  // namespace
 
 KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION(oci_mock_harness, oci_object_storage_client)
+
+// ── Credentials from the environment (object-backup-oci-oss-credentials 6.2) ──
+//
+// `raft_object_backup` builds its config with `oci_object_storage_config_from_env`.
+// These cases do the same from a map and complete a LIST against the mock,
+// which verifies every signature with the public key: a passing call proves
+// the environment's credentials reached the signer, not merely the struct.
+
+namespace {
+
+using env_map = std::map<std::string, std::string, std::less<>>;
+
+auto lookup(const env_map& vars) -> env_lookup {
+    return [vars](std::string_view name) -> std::optional<std::string> {
+        const auto it = vars.find(name);
+        if (it == vars.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    };
+}
+
+auto api_key_env(const oci_mock_harness& harness) -> env_map {
+    return {
+        {"KYTHIRA_OCI_REGION", "us-phoenix-1"},
+        {"KYTHIRA_OCI_TENANCY_ID", "ocid1.tenancy.oc1..mock"},
+        {"KYTHIRA_OCI_USER_ID", "ocid1.user.oc1..mock"},
+        {"KYTHIRA_OCI_FINGERPRINT", "aa:bb:cc"},
+        {"KYTHIRA_OCI_ENDPOINT_OVERRIDE", harness.server.origin()},
+    };
+}
+
+/// Builds the client from @p vars and lists the harness bucket, which holds
+/// one seeded object.
+auto list_through_env(oci_mock_harness& harness, const env_map& vars)
+    -> std::pair<std::string, std::vector<std::string>> {
+    harness.seed("node-1/hard_state", "x");
+    auto env = oci_object_storage_config_from_env(lookup(vars));
+    BOOST_REQUIRE_MESSAGE(env.ok(), (env.errors.empty() ? "" : env.errors.front()));
+    oci_object_storage_client client{std::move(env.config)};
+    return {client.namespace_name(), client.list_keys(harness.bucket(), "node-1/")};
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(oci_object_storage_env_credentials)
+
+BOOST_AUTO_TEST_CASE(an_inline_key_with_a_configured_namespace_skips_the_lookup) {
+    oci_mock_harness harness;
+    auto vars = api_key_env(harness);
+    vars["KYTHIRA_OCI_PRIVATE_KEY_PEM"] = shared_key_pem();
+    // Not the mock's own namespace: had the client asked `GET /n/` it would
+    // have been handed "axunmw4f0mln" instead.
+    vars["KYTHIRA_OCI_NAMESPACE"] = "configured-ns";
+    const auto [ns, keys] = list_through_env(harness, vars);
+    BOOST_TEST(ns == "configured-ns");
+    BOOST_TEST(keys == std::vector<std::string>{"node-1/hard_state"});
+}
+
+BOOST_AUTO_TEST_CASE(an_inline_key_without_a_namespace_resolves_it) {
+    oci_mock_harness harness;
+    auto vars = api_key_env(harness);
+    vars["KYTHIRA_OCI_PRIVATE_KEY_PEM"] = shared_key_pem();
+    const auto [ns, keys] = list_through_env(harness, vars);
+    BOOST_TEST(ns == "axunmw4f0mln");
+    BOOST_TEST(keys == std::vector<std::string>{"node-1/hard_state"});
+}
+
+BOOST_AUTO_TEST_CASE(a_key_file_reaches_the_signer) {
+    oci_mock_harness harness;
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("kythira-oci-mock-key-" +
+                       std::to_string(reinterpret_cast<std::uintptr_t>(&harness)) + ".pem");
+    std::ofstream(path, std::ios::binary) << shared_key_pem();
+    auto vars = api_key_env(harness);
+    vars["KYTHIRA_OCI_PRIVATE_KEY_FILE"] = path.string();
+    const auto [ns, keys] = list_through_env(harness, vars);
+    std::filesystem::remove(path);
+    BOOST_TEST(ns == "axunmw4f0mln");
+    BOOST_TEST(keys == std::vector<std::string>{"node-1/hard_state"});
+}
+
+BOOST_AUTO_TEST_SUITE_END()

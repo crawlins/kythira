@@ -741,10 +741,43 @@ checked it and it is broken" call for different responses, and a script gating a
 restore on `verify` has to tell them apart: the first is worth retrying, the
 second never is.
 
-**Credentials** come from wherever each provider's engine already reads them —
-nothing about authentication is special-cased for this tool. Azure additionally
-needs `KYTHIRA_AZURE_STORAGE_ACCOUNT`, because the bucket options name the
-*container* and that is not enough to build the endpoint.
+**Credentials** come from the environment only, never from flags: a secret on
+the command line is readable by every user on the host through `ps` and
+`/proc`. `raft_object_backup --help` lists the variables for each provider
+compiled into that binary.
+
+| Provider | Variables |
+|---|---|
+| `s3` | the AWS SDK default chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, ...) |
+| `azure-blob` | `KYTHIRA_AZURE_STORAGE_ACCOUNT` (the bucket options name the *container*, which is not enough to build the endpoint), plus the Azure SDK default chain |
+| `gcs` | `GOOGLE_CLOUD_PROJECT`, plus Application Default Credentials |
+| `oci-objectstorage` | `KYTHIRA_OCI_REGION`, and the variables for one auth mode (below) |
+| `oss` | `KYTHIRA_ALIBABA_REGION`, `KYTHIRA_ALIBABA_ACCESS_KEY_ID`, `KYTHIRA_ALIBABA_ACCESS_KEY_SECRET`; `KYTHIRA_ALIBABA_SECURITY_TOKEN` for STS keys; optionally `KYTHIRA_ALIBABA_ENDPOINT_OVERRIDE` |
+
+OCI and Alibaba have no SDK in this tree, so nothing else would supply their
+credentials; the tool reads the same `KYTHIRA_OCI_*` and `KYTHIRA_ALIBABA_*`
+names the real-cloud suites and CI already export. OCI's mode comes from
+`KYTHIRA_OCI_AUTH`:
+
+| `KYTHIRA_OCI_AUTH` | Also required |
+|---|---|
+| `api_key` | `KYTHIRA_OCI_TENANCY_ID`, `KYTHIRA_OCI_USER_ID`, `KYTHIRA_OCI_FINGERPRINT`, and a key |
+| `security_token` | `KYTHIRA_OCI_SECURITY_TOKEN`, and its session key |
+| `instance_principal` | nothing; any API-key or token variable that is set draws a warning and is ignored |
+
+A key is exactly one of `KYTHIRA_OCI_PRIVATE_KEY_PEM` (the PEM itself) or
+`KYTHIRA_OCI_PRIVATE_KEY_FILE` (a path), plus
+`KYTHIRA_OCI_PRIVATE_KEY_PASSPHRASE` if it is encrypted. When
+`KYTHIRA_OCI_AUTH` is unset the mode is `security_token` if
+`KYTHIRA_OCI_SECURITY_TOKEN` is set and `api_key` otherwise. Instance
+principal is never inferred: off OCI its metadata fetch fails only after a
+timeout, with a message about `169.254.169.254` rather than the variable you
+forgot. `KYTHIRA_OCI_NAMESPACE` skips the tenancy namespace lookup
+(`GET /n/`) the client otherwise makes first.
+
+A variable set to the empty string counts as unset. Everything missing for the
+chosen mode is reported in one message, with exit 1, before any network call;
+messages name variables and never print their values.
 
 ### Where backups go, and why not beside the source
 
