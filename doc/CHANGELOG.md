@@ -3,6 +3,26 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 3, 2026)
+
+- **The JSON RPC decoder rejects out-of-range numbers and bad base64**
+  (spec `json-serializer-input-validation`, parity audit Z1 and the JSON
+  half of Z2, vulnerability audit M21). `json_rpc_serializer` read every
+  integer with an unchecked `static_cast<T>(as_int64())`, so a peer sending
+  `"term":-1` planted term 2^64-1 and `"entry_type":300` became 44. Its
+  base64 decoder stopped at the first bad character, so `"AQID!!!!"`
+  silently lost bytes from a log entry or snapshot chunk. Every field now
+  goes through a checked accessor: negative values into unsigned fields,
+  values that do not fit, doubles (even `1.0`) and wrong JSON kinds are
+  rejected, and base64 must be canonical (length a multiple of 4, `=` only
+  as trailing padding, zero pad bits). Every decode failure, including a
+  JSON syntax error, is now `serialization_exception` naming the field,
+  instead of a leaked Boost.JSON exception. `std::uint64_t` values at or
+  above 2^63, which the old decoder threw on, now round-trip. Encoded bytes
+  are unchanged (pinned by golden vectors in
+  `json_serializer_range_property_test`), so old and new nodes interoperate;
+  the only payloads a new node refuses are ones no Kythira encoder emits.
+
 ### What Changed (October 2, 2026)
 
 - **A crashed kythira on a running VM is no longer live.** The cloud quorum

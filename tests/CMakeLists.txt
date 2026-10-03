@@ -2457,6 +2457,17 @@ target_link_libraries(rpc_malformed_message_property_test PRIVATE
 target_compile_features(rpc_malformed_message_property_test PRIVATE cxx_std_23)
 add_test(NAME rpc_malformed_message_property_test COMMAND rpc_malformed_message_property_test)
 
+# JSON serializer range, round-trip and golden-vector test
+# (.kiro/specs/json-serializer-input-validation)
+add_executable(json_serializer_range_property_test json_serializer_range_property_test.cpp)
+target_link_libraries(json_serializer_range_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(json_serializer_range_property_test PRIVATE cxx_std_23)
+add_test(NAME json_serializer_range_property_test COMMAND json_serializer_range_property_test)
+
 # CBOR serializer concept test needs Boost.JSON (transitively via coap_utils/json_serializer)
 add_executable(cbor_serializer_concept_test cbor_serializer_concept_test.cpp)
 target_link_libraries(cbor_serializer_concept_test PRIVATE
