@@ -36,6 +36,7 @@
 #define BOOST_TEST_MODULE alibaba_oss_persistence_mock_test
 #include <boost/test/unit_test.hpp>
 
+#include <raft/alibaba_client_config_env.hpp>
 #include <raft/alibaba_oss_client.hpp>
 #include <raft/alibaba_oss_persistence.hpp>
 #include <raft/persistence.hpp>
@@ -54,6 +55,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using kythira::testing::alibaba_mock_server;
@@ -793,3 +795,82 @@ using oss_client_t = kythira::alibaba_oss_client;
 }  // namespace
 
 KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION(alibaba_oss_mock_harness, oss_client_t)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Credentials from the environment (object-backup-oci-oss-credentials 6.2)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `raft_object_backup` builds its config with `alibaba_client_config_from_env`.
+// These build it the same way from a map and complete a List against the mock,
+// which verifies every signature: a passing call proves the environment's key
+// reached the signer.
+
+namespace {
+
+using env_map = std::map<std::string, std::string, std::less<>>;
+
+auto lookup(const env_map& vars) -> kythira::env_lookup {
+    return [vars](std::string_view name) -> std::optional<std::string> {
+        const auto it = vars.find(name);
+        if (it == vars.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    };
+}
+
+auto env_for(const alibaba_mock_server& server) -> env_map {
+    return {
+        {"KYTHIRA_ALIBABA_REGION", "cn-hangzhou"},
+        {"KYTHIRA_ALIBABA_ACCESS_KEY_ID", server.access_key_id()},
+        {"KYTHIRA_ALIBABA_ACCESS_KEY_SECRET", server.access_key_secret()},
+        {"KYTHIRA_ALIBABA_ENDPOINT_OVERRIDE", server.origin()},
+    };
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(alibaba_oss_persistence_mock_env_credentials)
+
+BOOST_AUTO_TEST_CASE(a_static_key_from_the_environment_lists,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    MockFixture fx;
+    fx.server.set_credentials("LTAIenvironment", "environment-secret");
+    fx.server.seed_oss_object("raft/hard_state", "x");
+
+    auto env = kythira::alibaba_client_config_from_env(lookup(env_for(fx.server)));
+    BOOST_REQUIRE(env.ok());
+    const kythira::alibaba_oss_client client{std::move(env.config)};
+    BOOST_TEST(client.list_keys(fx.server.bucket(), "raft/") ==
+               std::vector<std::string>{"raft/hard_state"});
+    BOOST_TEST(fx.server.signature_failures() == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(an_sts_token_from_the_environment_reaches_the_wire,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    MockFixture fx;
+    fx.server.set_credentials("STS.environment", "sts-secret");
+    fx.server.set_security_token("sts-token-from-env");
+    fx.server.seed_oss_object("raft/hard_state", "x");
+
+    auto vars = env_for(fx.server);
+    // Without the token the mock refuses the request: the check is live.
+    {
+        auto env = kythira::alibaba_client_config_from_env(lookup(vars));
+        BOOST_REQUIRE(env.ok());
+        BOOST_TEST(env.warnings.size() == 1U);
+        const kythira::alibaba_oss_client client{std::move(env.config)};
+        BOOST_CHECK_THROW(static_cast<void>(client.list_keys(fx.server.bucket(), "raft/")),
+                          std::exception);
+    }
+
+    vars["KYTHIRA_ALIBABA_SECURITY_TOKEN"] = "sts-token-from-env";
+    auto env = kythira::alibaba_client_config_from_env(lookup(vars));
+    BOOST_REQUIRE(env.ok());
+    BOOST_TEST(env.warnings.empty());
+    const kythira::alibaba_oss_client client{std::move(env.config)};
+    BOOST_TEST(client.list_keys(fx.server.bucket(), "raft/") ==
+               std::vector<std::string>{"raft/hard_state"});
+}
+
+BOOST_AUTO_TEST_SUITE_END()

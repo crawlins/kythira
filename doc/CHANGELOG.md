@@ -5,6 +5,19 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 3, 2026)
 
+- **`raft_object_backup` can authenticate to OCI Object Storage and Alibaba
+  OSS.** Both arms built an empty config and nothing filled it in, so OSS
+  failed every request with `access_key_id is empty` and OCI aborted. They
+  now read the `KYTHIRA_OCI_*` and `KYTHIRA_ALIBABA_*` variables the
+  real-cloud suites already use (`KYTHIRA_OCI_AUTH` picks `api_key`,
+  `security_token` or `instance_principal`), report every missing variable
+  in one message with exit 1, and never print a secret's value. `--help` and
+  `doc/cloud_object_persistence.md` list each provider's variables.
+- **A failure to construct any provider's client exits 2 instead of
+  aborting.** The OCI client resolves its namespace in its constructor,
+  outside the CLI's `try`, so an unreachable endpoint or bad credential ended
+  in `std::terminate` (shell status 134). The OCI message now also says that
+  `KYTHIRA_OCI_NAMESPACE` skips the lookup.
 - **The JSON RPC decoder rejects out-of-range numbers and bad base64**
   (spec `json-serializer-input-validation`, parity audit Z1 and the JSON
   half of Z2, vulnerability audit M21). `json_rpc_serializer` read every

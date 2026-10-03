@@ -1014,6 +1014,16 @@ private:
                     "the OSS Access Key Id you provided does not exist in our records: " + key_id);
                 return false;
             }
+            // Enforced as the setter documents, so a test that configures a
+            // token proves the client sent it rather than merely signed
+            // whatever it had.
+            if (!_security_token.empty() &&
+                req.get_header_value("x-oss-security-token") != _security_token) {
+                ++_signature_failures;
+                oss_error(res, 403, "InvalidSecurityToken",
+                          "the request's x-oss-security-token is missing or does not match");
+                return false;
+            }
             secret = _access_key_secret;
         }
 
