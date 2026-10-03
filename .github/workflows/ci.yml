@@ -2208,6 +2208,27 @@ jobs:
   # of its checks passed, it merged, and the real-cloud workflow was dead on
   # main until this guard's fix landed. A comment would not have caught it,
   # because there was one place to look and no reason to look there.
+  # Validates every configs/*_defconfig against Kconfig, so that renaming or
+  # removing a symbol cannot leave a stale defconfig behind (kconfig-integration
+  # Req 5.4), and fails if a defconfig is applied by no workflow and is not in
+  # configs/defconfig-usage-allowlist.txt (ci-build-matrix-coverage Req 4).
+  # Calls the scripts directly rather than the `kconfig-check` CMake target:
+  # the target only exists after a configure, which needs the vcpkg tree. The
+  # first script is the target's whole body, so the two cannot drift.
+  kconfig-check:
+    name: Kconfig defconfig check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+      - name: Every defconfig loads against Kconfig without a warning
+        run: python3 scripts/kconfig/check_defconfigs.py Kconfig configs
+      - name: Every defconfig is applied by a workflow or allowlisted
+        run: python3 scripts/kconfig/check_defconfig_usage.py
+
   workflow-input-limits:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
