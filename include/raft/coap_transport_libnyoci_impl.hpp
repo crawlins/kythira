@@ -67,6 +67,7 @@
 #include <raft/coap_conformance_types.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
+#include <raft/coap_ace_oauth.hpp>
 #include <raft/coap_utils.hpp>
 // The transport-neutral OSCORE implementation (RFC 8613). Deliberately usable
 // from here: it works on CoAP message bytes and needs no CoAP library.
@@ -111,6 +112,7 @@ extern "C" {
 // costs consumers nothing.
 #include <openssl/ssl.h>
 #include <raft/coap_dtls_cipher_suites.hpp>
+#include <raft/coap_revocation.hpp>
 // RFC 7250 raw public keys: the certificate-type extensions
 // (SSL_CTX_set1_client_cert_type and friends) and X509_STORE_CTX_get0_rpk()
 // arrived in OpenSSL 3.2. The vcpkg baseline pins a newer OpenSSL than that,
@@ -326,6 +328,18 @@ template<typename Config>
                 "OSCORE over DTLS (security.oscore_dtls) was requested for this libnyoci CoAP ") +
             role + ", but only the libcoap backend provides it.");
     }
+    // The same ACE step, in the same place, as the libcoap constructors: it
+    // decides the credentials every check below looks at.
+    kythira::resolve_ace_bootstrap(effective);
+    if (effective.mode == coap_auth_mode::oscore &&
+        !std::holds_alternative<oscore_credentials>(effective.credentials)) {
+        throw coap_security_config_error(
+            "security.mode == oscore requires oscore_credentials in security.credentials");
+    }
+    if (const auto* pki = std::get_if<pki_credentials>(&effective.credentials);
+        pki != nullptr && effective.mode == coap_auth_mode::dtls_pki) {
+        kythira::validate_pki_peer_policy(*pki);
+    }
     switch (effective.mode) {
         case coap_auth_mode::none:
             return {channel::plain, std::move(effective)};
@@ -431,6 +445,16 @@ struct dtls_state {
     // DER SubjectPublicKeyInfo of every peer dtls_rpk accepts. Read from the
     // verify callback, which finds this object through the SSL_CTX's app data.
     std::vector<std::vector<std::byte>> trusted_peer_keys;
+    // dtls_pki's checks on top of OpenSSL's chain validation: the CRL check
+    // and the application's validator. Read from the verify callback, which
+    // finds this object the same way the RPK one does.
+    struct pki_peer_policy {
+        std::string ca_file;
+        certificate_revocation_config revocation;
+        std::function<bool(const std::string& peer_cert_pem)> cn_validator;
+
+        [[nodiscard]] auto empty() const -> bool { return !revocation.enabled && !cn_validator; }
+    } pki_policy;
     SSL_CTX* ssl_ctx{nullptr};
 
     dtls_state() = default;
@@ -488,12 +512,72 @@ extern "C" inline auto libnyoci_server_psk_trampoline(void* context, const char*
     return ctx;
 }
 
+/// The dtls_pki peer policy, run where OpenSSL asks for a verdict.
+///
+/// libnyoci's plugin creates and drives every SSL itself, so the SSL_CTX verify
+/// callback is the only place this backend can see the peer's certificate
+/// before application data flows; the RPK trampoline below uses the same seam.
+/// Refusing here makes the handshake fail with a fatal alert, so a refused peer
+/// never exchanges a record, as on libcoap.
+///
+/// Leaf only. OpenSSL's own chain validation has already passed when this runs
+/// at depth 0, and coap_revocation::check() walks the whole chain from the leaf
+/// (X509_V_FLAG_CRL_CHECK_ALL), so running it again per depth would add
+/// nothing. libcoap differs: it calls its CN callback at every depth.
+extern "C" inline auto libnyoci_pki_verify_trampoline(int preverify_ok, X509_STORE_CTX* store)
+    -> int {
+    if (preverify_ok == 0 || X509_STORE_CTX_get_error_depth(store) != 0) {
+        return preverify_ok;
+    }
+    auto* ssl =
+        static_cast<SSL*>(X509_STORE_CTX_get_ex_data(store, SSL_get_ex_data_X509_STORE_CTX_idx()));
+    const auto* state =
+        ssl == nullptr ? nullptr
+                       : static_cast<const dtls_state*>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl)));
+    X509* leaf = X509_STORE_CTX_get_current_cert(store);
+    if (state == nullptr || leaf == nullptr) {
+        X509_STORE_CTX_set_error(store, X509_V_ERR_APPLICATION_VERIFICATION);
+        return 0;
+    }
+    const auto& policy = state->pki_policy;
+    // Revocation first, so a revoked peer is refused without the validator
+    // ever seeing it (as dtls_pki_provider::validate_cn does).
+    if (const auto refusal = coap_revocation::check(leaf, policy.ca_file, policy.revocation,
+                                                    X509_STORE_CTX_get0_untrusted(store))) {
+        X509_STORE_CTX_set_error(store, *refusal == "certificate revoked"
+                                            ? X509_V_ERR_CERT_REVOKED
+                                            : X509_V_ERR_APPLICATION_VERIFICATION);
+        return 0;
+    }
+    if (policy.cn_validator) {
+        bool accepted = false;
+        BIO* bio = BIO_new(BIO_s_mem());
+        if (bio != nullptr && PEM_write_bio_X509(bio, leaf) == 1) {
+            char* pem = nullptr;
+            const long length = BIO_get_mem_data(bio, &pem);
+            try {
+                accepted = policy.cn_validator(std::string(pem, static_cast<std::size_t>(length)));
+            } catch (...) {
+                accepted = false;
+            }
+        }
+        BIO_free(bio);
+        if (!accepted) {
+            X509_STORE_CTX_set_error(store, X509_V_ERR_APPLICATION_VERIFICATION);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /// Apply PKI credentials to `ctx`. Deliberately mirrors what the libcoap
 /// backend's dtls_pki_provider asks libcoap for, so a config that works there
 /// means the same thing here: own certificate and key, optional CA bundle, and
-/// peer verification unless explicitly disabled.
-inline auto apply_pki_credentials(SSL_CTX* ctx, const pki_credentials& creds,
+/// peer verification unless explicitly disabled, with revocation and
+/// cn_validator enforced on top of it.
+inline auto apply_pki_credentials(SSL_CTX* ctx, dtls_state& state, const pki_credentials& creds,
                                   coap_security_role role) -> void {
+    validate_pki_peer_policy(creds);
     if (creds.cert_file.empty() || creds.key_file.empty()) {
         throw coap_security_config_error(
             "dtls_pki requires both cert_file and key_file for the libnyoci backend");
@@ -519,7 +603,15 @@ inline auto apply_pki_credentials(SSL_CTX* ctx, const pki_credentials& creds,
         const int mode = (role == coap_security_role::server)
                              ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT)
                              : SSL_VERIFY_PEER;
-        SSL_CTX_set_verify(ctx, mode, nullptr);
+        state.pki_policy = {creds.ca_file, creds.revocation, creds.cn_validator};
+        if (state.pki_policy.empty()) {
+            // Neither check configured: OpenSSL's chain verdict stands alone,
+            // exactly as before the policy existed.
+            SSL_CTX_set_verify(ctx, mode, nullptr);
+        } else {
+            SSL_CTX_set_app_data(ctx, &state);
+            SSL_CTX_set_verify(ctx, mode, &libnyoci_pki_verify_trampoline);
+        }
     }
     detail::apply_dtls_cipher_list(ctx, detail::dtls_cipher_list(creds.cipher_suites));
 }
@@ -660,8 +752,8 @@ inline auto configure_dtls(nyoci_t instance, const coap_security_config& securit
             throw coap_security_config_error(
                 "security.mode == dtls_pki requires pki_credentials in security.credentials");
         }
-        apply_pki_credentials(state->ssl_ctx, std::get<pki_credentials>(security.credentials),
-                              role);
+        apply_pki_credentials(state->ssl_ctx, *state,
+                              std::get<pki_credentials>(security.credentials), role);
     }
 #ifdef KYTHIRA_LIBNYOCI_HAS_DTLS_RPK
     if (security.mode == coap_auth_mode::dtls_rpk) {

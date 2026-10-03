@@ -238,6 +238,30 @@ public:
         : coap_security_error(message) {}
 };
 
+// ── PKI peer-certificate policy (coap-alternate-backend-security-parity) ──
+
+// Refuses a revocation check or cn_validator that could never reject
+// anything. With verify_peer_cert == false a server never asks for a client
+// certificate and a client ignores the verify callback's verdict, so the
+// configured policy would be believed and never enforced. Every backend
+// calls this where it validates pki_credentials, so all three refuse the
+// same configuration with the same message.
+inline auto validate_pki_peer_policy(const pki_credentials& creds) -> void {
+    if (creds.verify_peer_cert) {
+        return;
+    }
+    if (creds.revocation.enabled) {
+        throw coap_security_config_error(
+            "pki_credentials.revocation.enabled requires verify_peer_cert: with peer "
+            "verification off the revocation check never runs");
+    }
+    if (creds.cn_validator) {
+        throw coap_security_config_error(
+            "pki_credentials.cn_validator requires verify_peer_cert: with peer verification "
+            "off the validator never runs");
+    }
+}
+
 // ── coap_security_provider interface (Requirement 1.4, Component 2) ──────
 
 class coap_security_provider {
