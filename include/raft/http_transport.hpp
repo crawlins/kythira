@@ -177,6 +177,13 @@ public:
                                std::chrono::milliseconds timeout) ->
         typename Types::template future_template<kythira::install_snapshot_response<>>;
 
+    /// Satisfies `network_client_with_log_fetch`: a peer-to-peer catch-up
+    /// fetch, sent to `/v1/raft/fetch_log_entries`.
+    auto send_fetch_log_entries(std::uint64_t target,
+                                const kythira::fetch_log_entries_request<>& request,
+                                std::chrono::milliseconds timeout) ->
+        typename Types::template future_template<kythira::fetch_log_entries_response<>>;
+
     /// Validates `client_cert_path`/`client_key_path`/`ca_cert_path`, then retires
     /// every cached per-node `httplib::Client` so subsequent RPCs build fresh
     /// connections using the reloaded material. Retired clients are kept alive
@@ -295,6 +302,11 @@ public:
                                                const kythira::install_snapshot_request<>&)>
                                                handler) -> void;
 
+    /// Satisfies `network_server_with_log_fetch` (peer-to-peer catch-up).
+    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
+                                                const kythira::fetch_log_entries_request<>&)>
+                                                handler) -> void;
+
     auto start() -> void;
     auto stop() -> void;
     auto is_running() const -> bool;
@@ -339,6 +351,9 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    std::function<kythira::fetch_log_entries_response<>(
+        const kythira::fetch_log_entries_request<>&)>
+        _fetch_log_entries_handler;
     std::string _bind_address;
     std::uint16_t _bind_port;
     // Resolved by start(); atomic because bound_port() is callable without the

@@ -113,6 +113,10 @@ BOOST_AUTO_TEST_CASE(test_concepts_satisfied) {
                   "tcp_rpc_client must satisfy network_client");
     static_assert(kythira::network_server<kythira::tcp_rpc_server>,
                   "tcp_rpc_server must satisfy network_server");
+    static_assert(kythira::network_client_with_log_fetch<kythira::tcp_rpc_client>,
+                  "tcp_rpc_client must satisfy network_client_with_log_fetch");
+    static_assert(kythira::network_server_with_log_fetch<kythira::tcp_rpc_server>,
+                  "tcp_rpc_server must satisfy network_server_with_log_fetch");
 }
 
 // ── Framing ───────────────────────────────────────────────────────────────────
@@ -812,4 +816,68 @@ BOOST_AUTO_TEST_CASE(test_inflight_cap_per_endpoint, *boost::unit_test::timeout(
         BOOST_TEST(std::string{e.what()}.find("too many RPCs in flight") == std::string::npos);
     }
     ::close(listener);
+}
+
+BOOST_AUTO_TEST_CASE(test_fetch_log_entries_round_trip, *boost::unit_test::timeout(15)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+
+    kythira::fetch_log_entries_request<> seen{};
+    server.register_fetch_log_entries_handler(
+        [&seen](const kythira::fetch_log_entries_request<>& r) {
+            seen = r;
+            kythira::fetch_log_entries_response<> resp{};
+            resp._responder_id = 2;
+            resp._available = true;
+            resp._prev_log_term = 4;
+            resp._entries = {{5, r.from_index(), {std::byte{0x01}, std::byte{0x02}}},
+                             {5, r.from_index() + 1, {std::byte{0x03}}}};
+            return resp;
+        });
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    client.add_peer(2, "127.0.0.1", port);
+
+    kythira::fetch_log_entries_request<> req{};
+    req._requester_id = 3;
+    req._from_index = 11;
+    req._to_index = 12;
+
+    auto resp = client.send_fetch_log_entries(2, req, std::chrono::milliseconds{5000}).get();
+
+    BOOST_TEST(seen.requester_id() == 3u);
+    BOOST_TEST(seen.from_index() == 11u);
+    BOOST_TEST(seen.to_index() == 12u);
+    BOOST_TEST(resp.responder_id() == 2u);
+    BOOST_TEST(resp.available());
+    BOOST_TEST(resp.prev_log_term() == 4u);
+    BOOST_REQUIRE_EQUAL(resp.entries().size(), 2u);
+    BOOST_TEST(resp.entries()[0].index() == 11u);
+    BOOST_TEST(resp.entries()[1].index() == 12u);
+    BOOST_TEST(resp.entries()[1].term() == 5u);
+    BOOST_TEST(
+        (resp.entries()[0].command() == std::vector<std::byte>{std::byte{0x01}, std::byte{0x02}}));
+
+    server.stop();
+}
+
+// A server with no fetch handler drops the request without replying, as it
+// does any other RPC it cannot serve, so the client sees a transport error.
+BOOST_AUTO_TEST_CASE(test_fetch_log_entries_without_handler_fails, *boost::unit_test::timeout(15)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    client.add_peer(2, "127.0.0.1", port);
+
+    kythira::fetch_log_entries_request<> req{};
+    req._requester_id = 3;
+    req._from_index = 1;
+    req._to_index = 1;
+    auto fut = client.send_fetch_log_entries(2, req, std::chrono::milliseconds{2000});
+    BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
+
+    server.stop();
 }

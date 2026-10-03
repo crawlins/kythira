@@ -9,6 +9,21 @@ July 11–12, 2026 entry; this tracking document simply hadn't been updated
 to reflect that. Tasks 18, 19, and 21 had never actually been implemented
 until this pass — see below.)
 
+**Follow-up, October 2, 2026** (from the repo-wide spec gap audit):
+Requirement 4.1/4.2 had not actually been met. `maybe_catch_up_from_peer()`
+never read `catch_up_gap_threshold()` and asked for a catch-up source on
+every tick, and nothing computed `highest_known_last_log_index`. The
+`peer2peer_replicator` concept now has `highest_known_last_log_index()`
+(implemented by all three replicators), and the node fetches only when the
+highest known index exceeds its own by more than the threshold, never asking
+past that index. Requirement 5.2's transports were also narrower than the
+"every existing transport" this spec implies: only the simulator and gRPC
+carried `fetch_log_entries`, so on TCP and HTTP catch-up compiled down to a
+no-op. `tcp_rpc`, `tls_tcp_rpc` (with the same sender binding as its other
+RPCs) and all three HTTP transports (`/v1/raft/fetch_log_entries`) now carry
+it. CoAP still does not; it follows once the CoAP multi-Raft work, which
+rewrites the same backend files, has landed.
+
 Verified directly against the real implementation for tasks 1–17 and 20:
 `include/raft/peer2peer_replication.hpp` (concept, `no_op_`/`static_`
 implementations), `fetch_log_entries_request`/`response` in `types.hpp`,

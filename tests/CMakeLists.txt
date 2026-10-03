@@ -1503,6 +1503,8 @@ add_raft_completion_test(tcp_gossip_transport_merge_unit_test tcp_gossip_transpo
 add_raft_completion_test(tcp_gossip_transport_wire_unit_test tcp_gossip_transport_wire_unit_test.cpp)
 add_raft_completion_test(tcp_gossip_transport_integration_test tcp_gossip_transport_integration_test.cpp)
 add_raft_completion_test(tcp_gossip_transport_catch_up_property_test tcp_gossip_transport_catch_up_property_test.cpp)
+# Peer-to-peer catch-up with Raft RPCs on tcp_rpc as well as gossip on TCP.
+add_raft_completion_test(tcp_rpc_peer_catch_up_test tcp_rpc_peer_catch_up_test.cpp)
 
 # Learner (non-voting node) tests — .kiro/specs/non-voting-nodes/
 add_raft_completion_test(learner_mechanism_unit_test learner_mechanism_unit_test.cpp)

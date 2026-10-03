@@ -571,6 +571,7 @@ public:
     using tn_fn = std::function<timeout_now_response<>(const timeout_now_request<>&)>;
     using ae_fn = std::function<append_entries_response<>(const append_entries_request<>&)>;
     using is_fn = std::function<install_snapshot_response<>(const install_snapshot_request<>&)>;
+    using fl_fn = std::function<fetch_log_entries_response<>(const fetch_log_entries_request<>&)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
     server_impl(std::uint16_t port, tls_tcp_rpc_config config,
@@ -611,6 +612,8 @@ public:
     void register_timeout_now_handler(tn_fn h) { _tn = std::move(h); }
     void register_append_entries_handler(ae_fn h) { _ae = std::move(h); }
     void register_install_snapshot_handler(is_fn h) { _is = std::move(h); }
+    // Satisfies kythira::network_server_with_log_fetch (peer-to-peer catch-up).
+    void register_fetch_log_entries_handler(fl_fn h) { _fl = std::move(h); }
 
     void start() {
         if (_running.exchange(true)) {
@@ -765,6 +768,10 @@ private:
                 auto req = _ser.deserialize_install_snapshot_request(bytes);
                 if (!sender_ok(req.leader_id())) return;
                 resp = _ser.serialize(_is(req));
+            } else if (type == "fetch_log_entries_request" && _fl) {
+                auto req = _ser.deserialize_fetch_log_entries_request(bytes);
+                if (!sender_ok(req.requester_id())) return;
+                resp = _ser.serialize(_fl(req));
             } else {
                 return;
             }
@@ -789,6 +796,7 @@ private:
     tn_fn _tn;
     ae_fn _ae;
     is_fn _is;
+    fl_fn _fl;
     serializer_t _ser;
 };
 
@@ -843,6 +851,17 @@ public:
         return _impl->call<timeout_now_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_timeout_now_response(d);
+            });
+    }
+
+    // Satisfies kythira::network_client_with_log_fetch
+    // (`.kiro/specs/peer2peer-log-replication/` Requirement 5.2).
+    auto send_fetch_log_entries(std::uint64_t target, const fetch_log_entries_request<>& req,
+                                std::chrono::milliseconds timeout)
+        -> future_default<fetch_log_entries_response<>> {
+        return _impl->call<fetch_log_entries_response<>>(
+            target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
+                return _ser.deserialize_fetch_log_entries_response(d);
             });
     }
 
@@ -902,6 +921,10 @@ public:
     void register_install_snapshot_handler(tls_detail::server_impl::is_fn h) {
         _impl->register_install_snapshot_handler(std::move(h));
     }
+    // Satisfies kythira::network_server_with_log_fetch (peer-to-peer catch-up).
+    void register_fetch_log_entries_handler(tls_detail::server_impl::fl_fn h) {
+        _impl->register_fetch_log_entries_handler(std::move(h));
+    }
 
     void start() { _impl->start(); }
     void stop() { _impl->stop(); }
@@ -937,6 +960,14 @@ static_assert(kythira::network_client_with_timeout_now<tls_tcp_rpc_client>,
               "tls_tcp_rpc_client must satisfy network_client_with_timeout_now");
 static_assert(kythira::network_server_with_timeout_now<tls_tcp_rpc_server>,
               "tls_tcp_rpc_server must satisfy network_server_with_timeout_now");
+
+// The optional peer-to-peer catch-up extension. The server drops a fetch whose
+// requester_id is not the node this connection authenticated as, like every
+// other RPC here.
+static_assert(kythira::network_client_with_log_fetch<tls_tcp_rpc_client>,
+              "tls_tcp_rpc_client must satisfy network_client_with_log_fetch");
+static_assert(kythira::network_server_with_log_fetch<tls_tcp_rpc_server>,
+              "tls_tcp_rpc_server must satisfy network_server_with_log_fetch");
 
 }  // namespace kythira
 
