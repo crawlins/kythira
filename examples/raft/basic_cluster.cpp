@@ -129,17 +129,20 @@ auto test_node_creation() -> bool {
         config._heartbeat_interval = heartbeat_interval;
 
         // Create Raft node using simulator_raft_types
-        auto node = kythira::node<simulator_raft_types>{
-            node_id,
-            simulator_raft_types::network_client_type{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            simulator_raft_types::network_server_type{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::info},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
-            config};
+        auto node = kythira::node<simulator_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                simulator_raft_types::network_client_type{
+                    sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .network_server =
+                simulator_raft_types::network_server_type{
+                    sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .persistence = kythira::memory_persistence_engine<>{},
+            .logger = kythira::console_logger{kythira::log_level::info},
+            .metrics = kythira::noop_metrics{},
+            .membership = kythira::default_membership_manager<>{},
+            .config = config,
+        }};
 
         // Start the node
         node.start();
@@ -185,17 +188,20 @@ auto test_leader_election() -> bool {
         config._heartbeat_interval = heartbeat_interval;
 
         // Create Raft node using simulator_raft_types
-        auto node = kythira::node<simulator_raft_types>{
-            node_id,
-            simulator_raft_types::network_client_type{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            simulator_raft_types::network_server_type{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::info},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
-            config};
+        auto node = kythira::node<simulator_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                simulator_raft_types::network_client_type{
+                    sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .network_server =
+                simulator_raft_types::network_server_type{
+                    sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .persistence = kythira::memory_persistence_engine<>{},
+            .logger = kythira::console_logger{kythira::log_level::info},
+            .metrics = kythira::noop_metrics{},
+            .membership = kythira::default_membership_manager<>{},
+            .config = config,
+        }};
 
         node.start();
 
@@ -251,17 +257,20 @@ auto test_command_submission() -> bool {
         config._heartbeat_interval = heartbeat_interval;
 
         // Create Raft node using simulator_raft_types
-        auto node = kythira::node<simulator_raft_types>{
-            node_id,
-            simulator_raft_types::network_client_type{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            simulator_raft_types::network_server_type{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::info},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
-            config};
+        auto node = kythira::node<simulator_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                simulator_raft_types::network_client_type{
+                    sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .network_server =
+                simulator_raft_types::network_server_type{
+                    sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .persistence = kythira::memory_persistence_engine<>{},
+            .logger = kythira::console_logger{kythira::log_level::info},
+            .metrics = kythira::noop_metrics{},
+            .membership = kythira::default_membership_manager<>{},
+            .config = config,
+        }};
 
         node.start();
 
@@ -314,17 +323,20 @@ auto test_state_reading() -> bool {
         config._heartbeat_interval = heartbeat_interval;
 
         // Create Raft node using simulator_raft_types
-        auto node = kythira::node<simulator_raft_types>{
-            node_id,
-            simulator_raft_types::network_client_type{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            simulator_raft_types::network_server_type{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::info},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
-            config};
+        auto node = kythira::node<simulator_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                simulator_raft_types::network_client_type{
+                    sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .network_server =
+                simulator_raft_types::network_server_type{
+                    sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .persistence = kythira::memory_persistence_engine<>{},
+            .logger = kythira::console_logger{kythira::log_level::info},
+            .metrics = kythira::noop_metrics{},
+            .membership = kythira::default_membership_manager<>{},
+            .config = config,
+        }};
 
         node.start();
 

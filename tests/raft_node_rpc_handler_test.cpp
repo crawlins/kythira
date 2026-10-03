@@ -177,14 +177,16 @@ BOOST_AUTO_TEST_CASE(read_state_on_follower_throws, *boost::unit_test::timeout(1
     auto net = sim.create_node("1");
     auto ser = test_raft_types::serializer_type{};
 
-    raft_node_type node{1,
-                        test_raft_types::network_client_type{net, ser},
-                        test_raft_types::network_server_type{net, ser},
-                        test_raft_types::persistence_engine_type{},
-                        kythira::console_logger{kythira::log_level::error},
-                        test_raft_types::metrics_type{},
-                        test_raft_types::membership_manager_type{},
-                        make_fast_config()};
+    raft_node_type node{{
+        .node_id = 1,
+        .network_client = test_raft_types::network_client_type{net, ser},
+        .network_server = test_raft_types::network_server_type{net, ser},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = make_fast_config(),
+    }};
     node.start();
 
     // Immediately after start, node is a follower — read_state must throw
@@ -239,14 +241,16 @@ BOOST_AUTO_TEST_CASE(stop_already_stopped_node, *boost::unit_test::timeout(10)) 
     auto net = sim.create_node("1");
     auto ser = test_raft_types::serializer_type{};
 
-    raft_node_type node{1,
-                        test_raft_types::network_client_type{net, ser},
-                        test_raft_types::network_server_type{net, ser},
-                        test_raft_types::persistence_engine_type{},
-                        kythira::console_logger{kythira::log_level::error},
-                        test_raft_types::metrics_type{},
-                        test_raft_types::membership_manager_type{},
-                        make_fast_config()};
+    raft_node_type node{{
+        .node_id = 1,
+        .network_client = test_raft_types::network_client_type{net, ser},
+        .network_server = test_raft_types::network_server_type{net, ser},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = make_fast_config(),
+    }};
     node.start();
     BOOST_CHECK(node.is_running());
 
@@ -270,14 +274,16 @@ BOOST_AUTO_TEST_CASE(check_heartbeat_on_follower, *boost::unit_test::timeout(10)
     auto net = sim.create_node("1");
     auto ser = test_raft_types::serializer_type{};
 
-    raft_node_type node{1,
-                        test_raft_types::network_client_type{net, ser},
-                        test_raft_types::network_server_type{net, ser},
-                        test_raft_types::persistence_engine_type{},
-                        kythira::console_logger{kythira::log_level::error},
-                        test_raft_types::metrics_type{},
-                        test_raft_types::membership_manager_type{},
-                        make_fast_config()};
+    raft_node_type node{{
+        .node_id = 1,
+        .network_client = test_raft_types::network_client_type{net, ser},
+        .network_server = test_raft_types::network_server_type{net, ser},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = make_fast_config(),
+    }};
     node.start();
 
     BOOST_CHECK_EQUAL(node.get_state(), kythira::server_state::follower);
@@ -340,14 +346,16 @@ BOOST_AUTO_TEST_CASE(replicate_on_follower_is_noop, *boost::unit_test::timeout(1
     auto net = sim.create_node("1");
     auto ser = test_raft_types::serializer_type{};
 
-    raft_node_type node{1,
-                        test_raft_types::network_client_type{net, ser},
-                        test_raft_types::network_server_type{net, ser},
-                        test_raft_types::persistence_engine_type{},
-                        kythira::console_logger{kythira::log_level::error},
-                        test_raft_types::metrics_type{},
-                        test_raft_types::membership_manager_type{},
-                        make_fast_config()};
+    raft_node_type node{{
+        .node_id = 1,
+        .network_client = test_raft_types::network_client_type{net, ser},
+        .network_server = test_raft_types::network_server_type{net, ser},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = make_fast_config(),
+    }};
     node.start();
 
     BOOST_CHECK_EQUAL(node.get_state(), kythira::server_state::follower);

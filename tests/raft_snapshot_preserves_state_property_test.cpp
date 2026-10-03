@@ -371,14 +371,17 @@ BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, *boost::unit_test::ti
         }
 
         // Create and start node
-        auto node = kythira::node<test_raft_types>{
-            node_id,
-            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-            std::move(persistence),
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{}};
+        auto node = kythira::node<test_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            .network_server =
+                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            .persistence = std::move(persistence),
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+        }};
 
         node.start();
 

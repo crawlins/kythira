@@ -8,6 +8,7 @@
 #include <raft/types.hpp>
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,30 @@ BOOST_AUTO_TEST_CASE(config_no_old_nodes_when_non_joint) {
     auto bytes = kythira::serialize_configuration<std::uint64_t>(orig);
     auto restored = kythira::deserialize_configuration<std::uint64_t>(bytes);
     BOOST_CHECK(!restored.old_nodes().has_value());
+}
+
+// Placement-group assignments round-trip with the configuration, for
+// numeric and string node IDs.
+BOOST_AUTO_TEST_CASE(config_round_trip_placement) {
+    kythira::cluster_configuration<std::uint64_t> numeric{{1, 2}, false, std::nullopt, {3}};
+    std::map<std::uint64_t, std::string> numeric_placement{{1, "az-a"}, {2, "az-b"}, {3, "az-a"}};
+    auto bytes = kythira::serialize_configuration<std::uint64_t>(numeric, &numeric_placement);
+    BOOST_CHECK(kythira::deserialize_placement<std::uint64_t>(bytes) == numeric_placement);
+    BOOST_CHECK(kythira::deserialize_configuration<std::uint64_t>(bytes).learners() ==
+                std::vector<std::uint64_t>{3});
+
+    kythira::cluster_configuration<std::string> named{{"n1"}, false, std::nullopt};
+    std::map<std::string, std::string> named_placement{{"n1", "zone-1"}};
+    auto named_bytes = kythira::serialize_configuration<std::string>(named, &named_placement);
+    BOOST_CHECK(kythira::deserialize_placement<std::string>(named_bytes) == named_placement);
+}
+
+// An entry written without placement (by an older node, or one whose
+// placement groups are not strings) yields an empty map.
+BOOST_AUTO_TEST_CASE(config_without_placement_yields_empty_map) {
+    kythira::cluster_configuration<std::uint64_t> cfg{{1, 2, 3}, false, std::nullopt};
+    auto bytes = kythira::serialize_configuration<std::uint64_t>(cfg);
+    BOOST_CHECK(kythira::deserialize_placement<std::uint64_t>(bytes).empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

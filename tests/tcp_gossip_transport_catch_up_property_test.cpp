@@ -194,18 +194,20 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_real_gossip_transport,
 
     auto make_node = [&](std::uint64_t id, auto net, const kythira::raft_configuration& c,
                          std::uint16_t port) {
-        return test_node{
-            id,
-            {net, test_types::serializer_type{}},
-            {net, test_types::serializer_type{}},
-            {},
-            kythira::console_logger{},
-            {},
-            {},
-            c,
-            std::to_string(id),
-            preset_peer_discovery<std::uint64_t, std::string>{},
-            test_types::peer2peer_replicator_type{make_gossip_config(id, port, all_ports)}};
+        return test_node{{
+            .node_id = id,
+            .network_client = {net, test_types::serializer_type{}},
+            .network_server = {net, test_types::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{},
+            .metrics = {},
+            .membership = {},
+            .config = c,
+            .self_address = std::to_string(id),
+            .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+            .peer2peer_replicator =
+                test_types::peer2peer_replicator_type{make_gossip_config(id, port, all_ports)},
+        }};
     };
 
     auto node1 = make_node(1, net1, cfg, port1);

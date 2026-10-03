@@ -163,16 +163,18 @@ BOOST_AUTO_TEST_CASE(leave_cluster_via_rpc_shrinks_cluster, *boost::unit_test::t
 
         auto cfg = make_fast_config();
         auto make_node = [&](std::uint64_t id, auto net) {
-            return test_node{id,
-                             {net, test_types::serializer_type{}},
-                             {net, test_types::serializer_type{}},
-                             {},
-                             kythira::console_logger{},
-                             {},
-                             {},
-                             cfg,
-                             std::to_string(id),
-                             preset_peer_discovery<std::uint64_t, std::string>{}};
+            return test_node{{
+                .node_id = id,
+                .network_client = {net, test_types::serializer_type{}},
+                .network_server = {net, test_types::serializer_type{}},
+                .persistence = {},
+                .logger = kythira::console_logger{},
+                .metrics = {},
+                .membership = {},
+                .config = cfg,
+                .self_address = std::to_string(id),
+                .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+            }};
         };
 
         auto node1 = make_node(1, net1);
@@ -238,16 +240,18 @@ BOOST_AUTO_TEST_CASE(cluster_operable_after_leave_rpc, *boost::unit_test::timeou
 
     auto cfg = make_fast_config();
     auto make_node = [&](std::uint64_t id, auto net) {
-        return test_node{id,
-                         {net, test_types::serializer_type{}},
-                         {net, test_types::serializer_type{}},
-                         {},
-                         kythira::console_logger{},
-                         {},
-                         {},
-                         cfg,
-                         std::to_string(id),
-                         preset_peer_discovery<std::uint64_t, std::string>{}};
+        return test_node{{
+            .node_id = id,
+            .network_client = {net, test_types::serializer_type{}},
+            .network_server = {net, test_types::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{},
+            .metrics = {},
+            .membership = {},
+            .config = cfg,
+            .self_address = std::to_string(id),
+            .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+        }};
     };
 
     auto node1 = make_node(1, net1);
@@ -325,16 +329,18 @@ BOOST_AUTO_TEST_CASE(leave_cluster_noop_when_no_leader_known, *boost::unit_test:
     auto net1 = sim.create_node("1");
     auto cfg = make_fast_config();
 
-    test_node node1{1,
-                    {net1, test_types::serializer_type{}},
-                    {net1, test_types::serializer_type{}},
-                    {},
-                    kythira::console_logger{},
-                    {},
-                    {},
-                    cfg,
-                    "1",
-                    preset_peer_discovery<std::uint64_t, std::string>{}};
+    test_node node1{{
+        .node_id = 1,
+        .network_client = {net1, test_types::serializer_type{}},
+        .network_server = {net1, test_types::serializer_type{}},
+        .persistence = {},
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = "1",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+    }};
 
     node1.set_cluster_configuration({1});
     node1.start();
@@ -371,16 +377,18 @@ BOOST_AUTO_TEST_CASE(leave_cluster_via_stale_leader_uses_redirect, *boost::unit_
     auto cfg = make_fast_config();  // 26ms heartbeat interval — check_heartbeat_timeout fires
 
     auto make_node = [&](std::uint64_t id, auto net) {
-        return test_node{id,
-                         {net, test_types::serializer_type{}},
-                         {net, test_types::serializer_type{}},
-                         {},
-                         kythira::console_logger{},
-                         {},
-                         {},
-                         cfg,
-                         std::to_string(id),
-                         preset_peer_discovery<std::uint64_t, std::string>{}};
+        return test_node{{
+            .node_id = id,
+            .network_client = {net, test_types::serializer_type{}},
+            .network_server = {net, test_types::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{},
+            .metrics = {},
+            .membership = {},
+            .config = cfg,
+            .self_address = std::to_string(id),
+            .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+        }};
     };
 
     auto node1 = make_node(1, net1);
@@ -476,16 +484,18 @@ BOOST_AUTO_TEST_CASE(leave_cluster_rpc_failure_is_handled, *boost::unit_test::ti
 
     auto cfg = make_fast_config();
     auto make_node = [&](std::uint64_t id, auto net) {
-        return test_node{id,
-                         {net, test_types::serializer_type{}},
-                         {net, test_types::serializer_type{}},
-                         {},
-                         kythira::console_logger{},
-                         {},
-                         {},
-                         cfg,
-                         std::to_string(id),
-                         preset_peer_discovery<std::uint64_t, std::string>{}};
+        return test_node{{
+            .node_id = id,
+            .network_client = {net, test_types::serializer_type{}},
+            .network_server = {net, test_types::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{},
+            .metrics = {},
+            .membership = {},
+            .config = cfg,
+            .self_address = std::to_string(id),
+            .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+        }};
     };
 
     auto node1 = make_node(1, net1);
@@ -539,16 +549,18 @@ BOOST_AUTO_TEST_CASE(leave_rpc_to_follower_returns_redirect, *boost::unit_test::
 
     auto cfg = make_fast_config();
     auto make_node = [&](std::uint64_t id, auto net) {
-        return test_node{id,
-                         {net, test_types::serializer_type{}},
-                         {net, test_types::serializer_type{}},
-                         {},
-                         kythira::console_logger{},
-                         {},
-                         {},
-                         cfg,
-                         std::to_string(id),
-                         preset_peer_discovery<std::uint64_t, std::string>{}};
+        return test_node{{
+            .node_id = id,
+            .network_client = {net, test_types::serializer_type{}},
+            .network_server = {net, test_types::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{},
+            .metrics = {},
+            .membership = {},
+            .config = cfg,
+            .self_address = std::to_string(id),
+            .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+        }};
     };
 
     auto node1 = make_node(1, net1);

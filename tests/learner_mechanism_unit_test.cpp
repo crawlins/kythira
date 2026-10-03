@@ -22,6 +22,7 @@
 #include <folly/init/Init.h>
 
 #endif
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -408,6 +409,89 @@ BOOST_AUTO_TEST_CASE(add_learner_and_remove_learner_round_trip, *boost::unit_tes
     BOOST_CHECK(wait_until([&] { return readd_done || readd_threw; }));
     BOOST_CHECK(!readd_threw);
 
+    node2.stop();
+    node1.stop();
+}
+
+// Two add_learner() calls before either entry commits append two plain
+// configuration entries back to back. Applying the first must not roll the
+// leader's configuration back to it or prune the second learner from
+// replication, or that learner never hears from the leader again.
+BOOST_AUTO_TEST_CASE(concurrent_add_learners_both_replicate, *boost::unit_test::timeout(30)) {
+    sim_t sim;
+    sim.start();
+    auto net1 = sim.create_node("1");
+    auto net2 = sim.create_node("2");
+    auto net3 = sim.create_node("3");
+    auto net4 = sim.create_node("4");
+    connect_all(sim, {"1", "2", "3", "4"});
+
+    auto cfg = make_fast_config();
+    test_node node1{make_node_config(1, net1, cfg)};
+    test_node node2{make_node_config(2, net2, cfg)};
+    test_node node3{make_node_config(3, net3, cfg)};
+    test_node node4{make_node_config(4, net4, cfg)};
+
+    // A second voter, so the learner entries need an ack to commit.
+    node1.set_cluster_configuration({1, 4});
+    node4.set_cluster_configuration({1, 4});
+    node2.set_cluster_configuration({2});
+    node3.set_cluster_configuration({3});
+
+    node1.start();
+    node2.start();
+    node3.start();
+    node4.start();
+
+    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+    node1.check_election_timeout();
+    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+
+    // Cut the second voter off so neither learner entry can commit until
+    // both are in the leader's log.
+    // The simulator routes over multiple hops, so every edge goes.
+    for (const auto* other : {"1", "2", "3"}) {
+        sim.remove_edge(other, "4");
+        sim.remove_edge("4", other);
+    }
+
+    std::atomic<int> added{0};
+    std::atomic<bool> add_threw{false};
+    for (std::uint64_t learner : {2u, 3u}) {
+        node1.add_learner(learner)
+            .thenValue([&](std::vector<std::byte>) { ++added; })
+            .thenError([&](const std::exception_ptr&) { add_threw = true; })
+            .detach();
+    }
+    for (int i = 0; i < 3; ++i) {
+        node1.check_heartbeat_timeout();
+        std::this_thread::sleep_for(std::chrono::milliseconds{30});
+    }
+    BOOST_REQUIRE_EQUAL(added.load(), 0);
+    connect_all(sim, {"1", "2", "3", "4"});
+    for (int i = 0; i < 15; ++i) {
+        node1.check_heartbeat_timeout();
+        std::this_thread::sleep_for(std::chrono::milliseconds{30});
+    }
+    BOOST_REQUIRE(wait_until([&] { return added == 2 || add_threw; }));
+    BOOST_REQUIRE(!add_threw);
+
+    using sm_t = kythira::test_key_value_state_machine<test_types::log_index_type>;
+    auto cmd_fut =
+        node1.submit_command(sm_t::make_put_command("k", "v"), std::chrono::milliseconds{3000});
+    std::move(cmd_fut).thenValue([](std::vector<std::byte>) {}).detach();
+    for (int i = 0; i < 15; ++i) {
+        node1.check_heartbeat_timeout();
+        std::this_thread::sleep_for(std::chrono::milliseconds{30});
+    }
+    for (auto* learner : {&node2, &node3}) {
+        BOOST_CHECK(wait_until(
+            [&] { return learner->debug_state().last_applied == node1.debug_state().last_applied; },
+            std::chrono::milliseconds{3000}));
+    }
+
+    node4.stop();
+    node3.stop();
     node2.stop();
     node1.stop();
 }

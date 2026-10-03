@@ -179,16 +179,18 @@ BOOST_AUTO_TEST_CASE(fresh_node_joins_single_node_leader, *boost::unit_test::tim
     auto cfg = make_fast_config();
 
     // Node 1: single-node cluster, no peer discovery
-    test_node node1{1,
-                    {net1, test_types::serializer_type{}},
-                    {net1, test_types::serializer_type{}},
-                    {},
-                    kythira::console_logger{},
-                    {},
-                    {},
-                    cfg,
-                    "1",
-                    preset_peer_discovery<std::uint64_t, std::string>{}};
+    test_node node1{{
+        .node_id = 1,
+        .network_client = {net1, test_types::serializer_type{}},
+        .network_server = {net1, test_types::serializer_type{}},
+        .persistence = {},
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = "1",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+    }};
     node1.start();
 
     // Drive node1 to become leader
@@ -199,16 +201,18 @@ BOOST_AUTO_TEST_CASE(fresh_node_joins_single_node_leader, *boost::unit_test::tim
     BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
 
     // Node 4: fresh, peer discovery returns node1
-    test_node node4{4,
-                    {net4, test_types::serializer_type{}},
-                    {net4, test_types::serializer_type{}},
-                    {},
-                    kythira::console_logger{},
-                    {},
-                    {},
-                    cfg,
-                    "4",
-                    preset_peer_discovery<std::uint64_t, std::string>{{pi{1, "1"}}}};
+    test_node node4{{
+        .node_id = 4,
+        .network_client = {net4, test_types::serializer_type{}},
+        .network_server = {net4, test_types::serializer_type{}},
+        .persistence = {},
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = "4",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{{pi{1, "1"}}},
+    }};
 
     // start() blocks until bootstrap completes — run it in a background thread
     std::promise<void> done;
@@ -246,16 +250,18 @@ BOOST_AUTO_TEST_CASE(fresh_node_follows_redirect_to_leader, *boost::unit_test::t
     auto cfg = make_fast_config();
 
     auto make_node = [&](std::uint64_t id, auto net) {
-        return test_node{id,
-                         {net, test_types::serializer_type{}},
-                         {net, test_types::serializer_type{}},
-                         {},
-                         kythira::console_logger{},
-                         {},
-                         {},
-                         cfg,
-                         std::to_string(id),
-                         preset_peer_discovery<std::uint64_t, std::string>{}};
+        return test_node{{
+            .node_id = id,
+            .network_client = {net, test_types::serializer_type{}},
+            .network_server = {net, test_types::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{},
+            .metrics = {},
+            .membership = {},
+            .config = cfg,
+            .self_address = std::to_string(id),
+            .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+        }};
     };
 
     auto node1 = make_node(1, net1);
@@ -283,16 +289,18 @@ BOOST_AUTO_TEST_CASE(fresh_node_follows_redirect_to_leader, *boost::unit_test::t
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
 
     // Node 4: fresh, peer discovery returns node 2 (follower)
-    test_node node4{4,
-                    {net4, test_types::serializer_type{}},
-                    {net4, test_types::serializer_type{}},
-                    {},
-                    kythira::console_logger{},
-                    {},
-                    {},
-                    cfg,
-                    "4",
-                    preset_peer_discovery<std::uint64_t, std::string>{{pi{2, "2"}}}};
+    test_node node4{{
+        .node_id = 4,
+        .network_client = {net4, test_types::serializer_type{}},
+        .network_server = {net4, test_types::serializer_type{}},
+        .persistence = {},
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = "4",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{{pi{2, "2"}}},
+    }};
 
     std::promise<void> done;
     auto done_fut = done.get_future();
@@ -322,16 +330,18 @@ BOOST_AUTO_TEST_CASE(empty_peers_founds_single_node_cluster, *boost::unit_test::
     auto net1 = sim.create_node("1");
     auto cfg = make_fast_config();
 
-    test_node node1{1,
-                    {net1, test_types::serializer_type{}},
-                    {net1, test_types::serializer_type{}},
-                    {},
-                    kythira::console_logger{},
-                    {},
-                    {},
-                    cfg,
-                    "1",
-                    preset_peer_discovery<std::uint64_t, std::string>{}};
+    test_node node1{{
+        .node_id = 1,
+        .network_client = {net1, test_types::serializer_type{}},
+        .network_server = {net1, test_types::serializer_type{}},
+        .persistence = {},
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = "1",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+    }};
 
     BOOST_CHECK_NO_THROW(node1.start());
     node1.stop();
@@ -357,16 +367,18 @@ BOOST_AUTO_TEST_CASE(retry_loop_on_unreachable_peer, *boost::unit_test::timeout(
     }
     auto cfg = make_fast_config();
 
-    test_node node1{1,
-                    {net1, test_types::serializer_type{}},
-                    {net1, test_types::serializer_type{}},
-                    {},
-                    kythira::console_logger{},
-                    {},
-                    {},
-                    cfg,
-                    "1",
-                    preset_peer_discovery<std::uint64_t, std::string>{}};
+    test_node node1{{
+        .node_id = 1,
+        .network_client = {net1, test_types::serializer_type{}},
+        .network_server = {net1, test_types::serializer_type{}},
+        .persistence = {},
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = "1",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+    }};
     node1.start();
 
     std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
@@ -374,16 +386,18 @@ BOOST_AUTO_TEST_CASE(retry_loop_on_unreachable_peer, *boost::unit_test::timeout(
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
     BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
 
-    test_node node4{4,
-                    {net4, test_types::serializer_type{}},
-                    {net4, test_types::serializer_type{}},
-                    {},
-                    kythira::console_logger{},
-                    {},
-                    {},
-                    cfg,
-                    "4",
-                    preset_peer_discovery<std::uint64_t, std::string>{{pi{1, "1"}}}};
+    test_node node4{{
+        .node_id = 4,
+        .network_client = {net4, test_types::serializer_type{}},
+        .network_server = {net4, test_types::serializer_type{}},
+        .persistence = {},
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = "4",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{{pi{1, "1"}}},
+    }};
 
     std::promise<void> done;
     auto done_fut = done.get_future();
@@ -430,16 +444,18 @@ BOOST_AUTO_TEST_CASE(restarting_node_reconnects_without_join, *boost::unit_test:
     auto cfg = make_fast_config();
 
     auto make_node = [&](std::uint64_t id, auto net) {
-        return test_node{id,
-                         {net, test_types::serializer_type{}},
-                         {net, test_types::serializer_type{}},
-                         {},
-                         kythira::console_logger{},
-                         {},
-                         {},
-                         cfg,
-                         std::to_string(id),
-                         preset_peer_discovery<std::uint64_t, std::string>{}};
+        return test_node{{
+            .node_id = id,
+            .network_client = {net, test_types::serializer_type{}},
+            .network_server = {net, test_types::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{},
+            .metrics = {},
+            .membership = {},
+            .config = cfg,
+            .self_address = std::to_string(id),
+            .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+        }};
     };
 
     auto node1 = make_node(1, net1);
@@ -473,17 +489,19 @@ BOOST_AUTO_TEST_CASE(restarting_node_reconnects_without_join, *boost::unit_test:
     persistence3.save_current_term(leader_term);
 
     // node3 restarts with peer discovery — goes through run_reconnect(), not run_bootstrap()
-    test_node node3_restart{
-        3,
-        {net3, test_types::serializer_type{}},
-        {net3, test_types::serializer_type{}},
-        std::move(persistence3),
-        kythira::console_logger{},
-        {},
-        {},
-        cfg,
-        "3",
-        preset_peer_discovery<std::uint64_t, std::string>{{pi{1, "1"}, pi{2, "2"}}}};
+    test_node node3_restart{{
+        .node_id = 3,
+        .network_client = {net3, test_types::serializer_type{}},
+        .network_server = {net3, test_types::serializer_type{}},
+        .persistence = std::move(persistence3),
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = "3",
+        .peer_discovery =
+            preset_peer_discovery<std::uint64_t, std::string>{{pi{1, "1"}, pi{2, "2"}}},
+    }};
     node3_restart.set_cluster_configuration({1, 2, 3});
 
     // start() returns immediately for restarting nodes (run_reconnect is background)
@@ -522,16 +540,18 @@ BOOST_AUTO_TEST_CASE(isolated_restarting_node_stays_follower, *boost::unit_test:
     test_types::persistence_engine_type persistence3;
     persistence3.save_current_term(1);  // non-fresh: had term 1 in a prior run
 
-    test_node node3{3,
-                    {net3, test_types::serializer_type{}},
-                    {net3, test_types::serializer_type{}},
-                    std::move(persistence3),
-                    kythira::console_logger{},
-                    {},
-                    {},
-                    cfg,
-                    "3",
-                    preset_peer_discovery<std::uint64_t, std::string>{}};  // no_op effectively
+    test_node node3{{
+        .node_id = 3,
+        .network_client = {net3, test_types::serializer_type{}},
+        .network_server = {net3, test_types::serializer_type{}},
+        .persistence = std::move(persistence3),
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = "3",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+    }};  // no_op effectively
     node3.set_cluster_configuration({1, 2, 3});
     node3.start();
 

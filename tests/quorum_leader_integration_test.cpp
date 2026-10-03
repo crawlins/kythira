@@ -727,6 +727,162 @@ BOOST_AUTO_TEST_CASE(operator_remove_does_not_decommission,
     BOOST_CHECK_EQUAL(c.state->provision_count(), 0u);
 }
 
+// Req 9.2 — when every node of a placement group is unreachable and the
+// rest still hold a majority, the replacements go to the surviving groups,
+// spread across them, and never to the lost group.  Once the failed nodes
+// are removed the lost group is empty but still short of its target; the
+// surplus in the surviving groups stands in for it, so nothing more is
+// provisioned into the failed zone.
+BOOST_AUTO_TEST_CASE(whole_group_loss_provisions_into_surviving_groups,
+                     *boost::unit_test::timeout(scaled_timeout(45))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "az-a", .target_count = 2},
+                                    {.group_id = "az-b", .target_count = 2},
+                                    {.group_id = "az-c", .target_count = 1}}};
+        c.state->provision_ids = {6, 7, 8, 9};
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{
+        {1, "az-a"}, {2, "az-a"}, {3, "az-b"}, {4, "az-b"}, {5, "az-c"}};
+    for (std::uint64_t id = 1; id <= 5; ++id) {
+        c.add_node(id, {1, 2, 3, 4, 5}, placement);
+    }
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    // Both at once: an assessment between the two kills would see az-b only
+    // degraded (replacement_in_group_that_then_fails_is_abandoned covers that).
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->unreachable.insert({3, 4});
+    }
+    c.kill(3);
+    c.kill(4);
+    BOOST_REQUIRE(wait_until([&] { return c.state->provision_count() >= 2; }));
+    {
+        std::lock_guard lock(c.state->mu);
+        BOOST_REQUIRE_EQUAL(c.state->provisions.size(), 2u);
+        // The emptier surviving group first, then the other.
+        BOOST_CHECK_EQUAL(c.state->provisions[0].first, "az-c");
+        BOOST_CHECK(c.state->provisions[0].second == std::optional<std::uint64_t>{3});
+        BOOST_CHECK_EQUAL(c.state->provisions[1].first, "az-a");
+        BOOST_CHECK(c.state->provisions[1].second == std::optional<std::uint64_t>{4});
+    }
+
+    // Both join as learners even though their groups are at target: each
+    // replaces a voter of the lost group.
+    for (std::uint64_t spare : {6u, 7u}) {
+        c.add_node(spare, {spare});
+        c.start_ticker(spare);
+        c.node(1).add_learner(spare).detach();
+    }
+
+    BOOST_REQUIRE(
+        wait_until([&] { return c.state->decommissioned().size() >= 2; }, scaled_deadline(15000)));
+    auto decommissioned = c.state->decommissioned();
+    std::sort(decommissioned.begin(), decommissioned.end());
+    BOOST_CHECK(decommissioned == (std::vector<std::uint64_t>{3, 4}));
+    BOOST_CHECK_EQUAL(c.node(1).get_cluster_size(), 5u);
+
+    auto calls = c.state->assess_count(1);
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) > calls + 5; }));
+    auto cluster = c.state->last_assess(1);
+    BOOST_REQUIRE(cluster.has_value());
+    BOOST_CHECK(group_of(*cluster, 6) == std::optional<std::string>{"az-c"});
+    BOOST_CHECK(group_of(*cluster, 7) == std::optional<std::string>{"az-a"});
+    BOOST_CHECK(!group_of(*cluster, 3).has_value());
+    BOOST_CHECK(!group_of(*cluster, 4).has_value());
+    // az-b is empty and below target, but nothing is provisioned into it.
+    BOOST_CHECK_EQUAL(c.state->provision_count(), 2u);
+}
+
+// Req 9.2 — a replacement provisioned into a group that then loses its last
+// live node is abandoned and decommissioned: it cannot join from a failed
+// zone.  Both of the group's failed nodes are then replaced elsewhere.
+BOOST_AUTO_TEST_CASE(replacement_in_group_that_then_fails_is_abandoned,
+                     *boost::unit_test::timeout(scaled_timeout(30))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "az-a", .target_count = 2},
+                                    {.group_id = "az-b", .target_count = 2},
+                                    {.group_id = "az-c", .target_count = 1}}};
+        c.state->provision_ids = {6, 7, 8, 9};
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{
+        {1, "az-a"}, {2, "az-a"}, {3, "az-b"}, {4, "az-b"}, {5, "az-c"}};
+    for (std::uint64_t id = 1; id <= 5; ++id) {
+        c.add_node(id, {1, 2, 3, 4, 5}, placement);
+    }
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    c.kill(3);
+    BOOST_REQUIRE(wait_until([&] { return c.state->provision_count() >= 1; }));
+    {
+        std::lock_guard lock(c.state->mu);
+        BOOST_REQUIRE_EQUAL(c.state->provisions[0].first, "az-b");
+    }
+
+    c.kill(4);
+    BOOST_REQUIRE(wait_until([&] { return c.state->provision_count() >= 3; }));
+    BOOST_REQUIRE(wait_until([&] { return !c.state->decommissioned().empty(); }));
+    BOOST_CHECK_EQUAL(c.state->decommissioned().front(), 6u);
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    std::lock_guard lock(c.state->mu);
+    BOOST_REQUIRE_EQUAL(c.state->provisions.size(), 3u);
+    std::set<std::uint64_t> replaced;
+    for (std::size_t i = 1; i < 3; ++i) {
+        BOOST_CHECK_NE(c.state->provisions[i].first, "az-b");
+        BOOST_REQUIRE(c.state->provisions[i].second.has_value());
+        replaced.insert(*c.state->provisions[i].second);
+    }
+    BOOST_CHECK(replaced == (std::set<std::uint64_t>{3, 4}));
+}
+
+// Placement travels in configuration entries, so a leader elected after a
+// replacement was provisioned still knows that node's group.  Here a
+// one-node group is lost, its replacement goes to az-a, and leadership then
+// moves to node 2, whose own initial placement never named node 4.
+BOOST_AUTO_TEST_CASE(placement_survives_leader_change,
+                     *boost::unit_test::timeout(scaled_timeout(45))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "az-a", .target_count = 1},
+                                    {.group_id = "az-b", .target_count = 1},
+                                    {.group_id = "az-c", .target_count = 1}}};
+        c.state->provision_ids = {4, 5};
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "az-a"}, {2, "az-b"}, {3, "az-c"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    c.kill(3);
+    BOOST_REQUIRE(wait_until([&] { return c.state->provision_count() >= 1; }));
+    {
+        std::lock_guard lock(c.state->mu);
+        BOOST_CHECK_EQUAL(c.state->provisions[0].first, "az-a");
+    }
+    c.add_node(4, {4});
+    c.start_ticker(4);
+    c.node(1).add_learner(4).detach();
+    BOOST_REQUIRE(
+        wait_until([&] { return !c.state->decommissioned().empty(); }, scaled_deadline(10000)));
+
+    c.node(1).transfer_leadership(2, scaled_deadline(3000)).detach();
+    BOOST_REQUIRE(wait_until([&] { return c.node(2).is_leader(); }, scaled_deadline(10000)));
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(2) >= 3; }));
+
+    auto cluster = c.state->last_assess(2);
+    BOOST_REQUIRE(cluster.has_value());
+    BOOST_CHECK_EQUAL(cluster->size(), 3u);
+    BOOST_CHECK(group_of(*cluster, 4) == std::optional<std::string>{"az-a"});
+    // The new leader sees az-c's deficit covered by az-a's surplus.
+    BOOST_CHECK_EQUAL(c.state->provision_count(), 1u);
+}
+
 // Req 12.2 — set_placement accepts entries for members and non-members.
 BOOST_AUTO_TEST_CASE(set_placement_does_not_crash, *boost::unit_test::timeout(5)) {
     test_cluster c{fast_config()};

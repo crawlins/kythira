@@ -202,6 +202,7 @@ if(_RUNTIME_EXE)
     set(_CHAOS_COMPOSE_FILE              "${CMAKE_SOURCE_DIR}/docker/docker-compose.yml")
     set(_CHAOS_DOCKERFILE                "${CMAKE_SOURCE_DIR}/docker/chaos_node/Dockerfile")
     set(_QUORUM_COMPOSE_FILE             "${CMAKE_SOURCE_DIR}/docker/docker-compose.quorum.yml")
+    set(_QUORUM5_COMPOSE_FILE            "${CMAKE_SOURCE_DIR}/docker/docker-compose.quorum-5.yml")
     set(_POCO_DISCOVERY_COMPOSE_FILE     "${CMAKE_SOURCE_DIR}/docker/poco-discovery-compose.yml")
     set(_POCO_DISCOVERY_DOCKERFILE       "${CMAKE_SOURCE_DIR}/docker/poco_discovery_node/Dockerfile")
     set(_BIND9_DOCKERFILE                "${CMAKE_SOURCE_DIR}/docker/bind9/Dockerfile")
@@ -391,6 +392,7 @@ if(_RUNTIME_EXE)
                 ${_RT_ENV}
                 KYTHIRA_DOCKER_INTEGRATION_TESTS=1
                 KYTHIRA_QUORUM_COMPOSE_FILE=${_QUORUM_COMPOSE_FILE}
+                KYTHIRA_QUORUM5_COMPOSE_FILE=${_QUORUM5_COMPOSE_FILE}
                 $<TARGET_FILE:quorum_healing_tests>
                 --log_level=message
         DEPENDS docker-chaos-image quorum_healing_tests
