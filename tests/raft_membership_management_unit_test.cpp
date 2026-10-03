@@ -1,484 +1,366 @@
 // Copyright (c) 2026 Clark Rawlins
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * Membership management on a real multi-node cluster.
+ *
+ * add_server, remove_server (of a follower and of the leader itself), the
+ * learner catch-up path, rejection of concurrent and non-leader changes, and
+ * changes that run into a crashed node, a partition, or each other. Every case
+ * also checks that no term ever had two leaders.
+ *
+ * Requirements: raft-consensus 11.1, 11.2, 11.3, 11.4, 11.5
+ * Task: raft-consensus 702
+ */
+
 #define BOOST_TEST_MODULE raft_membership_management_unit_test
 #include <boost/test/unit_test.hpp>
-#include <raft/raft.hpp>
-#include <raft/examples/counter_state_machine.hpp>
-#include "raft_multi_node_test_fixture.hpp"
-#include <chrono>
-#include <vector>
-#include <memory>
-#include <thread>
 
-/**
- * Unit tests for Raft membership management operations
- *
- * Tests:
- * - Add server operation with joint consensus
- * - Remove server operation with proper cleanup
- * - Configuration change safety (no split-brain)
- * - Catch-up phase for new nodes
- * - Leader step-down when removing self
- *
- * Requirements: 11.1, 11.2, 11.3, 11.4, 11.5
- * Task: 702 - Test membership management operations
- */
+#include "raft_multi_node_test_fixture.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <string>
+#include <thread>
+#include <vector>
+
+using kythira::test::await_result;
+using kythira::test::cluster_config;
+using kythira::test::raft_multi_node_fixture;
+using kythira::test::wait_until;
+using kythira::testing::scaled_deadline;
+using kythira::testing::scaled_timeout;
+using namespace std::chrono_literals;
+
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+// BOOST_GLOBAL_FIXTURE pastes its argument into an identifier, so the
+// fixture must be named unqualified.
+using kythira::test::folly_init_fixture;
+BOOST_GLOBAL_FIXTURE(folly_init_fixture);
+#endif
 
 namespace {
-// Test constants
-constexpr std::chrono::milliseconds test_timeout{5000};
-constexpr std::chrono::milliseconds short_timeout{1000};
-constexpr std::chrono::milliseconds election_timeout_min{150};
-constexpr std::chrono::milliseconds election_timeout_max{300};
-constexpr std::chrono::milliseconds heartbeat_interval{50};
-constexpr std::chrono::milliseconds rpc_timeout{100};
 
-constexpr const char* test_leader_id = "leader";
-constexpr const char* test_follower_1_id = "follower1";
-constexpr const char* test_follower_2_id = "follower2";
-constexpr const char* test_new_node_id = "new_node";
-constexpr const char* test_node_to_remove_id = "node_to_remove";
+using node_id = raft_multi_node_fixture::node_id_type;
+using id_list = std::vector<node_id>;
 
-constexpr std::size_t default_cluster_size = 3;
-constexpr std::size_t extended_cluster_size = 5;
+constexpr auto change_timeout = std::chrono::milliseconds{5000};
+
+auto make_running_cluster(std::size_t nodes) -> std::unique_ptr<raft_multi_node_fixture> {
+    cluster_config cfg;
+    cfg.node_count = nodes;
+    auto f = std::make_unique<raft_multi_node_fixture>(cfg);
+    f->initialize_cluster();
+    f->start_all_nodes();
+    return f;
 }
 
-/**
- * Test: Verify add_server operation with joint consensus
- *
- * This test validates that:
- * 1. Only leaders can initiate add_server
- * 2. Joint consensus is used for safe configuration change
- * 3. New node is added to cluster configuration
- * 4. Configuration change completes successfully
- *
- * **Validates: Requirements 11.1**
- */
-BOOST_AUTO_TEST_CASE(test_add_server_with_joint_consensus, *boost::unit_test::timeout(60)) {
-    BOOST_TEST_MESSAGE("Test: Add server operation with joint consensus");
+auto sorted(id_list ids) -> id_list {
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
 
-    // Create cluster configuration
-    kythira::test::cluster_config config;
-    config.node_count = default_cluster_size;
-    config.election_timeout_min = election_timeout_min;
-    config.election_timeout_max = election_timeout_max;
-    config.heartbeat_interval = heartbeat_interval;
-    config.rpc_timeout = rpc_timeout;
+auto voters_of(raft_multi_node_fixture& f, node_id id) -> id_list {
+    return sorted(f.node(id).current_membership().voters);
+}
 
-    // Create multi-node fixture
-    kythira::test::raft_multi_node_fixture fixture(config);
+/// Waits until every node in `ids` runs a settled (non-joint) configuration
+/// whose voters are exactly `expected`.
+auto wait_for_membership(raft_multi_node_fixture& f, const id_list& ids, const id_list& expected)
+    -> bool {
+    return wait_until(
+        [&] {
+            for (auto id : ids) {
+                auto m = f.node(id).current_membership();
+                if (m.joint || sorted(m.voters) != sorted(expected)) {
+                    return false;
+                }
+            }
+            return true;
+        },
+        scaled_deadline(5000));
+}
 
-    // Initialize cluster
-    fixture.initialize_cluster();
-    fixture.start_all_nodes();
+auto check_safety(const raft_multi_node_fixture& f) -> void {
+    for (const auto& v : f.election_safety_violations()) {
+        BOOST_ERROR("two leaders in one " << v);
+    }
+    auto mismatch = f.committed_logs_mismatch();
+    BOOST_CHECK_MESSAGE(!mismatch.has_value(), mismatch.value_or(""));
+}
 
-    // Verify cluster is initialized
-    BOOST_CHECK_EQUAL(fixture.get_node_count(), default_cluster_size);
+auto first_follower(const raft_multi_node_fixture& f, node_id leader) -> node_id {
+    for (auto id : f.get_node_ids()) {
+        if (id != leader) {
+            return id;
+        }
+    }
+    throw std::logic_error("no follower");
+}
 
-    // Get all node IDs
-    auto node_ids = fixture.get_node_ids();
-    BOOST_CHECK_EQUAL(node_ids.size(), default_cluster_size);
+/// Adds a stopped node that knows the voters but lists itself as a learner,
+/// so it cannot campaign before the leader's configuration reaches it.
+auto add_joining_node(raft_multi_node_fixture& f, node_id id, const id_list& voters) -> void {
+    f.add_node(id, voters, {id});
+    f.start_node(id);
+}
 
-    // Verify all nodes are running
-    for (const auto& node_id : node_ids) {
-        BOOST_CHECK(fixture.is_node_running(node_id));
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(membership_management)
+
+// Requirement 11.1: add_server goes through joint consensus and the new node
+// ends up a voter holding the whole log.
+BOOST_AUTO_TEST_CASE(add_server_admits_a_voter_with_the_full_log,
+                     *boost::unit_test::timeout(scaled_timeout(60))) {
+    auto f = make_running_cluster(3);
+    auto leader = f->wait_for_leader(scaled_deadline(5000));
+    BOOST_REQUIRE(leader.has_value());
+    for (int i = 0; i < 5; ++i) {
+        BOOST_REQUIRE(
+            f->submit(raft_multi_node_fixture::put_command("pre" + std::to_string(i), "v"), 3s).ok);
+    }
+    auto before = f->commit_index_of(*leader);
+
+    add_joining_node(*f, 4, {1, 2, 3});
+    auto r = await_result(f->node(*leader).add_server(4), scaled_deadline(change_timeout.count()));
+    BOOST_REQUIRE_MESSAGE(r.completed && r.ok, "add_server: " << r.error);
+
+    BOOST_CHECK(wait_for_membership(*f, {1, 2, 3, 4}, {1, 2, 3, 4}));
+    BOOST_CHECK(f->wait_for_convergence(scaled_deadline(5000), before));
+    BOOST_CHECK(f->submit(raft_multi_node_fixture::put_command("post", "v"), 3s).ok);
+    BOOST_CHECK(f->wait_for_convergence(scaled_deadline(5000), f->commit_index_of(*leader)));
+    check_safety(*f);
+}
+
+// Requirement 11.2: removing a follower drops it from every configuration and
+// from the leader's replication state, and the rest keep committing.
+BOOST_AUTO_TEST_CASE(remove_server_cleans_up_the_follower,
+                     *boost::unit_test::timeout(scaled_timeout(60))) {
+    auto f = make_running_cluster(5);
+    auto leader = f->wait_for_leader(scaled_deadline(5000));
+    BOOST_REQUIRE(leader.has_value());
+    auto removed = first_follower(*f, *leader);
+    BOOST_REQUIRE(f->wait_for_convergence(scaled_deadline(3000), 1));
+    BOOST_REQUIRE(f->node(*leader).match_index_of(removed).has_value());
+
+    auto r = await_result(f->node(*leader).remove_server(removed),
+                          scaled_deadline(change_timeout.count()));
+    BOOST_REQUIRE_MESSAGE(r.completed && r.ok, "remove_server: " << r.error);
+
+    id_list rest;
+    for (auto id : f->get_node_ids()) {
+        if (id != removed) {
+            rest.push_back(id);
+        }
+    }
+    BOOST_CHECK(wait_for_membership(*f, rest, rest));
+    BOOST_CHECK(wait_until([&] { return !f->node(*leader).match_index_of(removed).has_value(); },
+                           scaled_deadline(3000)));
+
+    f->stop_node(removed);
+    BOOST_CHECK(f->submit(raft_multi_node_fixture::put_command("after", "v"), 3s).ok);
+    BOOST_CHECK(f->wait_for_convergence(scaled_deadline(5000), f->commit_index_of(*leader), rest));
+    check_safety(*f);
+}
+
+// Requirement 11.5: a leader that removes itself steps down once the change
+// commits, and the remaining nodes elect a leader among themselves.
+BOOST_AUTO_TEST_CASE(leader_steps_down_after_removing_itself,
+                     *boost::unit_test::timeout(scaled_timeout(60))) {
+    auto f = make_running_cluster(3);
+    auto leader = f->wait_for_leader(scaled_deadline(5000));
+    BOOST_REQUIRE(leader.has_value());
+
+    auto r = await_result(f->node(*leader).remove_server(*leader),
+                          scaled_deadline(change_timeout.count()));
+    BOOST_REQUIRE_MESSAGE(r.completed && r.ok, "remove_server(self): " << r.error);
+
+    id_list rest;
+    for (auto id : f->get_node_ids()) {
+        if (id != *leader) {
+            rest.push_back(id);
+        }
+    }
+    BOOST_CHECK(wait_until([&] { return !f->node(*leader).is_leader(); }, scaled_deadline(3000)));
+    BOOST_CHECK(wait_for_membership(*f, rest, rest));
+
+    auto new_leader = f->wait_for_leader(scaled_deadline(5000), rest);
+    BOOST_REQUIRE_MESSAGE(new_leader.has_value(),
+                          "no leader among the rest:" << f->cluster_summary());
+    BOOST_CHECK_NE(*new_leader, *leader);
+    f->stop_node(*leader);
+    BOOST_CHECK(f->submit_to(*new_leader, raft_multi_node_fixture::put_command("k", "v"), 3s).ok);
+    check_safety(*f);
+}
+
+// Requirement 11.4: a new node catches up as a learner, never votes or
+// campaigns while it does, and is then promoted to voter.
+BOOST_AUTO_TEST_CASE(learner_catches_up_before_promotion,
+                     *boost::unit_test::timeout(scaled_timeout(60))) {
+    auto f = make_running_cluster(3);
+    auto leader = f->wait_for_leader(scaled_deadline(5000));
+    BOOST_REQUIRE(leader.has_value());
+    for (int i = 0; i < 10; ++i) {
+        BOOST_REQUIRE(
+            f->submit(raft_multi_node_fixture::put_command("log" + std::to_string(i), "v"), 3s).ok);
     }
 
-    BOOST_TEST_MESSAGE("✓ Add server with joint consensus infrastructure validated");
+    add_joining_node(*f, 4, {1, 2, 3});
+    auto added =
+        await_result(f->node(*leader).add_learner(4), scaled_deadline(change_timeout.count()));
+    BOOST_REQUIRE_MESSAGE(added.completed && added.ok, "add_learner: " << added.error);
+    auto m = f->node(*leader).current_membership();
+    BOOST_CHECK(std::find(m.learners.begin(), m.learners.end(), 4u) != m.learners.end());
+    BOOST_CHECK(std::find(m.voters.begin(), m.voters.end(), 4u) == m.voters.end());
+
+    BOOST_CHECK(f->wait_for_convergence(scaled_deadline(5000), f->commit_index_of(*leader)));
+    BOOST_CHECK_EQUAL(f->term_of(4), f->term_of(*leader));
+
+    auto promoted =
+        await_result(f->node(*leader).promote_to_voter(4), scaled_deadline(change_timeout.count()));
+    BOOST_REQUIRE_MESSAGE(promoted.completed && promoted.ok,
+                          "promote_to_voter: " << promoted.error);
+    BOOST_CHECK(wait_for_membership(*f, {1, 2, 3, 4}, {1, 2, 3, 4}));
+
+    for (const auto& [term, leaders] : f->observed_leaders()) {
+        BOOST_CHECK_MESSAGE(!leaders.contains(4), "the learner led term " << term);
+    }
+    check_safety(*f);
 }
 
-/**
- * Test: Remove server operation with proper cleanup
- *
- * This test validates that:
- * 1. Only leaders can initiate remove_server
- * 2. Node is removed from cluster configuration
- * 3. Internal state is cleaned up (next_index, match_index)
- * 4. Configuration change completes successfully
- *
- * **Validates: Requirements 11.2**
- */
-BOOST_AUTO_TEST_CASE(test_remove_server_with_cleanup, *boost::unit_test::timeout(60)) {
-    BOOST_TEST_MESSAGE("Test: Remove server operation with proper cleanup");
+// Requirements 11.1, 11.2: one change at a time, and only on the leader.
+BOOST_AUTO_TEST_CASE(rejects_concurrent_and_non_leader_changes,
+                     *boost::unit_test::timeout(scaled_timeout(60))) {
+    auto f = make_running_cluster(5);
+    auto leader = f->wait_for_leader(scaled_deadline(5000));
+    BOOST_REQUIRE(leader.has_value());
+    auto follower = first_follower(*f, *leader);
 
-    // Create cluster configuration with more nodes
-    kythira::test::cluster_config config;
-    config.node_count = extended_cluster_size;
-    config.election_timeout_min = election_timeout_min;
-    config.election_timeout_max = election_timeout_max;
-    config.heartbeat_interval = heartbeat_interval;
-    config.rpc_timeout = rpc_timeout;
+    auto on_follower = await_result(f->node(follower).remove_server(*leader), 1s);
+    BOOST_CHECK(on_follower.completed && !on_follower.ok);
+    BOOST_CHECK_NE(on_follower.error.find("leader"), std::string::npos);
 
-    // Create multi-node fixture
-    kythira::test::raft_multi_node_fixture fixture(config);
+    auto first_fut = f->node(*leader).remove_server(follower);
+    auto second = await_result(f->node(*leader).add_server(9), 1s);
+    BOOST_CHECK(second.completed && !second.ok);
+    BOOST_CHECK_NE(second.error.find("in progress"), std::string::npos);
 
-    // Initialize cluster
-    fixture.initialize_cluster();
-    fixture.start_all_nodes();
+    auto first = await_result(std::move(first_fut), scaled_deadline(change_timeout.count()));
+    BOOST_CHECK_MESSAGE(first.completed && first.ok, "first change: " << first.error);
+    check_safety(*f);
+}
 
-    // Verify cluster is initialized with correct size
-    BOOST_CHECK_EQUAL(fixture.get_node_count(), extended_cluster_size);
+// Requirement 11.3: a crashed node outside the change does not block it, as
+// long as both configurations keep a majority.
+BOOST_AUTO_TEST_CASE(change_completes_with_a_node_down,
+                     *boost::unit_test::timeout(scaled_timeout(60))) {
+    auto f = make_running_cluster(5);
+    auto leader = f->wait_for_leader(scaled_deadline(5000));
+    BOOST_REQUIRE(leader.has_value());
+    id_list followers;
+    for (auto id : f->get_node_ids()) {
+        if (id != *leader) {
+            followers.push_back(id);
+        }
+    }
+    auto crashed = followers[0];
+    auto removed = followers[1];
+    f->stop_node(crashed);
 
-    // Get all node IDs
-    auto node_ids = fixture.get_node_ids();
-    BOOST_CHECK_EQUAL(node_ids.size(), extended_cluster_size);
+    auto r = await_result(f->node(*leader).remove_server(removed),
+                          scaled_deadline(change_timeout.count()));
+    BOOST_REQUIRE_MESSAGE(r.completed && r.ok, "remove_server: " << r.error);
 
-    // Verify all nodes are running
-    for (const auto& node_id : node_ids) {
-        BOOST_CHECK(fixture.is_node_running(node_id));
+    id_list expected;
+    for (auto id : f->get_node_ids()) {
+        if (id != removed) {
+            expected.push_back(id);
+        }
+    }
+    id_list live{*leader, followers[2], followers[3]};
+    BOOST_CHECK(wait_for_membership(*f, live, expected));
+
+    // The crashed node learns the new configuration when it comes back.
+    f->start_node(crashed);
+    BOOST_CHECK(wait_for_membership(*f, {crashed}, expected));
+    check_safety(*f);
+}
+
+// Requirement 11.3: a change started by a leader that is then cut off cannot
+// split the cluster: after healing, every node runs one configuration.
+BOOST_AUTO_TEST_CASE(partition_during_change_leaves_one_configuration,
+                     *boost::unit_test::timeout(scaled_timeout(60))) {
+    auto f = make_running_cluster(5);
+    auto leader = f->wait_for_leader(scaled_deadline(5000));
+    BOOST_REQUIRE(leader.has_value());
+    BOOST_REQUIRE(f->wait_for_convergence(scaled_deadline(3000), 1));
+    id_list followers;
+    for (auto id : f->get_node_ids()) {
+        if (id != *leader) {
+            followers.push_back(id);
+        }
+    }
+    id_list minority{*leader, followers[0]};
+    id_list majority{followers[1], followers[2], followers[3]};
+
+    f->partition({minority, majority});
+    auto pending = f->node(*leader).remove_server(followers[3]);
+
+    auto new_leader = f->wait_for_leader(scaled_deadline(5000), majority);
+    BOOST_REQUIRE(new_leader.has_value());
+    BOOST_REQUIRE(f->submit_to(*new_leader, raft_multi_node_fixture::put_command("k", "v"), 3s).ok);
+
+    f->heal();
+    // The majority never saw the change, so it is discarded everywhere.
+    BOOST_CHECK(wait_for_membership(*f, f->get_node_ids(), {1, 2, 3, 4, 5}));
+    auto r = await_result(std::move(pending), scaled_deadline(change_timeout.count()));
+    BOOST_CHECK(!r.ok);
+    BOOST_CHECK(f->wait_for_convergence(scaled_deadline(5000)));
+    check_safety(*f);
+}
+
+// Requirements 11.1, 11.2: changes run back to back, each after the last
+// commits.
+BOOST_AUTO_TEST_CASE(sequential_changes, *boost::unit_test::timeout(scaled_timeout(90))) {
+    auto f = make_running_cluster(5);
+    BOOST_REQUIRE(f->wait_for_leader(scaled_deadline(5000)).has_value());
+
+    auto change = [&](auto&& op, const char* what) {
+        auto leader = f->wait_for_leader(scaled_deadline(5000));
+        BOOST_REQUIRE(leader.has_value());
+        auto r = await_result(op(f->node(*leader)), scaled_deadline(change_timeout.count()));
+        BOOST_REQUIRE_MESSAGE(r.completed && r.ok, what << ": " << r.error);
+    };
+
+    auto leader = *f->wait_for_leader(scaled_deadline(5000));
+    id_list victims;
+    for (auto id : f->get_node_ids()) {
+        if (id != leader && victims.size() < 2) {
+            victims.push_back(id);
+        }
     }
 
-    BOOST_TEST_MESSAGE("✓ Remove server with cleanup infrastructure validated");
-}
+    change([&](auto& n) { return n.remove_server(victims[0]); }, "remove first");
+    f->stop_node(victims[0]);
+    change([&](auto& n) { return n.remove_server(victims[1]); }, "remove second");
+    f->stop_node(victims[1]);
 
-/**
- * Test: Configuration change safety (no split-brain)
- *
- * This test validates that:
- * 1. Joint consensus prevents split-brain scenarios
- * 2. Majority is required in both old and new configurations
- * 3. No two leaders can be elected during configuration change
- * 4. Configuration changes are atomic
- *
- * **Validates: Requirements 11.3**
- */
-BOOST_AUTO_TEST_CASE(test_configuration_change_safety, *boost::unit_test::timeout(90)) {
-    BOOST_TEST_MESSAGE("Test: Configuration change safety (no split-brain)");
-
-    // Create cluster configuration
-    kythira::test::cluster_config config;
-    config.node_count = default_cluster_size;
-    config.election_timeout_min = election_timeout_min;
-    config.election_timeout_max = election_timeout_max;
-    config.heartbeat_interval = heartbeat_interval;
-    config.rpc_timeout = rpc_timeout;
-    config.enable_network_delays = true;
-    config.network_latency = std::chrono::milliseconds{10};
-    config.network_reliability = 0.95;
-
-    // Create multi-node fixture
-    kythira::test::raft_multi_node_fixture fixture(config);
-
-    // Initialize cluster
-    fixture.initialize_cluster();
-    fixture.start_all_nodes();
-
-    // Verify cluster is initialized
-    BOOST_CHECK_EQUAL(fixture.get_node_count(), default_cluster_size);
-
-    // Get all node IDs
-    auto node_ids = fixture.get_node_ids();
-    BOOST_CHECK_EQUAL(node_ids.size(), default_cluster_size);
-
-    // Test network partition scenarios
-    if (node_ids.size() >= 3) {
-        // Create a partition: majority vs minority
-        std::vector<std::string> majority_group = {node_ids[0], node_ids[1]};
-        std::vector<std::string> minority_group = {node_ids[2]};
-
-        // Create network partition
-        fixture.create_network_partition(majority_group, minority_group);
-
-        // Advance time to allow for election timeout
-        fixture.advance_time(election_timeout_max * 2);
-
-        // Heal partition
-        fixture.heal_network_partition();
-
-        // Advance time to allow for recovery
-        fixture.advance_time(election_timeout_max);
+    id_list remaining;
+    for (auto id : f->get_node_ids()) {
+        if (id != victims[0] && id != victims[1]) {
+            remaining.push_back(id);
+        }
     }
+    add_joining_node(*f, 6, remaining);
+    change([&](auto& n) { return n.add_server(6); }, "add");
 
-    BOOST_TEST_MESSAGE("✓ Configuration change safety infrastructure validated");
+    auto expected = remaining;
+    expected.push_back(6);
+    BOOST_CHECK(wait_for_membership(*f, expected, expected));
+    BOOST_CHECK(f->submit(raft_multi_node_fixture::put_command("k", "v"), 3s).ok);
+    BOOST_CHECK(f->wait_for_convergence(scaled_deadline(5000), 0, expected));
+    check_safety(*f);
 }
 
-/**
- * Test: Catch-up phase for new nodes
- *
- * This test validates that:
- * 1. New nodes start in non-voting mode
- * 2. Leader replicates log entries to new node
- * 3. New node catches up to current log state
- * 4. New node transitions to voting member after catch-up
- *
- * **Validates: Requirements 11.4**
- */
-BOOST_AUTO_TEST_CASE(test_new_node_catch_up_phase, *boost::unit_test::timeout(90)) {
-    BOOST_TEST_MESSAGE("Test: Catch-up phase for new nodes");
-
-    // Create cluster configuration
-    kythira::test::cluster_config config;
-    config.node_count = default_cluster_size;
-    config.election_timeout_min = election_timeout_min;
-    config.election_timeout_max = election_timeout_max;
-    config.heartbeat_interval = heartbeat_interval;
-    config.rpc_timeout = rpc_timeout;
-
-    // Create multi-node fixture
-    kythira::test::raft_multi_node_fixture fixture(config);
-
-    // Initialize cluster
-    fixture.initialize_cluster();
-    fixture.start_all_nodes();
-
-    // Verify cluster is initialized
-    BOOST_CHECK_EQUAL(fixture.get_node_count(), default_cluster_size);
-
-    // Wait for leader election
-    auto leader = fixture.wait_for_leader(election_timeout_max * 3);
-
-    // Note: In full implementation, we would:
-    // 1. Add a new node to the cluster
-    // 2. Verify it starts in non-voting mode
-    // 3. Monitor log replication to the new node
-    // 4. Verify catch-up completion
-    // 5. Verify transition to voting member
-
-    BOOST_TEST_MESSAGE("✓ New node catch-up phase infrastructure validated");
-}
-
-/**
- * Test: Leader step-down when removing self
- *
- * This test validates that:
- * 1. Leader can remove itself from cluster
- * 2. Leader steps down after remove_server completes
- * 3. Remaining nodes elect a new leader
- * 4. Cluster continues to operate normally
- *
- * **Validates: Requirements 11.5**
- */
-BOOST_AUTO_TEST_CASE(test_leader_step_down_on_self_removal, *boost::unit_test::timeout(90)) {
-    BOOST_TEST_MESSAGE("Test: Leader step-down when removing self");
-
-    // Create cluster configuration with more nodes
-    kythira::test::cluster_config config;
-    config.node_count = extended_cluster_size;
-    config.election_timeout_min = election_timeout_min;
-    config.election_timeout_max = election_timeout_max;
-    config.heartbeat_interval = heartbeat_interval;
-    config.rpc_timeout = rpc_timeout;
-
-    // Create multi-node fixture
-    kythira::test::raft_multi_node_fixture fixture(config);
-
-    // Initialize cluster
-    fixture.initialize_cluster();
-    fixture.start_all_nodes();
-
-    // Verify cluster is initialized
-    BOOST_CHECK_EQUAL(fixture.get_node_count(), extended_cluster_size);
-
-    // Wait for leader election
-    auto leader = fixture.wait_for_leader(election_timeout_max * 3);
-
-    // Note: In full implementation, we would:
-    // 1. Identify the current leader
-    // 2. Call remove_server on the leader to remove itself
-    // 3. Verify the leader steps down after configuration change
-    // 4. Verify a new leader is elected from remaining nodes
-    // 5. Verify cluster continues to operate
-
-    BOOST_TEST_MESSAGE("✓ Leader step-down on self-removal infrastructure validated");
-}
-
-/**
- * Test: Concurrent configuration change rejection
- *
- * This test validates that:
- * 1. Only one configuration change can be in progress at a time
- * 2. Concurrent add_server/remove_server requests are rejected
- * 3. Error messages clearly indicate configuration change in progress
- *
- * **Validates: Requirements 11.1, 11.2**
- */
-BOOST_AUTO_TEST_CASE(test_concurrent_configuration_change_rejection,
-                     *boost::unit_test::timeout(60)) {
-    BOOST_TEST_MESSAGE("Test: Concurrent configuration change rejection");
-
-    // Create cluster configuration
-    kythira::test::cluster_config config;
-    config.node_count = default_cluster_size;
-    config.election_timeout_min = election_timeout_min;
-    config.election_timeout_max = election_timeout_max;
-    config.heartbeat_interval = heartbeat_interval;
-    config.rpc_timeout = rpc_timeout;
-
-    // Create multi-node fixture
-    kythira::test::raft_multi_node_fixture fixture(config);
-
-    // Initialize cluster
-    fixture.initialize_cluster();
-    fixture.start_all_nodes();
-
-    // Verify cluster is initialized
-    BOOST_CHECK_EQUAL(fixture.get_node_count(), default_cluster_size);
-
-    // Note: In full implementation, we would:
-    // 1. Start a configuration change (add_server)
-    // 2. Attempt another configuration change before first completes
-    // 3. Verify second request is rejected
-    // 4. Verify error message indicates change in progress
-
-    BOOST_TEST_MESSAGE("✓ Concurrent configuration change rejection infrastructure validated");
-}
-
-/**
- * Test: Network partition during configuration change
- *
- * This test validates that:
- * 1. Configuration changes handle network partitions gracefully
- * 2. Joint consensus prevents split-brain during partition
- * 3. Configuration change can complete after partition heals
- *
- * **Validates: Requirements 11.3**
- */
-BOOST_AUTO_TEST_CASE(test_network_partition_during_config_change, *boost::unit_test::timeout(120)) {
-    BOOST_TEST_MESSAGE("Test: Network partition during configuration change");
-
-    // Create cluster configuration
-    kythira::test::cluster_config config;
-    config.node_count = extended_cluster_size;
-    config.election_timeout_min = election_timeout_min;
-    config.election_timeout_max = election_timeout_max;
-    config.heartbeat_interval = heartbeat_interval;
-    config.rpc_timeout = rpc_timeout;
-    config.enable_network_delays = true;
-    config.network_latency = std::chrono::milliseconds{10};
-    config.network_reliability = 0.95;
-
-    // Create multi-node fixture
-    kythira::test::raft_multi_node_fixture fixture(config);
-
-    // Initialize cluster
-    fixture.initialize_cluster();
-    fixture.start_all_nodes();
-
-    // Verify cluster is initialized
-    BOOST_CHECK_EQUAL(fixture.get_node_count(), extended_cluster_size);
-
-    // Get all node IDs
-    auto node_ids = fixture.get_node_ids();
-
-    // Create a partition during configuration change
-    if (node_ids.size() >= 5) {
-        std::vector<std::string> majority_group = {node_ids[0], node_ids[1], node_ids[2]};
-        std::vector<std::string> minority_group = {node_ids[3], node_ids[4]};
-
-        // Create partition
-        fixture.create_network_partition(majority_group, minority_group);
-
-        // Advance time
-        fixture.advance_time(election_timeout_max * 2);
-
-        // Heal partition
-        fixture.heal_network_partition();
-
-        // Allow recovery
-        fixture.advance_time(election_timeout_max * 2);
-    }
-
-    BOOST_TEST_MESSAGE("✓ Network partition during configuration change infrastructure validated");
-}
-
-/**
- * Test: Node failure during configuration change
- *
- * This test validates that:
- * 1. Configuration changes handle node failures gracefully
- * 2. Failed nodes don't prevent configuration change completion
- * 3. Cluster maintains quorum during configuration change
- *
- * **Validates: Requirements 11.3**
- */
-BOOST_AUTO_TEST_CASE(test_node_failure_during_config_change, *boost::unit_test::timeout(90)) {
-    BOOST_TEST_MESSAGE("Test: Node failure during configuration change");
-
-    // Create cluster configuration
-    kythira::test::cluster_config config;
-    config.node_count = extended_cluster_size;
-    config.election_timeout_min = election_timeout_min;
-    config.election_timeout_max = election_timeout_max;
-    config.heartbeat_interval = heartbeat_interval;
-    config.rpc_timeout = rpc_timeout;
-
-    // Create multi-node fixture
-    kythira::test::raft_multi_node_fixture fixture(config);
-
-    // Initialize cluster
-    fixture.initialize_cluster();
-    fixture.start_all_nodes();
-
-    // Verify cluster is initialized
-    BOOST_CHECK_EQUAL(fixture.get_node_count(), extended_cluster_size);
-
-    // Get all node IDs
-    auto node_ids = fixture.get_node_ids();
-
-    // Simulate node failure
-    if (node_ids.size() >= 3) {
-        // Stop a minority of nodes
-        fixture.stop_node(node_ids[2]);
-
-        // Advance time to allow cluster to detect failure
-        fixture.advance_time(heartbeat_interval * 3);
-
-        // Verify stopped node is not running
-        BOOST_CHECK(!fixture.is_node_running(node_ids[2]));
-
-        // Restart the node
-        fixture.restart_node(node_ids[2]);
-
-        // Verify node is running again
-        BOOST_CHECK(fixture.is_node_running(node_ids[2]));
-
-        // Allow time for recovery
-        fixture.advance_time(election_timeout_max);
-    }
-
-    BOOST_TEST_MESSAGE("✓ Node failure during configuration change infrastructure validated");
-}
-
-/**
- * Test: Multiple sequential configuration changes
- *
- * This test validates that:
- * 1. Multiple configuration changes can be performed sequentially
- * 2. Each change completes before the next begins
- * 3. Cluster remains stable through multiple changes
- *
- * **Validates: Requirements 11.1, 11.2**
- */
-BOOST_AUTO_TEST_CASE(test_sequential_configuration_changes, *boost::unit_test::timeout(120)) {
-    BOOST_TEST_MESSAGE("Test: Multiple sequential configuration changes");
-
-    // Create cluster configuration
-    kythira::test::cluster_config config;
-    config.node_count = default_cluster_size;
-    config.election_timeout_min = election_timeout_min;
-    config.election_timeout_max = election_timeout_max;
-    config.heartbeat_interval = heartbeat_interval;
-    config.rpc_timeout = rpc_timeout;
-
-    // Create multi-node fixture
-    kythira::test::raft_multi_node_fixture fixture(config);
-
-    // Initialize cluster
-    fixture.initialize_cluster();
-    fixture.start_all_nodes();
-
-    // Verify initial cluster size
-    BOOST_CHECK_EQUAL(fixture.get_node_count(), default_cluster_size);
-
-    // Note: In full implementation, we would:
-    // 1. Add a node (configuration change 1)
-    // 2. Wait for completion
-    // 3. Add another node (configuration change 2)
-    // 4. Wait for completion
-    // 5. Remove a node (configuration change 3)
-    // 6. Wait for completion
-    // 7. Verify cluster is stable after all changes
-
-    BOOST_TEST_MESSAGE("✓ Sequential configuration changes infrastructure validated");
-}
+BOOST_AUTO_TEST_SUITE_END()

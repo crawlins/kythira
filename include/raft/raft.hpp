@@ -4331,6 +4331,26 @@ auto node<Types>::check_election_timeout() -> void {
         return;
     }
 
+    // Nor does a server its own latest configuration leaves out (dissertation
+    // §4.2.2). A leader that removed itself steps down once C_new commits, but
+    // its followers may not have applied C_new yet; still running the joint
+    // configuration, they count it as a voter and would elect it, and it would
+    // then lead a cluster it is not part of, its heartbeats keeping the real
+    // members from ever electing one of their own. An empty voter set is a node
+    // that has not been configured yet and keeps the founding behaviour.
+    {
+        const auto& voters = _configuration.nodes();
+        bool listed =
+            voters.empty() || std::find(voters.begin(), voters.end(), _node_id) != voters.end();
+        if (!listed && _configuration.is_joint_consensus() && _configuration.old_nodes()) {
+            const auto& old_voters = *_configuration.old_nodes();
+            listed = std::find(old_voters.begin(), old_voters.end(), _node_id) != old_voters.end();
+        }
+        if (!listed) {
+            return;
+        }
+    }
+
     // A TimeoutNow accepted since the last tick campaigns NOW, without waiting
     // for the election timeout and without a pre-vote round — the leader has
     // already decided, and every other follower would refuse a pre-vote because
@@ -4553,8 +4573,20 @@ auto node<Types>::initialize_from_storage() -> void {
                       {"last_included_index", std::to_string(snap.last_included_index())}});
     }
 
-    // Reload log entries from persistence (entries after the snapshot point)
-    log_index_type first_needed = (_last_applied > 0) ? _last_applied + 1 : log_index_type{1};
+    // Reload log entries from persistence (entries after the snapshot point).
+    //
+    // The store is the only source of truth here, so the in-memory log is
+    // rebuilt from it rather than appended to. A node restarted in-process by
+    // stop() + start() still holds its previous run's log, and appending the
+    // persisted entries onto it duplicated every index after the last applied
+    // one, which broke the log-matching check for any leader that later
+    // replicated to it. For the same reason the reload starts after the
+    // snapshot, not after `_last_applied`: on an in-process restart the latter
+    // survives from the previous run, and starting there would drop committed
+    // entries no snapshot covers. In a fresh process the two are equal.
+    _log.clear();
+    log_index_type first_needed =
+        snap_opt.has_value() ? snap_opt->last_included_index() + 1 : log_index_type{1};
     log_index_type last_persisted = _persistence.get_last_log_index();
     if (last_persisted >= first_needed) {
         auto entries = _persistence.get_log_entries(first_needed, last_persisted);
@@ -6806,6 +6838,15 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                     return;
                 }
 
+                // A reply from a peer this leader no longer tracks — removed by a
+                // configuration change that committed while the RPC was in flight —
+                // must not put it back: `_next_index` is the replication fan-out,
+                // so recreating the entry kept the leader sending AppendEntries to
+                // the removed server for the rest of its term.
+                if (!_next_index.contains(target)) {
+                    return;
+                }
+
                 if (response.success()) {
                     // Success - update next_index and match_index
                     auto new_match_index = next_idx + entries_to_send.size() - 1;
@@ -7038,8 +7079,12 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
         chunk_num++;
     }
 
-    // Snapshot transfer complete - update next_index and match_index
+    // Snapshot transfer complete - update next_index and match_index, unless the
+    // peer was removed while the transfer ran (see the AppendEntries reply path).
     std::lock_guard<std::mutex> lock(_mutex);
+    if (!_next_index.contains(target)) {
+        return;
+    }
     _next_index[target] = snap.last_included_index() + 1;
     _match_index[target] = snap.last_included_index();
 

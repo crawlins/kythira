@@ -35,6 +35,17 @@ deviations from the original task descriptions, found during verification:
   `tests/raft_snapshot_preserves_state_property_test.cpp`; the new file
   verifies the same underlying assignment via the `initialize_from_storage()`
   restart path instead of forcing a live RPC exchange.
+- **Tasks 6/7, 12, 13, 15 test gap (closed 2026-10-02)**: the 2026-10-02
+  spec-gap audit found these tasks' tests did not check what the tasks name.
+  The joint-quorum test only did majority arithmetic, no test truncated a
+  configuration entry, and the add-server and leader-crash tests never looked
+  at how many leaders there were. `tests/membership_change_joint_safety_test.cpp`
+  now covers each on a live cluster: a joint entry that lacks only the C_new
+  majority, and one that lacks only the C_old majority, stays uncommitted
+  (each case fails if `advance_commit_index()` counts only the other set);
+  a follower reverts its configuration when a new leader overwrites its
+  uncommitted joint entry; `add_server` never shows two leaders at once; and a
+  leader crash mid-change never shows two leaders in one term.
 - All other tasks (1–5, 8–19) were already implemented and already covered by
   existing tests (`tests/membership_change_unit_test.cpp`,
   `tests/membership_change_add_server_property_test.cpp`,
