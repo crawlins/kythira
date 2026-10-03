@@ -1265,22 +1265,13 @@ private:
         }
     }
 
-    /// Strict decimal: digits only, all of them consumed, no sign, no
-    /// whitespace. `std::stoull` is not that — it reads "-1" as the largest
-    /// uint64 and "7x" as 7 — so a tag nobody here wrote could otherwise
-    /// steer the numbering instead of being ignored.
+    /// Strict decimal (node_id_traits): digits only, all of them consumed,
+    /// no sign, no whitespace. `std::stoull` is not that — it reads "-1" as
+    /// the largest uint64 and "7x" as 7 — so a tag nobody here wrote could
+    /// otherwise steer the numbering instead of being ignored.
     [[nodiscard]] static auto parse_node_id_tag(std::string_view text)
         -> std::optional<std::uint64_t> {
-        if (text.empty() ||
-            !std::ranges::all_of(text, [](char c) { return c >= '0' && c <= '9'; })) {
-            return std::nullopt;
-        }
-        std::uint64_t value = 0;
-        const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-        if (ec != std::errc{} || end != text.data() + text.size()) {
-            return std::nullopt;
-        }
-        return value;
+        return node_id_traits<std::uint64_t>::from_text(text);
     }
 
     [[nodiscard]] auto next_node_id_from(
