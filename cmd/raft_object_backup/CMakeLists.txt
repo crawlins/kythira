@@ -101,6 +101,36 @@ elseif(TARGET Boost::json)
     target_link_libraries(raft_object_backup PRIVATE Boost::json)
 endif()
 
+# ── Process-level test (object-backup-oci-oss-credentials, Requirement 6.3) ──
+#
+# Registered here rather than in tests/ because tests/ is configured first and
+# this file is what knows which providers the binary carries. Only the OCI and
+# OSS arms read credentials this tool maps itself, so only they get a test; the
+# test is given the same provider macros, and gates each case on its own.
+set(_KYTHIRA_BACKUP_PROCESS_TEST_DEFS "")
+if("oci-objectstorage" IN_LIST _KYTHIRA_BACKUP_ENABLED)
+    list(APPEND _KYTHIRA_BACKUP_PROCESS_TEST_DEFS KYTHIRA_BACKUP_PROVIDER_OCI)
+endif()
+if("oss" IN_LIST _KYTHIRA_BACKUP_ENABLED)
+    list(APPEND _KYTHIRA_BACKUP_PROCESS_TEST_DEFS KYTHIRA_BACKUP_PROVIDER_OSS)
+endif()
+if(_KYTHIRA_BACKUP_PROCESS_TEST_DEFS AND TARGET Boost::unit_test_framework)
+    add_executable(raft_object_backup_cli_process_test
+        "${CMAKE_SOURCE_DIR}/tests/raft_object_backup_cli_process_test.cpp")
+    target_compile_features(raft_object_backup_cli_process_test PRIVATE cxx_std_23)
+    target_compile_definitions(raft_object_backup_cli_process_test PRIVATE
+        ${_KYTHIRA_BACKUP_PROCESS_TEST_DEFS}
+        RAFT_OBJECT_BACKUP_PATH="$<TARGET_FILE:raft_object_backup>")
+    target_link_libraries(raft_object_backup_cli_process_test PRIVATE
+        Boost::unit_test_framework OpenSSL::Crypto)
+    add_dependencies(raft_object_backup_cli_process_test raft_object_backup)
+    add_test(NAME raft_object_backup_cli_process_test
+        COMMAND raft_object_backup_cli_process_test)
+    set_tests_properties(raft_object_backup_cli_process_test PROPERTIES
+        TIMEOUT 120
+        LABELS "integration;persistence;object-store;backup;cli")
+endif()
+
 if(_KYTHIRA_BACKUP_ENABLED)
     list(JOIN _KYTHIRA_BACKUP_ENABLED ", " _KYTHIRA_BACKUP_ENABLED_TEXT)
     message(STATUS "raft_object_backup: enabled (providers: ${_KYTHIRA_BACKUP_ENABLED_TEXT})")

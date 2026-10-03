@@ -859,6 +859,15 @@ set_tests_properties(object_store_backup_cli_unit_test PROPERTIES
     LABELS "unit;persistence;object-store;backup;cli"
 )
 
+# The environment-to-config mapping behind raft_object_backup's OCI and OSS
+# arms (object-backup-oci-oss-credentials). Unconditional: the headers it tests
+# include neither httplib nor OpenSSL, so every build leg can run it.
+add_raft_completion_test(cloud_config_env_unit_test cloud_config_env_unit_test.cpp)
+set_tests_properties(cloud_config_env_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;object-store;backup;cli;oci;alibaba"
+)
+
 add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
 add_raft_completion_test(tcp_cluster_join_test tcp_cluster_join_test.cpp)
 # chaos_node's environment parsing for joining a running cluster.
