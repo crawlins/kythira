@@ -63,7 +63,7 @@
 // received_message_info / translate_legacy_fields(). NOT
 // raft/coap_transport.hpp -- see above.
 #include <raft/coap_transport_config.hpp>
-#include <raft/coap_conformance_types.hpp>
+#include <raft/transport_conformance_types.hpp>
 #include <raft/coap_exchange_table.hpp>
 #include <raft/coap_block_option.hpp>
 #include <raft/coap_cantcoap_dtls.hpp>
@@ -126,6 +126,7 @@ inline constexpr const char* cantcoap_request_vote_path = "/raft/request_vote";
 inline constexpr const char* cantcoap_append_entries_path = "/raft/append_entries";
 inline constexpr const char* cantcoap_install_snapshot_path = "/raft/install_snapshot";
 inline constexpr const char* cantcoap_timeout_now_path = "/raft/timeout_now";
+inline constexpr const char* cantcoap_request_pre_vote_path = "/raft/request_pre_vote";
 
 /// How long the loop blocks in poll() before servicing timers. Bounds both
 /// retransmission granularity and how quickly stop() is noticed.
@@ -621,6 +622,16 @@ public:
             coap_message_reliability::always_confirmable);
     }
 
+    /// PreVote (.kiro/specs/http-coap-pre-vote-timeout-now/ Requirement 5).
+    /// RequestVote's reliability, not TimeoutNow's forced CON, as on libcoap.
+    auto send_request_pre_vote(std::uint64_t target,
+                               const kythira::request_pre_vote_request<>& request,
+                               std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::request_pre_vote_response<>> {
+        return send_rpc<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+            target, cantcoap_request_pre_vote_path, request, timeout);
+    }
+
     [[nodiscard]] auto bound_port() const -> std::uint16_t {
 #ifdef CANTCOAP_AVAILABLE
         return _socket.bound_port();
@@ -821,7 +832,12 @@ private:
                             "failed to deserialize CoAP response: " + std::string(e.what()))));
                     }
                 },
-                [promise](std::exception_ptr error) { promise->setException(error); },
+                // A 4.04/5.01 on an extension RPC means an older peer, not a
+                // failure; see coap_detail::map_extension_not_implemented.
+                [promise, target, resource_path](std::exception_ptr error) {
+                    promise->setException(coap_detail::map_extension_not_implemented(
+                        std::move(error), resource_path, target));
+                },
                 exchange->full_request, endpoint->second, resource_path,
                 reliability == coap_message_reliability::always_confirmable ||
                     _config.use_confirmable_messages);
@@ -1441,6 +1457,18 @@ public:
         _timeout_now_handler = std::move(handler);
     }
 
+    /// Optional extension (network_server_with_pre_vote). Until one is
+    /// registered, `/raft/request_pre_vote` answers 5.01 Not Implemented.
+    auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
+                                               const kythira::request_pre_vote_request<>&)>
+                                               handler) -> void {
+        if (!handler) {
+            throw std::invalid_argument("request_pre_vote handler must not be empty");
+        }
+        const std::lock_guard lock(_mutex);
+        _request_pre_vote_handler = std::move(handler);
+    }
+
     auto start() -> void {
         if (_running.load()) {
             return;
@@ -1749,6 +1777,16 @@ private:
                     _timeout_now_handler(
                         _registry.template decode_with<kythira::timeout_now_request<>>(
                             request_media_type, body)));
+            } else if (path == cantcoap_request_pre_vote_path) {
+                if (!_request_pre_vote_handler) {
+                    send_error(pdu, from, binding, CoapPDU::COAP_NOT_IMPLEMENTED);
+                    return;
+                }
+                encoded = _registry.encode_with(
+                    response_media_type,
+                    _request_pre_vote_handler(
+                        _registry.template decode_with<kythira::request_pre_vote_request<>>(
+                            request_media_type, body)));
             } else {
                 send_error(pdu, from, binding, CoapPDU::COAP_NOT_FOUND);
                 return;
@@ -2040,6 +2078,8 @@ private:
         _install_snapshot_handler;
     std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
         _timeout_now_handler;
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        _request_pre_vote_handler;
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};
@@ -2065,11 +2105,11 @@ static_assert(kythira::network_client<coap_cantcoap_client<coap_detail::conforma
 static_assert(kythira::network_server<coap_cantcoap_server<coap_detail::conformance_types>>,
               "coap_cantcoap_server must satisfy network_server");
 static_assert(
-    !kythira::network_client_with_pre_vote<coap_cantcoap_client<coap_detail::conformance_types>>,
-    "coap_cantcoap_client does not implement pre-vote; see design §2's capability table");
+    kythira::network_client_with_pre_vote<coap_cantcoap_client<coap_detail::conformance_types>>,
+    "coap_cantcoap_client must implement pre-vote; see design §2's capability table");
 static_assert(
-    !kythira::network_server_with_pre_vote<coap_cantcoap_server<coap_detail::conformance_types>>,
-    "coap_cantcoap_server does not implement pre-vote; see design §2's capability table");
+    kythira::network_server_with_pre_vote<coap_cantcoap_server<coap_detail::conformance_types>>,
+    "coap_cantcoap_server must implement pre-vote; see design §2's capability table");
 static_assert(
     !kythira::network_client_with_log_fetch<coap_cantcoap_client<coap_detail::conformance_types>>,
     "coap_cantcoap_client does not implement log fetch; see design §2's capability table");

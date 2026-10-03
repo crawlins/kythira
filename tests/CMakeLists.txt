@@ -1487,6 +1487,35 @@ add_raft_completion_test(composite_policy_unit_test composite_policy_unit_test.c
 add_raft_completion_test(shard_placement_driver_unit_test shard_placement_driver_unit_test.cpp)
 add_raft_completion_test(multi_raft_placement_driver_test multi_raft_placement_driver_test.cpp)
 add_raft_completion_test(leader_transfer_test leader_transfer_test.cpp)
+# .kiro/specs/http-coap-pre-vote-timeout-now/ tasks 5.4 and 6: PreVote and
+# TimeoutNow end to end over cpp-httplib, three multi_raft hosts on real
+# sockets. Gated on cpp-httplib because the cluster is served over it.
+if(TARGET httplib::httplib)
+    add_raft_completion_test(http_pre_vote_timeout_now_test http_pre_vote_timeout_now_test.cpp)
+    target_include_directories(http_pre_vote_timeout_now_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(http_pre_vote_timeout_now_test PRIVATE httplib::httplib)
+    # Task 5.5: the leadership-transfer case also runs over Beast and Proxygen
+    # when the build has them, through the multi-Raft harness's own gates.
+    if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
+        target_compile_definitions(http_pre_vote_timeout_now_test PRIVATE KYTHIRA_BENCH_HAS_BEAST)
+        target_link_libraries(http_pre_vote_timeout_now_test PRIVATE Boost::beast)
+    endif()
+    if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+        target_compile_definitions(http_pre_vote_timeout_now_test PRIVATE KYTHIRA_BENCH_HAS_PROXYGEN)
+        target_link_libraries(http_pre_vote_timeout_now_test PRIVATE
+            proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
+    endif()
+    if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT OR KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+        # Beast, Proxygen and cpp-httplib in one TU, like the three-way test.
+        set_target_properties(http_pre_vote_timeout_now_test PROPERTIES JOB_POOL_COMPILE heavy_tu)
+    endif()
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(http_pre_vote_timeout_now_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_link_libraries(http_pre_vote_timeout_now_test PRIVATE atomic)
+    endif()
+endif()
 
 # Peer-to-peer log replication (gossip catch-up) — .kiro/specs/peer2peer-log-replication/
 add_raft_completion_test(peer2peer_replication_unit_test peer2peer_replication_unit_test.cpp)

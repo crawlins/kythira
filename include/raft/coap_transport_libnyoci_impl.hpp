@@ -64,7 +64,7 @@
 // translate_legacy_fields(), shared with the libcoap backend. NOT
 // raft/coap_transport.hpp — see the header comment above.
 #include <raft/coap_transport_config.hpp>
-#include <raft/coap_conformance_types.hpp>
+#include <raft/transport_conformance_types.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
 #include <raft/coap_utils.hpp>
@@ -138,6 +138,7 @@ inline constexpr const char* libnyoci_request_vote_path = "/raft/request_vote";
 inline constexpr const char* libnyoci_append_entries_path = "/raft/append_entries";
 inline constexpr const char* libnyoci_install_snapshot_path = "/raft/install_snapshot";
 inline constexpr const char* libnyoci_timeout_now_path = "/raft/timeout_now";
+inline constexpr const char* libnyoci_request_pre_vote_path = "/raft/request_pre_vote";
 
 // How long the process-loop thread blocks in nyoci_plat_wait() before looking
 // at its own queues again. libnyoci has no way to interrupt its poll() from
@@ -1010,6 +1011,16 @@ public:
             coap_message_reliability::always_confirmable);
     }
 
+    /// PreVote (.kiro/specs/http-coap-pre-vote-timeout-now/ Requirement 5).
+    /// RequestVote's reliability, not TimeoutNow's forced CON, as on libcoap.
+    auto send_request_pre_vote(std::uint64_t target,
+                               const kythira::request_pre_vote_request<>& request,
+                               std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::request_pre_vote_response<>> {
+        return send_rpc<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+            target, libnyoci_request_pre_vote_path, request, timeout);
+    }
+
     /// The ephemeral UDP source port libnyoci bound. Exposed for tests; 0 when
     /// the backend is compiled out.
     [[nodiscard]] auto bound_port() const -> std::uint16_t { return _bound_port; }
@@ -1227,8 +1238,11 @@ private:
                         "failed to deserialize CoAP response: " + std::string(e.what()))));
                 }
             };
-            rpc->reject_callback = [promise](std::exception_ptr error) {
-                promise->setException(error);
+            // A 4.04/5.01 on an extension RPC means an older peer, not a
+            // failure; see coap_detail::map_extension_not_implemented.
+            rpc->reject_callback = [promise, target, resource_path](std::exception_ptr error) {
+                promise->setException(coap_detail::map_extension_not_implemented(
+                    std::move(error), resource_path, target));
             };
             if (_edhoc_bootstrap && !_oscore) {
                 // First RPC to this peer pays for the handshake.
@@ -1803,6 +1817,18 @@ public:
         _timeout_now_handler = std::move(handler);
     }
 
+    /// Optional extension (network_server_with_pre_vote). Until one is
+    /// registered, `/raft/request_pre_vote` answers 5.01 Not Implemented.
+    auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
+                                               const kythira::request_pre_vote_request<>&)>
+                                               handler) -> void {
+        if (!handler) {
+            throw std::invalid_argument("request_pre_vote handler must not be empty");
+        }
+        const std::lock_guard lock(_mutex);
+        _request_pre_vote_handler = std::move(handler);
+    }
+
     auto start() -> void {
         if (_running.load()) {
             return;
@@ -2018,6 +2044,12 @@ private:
                     copy_handler(_timeout_now_handler), body, request_media_type,
                     response_media_type, options);
             }
+            if (resource_path == libnyoci_request_pre_vote_path) {
+                return dispatch<kythira::request_pre_vote_request<>,
+                                kythira::request_pre_vote_response<>>(
+                    copy_handler(_request_pre_vote_handler), body, request_media_type,
+                    response_media_type, options);
+            }
         } catch (const std::exception&) {
             // A handler that threw, or a body this registry could not decode.
             // Dropping the response instead would leave the peer retransmitting
@@ -2220,6 +2252,15 @@ private:
                 body = _registry.encode_with(
                     response_media_type,
                     handler(_registry.template decode_with<kythira::timeout_now_request<>>(
+                        request_media_type, request_body)));
+            } else if (resource_path == libnyoci_request_pre_vote_path) {
+                auto handler = copy_handler(_request_pre_vote_handler);
+                if (!handler) {
+                    return respond_oscore(binding, 0xA1, 0, {});
+                }
+                body = _registry.encode_with(
+                    response_media_type,
+                    handler(_registry.template decode_with<kythira::request_pre_vote_request<>>(
                         request_media_type, request_body)));
             } else {
                 return respond_oscore(binding, 0x84, 0, {});  // 4.04
@@ -2456,6 +2497,8 @@ private:
         _install_snapshot_handler;
     std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
         _timeout_now_handler;
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        _request_pre_vote_handler;
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};
@@ -2481,11 +2524,11 @@ static_assert(kythira::network_client<coap_libnyoci_client<coap_detail::conforma
 static_assert(kythira::network_server<coap_libnyoci_server<coap_detail::conformance_types>>,
               "coap_libnyoci_server must satisfy network_server");
 static_assert(
-    !kythira::network_client_with_pre_vote<coap_libnyoci_client<coap_detail::conformance_types>>,
-    "coap_libnyoci_client does not implement pre-vote; see design §2's capability table");
+    kythira::network_client_with_pre_vote<coap_libnyoci_client<coap_detail::conformance_types>>,
+    "coap_libnyoci_client must implement pre-vote; see design §2's capability table");
 static_assert(
-    !kythira::network_server_with_pre_vote<coap_libnyoci_server<coap_detail::conformance_types>>,
-    "coap_libnyoci_server does not implement pre-vote; see design §2's capability table");
+    kythira::network_server_with_pre_vote<coap_libnyoci_server<coap_detail::conformance_types>>,
+    "coap_libnyoci_server must implement pre-vote; see design §2's capability table");
 static_assert(
     !kythira::network_client_with_log_fetch<coap_libnyoci_client<coap_detail::conformance_types>>,
     "coap_libnyoci_client does not implement log fetch; see design §2's capability table");

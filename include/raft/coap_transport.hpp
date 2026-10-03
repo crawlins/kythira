@@ -290,6 +290,17 @@ public:
                           std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::timeout_now_response<>>;
 
+    /// PreVote (dissertation §9.6): POST /raft/request_pre_vote, satisfying
+    /// network_client_with_pre_vote. Sent with RequestVote's reliability, not
+    /// TimeoutNow's forced CON: start_pre_vote() retries a lost one, and it
+    /// goes out as often as RequestVote does. A peer without the resource
+    /// (4.04) or without a handler (5.01) fails the future with
+    /// rpc_not_implemented_exception.
+    auto send_request_pre_vote(std::uint64_t target,
+                               const kythira::request_pre_vote_request<>& request,
+                               std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::request_pre_vote_response<>>;
+
     // Multicast support. Resolves once `timeout` has elapsed with every
     // successful response that arrived in that window, one entry per
     // responding group member -- possibly none.
@@ -588,6 +599,13 @@ public:
         std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
             handler) -> void;
 
+    /// Serves POST /raft/request_pre_vote, satisfying
+    /// network_server_with_pre_vote. Until one is registered the resource
+    /// answers 5.01 Not Implemented.
+    auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
+                                               const kythira::request_pre_vote_request<>&)>
+                                               handler) -> void;
+
     // Server lifecycle
     auto start() -> void;
     auto stop() -> void;
@@ -705,6 +723,8 @@ private:
         _install_snapshot_handler;
     std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
         _timeout_now_handler;
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        _request_pre_vote_handler;
 
     // Synchronization
     mutable std::mutex _mutex;

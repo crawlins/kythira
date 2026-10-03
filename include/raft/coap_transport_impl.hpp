@@ -4,7 +4,7 @@
 #pragma once
 
 #include <raft/coap_transport.hpp>
-#include <raft/coap_conformance_types.hpp>
+#include <raft/transport_conformance_types.hpp>
 #include <raft/coap_security_impl.hpp>
 #include <raft/net_bind.hpp>
 #include <algorithm>
@@ -589,6 +589,18 @@ auto coap_client<Types>::send_timeout_now(std::uint64_t target,
         coap_message_reliability::always_confirmable);
 }
 
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::send_request_pre_vote(std::uint64_t target,
+                                               const kythira::request_pre_vote_request<>& request,
+                                               std::chrono::milliseconds timeout)
+    -> future_template<kythira::request_pre_vote_response<>> {
+    // RequestVote's reliability, not TimeoutNow's forced CON: see the
+    // declaration.
+    return send_rpc<request_pre_vote_request<>, request_pre_vote_response<>>(
+        target, "/raft/request_pre_vote", request, timeout);
+}
+
 // CoAP server implementation
 template<typename Types>
 requires kythira::transport_types<Types>
@@ -827,6 +839,23 @@ auto coap_server<Types>::register_timeout_now_handler(
     // The /raft/timeout_now resource is registered by setup_resources() with
     // the other three and dispatches through this member, so a handler
     // registered after start() is picked up without re-registering anything.
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::register_request_pre_vote_handler(
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        handler) -> void {
+    std::lock_guard lock(_mutex);
+
+    if (!handler) {
+        throw coap_transport_error("RequestPreVote handler cannot be null");
+    }
+
+    _request_pre_vote_handler = std::move(handler);
+
+    // Like /raft/timeout_now, the resource is always registered and reads
+    // this member per request, so a late registration needs nothing more.
 }
 
 template<typename Types>
@@ -2749,8 +2778,13 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                             "Failed to deserialize response: " + std::string(e.what()))));
                     }
                 },
-                [promise](std::exception_ptr ex) { promise->setException(ex); }, serialized_request,
-                endpoint_uri, resource_path, confirmable);
+                // A 4.04/5.01 on an extension RPC means an older peer, not a
+                // failure; see coap_detail::map_extension_not_implemented.
+                [promise, target, resource_path](std::exception_ptr ex) {
+                    promise->setException(coap_detail::map_extension_not_implemented(
+                        std::move(ex), resource_path, target));
+                },
+                serialized_request, endpoint_uri, resource_path, confirmable);
 
             _pending_requests[token] = std::move(pending_msg);
         }
@@ -3110,6 +3144,43 @@ auto coap_server<Types>::setup_resources() -> void {
         throw coap_transport_error("Failed to create TimeoutNow resource");
     }
 
+    // Register /raft/request_pre_vote with request_vote's flags (OSCORE-only
+    // under OSCORE) and the same dispatch, so it gets the same security and
+    // duplicate detection. Like timeout_now, registered whether or not a
+    // handler is yet, so an unregistered one answers 5.01 rather than 4.04.
+    coap_resource_t* pv_resource =
+        coap_resource_init(coap_make_str_const("raft/request_pre_vote"), raft_resource_flags);
+    if (pv_resource) {
+        coap_register_handler(
+            pv_resource, COAP_REQUEST_POST,
+            [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
+               const coap_string_t* query, coap_pdu_t* response) -> void {
+                auto* server =
+                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                if (server && server->_request_pre_vote_handler) {
+                    server->template handle_rpc_resource<request_pre_vote_request<>,
+                                                         request_pre_vote_response<>>(
+                        resource, session, request, query, response,
+                        server->_request_pre_vote_handler);
+                } else {
+                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_NOT_IMPLEMENTED);
+                    if (server) {
+                        server->_logger.warning("RequestPreVote handler not registered");
+                    }
+                }
+            });
+
+        coap_resource_set_userdata(pv_resource, this);
+        coap_add_resource(_coap_context, pv_resource);
+
+        _logger.info("Registered RequestPreVote resource with libcoap",
+                     {{"resource_path", "/raft/request_pre_vote"},
+                      {"handler_registered", _request_pre_vote_handler ? "true" : "false"}});
+    } else {
+        _logger.error("Failed to create RequestPreVote resource");
+        throw coap_transport_error("Failed to create RequestPreVote resource");
+    }
+
     // No explicit catch-all handler is registered for unknown resources:
     // libcoap already responds 4.04 Not Found by default when a request's
     // URI-Path doesn't match any registered resource. An earlier version of
@@ -3125,7 +3196,9 @@ auto coap_server<Types>::setup_resources() -> void {
         {{"request_vote_handler", _request_vote_handler ? "registered" : "not_registered"},
          {"append_entries_handler", _append_entries_handler ? "registered" : "not_registered"},
          {"install_snapshot_handler", _install_snapshot_handler ? "registered" : "not_registered"},
-         {"timeout_now_handler", _timeout_now_handler ? "registered" : "not_registered"}});
+         {"timeout_now_handler", _timeout_now_handler ? "registered" : "not_registered"},
+         {"request_pre_vote_handler",
+          _request_pre_vote_handler ? "registered" : "not_registered"}});
 #endif
 
     // Log block transfer configuration
@@ -8492,10 +8565,10 @@ static_assert(kythira::network_client<coap_client<coap_detail::conformance_types
 static_assert(kythira::network_server<coap_server<coap_detail::conformance_types>>,
               "coap_server must satisfy network_server");
 
-static_assert(!kythira::network_client_with_pre_vote<coap_client<coap_detail::conformance_types>>,
-              "coap_client does not implement pre-vote; see design §2's capability table");
-static_assert(!kythira::network_server_with_pre_vote<coap_server<coap_detail::conformance_types>>,
-              "coap_server does not implement pre-vote; see design §2's capability table");
+static_assert(kythira::network_client_with_pre_vote<coap_client<coap_detail::conformance_types>>,
+              "coap_client must satisfy network_client_with_pre_vote");
+static_assert(kythira::network_server_with_pre_vote<coap_server<coap_detail::conformance_types>>,
+              "coap_server must satisfy network_server_with_pre_vote");
 static_assert(!kythira::network_client_with_log_fetch<coap_client<coap_detail::conformance_types>>,
               "coap_client does not implement log fetch; see design §2's capability table");
 static_assert(!kythira::network_server_with_log_fetch<coap_server<coap_detail::conformance_types>>,

@@ -65,10 +65,14 @@ explicitly:
 static_assert(kythira::network_client<coap_client<coap_kythira_types>>);
 static_assert(kythira::network_server<coap_server<coap_kythira_types>>);
 static_assert(kythira::network_client_with_timeout_now<coap_client<coap_kythira_types>>);
-static_assert(!kythira::network_client_with_pre_vote<coap_client<coap_kythira_types>>,
-              "CoAP does not implement pre-vote; see design §2's table. If this "
+static_assert(!kythira::network_client_with_log_fetch<coap_client<coap_kythira_types>>,
+              "CoAP does not implement log fetch; see design §2's table. If this "
               "fires, the table is stale, not the assertion.");
 ```
+
+(As first written the negative example was pre-vote. CoAP gained pre-vote in
+`.kiro/specs/http-coap-pre-vote-timeout-now/`, and the assertion flipped to
+positive with it.)
 
 Asserting the *negative* is deliberate. A backend that quietly gains or loses
 an extension changes which multi-Raft features work on it, and that should
@@ -80,7 +84,7 @@ The capability table, kept in this section and mirrored by the assertions:
 | | libcoap | libnyoci | cantcoap |
 |---|---|---|---|
 | `network_client` / `network_server` | yes | yes | yes |
-| pre-vote | no | no | no |
+| pre-vote | yes | yes | yes |
 | log fetch | no | no | no |
 | cluster join / leave | no | no | no |
 | timeout-now | yes | yes | yes |
@@ -88,6 +92,9 @@ The capability table, kept in this section and mirrored by the assertions:
 The same rows live in `tests/coap_capability_table.hpp`, checked against each
 backend by its `coap_*_concept_conformance_test`, and as `static_assert`s at the
 foot of each backend header. Change all three together.
+
+The pre-vote row was "no" until `.kiro/specs/http-coap-pre-vote-timeout-now/`;
+that spec explains why the gap was historical rather than deliberate.
 
 Absent extensions are not a defect: `node<Types>` detects them with
 `if constexpr` and does without. They are only a defect when undocumented.

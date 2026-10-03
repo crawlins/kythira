@@ -3,8 +3,10 @@
 
 #pragma once
 
+#include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace kythira {
 
@@ -18,6 +20,31 @@ public:
 class network_exception : public raft_exception {
 public:
     explicit network_exception(const std::string& message) : raft_exception(message) {}
+};
+
+// A peer answered that it cannot serve an optional extension RPC (PreVote,
+// TimeoutNow): HTTP 404/501 or CoAP 4.04/5.01 on the extension's path. It
+// means "this peer runs a build without the RPC", not "the call failed", and
+// the core treats it differently from every other network error: a pre-vote
+// round counts it as a grant and a leadership transfer reports it as
+// unsupported (.kiro/specs/http-coap-pre-vote-timeout-now/ Requirement 4).
+//
+// Mandatory RPCs never produce it: a peer without RequestVote is
+// misconfigured, not older, and keeps the transport's ordinary error.
+class rpc_not_implemented_exception : public network_exception {
+public:
+    rpc_not_implemented_exception(std::string rpc, std::uint64_t target)
+        : network_exception("peer " + std::to_string(target) + " does not implement RPC '" + rpc +
+                            "' (not implemented)"),
+          _rpc{std::move(rpc)},
+          _target{target} {}
+
+    [[nodiscard]] auto rpc() const -> const std::string& { return _rpc; }
+    [[nodiscard]] auto target() const -> std::uint64_t { return _target; }
+
+private:
+    std::string _rpc;
+    std::uint64_t _target;
 };
 
 // Exception for persistence-related errors

@@ -504,6 +504,7 @@ valgrind --tool=massif ./your_raft_application
 | "TLS handshake failed" | TLS version or cipher mismatch | Verify TLS configuration compatibility |
 | "Node not found in URL map" | Missing node URL configuration | Add URL for target node ID |
 | "Request timeout" | RPC took too long | Increase request timeout or check server performance |
+| "does not implement RPC 'request_pre_vote'" (or `'timeout_now'`) | Peer answered 404/501 on an extension endpoint: an older build, or no handler registered | Expected during a rolling upgrade; see [HTTP Transport Endpoints](http_transport_endpoints.md) |
 
 ### Server Errors
 
