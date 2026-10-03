@@ -47,6 +47,11 @@ current list of outstanding work, see [TODO.md](TODO.md).
   `catch_up_gap_threshold` (default 50), a value it had never read.
   `fetch_log_entries` now rides `tcp_rpc`, `tls_tcp_rpc` and all three HTTP
   transports, where catch-up had compiled down to a no-op; CoAP follows.
+- **cantcoap serves responses larger than one block.** Its Block2
+  continuations carry no request body, and the stateless server ran the
+  handler again on the empty body and answered 5.00, so no RPC response over
+  `max_block_size` ever arrived. The server now keeps a multi-block response
+  for its continuations, keyed by peer and token.
 - **The Alibaba Cloud spec is closed** (`.kiro/specs/alibaba-cloud-services/`,
   every task ticked, task 4 by descope). The checklist had read 3 of 12 since
   August while the tree held nearly all of it; each task is now ticked against

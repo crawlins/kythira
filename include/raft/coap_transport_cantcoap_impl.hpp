@@ -1506,6 +1506,7 @@ public:
         {
             const std::lock_guard lock(_mutex);
             _block1_assembly.clear();
+            _block2_responses.clear();
             _seen.clear();
         }
 #endif
@@ -1678,6 +1679,29 @@ private:
             _block1_assembly.clear();
         }
 
+        // Block2 continuation (Requirement 5.1). The client asks for block N>0
+        // without repeating the request body, so the response encoded for
+        // block 0 is served from _block2_responses rather than by running the
+        // handler again on an empty body -- which also keeps every slice from
+        // the same response even if the handler's answer would have changed.
+        const auto block2_key = from.key() + '\0' + cantcoap_detail::token_of(pdu);
+        if (options.block2 && options.block2->block_number > 0) {
+            const auto stored = _block2_responses.find(block2_key);
+            if (stored == _block2_responses.end()) {
+                // 4.08 Request Entity Incomplete; cantcoap's enum stops short.
+                send_error(pdu, from, binding, static_cast<CoapPDU::Code>(0x88));
+                return;
+            }
+            send_content(pdu, from, binding, stored->second.body, stored->second.media_type,
+                         options.block2->block_number);
+            const auto served_to = (static_cast<std::size_t>(options.block2->block_number) + 1) *
+                                   response_block_size();
+            if (served_to >= stored->second.body.size()) {
+                _block2_responses.erase(stored);
+            }
+            return;
+        }
+
         // Content negotiation, exactly as the other two backends do it.
         std::string request_media_type = _registry.default_media_type();
         if (options.content_format) {
@@ -1758,8 +1782,35 @@ private:
             return;
         }
 
-        send_content(pdu, from, binding, encoded, response_media_type,
-                     options.block2 ? options.block2->block_number : 0);
+        if (encoded.size() > response_block_size()) {
+            remember_block2_response(block2_key, encoded, response_media_type);
+        }
+        send_content(pdu, from, binding, encoded, response_media_type, 0);
+    }
+
+    /// The Block2 slice size send_content() uses.
+    [[nodiscard]] auto response_block_size() const -> std::size_t {
+        return _config.enable_block_transfer &&
+                       kythira::coap_utils::is_valid_block_size(_config.max_block_size)
+                   ? _config.max_block_size
+                   : 1024;
+    }
+
+    /// Keep a multi-block response for its continuations. Bounded: entries a
+    /// client abandoned age out after block2_response_lifetime, and past
+    /// max_block2_responses the oldest goes first.
+    auto remember_block2_response(const std::string& key, const std::vector<std::byte>& body,
+                                  const std::string& media_type) -> void {
+        const auto now = std::chrono::steady_clock::now();
+        std::erase_if(_block2_responses, [now](const auto& entry) {
+            return now - entry.second.stored_at > block2_response_lifetime;
+        });
+        if (_block2_responses.size() >= max_block2_responses) {
+            const auto oldest = std::ranges::min_element(
+                _block2_responses, {}, [](const auto& entry) { return entry.second.stored_at; });
+            _block2_responses.erase(oldest);
+        }
+        _block2_responses.insert_or_assign(key, block2_response{body, media_type, now});
     }
 
     /// Build a reply that echoes the request's token and Message ID, as a
@@ -1972,11 +2023,7 @@ private:
         cantcoap_detail::add_uint_option(*reply, CoapPDU::COAP_OPTION_CONTENT_FORMAT,
                                          static_cast<std::uint32_t>(*format));
 
-        const std::size_t block_size =
-            _config.enable_block_transfer &&
-                    kythira::coap_utils::is_valid_block_size(_config.max_block_size)
-                ? _config.max_block_size
-                : 1024;
+        const std::size_t block_size = response_block_size();
         if (body.size() > block_size) {
             const std::size_t offset = static_cast<std::size_t>(block_number) * block_size;
             if (offset >= body.size()) {
@@ -2045,6 +2092,17 @@ private:
     std::atomic<bool> _running{false};
     coap_exchange_table _seen;
     std::vector<std::byte> _block1_assembly;
+
+    /// A response larger than one block, kept for the Block2 continuations
+    /// that ask for the rest of it. Keyed by peer address and token.
+    struct block2_response {
+        std::vector<std::byte> body;
+        std::string media_type;
+        std::chrono::steady_clock::time_point stored_at;
+    };
+    static constexpr auto block2_response_lifetime = std::chrono::seconds{60};
+    static constexpr std::size_t max_block2_responses = 64;
+    std::unordered_map<std::string, block2_response> _block2_responses;
 
 #ifdef CANTCOAP_AVAILABLE
     cantcoap_detail::udp_socket _socket;
