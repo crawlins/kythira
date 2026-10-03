@@ -326,6 +326,28 @@ public:
             std::optional<peer_info<NodeId, Address>>{});
     }
 
+    // peer2peer-log-replication Requirement 4.1 — the same filter as
+    // find_catch_up_source (fresh, a current member, not this node), so the
+    // gap the node computes is one find_catch_up_source can actually close.
+    [[nodiscard]] auto highest_known_last_log_index() const -> std::optional<LogIndex> {
+        auto self = _self_id.rlock();
+        auto members = _active_members.rlock();
+        auto locked = _table.rlock();
+        auto now = gossip_detail::epoch_seconds_now();
+
+        std::optional<LogIndex> highest;
+        for (const auto& [id, digest] : *locked) {
+            if ((self->has_value() && id == self->value()) || digest.fresh_until < now ||
+                !members->contains(id)) {
+                continue;
+            }
+            if (!highest.has_value() || digest.last_log_index > *highest) {
+                highest = digest.last_log_index;
+            }
+        }
+        return highest;
+    }
+
     // Requirement 1.4/2.2 — replaces _active_members; resolves immediately.
     // This, not address_book, is this instance's source of truth for "who is
     // currently a cluster member."

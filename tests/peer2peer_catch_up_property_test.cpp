@@ -187,6 +187,9 @@ kythira::raft_configuration make_fast_config() {
     cfg._rpc_timeout = std::chrono::milliseconds{200};
     cfg._progress_gossip_interval = std::chrono::milliseconds{25};
     cfg._catch_up_fetch_timeout = std::chrono::milliseconds{300};
+    // These clusters commit a handful of entries, far below the default
+    // 50-entry gap threshold, so any gap must trigger a fetch here.
+    cfg._catch_up_gap_threshold = 0;
     return cfg;
 }
 
@@ -424,6 +427,119 @@ BOOST_AUTO_TEST_CASE(remove_server_revokes_catch_up_eligibility_immediately,
     // via node1's own get_cluster_size(), the same signal update_membership was
     // driven from).
     BOOST_CHECK_EQUAL(node1.get_cluster_size(), 2u);
+
+    node3.stop();
+    node2.stop();
+    node1.stop();
+}
+
+/**
+ * Property (Requirement 4.1/4.2): a follower whose gap to the highest known
+ * digest is at or below catch_up_gap_threshold does not fetch from a peer;
+ * once the gap exceeds it, the same follower catches up. Same topology as
+ * joining_node_catches_up_via_peer_not_leader, so node 3 can only converge by
+ * peer fetch.
+ */
+BOOST_AUTO_TEST_CASE(catch_up_waits_for_gap_above_threshold, *boost::unit_test::timeout(60)) {
+    auto table = std::make_shared<replicator_t::table_type>();
+
+    sim_t sim;
+    sim.start();
+    auto net1 = sim.create_node("1");
+    auto net2 = sim.create_node("2");
+    auto net3 = sim.create_node("3");
+
+    network_simulator::NetworkEdge edge{};
+    sim.add_edge("1", "2", edge);
+    sim.add_edge("2", "1", edge);
+    sim.add_edge("2", "3", edge);
+    sim.add_edge("3", "2", edge);
+
+    constexpr std::uint64_t threshold = 20;
+    auto cfg = make_fast_config();
+    auto cfg3 = make_dormant_config();
+    cfg3._catch_up_gap_threshold = threshold;
+
+    auto make_node = [&](std::uint64_t id, auto net, const kythira::raft_configuration& c) {
+        return test_node{id,
+                         {net, test_types::serializer_type{}},
+                         {net, test_types::serializer_type{}},
+                         {},
+                         kythira::console_logger{},
+                         {},
+                         {},
+                         c,
+                         std::to_string(id),
+                         preset_peer_discovery<std::uint64_t, std::string>{},
+                         replicator_t{table}};
+    };
+
+    auto node1 = make_node(1, net1, cfg);
+    auto node2 = make_node(2, net2, cfg);
+    auto node3 = make_node(3, net3, cfg3);
+
+    node1.set_cluster_configuration({1, 2});
+    node2.set_cluster_configuration({1, 2});
+    node3.set_cluster_configuration({2, 3});
+
+    node1.start();
+    node2.start();
+    node3.start();
+
+    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+    node1.check_election_timeout();
+    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+
+    auto commit_batch = [&](int first, int count) {
+        for (int i = first; i < first + count; ++i) {
+            auto command = kythira::test_key_value_state_machine<std::uint64_t>::make_put_command(
+                "key" + std::to_string(i), "value" + std::to_string(i));
+            try {
+                node1.submit_command(command, std::chrono::milliseconds{500});
+            } catch (...) {
+            }
+            node1.check_heartbeat_timeout();
+        }
+        for (int i = 0; i < 10; ++i) {
+            node1.check_heartbeat_timeout();
+            std::this_thread::sleep_for(cfg._heartbeat_interval);
+        }
+        auto commit = node1.debug_state().commit_index;
+        BOOST_REQUIRE(wait_until([&] { return node2.debug_state().last_applied >= commit; }));
+        return commit;
+    };
+    // node1's heartbeats keep flowing between batches. Without them node2's
+    // 80-160ms election timer fires during the quiet window below, node2
+    // takes over, and the second batch submitted to node1 never commits.
+    auto tick_all = [&] {
+        node1.check_heartbeat_timeout();
+        node1.check_election_timeout();
+        node2.check_election_timeout();
+        node3.check_election_timeout();
+    };
+
+    // Below the threshold: node 2 is a fresh, eligible source the whole time,
+    // and node 3 still never fetches.
+    auto first_commit = commit_batch(0, 10);
+    BOOST_REQUIRE_LE(first_commit, threshold);
+    auto quiet_until = std::chrono::steady_clock::now() + std::chrono::milliseconds{600};
+    while (std::chrono::steady_clock::now() < quiet_until) {
+        tick_all();
+        std::this_thread::sleep_for(std::chrono::milliseconds{15});
+    }
+    BOOST_CHECK_EQUAL(node3.debug_state().log.size(), 0u);
+
+    // Above the threshold: node 3 now catches up from node 2.
+    BOOST_REQUIRE(node1.is_leader());
+    auto second_commit = commit_batch(10, static_cast<int>(threshold) + 5);
+    BOOST_REQUIRE_GT(second_commit, threshold);
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            tick_all();
+            return static_cast<std::uint64_t>(node3.debug_state().log.size()) >= second_commit;
+        },
+        std::chrono::milliseconds{6000}));
+    BOOST_CHECK(!node3.is_leader());
 
     node3.stop();
     node2.stop();
