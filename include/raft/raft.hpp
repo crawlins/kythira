@@ -499,9 +499,11 @@ public:
     /// persistence engine, then discards the log entries it covers. A node
     /// restarted on the same persistence engine restores from it.
     ///
-    /// Nothing inside the node calls this yet — `snapshot_threshold_bytes` is
-    /// not wired to it — so an application that wants a bounded log calls it.
-    /// The overload that accepts caller-supplied state stays private: state
+    /// The node also does this on its own: once the commands it has applied
+    /// since its last snapshot add up to `snapshot_threshold_bytes()`, the
+    /// apply path snapshots and compacts. Calling it directly is still useful
+    /// to compact at a point the application chooses, such as before a
+    /// planned restart. The overload that accepts caller-supplied state stays private: state
     /// that did not come from this node's own state machine at
     /// `last_applied_index()` would make the snapshot lie about what it covers.
     auto create_snapshot() -> void;
@@ -745,6 +747,14 @@ private:
     // Index of highest log entry applied to state machine (initialized to 0, increases
     // monotonically)
     log_index_type _last_applied;
+
+    // Command bytes applied since the last snapshot this node created or
+    // installed. apply_committed_entries() snapshots automatically once this
+    // reaches the configuration's snapshot_threshold_bytes(). It counts
+    // applied entries rather than the in-memory log because only applied
+    // entries can be compacted: entries still waiting to commit would push
+    // the count over the threshold with nothing a snapshot could remove.
+    std::size_t _bytes_applied_since_snapshot{0};
 
     // Current server state (follower, candidate, or leader)
     kythira::server_state _state;
@@ -1281,6 +1291,10 @@ private:
 
     // Snapshot operations (the no-argument create_snapshot() is public)
     auto create_snapshot(const std::vector<std::byte>& state_machine_state) -> void;
+    // create_snapshot() with _mutex already held, for the apply path.
+    auto create_snapshot_locked() -> void;
+    // Snapshot if _bytes_applied_since_snapshot has reached the threshold.
+    auto maybe_create_snapshot_automatically() -> void;
     auto compact_log() -> void;
     auto install_snapshot(const snapshot_type& snap) -> void;
 
@@ -7603,6 +7617,21 @@ auto node<Types>::apply_committed_entries() -> void {
 
         auto& entry = entry_opt.value();
 
+        // Counts this entry toward the automatic-snapshot threshold on every
+        // path below that moves _last_applied past it (applied, skipped,
+        // admin, no-op or configuration). A halt or an exhausted retry leaves
+        // _last_applied where it was, so nothing is counted for the entry.
+        struct applied_bytes_counter {
+            node& self;
+            log_index_type index;
+            std::size_t bytes;
+            ~applied_bytes_counter() {
+                if (self._last_applied >= index) {
+                    self._bytes_applied_since_snapshot += bytes;
+                }
+            }
+        } count_applied_bytes{*this, next_index, entry.command().size()};
+
         // Administration entries (multi-Raft, `.kiro/specs/multi-raft/` §5.1) are
         // NOT applied to the state machine either. They are routed to the
         // sharding host's handler, which runs here — inside the apply loop, on
@@ -7974,6 +8003,8 @@ auto node<Types>::apply_committed_entries() -> void {
         _metrics.add_duration(catchup_duration);
         _metrics.emit();
 
+        maybe_create_snapshot_automatically();
+
         // Emit remaining lag metric
         if (remaining_lag > 0) {
             _metrics.set_metric_name("catchup_remaining_lag");
@@ -7988,7 +8019,43 @@ template<raft_types Types>
 
 auto node<Types>::create_snapshot() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
+    create_snapshot_locked();
+}
 
+template<raft_types Types>
+
+auto node<Types>::maybe_create_snapshot_automatically() -> void {
+    const auto threshold = _config.snapshot_threshold_bytes();
+    if (_bytes_applied_since_snapshot < threshold || _last_applied <= _snapshot_index) {
+        return;
+    }
+
+    _logger.info("Applied log reached the snapshot threshold, snapshotting",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"bytes_applied_since_snapshot", std::to_string(_bytes_applied_since_snapshot)},
+                  {"snapshot_threshold_bytes", std::to_string(threshold)},
+                  {"last_applied", std::to_string(_last_applied)}});
+
+    try {
+        create_snapshot_locked();
+    } catch (const std::exception& e) {
+        // This runs inside AppendEntries handling, heartbeat checks and commit
+        // advancement. Letting a failed save escape would fail those instead,
+        // and the log is no worse off than before the attempt. The byte count
+        // is left as it is, so the next applied batch tries again.
+        _logger.error("Automatic snapshot failed", {{"node_id", node_id_to_string(_node_id)},
+                                                    {"last_applied", std::to_string(_last_applied)},
+                                                    {"error", e.what()}});
+        _metrics.set_metric_name("raft_automatic_snapshot_failed");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_one();
+        _metrics.emit();
+    }
+}
+
+template<raft_types Types>
+
+auto node<Types>::create_snapshot_locked() -> void {
     _logger.info("Creating snapshot from current state machine state",
                  {{"node_id", node_id_to_string(_node_id)},
                   {"last_applied", std::to_string(_last_applied)}});
@@ -8014,6 +8081,7 @@ auto node<Types>::create_snapshot() -> void {
 
     // Persist snapshot to storage
     _persistence.save_snapshot(snap);
+    _bytes_applied_since_snapshot = 0;
 
     auto end_time = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -8198,6 +8266,8 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
         _last_applied = snap.last_included_index();
         _snapshot_index = snap.last_included_index();
         _snapshot_term = snap.last_included_term();
+        // Everything applied so far is inside the installed snapshot.
+        _bytes_applied_since_snapshot = 0;
 
         // Update commit_index if snapshot index is higher
         if (snap.last_included_index() > _commit_index) {

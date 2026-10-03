@@ -192,10 +192,10 @@ struct cluster {
 
     /// Node 1 starts with @p leader_trailing entries after the snapshot; the
     /// others with none.
-    explicit cluster(std::uint64_t leader_trailing) {
+    explicit cluster(std::uint64_t leader_trailing,
+                     const kythira::raft_configuration& cfg = make_fast_config()) {
         sim.start();
         connect_all(sim, {"1", "2", "3"});
-        const auto cfg = make_fast_config();
         for (std::uint64_t id = 1; id <= 3; ++id) {
             auto net = sim.create_node(std::to_string(id));
             nodes.push_back(std::make_unique<test_node>(
@@ -296,6 +296,63 @@ BOOST_AUTO_TEST_CASE(a_follower_at_the_boundary_receives_the_entries_after_it,
             return true;
         },
         std::chrono::milliseconds{3000}));
+}
+
+// The leader compacts on its own once its applied log passes
+// snapshot_threshold_bytes, including entries a cut-off follower never
+// received. When the follower is reconnected the leader has nothing older
+// than its snapshot to send, so the follower must catch up by InstallSnapshot
+// and then by AppendEntries from the boundary.
+//
+// Each write while node 3 is cut off waits out the leader's retries to it, so
+// the write count is kept just high enough to pass the threshold twice.
+BOOST_AUTO_TEST_CASE(a_follower_behind_an_automatic_snapshot_catches_up_by_install_snapshot,
+                     *boost::unit_test::timeout(60)) {
+    auto cfg = make_fast_config();
+    cfg._snapshot_threshold_bytes = 64;  // about four puts
+    cfg._snapshot_chunk_size = 32;
+    // The transfer the leader starts to node 3 while it is cut off must give
+    // up before the test reconnects it, or the retry waits behind it.
+    cfg._install_snapshot_timeout = std::chrono::milliseconds{300};
+    cluster c{0, cfg};
+    BOOST_REQUIRE(
+        wait_until([&] { return c.leader().is_leader(); }, std::chrono::milliseconds{4000}));
+
+    BOOST_REQUIRE(c.commit("before-cut"));
+    BOOST_REQUIRE(
+        c.pump_until([&] { return c.nodes[2]->debug_state().last_applied > k_snapshot_index; },
+                     std::chrono::milliseconds{3000}));
+    const auto follower_last = c.nodes[2]->debug_state().last_applied;
+
+    for (const auto* peer : {"1", "2"}) {
+        c.sim.remove_edge(peer, "3");
+        c.sim.remove_edge("3", peer);
+    }
+    constexpr int writes = 12;
+    for (int i = 0; i < writes; ++i) {
+        BOOST_REQUIRE(c.commit("cut-" + std::to_string(i)));
+    }
+
+    // The leader's log no longer reaches back to what node 3 holds.
+    const auto leader_last = c.leader().debug_state().last_applied;
+    const auto retained = c.leader().log_entries_between(1, leader_last);
+    BOOST_REQUIRE(!retained.empty());
+    BOOST_REQUIRE_GT(retained.front().index(), follower_last + 1);
+
+    connect_all(c.sim, {"1", "2", "3"});
+    BOOST_REQUIRE(c.commit("after-heal"));
+    BOOST_CHECK(c.pump_until(
+        [&] {
+            return c.nodes[2]->with_state_machine(
+                [](const sm_t& sm) { return sm.contains("after-heal"); });
+        },
+        std::chrono::milliseconds{5000}));
+    for (int i = 0; i < writes; ++i) {
+        const auto key = "cut-" + std::to_string(i);
+        BOOST_CHECK_MESSAGE(
+            c.nodes[2]->with_state_machine([&](const sm_t& sm) { return sm.contains(key); }),
+            key << " missing on the follower that caught up by snapshot");
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
