@@ -30,6 +30,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/oci_certificates_provider.hpp>
+#include <raft/pem_chain.hpp>
 
 #include "oci_real_test_support.hpp"
 #include "test_timeout_scale.hpp"
@@ -37,6 +38,8 @@
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 #endif
+
+#include <openssl/x509.h>
 
 #include <chrono>
 #include <cstdlib>
@@ -177,7 +180,25 @@ BOOST_AUTO_TEST_CASE(sign_csr_issues_from_the_callers_csr_and_returns_no_private
     BOOST_CHECK_MESSAGE(
         material.certificate_pem.find("-----BEGIN CERTIFICATE-----") != std::string::npos,
         "the issued certificate is not PEM: " << material.certificate_pem.substr(0, 80));
-    BOOST_CHECK_MESSAGE(!material.chain_pem.empty(), "no chain was returned");
+    BOOST_REQUIRE_MESSAGE(!material.chain_pem.empty(), "no chain was returned");
+
+    // .kiro/specs/oci-ca-chain-leaf/ Requirement 4.6: the chain is leaf-first,
+    // and each certificate is issued by the next one.
+    const auto chain = kythira::pem_chain::split_certificates(material.chain_pem);
+    BOOST_REQUIRE_MESSAGE(
+        chain.size() >= 2U,
+        "chain_pem should hold the leaf and at least the root, holds " << chain.size());
+    BOOST_CHECK_MESSAGE(
+        kythira::pem_chain::same_certificate(chain.front(), material.certificate_pem),
+        "chain_pem does not start with the issued leaf");
+    for (std::size_t i = 0; i + 1 < chain.size(); ++i) {
+        const auto child = kythira::pem_chain::detail::parse(chain[i]);
+        const auto parent = kythira::pem_chain::detail::parse(chain[i + 1]);
+        BOOST_CHECK_MESSAGE(
+            X509_NAME_cmp(X509_get_issuer_name(child.get()), X509_get_subject_name(parent.get())) ==
+                0,
+            "chain certificate " << i << "'s issuer is not certificate " << i + 1 << "'s subject");
+    }
 }
 
 /// Requirement 12.6's idempotency, against a real CA.

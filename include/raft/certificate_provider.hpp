@@ -32,6 +32,12 @@ namespace raft::testing {
 /// `aws_acm_pca_provider` (`aws_acm_pca_provider.hpp`) — the only two places that
 /// know which backend is actually in use; every call site above this concept is
 /// backend-agnostic.
+///
+/// A successful `sign_csr()` returns a `pem_material` whose `chain_pem` is
+/// leaf-first: `certificate_pem`, then each issuer up to and including the root
+/// (see `pem_material::chain_pem`). Consumers present `chain_pem` as the TLS
+/// identity, so a provider whose upstream returns the issuer chain separately
+/// must prepend the leaf (`pem_chain::leaf_first`).
 template<typename P>
 concept certificate_provider = requires(P& p, std::string csr_pem, csr_signing_options options) {
     { p.root_certificate_pem() } -> std::same_as<kythira::future_default<std::string>>;

@@ -35,6 +35,7 @@
 #include <raft/future_default.hpp>
 #include <raft/oci_client_config.hpp>
 #include <raft/oci_http_client.hpp>
+#include <raft/pem_chain.hpp>
 
 #include <boost/json.hpp>
 
@@ -234,6 +235,12 @@ public:
     /// `certificateRules`; those fields belong to the internally-generated
     /// config type, not this one. See `tasks.md`'s status block.)
     ///
+    /// `chain_pem` is assembled from `certificatePem` (the leaf) and
+    /// `certChainPem` (the issuer chain): OCI returns them separately, and the
+    /// `pem_material` contract is leaf-first. Returning `certChainPem` alone
+    /// made `issuing_tls_material_source` reject every issuance with "private
+    /// key does not match certificate" (`.kiro/specs/oci-ca-chain-leaf/`).
+    ///
     /// @return `pem_material` with `private_key_pem` empty — the key never left
     ///         the caller.
     [[nodiscard]] auto sign_csr(std::string csr_pem, csr_signing_options options)
@@ -292,10 +299,30 @@ public:
                                          certificate_id);
             }
 
+            // `certChainPem` is the *issuer* chain only; the leaf is in
+            // `certificatePem`. `chain_pem` is leaf-first everywhere else, so
+            // build it here (`.kiro/specs/oci-ca-chain-leaf/`). An empty issuer
+            // chain falls back to the CA bundle (cached) so the chain still ends
+            // at the root; a failure to fetch it fails the issuance.
+            auto issuers = oci_certificates_detail::json_string(bundle, "certChainPem");
+            if (issuers.empty()) {
+                issuers = root_certificate_pem().get();
+            }
+            std::string chain_pem;
+            try {
+                chain_pem = kythira::pem_chain::leaf_first(certificate_pem, issuers);
+            } catch (const std::invalid_argument& ex) {
+                // An upstream fault, not a caller error: runtime_error (502),
+                // so the invalid_argument catch below does not turn it into 400.
+                throw std::runtime_error(
+                    "GetCertificateBundle returned an unparseable certChainPem for " +
+                    certificate_id + ": " + ex.what());
+            }
+
             return kythira::future_factory_default::makeReadyFuture(pem_material{
                 .certificate_pem = std::move(certificate_pem),
                 .private_key_pem = {},
-                .chain_pem = oci_certificates_detail::json_string(bundle, "certChainPem"),
+                .chain_pem = std::move(chain_pem),
                 .serial =
                     parse_serial(oci_certificates_detail::json_string(bundle, "serialNumber")),
             });

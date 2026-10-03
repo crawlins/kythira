@@ -22,9 +22,12 @@
 #define BOOST_TEST_MODULE oci_certificates_provider_mock_test
 #include <boost/test/unit_test.hpp>
 
+#include <raft/issuing_tls_material_source.hpp>
 #include <raft/oci_certificates_provider.hpp>
+#include <raft/pem_chain.hpp>
 
 #include "oci_mock_server.hpp"
+#include "recording_metrics.hpp"
 #include "test_timeout_scale.hpp"
 
 #include <openssl/evp.h>
@@ -40,13 +43,16 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <utility>
 
 namespace {
 
 using raft::testing::csr_signing_options;
 using raft::testing::oci_certificates_provider;
 using raft::testing::oci_certificates_provider_config;
+using chain_mode = kythira::testing::oci_mock_server::chain_mode;
 
 constexpr std::uint16_t test_port = 18323;
 
@@ -111,6 +117,21 @@ struct MockFixture {
         // against the key the client uses, so a request whose sent headers
         // disagree with its signed ones fails here rather than at Oracle.
         server.set_signing_key_pem(shared_key_pem());
+        // Real certificates, so chain shape is checkable and the provider can
+        // be composed with issuing_tls_material_source
+        // (.kiro/specs/oci-ca-chain-leaf/). The mock signs like OCI's
+        // MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA: from the CSR, under the
+        // CA's own policy, returning the leaf and the issuer chain apart.
+        server.set_certificate_signer(
+            [this](const std::string& csr_pem) {
+                csr_signing_options signing;
+                signing.dns_names = {"mock-csr.example"};
+                signing.server_auth = true;
+                signing.client_auth = true;
+                auto material = ca.sign_csr(csr_pem, signing);
+                return std::pair{material.certificate_pem, ca.root_certificate_pem()};
+            },
+            ca.root_certificate_pem());
         server.start();
     }
     ~MockFixture() { server.stop(); }
@@ -135,8 +156,19 @@ struct MockFixture {
         return cfg;
     }
 
+    raft::testing::certificate_authority ca;
     kythira::testing::oci_mock_server server;
 };
+
+/// Asserts @p chain_pem is leaf-first and ends at @p root_pem, with exactly
+/// @p expected certificates.
+auto check_leaf_first(const raft::testing::pem_material& material, const std::string& root_pem,
+                      std::size_t expected) -> void {
+    const auto certs = kythira::pem_chain::split_certificates(material.chain_pem);
+    BOOST_REQUIRE_EQUAL(certs.size(), expected);
+    BOOST_TEST(kythira::pem_chain::same_certificate(certs.front(), material.certificate_pem));
+    BOOST_TEST(kythira::pem_chain::same_certificate(certs.back(), root_pem));
+}
 
 }  // namespace
 
@@ -194,8 +226,10 @@ BOOST_AUTO_TEST_CASE(sign_csr_forwards_the_callers_csr_and_returns_no_private_ke
     const auto material = std::move(provider.sign_csr(fake_csr_pem, options)).get();
 
     BOOST_CHECK(material.private_key_pem.empty());
-    BOOST_CHECK(material.certificate_pem.find("mock-leaf-") != std::string::npos);
-    BOOST_CHECK_EQUAL(material.chain_pem, fixture.server.root_pem());
+    BOOST_CHECK(kythira::pem_chain::split_certificates(material.certificate_pem).size() == 1U);
+    // The case that failed before .kiro/specs/oci-ca-chain-leaf/: OCI returns
+    // the issuer chain alone, and chain_pem must still start with the leaf.
+    check_leaf_first(material, fixture.server.root_pem(), 2U);
     BOOST_CHECK_EQUAL(material.serial, 100001U);
 
     const auto certificates = fixture.server.certificates();
@@ -315,6 +349,88 @@ BOOST_AUTO_TEST_CASE(oci_certificates_revoke_idempotent,
     BOOST_CHECK_NO_THROW(std::move(reopened.revoke("999999")).get());
     BOOST_CHECK_EQUAL(
         fixture.server.hits("POST /20210224/certificates/{id}/versions/{n}/actions/revoke"), 1U);
+}
+
+/// .kiro/specs/oci-ca-chain-leaf/ Requirement 1.2: an issuer chain that
+/// already starts with the leaf does not get it twice.
+BOOST_AUTO_TEST_CASE(sign_csr_does_not_repeat_a_leaf_already_in_the_chain,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    fixture.server.set_cert_chain_mode(chain_mode::leaf_included);
+    oci_certificates_provider provider{fixture.config()};
+
+    const auto material = std::move(provider.sign_csr(fake_csr_pem, csr_signing_options{})).get();
+    check_leaf_first(material, fixture.server.root_pem(), 2U);
+}
+
+/// Requirement 1.4: an empty certChainPem falls back to the CA bundle, which
+/// costs no extra request once the root is cached.
+BOOST_AUTO_TEST_CASE(sign_csr_falls_back_to_the_cached_ca_bundle_for_an_empty_chain,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    fixture.server.set_cert_chain_mode(chain_mode::empty);
+    oci_certificates_provider provider{fixture.config()};
+
+    const auto first = std::move(provider.sign_csr(fake_csr_pem, csr_signing_options{})).get();
+    check_leaf_first(first, fixture.server.root_pem(), 2U);
+    BOOST_CHECK_EQUAL(fixture.server.hits("GET /20210224/certificateAuthorityBundles/{id}"), 1U);
+
+    const auto second = std::move(provider.sign_csr(fake_csr_pem, csr_signing_options{})).get();
+    check_leaf_first(second, fixture.server.root_pem(), 2U);
+    BOOST_CHECK_EQUAL(fixture.server.hits("GET /20210224/certificateAuthorityBundles/{id}"), 1U);
+}
+
+/// Requirement 1.5: a certChainPem with no parseable certificate fails the
+/// issuance as an upstream error naming the certificate, never a partial chain.
+BOOST_AUTO_TEST_CASE(sign_csr_fails_on_an_unparseable_chain,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    fixture.server.set_cert_chain_mode(chain_mode::garbage);
+    oci_certificates_provider provider{fixture.config()};
+
+    try {
+        (void)std::move(provider.sign_csr(fake_csr_pem, csr_signing_options{})).get();
+        BOOST_FAIL("sign_csr accepted an unparseable certChainPem");
+    } catch (const std::invalid_argument& ex) {
+        BOOST_FAIL("an upstream fault must not surface as invalid_argument: " << ex.what());
+    } catch (const std::runtime_error& ex) {
+        const std::string what = ex.what();
+        BOOST_CHECK_MESSAGE(what.find("ocid1.certificate.oc1.phx.mock1") != std::string::npos,
+                            "error does not name the certificate: " << what);
+        BOOST_CHECK_MESSAGE(what.find("certChainPem") != std::string::npos,
+                            "error does not name certChainPem: " << what);
+    }
+}
+
+/// Requirement 4.4: the provider composed with issuing_tls_material_source
+/// reaches generation 1 with a chain that matches its key, and needs no
+/// correction from the source's guard.
+BOOST_AUTO_TEST_CASE(issuing_source_gets_a_working_identity_from_oci,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    auto provider = std::make_shared<oci_certificates_provider>(fixture.config());
+
+    kythira::issuing_tls_material_options options;
+    options.subject.common_name = "node-1";
+    options.signing.dns_names = {"node-1.cluster.local"};
+    options.signing.server_auth = true;
+    options.signing.client_auth = true;
+    options.signing.validity = std::chrono::hours(1);
+    kythira::testing::recording_metrics metrics;
+    kythira::issuing_tls_material_source<oci_certificates_provider,
+                                         kythira::testing::recording_metrics>
+        source(provider, options, metrics);
+    const auto& rec = *metrics.recorder();
+
+    BOOST_REQUIRE_EQUAL(source.generation(), 1U);
+    const auto material = source.current();
+    BOOST_REQUIRE(material);
+    BOOST_CHECK_NO_THROW(kythira::validate_certificate_key_pair(material->certificate_chain_pem,
+                                                                material->private_key_pem, "oci"));
+    BOOST_CHECK_NO_THROW(kythira::validate_tls_material(*material, "oci"));
+    BOOST_TEST(rec.count_named("tls_material_source.chain.leaf_prepended") == 0U);
+    BOOST_TEST(rec.count_named("tls_material_source.renewal.failed") == 0U);
+    source.stop();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
