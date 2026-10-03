@@ -66,14 +66,23 @@ BOOST_AUTO_TEST_CASE(capability_error_identifies_mode_and_is_distinct_from_secur
 
 #else
 
-// When LIBCOAP_AVAILABLE is defined (a test binary built with real libcoap
-// linked), the linked library genuinely has OSCORE compiled in (confirmed
-// via coap_oscore_is_supported() during design), so this build has nothing
-// to assert about the capability-absent path — see
-// coap_oscore_integration_test.cpp for the real-libcoap OSCORE tests.
-BOOST_AUTO_TEST_CASE(placeholder_when_built_with_libcoap,
+// When LIBCOAP_AVAILABLE is defined, the capability the OSCORE provider needs
+// is the *absence* of libcoap's own OSCORE: Kythira does OSCORE itself, and a
+// libcoap built with it decrypts (or drops) every protected request before a
+// handler sees it (oscore_provider's class comment, vcpkg-overlays/libcoap).
+// Whichever libcoap is linked, the provider must agree with it.
+BOOST_AUTO_TEST_CASE(oscore_provider_matches_the_linked_libcoap,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
-    BOOST_CHECK(coap_oscore_is_supported());
+    coap_startup();
+    auto provider = make_security_provider(make_oscore_config(), coap_security_role::server);
+    coap_context_t* ctx = coap_new_context(nullptr);
+    BOOST_REQUIRE(ctx != nullptr);
+    if (coap_oscore_is_supported() != 0) {
+        BOOST_CHECK_THROW(provider->configure_session(ctx), coap_unsupported_security_mode_error);
+    } else {
+        BOOST_CHECK_NO_THROW(provider->configure_session(ctx));
+    }
+    coap_free_context(ctx);
 }
 
 #endif

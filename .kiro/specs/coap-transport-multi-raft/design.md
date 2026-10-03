@@ -265,6 +265,41 @@ tombstoned, or shut down with the host — and destruction zeroes the key
 material rather than letting it fall out of a map. Split creates a group and
 therefore a context, lazily, at its first message.
 
+### 4.7a Where this runs on libcoap
+
+On libnyoci and cantcoap Kythira already applies `oscore.hpp` itself. libcoap
+was different: built with its own OSCORE, it decrypts every request carrying
+the OSCORE option inside `coap_dispatch()`, before any resource handler, and
+drops it when none of the contexts it was given matches. Its server holds a
+fixed set of contexts and libcoap 4.3.5 has no hook for deriving one when an
+unknown `kid context` arrives, so §4.6 cannot be built on it.
+
+So libcoap is built without its own OSCORE (`vcpkg-overlays/libcoap`,
+`-DENABLE_OSCORE=OFF`), registers option 9 as an ordinary option, and the
+backend does what the other two do:
+
+- **Client.** The inner request (Uri-Path, Content-Format, the serialized
+  RPC) is protected into an outer POST that carries only the outer options;
+  a large ciphertext rides libcoap's outer block-wise transfer. The response
+  is verified against the request's binding before it is decoded; a 2.xx
+  without an OSCORE option is a verification failure.
+- **Server.** The `/raft/*` paths answer 4.01 to plaintext. A root resource
+  takes protected requests, selects the context per §4.6, rebuilds the inner
+  request as a PDU and hands it to the same handler plaintext used, then
+  protects the reply under the request's nonce.
+- **Group consistency.** The decoded RPC's `group_id` must equal the group of
+  the context that verified it, else 4.01. Without this a member of one group
+  could address another group's replica under its own keys.
+
+One credential set covers every peer, so the sender context is keyed by group
+alone: keyed by (peer, group) it would encrypt different plaintexts under the
+same (key, nonce). The boot nonce in the ID Context still separates every
+node's contexts from every other node's.
+
+The backend refuses OSCORE mode against a libcoap with OSCORE compiled in. The
+overlay can go once a libcoap release ships an external context-lookup hook
+and the backend moves onto it.
+
 ### 4.8 When OSCORE is not configured
 
 Nothing above happens. `_id_context` stays empty, no `kid context` is emitted,

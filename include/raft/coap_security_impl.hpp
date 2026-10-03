@@ -24,12 +24,14 @@
 #include <raft/coap_security.hpp>
 #include <raft/coap_transport.hpp>
 #include <raft/oscore.hpp>
-#include <raft/oscore_sequence_store.hpp>
+#include <raft/oscore_group_contexts.hpp>
 
 #include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 
 #ifdef LIBCOAP_AVAILABLE
 #include <coap3/coap.h>
@@ -490,36 +492,84 @@ private:
 };
 
 // ── oscore_provider ────────────────────────────────────────────────────────
-// Requirement 4. libcoap applies OSCORE protection transparently within its
-// own send/receive pipeline once a session/context is OSCORE-configured —
-// there is no separate app-level "protect this PDU" entry point in this
-// library's public API (coap_oscore.h exposes only session/context-level
-// setup), the same way DTLS protection has no per-PDU call either. protect()
-// / unprotect() therefore stay identity passthroughs (coap_security_provider
-// base class default); the real work happens in configure_session() (server)
-// and create_client_session() (client, since coap_new_client_session_oscore()
-// takes the OSCORE configuration directly and consumes/frees it per call).
+// Requirement 4, and .kiro/specs/coap-transport-multi-raft/ tasks 9-11.
+//
+// OSCORE on the libcoap backend is Kythira's own (raft/oscore.hpp), the same
+// code libnyoci and cantcoap use, not libcoap's. libcoap's server holds a fixed
+// set of OSCORE contexts and, in every release up to 4.3.5, has no hook to
+// derive one when an unknown `kid context` arrives. That is exactly what a
+// context per Raft group needs: the peer's ID Context carries its boot nonce,
+// which this node learns only from the peer's first request.
+//
+// So libcoap is a plain CoAP stack here. The OSCORE option (9) travels as an
+// ordinary registered option, the transport protects each request and response
+// itself (coap_transport_impl.hpp), and this provider owns the contexts:
+//
+//  - one base context from the configured credentials, for requests that name
+//    no group, with the wire format the libnyoci backend already uses; and
+//  - optionally a group_context_registry over the same credentials, for
+//    requests that do (coap_oscore_group_config).
+//
+// libcoap must be built with its own OSCORE off. With it on, coap_dispatch()
+// decrypts every request carrying option 9 before any handler runs, and drops
+// any it has no context for, so this provider refuses to start rather than
+// lose every request. vcpkg-overlays/libcoap builds it that way.
+
+/// See the forward declaration in raft/coap_transport_config.hpp.
+struct oscore_exchange {
+    std::shared_ptr<oscore::security_context> context;
+    oscore::request_binding binding;
+};
 
 class oscore_provider final : public coap_security_provider {
 public:
-    oscore_provider(oscore_credentials creds, coap_security_role role)
+    using context_ptr = std::shared_ptr<oscore::security_context>;
+
+    oscore_provider(oscore_credentials creds, coap_security_role role,
+                    coap_oscore_group_config groups = {})
         : _creds(std::move(creds)),
           _role(role),
-          _sequence{oscore::sequence_store_for(_creds.sequence_state_dir),
-                    oscore::security_context::state_key(_creds, "SSN", _creds.sender_id, {})} {}
+          _base(std::make_shared<oscore::security_context>(_creds)) {
+        if (groups.enabled) {
+            if (_role == coap_security_role::server && !groups.hosts_group) {
+                throw coap_security_config_error(
+                    "oscore_groups.enabled on a server requires oscore_groups.hosts_group");
+            }
+            if (!_creds.id_context.empty()) {
+                throw coap_security_config_error(
+                    "oscore_groups.enabled requires oscore_credentials::id_context to be empty: "
+                    "each group's ID Context is derived from the group id and the boot nonce");
+            }
+            auto hosts_group = groups.hosts_group
+                                   ? std::move(groups.hosts_group)
+                                   : std::function<bool(std::uint64_t)>{[](std::uint64_t) {
+                                         // A client only ever derives sender
+                                         // contexts, which never consult this.
+                                         return false;
+                                     }};
+            _groups = std::make_unique<oscore::group_context_registry>(
+                [creds = _creds](const std::string&) {
+                    // Every group context is keyed by a fresh boot nonce, so
+                    // persisting its sequence numbers would buy nothing and
+                    // cost a write per group.
+                    auto group_creds = creds;
+                    group_creds.sequence_state_dir.clear();
+                    return group_creds;
+                },
+                std::move(hosts_group),
+                oscore::group_context_limits{groups.max_recipient_contexts_per_peer,
+                                             groups.recipient_idle_ttl},
+                groups.boot_nonce.empty() ? oscore::process_boot_nonce() : groups.boot_nonce);
+        }
+    }
 
     auto configure_session(coap_context_t* ctx) -> void override {
 #ifdef LIBCOAP_AVAILABLE
         check_capability();
-        if (_role == coap_security_role::server) {
-            auto* conf = build_oscore_conf();
-            if (coap_context_oscore_server(ctx, conf) == 0) {
-                throw coap_security_error("Failed to configure OSCORE server context");
-            }
-        }
-        // Client-side: the OSCORE context is built fresh per session in
-        // create_client_session(), since coap_new_client_session_oscore()
-        // consumes (frees) the coap_oscore_conf_t it's given.
+        // Without this, a libcoap built without OSCORE treats option 9 as an
+        // unknown critical option and answers 4.02 Bad Option before any
+        // handler runs; registered, it passes through like any other.
+        coap_register_option(ctx, oscore::coap_option_oscore);
 #else
         (void)ctx;
         throw coap_unsupported_security_mode_error(coap_auth_mode::oscore,
@@ -532,9 +582,9 @@ public:
         -> coap_session_t* override {
 #ifdef LIBCOAP_AVAILABLE
         check_capability();
-        auto* conf = build_oscore_conf();
-        return coap_new_client_session_oscore(ctx, local_if, server_addr,
-                                              static_cast<coap_proto_t>(proto), conf);
+        // A plain session: the transport protects each request itself.
+        return coap_new_client_session(ctx, local_if, server_addr,
+                                       static_cast<coap_proto_t>(proto));
 #else
         (void)ctx;
         (void)local_if;
@@ -545,117 +595,110 @@ public:
 #endif
     }
 
-    // Adds a known peer's recipient ID to an already-OSCORE-configured
-    // server context (Requirement 4.3), e.g. once per Raft peer discovered
-    // after startup.
+    // Kept for source compatibility (Requirement 4.3). A server now accepts a
+    // request whose kid is its configured recipient_id under any context it
+    // can select; there is no per-recipient list in libcoap to add to.
     auto add_recipient(coap_context_t* ctx, const std::vector<std::byte>& recipient_id) -> void {
-#ifdef LIBCOAP_AVAILABLE
-        // coap_new_oscore_recipient() takes ownership of *rid (it stores
-        // the pointer directly in its internal recipient chain and later
-        // frees it via coap_delete_bin_const(), including on the
-        // duplicate-recipient rejection path) — it must be a
-        // coap_new_bin_const() heap allocation, not a stack-local struct,
-        // or the eventual free() corrupts the heap.
-        coap_bin_const_t* rid = coap_new_bin_const(
-            reinterpret_cast<const uint8_t*>(recipient_id.data()), recipient_id.size());
-        if (rid == nullptr) {
-            throw coap_security_error("Failed to allocate OSCORE recipient ID");
-        }
-        if (coap_new_oscore_recipient(ctx, rid) == 0) {
-            throw coap_security_error("Failed to add OSCORE recipient");
-        }
-#else
         (void)ctx;
         (void)recipient_id;
-#endif
     }
 
     [[nodiscard]] auto mode() const -> coap_auth_mode override { return coap_auth_mode::oscore; }
 
     [[nodiscard]] auto credentials() const -> const oscore_credentials& { return _creds; }
 
-private:
-    // Where this provider's libcoap contexts take their Sender Sequence
-    // Numbers from: the same store and key a security_context built from these
-    // credentials would use. Outlives every libcoap context it is handed to,
-    // since the transports free their coap_context_t before their provider.
-    struct sequence_state {
-        std::shared_ptr<oscore::sequence_store> store;
-        std::string key;
-    };
+    [[nodiscard]] auto base_context() const -> const context_ptr& { return _base; }
 
-    // Numbers reserved per libcoap OSCORE context. libcoap counts on its own
-    // from the start it is given and cannot be capped, so each context gets a
-    // block large enough that it is not expected to run past it: 2^24 messages
-    // to one peer, and 2^16 contexts before the 40-bit space is spent.
-    static constexpr std::uint64_t libcoap_context_block = std::uint64_t{1} << 24;
+    [[nodiscard]] auto per_group_contexts() const -> bool { return _groups != nullptr; }
+
+    /// The context that protects a request in `group` (nullopt: the request
+    /// names none).
+    ///
+    /// Keyed by group alone, not by (peer, group). Every peer is reached with
+    /// the one credential set this client was configured with, so two peers'
+    /// contexts for one group would derive the same Sender Key and Common IV
+    /// and count Partial IVs independently from zero: the same nonce under the
+    /// same key, twice. One context per group shares one counter across peers,
+    /// which is what the base context has always done for ungrouped traffic.
+    [[nodiscard]] auto request_context(std::optional<std::uint64_t> group) -> context_ptr {
+        if (!_groups || !group) {
+            return _base;
+        }
+        return _groups->sender_context(std::string{k_registry_peer}, *group);
+    }
+
+    /// The context that verifies an incoming protected request, and the group
+    /// it belongs to when the request named one. Throws
+    /// oscore::verification_error, deriving nothing, when no context can be
+    /// selected.
+    [[nodiscard]] auto verifying_context(const oscore::coap_message& outer)
+        -> std::pair<context_ptr, std::optional<std::uint64_t>> {
+        oscore::option_fields fields;
+        bool found = false;
+        for (const auto& option : outer.options) {
+            if (option.number == oscore::coap_option_oscore) {
+                fields = oscore::decode_option(option.value);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw oscore::verification_error("request carries no OSCORE option");
+        }
+        // Before the registry is consulted, so an invented kid costs nothing:
+        // the registry would otherwise create state for it.
+        if (!fields.has_kid || fields.kid != _creds.recipient_id) {
+            throw oscore::verification_error("no Recipient Context matches the request's kid");
+        }
+        if (!fields.has_kid_context) {
+            return {_base, std::nullopt};
+        }
+        if (!_groups) {
+            // A kid context with groups off can only be the configured one,
+            // which security_context::unprotect_request() checks.
+            return {_base, std::nullopt};
+        }
+        auto context = _groups->recipient_context(std::string{k_registry_peer}, fields.kid,
+                                                  fields.kid_context);
+        return {std::move(context), oscore::group_of_id_context(fields.kid_context)};
+    }
+
+    /// Wipes every context of `group_id` (Requirement 4.9). Call when the
+    /// group's local replica is destroyed.
+    auto forget_group(std::uint64_t group_id) -> void {
+        if (_groups) {
+            _groups->forget_group(group_id);
+        }
+    }
+
+    [[nodiscard]] auto group_counters() const -> std::optional<oscore::group_context_counters> {
+        if (!_groups) {
+            return std::nullopt;
+        }
+        return _groups->counters();
+    }
+
+private:
+    /// The registry is keyed by peer so that a deployment with a master secret
+    /// per peer can use it; this provider has one credential set for every
+    /// peer, so it uses one key.
+    static constexpr std::string_view k_registry_peer = "configured-credentials";
 
 #ifdef LIBCOAP_AVAILABLE
-    // libcoap's coap_oscore_save_seq_num_t: called with a value at or above
-    // every Sender Sequence Number the context has used, every ssn_freq
-    // numbers. Inside the reserved block this writes nothing; past it, it
-    // keeps the durable high-water above what was used, so a restart still
-    // starts beyond it.
-    static auto save_sequence(uint64_t sender_seq_num, void* param) -> int {
-        auto* state = static_cast<sequence_state*>(param);
-        try {
-            state->store->raise_to(
-                state->key, oscore::memory_sequence_store::saturating_add(sender_seq_num, 1));
-            return 1;
-        } catch (...) {
-            return 0;
-        }
-    }
-
     static auto check_capability() -> void {
-        if (coap_oscore_is_supported() == 0) {
-            throw coap_unsupported_security_mode_error(coap_auth_mode::oscore,
-                                                       "OSCORE not compiled into linked libcoap");
+        if (coap_oscore_is_supported() != 0) {
+            throw coap_unsupported_security_mode_error(
+                coap_auth_mode::oscore,
+                "the linked libcoap has its own OSCORE compiled in, which intercepts every "
+                "OSCORE request before Kythira's handler can see it; build libcoap with "
+                "-DENABLE_OSCORE=OFF (vcpkg-overlays/libcoap does)");
         }
-    }
-
-    [[nodiscard]] auto build_oscore_conf() const -> coap_oscore_conf_t* {
-        std::ostringstream conf_text;
-        conf_text << "master_secret,hex,\"" << detail::bytes_to_hex(_creds.master_secret) << "\"\n";
-        if (!_creds.master_salt.empty()) {
-            conf_text << "master_salt,hex,\"" << detail::bytes_to_hex(_creds.master_salt) << "\"\n";
-        }
-        conf_text << "sender_id,hex,\"" << detail::bytes_to_hex(_creds.sender_id) << "\"\n";
-        conf_text << "recipient_id,hex,\"" << detail::bytes_to_hex(_creds.recipient_id) << "\"\n";
-        conf_text << "aead_alg,text,\"" << _creds.aead_algorithm << "\"\n";
-        if (!_creds.id_context.empty()) {
-            // Same field, same meaning as security_context's: libcoap mixes it
-            // into the derivation and sends it as the kid context.
-            conf_text << "id_context,hex,\"" << detail::bytes_to_hex(_creds.id_context) << "\"\n";
-        }
-        // RFC 8613 Appendix B.1.2 stays on (libcoap's default). It is not
-        // optional: libcoap's server only runs its replay window once a
-        // recipient has answered an Echo challenge, so with it off every
-        // request is accepted however often it is replayed. The challenge is
-        // a 4.01 + Echo on first contact, which libcoap's own client answers
-        // by resending with the Echo option, below this provider. It is also
-        // what makes a restarted server safe: its window starts empty, and the
-        // Echo round trip re-establishes it before anything is accepted.
-        conf_text << "rfc8613_b_1_2,bool,true\n";
-        // RFC 8613 Appendix B.1.1: start above every number this key has
-        // used, in this process or before a restart, instead of at zero.
-        conf_text << "ssn_freq,integer," << _sequence.store->sequence_block() << "\n";
-        auto text = conf_text.str();
-        coap_str_const_t conf_mem;
-        conf_mem.s = reinterpret_cast<const uint8_t*>(text.c_str());
-        conf_mem.length = text.size();
-        const auto start = _sequence.store->reserve(_sequence.key, libcoap_context_block);
-        auto* conf = coap_new_oscore_conf(conf_mem, &oscore_provider::save_sequence,
-                                          const_cast<sequence_state*>(&_sequence), start);
-        if (conf == nullptr) {
-            throw coap_security_error("Failed to parse OSCORE configuration");
-        }
-        return conf;
     }
 #endif
     oscore_credentials _creds;
     coap_security_role _role;
-    sequence_state _sequence;
+    context_ptr _base;
+    std::unique_ptr<oscore::group_context_registry> _groups;
 };
 
 // ── factory ────────────────────────────────────────────────────────────────

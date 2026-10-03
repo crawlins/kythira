@@ -663,6 +663,18 @@ struct multi_raft_config {
     /// Defence in depth on the one knob whose misconfiguration is unbounded.
     std::chrono::milliseconds split_merge_interval{std::chrono::hours{1}};
 
+    /// @brief Called once a local replica has been torn down: merged away
+    /// (at the end of the merge commit's apply phase), or tombstoned or
+    /// removed by `destroy_group()`.
+    ///
+    /// For state outside the host that is keyed by group and must not outlive
+    /// the replica. The libcoap transport's per-group OSCORE contexts are the
+    /// case it exists for: their key material is zeroed here
+    /// (`forget_oscore_group()`, .kiro/specs/coap-transport-multi-raft/
+    /// Requirement 4.9) rather than left to fall out of a map. Runs after the
+    /// node has stopped, on the thread that stopped it.
+    std::function<void(const GroupId&)> on_group_destroyed;
+
     /// @brief How many split or merge operations may be in flight at once.
     ///
     /// Enforced BEFORE proposing, never by aborting something already
@@ -888,6 +900,16 @@ public:
     auto destroy_group(const GroupId& group, tombstone_reason reason) -> bool;
 
     [[nodiscard]] auto has_group(const GroupId& group) const -> bool;
+
+    /// @brief Whether this node hosts `group` or is listed as one of its
+    /// replicas in the local routing map, so a message for it may create one.
+    ///
+    /// The same membership test the lazy-creation path applies, without its
+    /// side effects: no external lookup, no replica created. A tombstoned group
+    /// is never a member. Meant for admission checks below the host, such as
+    /// the libcoap transport's per-group OSCORE `hosts_group`, which must
+    /// refuse to derive keys for a group this node will never run.
+    [[nodiscard]] auto is_member_of(const GroupId& group) const -> bool;
     [[nodiscard]] auto group_count() const -> std::size_t;
     [[nodiscard]] auto group_ids() const -> std::vector<GroupId>;
 
