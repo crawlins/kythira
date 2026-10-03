@@ -47,8 +47,8 @@
 /// is still running, `shutdown()` releasing the fixture's own threads.
 /// Nothing else in the harness or in the tests changes. `coap_transport` is
 /// the worked example: it owns libcoap contexts instead of an `io_context`,
-/// and reports `_pre_vote = false` and `_log_fetch = false`, because CoAP
-/// carries TimeoutNow but neither of those.
+/// and reports `_log_fetch = false`, because CoAP carries PreVote and
+/// TimeoutNow but not log fetch.
 
 #include "multi_raft_kv_workload.hpp"
 #include "multi_raft_test_fabric.hpp"
@@ -307,8 +307,9 @@ private:
 /// @brief What a transport can carry, reported per row rather than assumed.
 ///
 /// Whether a transport carries pre-vote, log fetch or TimeoutNow is a property
-/// of the transport — CoAP carries TimeoutNow but neither of the others — so
-/// it is described here rather than rediscovered by a test that fails.
+/// of the transport — the HTTP and CoAP transports carry PreVote and
+/// TimeoutNow but not log fetch — so it is described here rather than
+/// rediscovered by a test that fails.
 struct transport_capabilities {
     bool _pre_vote{false};
     bool _log_fetch{false};
@@ -505,7 +506,8 @@ public:
     static auto name() -> std::string_view { return "cpp-httplib"; }
     static auto tier() -> deployment_tier { return deployment_tier::b_loopback; }
     static auto capabilities() -> transport_capabilities {
-        return transport_capabilities{._concurrent_per_peer = false};
+        return transport_capabilities{
+            ._pre_vote = true, ._timeout_now = true, ._concurrent_per_peer = false};
     }
 
     explicit cpp_httplib_transport(const std::vector<std::uint64_t>& nodes) {
@@ -592,7 +594,9 @@ public:
 
     static auto name() -> std::string_view { return "beast"; }
     static auto tier() -> deployment_tier { return deployment_tier::b_loopback; }
-    static auto capabilities() -> transport_capabilities { return transport_capabilities{}; }
+    static auto capabilities() -> transport_capabilities {
+        return transport_capabilities{._pre_vote = true, ._timeout_now = true};
+    }
 
     explicit beast_http_transport(const std::vector<std::uint64_t>& nodes)
         : _work(boost::asio::make_work_guard(*_ioc)) {
@@ -688,7 +692,9 @@ public:
 
     static auto name() -> std::string_view { return "proxygen"; }
     static auto tier() -> deployment_tier { return deployment_tier::b_loopback; }
-    static auto capabilities() -> transport_capabilities { return transport_capabilities{}; }
+    static auto capabilities() -> transport_capabilities {
+        return transport_capabilities{._pre_vote = true, ._timeout_now = true};
+    }
 
     explicit proxygen_http_transport(const std::vector<std::uint64_t>& nodes)
         : _io(std::make_shared<folly::IOThreadPoolExecutor>(
@@ -776,7 +782,7 @@ public:
     static auto name() -> std::string_view { return "coap"; }
     static auto tier() -> deployment_tier { return deployment_tier::b_loopback; }
     static auto capabilities() -> transport_capabilities {
-        return transport_capabilities{._timeout_now = true};
+        return transport_capabilities{._pre_vote = true, ._timeout_now = true};
     }
 
     explicit coap_transport(const std::vector<std::uint64_t>& nodes) {
@@ -1316,6 +1322,9 @@ public:
 
     [[nodiscard]] auto host(std::size_t index) -> host_type& { return *_hosts.at(index); }
     [[nodiscard]] auto host_count() const -> std::size_t { return _hosts.size(); }
+    /// @brief The transport fixture, for a test that needs to reach one
+    /// host's server or client directly (to isolate a node, say).
+    [[nodiscard]] auto transport() -> Transport& { return _transport; }
     [[nodiscard]] auto options() const -> const kv_cluster_options& { return _options; }
 
     /// @brief The host whose replica of `group` currently leads, if any.

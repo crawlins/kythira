@@ -6,6 +6,8 @@
 #include <raft/beast_http_transport.hpp>
 #include <raft/asio_listeners.hpp>
 #include <raft/coap_utils.hpp>
+#include <raft/exceptions.hpp>
+#include <raft/transport_conformance_types.hpp>
 
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
@@ -31,6 +33,8 @@ constexpr const char* beast_endpoint_request_vote = "/v1/raft/request_vote";
 constexpr const char* beast_endpoint_append_entries = "/v1/raft/append_entries";
 constexpr const char* beast_endpoint_install_snapshot = "/v1/raft/install_snapshot";
 constexpr const char* beast_endpoint_fetch_log_entries = "/v1/raft/fetch_log_entries";
+constexpr const char* beast_endpoint_request_pre_vote = "/v1/raft/request_pre_vote";
+constexpr const char* beast_endpoint_timeout_now = "/v1/raft/timeout_now";
 
 // NOTE: `beast_content_type_for_serializer` lived here, deriving the
 // Content-Type from the serializer's `name()` by substring match. Removed with
@@ -907,6 +911,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                                          std::string chosen_media_type)
     -> future_template<Response> {
     std::string rpc_type;
+    bool extension_rpc = false;
     if (endpoint == beast_endpoint_request_vote) {
         rpc_type = "request_vote";
     } else if (endpoint == beast_endpoint_append_entries) {
@@ -915,6 +920,12 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         rpc_type = "install_snapshot";
     } else if (endpoint == beast_endpoint_fetch_log_entries) {
         rpc_type = "fetch_log_entries";
+    } else if (endpoint == beast_endpoint_request_pre_vote) {
+        rpc_type = "request_pre_vote";
+        extension_rpc = true;
+    } else if (endpoint == beast_endpoint_timeout_now) {
+        rpc_type = "timeout_now";
+        extension_rpc = true;
     }
 
     try {
@@ -995,7 +1006,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         }();
 
         return std::move(response_future)
-            .thenValue([this, target, rpc_type, start_time, content_type, in_flight,
+            .thenValue([this, target, rpc_type, extension_rpc, start_time, content_type, in_flight,
                         lease](beast_http::response<beast_http::string_body> resp) -> Response {
                 // The exchange completed: a full response was framed and read,
                 // so this connection is in a known-good state and may go back
@@ -1072,6 +1083,13 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                         throw kythira::serialization_error(
                             std::format("Failed to deserialize response: {}", e.what()));
                     }
+                }
+                // An extension RPC the peer cannot serve: no route (an older
+                // build) or no handler. Only on an extension: a 404 on a
+                // mandatory RPC means a misconfigured peer and keeps its
+                // ordinary error.
+                if (extension_rpc && (status == 404 || status == 501)) {
+                    throw kythira::rpc_not_implemented_exception(rpc_type, target);
                 }
                 if (status >= 400 && status < 500) {
                     // Carry `Accept-Post` on the exception: this transport's 415
@@ -1185,6 +1203,25 @@ auto boost_beast_client<Types>::send_append_entries(
     std::chrono::milliseconds timeout) -> future_template<kythira::append_entries_response<>> {
     return send_rpc<kythira::append_entries_request<>, kythira::append_entries_response<>>(
         target, beast_endpoint_append_entries, request, timeout);
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_client<Types>::send_request_pre_vote(
+    std::uint64_t target, const kythira::request_pre_vote_request<>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::request_pre_vote_response<>> {
+    return send_rpc<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+        target, beast_endpoint_request_pre_vote, request, timeout);
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_client<Types>::send_timeout_now(std::uint64_t target,
+                                                 const kythira::timeout_now_request<>& request,
+                                                 std::chrono::milliseconds timeout)
+    -> future_template<kythira::timeout_now_response<>> {
+    return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+        target, beast_endpoint_timeout_now, request, timeout);
 }
 
 template<typename Types>
@@ -1676,6 +1713,24 @@ auto boost_beast_server<Types>::register_fetch_log_entries_handler(
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
+auto boost_beast_server<Types>::register_request_pre_vote_handler(
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        handler) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _request_pre_vote_handler = std::move(handler);
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_server<Types>::register_timeout_now_handler(
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler)
+    -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _timeout_now_handler = std::move(handler);
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
 auto boost_beast_server<Types>::start() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     if (_running.load()) {
@@ -1813,7 +1868,7 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
 
     auto handle = [&]<typename Request, typename Response>(
                       const std::function<Response(const Request&)>& handler,
-                      std::string_view rpc_type) {
+                      std::string_view rpc_type, bool extension_rpc = false) {
         auto start_time = std::chrono::steady_clock::now();
         auto received_metric = _metrics;
         received_metric.set_metric_name("beast_http.server.request.received");
@@ -1822,8 +1877,11 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
         received_metric.emit();
 
         if (!handler) {
-            status_code = 500;
-            response_body = "Handler not registered";
+            // 501 for an extension: this server cannot serve the RPC at all,
+            // which the caller maps to "older peer". The mandatory three keep
+            // 500, since a node without them is broken rather than older.
+            status_code = extension_rpc ? 501 : 500;
+            response_body = extension_rpc ? "Not Implemented" : "Handler not registered";
             return;
         }
 
@@ -1906,6 +1964,13 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
         handle.template
         operator()<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
             _fetch_log_entries_handler, "fetch_log_entries");
+    } else if (target == beast_endpoint_request_pre_vote) {
+        handle.template
+        operator()<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+            _request_pre_vote_handler, "request_pre_vote", true);
+    } else if (target == beast_endpoint_timeout_now) {
+        handle.template operator()<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+            _timeout_now_handler, "timeout_now", true);
     } else {
         status_code = 404;
         response_body = "Not Found";
@@ -1962,5 +2027,42 @@ auto boost_beast_server<Types>::do_accept(std::shared_ptr<net::ip::tcp::acceptor
         do_accept(std::move(acceptor));
     });
 }
+
+// ── concept conformance (.kiro/specs/http-coap-pre-vote-timeout-now/, Requirement 2) ──
+//
+// Which Raft extensions this transport carries, as a compile-time fact; see
+// the matching block in http_transport_impl.hpp for why the negative
+// assertions matter as much as the positive ones.
+
+static_assert(kythira::network_client<boost_beast_client<transport_detail::conformance_types>>,
+              "boost_beast_client must satisfy network_client");
+static_assert(kythira::network_server<boost_beast_server<transport_detail::conformance_types>>,
+              "boost_beast_server must satisfy network_server");
+static_assert(
+    kythira::network_client_with_pre_vote<boost_beast_client<transport_detail::conformance_types>>,
+    "boost_beast_client must satisfy network_client_with_pre_vote");
+static_assert(
+    kythira::network_server_with_pre_vote<boost_beast_server<transport_detail::conformance_types>>,
+    "boost_beast_server must satisfy network_server_with_pre_vote");
+static_assert(kythira::network_client_with_timeout_now<
+                  boost_beast_client<transport_detail::conformance_types>>,
+              "boost_beast_client must satisfy network_client_with_timeout_now");
+static_assert(kythira::network_server_with_timeout_now<
+                  boost_beast_server<transport_detail::conformance_types>>,
+              "boost_beast_server must satisfy network_server_with_timeout_now");
+static_assert(
+    kythira::network_client_with_log_fetch<boost_beast_client<transport_detail::conformance_types>>,
+    "boost_beast_client must satisfy network_client_with_log_fetch");
+static_assert(
+    kythira::network_server_with_log_fetch<boost_beast_server<transport_detail::conformance_types>>,
+    "boost_beast_server must satisfy network_server_with_log_fetch");
+static_assert(!kythira::network_client_with_cluster_join<
+                  boost_beast_client<transport_detail::conformance_types>>,
+              "HTTP does not implement cluster join; see "
+              ".kiro/specs/http-coap-pre-vote-timeout-now/design.md §6");
+static_assert(!kythira::network_client_with_cluster_leave<
+                  boost_beast_client<transport_detail::conformance_types>>,
+              "HTTP does not implement cluster leave; see "
+              ".kiro/specs/http-coap-pre-vote-timeout-now/design.md §6");
 
 }  // namespace kythira

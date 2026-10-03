@@ -35,6 +35,7 @@
 #include <raft/proxygen_http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/metrics.hpp>
+#include <raft/exceptions.hpp>
 #include <raft/executor_default.hpp>
 
 #include <httplib.h>
@@ -44,6 +45,7 @@
 #include <folly/init/Init.h>
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -131,6 +133,101 @@ template<typename Server> auto register_echo_handlers(Server& server) -> void {
         }
         return resp;
     });
+}
+
+// The two optional extensions (.kiro/specs/http-coap-pre-vote-timeout-now/).
+// Each echoes `group_id`, since a multi-Raft host routes on it and a transport
+// that dropped it would hand the RPC to the wrong group.
+template<typename Server> auto register_extension_echo_handlers(Server& server) -> void {
+    server.register_request_pre_vote_handler(
+        [](const kythira::request_pre_vote_request<>& req) -> kythira::request_pre_vote_response<> {
+            kythira::request_pre_vote_response<> resp{};
+            resp._term = req.term();
+            resp._vote_granted = req.last_log_index() >= req.last_log_term();
+            resp._group_id = req.group_id();
+            return resp;
+        });
+    server.register_timeout_now_handler(
+        [](const kythira::timeout_now_request<>& req) -> kythira::timeout_now_response<> {
+            kythira::timeout_now_response<> resp{};
+            resp._term = req.term();
+            resp._success = req.last_log_index() % 2 == 0;
+            resp._group_id = req.group_id();
+            return resp;
+        });
+}
+
+/// The three servers on fixed ports with their io threads, and a client for
+/// each, torn down in the right order. Only for the extension cases below;
+/// the original cases keep their inline setup.
+struct three_transports {
+    three_transports(std::uint16_t http_port, std::uint16_t beast_port, std::uint16_t proxygen_port,
+                     bool with_extensions)
+        : http_server("127.0.0.1", http_port, {}, kythira::noop_metrics{}),
+          http_client(node_map(http_port), {}, kythira::noop_metrics{}),
+          work_guard(boost::asio::make_work_guard(ioc)),
+          beast_server(ioc, "127.0.0.1", beast_port, {}, kythira::noop_metrics{}),
+          beast_client(ioc, node_map(beast_port), {}, kythira::noop_metrics{}),
+          io_executor(std::make_shared<folly::IOThreadPoolExecutor>(2)),
+          proxygen_server_inst("127.0.0.1", proxygen_port, {}, kythira::noop_metrics{},
+                               io_executor),
+          proxygen_client_inst(*io_executor, node_map(proxygen_port), {}, kythira::noop_metrics{}) {
+        for (int i = 0; i < 2; ++i) {
+            io_threads.emplace_back([this] { ioc.run(); });
+        }
+        register_echo_handlers(http_server);
+        register_echo_handlers(beast_server);
+        register_echo_handlers(proxygen_server_inst);
+        if (with_extensions) {
+            register_extension_echo_handlers(http_server);
+            register_extension_echo_handlers(beast_server);
+            register_extension_echo_handlers(proxygen_server_inst);
+        }
+        http_server.start();
+        beast_server.start();
+        proxygen_server_inst.start();
+    }
+
+    ~three_transports() {
+        http_server.stop();
+        beast_server.stop();
+        proxygen_server_inst.stop();
+        work_guard.reset();
+        ioc.stop();
+        for (auto& t : io_threads) {
+            t.join();
+        }
+    }
+
+    three_transports(const three_transports&) = delete;
+    auto operator=(const three_transports&) -> three_transports& = delete;
+
+    static auto node_map(std::uint16_t port) -> std::unordered_map<std::uint64_t, std::string> {
+        return {{test_node_id, std::string("http://127.0.0.1:") + std::to_string(port)}};
+    }
+
+    kythira::cpp_httplib_server<http_types> http_server;
+    kythira::cpp_httplib_client<http_types> http_client;
+    boost::asio::io_context ioc;
+    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work_guard;
+    std::vector<std::thread> io_threads;
+    kythira::boost_beast_server<beast_types> beast_server;
+    kythira::boost_beast_client<beast_types> beast_client;
+    std::shared_ptr<folly::IOThreadPoolExecutor> io_executor;
+    kythira::proxygen_server<proxygen_types> proxygen_server_inst;
+    kythira::proxygen_client<proxygen_types> proxygen_client_inst;
+};
+
+/// Whether `f` fails with exactly `rpc_not_implemented_exception`.
+template<typename Future> auto fails_not_implemented(Future&& f) -> bool {
+    try {
+        std::ignore = std::forward<Future>(f).get();
+    } catch (const kythira::rpc_not_implemented_exception&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
 }
 
 }  // namespace
@@ -409,6 +506,189 @@ BOOST_AUTO_TEST_CASE(oversized_body_is_refused_the_same_way_by_all_three_transpo
     for (auto& t : io_threads) {
         t.join();
     }
+}
+
+// .kiro/specs/http-coap-pre-vote-timeout-now/ Requirement 6.1: both extension
+// RPCs round-trip through all three transports with every field, group_id
+// included, and the three agree.
+BOOST_AUTO_TEST_CASE(extension_rpcs_are_equivalent_across_all_three_transports,
+                     *boost::unit_test::timeout(60)) {
+    three_transports t(28420, 28421, 28422, /*with_extensions=*/true);
+
+    for (std::uint64_t term : {1ULL, 2ULL, 41ULL}) {
+        kythira::request_pre_vote_request<> pv{};
+        pv._term = term;
+        pv._candidate_id = 3;
+        pv._last_log_index = term * 2;
+        pv._last_log_term = term + 1;
+        pv._group_id = 77;
+        auto http_pv =
+            std::move(t.http_client.send_request_pre_vote(test_node_id, pv, rpc_timeout)).get();
+        auto beast_pv =
+            std::move(t.beast_client.send_request_pre_vote(test_node_id, pv, rpc_timeout)).get();
+        auto proxygen_pv =
+            std::move(t.proxygen_client_inst.send_request_pre_vote(test_node_id, pv, rpc_timeout))
+                .get();
+        BOOST_TEST(http_pv.term() == term);
+        BOOST_TEST(http_pv.group_id() == 77U);
+        BOOST_TEST(http_pv.vote_granted() == (term * 2 >= term + 1));
+        BOOST_TEST(beast_pv.term() == http_pv.term());
+        BOOST_TEST(proxygen_pv.term() == http_pv.term());
+        BOOST_TEST(beast_pv.vote_granted() == http_pv.vote_granted());
+        BOOST_TEST(proxygen_pv.vote_granted() == http_pv.vote_granted());
+        BOOST_TEST(beast_pv.group_id() == http_pv.group_id());
+        BOOST_TEST(proxygen_pv.group_id() == http_pv.group_id());
+
+        kythira::timeout_now_request<> tn{};
+        tn._term = term;
+        tn._leader_id = 2;
+        tn._last_log_index = term;
+        tn._group_id = 78;
+        auto http_tn =
+            std::move(t.http_client.send_timeout_now(test_node_id, tn, rpc_timeout)).get();
+        auto beast_tn =
+            std::move(t.beast_client.send_timeout_now(test_node_id, tn, rpc_timeout)).get();
+        auto proxygen_tn =
+            std::move(t.proxygen_client_inst.send_timeout_now(test_node_id, tn, rpc_timeout)).get();
+        BOOST_TEST(http_tn.term() == term);
+        BOOST_TEST(http_tn.group_id() == 78U);
+        BOOST_TEST(http_tn.success() == (term % 2 == 0));
+        BOOST_TEST(beast_tn.term() == http_tn.term());
+        BOOST_TEST(proxygen_tn.term() == http_tn.term());
+        BOOST_TEST(beast_tn.success() == http_tn.success());
+        BOOST_TEST(proxygen_tn.success() == http_tn.success());
+        BOOST_TEST(beast_tn.group_id() == http_tn.group_id());
+        BOOST_TEST(proxygen_tn.group_id() == http_tn.group_id());
+    }
+}
+
+// Requirement 3.1, 3.3 and 6.4: a server with no handler for an extension
+// answers 501 on the wire, and every client reports it as
+// rpc_not_implemented_exception. The mandatory RPCs are untouched by that.
+BOOST_AUTO_TEST_CASE(unregistered_extension_handlers_answer_not_implemented_on_all_three,
+                     *boost::unit_test::timeout(60)) {
+    three_transports t(28423, 28424, 28425, /*with_extensions=*/false);
+
+    for (auto port : {std::uint16_t{28423}, std::uint16_t{28424}, std::uint16_t{28425}}) {
+        httplib::Client raw_client("127.0.0.1", port);
+        raw_client.set_connection_timeout(5, 0);
+        for (const auto* path : {"/v1/raft/request_pre_vote", "/v1/raft/timeout_now"}) {
+            auto result = raw_client.Post(path, "{}", "application/json");
+            BOOST_REQUIRE_MESSAGE(result, "port " << port << ": request itself failed");
+            BOOST_TEST(result->status == 501, "port " << port << " " << path);
+        }
+    }
+
+    const kythira::request_pre_vote_request<> pv{};
+    const kythira::timeout_now_request<> tn{};
+    BOOST_TEST(
+        fails_not_implemented(t.http_client.send_request_pre_vote(test_node_id, pv, rpc_timeout)));
+    BOOST_TEST(
+        fails_not_implemented(t.beast_client.send_request_pre_vote(test_node_id, pv, rpc_timeout)));
+    BOOST_TEST(fails_not_implemented(
+        t.proxygen_client_inst.send_request_pre_vote(test_node_id, pv, rpc_timeout)));
+    BOOST_TEST(
+        fails_not_implemented(t.http_client.send_timeout_now(test_node_id, tn, rpc_timeout)));
+    BOOST_TEST(
+        fails_not_implemented(t.beast_client.send_timeout_now(test_node_id, tn, rpc_timeout)));
+    BOOST_TEST(fails_not_implemented(
+        t.proxygen_client_inst.send_timeout_now(test_node_id, tn, rpc_timeout)));
+}
+
+// Requirement 3.3, 3.4 and 6.3: a peer on a build that predates the
+// extensions has no route for them and answers 404. Played here by a raw
+// httplib server that serves only the three mandatory paths, so no transport
+// code is forked. On an extension the 404 is rpc_not_implemented_exception
+// after exactly one request; on RequestVote it stays an ordinary client error.
+BOOST_AUTO_TEST_CASE(an_older_peer_without_the_routes_is_reported_as_not_implemented,
+                     *boost::unit_test::timeout(60)) {
+    constexpr std::uint16_t older_port = 28426;
+    httplib::Server older_peer;
+    std::atomic<int> pre_vote_hits{0};
+    older_peer.set_pre_routing_handler([&](const httplib::Request& req, httplib::Response&) {
+        if (req.path == "/v1/raft/request_pre_vote") {
+            pre_vote_hits.fetch_add(1);
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
+    for (const auto* path :
+         {"/v1/raft/request_vote", "/v1/raft/append_entries", "/v1/raft/install_snapshot"}) {
+        older_peer.Post(path, [](const httplib::Request&, httplib::Response& res) {
+            res.status = 500;  // Never reached by this case.
+        });
+    }
+    BOOST_REQUIRE(older_peer.bind_to_port("127.0.0.1", older_port));
+    std::thread older_thread([&] { older_peer.listen_after_bind(); });
+    older_peer.wait_until_ready();
+
+    boost::asio::io_context ioc;
+    auto work_guard = boost::asio::make_work_guard(ioc);
+    std::thread io_thread([&ioc] { ioc.run(); });
+    auto io_executor = std::make_shared<folly::IOThreadPoolExecutor>(1);
+    {
+        const auto map = three_transports::node_map(older_port);
+        kythira::cpp_httplib_client<http_types> http_client(map, {}, kythira::noop_metrics{});
+        kythira::boost_beast_client<beast_types> beast_client(ioc, map, {},
+                                                              kythira::noop_metrics{});
+        kythira::proxygen_client<proxygen_types> proxygen_client_inst(*io_executor, map, {},
+                                                                      kythira::noop_metrics{});
+
+        const kythira::request_pre_vote_request<> pv{};
+        BOOST_TEST(fails_not_implemented(
+            http_client.send_request_pre_vote(test_node_id, pv, rpc_timeout)));
+        BOOST_TEST(pre_vote_hits.load() == 1);
+        BOOST_TEST(fails_not_implemented(
+            beast_client.send_request_pre_vote(test_node_id, pv, rpc_timeout)));
+        BOOST_TEST(pre_vote_hits.load() == 2);
+        BOOST_TEST(fails_not_implemented(
+            proxygen_client_inst.send_request_pre_vote(test_node_id, pv, rpc_timeout)));
+        BOOST_TEST(pre_vote_hits.load() == 3);
+
+        const kythira::timeout_now_request<> tn{};
+        BOOST_TEST(
+            fails_not_implemented(http_client.send_timeout_now(test_node_id, tn, rpc_timeout)));
+        BOOST_TEST(
+            fails_not_implemented(beast_client.send_timeout_now(test_node_id, tn, rpc_timeout)));
+        BOOST_TEST(fails_not_implemented(
+            proxygen_client_inst.send_timeout_now(test_node_id, tn, rpc_timeout)));
+    }
+    older_peer.stop();
+    older_thread.join();
+
+    // And a 404 on a mandatory RPC is a misconfigured peer, not an older one:
+    // checked against a server with no routes at all.
+    constexpr std::uint16_t empty_port = 28427;
+    httplib::Server empty_peer;
+    BOOST_REQUIRE(empty_peer.bind_to_port("127.0.0.1", empty_port));
+    std::thread empty_thread([&] { empty_peer.listen_after_bind(); });
+    empty_peer.wait_until_ready();
+    {
+        const auto map = three_transports::node_map(empty_port);
+        kythira::cpp_httplib_client<http_types> http_client(map, {}, kythira::noop_metrics{});
+        kythira::boost_beast_client<beast_types> beast_client(ioc, map, {},
+                                                              kythira::noop_metrics{});
+        kythira::proxygen_client<proxygen_types> proxygen_client_inst(*io_executor, map, {},
+                                                                      kythira::noop_metrics{});
+        const kythira::request_vote_request<> rv{};
+        BOOST_CHECK_THROW(
+            std::ignore =
+                std::move(http_client.send_request_vote(test_node_id, rv, rpc_timeout)).get(),
+            kythira::http_client_error);
+        BOOST_CHECK_THROW(
+            std::ignore =
+                std::move(beast_client.send_request_vote(test_node_id, rv, rpc_timeout)).get(),
+            kythira::http_client_error);
+        BOOST_CHECK_THROW(std::ignore = std::move(proxygen_client_inst.send_request_vote(
+                                                      test_node_id, rv, rpc_timeout))
+                                            .get(),
+                          kythira::http_client_error);
+    }
+    empty_peer.stop();
+    empty_thread.join();
+
+    work_guard.reset();
+    ioc.stop();
+    io_thread.join();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

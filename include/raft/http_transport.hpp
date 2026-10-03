@@ -211,6 +211,18 @@ public:
                                 const kythira::fetch_log_entries_request<>& request,
                                 std::chrono::milliseconds timeout) ->
         typename Types::template future_template<kythira::fetch_log_entries_response<>>;
+    // Optional extensions (.kiro/specs/http-coap-pre-vote-timeout-now/). A
+    // peer on a build without the route answers 404, and one without a
+    // registered handler 501; both fail the future with
+    // `rpc_not_implemented_exception`, which the core treats as "older peer".
+    auto send_request_pre_vote(std::uint64_t target,
+                               const kythira::request_pre_vote_request<>& request,
+                               std::chrono::milliseconds timeout) ->
+        typename Types::template future_template<kythira::request_pre_vote_response<>>;
+
+    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+                          std::chrono::milliseconds timeout) ->
+        typename Types::template future_template<kythira::timeout_now_response<>>;
 
     /// Validates `client_cert_path`/`client_key_path`/`ca_cert_path`, then
     /// closes every idle pooled connection so subsequent RPCs build fresh ones
@@ -327,6 +339,16 @@ public:
     auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
                                                 const kythira::fetch_log_entries_request<>&)>
                                                 handler) -> void;
+    // Optional extensions. Left unregistered, their routes answer 501 rather
+    // than the mandatory RPCs' 500, so a caller can tell "cannot serve this"
+    // from "failed while serving it".
+    auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
+                                               const kythira::request_pre_vote_request<>&)>
+                                               handler) -> void;
+
+    auto register_timeout_now_handler(
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+            handler) -> void;
 
     auto start() -> void;
     auto stop() -> void;
@@ -382,6 +404,10 @@ private:
     std::function<kythira::fetch_log_entries_response<>(
         const kythira::fetch_log_entries_request<>&)>
         _fetch_log_entries_handler;
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        _request_pre_vote_handler;
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        _timeout_now_handler;
     std::string _bind_address;
     std::uint16_t _bind_port;
     // Resolved by start(); atomic because bound_port() is callable without the
