@@ -322,7 +322,10 @@ the manager owning instance-launch mechanics.
    `config.poll_interval` until a new instance (not in the snapshot)
    reaches `InService` and its ECS status is `Running`, or
    `config.provision_timeout` elapses (exceptional future on timeout,
-   naming the scaling group and elapsed time).
+   naming the scaling group and elapsed time). The timeout's rollback is
+   specified by `.kiro/specs/group-scale-up-rollback/`: the fresh instance
+   is removed by id, and DesiredCapacity is restored only when none is
+   listed.
 3. ESS chooses the zone (the group balances across its configured
    vSwitches); WHEN the new instance's zone differs from `target_group`
    THEN the manager SHALL proceed and report the actual zone in the

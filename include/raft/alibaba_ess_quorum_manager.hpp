@@ -48,6 +48,22 @@
 /// deliberately does not (design.md Non-Goals). A wedged kythira process on a
 /// `Running` instance therefore reads as live here.
 ///
+/// **A timed-out provision removes its own launch, by id, and adopted nodes
+/// carry scale-in protection** (`.kiro/specs/group-scale-up-rollback/`). The
+/// timeout path removes every instance absent from the pre-growth snapshot
+/// with a decrementing `RemoveInstances`, and lowers DesiredCapacity only
+/// when there is none, then reports any member that shrink cost. Every node
+/// this manager adopts is put in ESS's `Protected` lifecycle
+/// (`SetInstancesProtection`), and construction protects any adopted node
+/// that is not, so neither this manager's capacity writes nor anyone
+/// else's can make the group's RemovalPolicies choose a Raft voter. ESS
+/// also skips health checks on protected members, which suits a manager
+/// that decides liveness itself. To scale the group in by hand, clear
+/// protection on the members to remove first. Run one manager per scaling
+/// group: an instance another tool launches mid-provision is "fresh" and
+/// would be removed on a timeout. The RAM policy needs
+/// `ess:SetInstancesProtection` and `ess:RemoveInstances`.
+///
 /// Header-only and always compiled — there is no Alibaba SDK to detect. The
 /// Kconfig symbol `CONFIG_ALIBABA_QUORUM_MANAGER` selects whether the *tests*
 /// are built, not whether this header works.
@@ -56,6 +72,7 @@
 #include <raft/alibaba_http_client.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
+#include <raft/group_scale_rollback.hpp>
 #include <raft/quorum_management.hpp>
 
 #include <boost/json.hpp>
@@ -113,6 +130,8 @@ inline constexpr int scaling_activity_page_size = 50;
 /// helper like `oci_detail::parallel_for` — ECS answers for 100 instances in
 /// one call where OCI's `GetInstance` answers for one.
 inline constexpr std::size_t ecs_describe_batch = 100;
+/// `SetInstancesProtection` accepts at most 20 instance IDs per call.
+inline constexpr std::size_t protection_batch = 20;
 
 /// Read a string field, or `""` when it is absent or not a string.
 ///
@@ -363,6 +382,8 @@ public:
                                      _cfg.scaling_group_id + " exists in region " +
                                      _cfg.alibaba.region);
         }
+
+        reconcile_scale_in_protection();
     }
 
     alibaba_ess_quorum_manager(const alibaba_ess_quorum_manager&) = delete;
@@ -573,18 +594,22 @@ public:
             const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - started);
             if (!launched.has_value()) {
-                // Best-effort capacity rollback, exactly as the AWS and OCI
-                // siblings do on this path: with no identified instance there
-                // is nothing specific to remove, and leaving the group one
-                // instance larger than the cluster believes turns a timeout
-                // into a permanent capacity drift.
+                // Undo the scale-up by removing the instance it caused, by
+                // id, and lower the desired size blind only when there is
+                // none (`.kiro/specs/group-scale-up-rollback/`). Lowering it
+                // blind with a fresh member present lets the group's
+                // RemovalPolicies choose which member goes, and nothing in
+                // them knows a Raft voter from the launch being undone.
                 try {
-                    set_desired_capacity(original_capacity);
+                    members = describe_members();
                 } catch (const std::exception& ex) {
-                    std::cerr
-                        << "[alibaba_ess_quorum_manager::provision_node] capacity rollback to "
-                        << original_capacity << " failed: " << ex.what() << "\n";
+                    // The last successful poll is the best listing left; with
+                    // none at all the planner restores the size instead.
+                    std::cerr << "[alibaba_ess_quorum_manager::provision_node] final listing "
+                                 "failed, using the last poll: "
+                              << ex.what() << "\n";
                 }
+                const auto rollback = undo_scale_up(known, members, original_capacity);
                 // Everything below turns "it did not happen" into "here is
                 // what happened instead". The bare timeout this replaced was
                 // accurate and useless: it could not distinguish a refused
@@ -632,7 +657,8 @@ public:
                     "s) waiting for a new InService/Running instance in scaling group " +
                     _cfg.scaling_group_id +
                     (target_group.empty() ? std::string{} : " for zone " + target_group) + "; " +
-                    seen + "; " + scaling_activity_diagnosis(started_iso));
+                    seen + "; " + scaling_activity_diagnosis(started_iso) + "; " +
+                    group_rollback::describe(rollback, original_capacity + 1));
             }
 
             if (launched->zone_id != target_group) {
@@ -668,6 +694,19 @@ public:
                 // infra).
                 best_effort_remove(launched->id);
                 throw;
+            }
+
+            // Requirement 4.1-4.2 of group-scale-up-rollback: keep the
+            // group's own scale-in from ever choosing this node. Not fatal:
+            // the instance is up and tagged, failing would churn a working
+            // node, and the next construction's reconcile repairs the miss.
+            try {
+                set_scale_in_protection({launched->id}, true);
+            } catch (const std::exception& ex) {
+                std::cerr << "[alibaba_ess_quorum_manager::provision_node] could not set scale-in "
+                             "protection on "
+                          << launched->id << " (node " << node_id_str(new_id)
+                          << "); the next manager start retries: " << ex.what() << "\n";
             }
 
             auto addr =
@@ -707,6 +746,11 @@ public:
             if (!found.has_value()) {
                 return future_factory_default::makeFuture();
             }
+
+            // No protection clearing first: ESS documents `RemoveInstances`
+            // as the way to remove a `Protected` member by hand, and clearing
+            // it would open a window in which the group's scale-in could
+            // choose this node and a voter both.
 
             try {
                 std::map<std::string, std::string> params{
@@ -814,8 +858,144 @@ private:
 
     /// Requirement 6.2's whole liveness ladder, in one place so the callers
     /// read as classification rather than as policy.
+    ///
+    /// `Protected` counts as in service: it is the lifecycle ESS reports for
+    /// an `InService` member once scale-in protection is set, and this
+    /// manager sets it on every node it adopts.
     [[nodiscard]] static auto is_live(const alibaba_ess_detail::instance_view& inst) -> bool {
-        return inst.lifecycle_state == "InService" && inst.status == "Running";
+        return (inst.lifecycle_state == "InService" || inst.lifecycle_state == "Protected") &&
+               inst.status == "Running";
+    }
+
+    /// ESS lifecycle states mapped onto the rollback planner's classes.
+    /// Anything unrecognised counts as pending: still a member, and removable
+    /// when this call launched it.
+    [[nodiscard]] static auto rollback_state(const std::string& lifecycle)
+        -> group_rollback::member_state {
+        if (lifecycle == "InService" || lifecycle == "Protected" || lifecycle == "Standby") {
+            return group_rollback::member_state::live;
+        }
+        if (lifecycle.starts_with("Removing")) {  // `Removing`, `Removing:Wait`
+            return group_rollback::member_state::terminal;
+        }
+        return group_rollback::member_state::pending;
+    }
+
+    [[nodiscard]] auto rollback_listing(
+        const std::vector<alibaba_ess_detail::instance_view>& members) const
+        -> std::vector<group_rollback::listed_member> {
+        std::vector<group_rollback::listed_member> out;
+        out.reserve(members.size());
+        for (const auto& inst : members) {
+            std::string node;
+            if (const auto cluster = inst.tags.find(alibaba_ess_detail::tag_cluster);
+                cluster != inst.tags.end() && cluster->second == _cfg.cluster_name) {
+                if (const auto tag = inst.tags.find(alibaba_ess_detail::tag_node_id);
+                    tag != inst.tags.end()) {
+                    node = tag->second;
+                }
+            }
+            out.push_back({.id = inst.id,
+                           .state = rollback_state(inst.lifecycle_state),
+                           .lifecycle = inst.lifecycle_state,
+                           .node = std::move(node)});
+        }
+        return out;
+    }
+
+    /// @brief The timeout path's rollback (group-scale-up-rollback
+    ///        Requirements 2, 3 and 5). Never throws: every failure is
+    ///        recorded in the outcome so the timeout stays the reason.
+    [[nodiscard]] auto undo_scale_up(const std::vector<std::string>& pre_growth,
+                                     const std::vector<alibaba_ess_detail::instance_view>& members,
+                                     std::int64_t original_capacity) const noexcept
+        -> group_rollback::rollback_outcome {
+        group_rollback::rollback_outcome outcome;
+        try {
+            outcome.final_listing = rollback_listing(members);
+            outcome.plan =
+                group_rollback::plan_scale_up_rollback(pre_growth, outcome.final_listing);
+            for (const auto& id : outcome.plan.remove) {
+                if (auto error = try_remove(id); error.empty()) {
+                    outcome.removed.push_back(id);
+                } else {
+                    outcome.removal_failures.emplace_back(id, std::move(error));
+                }
+            }
+            if (!outcome.plan.restore_desired_size) {
+                return outcome;
+            }
+            try {
+                set_desired_capacity(original_capacity);
+                outcome.restored_size = original_capacity;
+            } catch (const std::exception& ex) {
+                outcome.restore_error = ex.what();
+                return outcome;
+            }
+            const auto after = group_rollback::settle_listing(
+                [this] { return rollback_listing(describe_members()); },
+                group_rollback::settle_window(_cfg.provision_timeout, _cfg.poll_interval),
+                _cfg.poll_interval);
+            if (after.has_value()) {
+                outcome.audit =
+                    group_rollback::audit_after_shrink(pre_growth, outcome.final_listing, *after);
+            } else {
+                outcome.audit_unavailable = true;
+            }
+        } catch (const std::exception& ex) {
+            outcome.restore_error = std::string("rollback aborted: ") + ex.what();
+        }
+        return outcome;
+    }
+
+    /// `SetInstancesProtection`, batched to the API's per-call limit.
+    auto set_scale_in_protection(const std::vector<std::string>& ids, bool enabled) const -> void {
+        for (std::size_t start = 0; start < ids.size();
+             start += alibaba_ess_detail::protection_batch) {
+            std::map<std::string, std::string> params{
+                {"ScalingGroupId", _cfg.scaling_group_id},
+                {"ProtectedFromScaleIn", enabled ? "true" : "false"},
+            };
+            const auto stop = std::min(start + alibaba_ess_detail::protection_batch, ids.size());
+            for (std::size_t i = start; i < stop; ++i) {
+                params.emplace("InstanceId." + std::to_string(i - start + 1), ids[i]);
+            }
+            (void)ess("SetInstancesProtection", std::move(params));
+        }
+    }
+
+    /// @brief Protect every adopted member of this cluster that is not yet
+    ///        protected (group-scale-up-rollback Requirement 4.3).
+    ///
+    /// Covers clusters adopted before protection existed, and repairs an
+    /// adoption whose protection call failed. A permission error throws
+    /// `std::invalid_argument`, like the constructor's other configuration
+    /// checks; anything else is logged, because a transient read failure at
+    /// startup is not a reason to refuse to run.
+    auto reconcile_scale_in_protection() const -> void {
+        try {
+            std::vector<std::string> unprotected;
+            for (const auto& inst : cluster_members()) {
+                if (inst.tags.contains(alibaba_ess_detail::tag_node_id) &&
+                    inst.lifecycle_state == "InService") {
+                    unprotected.push_back(inst.id);
+                }
+            }
+            set_scale_in_protection(unprotected, true);
+        } catch (const std::exception& ex) {
+            const std::string what = ex.what();
+            if (what.find("NoPermission") != std::string::npos ||
+                what.find("Forbidden.RAM") != std::string::npos ||
+                what.find("Forbidden.Unauthorized") != std::string::npos) {
+                throw std::invalid_argument(
+                    "alibaba_ess_quorum_manager: cannot set scale-in protection on scaling group " +
+                    _cfg.scaling_group_id +
+                    " (the RAM policy needs ess:SetInstancesProtection): " + what);
+            }
+            std::cerr << "[alibaba_ess_quorum_manager] scale-in protection reconcile failed; "
+                         "unprotected members stay exposed to the group's scale-in: "
+                      << what << "\n";
+        }
     }
 
     /// One ESS RPC, with `RegionId` folded in when the config carries one.
@@ -1172,14 +1352,69 @@ private:
     /// and the alternative is a running, billed instance that no future call
     /// will ever recognise as ours.
     auto best_effort_remove(const std::string& instance_id) const noexcept -> void {
+        if (const auto error = try_remove(instance_id); !error.empty()) {
+            std::cerr << "[alibaba_ess_quorum_manager::provision_node] could not clean up "
+                      << instance_id << " after a failed adoption; it may still be running and "
+                      << "billing: " << error << "\n";
+        }
+    }
+
+    /// `RemoveInstances` with the capacity decrement, for an instance this
+    /// manager launched. Returns the error, or `""` on success; an instance
+    /// already gone counts as removed, the same rule `decommission_node`
+    /// applies.
+    ///
+    /// Waits for the group's scaling activities to finish first: ESS refuses
+    /// `RemoveInstances` while one is in progress, and the timed-out
+    /// scale-out that this call undoes is usually still running.
+    [[nodiscard]] auto try_remove(const std::string& instance_id) const noexcept -> std::string {
         try {
+            await_no_scaling_activity(_cfg.provision_timeout);
             (void)ess("RemoveInstances", {{"ScalingGroupId", _cfg.scaling_group_id},
                                           {"InstanceId.1", instance_id},
                                           {"DecreaseDesiredCapacity", "true"}});
+            return {};
         } catch (const std::exception& ex) {
-            std::cerr << "[alibaba_ess_quorum_manager::provision_node] could not clean up "
-                      << instance_id << " after a failed adoption; it may still be running and "
-                      << "billing: " << ex.what() << "\n";
+            std::string what = ex.what();
+            if (what.find("NotFound") != std::string::npos ||
+                what.find("not found") != std::string::npos) {
+                return {};
+            }
+            return what.empty() ? std::string{"unknown error"} : what;
+        }
+    }
+
+    /// @brief Wait until no scaling activity of the group is `InProgress`.
+    ///
+    /// The ESS analogue of the OCI manager's `await_pool_running`, for the
+    /// same reason: `RemoveInstances` requires "no scaling activity in
+    /// progress", and a scale-out that never delivered an adoptable instance
+    /// typically is one. Bounded, and falls through on expiry or on read
+    /// failures: the removal's own error then says what went wrong.
+    auto await_no_scaling_activity(std::chrono::seconds budget) const -> void {
+        const auto deadline = std::chrono::steady_clock::now() + budget;
+        for (;;) {
+            try {
+                const auto response = ess(
+                    "DescribeScalingActivities",
+                    {{"ScalingGroupId", _cfg.scaling_group_id},
+                     {"PageSize", std::to_string(alibaba_ess_detail::scaling_activity_page_size)}});
+                const auto* arr = alibaba_ess_detail::nested_array(response, "ScalingActivities",
+                                                                   "ScalingActivity");
+                const bool busy =
+                    arr != nullptr && std::ranges::any_of(*arr, [](const auto& a) {
+                        return alibaba_ess_detail::json_string(a, "StatusCode") == "InProgress";
+                    });
+                if (!busy) {
+                    return;
+                }
+            } catch (const std::exception&) {
+                // A read failure is not a reason to stop waiting; the deadline is.
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return;
+            }
+            std::this_thread::sleep_for(_cfg.poll_interval);
         }
     }
 

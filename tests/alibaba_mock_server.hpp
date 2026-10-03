@@ -486,6 +486,43 @@ public:
         _launch_status = std::move(status);
     }
 
+    /// The ESS lifecycle a freshly launched instance reports. `Pending` holds
+    /// the launch in the state a slow boot leaves it in, so a test can let
+    /// `provision_timeout` expire with a fresh instance in the group.
+    auto set_launch_lifecycle(std::string lifecycle) -> void {
+        const std::lock_guard lock(_mutex);
+        _launch_lifecycle = std::move(lifecycle);
+    }
+
+    /// How many members a DesiredCapacity decrease has removed without being
+    /// named (see `reconcile_capacity_locked`).
+    [[nodiscard]] auto blind_scale_in_count() const -> int {
+        const std::lock_guard lock(_mutex);
+        return _blind_scale_in_count;
+    }
+
+    /// How many `DescribeScalingActivities` reads report a scale-out as
+    /// `InProgress` after it starts. While any remain, `RemoveInstances` is
+    /// refused, as ESS refuses it during a scaling activity. Zero (the
+    /// default) settles every activity at once.
+    auto set_activity_in_progress_reads(int reads) -> void {
+        const std::lock_guard lock(_mutex);
+        _in_progress_reads = reads;
+    }
+
+    /// Every `SetInstancesProtection` call, as `"<id>=<true|false>"`.
+    [[nodiscard]] auto protection_calls() const -> std::vector<std::string> {
+        const std::lock_guard lock(_mutex);
+        return _protection_calls;
+    }
+
+    /// Make every `SetInstancesProtection` call fail with this error code.
+    /// Empty (the default) lets them succeed.
+    auto set_protection_error(std::string code) -> void {
+        const std::lock_guard lock(_mutex);
+        _protection_error = std::move(code);
+    }
+
     /// Tags a launched instance already carries before the manager adopts it —
     /// so an additive `TagResources` is distinguishable from a replacing one.
     auto set_launch_tags(std::map<std::string, std::string> tags) -> void {
@@ -1091,6 +1128,22 @@ private:
     /// `provision_node`'s poll.
     auto reconcile_capacity_locked() -> void {
         const auto held = static_cast<std::int64_t>(_instances.size());
+        if (_desired_capacity < held) {
+            // A decrease names no instance, so ESS picks. The mock picks the
+            // **oldest** unprotected member, the worst case for a Raft
+            // cluster, whose oldest members are its longest-serving voters
+            // (`.kiro/specs/group-scale-up-rollback/`, Requirement 8.1).
+            // `Protected` members are skipped, as ESS skips them on scale-in.
+            auto excess = held - _desired_capacity;
+            std::erase_if(_instances, [&](const instance_state& inst) {
+                if (excess == 0 || inst.lifecycle_state == "Protected") {
+                    return false;
+                }
+                --excess;
+                ++_blind_scale_in_count;
+                return true;
+            });
+        }
         if (_desired_capacity <= held) {
             // A change that needs no launch. Real ESS still records it, as a
             // Successful "The Desired Capacity is changed" -- which is what
@@ -1117,11 +1170,12 @@ private:
         // scale-out and simply never delivers, so the activity is Successful
         // and membership never changes.
         record_activity_locked("Successful", add, "", "");
+        _in_progress_remaining = _in_progress_reads;
         if (!_auto_launch) {
             return;
         }
         while (static_cast<std::int64_t>(_instances.size()) < _desired_capacity) {
-            (void)launch_locked(_launch_tags, "InService", _launch_status, _launch_zone);
+            (void)launch_locked(_launch_tags, _launch_lifecycle, _launch_status, _launch_zone);
         }
     }
 
@@ -1290,6 +1344,14 @@ private:
                                   " below its MinSize of " + std::to_string(_min_size));
                     return;
                 }
+                // ESS refuses RemoveInstances while a scaling activity is in
+                // progress. A `Protected` member, by contrast, is removable:
+                // that is the documented way to remove one by hand.
+                if (_in_progress_remaining > 0) {
+                    rpc_error(res, 400, "IncorrectScalingGroupStatus",
+                              "a scaling activity is in progress in scaling group " + _group_id);
+                    return;
+                }
                 const auto before = _instances.size();
                 std::erase_if(_instances,
                               [&](const instance_state& inst) { return inst.id == target; });
@@ -1323,6 +1385,38 @@ private:
             wrapper["Instance"] = described;
             out["TotalCount"] = static_cast<std::int64_t>(described.size());
             out["Instances"] = wrapper;
+        } else if (action == "SetInstancesProtection") {
+            if (req.get_param_value("ScalingGroupId") != _group_id) {
+                rpc_error(res, 404, "InvalidScalingGroupId.NotFound",
+                          "the specified scaling group does not exist");
+                return;
+            }
+            if (!_protection_error.empty()) {
+                rpc_error(res, 403, _protection_error, "SetInstancesProtection refused by mock");
+                return;
+            }
+            const auto flag = req.get_param_value("ProtectedFromScaleIn");
+            if (flag != "true" && flag != "false") {
+                rpc_error(res, 400, "InvalidParameter", "ProtectedFromScaleIn is required");
+                return;
+            }
+            std::vector<std::string> targets;
+            for (int n = 1; req.has_param("InstanceId." + std::to_string(n)); ++n) {
+                targets.push_back(req.get_param_value("InstanceId." + std::to_string(n)));
+            }
+            for (const auto& target : targets) {
+                const auto it = std::ranges::find(_instances, target, &instance_state::id);
+                if (it == _instances.end()) {
+                    rpc_error(res, 404, "InvalidInstanceId.NotFound",
+                              "instance " + target + " is not in scaling group " + _group_id);
+                    return;
+                }
+            }
+            for (const auto& target : targets) {
+                auto it = std::ranges::find(_instances, target, &instance_state::id);
+                it->lifecycle_state = flag == "true" ? "Protected" : "InService";
+                _protection_calls.push_back(target + "=" + flag);
+            }
         } else if (action == "TagResources") {
             if (req.get_param_value("ResourceType") != "instance") {
                 rpc_error(res, 400, "InvalidParameter.ResourceType",
@@ -1356,11 +1450,18 @@ private:
                 return;
             }
             boost::json::array activities;
+            // Composed before the countdown ticks, so `reads = N` yields
+            // exactly N answers with the newest activity InProgress.
+            const bool in_progress = _in_progress_remaining > 0;
+            if (in_progress) {
+                --_in_progress_remaining;
+            }
             for (auto it = _activities.rbegin(); it != _activities.rend(); ++it) {
                 boost::json::object entry;
                 entry["StartTime"] = it->start_time;
                 entry["EndTime"] = it->start_time;
-                entry["StatusCode"] = it->status_code;
+                entry["StatusCode"] =
+                    in_progress && it == _activities.rbegin() ? "InProgress" : it->status_code;
                 entry["Description"] = it->description;
                 entry["ScalingGroupId"] = _group_id;
                 if (!it->error_code.empty()) {
@@ -1664,6 +1765,12 @@ private:
     std::map<std::string, std::string> _launch_tags{{"owner", "platform-team"}};
     std::vector<instance_state> _instances;
     int _instance_counter{0};
+    std::string _launch_lifecycle{"InService"};
+    int _blind_scale_in_count{0};
+    int _in_progress_reads{0};
+    int _in_progress_remaining{0};
+    std::vector<std::string> _protection_calls;
+    std::string _protection_error;
 
     /// One `DescribeScalingActivities` record. Modelled because the manager's
     /// provision timeout now reads them: membership alone cannot distinguish a

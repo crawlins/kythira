@@ -999,6 +999,14 @@ target_link_libraries(shard_group_id_wire_property_test PRIVATE
 )
 target_compile_features(shard_group_id_wire_property_test PRIVATE cxx_std_23)
 add_test(NAME shard_group_id_wire_property_test COMMAND shard_group_id_wire_property_test)
+# group-scale-up-rollback spec, task 2: the shared timeout-rollback planner.
+# Outside every cloud gate on purpose: it is the only offline coverage the
+# ASG, VMSS and MIG managers' victim choice has.
+add_executable(group_scale_rollback_unit_test group_scale_rollback_unit_test.cpp)
+target_include_directories(group_scale_rollback_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(group_scale_rollback_unit_test PRIVATE Boost::unit_test_framework)
+target_compile_features(group_scale_rollback_unit_test PRIVATE cxx_std_23)
+add_test(NAME group_scale_rollback_unit_test COMMAND group_scale_rollback_unit_test)
 add_raft_completion_test(group_transport_unit_test group_transport_unit_test.cpp)
 add_raft_completion_test(group_storage_unit_test group_storage_unit_test.cpp)
 add_raft_completion_test(striped_executor_unit_test striped_executor_unit_test.cpp)

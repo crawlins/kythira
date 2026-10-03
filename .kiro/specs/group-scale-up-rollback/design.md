@@ -137,15 +137,41 @@ Rules:
 | MIG | `currentAction` `NONE` | `CREATING`, `CREATING_WITHOUT_RETRIES`, `VERIFYING`, `RECREATING` | `DELETING`, `ABANDONING` |
 
 `STOPPED` is terminal for OCI because a stopped pool member does not serve
-and OCI pools do not restart it. Exact state strings are confirmed in task
-1 against each provider's API reference before code depends on them.
+and OCI pools do not restart it. Any string a manager does not recognise
+maps to `pending`: still a member, removable only when fresh. ESS's
+`Removing:Wait` is terminal (`Removing*`), and its `Pending:Wait` and
+`Stopped` fall to `pending`. Task 1's full state lists are below.
+
+### Vendor behaviour (task 1, 2026-10-03)
+
+Read from the API references, or for Alibaba and OCI from the vendors'
+generated SDK docstrings (`alibabacloud_ess20220222`, `oci` 2.187.1), whose
+help pages the sandbox proxy blocks.
+
+| Question | Answer | Effect here |
+|---|---|---|
+| ASG: does `TerminateInstanceInAutoScalingGroup` remove a protected instance? | Yes. The scale-in protection page lists it among what protection does not block. | No clear-before-terminate (task 6.3). |
+| ASG: is it accepted on `Pending`? | Not documented. It can fail with `ScalingActivityInProgress` and does not apply to warm-pool instances. | Task 6 retries on `ScalingActivityInProgress` within `provision_timeout`. |
+| ASG: `SetInstanceProtection` batch | 50 ids. | Batches of 50. |
+| ASG lifecycle | `Pending*`, `Quarantined`, `InService`, `Terminating*`, `Terminated`, `Detaching`, `Detached`, `EnteringStandby`, `Standby`, `ReplacingRootVolume*`, `RootVolumeReplaced`, `Warmed:*` | Matches the table above; `Quarantined` and `ReplacingRootVolume*` fall to `pending`. |
+| ESS: `RemoveInstances` on `Protected` | Allowed. It is the documented way to remove a protected member by hand. | No clear before decommission; Requirement 4.4 needs nothing more. |
+| ESS: `RemoveInstances` during a scaling activity | Refused. The prerequisite is "no scaling activity is in progress". The error code is not documented. | `try_remove` first waits for no `InProgress` activity, bounded by `provision_timeout` (Requirement 2.4). |
+| ESS: `SetInstancesProtection` | Moves the instance to `Protected`. Only `InService` or `Stopped` instances qualify. Version 2014-08-28 takes `InstanceId.N`. The batch limit is not documented. | Batches of 20; reconcile protects `InService` members only. |
+| ESS lifecycle | `InService`, `Pending`, `Pending:Wait`, `Protected`, `Standby`, `Stopped`, `Removing`, `Removing:Wait` | As mapped above. |
+| VMSS Flexible: per-VM protection | Supported from API 2023-09-01. It is set with PUT `.../virtualMachineScaleSets/{vmss}/virtualMachines/{id}` and `properties.protectionPolicy.protectFromScaleIn`. | Task 7.3 uses that call and API version. |
+| VMSS: delete a protected VM | "User-initiated instance operations (including instance delete) are not blocked." Deleting a `Creating` VM is not documented. | No clear before delete. |
+| MIG: `deleteInstances` | Lowers `targetSize` by the number deleted. Rejects only non-members and instances already being deleted or abandoned. `CREATING` is not listed as refused. | Task 8 as designed, with `skipInstancesOnValidationError=true`. |
+| MIG `currentAction` | `ABANDONING, CREATING, CREATING_WITHOUT_RETRIES, DELETING, NONE, RECREATING, REFRESHING, RESTARTING, RESUMING, STARTING, STOPPING, SUSPENDING, VERIFYING` | Unlisted ones fall to `pending`. |
+| OCI: detach while `SCALING`, or on `PROVISIONING` | Not documented. The `409 IncorrectState` while `SCALING` was observed live and is handled by `await_pool_running`. | Unchanged. |
+| OCI: victim of a size decrease | Balanced across ADs, then fault domains; within a fault domain, the **oldest** goes first. | The mock's oldest-first model matches the documented order. |
+| OCI lifecycle | `MOVING, PROVISIONING, RUNNING, STARTING, STOPPING, STOPPED, CREATING_IMAGE, TERMINATING, TERMINATED` | As mapped above. |
 
 ### Per-manager rollback calls
 
 | Manager | Final listing | Targeted removal | Settle before removal |
 |---|---|---|---|
 | ASG | `DescribeAutoScalingGroups` instances | `TerminateInstanceInAutoScalingGroup(decrement=true)` | none |
-| ESS | `describe_members()` | `RemoveInstances(DecreaseDesiredCapacity=true)` (existing `best_effort_remove`) | none known; task 1 checks `IncorrectScalingGroupStatus` while scaling |
+| ESS | `describe_members()` | `RemoveInstances(DecreaseDesiredCapacity=true)` (`try_remove`) | wait until no `DescribeScalingActivities` entry is `InProgress` (task 1: refused during a scaling activity) |
 | OCI | `describe_pool_instances()` | existing `best_effort_detach` (`isDecrementSize`, `isAutoTerminate`) | `await_pool_running` (already inside `best_effort_detach`) |
 | VMSS | `scale_set_vms()` | `POST .../delete` with `instanceIds` | none known; task 1 checks a delete on a `Creating` member |
 | MIG | `listManagedInstances` | `deleteInstances` with `skipInstancesOnValidationError=true` | wait for the resize operation (already awaited) |
@@ -166,7 +192,7 @@ match. It only reports; it never mutates.
 | Manager | Set | Clear before decommission | Startup reconcile |
 |---|---|---|---|
 | ASG | `SetInstanceProtection(ids, ProtectedFromScaleIn=true)` | only if task 1 shows `TerminateInstanceInAutoScalingGroup` refuses a protected instance | in the constructor block that checks `HealthCheckType` |
-| ESS | `SetInstancesProtection(ProtectedFromScaleIn=true)` | `RemoveInstances` is refused for `Protected` instances in the documented model, so clear first unless task 1 shows otherwise | in the constructor |
+| ESS | `SetInstancesProtection(ProtectedFromScaleIn=true)` | not needed: task 1 found `RemoveInstances` is the documented way to remove a `Protected` member, and clearing first would expose it to scale-in | in the constructor |
 | VMSS | `PATCH` the member VM `properties.protectionPolicy.protectFromScaleIn=true` | only if task 1 shows the scale set `delete` refuses it | in the constructor's Flexible-mode check |
 
 Startup reconcile reads the group once, filters to members tagged for

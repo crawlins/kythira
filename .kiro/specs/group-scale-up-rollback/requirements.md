@@ -119,7 +119,8 @@ it.
 3. The manager SHALL NOT perform a targeted removal on any instance in the
    pre-growth snapshot from this path.
 4. WHERE the cloud refuses a targeted removal while the group is still
-   scaling (OCI returns `409 IncorrectState` while the pool is `SCALING`),
+   scaling (OCI returns `409 IncorrectState` while the pool is `SCALING`;
+   ESS requires that no scaling activity is in progress),
    the manager SHALL wait for the group to settle, bounded by
    `provision_timeout`, before removing. The OCI manager's existing
    `best_effort_detach` already does this and SHALL be reused.

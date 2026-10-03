@@ -495,7 +495,9 @@ to become live, tag it, and return its address so it can join the cluster.
    (best-effort rollback, mirroring `aws_asg_quorum_manager`'s timeout
    handling since neither system supports targeting a single new instance
    for termination without first identifying it) and return an exceptional
-   Future.
+   Future. *Superseded in part by `.kiro/specs/group-scale-up-rollback/`:
+   the manager now detaches the instance the call launched, by id, and
+   writes the original size only when the pool lists no fresh instance.*
 8. The `replacing` hint, when non-null, SHALL be logged for diagnostic
    purposes only, matching AWS's implementations.
 9. `provision_node` SHALL check the fault injection point

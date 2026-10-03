@@ -827,9 +827,12 @@ BOOST_AUTO_TEST_CASE(a_provision_that_never_settles_times_out_and_rolls_capacity
 
     BOOST_CHECK_THROW(std::move(mgr.provision_node(default_zone, std::nullopt)).get(),
                       std::exception);
-    // Grow, then roll back — the second `ModifyScalingGroup` is the whole
-    // point of the case.
-    BOOST_CHECK_EQUAL(mock.modify_calls.load(), 2);
+    // Grow, then roll back by removing the instance that never settled, by
+    // id (group-scale-up-rollback): one `ModifyScalingGroup`, one
+    // decrementing `RemoveInstances`, and no blind capacity write that
+    // would let ESS choose which member goes.
+    BOOST_CHECK_EQUAL(mock.modify_calls.load(), 1);
+    BOOST_CHECK_EQUAL(mock.remove_calls.load(), 1);
     BOOST_CHECK_EQUAL(mock.capacity(), 1);
 }
 
