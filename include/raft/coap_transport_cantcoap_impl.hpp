@@ -70,6 +70,7 @@
 #include <raft/coap_edhoc_bootstrap.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
+#include <raft/coap_ace_oauth.hpp>
 #include <raft/coap_utils.hpp>
 #include <raft/oscore.hpp>
 #include <raft/peer_capability_cache.hpp>
@@ -161,6 +162,18 @@ template<typename Config>
 [[nodiscard]] inline auto plan_security(const Config& config, const char* role)
     -> std::pair<channel, coap_security_config> {
     coap_security_config effective = kythira::translate_legacy_fields(config);
+    // The same ACE step, in the same place, as the libcoap constructors: it
+    // decides the credentials every check below looks at.
+    kythira::resolve_ace_bootstrap(effective);
+    if (effective.mode == coap_auth_mode::oscore &&
+        !std::holds_alternative<oscore_credentials>(effective.credentials)) {
+        throw coap_security_config_error(
+            "security.mode == oscore requires oscore_credentials in security.credentials");
+    }
+    if (const auto* pki = std::get_if<pki_credentials>(&effective.credentials);
+        pki != nullptr && effective.mode == coap_auth_mode::dtls_pki) {
+        kythira::validate_pki_peer_policy(*pki);
+    }
     switch (effective.mode) {
         case coap_auth_mode::none:
             return {channel::plain, std::move(effective)};

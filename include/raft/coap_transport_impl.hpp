@@ -241,12 +241,7 @@ coap_client<Types>::coap_client(
     // a bad mode/credential combination fails construction cleanly.
     {
         auto security = translate_legacy_fields(_config);
-        if (security.ace_bootstrap) {
-            auto result = run_ace_token_exchange(*security.ace_bootstrap);
-            std::visit(
-                [&](auto&& creds) { security.credentials = std::forward<decltype(creds)>(creds); },
-                result);
-        }
+        resolve_ace_bootstrap(security);
         if (security.mode == coap_auth_mode::oscore) {
             if (!std::holds_alternative<oscore_credentials>(security.credentials)) {
                 throw coap_security_config_error(
@@ -610,12 +605,7 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
     // Requirement 1.2/1.3) — before any libcoap resource is allocated.
     {
         auto security = translate_legacy_fields(_config);
-        if (security.ace_bootstrap) {
-            auto result = run_ace_token_exchange(*security.ace_bootstrap);
-            std::visit(
-                [&](auto&& creds) { security.credentials = std::forward<decltype(creds)>(creds); },
-                result);
-        }
+        resolve_ace_bootstrap(security);
         if (security.mode == coap_auth_mode::oscore) {
             if (!std::holds_alternative<oscore_credentials>(security.credentials)) {
                 throw coap_security_config_error(
