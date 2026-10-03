@@ -5106,6 +5106,29 @@ set_tests_properties(aws_quorum_manager_unit_test PROPERTIES
     LABELS "unit;raft;quorum;aws"
 )
 
+# Both AWS managers in composite, string and numeric id mode against a local
+# fake of the EC2 and Auto Scaling query APIs (cloud-composite-node-ids
+# Requirement 13.1): the ids that crashed the old stoull derivation, offline.
+if(TARGET httplib::httplib)
+    add_executable(aws_ec2_node_id_mock_test aws_ec2_node_id_mock_test.cpp)
+    target_link_libraries(aws_ec2_node_id_mock_test PRIVATE
+        network_simulator
+        httplib::httplib
+        Boost::unit_test_framework
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(aws_ec2_node_id_mock_test PRIVATE Folly::folly)
+    endif()
+    target_compile_features(aws_ec2_node_id_mock_test PRIVATE cxx_std_23)
+    add_test(NAME aws_ec2_node_id_mock_test COMMAND aws_ec2_node_id_mock_test)
+    set_tests_properties(aws_ec2_node_id_mock_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;raft;quorum;aws;node_id"
+    )
+else()
+    message(STATUS "aws_ec2_node_id_mock_test: skipped (requires httplib for the local fake)")
+endif()
+
 # LocalStack integration tests — requires LocalStack running on localhost:4566.
 add_executable(aws_quorum_manager_localstack_test aws_quorum_manager_localstack_test.cpp)
 target_compile_definitions(aws_quorum_manager_localstack_test PRIVATE

@@ -527,7 +527,7 @@ struct Ec2LaunchFixture : signal_cleanup_target {
         -> Aws::EC2::Model::Instance {
         const auto requested = std::chrono::steady_clock::now();
         auto p = std::move(mgr.provision_node(group, std::nullopt)).get();
-        const auto id = ec2_manager::node_id_to_ec2_id(p.node_id);
+        const auto id = mgr.instance_id_of(p.node_id).value();
         auto inst = describe_instance(id);
         BOOST_REQUIRE_MESSAGE(inst.has_value(),
                               "provisioned instance " + id + " not returned by DescribeInstances");
@@ -761,7 +761,7 @@ BOOST_AUTO_TEST_CASE(placement_group_cluster_strategy, *boost::unit_test::timeou
         BOOST_CHECK_EQUAL(std::string(inst.GetPlacement().GetAvailabilityZone()), azs[0]);
         BOOST_CHECK_EQUAL(tag_value(inst.GetTags(), "kythira:placement-strategy"), "cluster");
         cluster.push_back(
-            {.node_id = ec2_manager::ec2_id_to_node_id(inst.GetInstanceId()), .group_id = "AZ1"});
+            {.node_id = mgr.node_id_of_instance(inst.GetInstanceId()).value(), .group_id = "AZ1"});
     }
     auto health = std::move(mgr.assess_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 2u);
@@ -864,7 +864,7 @@ BOOST_AUTO_TEST_CASE(on_demand_provision_and_decommission, *boost::unit_test::ti
 
     std::string err;
     try {
-        std::move(mgr.decommission_node(ec2_manager::ec2_id_to_node_id(id))).get();
+        std::move(mgr.decommission_node(mgr.node_id_of_instance(id).value())).get();
     } catch (const std::exception& ex) {
         err = ex.what();
     }
@@ -887,7 +887,7 @@ BOOST_AUTO_TEST_CASE(spot_provision_reports_spot_lifecycle, *boost::unit_test::t
 
     std::string err;
     try {
-        std::move(mgr.decommission_node(ec2_manager::ec2_id_to_node_id(id))).get();
+        std::move(mgr.decommission_node(mgr.node_id_of_instance(id).value())).get();
     } catch (const std::exception& ex) {
         err = ex.what();
     }

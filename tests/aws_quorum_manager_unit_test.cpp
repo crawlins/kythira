@@ -185,12 +185,40 @@ BOOST_AUTO_TEST_CASE(placement_group_config_accepted) {
     BOOST_CHECK_NO_THROW((kythira::aws_ec2_quorum_manager<>{cfg}));
 }
 
-BOOST_AUTO_TEST_CASE(ec2_id_node_id_round_trip) {
+// Composite and string mode map a node to its instance by reading fields:
+// every EC2 id fits, including the 17-digit ids with a non-zero first digit
+// that std::stoull overflowed on and the legacy 8-digit ids.
+BOOST_AUTO_TEST_CASE(instance_id_node_id_round_trip) {
+    using composite_t = kythira::aws_ec2_quorum_manager<kythira::aws_ec2_node_id, std::string>;
+    using string_t = kythira::aws_ec2_quorum_manager<std::string, std::string>;
+    for (const std::string ec2_id : {"i-0deadbeefcafe0001", "i-f0123456789abcdef", "i-1234abcd"}) {
+        auto nid = composite_t::node_id_for_instance("us-east-1", ec2_id);
+        BOOST_REQUIRE(nid.has_value());
+        BOOST_CHECK_EQUAL(nid->native(), ec2_id);
+        BOOST_CHECK_EQUAL(composite_t::instance_id_for_node("us-east-1", *nid).value_or(""),
+                          ec2_id);
+        BOOST_CHECK(!composite_t::instance_id_for_node("us-west-2", *nid));
+
+        auto text = string_t::node_id_for_instance("us-east-1", ec2_id);
+        BOOST_REQUIRE(text.has_value());
+        BOOST_CHECK_EQUAL(*text, "aws-ec2:us-east-1:" + ec2_id);
+        BOOST_CHECK_EQUAL(string_t::instance_id_for_node("us-east-1", *text).value_or(""), ec2_id);
+    }
+    BOOST_CHECK(!composite_t::node_id_for_instance("us-east-1", "i-xyz"));
+    BOOST_CHECK(!string_t::instance_id_for_node("us-east-1", "12345"));
+}
+
+// Numeric mode's fallback for instances launched before ids were tags: the
+// old derivation, only where it could have produced the instance.
+BOOST_AUTO_TEST_CASE(legacy_derivation_is_bounded) {
     using mgr_t = kythira::aws_ec2_quorum_manager<std::uint64_t, std::string>;
-    const std::string ec2_id = "i-0deadbeefcafe0001";
-    auto nid = mgr_t::ec2_id_to_node_id(ec2_id);
-    auto back = mgr_t::node_id_to_ec2_id(nid);
-    BOOST_CHECK_EQUAL(back, ec2_id);
+    BOOST_CHECK_EQUAL(mgr_t::legacy_instance_id(0xdeadbeefcafe0001ULL), "i-0deadbeefcafe0001");
+    BOOST_CHECK_EQUAL(mgr_t::legacy_node_id("i-0deadbeefcafe0001").value_or(0),
+                      0xdeadbeefcafe0001ULL);
+    BOOST_CHECK(!mgr_t::legacy_node_id("i-f0123456789abcdef"));  // does not fit
+    BOOST_CHECK(!mgr_t::legacy_node_id("i-1234abcd"));           // never derived
+    BOOST_CHECK(!mgr_t::legacy_node_id("i-0DEADBEEFCAFE0001"));
+    BOOST_CHECK(!mgr_t::legacy_node_id("i-0deadbeefcafe000x"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -384,10 +412,8 @@ BOOST_AUTO_TEST_CASE(ec2_describe_instance_status_fault_returns_exceptional_futu
     kythira::aws_ec2_quorum_manager<> mgr{cfg};
 
     // Non-empty cluster so assess_quorum proceeds past the early-exit guard.
-    using mgr_t = kythira::aws_ec2_quorum_manager<std::uint64_t, std::string>;
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
-    cluster.push_back(
-        {.node_id = mgr_t::ec2_id_to_node_id("i-0deadbeefcafe0001"), .group_id = "AZ1"});
+    cluster.push_back({.node_id = 1, .group_id = "AZ1"});
 
     fiu_enable("raft/aws/ec2/describe_instance_status", 1, nullptr, 0);
     auto fut = mgr.assess_quorum(cluster);
@@ -480,10 +506,8 @@ BOOST_AUTO_TEST_CASE(asg_describe_instance_status_fault_returns_exceptional_futu
     fiu_disable("raft/aws/asg/skip_health_check_validation");
 
     // Non-empty cluster so assess_quorum proceeds past the early-exit guard.
-    using ec2_mgr_t = kythira::aws_ec2_quorum_manager<std::uint64_t, std::string>;
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
-    cluster.push_back(
-        {.node_id = ec2_mgr_t::ec2_id_to_node_id("i-0deadbeefcafe0001"), .group_id = "AZ1"});
+    cluster.push_back({.node_id = 1, .group_id = "AZ1"});
 
     fiu_enable("raft/aws/asg/describe_instance_status", 1, nullptr, 0);
     auto fut = mgr.assess_quorum(cluster);
