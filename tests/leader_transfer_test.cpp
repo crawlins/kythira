@@ -43,7 +43,11 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <iostream>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <streambuf>
 #include <string>
 #include <thread>
 #include <vector>
@@ -655,6 +659,184 @@ BOOST_AUTO_TEST_CASE(consecutive_scatters_on_one_host_pick_different_targets,
         // Both moved off the original host; the cursor asked for two different
         // targets, so they should not have piled onto one machine.
         BOOST_CHECK_NE(*l1, *l2);
+    }
+    cluster.stop();
+}
+
+// ── rolling upgrade: peers that answer "not implemented" ────────────────────
+//
+// .kiro/specs/http-coap-pre-vote-timeout-now/ Requirement 4. The fabric's
+// `set_not_implemented` stands in for an older build: it fails the RPC with
+// the same `rpc_not_implemented_exception` the HTTP and CoAP transports turn
+// a 404/501 (4.04/5.01) on an extension RPC into.
+
+namespace {
+
+/// @brief Counts the occurrences of `needle` written to std::cout while it is
+/// alive. console_logger writes everything below error there.
+///
+/// The buffer locks: every node and fabric thread logs through std::cout, and
+/// a plain std::stringbuf behind it would be written from all of them at once.
+/// Installed before the cluster exists and removed after it is destroyed, so
+/// the swap itself races with nothing.
+class cout_capture {
+public:
+    cout_capture() : _old(std::cout.rdbuf(&_buffer)) {}
+    ~cout_capture() { std::cout.rdbuf(_old); }
+    cout_capture(const cout_capture&) = delete;
+    auto operator=(const cout_capture&) -> cout_capture& = delete;
+
+    [[nodiscard]] auto count(const std::string& needle) -> std::size_t {
+        const auto text = _buffer.text();
+        std::size_t n = 0;
+        for (auto pos = text.find(needle); pos != std::string::npos;
+             pos = text.find(needle, pos + needle.size())) {
+            ++n;
+        }
+        return n;
+    }
+
+private:
+    class locked_buffer : public std::streambuf {
+    public:
+        auto text() -> std::string {
+            std::lock_guard lock(_mutex);
+            return _text;
+        }
+
+    protected:
+        auto overflow(int_type ch) -> int_type override {
+            if (traits_type::eq_int_type(ch, traits_type::eof())) {
+                return traits_type::not_eof(ch);
+            }
+            std::lock_guard lock(_mutex);
+            _text.push_back(traits_type::to_char_type(ch));
+            return ch;
+        }
+        auto xsputn(const char* s, std::streamsize n) -> std::streamsize override {
+            std::lock_guard lock(_mutex);
+            _text.append(s, static_cast<std::size_t>(n));
+            return n;
+        }
+
+    private:
+        std::mutex _mutex;
+        std::string _text;
+    };
+
+    locked_buffer _buffer;
+    std::streambuf* _old;
+};
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(a_target_without_timeout_now_ends_the_transfer_as_unsupported,
+                     *boost::unit_test::timeout(120)) {
+    transfer_cluster cluster{{1, 2, 3}};
+    cluster.create_group(k_group);
+    cluster.start();
+
+    const auto from = cluster.require_leader(k_group);
+    const std::uint64_t to = from == 1 ? 2 : 1;
+    cluster.fabric().set_not_implemented(to, "timeout_now");
+
+    const auto started = std::chrono::steady_clock::now();
+    auto outcome = cluster.settle(
+        cluster.host(from).transfer_leadership(k_group, to, std::chrono::milliseconds{5000}));
+    const auto took = std::chrono::steady_clock::now() - started;
+
+    // Unsupported, which the multi-Raft host records as a skip, rather than
+    // the generic failure a lost or refused TimeoutNow would retry until the
+    // deadline and then report.
+    BOOST_CHECK_MESSAGE(
+        is_a<kythira::leader_transfer_unsupported_exception>(outcome),
+        "expected leader_transfer_unsupported_exception, got " << describe(outcome));
+    BOOST_CHECK_LT(std::chrono::duration_cast<std::chrono::milliseconds>(took).count(), 5000);
+
+    // And the cluster is where it started: the leader resumes and takes
+    // commands again.
+    BOOST_CHECK(
+        cluster.tick_until([&] { return cluster.leader_of(k_group) == std::optional{from}; },
+                           std::chrono::milliseconds{2000}));
+    cluster.stop();
+}
+
+BOOST_AUTO_TEST_CASE(pre_votes_answered_not_implemented_count_as_grants,
+                     *boost::unit_test::timeout(120)) {
+    // Every node answers the pre-vote "not implemented", as in a cluster whose
+    // first node has just been upgraded from the far side: each node's peers
+    // are all older. If not-implemented counted as a refusal, no pre-vote
+    // round could reach quorum and nobody would ever campaign.
+    std::optional<cout_capture> capture{std::in_place};
+    {
+        transfer_cluster cluster{{1, 2, 3}};
+        for (auto id : cluster.nodes()) {
+            cluster.fabric().set_not_implemented(id, "request_pre_vote");
+        }
+        cluster.create_group(k_group);
+        cluster.start();
+
+        const auto first = cluster.require_leader(k_group);
+
+        // Force several more rounds: isolate the leader both ways (kill()
+        // only drops what is sent TO it, and its heartbeats would keep the
+        // others from campaigning), so the other two hold elections against
+        // peers that keep answering "not implemented".
+        cluster.fabric().kill(first);
+        for (auto id : cluster.nodes()) {
+            if (id != first) {
+                cluster.fabric().partition(first, id);
+            }
+        }
+        // Asked of the two survivors only: the isolated node may still
+        // believe it leads, and leader_of() would report it first.
+        const bool reelected = cluster.tick_until(
+            [&] {
+                for (auto id : cluster.nodes()) {
+                    auto* n = cluster.host(id).group_node(k_group);
+                    if (id != first && n != nullptr && n->is_leader()) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            std::chrono::milliseconds{10000});
+        BOOST_CHECK_MESSAGE(reelected, "no leader after the first one was isolated");
+        cluster.stop();
+    }
+    const auto warnings = capture->count("Peer does not implement PreVote");
+    capture.reset();
+
+    // One warning per (node, peer) pair at most, however many rounds ran: three
+    // nodes with two peers each. The rounds above make at least two nodes see
+    // both their peers, so at least four.
+    BOOST_TEST_MESSAGE("not-implemented warnings: " << warnings);
+    BOOST_CHECK_LE(warnings, 6U);
+    BOOST_CHECK_GE(warnings, 2U);
+}
+
+BOOST_AUTO_TEST_CASE(pre_votes_that_fail_any_other_way_still_count_as_refusals,
+                     *boost::unit_test::timeout(60)) {
+    // The control for the case above: the same cluster, but the pre-vote
+    // path fails with an ordinary network error. Nothing may change for this
+    // case (Requirement 4.5), so no pre-vote round reaches quorum and no node
+    // ever campaigns. Without this, the case above could pass because the
+    // fabric silently delivered the pre-votes.
+    transfer_cluster cluster{{1, 2, 3}};
+    for (auto a : cluster.nodes()) {
+        for (auto b : cluster.nodes()) {
+            if (a != b) {
+                cluster.fabric().partition(a, b);
+            }
+        }
+    }
+    cluster.create_group(k_group);
+    cluster.start();
+    const bool elected = cluster.tick_until([&] { return cluster.leader_of(k_group).has_value(); },
+                                            std::chrono::milliseconds{1500});
+    BOOST_CHECK(!elected);
+    for (auto id : cluster.nodes()) {
+        BOOST_CHECK_EQUAL(cluster.term_of(id, k_group), 0U);
     }
     cluster.stop();
 }

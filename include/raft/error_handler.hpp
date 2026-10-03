@@ -4,6 +4,7 @@
 #pragma once
 
 #include "async_scope.hpp"
+#include "exceptions.hpp"
 #include "future_default.hpp"
 #include "types.hpp"
 #include <algorithm>
@@ -201,6 +202,18 @@ public:
      * @return Error classification result
      */
     auto classify_error(const std::exception& e) -> error_classification {
+        // A peer without an optional extension RPC will say the same thing
+        // on every attempt, so retrying it only turns one round trip into
+        // three. Checked by type ahead of the text matching below, which
+        // would otherwise see "not implemented" as an unknown error and
+        // retry it.
+        if (dynamic_cast<const kythira::rpc_not_implemented_exception*>(&e) != nullptr) {
+            return {.type = error_type::permanent_failure,
+                    .should_retry = false,
+                    .description = "Peer does not implement this RPC",
+                    .timeout_classification = std::nullopt};
+        }
+
         std::string error_msg = e.what();
 
         // Convert to lowercase for case-insensitive matching
