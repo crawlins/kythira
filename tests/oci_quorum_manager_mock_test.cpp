@@ -46,6 +46,7 @@ using kythira::node_placement;
 using kythira::oci_instance_pool_quorum_manager;
 using kythira::oci_instance_pool_quorum_manager_config;
 using kythira::quorum_status;
+using kythira::testing::oci_mock_server;
 
 constexpr std::uint16_t test_port = 18322;
 
@@ -317,6 +318,97 @@ BOOST_AUTO_TEST_CASE(a_provision_timeout_rolls_the_pool_size_back,
     auto fut = mgr.provision_node(fixture.server.availability_domain(), std::nullopt);
     BOOST_CHECK_THROW(std::move(fut).get(), std::runtime_error);
     BOOST_CHECK_EQUAL(fixture.server.pool_size(), original);
+}
+
+/// group-scale-up-rollback Requirement 8.2: a launch that never becomes
+/// adoptable is detached by id. The mock terminates the **oldest** member on
+/// a blind size decrease, so a manager that undid the scale-up by lowering
+/// the size would lose node 1 here.
+BOOST_AUTO_TEST_CASE(a_provision_timeout_detaches_the_fresh_instance_and_keeps_every_voter,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    const std::vector<std::string> voters{fixture.seed_node(1), fixture.seed_node(2),
+                                          fixture.seed_node(3)};
+    const auto original = fixture.server.pool_size();
+    BOOST_REQUIRE_EQUAL(original, 3);
+
+    // The launch appears at once but never leaves PROVISIONING.
+    fixture.server.set_provisioning_reads(1'000'000);
+    auto cfg = fixture.config();
+    cfg.provision_timeout = std::chrono::seconds{2};
+    cfg.poll_interval = std::chrono::milliseconds{100};
+    oci_instance_pool_quorum_manager<> mgr{cfg};
+
+    std::string message;
+    try {
+        (void)std::move(mgr.provision_node(fixture.server.availability_domain(), std::nullopt))
+            .get();
+        BOOST_FAIL("provision_node should have timed out");
+    } catch (const std::runtime_error& ex) {
+        message = ex.what();
+    }
+    BOOST_TEST_MESSAGE(message);
+    BOOST_CHECK(message.find("rollback: removed ") != std::string::npos);
+    BOOST_CHECK(message.find("PROVISIONING") != std::string::npos);
+
+    const auto members = fixture.server.pool_instances();
+    BOOST_CHECK_EQUAL(members.size(), voters.size());
+    for (const auto& id : voters) {
+        BOOST_CHECK_MESSAGE(
+            std::ranges::find(members, id, &oci_mock_server::instance_state::id) != members.end(),
+            "voter " << id << " left the pool");
+    }
+    BOOST_CHECK_EQUAL(fixture.server.pool_size(), original);
+    BOOST_CHECK_EQUAL(fixture.server.blind_scale_in_count(), 0);
+}
+
+/// group-scale-up-rollback Requirement 3.1 and 8.3: with nothing fresh in
+/// the pool the size is restored, and the audit finds no member lost.
+BOOST_AUTO_TEST_CASE(a_provision_timeout_with_no_fresh_instance_restores_the_size,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    const std::vector<std::string> voters{fixture.seed_node(1), fixture.seed_node(2)};
+    fixture.server.set_auto_launch(false);
+    auto cfg = fixture.config();
+    cfg.provision_timeout = std::chrono::seconds{2};
+    cfg.poll_interval = std::chrono::milliseconds{100};
+    oci_instance_pool_quorum_manager<> mgr{cfg};
+
+    std::string message;
+    try {
+        (void)std::move(mgr.provision_node(fixture.server.availability_domain(), std::nullopt))
+            .get();
+        BOOST_FAIL("provision_node should have timed out");
+    } catch (const std::runtime_error& ex) {
+        message = ex.what();
+    }
+    BOOST_CHECK(message.find("rollback: desired size restored to 2") != std::string::npos);
+    BOOST_CHECK(message.find("lost member") == std::string::npos);
+    BOOST_CHECK_EQUAL(fixture.server.pool_size(), 2);
+    BOOST_CHECK_EQUAL(fixture.server.pool_instances().size(), voters.size());
+}
+
+/// group-scale-up-rollback Requirement 1.3: an untagged instance that was in
+/// the pool before the call is neither adopted nor removed by it.
+BOOST_AUTO_TEST_CASE(an_untagged_instance_that_predates_the_call_is_left_alone,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    fixture.seed_node(1);
+    const auto stray = fixture.server.add_instance({{"owner", "someone-else"}});
+    fixture.server.set_auto_launch(false);
+    auto cfg = fixture.config();
+    cfg.provision_timeout = std::chrono::seconds{2};
+    cfg.poll_interval = std::chrono::milliseconds{100};
+    oci_instance_pool_quorum_manager<> mgr{cfg};
+
+    BOOST_CHECK_THROW(
+        (void)std::move(mgr.provision_node(fixture.server.availability_domain(), std::nullopt))
+            .get(),
+        std::runtime_error);
+    const auto after = fixture.server.instance(stray);
+    BOOST_REQUIRE(after.has_value());
+    BOOST_CHECK(after->in_pool);
+    BOOST_CHECK(!after->freeform_tags.contains("kythira-node-id"));
 }
 
 /// Requirement 13.7's "detect a stopped/terminated instance as degraded".

@@ -514,7 +514,7 @@ BOOST_AUTO_TEST_CASE(a_zone_mismatch_proceeds_rather_than_failing,
 BOOST_AUTO_TEST_CASE(an_instance_that_never_comes_up_times_out_and_rolls_capacity_back,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     MockFixture fixture;
-    fixture.seed_node(1);
+    const auto voter = fixture.seed_node(1);
     auto cfg = fixture.config();
     cfg.provision_timeout = 1s;
     fixture.server.set_launch_status("Starting");
@@ -524,13 +524,13 @@ BOOST_AUTO_TEST_CASE(an_instance_that_never_comes_up_times_out_and_rolls_capacit
                       std::runtime_error);
 
     // Requirement 7.4: the capacity bump is undone, or the group stays one
-    // instance larger than the cluster believes forever.
+    // instance larger than the cluster believes forever. Since
+    // group-scale-up-rollback it is undone by removing the unadoptable
+    // instance itself, so the seeded node is what remains.
     BOOST_CHECK_EQUAL(fixture.server.desired_capacity(), 1);
-    // The unadoptable instance carries no cluster tag, so a later assessment
-    // still ignores it.
     const auto instances = fixture.server.instances();
-    BOOST_REQUIRE_EQUAL(instances.size(), 2U);
-    BOOST_CHECK(!instances.back().tags.contains("kythira-cluster"));
+    BOOST_REQUIRE_EQUAL(instances.size(), 1U);
+    BOOST_CHECK_EQUAL(instances.front().id, voter);
 }
 
 /// The other timeout shape: capacity goes up and ESS launches nothing at all,
@@ -867,6 +867,174 @@ BOOST_AUTO_TEST_CASE(an_assessment_failure_aborts_before_any_remediation,
     BOOST_CHECK_THROW((void)std::move(mgr.maintain_quorum(cluster_of({1}))).get(),
                       std::runtime_error);
     BOOST_CHECK_EQUAL(fixture.server.count_requests("RPC ModifyScalingGroup"), 0U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ─────────────────────────────────────────────────────────────────────────────
+// group-scale-up-rollback: timeout rollback and scale-in protection
+// ─────────────────────────────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(alibaba_quorum_manager_mock_rollback)
+
+/// Requirement 8.2: a launch held `Pending` past `provision_timeout` is
+/// removed by id. The mock removes the **oldest** unprotected member on a
+/// blind capacity decrease, so a manager that lowered DesiredCapacity
+/// instead would lose a voter here (it did before this spec).
+BOOST_AUTO_TEST_CASE(a_timed_out_launch_is_removed_by_id_and_every_voter_kept,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    const std::vector<std::string> voters{fixture.seed_node(1), fixture.seed_node(2),
+                                          fixture.seed_node(3)};
+    auto cfg = fixture.config();
+    cfg.provision_timeout = 1s;
+    fixture.server.set_launch_lifecycle("Pending");
+    fixture.server.set_launch_status("Starting");
+    // The scale-out is still running at the timeout, and ESS refuses
+    // RemoveInstances until it finishes (Requirement 2.4).
+    fixture.server.set_activity_in_progress_reads(3);
+
+    alibaba_ess_quorum_manager<> mgr{cfg};
+    std::string message;
+    try {
+        (void)std::move(mgr.provision_node(k_zone, std::nullopt)).get();
+        BOOST_FAIL("provision_node should have timed out");
+    } catch (const std::runtime_error& ex) {
+        message = ex.what();
+    }
+    BOOST_TEST_MESSAGE(message);
+    BOOST_CHECK(message.find("rollback: removed i-mock4 (fresh, Pending)") != std::string::npos);
+
+    BOOST_CHECK_EQUAL(fixture.server.desired_capacity(), 3);
+    BOOST_CHECK_EQUAL(fixture.server.blind_scale_in_count(), 0);
+    const auto instances = fixture.server.instances();
+    BOOST_REQUIRE_EQUAL(instances.size(), voters.size());
+    for (std::size_t i = 0; i < voters.size(); ++i) {
+        BOOST_CHECK_EQUAL(instances[i].id, voters[i]);
+    }
+}
+
+/// Requirement 8.3: with no fresh instance the capacity is restored, and
+/// the audit reports no lost member.
+BOOST_AUTO_TEST_CASE(a_timeout_with_nothing_launched_restores_capacity,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    fixture.seed_node(1);
+    fixture.seed_node(2);
+    fixture.server.set_auto_launch(false);
+    auto cfg = fixture.config();
+    cfg.provision_timeout = 1s;
+
+    alibaba_ess_quorum_manager<> mgr{cfg};
+    std::string message;
+    try {
+        (void)std::move(mgr.provision_node(k_zone, std::nullopt)).get();
+        BOOST_FAIL("provision_node should have timed out");
+    } catch (const std::runtime_error& ex) {
+        message = ex.what();
+    }
+    BOOST_CHECK(message.find("rollback: desired size restored to 2") != std::string::npos);
+    BOOST_CHECK(message.find("lost member") == std::string::npos);
+    BOOST_CHECK_EQUAL(fixture.server.desired_capacity(), 2);
+    BOOST_CHECK_EQUAL(fixture.server.instance_count(), 2U);
+}
+
+/// Requirement 4.1 and 4.6: adoption protects the new node, and a protected
+/// node still counts as live.
+BOOST_AUTO_TEST_CASE(adoption_sets_scale_in_protection_and_the_node_stays_live,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    alibaba_ess_quorum_manager<> mgr{fixture.config(1)};
+    const auto peer = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
+
+    const auto instances = fixture.server.instances();
+    BOOST_REQUIRE_EQUAL(instances.size(), 1U);
+    BOOST_CHECK_EQUAL(instances.front().lifecycle_state, "Protected");
+    BOOST_CHECK(fixture.server.protection_calls() ==
+                std::vector<std::string>{instances.front().id + "=true"});
+
+    const auto health = std::move(mgr.assess_quorum(cluster_of({peer.node_id}))).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1U);
+}
+
+/// Requirement 4.2: a protection failure does not fail the provision.
+BOOST_AUTO_TEST_CASE(a_protection_failure_on_adoption_is_not_fatal,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    alibaba_ess_quorum_manager<> mgr{fixture.config(1)};
+    fixture.server.set_protection_error("Throttling");
+    const auto peer = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
+    BOOST_CHECK_EQUAL(peer.node_id, 1U);
+    BOOST_CHECK_EQUAL(fixture.server.instances().front().lifecycle_state, "InService");
+}
+
+/// Requirement 4.3 and 4.5: construction protects this cluster's adopted
+/// members and nothing else.
+BOOST_AUTO_TEST_CASE(construction_protects_adopted_members_only,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    const auto ours = fixture.seed_node(1);
+    const auto foreign = fixture.server.add_instance(
+        {{"kythira-cluster", "other-cluster"}, {"kythira-node-id", "1"}}, "InService", "Running",
+        k_zone);
+    const auto untagged =
+        fixture.server.add_instance({{"owner", "platform-team"}}, "InService", "Running", k_zone);
+
+    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    BOOST_CHECK_EQUAL(fixture.server.instance(ours)->lifecycle_state, "Protected");
+    BOOST_CHECK_EQUAL(fixture.server.instance(foreign)->lifecycle_state, "InService");
+    BOOST_CHECK_EQUAL(fixture.server.instance(untagged)->lifecycle_state, "InService");
+}
+
+/// Requirement 4.3: a permission error at construction is a configuration
+/// error, like the constructor's other checks; a transient one is not.
+BOOST_AUTO_TEST_CASE(construction_rejects_a_policy_without_set_instances_protection,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    fixture.seed_node(1);
+    fixture.server.set_protection_error("Forbidden.RAM");
+    BOOST_CHECK_THROW(alibaba_ess_quorum_manager<>{fixture.config()}, std::invalid_argument);
+    fixture.server.set_protection_error("Throttling");
+    BOOST_CHECK_NO_THROW(alibaba_ess_quorum_manager<>{fixture.config()});
+}
+
+/// Requirement 4.4: decommission still removes a protected node. ESS
+/// documents `RemoveInstances` as the way to remove a `Protected` member, so
+/// protection is not cleared first, which would expose it to scale-in.
+BOOST_AUTO_TEST_CASE(decommission_removes_a_protected_node,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    const auto keep = fixture.seed_node(1);
+    const auto gone = fixture.seed_node(2);
+    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    BOOST_REQUIRE_EQUAL(fixture.server.instance(gone)->lifecycle_state, "Protected");
+
+    std::move(mgr.decommission_node(2)).get();
+    BOOST_CHECK(!fixture.server.instance(gone).has_value());
+    BOOST_CHECK_EQUAL(fixture.server.instance(keep)->lifecycle_state, "Protected");
+    BOOST_CHECK_EQUAL(fixture.server.desired_capacity(), 1);
+    const auto calls = fixture.server.protection_calls();
+    BOOST_CHECK(std::ranges::find(calls, gone + "=false") == calls.end());
+}
+
+/// The mock's half of Requirement 8.1: a blind decrease skips protected
+/// members, which is what makes protection a defence on the shrink path.
+BOOST_AUTO_TEST_CASE(a_blind_decrease_skips_protected_members,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    const auto voter = fixture.seed_node(1);
+    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    const auto stray =
+        fixture.server.add_instance({{"owner", "platform-team"}}, "InService", "Running", k_zone);
+    BOOST_REQUIRE_EQUAL(fixture.server.desired_capacity(), 2);
+
+    // Lower DesiredCapacity by hand, as an operator or another tool would.
+    alibaba_ess_quorum_manager_config raw = fixture.config();
+    kythira::alibaba_http_client http{raw.alibaba};
+    (void)http.rpc("ess", "ModifyScalingGroup", "2014-08-28",
+                   {{"ScalingGroupId", raw.scaling_group_id}, {"DesiredCapacity", "1"}});
+    BOOST_CHECK(fixture.server.instance(voter).has_value());
+    BOOST_CHECK(!fixture.server.instance(stray).has_value());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
