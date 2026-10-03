@@ -7585,10 +7585,20 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                 }
 
                 if (response.success()) {
-                    // Success - update next_index and match_index
+                    // Success - update next_index and match_index. Only ever
+                    // forward: heartbeats and AppendEntries to one follower
+                    // overlap, so a reply to an older, shorter request can
+                    // land after a newer one. Taking it as-is moved
+                    // match_index backwards and, once the log was compacted,
+                    // pushed next_index behind the snapshot and made an
+                    // up-to-date follower take an InstallSnapshot.
                     auto new_match_index = next_idx + entries_to_send.size() - 1;
-                    _next_index[target] = new_match_index + 1;
-                    _match_index[target] = new_match_index;
+                    if (new_match_index > _match_index[target]) {
+                        _match_index[target] = new_match_index;
+                    }
+                    if (new_match_index + 1 > _next_index[target]) {
+                        _next_index[target] = new_match_index + 1;
+                    }
 
                     // Remove from unresponsive set
                     _unresponsive_followers.erase(target);
@@ -7840,9 +7850,17 @@ auto node<Types>::send_install_snapshot_chunk(node_id_type target,
                         // Snapshot transfer complete - update next_index and
                         // match_index, unless the peer was removed while the
                         // transfer ran (see the AppendEntries reply path).
+                        // Only ever forward, as on the AppendEntries reply
+                        // path: AppendEntries may already have taken the
+                        // follower past this snapshot while it was in flight.
                         if (_next_index.contains(target)) {
-                            _next_index[target] = snap->last_included_index() + 1;
-                            _match_index[target] = snap->last_included_index();
+                            const auto last_included = snap->last_included_index();
+                            if (_match_index[target] < last_included) {
+                                _match_index[target] = last_included;
+                            }
+                            if (_next_index[target] < last_included + 1) {
+                                _next_index[target] = last_included + 1;
+                            }
                         }
                         _snapshot_transfers_in_flight.erase(target);
                     }
