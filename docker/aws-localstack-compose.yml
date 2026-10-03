@@ -11,10 +11,9 @@
 # (podman-compose works the same way.) The test reaches LocalStack at
 # localhost:4566, hence the one published port.
 #
-# The ready hook under aws-localstack/init/ready.d is what makes the EC2 cases
-# runnable at all: it gives instances the i-0 + 16 hex digit IDs real AWS
-# uses, which aws_ec2_quorum_manager needs to derive a 64-bit node ID. See the
-# hook's own header.
+# Stock LocalStack: its EC2 instance ids are 17 random hex digits, which the
+# quorum managers no longer parse as numbers (cloud-composite-node-ids), so no
+# init hook is needed.
 #
 # The ASG cases need LocalStack's autoscaling service, which the community
 # edition does not include; they skip, naming the reason, and the EC2 cases
@@ -30,7 +29,5 @@ services:
     hostname: localstack
     environment:
       SERVICES: "ec2,sts,iam,autoscaling"
-    volumes:
-      - ./aws-localstack/init/ready.d:/etc/localstack/init/ready.d:ro
     ports:
       - "4566:4566"
