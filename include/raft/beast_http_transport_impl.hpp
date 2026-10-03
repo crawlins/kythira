@@ -1291,21 +1291,51 @@ private:
                 return kythira::unit{};
             })
             .thenError([self](std::exception_ptr eptr) { return self->handle_read_error(eptr); })
+#if defined(KYTHIRA_FUTURE_BACKEND_BOOST)
             .detach();
+#else
+            // Holds the session until the chain's last callback has run.
+            // The thenError lambda lets go of `self` as soon as it returns
+            // handle_read_error's future, and on the 413 path that future's
+            // own continuations release the last other reference once the
+            // write finishes. Without a holder here the session (and the
+            // strand executor it owns) was destroyed before the flattened
+            // future dispatched its completion through that executor: a
+            // "pure virtual method called" abort on the Folly backend the
+            // first time a 413 was actually written for a Content-Length
+            // request.
+            //
+            // Not on the boost backend, which needs no holder and must not
+            // have one. Its flattening thenError completes by setting a
+            // promise, which dispatches nothing when no continuation is
+            // attached. A holder is a continuation, so it posts onto the
+            // session's strand. The error path runs when stop() closes the
+            // socket, often on a Boost.Thread worker after the caller has
+            // destroyed its io_context, and that post then lands in a freed
+            // strand: a segfault, or a hang on the strand's mutex.
+            .thenValue([self](kythira::unit) { return kythira::unit{}; })
+            .detach();
+#endif
     }
 
     // Requirement 4 (malformed-request handling): a request whose body
     // exceeds max_request_body_size fails async_read_kf with
     // beast_http::error::body_limit rather than reaching dispatch() at all.
-    // Headers are always fully parsed before a body_limit error can occur
-    // (the limit is checked against the parsed Content-Length, or
-    // incrementally for chunked/unbounded bodies, both of which happen only
-    // after the header line and fields are already in), so responding with
-    // an explicit 413 here (rather than just severing the connection, the
-    // only option for a read failure whose cause isn't known) is safe -- the
-    // connection is still closed afterward (keep_alive(false)) rather than
-    // kept open, since the client's remaining unread bytes on the wire would
-    // otherwise be misparsed as the start of a new request. Any other read
+    // The request line and every header field are always parsed before a
+    // body_limit error can occur (the limit is checked against the parsed
+    // Content-Length, or incrementally for chunked/unbounded bodies, both of
+    // which happen only after the header line and fields are already in), so
+    // responding with an explicit 413 here (rather than just severing the
+    // connection, the only option for a read failure whose cause isn't
+    // known) is safe. Do not also require _parser->is_header_done(): for a
+    // declared Content-Length over the limit, Beast raises body_limit from
+    // finish_header() *before* it marks the header done, so that check
+    // turned the commonest oversized request into a bare close with no
+    // status at all (found by http-server-request-limits' wire-level test,
+    // which reads the status line instead of only checking the RPC failed).
+    // The connection is still closed afterward (keep_alive(false)) rather
+    // than kept open, since the client's remaining unread bytes on the wire
+    // would otherwise be misparsed as the start of a new request. Any other read
     // failure (peer disconnect, timeout, malformed/truncated header) has no
     // reliable message to respond to, so it falls back to the pre-existing
     // finish()-and-close behavior (Error Handling: Server Accept-Loop
@@ -1319,7 +1349,7 @@ private:
             is_body_limit_exceeded = (e.code() == beast_http::error::body_limit);
         } catch (...) {
         }
-        if (is_body_limit_exceeded && _parser && _parser->is_header_done()) {
+        if (is_body_limit_exceeded && _parser) {
             auto self = this->shared_from_this();
             auto res = std::make_shared<beast_http::response<beast_http::string_body>>(
                 beast_http::status::payload_too_large, _parser->get().version());
