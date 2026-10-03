@@ -99,12 +99,12 @@ Facts about the branch's daemon that size the nodes, all read from
   comment that a replica which restarts catches up from its peers and a
   cluster that loses every replica at once has lost a cache. Rolling restarts
   only.
-- **No log compaction.** Nothing outside the tests calls
-  `node::create_snapshot`, so the in-memory Raft log holds every value ever
-  written and never shrinks. The state machine is bounded by the eviction
-  budget (`KYTHIRA_REDIS_MAX_SHARD_BYTES`, 1 GiB per shard by default, two
-  shards). The log is bounded only by write volume. See *Known gaps* below;
-  this is what decides between 8 GB and 16 GB nodes.
+- **Log compaction.** Each replica snapshots and compacts once the
+  commands it has applied since its last snapshot reach
+  `snapshot_threshold_bytes` (10 MB by default), so the in-memory Raft log
+  stays bounded by that threshold plus whatever is not yet applied. The
+  snapshot is a full copy of the shard's state, so memory briefly peaks at
+  about twice the state size while one is taken.
 - **CPU is trivial.** Two IO threads, eight command workers, four executor
   stripes. Two vCPUs are sufficient.
 - **arm64 is fine.** The image is a host-built binary on `ubuntu:24.04`, and
@@ -463,11 +463,9 @@ not do about it:
 
 ## Known gaps to close before or during the dogfood
 
-1. **Log compaction.** Add a policy-phase trigger in `run_host.hpp` that
-   calls `create_snapshot` when a group's log passes a byte or entry
-   threshold. Until then the 16 GB node size is what keeps a month of
-   main-branch churn from exhausting memory, and a rolling restart is the
-   manual compaction.
+1. **Log compaction.** Done: `raft::node` snapshots automatically at
+   `snapshot_threshold_bytes`. What is left is choosing that threshold for
+   the cache, since each snapshot copies up to the 1 GiB shard budget.
 2. **Membership change in the daemon**, per the section above.
 3. **The sccache adoption spec.** Wiring `RUSTC_WRAPPER=sccache` into the
    `lakers` port and CI was explicitly excluded from `redis-compatible-kv`
