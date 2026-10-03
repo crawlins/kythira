@@ -192,17 +192,20 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, *boost::unit_test::timeout
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = heartbeat_interval;
 
-        auto leader = kythira::node<test_raft_types>{
-            leader_id,
-            test_raft_types::network_client_type{
-                leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            test_raft_types::network_server_type{
-                leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            test_raft_types::persistence_engine_type{},
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+        auto leader = kythira::node<test_raft_types>{{
+            .node_id = leader_id,
+            .network_client =
+                test_raft_types::network_client_type{
+                    leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .network_server =
+                test_raft_types::network_server_type{
+                    leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .persistence = test_raft_types::persistence_engine_type{},
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         // Set up joint consensus configuration
         kythira::cluster_configuration<std::uint64_t> old_config{};

@@ -127,35 +127,38 @@ BOOST_AUTO_TEST_CASE(test_leader_sends_heartbeats) {
     auto serializer_3 = kythira::json_rpc_serializer<std::vector<std::byte>>{};
 
     // Create Raft nodes
-    auto raft_node_1 =
-        kythira::node<test_raft_types>{node_1_id,
-                                       test_raft_types::network_client_type{node_1, serializer_1},
-                                       test_raft_types::network_server_type{node_1, serializer_1},
-                                       test_raft_types::persistence_engine_type{},
-                                       kythira::console_logger{},
-                                       test_raft_types::metrics_type{},
-                                       test_raft_types::membership_manager_type{},
-                                       config};
+    auto raft_node_1 = kythira::node<test_raft_types>{{
+        .node_id = node_1_id,
+        .network_client = test_raft_types::network_client_type{node_1, serializer_1},
+        .network_server = test_raft_types::network_server_type{node_1, serializer_1},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = config,
+    }};
 
-    auto raft_node_2 =
-        kythira::node<test_raft_types>{node_2_id,
-                                       test_raft_types::network_client_type{node_2, serializer_2},
-                                       test_raft_types::network_server_type{node_2, serializer_2},
-                                       test_raft_types::persistence_engine_type{},
-                                       kythira::console_logger{},
-                                       test_raft_types::metrics_type{},
-                                       test_raft_types::membership_manager_type{},
-                                       config};
+    auto raft_node_2 = kythira::node<test_raft_types>{{
+        .node_id = node_2_id,
+        .network_client = test_raft_types::network_client_type{node_2, serializer_2},
+        .network_server = test_raft_types::network_server_type{node_2, serializer_2},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = config,
+    }};
 
-    auto raft_node_3 =
-        kythira::node<test_raft_types>{node_3_id,
-                                       test_raft_types::network_client_type{node_3, serializer_3},
-                                       test_raft_types::network_server_type{node_3, serializer_3},
-                                       test_raft_types::persistence_engine_type{},
-                                       kythira::console_logger{},
-                                       test_raft_types::metrics_type{},
-                                       test_raft_types::membership_manager_type{},
-                                       config};
+    auto raft_node_3 = kythira::node<test_raft_types>{{
+        .node_id = node_3_id,
+        .network_client = test_raft_types::network_client_type{node_3, serializer_3},
+        .network_server = test_raft_types::network_server_type{node_3, serializer_3},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = config,
+    }};
 
     // Start all nodes
     raft_node_1.start();
@@ -228,15 +231,16 @@ BOOST_AUTO_TEST_CASE(test_heartbeat_mechanism_for_leader) {
     auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
 
     // Create Raft node
-    auto raft_node =
-        kythira::node<test_raft_types>{node_1_id,
-                                       test_raft_types::network_client_type{node_1, serializer},
-                                       test_raft_types::network_server_type{node_1, serializer},
-                                       test_raft_types::persistence_engine_type{},
-                                       kythira::console_logger{},
-                                       test_raft_types::metrics_type{},
-                                       test_raft_types::membership_manager_type{},
-                                       config};
+    auto raft_node = kythira::node<test_raft_types>{{
+        .node_id = node_1_id,
+        .network_client = test_raft_types::network_client_type{node_1, serializer},
+        .network_server = test_raft_types::network_server_type{node_1, serializer},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = config,
+    }};
 
     // Start the node
     raft_node.start();
@@ -300,15 +304,16 @@ BOOST_AUTO_TEST_CASE(test_heartbeat_timeout_elapsed) {
     auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
 
     // Create Raft node
-    auto raft_node =
-        kythira::node<test_raft_types>{node_1_id,
-                                       test_raft_types::network_client_type{node_1, serializer},
-                                       test_raft_types::network_server_type{node_1, serializer},
-                                       test_raft_types::persistence_engine_type{},
-                                       kythira::console_logger{},
-                                       test_raft_types::metrics_type{},
-                                       test_raft_types::membership_manager_type{},
-                                       config};
+    auto raft_node = kythira::node<test_raft_types>{{
+        .node_id = node_1_id,
+        .network_client = test_raft_types::network_client_type{node_1, serializer},
+        .network_server = test_raft_types::network_server_type{node_1, serializer},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = config,
+    }};
 
     // Start the node
     raft_node.start();

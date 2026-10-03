@@ -133,16 +133,19 @@ BOOST_AUTO_TEST_CASE(single_node_becomes_leader, *boost::unit_test::timeout(60))
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
 
-        auto node = kythira::node<test_raft_types>{
-            node_id,
-            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::persistence_engine_type{},
-            test_raft_types::logger_type{
-                kythira::log_level::error},  // Suppress logs for property test
+        auto node = kythira::node<test_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            .network_server =
+                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            .persistence = test_raft_types::persistence_engine_type{},
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics =  // Suppress logs for property test
             test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         // Update cluster configuration to only include this node
 
@@ -189,15 +192,18 @@ BOOST_AUTO_TEST_CASE(term_monotonically_increases, *boost::unit_test::timeout(60
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
 
-        auto node = kythira::node<test_raft_types>{
-            node_id,
-            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::persistence_engine_type{},
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+        auto node = kythira::node<test_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            .network_server =
+                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            .persistence = test_raft_types::persistence_engine_type{},
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         // Update cluster configuration
 
@@ -251,15 +257,18 @@ BOOST_AUTO_TEST_CASE(candidate_increments_term, *boost::unit_test::timeout(60)) 
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
 
-        auto node = kythira::node<test_raft_types>{
-            node_id,
-            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::persistence_engine_type{},
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+        auto node = kythira::node<test_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            .network_server =
+                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            .persistence = test_raft_types::persistence_engine_type{},
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         // Update cluster configuration
 
@@ -309,15 +318,18 @@ BOOST_AUTO_TEST_CASE(leader_state_persists, *boost::unit_test::timeout(60)) {
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
 
-        auto node = kythira::node<test_raft_types>{
-            node_id,
-            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::persistence_engine_type{},
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+        auto node = kythira::node<test_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            .network_server =
+                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            .persistence = test_raft_types::persistence_engine_type{},
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         // Update cluster configuration
 

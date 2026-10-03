@@ -185,17 +185,19 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
     auto cfg = make_fast_config();
 
     auto make_node = [&](std::uint64_t id, auto net, const kythira::raft_configuration& c) {
-        return test_node{id,
-                         {net, test_types::serializer_type{}},
-                         {net, test_types::serializer_type{}},
-                         {},
-                         kythira::console_logger{},
-                         {},
-                         {},
-                         c,
-                         std::to_string(id),
-                         preset_peer_discovery<std::uint64_t, std::string>{},
-                         replicator_t{table}};
+        return test_node{{
+            .node_id = id,
+            .network_client = {net, test_types::serializer_type{}},
+            .network_server = {net, test_types::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{},
+            .metrics = {},
+            .membership = {},
+            .config = c,
+            .self_address = std::to_string(id),
+            .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+            .peer2peer_replicator = replicator_t{table},
+        }};
     };
 
     auto node1 = make_node(1, net1, cfg);

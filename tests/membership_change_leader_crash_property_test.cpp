@@ -216,16 +216,18 @@ BOOST_AUTO_TEST_CASE(cluster_survives_leader_crash_during_add,
 
         auto cfg = make_fast_config();
         auto make_node = [&](std::uint64_t id, auto net) {
-            return test_node{id,
-                             {net, test_types::serializer_type{}},
-                             {net, test_types::serializer_type{}},
-                             {},
-                             kythira::console_logger{},
-                             {},
-                             {},
-                             cfg,
-                             std::to_string(id),
-                             preset_peer_discovery<std::uint64_t, std::string>{}};
+            return test_node{{
+                .node_id = id,
+                .network_client = {net, test_types::serializer_type{}},
+                .network_server = {net, test_types::serializer_type{}},
+                .persistence = {},
+                .logger = kythira::console_logger{},
+                .metrics = {},
+                .membership = {},
+                .config = cfg,
+                .self_address = std::to_string(id),
+                .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+            }};
         };
 
         auto node1 = make_node(1, net1);

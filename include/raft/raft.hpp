@@ -210,7 +210,9 @@ public:
 
     /// @brief Legacy positional constructor retained for migration compatibility.
     ///
-    /// Prefer `node(node_config<Types>)` for new code.
+    /// Deprecated (quorum-management Req 17.3): use `node(node_config<Types>)`.
+    /// No in-tree code calls it; it is kept only for out-of-tree callers.
+    [[deprecated("use node(node_config<Types>)")]]
     node(node_id_type node_id, network_client_type network_client,
          network_server_type network_server, persistence_engine_type persistence,
          logger_type logger, metrics_type metrics, membership_manager_type membership,
