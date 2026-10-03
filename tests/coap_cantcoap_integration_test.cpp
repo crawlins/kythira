@@ -4,6 +4,7 @@
 #include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_cantcoap_integration_test
 #include <boost/test/unit_test.hpp>
+#include <raft/exceptions.hpp>
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
@@ -1283,6 +1284,8 @@ BOOST_AUTO_TEST_CASE(test_timeout_now_is_confirmable_when_the_config_says_non,
 
 // No handler is 5.01 Not Implemented, never 4.04, the same answer the libcoap
 // server gives: a peer can tell "cannot transfer" from "not a Raft endpoint".
+// The client reports that 5.01 as rpc_not_implemented_exception
+// (.kiro/specs/http-coap-pre-vote-timeout-now/ Requirement 3.3).
 BOOST_AUTO_TEST_CASE(test_timeout_now_without_a_handler_is_not_implemented,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
@@ -1290,19 +1293,84 @@ BOOST_AUTO_TEST_CASE(test_timeout_now_without_a_handler_is_not_implemented,
     test_client client{
         {{peer_node_id, endpoint_for(server.bound_port())}}, fast_client_config(), test_metrics{}};
 
-    std::optional<std::uint8_t> code;
-    try {
-        (void)client
-            .send_timeout_now(peer_node_id, kythira::timeout_now_request<>{},
-                              std::chrono::seconds{10})
-            .get();
-    } catch (const kythira::coap_server_error& error) {
-        code = error.response_code();
-    } catch (const kythira::coap_transport_error&) {  // NOLINT(bugprone-empty-catch)
-    }
+    BOOST_CHECK_THROW((void)client
+                          .send_timeout_now(peer_node_id, kythira::timeout_now_request<>{},
+                                            std::chrono::seconds{10})
+                          .get(),
+                      kythira::rpc_not_implemented_exception);
     server.stop();
-    BOOST_REQUIRE(code.has_value());
-    BOOST_TEST(*code == 0xA1U);  // 5.01
+}
+
+// ── PreVote (http-coap-pre-vote-timeout-now task 8) ─────────────────────────
+
+BOOST_AUTO_TEST_CASE(test_pre_vote_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    kythira::request_pre_vote_request<> seen{};
+    server.register_request_pre_vote_handler(
+        [&seen](const kythira::request_pre_vote_request<>& request) {
+            seen = request;
+            kythira::request_pre_vote_response<> response{};
+            response._term = request.term();
+            response._vote_granted = true;
+            response._group_id = request.group_id();
+            return response;
+        });
+    server.start();
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, fast_client_config(), test_metrics{}};
+
+    kythira::request_pre_vote_request<> request{};
+    request._term = 8;
+    request._candidate_id = 3;
+    request._last_log_index = 41;
+    request._last_log_term = 6;
+    request._group_id = 9002;
+    const auto response =
+        client.send_request_pre_vote(peer_node_id, request, std::chrono::seconds{10}).get();
+    server.stop();
+
+    BOOST_TEST(response.term() == 8U);
+    BOOST_TEST(response.vote_granted());
+    BOOST_TEST(response.group_id() == 9002U);
+    BOOST_TEST(seen.term() == 8U);
+    BOOST_TEST(seen.candidate_id() == 3U);
+    BOOST_TEST(seen.last_log_index() == 41U);
+    BOOST_TEST(seen.last_log_term() == 6U);
+    BOOST_TEST(seen.group_id() == 9002U);
+}
+
+// Requirement 5.3: a pre-vote takes RequestVote's reliability, so it leaves as
+// NON when the config says so, unlike TimeoutNow.
+BOOST_AUTO_TEST_CASE(test_pre_vote_follows_the_configured_reliability,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::testing::udp_probe fake_server;
+    auto config = fast_client_config();
+    config.use_confirmable_messages = false;
+    test_client client{{{peer_node_id, fake_server.endpoint()}}, config, test_metrics{}};
+
+    auto pre_vote = client.send_request_pre_vote(
+        peer_node_id, kythira::request_pre_vote_request<>{}, std::chrono::seconds{2});
+    const auto datagram = fake_server.receive();
+    BOOST_REQUIRE(datagram.has_value());
+    BOOST_TEST(kythira::testing::coap_message_type(*datagram) == kythira::testing::coap_type_non);
+}
+
+BOOST_AUTO_TEST_CASE(test_pre_vote_without_a_handler_is_not_implemented,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    server.start();
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, fast_client_config(), test_metrics{}};
+
+    BOOST_CHECK_THROW(
+        (void)client
+            .send_request_pre_vote(peer_node_id, kythira::request_pre_vote_request<>{},
+                                   std::chrono::seconds{10})
+            .get(),
+        kythira::rpc_not_implemented_exception);
+    server.stop();
 }
 
 // ── FetchLogEntries (peer2peer-log-replication Req 4.1/4.2) ────────────────
