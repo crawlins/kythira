@@ -773,7 +773,10 @@ struct raft_configuration {
 
     // ── Log and snapshot ──────────────────────────────────────────────────────
     std::size_t _max_entries_per_append{100};  ///< Maximum entries in one AppendEntries RPC.
-    std::size_t _snapshot_threshold_bytes{10'000'000};  ///< Log size that triggers snapshotting.
+    /// Command bytes applied since the last snapshot at which the node
+    /// snapshots its state machine and compacts the log on its own. Every
+    /// replica, leader or follower, counts and snapshots independently.
+    std::size_t _snapshot_threshold_bytes{10'000'000};
     std::size_t _snapshot_chunk_size{1'000'000};  ///< Chunk size for InstallSnapshot transfers.
 
     // ── Retry policies ────────────────────────────────────────────────────────
