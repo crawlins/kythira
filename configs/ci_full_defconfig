@@ -34,8 +34,12 @@
 #                             CONFIG_ION_SERIALIZER=y. Keep the two in sync —
 #                             every other symbol below must match.
 #   COAP_TRANSPORT_LIBNYOCI — same shape: opt-in `coap-libnyoci` vcpkg feature,
-#   COAP_TRANSPORT_CANTCOAP   and opt-in `coap-cantcoap`; neither is installed
-#                             by any CI job.
+#   COAP_TRANSPORT_CANTCOAP   and opt-in `coap-cantcoap`, which these legs do
+#                             not install. ci.yml's alt-coap-backends job
+#                             installs both and applies
+#                             configs/ci_alt_coap_defconfig, which is this
+#                             file plus the two symbols. Keep the two in sync
+#                             as well.
 #
 # `default y` symbols explicitly turned OFF, because the edhoc-feature image
 # does not install their dependency and under strict mode default-y would be
