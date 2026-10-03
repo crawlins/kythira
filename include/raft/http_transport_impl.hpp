@@ -39,6 +39,8 @@ namespace {
 constexpr const char* endpoint_request_vote = "/v1/raft/request_vote";
 constexpr const char* endpoint_append_entries = "/v1/raft/append_entries";
 constexpr const char* endpoint_install_snapshot = "/v1/raft/install_snapshot";
+// Peer-to-peer catch-up (.kiro/specs/peer2peer-log-replication/ Requirement 5.2).
+constexpr const char* endpoint_fetch_log_entries = "/v1/raft/fetch_log_entries";
 constexpr const char* header_content_type = "Content-Type";
 constexpr const char* header_content_length = "Content-Length";
 constexpr const char* header_user_agent = "User-Agent";
@@ -1254,6 +1256,8 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             rpc_type = "append_entries";
         } else if (endpoint == endpoint_install_snapshot) {
             rpc_type = "install_snapshot";
+        } else if (endpoint == endpoint_fetch_log_entries) {
+            rpc_type = "fetch_log_entries";
         }
 
         // Latency is measured across the whole operation, retries included: it
@@ -1586,6 +1590,17 @@ auto cpp_httplib_client<Types>::send_install_snapshot(
         target, endpoint_install_snapshot, request, timeout);
 }
 
+// send_fetch_log_entries implementation
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_client<Types>::send_fetch_log_entries(
+    std::uint64_t target, const kythira::fetch_log_entries_request<>& request,
+    std::chrono::milliseconds timeout) ->
+    typename Types::template future_template<kythira::fetch_log_entries_response<>> {
+    return send_rpc<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
+        target, endpoint_fetch_log_entries, request, timeout);
+}
+
 // Server constructor implementation
 template<typename Types>
 requires kythira::transport_types<Types>
@@ -1598,6 +1613,7 @@ cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uin
       _request_vote_handler{},
       _append_entries_handler{},
       _install_snapshot_handler{},
+      _fetch_log_entries_handler{},
       _bind_address{std::move(bind_address)},
       _bind_port{bind_port},
       _config{std::move(config)},
@@ -1924,6 +1940,17 @@ auto cpp_httplib_server<Types>::register_install_snapshot_handler(
     _install_snapshot_handler = std::move(handler);
 }
 
+// Register FetchLogEntries handler
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_server<Types>::register_fetch_log_entries_handler(
+    std::function<
+        kythira::fetch_log_entries_response<>(const kythira::fetch_log_entries_request<>&)>
+        handler) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _fetch_log_entries_handler = std::move(handler);
+}
+
 // Generic RPC endpoint handler
 template<typename Types>
 requires kythira::transport_types<Types>
@@ -1943,6 +1970,8 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
         rpc_type = "append_entries";
     } else if (endpoint == endpoint_install_snapshot) {
         rpc_type = "install_snapshot";
+    } else if (endpoint == endpoint_fetch_log_entries) {
+        rpc_type = "fetch_log_entries";
     }
 
     try {
@@ -2128,6 +2157,9 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
                     static_cast<void>(_serializer.deserialize_append_entries_request(test_data));
                 } else if constexpr (std::is_same_v<Request, kythira::install_snapshot_request<>>) {
                     static_cast<void>(_serializer.deserialize_install_snapshot_request(test_data));
+                } else if constexpr (std::is_same_v<Request,
+                                                    kythira::fetch_log_entries_request<>>) {
+                    static_cast<void>(_serializer.deserialize_fetch_log_entries_request(test_data));
                 }
 
                 // If we get here, deserialization worked, so it's a handler exception
@@ -2193,6 +2225,14 @@ auto cpp_httplib_server<Types>::setup_endpoints(httplib::Server& server) -> void
                     this->handle_rpc_endpoint<kythira::install_snapshot_request<>,
                                               kythira::install_snapshot_response<>>(
                         req, resp, _install_snapshot_handler);
+                });
+
+    // FetchLogEntries endpoint (peer-to-peer catch-up)
+    server.Post(endpoint_fetch_log_entries,
+                [this](const httplib::Request& req, httplib::Response& resp) {
+                    this->handle_rpc_endpoint<kythira::fetch_log_entries_request<>,
+                                              kythira::fetch_log_entries_response<>>(
+                        req, resp, _fetch_log_entries_handler);
                 });
 }
 

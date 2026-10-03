@@ -177,6 +177,7 @@ namespace proxygen_detail {
 constexpr const char* proxygen_endpoint_request_vote = "/v1/raft/request_vote";
 constexpr const char* proxygen_endpoint_append_entries = "/v1/raft/append_entries";
 constexpr const char* proxygen_endpoint_install_snapshot = "/v1/raft/install_snapshot";
+constexpr const char* proxygen_endpoint_fetch_log_entries = "/v1/raft/fetch_log_entries";
 
 /// @brief Accumulated client-side response -- status code plus the fully
 ///     read body. Proxygen delivers the body across one or more `onBody`
@@ -577,6 +578,13 @@ public:
                                std::chrono::milliseconds timeout)
         -> future_template<kythira::install_snapshot_response<>>;
 
+    /// Satisfies `network_client_with_log_fetch`: a peer-to-peer catch-up
+    /// fetch, sent to `/v1/raft/fetch_log_entries`.
+    auto send_fetch_log_entries(std::uint64_t target,
+                                const kythira::fetch_log_entries_request<>& request,
+                                std::chrono::milliseconds timeout)
+        -> future_template<kythira::fetch_log_entries_response<>>;
+
     /// @brief Validates the configured TLS material, then retires the
     ///     current `folly::SSLContext` (kept alive, not destroyed -- an
     ///     in-flight `HTTPUpstreamSession` may still reference it, Property
@@ -736,6 +744,11 @@ public:
                                                const kythira::install_snapshot_request<>&)>
                                                handler) -> void;
 
+    /// Satisfies `network_server_with_log_fetch` (peer-to-peer catch-up).
+    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
+                                                const kythira::fetch_log_entries_request<>&)>
+                                                handler) -> void;
+
     auto start() -> void;
     auto stop() -> void;
     [[nodiscard]] auto is_running() const -> bool;
@@ -825,6 +838,9 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    std::function<kythira::fetch_log_entries_response<>(
+        const kythira::fetch_log_entries_request<>&)>
+        _fetch_log_entries_handler;
 
     std::mutex _requests_mutex;
     std::size_t _live_requests{0};

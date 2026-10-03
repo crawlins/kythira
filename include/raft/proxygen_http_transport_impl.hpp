@@ -238,6 +238,9 @@ auto proxygen_rpc_type_name(std::string_view endpoint) -> std::string {
     if (endpoint == proxygen_detail::proxygen_endpoint_install_snapshot) {
         return "install_snapshot";
     }
+    if (endpoint == proxygen_detail::proxygen_endpoint_fetch_log_entries) {
+        return "fetch_log_entries";
+    }
     return "unknown";
 }
 
@@ -1646,6 +1649,15 @@ auto proxygen_client<Types>::send_install_snapshot(
         target, proxygen_detail::proxygen_endpoint_install_snapshot, request, timeout);
 }
 
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::send_fetch_log_entries(
+    std::uint64_t target, const kythira::fetch_log_entries_request<>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::fetch_log_entries_response<>> {
+    return send_rpc<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
+        target, proxygen_detail::proxygen_endpoint_fetch_log_entries, request, timeout);
+}
+
 // ---------------------------------------------------------------------------
 // Server-side RequestHandler/RequestHandlerFactory (Requirement 4) -- built
 // on Proxygen's own higher-level server API (proxygen::RequestHandler +
@@ -1965,6 +1977,16 @@ auto proxygen_server<Types>::register_install_snapshot_handler(
 
 template<typename Types>
 requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::register_fetch_log_entries_handler(
+    std::function<
+        kythira::fetch_log_entries_response<>(const kythira::fetch_log_entries_request<>&)>
+        handler) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _fetch_log_entries_handler = std::move(handler);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
 auto proxygen_server<Types>::start() -> void {
     {
         std::lock_guard<std::mutex> lock(_start_mutex);
@@ -2230,6 +2252,10 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
         handle.template
         operator()<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
             _install_snapshot_handler, "install_snapshot");
+    } else if (target == proxygen_detail::proxygen_endpoint_fetch_log_entries) {
+        handle.template
+        operator()<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
+            _fetch_log_entries_handler, "fetch_log_entries");
     } else {
         status_code = 404;
         response_body = "Not Found";

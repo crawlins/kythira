@@ -414,6 +414,17 @@ public:
                                             });
     }
 
+    // Satisfies kythira::network_client_with_log_fetch
+    // (`.kiro/specs/peer2peer-log-replication/` Requirement 5.2).
+    auto send_fetch_log_entries(std::uint64_t target, const fetch_log_entries_request<>& req,
+                                std::chrono::milliseconds timeout)
+        -> future_default<fetch_log_entries_response<>> {
+        return call<fetch_log_entries_response<>>(
+            target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
+                return _ser.deserialize_fetch_log_entries_response(d);
+            });
+    }
+
     auto send_append_entries(std::uint64_t target, const append_entries_request<>& req,
                              std::chrono::milliseconds timeout)
         -> future_default<append_entries_response<>> {
@@ -549,6 +560,7 @@ public:
     using is_fn = std::function<install_snapshot_response<>(const install_snapshot_request<>&)>;
     using cj_fn = std::function<cluster_join_response<>(const cluster_join_request<>&)>;
     using cl_fn = std::function<cluster_leave_response<>(const cluster_leave_request<>&)>;
+    using fl_fn = std::function<fetch_log_entries_response<>(const fetch_log_entries_request<>&)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
     explicit tcp_rpc_server(std::uint16_t port, tcp_server_limits limits = {})
@@ -585,6 +597,7 @@ public:
           _is(std::move(other._is)),
           _cj(std::move(other._cj)),
           _cl(std::move(other._cl)),
+          _fl(std::move(other._fl)),
           _ser(std::move(other._ser)) {
         other._running = false;
     }
@@ -599,6 +612,8 @@ public:
     // Satisfies kythira::network_server_with_cluster_join / _with_cluster_leave.
     void register_cluster_join_handler(cj_fn h) { _cj = std::move(h); }
     void register_cluster_leave_handler(cl_fn h) { _cl = std::move(h); }
+    // Satisfies kythira::network_server_with_log_fetch (peer-to-peer catch-up).
+    void register_fetch_log_entries_handler(fl_fn h) { _fl = std::move(h); }
 
     void start() {
         if (_running.exchange(true)) {
@@ -692,6 +707,8 @@ private:
                 resp = _ser.serialize(_cj(_ser.deserialize_cluster_join_request(bytes)));
             } else if (type == "cluster_leave_request" && _cl) {
                 resp = _ser.serialize(_cl(_ser.deserialize_cluster_leave_request(bytes)));
+            } else if (type == "fetch_log_entries_request" && _fl) {
+                resp = _ser.serialize(_fl(_ser.deserialize_fetch_log_entries_request(bytes)));
             } else {
                 return;
             }
@@ -717,6 +734,7 @@ private:
     is_fn _is;
     cj_fn _cj;
     cl_fn _cl;
+    fl_fn _fl;
     serializer_t _ser;
 };
 
@@ -750,5 +768,11 @@ static_assert(kythira::network_client_with_cluster_leave<tcp_rpc_client>,
               "tcp_rpc_client must satisfy network_client_with_cluster_leave");
 static_assert(kythira::network_server_with_cluster_leave<tcp_rpc_server>,
               "tcp_rpc_server must satisfy network_server_with_cluster_leave");
+// The optional peer-to-peer catch-up extension, without which a node can
+// gossip its progress over tcp_gossip_transport but never fetch from a peer.
+static_assert(kythira::network_client_with_log_fetch<tcp_rpc_client>,
+              "tcp_rpc_client must satisfy network_client_with_log_fetch");
+static_assert(kythira::network_server_with_log_fetch<tcp_rpc_server>,
+              "tcp_rpc_server must satisfy network_server_with_log_fetch");
 
 }  // namespace kythira
