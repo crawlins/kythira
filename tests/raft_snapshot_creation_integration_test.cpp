@@ -8,6 +8,10 @@
  * last applied index, compacts the log it covers, and that a node restarted
  * on the same persistence engine restores from it.
  *
+ * Also covers the automatic trigger: once the commands a node has applied
+ * since its last snapshot reach snapshot_threshold_bytes(), the node
+ * snapshots and compacts without being asked.
+ *
  * Requirements: 10.1, 10.2, 31.1
  * Covers raft-consensus tasks 303.2/314/504 (create_snapshot takes its state
  * from the state machine) and membership-change task 19 (restart restores
@@ -256,6 +260,162 @@ BOOST_AUTO_TEST_CASE(restart_restores_from_created_snapshot, *boost::unit_test::
     BOOST_CHECK_EQUAL(restarted->last_applied_index(), applied);
     BOOST_CHECK_EQUAL(counter_value(*restarted), increments);
 
+    elect(*restarted, cfg);
+    BOOST_REQUIRE(restarted->is_leader());
+    std::move(restarted->submit_command(make_command("INC"), commit_timeout)).get();
+    BOOST_CHECK_EQUAL(counter_value(*restarted), increments + 1);
+
+    restarted->stop();
+}
+
+namespace {
+
+// "INC" is three bytes, so this many applied increments reach the threshold.
+constexpr std::size_t increments_per_snapshot = 4;
+constexpr std::size_t inc_command_bytes = 3;
+
+auto make_auto_snapshot_config() -> kythira::raft_configuration {
+    auto cfg = make_config();
+    cfg._snapshot_threshold_bytes = increments_per_snapshot * inc_command_bytes;
+    cfg._snapshot_chunk_size = 1;
+    return cfg;
+}
+
+}  // namespace
+
+/**
+ * With a small snapshot_threshold_bytes, applying commands is enough to make
+ * the node snapshot and compact: nobody calls create_snapshot().
+ */
+BOOST_AUTO_TEST_CASE(applied_bytes_past_threshold_trigger_snapshot,
+                     *boost::unit_test::timeout(30)) {
+    simulator_type sim;
+    sim.start();
+    const auto cfg = make_auto_snapshot_config();
+    shared_persistence persistence;
+
+    auto node = make_node(sim, persistence, cfg);
+    node->start();
+    elect(*node, cfg);
+    BOOST_REQUIRE(node->is_leader());
+
+    for (std::int64_t i = 0; i < increments; ++i) {
+        std::move(node->submit_command(make_command("INC"), commit_timeout)).get();
+    }
+    BOOST_REQUIRE_EQUAL(counter_value(*node), increments);
+
+    const auto snapshot = persistence.load_snapshot();
+    BOOST_REQUIRE_MESSAGE(snapshot.has_value(), "no automatic snapshot was taken");
+
+    // The snapshot is internally consistent: the counter it carries is the
+    // number of increments at or below its index. The no-op the new leader
+    // appends sits at index 1 and adds nothing.
+    const auto included = snapshot->last_included_index();
+    BOOST_CHECK_GT(included, increments_per_snapshot);
+    BOOST_CHECK_LE(included, node->last_applied_index());
+    BOOST_CHECK_EQUAL(decode_counter(snapshot->state_machine_state()),
+                      static_cast<std::int64_t>(included) - 1);
+
+    for (std::uint64_t index = 1; index <= included; ++index) {
+        BOOST_CHECK_MESSAGE(!persistence.get_log_entry(index).has_value(),
+                            "entry " << index << " survived automatic compaction");
+    }
+
+    node->stop();
+}
+
+/**
+ * Below the threshold nothing is snapshotted: the default 10 MB is far above
+ * a handful of three-byte commands.
+ */
+BOOST_AUTO_TEST_CASE(applied_bytes_below_threshold_leave_log_alone,
+                     *boost::unit_test::timeout(30)) {
+    simulator_type sim;
+    sim.start();
+    const auto cfg = make_config();
+    shared_persistence persistence;
+
+    auto node = make_node(sim, persistence, cfg);
+    node->start();
+    elect(*node, cfg);
+    BOOST_REQUIRE(node->is_leader());
+
+    for (std::int64_t i = 0; i < increments; ++i) {
+        std::move(node->submit_command(make_command("INC"), commit_timeout)).get();
+    }
+
+    BOOST_CHECK(!persistence.load_snapshot().has_value());
+    for (std::uint64_t index = 1; index <= node->last_applied_index(); ++index) {
+        BOOST_CHECK(persistence.get_log_entry(index).has_value());
+    }
+
+    node->stop();
+}
+
+/**
+ * The byte count restarts after each snapshot, so a node keeps snapshotting
+ * as it keeps applying rather than snapshotting once and never again.
+ */
+BOOST_AUTO_TEST_CASE(threshold_count_restarts_after_each_snapshot, *boost::unit_test::timeout(30)) {
+    simulator_type sim;
+    sim.start();
+    const auto cfg = make_auto_snapshot_config();
+    shared_persistence persistence;
+
+    auto node = make_node(sim, persistence, cfg);
+    node->start();
+    elect(*node, cfg);
+    BOOST_REQUIRE(node->is_leader());
+
+    std::uint64_t previous_index = 0;
+    std::size_t snapshots_seen = 0;
+    for (std::int64_t i = 0; i < 3 * increments; ++i) {
+        std::move(node->submit_command(make_command("INC"), commit_timeout)).get();
+        if (const auto snapshot = persistence.load_snapshot();
+            snapshot && snapshot->last_included_index() > previous_index) {
+            previous_index = snapshot->last_included_index();
+            ++snapshots_seen;
+        }
+    }
+
+    // 30 increments at four per snapshot: several, not one.
+    BOOST_CHECK_GE(snapshots_seen, 3U);
+    BOOST_CHECK_LT(node->last_applied_index() - previous_index, increments_per_snapshot + 1);
+
+    node->stop();
+}
+
+/**
+ * A node restarted on the persistence engine an automatic snapshot was saved
+ * to restores from it and replays only the entries after it.
+ */
+BOOST_AUTO_TEST_CASE(restart_restores_from_automatic_snapshot, *boost::unit_test::timeout(30)) {
+    simulator_type sim;
+    sim.start();
+    const auto cfg = make_auto_snapshot_config();
+    shared_persistence persistence;
+
+    {
+        auto node = make_node(sim, persistence, cfg);
+        node->start();
+        elect(*node, cfg);
+        BOOST_REQUIRE(node->is_leader());
+        for (std::int64_t i = 0; i < increments; ++i) {
+            std::move(node->submit_command(make_command("INC"), commit_timeout)).get();
+        }
+        node->stop();
+    }
+
+    const auto snapshot = persistence.load_snapshot();
+    BOOST_REQUIRE(snapshot.has_value());
+
+    simulator_type restart_sim;
+    restart_sim.start();
+    auto restarted = make_node(restart_sim, persistence, cfg);
+    restarted->start();
+    BOOST_CHECK_EQUAL(restarted->last_applied_index(), snapshot->last_included_index());
+
+    // Re-electing commits the tail after the snapshot, which replays it.
     elect(*restarted, cfg);
     BOOST_REQUIRE(restarted->is_leader());
     std::move(restarted->submit_command(make_command("INC"), commit_timeout)).get();
