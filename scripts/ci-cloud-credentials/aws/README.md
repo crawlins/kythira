@@ -114,6 +114,17 @@ at GitHub's cap of 25 inputs, so a manual dispatch selects it through
 only the scheduled run controls it independently, through the variable
 above.
 
+The `aws-ec2-launch-options` job (`tests/aws_ec2_launch_options_real_test.cpp`:
+placement groups, spot vs on-demand, provision-timeout cleanup) needs no
+bundle of its own. It runs on `ec2-quorum-manager`, which grants the
+placement-group and `DescribeAvailabilityZones` / `DescribeSubnets` /
+`DescribeSecurityGroups` actions it uses. A manual dispatch selects it
+through `aws_bundle_ec2_quorum` too; its schedule toggle is separate:
+
+```sh
+gh variable set REAL_CLOUD_TESTS_AWS_EC2_LAUNCH_OPTIONS_ENABLED --body true
+```
+
 Policy JSON cannot carry comments, so the reasoning behind each statement
 lives here. Each `Sid` names the rule it follows.
 
@@ -168,6 +179,7 @@ prefers spot pricing where available):
 | `ca-cluster-node-rpc-tls` (same shape + NACL setup, which AWS doesn't bill for) | ≈ $0.02 |
 | `ec2-quorum-manager` (10 cases, 3-9 node clusters + bastion, ~157 min total) | ≈ $0.10 - $0.30 |
 | `asg-quorum-manager` (one to three `t3.micro`s per case, every ASG at desired capacity 0 between cases) | ≈ cents; not yet measured |
+| `aws-ec2-launch-options` job, on `ec2-quorum-manager` (6 cases, a few instances each for minutes; `c5.large`/`c6g.medium` for the cluster placement group, else `t3.micro`/`t4g.micro`) | ≈ cents; not yet measured |
 
 IAM itself (roles, policies, instance profiles, the OIDC provider) carries
 no AWS charge. At the weekly `schedule` trigger with all three bundles
