@@ -81,6 +81,7 @@
 #include <raft/key_object_store.hpp>
 #include <raft/oci_client_config.hpp>
 #include <raft/oci_http_client.hpp>
+#include <raft/oci_object_storage_config.hpp>
 
 #include <boost/json.hpp>
 
@@ -228,17 +229,6 @@ inline constexpr const char* k_bucket_not_found = "BucketNotFound";
 }
 
 }  // namespace oci_object_detail
-
-/// @brief Object Storage settings, alongside the shared OCI ones.
-struct oci_object_storage_config {
-    /// Region, auth material, endpoint override and timeout — the same struct
-    /// the quorum manager and certificate provider take.
-    oci_client_config oci;
-
-    /// The tenancy's Object Storage namespace. When empty it is resolved once at
-    /// construction via `GET /n/` and cached (task 0.8).
-    std::string namespace_name;
-};
 
 /// @brief The object operations the persistence engine needs, over OCI Object
 ///        Storage.
