@@ -28,6 +28,17 @@ services:
     # a root-owned volume is unwritable either way (run-4 scenario-test
     # evidence). The file output writes to /tmp inside the container and the
     # test reads it back via `<runtime> exec cat`.
+    #
+    # NET_RAW because that entrypoint, running as root, `setcap`s
+    # cap_net_raw onto /usr/bin/telegraf before dropping privileges, and the
+    # kernel refuses to exec a binary whose file capabilities exceed the
+    # container's bounding set. Docker's default set includes NET_RAW;
+    # Podman's does not, so under Podman the container exited 126 with
+    # "setpriv: failed to execute telegraf: Operation not permitted" (the
+    # first scheduled container-tests run). Rootless Podman grants it inside
+    # its user namespace, so this is no privilege beyond Docker's default.
+    cap_add:
+      - NET_RAW
     volumes:
       - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
     networks:
