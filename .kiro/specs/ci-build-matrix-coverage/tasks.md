@@ -1,9 +1,8 @@
 # Implementation Plan — CI Build-Matrix Coverage
 
-## Status: Not started — 0/12 tasks
+## Status: In progress — 1/12 tasks
 
-**Last Updated**: October 2, 2026 (spec written; every gap re-verified on
-`origin/main` at `9c738d2`).
+**Last Updated**: October 3, 2026 (Task 2 done: `kconfig-check` job).
 
 ## Overview
 
@@ -57,7 +56,7 @@ the Folly-free target set) depend on numbers nobody has yet.
 
 ## Phase 1: Cheap gates (Tasks 2–3)
 
-- [ ] 2. Add the `kconfig-check` job
+- [x] 2. Add the `kconfig-check` job
   - Add `scripts/kconfig/check_defconfig_usage.py` (copyright header,
     `#!` first) and an empty `configs/defconfig-usage-allowlist.txt`.
   - Add the job per design §1; no vcpkg, `timeout-minutes: 10`.
@@ -66,6 +65,11 @@ the Folly-free target set) depend on numbers nobody has yet.
   - Until Tasks 4, 6 and 8 land, `minimal_defconfig` and
     `no_cloud_defconfig` are in the allowlist with "applied by
     config-variants once Task 8 lands"; Task 8 removes them.
+  - Done. `check_defconfigs.py` also needed a fix the design had not
+    expected: Kconfiglib leaves `warn_assign_undef` off by default, so a
+    defconfig assigning a removed symbol loaded with no warning and the
+    check passed. It now turns that on, plus `warn_assign_override` and
+    `warn_assign_redun`; every checked-in defconfig is clean under all three.
   - _Requirements: 4.1, 4.2, 4.3_
 
 - [ ] 3. Add `cmd/` to `TIDY_SOURCES` and `FORMAT_SOURCES`
