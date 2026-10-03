@@ -28,10 +28,11 @@
 /// - **Scatter.** Needs `TimeoutNow` (task 6); before that the libcoap backend
 ///   did not have it and `scatter` could not move leadership at all.
 ///
-/// OSCORE is not on here. Per-group Security Contexts (tasks 9–11) exist as
-/// `oscore_group_contexts.hpp`, but how they reach the libcoap backend — whose
-/// OSCORE is libcoap's own, configured once per context — is an open decision
-/// recorded in the spec; this suite gains an OSCORE variant once it is made.
+/// - **OSCORE.** The split and merge again with per-group OSCORE contexts on
+///   (tasks 9-11): every group's traffic is protected under its own context,
+///   each host derives one context per group it sends in and one per (peer,
+///   group) it receives in, never more, and refuses nothing a member sends.
+///   The merged-away group's contexts are wiped when its replica is destroyed.
 
 #define BOOST_TEST_MODULE multi_raft_coap_test
 #include <boost/test/unit_test.hpp>
@@ -280,17 +281,43 @@ private:
     group_id_type _next{100};
 };
 
+/// One master secret for the cluster. Every client sends as kid 0x00 and every
+/// server as 0x01: the libcoap backend holds one credential set per endpoint,
+/// and the per-group ID Context, which carries each node's boot nonce, is what
+/// keeps the nodes' keys apart.
+auto oscore_security(std::byte sender, std::byte recipient) -> kythira::coap_security_config {
+    kythira::oscore_credentials creds;
+    creds.sender_id = {sender};
+    creds.recipient_id = {recipient};
+    creds.master_secret = std::vector<std::byte>(16, std::byte{0x3D});
+    creds.master_salt = std::vector<std::byte>(8, std::byte{0x71});
+    kythira::coap_security_config config;
+    config.mode = kythira::coap_auth_mode::oscore;
+    config.credentials = creds;
+    return config;
+}
+
 /// Three `multi_raft` hosts, one CoAP client and one CoAP server each.
 class coap_multi_raft_cluster {
 public:
-    coap_multi_raft_cluster() {
+    /// `oscore`: per-group OSCORE contexts on every client and server.
+    explicit coap_multi_raft_cluster(bool oscore = false) : _oscore{oscore} {
         std::map<node_id_t, std::string> endpoints;
         for (node_id_t id = 1; id <= k_node_count; ++id) {
             const auto port = reserve_udp_port();
             endpoints.emplace(id, "coap://127.0.0.1:" + std::to_string(port));
-            _servers.emplace(
-                id, std::make_unique<coap_server_type>(
-                        "127.0.0.1", port, kythira::coap_server_config{}, kythira::noop_metrics{}));
+            kythira::coap_server_config server_config;
+            if (_oscore) {
+                server_config.security = oscore_security(std::byte{0x01}, std::byte{0x00});
+                server_config.oscore_groups.enabled = true;
+                // Hosts are built after the transports and only start them
+                // once all exist, so this never runs before `_hosts` is filled.
+                server_config.oscore_groups.hosts_group = [this, id](std::uint64_t group) {
+                    return id <= _hosts.size() && _hosts[id - 1]->is_member_of(group);
+                };
+            }
+            _servers.emplace(id, std::make_unique<coap_server_type>(
+                                     "127.0.0.1", port, server_config, kythira::noop_metrics{}));
             _seen.emplace(id, std::make_unique<inbound_groups>());
         }
         for (node_id_t id = 1; id <= k_node_count; ++id) {
@@ -300,9 +327,18 @@ public:
                     peers.emplace(peer, endpoint);
                 }
             }
-            _clients.emplace(
-                id, std::make_unique<coap_client_type>(
-                        std::move(peers), kythira::coap_client_config{}, kythira::noop_metrics{}));
+            kythira::coap_client_config client_config;
+            if (_oscore) {
+                client_config.security = oscore_security(std::byte{0x00}, std::byte{0x01});
+                client_config.oscore_groups.enabled = true;
+                // Three nodes in one process share its boot nonce; with one
+                // credential set they would then derive the same sender keys.
+                // A deployment runs one node per process and never sets this.
+                client_config.oscore_groups.boot_nonce =
+                    std::vector<std::byte>(8, static_cast<std::byte>(0xB0 + id));
+            }
+            _clients.emplace(id, std::make_unique<coap_client_type>(std::move(peers), client_config,
+                                                                    kythira::noop_metrics{}));
         }
         for (node_id_t id = 1; id <= k_node_count; ++id) {
             _hosts.push_back(std::make_unique<host_type>(make_config(id)));
@@ -337,6 +373,8 @@ public:
     auto operator=(const coap_multi_raft_cluster&) -> coap_multi_raft_cluster& = delete;
 
     [[nodiscard]] auto host(node_id_t id) -> host_type& { return *_hosts.at(id - 1); }
+    [[nodiscard]] auto client(node_id_t id) -> coap_client_type& { return *_clients.at(id); }
+    [[nodiscard]] auto server(node_id_t id) -> coap_server_type& { return *_servers.at(id); }
     [[nodiscard]] auto inbound(node_id_t id) const -> std::set<group_id_type> {
         return _seen.at(id)->seen();
     }
@@ -473,6 +511,13 @@ private:
         // No arbiter cooldown: each case runs one operator-initiated split or
         // merge, and the one-hour production default would gate the second.
         cfg.split_merge_interval = std::chrono::milliseconds{0};
+        if (_oscore) {
+            // A destroyed replica's keys are zeroed, not left in the maps.
+            cfg.on_group_destroyed = [this, id](const group_id_type& group) {
+                _clients.at(id)->forget_oscore_group(group);
+                _servers.at(id)->forget_oscore_group(group);
+            };
+        }
         return cfg;
     }
 
@@ -493,6 +538,7 @@ private:
         }
     }
 
+    bool _oscore{false};
     id_authority _ids;
     std::map<node_id_t, std::unique_ptr<inbound_groups>> _seen;
     std::map<node_id_t, std::unique_ptr<coap_server_type>> _servers;
@@ -692,6 +738,104 @@ BOOST_AUTO_TEST_CASE(a_merge_completes_over_coap, *boost::unit_test::timeout(240
     BOOST_CHECK(!c.tiling_problem().has_value());
     BOOST_CHECK(c.host(1).resolve("papa").has_value() &&
                 c.host(1).resolve("papa")->_group_id == k_left);
+}
+
+// Tasks 9-11 and 13: the split and the merge again, with every group's traffic
+// under its own OSCORE context. Each host bootstraps once, derives one sender
+// context per group it ever sent in and one recipient context per (peer,
+// group), and drops the merged-away group's keys when its replica goes.
+BOOST_AUTO_TEST_CASE(a_split_and_merge_complete_under_per_group_oscore,
+                     *boost::unit_test::timeout(300)) {
+    coap_startup();
+    if (coap_oscore_is_supported() != 0) {
+        BOOST_TEST_MESSAGE("linked libcoap has its own OSCORE, which the backend refuses");
+        return;
+    }
+    coap_multi_raft_cluster c(true);
+    BOOST_REQUIRE(c.await_leaders(scaled_deadline(20000)));
+    seed(c);
+
+    auto* leader = c.leader_of(k_left);
+    BOOST_REQUIRE(leader != nullptr);
+    auto err = settle(leader->split_shard(k_left, {"charlie"}, scaled_deadline(10000)),
+                      scaled_deadline(15000));
+    BOOST_REQUIRE_MESSAGE(err == nullptr, "split under OSCORE failed: " << describe(err));
+    BOOST_REQUIRE(c.await(
+        [&] {
+            const auto fresh = c.host(1).resolve("delta");
+            return fresh.has_value() && fresh->_group_id != k_left;
+        },
+        scaled_deadline(20000)));
+    const auto child = c.host(1).resolve("delta")->_group_id;
+    BOOST_REQUIRE(c.await([&] { return c.leader_of(child) != nullptr; }, scaled_deadline(20000)));
+    BOOST_REQUIRE(c.put("baker", "after-split"));
+    BOOST_REQUIRE(c.put("echo", "after-split"));
+
+    auto* source_leader = c.leader_of(k_right);
+    BOOST_REQUIRE(source_leader != nullptr);
+    const auto source_leader_id = c.leader_id_of(k_right);
+    BOOST_REQUIRE(source_leader_id.has_value());
+    // After the split, k_right's neighbour is the child, not k_left.
+    err = settle(source_leader->merge_shards(k_right, child, scaled_deadline(10000)),
+                 scaled_deadline(15000));
+    BOOST_REQUIRE_MESSAGE(err == nullptr, "merge under OSCORE failed: " << describe(err));
+    BOOST_REQUIRE(c.await(
+        [&] {
+            for (node_id_t id = 1; id <= k_node_count; ++id) {
+                if (c.host(id).applied_merge_count() == 0) {
+                    return false;
+                }
+            }
+            return true;
+        },
+        scaled_deadline(30000)));
+    BOOST_CHECK(!c.tiling_problem().has_value());
+
+    // The merged-away replica is stopped in the apply phase, after the merge
+    // counts as applied, and its keys go with it. k_right's leader held a
+    // sender context for it and every follower a recipient context, so each of
+    // those has something to wipe.
+    const auto forgot = [&](node_id_t id) {
+        return id == *source_leader_id
+                   ? c.client(id).oscore_group_counters()->groups_forgotten >= 1
+                   : c.server(id).oscore_group_counters()->groups_forgotten >= 1;
+    };
+    BOOST_CHECK(c.await(
+        [&] {
+            for (node_id_t id = 1; id <= k_node_count; ++id) {
+                if (!forgot(id)) {
+                    return false;
+                }
+            }
+            return true;
+        },
+        scaled_deadline(10000)));
+
+    // Three groups ever existed: k_left, k_right and the split's child. A
+    // node's client sends only while it leads and its server hears only while
+    // it follows, so either side may never have bootstrapped; a server hears
+    // from at most its two peers.
+    constexpr std::uint64_t groups_ever = 3;
+    constexpr std::uint64_t peers = k_node_count - 1;
+    for (node_id_t id = 1; id <= k_node_count; ++id) {
+        const auto sent = c.client(id).oscore_group_counters();
+        const auto received = c.server(id).oscore_group_counters();
+        BOOST_REQUIRE(sent.has_value());
+        BOOST_REQUIRE(received.has_value());
+        BOOST_TEST_CONTEXT("node " << id) {
+            BOOST_TEST(forgot(id));
+            BOOST_TEST(sent->bootstraps <= 1U);
+            BOOST_TEST(sent->sender_derivations <= groups_ever);
+            BOOST_TEST(received->bootstraps <= 1U);
+            BOOST_TEST(received->recipient_derivations <= peers * groups_ever);
+            BOOST_TEST(received->rejected_malformed == 0U);
+            if (id == *source_leader_id) {
+                BOOST_TEST(sent->bootstraps == 1U);
+            } else {
+                BOOST_TEST(received->recipient_derivations >= 1U);
+            }
+        }
+    }
 }
 
 BOOST_AUTO_TEST_CASE(scatter_moves_leadership_over_coap, *boost::unit_test::timeout(180)) {
