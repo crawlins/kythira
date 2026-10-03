@@ -34,6 +34,17 @@ bool docker_integration_tests_enabled() {
 
 }  // namespace
 
+// A failed healing check is decided inside the nodes and the container API
+// proxy, so on failure dump their state and logs; a bare timeout says nothing.
+#define CHECK_OR_DUMP(fixture, cond, msg) \
+    do {                                  \
+        const bool ok_ = (cond);          \
+        BOOST_CHECK_MESSAGE(ok_, msg);    \
+        if (!ok_) {                       \
+            (fixture).dump_diagnostics(); \
+        }                                 \
+    } while (0)
+
 // ── Req 19 AC 4 — follower kill self-heals to 3 nodes ────────────────────────
 
 BOOST_AUTO_TEST_CASE(follower_kill_heals_to_target, *boost::unit_test::timeout(240)) {
@@ -52,12 +63,12 @@ BOOST_AUTO_TEST_CASE(follower_kill_heals_to_target, *boost::unit_test::timeout(2
     f.node(follower_id).kill();
 
     // Wait for the cluster to self-heal to 3 running containers
-    BOOST_CHECK_MESSAGE(f.wait_for_cluster_size(3, 60s),
-                        "cluster did not self-heal to 3 nodes within 60 s");
+    CHECK_OR_DUMP(f, f.wait_for_cluster_size(3, 60s),
+                  "cluster did not self-heal to 3 nodes within 60 s");
 
     // The killed node's original container should have been decommissioned
-    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(follower_id, 60s),
-                        "the failed follower was not decommissioned within 60 s");
+    CHECK_OR_DUMP(f, f.wait_for_container_absent(follower_id, 60s),
+                  "the failed follower was not decommissioned within 60 s");
 
     f.assert_no_split_brain();
 }
@@ -77,11 +88,11 @@ BOOST_AUTO_TEST_CASE(follower_stop_heals_to_target, *boost::unit_test::timeout(2
 
     f.node(follower_id).stop();
 
-    BOOST_CHECK_MESSAGE(f.wait_for_cluster_size(3, 60s),
-                        "cluster did not self-heal to 3 nodes after follower stop");
+    CHECK_OR_DUMP(f, f.wait_for_cluster_size(3, 60s),
+                  "cluster did not self-heal to 3 nodes after follower stop");
 
-    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(follower_id, 60s),
-                        "the failed follower was not decommissioned within 60 s");
+    CHECK_OR_DUMP(f, f.wait_for_container_absent(follower_id, 60s),
+                  "the failed follower was not decommissioned within 60 s");
     f.assert_no_split_brain();
 }
 
@@ -105,11 +116,11 @@ BOOST_AUTO_TEST_CASE(leader_kill_new_leader_heals, *boost::unit_test::timeout(24
     BOOST_CHECK_NE(new_leader.id(), old_leader_id);
 
     // The new leader should provision a replacement
-    BOOST_CHECK_MESSAGE(f.wait_for_cluster_size(3, 60s),
-                        "cluster did not self-heal to 3 nodes after leader kill");
+    CHECK_OR_DUMP(f, f.wait_for_cluster_size(3, 60s),
+                  "cluster did not self-heal to 3 nodes after leader kill");
 
-    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(old_leader_id, 60s),
-                        "the failed old leader was not decommissioned within 60 s");
+    CHECK_OR_DUMP(f, f.wait_for_container_absent(old_leader_id, 60s),
+                  "the failed old leader was not decommissioned within 60 s");
     f.assert_no_split_brain();
 }
 
@@ -171,10 +182,10 @@ BOOST_AUTO_TEST_CASE(sustained_pause_triggers_replacement, *boost::unit_test::ti
     // replacement is promoted, node 2 is removed from the configuration and
     // its container decommissioned, which also removes the paused container:
     // there is nothing left to unpause.
-    BOOST_CHECK_MESSAGE(f.wait_for_container_absent(2, 90s),
-                        "the paused node was not replaced and decommissioned within 90 s");
-    BOOST_CHECK_MESSAGE(f.wait_for_cluster_size(3, 30s),
-                        "cluster is not back to 3 running nodes after the sustained pause");
+    CHECK_OR_DUMP(f, f.wait_for_container_absent(2, 90s),
+                  "the paused node was not replaced and decommissioned within 90 s");
+    CHECK_OR_DUMP(f, f.wait_for_cluster_size(3, 30s),
+                  "cluster is not back to 3 running nodes after the sustained pause");
 
     f.assert_no_split_brain();
 }

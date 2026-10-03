@@ -7,6 +7,8 @@
 #include "os_faults.hpp"
 
 #include <chrono>
+#include <iostream>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -174,6 +176,37 @@ public:
     }
 
     [[nodiscard]] const std::string& cluster_name() const { return _cluster_name; }
+
+    // Prints, to stderr, every container this cluster owns: the compose
+    // project's (the three bootstrap nodes and the container API proxy) and
+    // the ones docker_quorum_manager provisioned (labelled but outside the
+    // project), each with its state and the tail of its logs. A healing
+    // failure is decided inside the nodes and the proxy, so without this the
+    // only evidence is a timeout. `compose ps -a` is not used: podman-compose
+    // rejects `-a` (see metrics_scenario_support.hpp).
+    void dump_diagnostics() {
+        const auto& rt = os::container_runtime();
+        auto ps = _exec({rt, "ps", "-a", "--filter", "label=kythira.cluster=" + _cluster_name,
+                         "--format", "{{.Names}} {{.Status}}"});
+        std::cerr << "── quorum cluster " << _cluster_name << " containers ──\n" << ps.out;
+
+        std::vector<std::string> ids_cmd = os::compose_prefix();
+        ids_cmd.insert(ids_cmd.end(), {"-f", _compose_file, "-p", _cluster_name, "ps", "-q"});
+        auto ids = _exec(ids_cmd);
+        auto labelled =
+            _exec({rt, "ps", "-aq", "--filter", "label=kythira.cluster=" + _cluster_name});
+        std::set<std::string> seen;
+        std::istringstream ss(ids.out + "\n" + labelled.out);
+        std::string id;
+        while (ss >> id) {
+            if (!seen.insert(id.substr(0, 12)).second) {
+                continue;
+            }
+            auto name = _exec({rt, "inspect", "--format", "{{.Name}} {{.State.Status}}", id});
+            auto logs = _exec({rt, "logs", "--tail", "60", id});
+            std::cerr << "── logs for " << name.out << logs.out << "\n";
+        }
+    }
 
 private:
     std::string _cluster_name;
