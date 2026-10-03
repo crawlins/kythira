@@ -7,6 +7,7 @@
 #include <raft/proxygen_http_transport.hpp>
 
 #include <folly/io/IOBuf.h>
+#include <folly/io/async/AsyncSSLSocket.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 #include <proxygen/lib/http/HTTPCommonHeaders.h>
 #include <proxygen/lib/http/HTTPException.h>
@@ -15,6 +16,7 @@
 
 #include <wangle/acceptor/Acceptor.h>
 
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -31,6 +33,7 @@
 #include <exception>
 #include <format>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -319,6 +322,65 @@ struct session_probe {
     }
 };
 
+/// @brief The address bytes of @p host when it is an IP literal, nullopt when
+///     it is a host name. A scoped IPv6 literal ("fe80::1%eth0") yields the
+///     address without its zone, which is what a certificate's iPAddress entry
+///     carries.
+inline auto peer_ip_literal(const std::string& host) -> std::optional<std::vector<unsigned char>> {
+    const std::string address = host.substr(0, host.find('%'));
+    std::vector<unsigned char> bytes(sizeof(in6_addr));
+    if (::inet_pton(AF_INET, address.c_str(), bytes.data()) == 1) {
+        bytes.resize(sizeof(in_addr));
+        return bytes;
+    }
+    if (::inet_pton(AF_INET6, address.c_str(), bytes.data()) == 1) {
+        return bytes;
+    }
+    return std::nullopt;
+}
+
+/// @brief Checks that @p cert names @p host, the peer the connection was
+///     opened to (audit M15, the Proxygen half of the check
+///     `beast_bind_peer_identity` makes). Returns the failure to report, or
+///     nullopt when the certificate names the peer.
+///
+/// Without it, verification only proves the chain ends at a trusted root, so
+/// any certificate that root ever issued -- another node's, or a public
+/// site's when ca_cert_path is empty and the system store is used -- is
+/// accepted for every peer. An IP literal is matched against iPAddress
+/// entries and a host name against dNSName ones (the subject CN only when the
+/// certificate has no dNSName at all, as OpenSSL's own host check does).
+/// Partial wildcards ("n*.example") are refused, per RFC 6125.
+///
+/// This runs on the finished handshake rather than inside it, unlike Beast's
+/// `SSL_set1_host`: `HTTPConnector` creates the `AsyncSSLSocket` itself and
+/// the `SSL*` only exists once the TCP connect completes, so there is no
+/// point at which the expected identity can be set on it. Folly's own
+/// `SSLContext::authenticate` hook is no substitute: it would put the name
+/// in SNI and pass it to `X509_VERIFY_PARAM_set1_host` even for an IP
+/// literal, which then never matches an iPAddress entry. Checking before the
+/// session is handed out keeps the property that matters -- no request is
+/// ever written to a peer that has not proved it is the one addressed.
+inline auto peer_identity_error(X509* cert, const std::string& host) -> std::optional<std::string> {
+    if (host.empty()) {
+        return std::nullopt;
+    }
+    if (cert == nullptr) {
+        return std::format("TLS peer {} presented no certificate", host);
+    }
+    if (auto ip = peer_ip_literal(host)) {
+        if (X509_check_ip(cert, ip->data(), ip->size(), 0) == 1) {
+            return std::nullopt;
+        }
+        return std::format("TLS peer certificate does not name IP address {}", host);
+    }
+    if (X509_check_host(cert, host.data(), host.size(), X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS,
+                        nullptr) == 1) {
+        return std::nullopt;
+    }
+    return std::format("TLS peer certificate does not name host {}", host);
+}
+
 inline connect_bridge::connect_bridge(folly::EventBase* evb, std::chrono::milliseconds txn_timeout,
                                       std::shared_ptr<session_pool> pool,
                                       kythira::promise_default<session_lease> promise,
@@ -340,6 +402,26 @@ inline auto connect_bridge::connectSuccess(proxygen::HTTPUpstreamSession* sessio
     // The slot is fresh, and belongs to this session alone. `established` was
     // already incremented on this bridge's behalf by whoever started the
     // connect, so nothing is counted here.
+    if (_pool->use_ssl && _pool->verify_peer_identity) {
+        const auto* transport = session->getTransport();
+        const auto* ssl_socket = transport == nullptr
+                                     ? nullptr
+                                     : transport->getUnderlyingTransport<folly::AsyncSSLSocket>();
+        const SSL* ssl = ssl_socket == nullptr ? nullptr : ssl_socket->getSSL();
+        auto failure = peer_identity_error(
+            ssl == nullptr ? nullptr : SSL_get0_peer_certificate(ssl), _pool->host);
+        if (failure) {
+            // Dropped before any transaction exists, so no request was sent.
+            // Reported as the handshake failure it stands in for, and not
+            // retried on the target's other addresses: they were all
+            // resolved from the same name, which is what the certificate
+            // failed to match.
+            session->dropConnection();
+            fail(std::make_exception_ptr(
+                folly::AsyncSocketException(folly::AsyncSocketException::SSL_ERROR, *failure)));
+            return;
+        }
+    }
     auto slot = std::make_shared<pooled_session>(session);
     session->setInfoCallback(new session_liveness_tracker(slot, session));
     auto lease = std::make_shared<session_checkout>(_pool, _evb, std::move(slot));
@@ -368,11 +450,14 @@ inline auto connect_bridge::connectError(const folly::AsyncSocketException& ex) 
     // it either way, and `error_handler` is what decides when to try again.
     // Leaving them queued, by contrast, would wedge them until their own
     // request timeout, one at a time.
+    fail(std::make_exception_ptr(ex));
+}
+
+inline auto connect_bridge::fail(std::exception_ptr error) -> void {
     --_pool->established;
     auto waiters = std::move(_pool->waiters);
     _pool->waiters.clear();
     auto promise = std::move(_promise);
-    auto error = std::make_exception_ptr(ex);
     delete this;
     for (auto& waiter : waiters) {
         waiter.setException(error);
@@ -422,7 +507,12 @@ inline auto start_connect(const std::shared_ptr<session_pool>& pool, folly::Even
         new connect_bridge(evb, pool->connection_timeout, pool, std::move(promise), attempt);
     const auto& addr = pool->addrs.at(attempt);
     if (pool->use_ssl) {
-        bridge->connector().connectSSL(evb, addr, pool->ssl_ctx, nullptr, pool->connection_timeout);
+        // SNI carries host names only: RFC 6066 section 3 forbids a literal
+        // IP address in it.
+        const std::string server_name = peer_ip_literal(pool->host) ? std::string{} : pool->host;
+        bridge->connector().connectSSL(evb, addr, pool->ssl_ctx, nullptr, pool->connection_timeout,
+                                       folly::emptySocketOptionMap,
+                                       folly::AsyncSocket::anyAddress(), server_name);
     } else {
         bridge->connector().connect(evb, addr, pool->connection_timeout);
     }
@@ -481,16 +571,18 @@ inline auto serve_session_waiters(const std::shared_ptr<session_pool>& pool, fol
 }
 
 inline auto acquire_session(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
-                            const std::vector<folly::SocketAddress>& addrs,
+                            const std::vector<folly::SocketAddress>& addrs, const std::string& host,
                             std::shared_ptr<folly::SSLContext> ssl_ctx, bool use_ssl,
-                            std::chrono::milliseconds connection_timeout)
+                            bool verify_peer_identity, std::chrono::milliseconds connection_timeout)
     -> kythira::future_default<session_lease> {
     // Refreshed every time so a `reload_tls_material()` between two RPCs is
     // what a later connect uses, including one started on a waiter's behalf
     // from `serve_session_waiters`, which has no caller to take them from.
     pool->addrs = addrs;
+    pool->host = host;
     pool->ssl_ctx = std::move(ssl_ctx);
     pool->use_ssl = use_ssl;
+    pool->verify_peer_identity = verify_peer_identity;
     pool->connection_timeout = connection_timeout;
 
     kythira::promise_default<session_lease> promise;
@@ -1159,6 +1251,7 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
         auto ssl_ctx = _ssl_ctx;
         auto user_agent = _config.user_agent;
         auto connection_timeout = _config.connection_timeout;
+        auto verify_peer_identity = _config.enable_ssl_verification;
         auto start_time = std::chrono::steady_clock::now();
 
         auto metric = _metrics;
@@ -1171,8 +1264,9 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
         metric.emit();
 
         evb->runInEventBaseThread([this, evb, sessions, addr, ssl_ctx, is_https, connection_timeout,
-                                   host, body = std::move(body), endpoint = std::string(endpoint),
-                                   timeout, target, rpc_type, start_time, content_type, accept,
+                                   host, verify_peer_identity, body = std::move(body),
+                                   endpoint = std::string(endpoint), timeout, target, rpc_type,
+                                   start_time, content_type, accept,
                                    promise = std::move(promise)]() mutable {
             // The response-transform step below returns Response or
             // throws (Beast's own send_rpc pattern exactly) rather
@@ -1184,8 +1278,8 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
             // exactly once, regardless of which upstream step
             // produced the value or the exception.
             auto chain =
-                proxygen_detail::acquire_session(sessions, evb, addr, ssl_ctx, is_https,
-                                                 connection_timeout)
+                proxygen_detail::acquire_session(sessions, evb, addr, host, ssl_ctx, is_https,
+                                                 verify_peer_identity, connection_timeout)
                     .thenValue([evb, host, body = std::move(body), endpoint,
                                 user_agent = _config.user_agent, timeout, content_type,
                                 accept](proxygen_detail::session_lease lease) mutable {
@@ -1370,6 +1464,7 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
         auto sessions = slot.sessions;
         auto ssl_ctx = _ssl_ctx;
         auto connection_timeout = _config.connection_timeout;
+        auto verify_peer_identity = _config.enable_ssl_verification;
         auto start_time = std::chrono::steady_clock::now();
 
         auto metric = _metrics;
@@ -1382,8 +1477,9 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
         metric.emit();
 
         evb->runInEventBaseThread([this, evb, sessions, addr, ssl_ctx, is_https, connection_timeout,
-                                   host, body = std::move(body), endpoint = std::string(endpoint),
-                                   timeout, target, rpc_type, start_time, content_type, accept,
+                                   host, verify_peer_identity, body = std::move(body),
+                                   endpoint = std::string(endpoint), timeout, target, rpc_type,
+                                   start_time, content_type, accept,
                                    promise = std::move(promise)]() mutable {
             // Requirement 16.3: continuations scheduled via .via(evb) --
             // the connection's own pinned EventBase -- so this chain
@@ -1396,8 +1492,8 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
             // trailing .thenTry() is the one place `promise` is
             // captured/settled.
             auto chain =
-                proxygen_detail::acquire_session(sessions, evb, addr, ssl_ctx, is_https,
-                                                 connection_timeout)
+                proxygen_detail::acquire_session(sessions, evb, addr, host, ssl_ctx, is_https,
+                                                 verify_peer_identity, connection_timeout)
                     .get_folly_future()
                     .via(evb)
                     .thenValue([host, body = std::move(body), endpoint,
