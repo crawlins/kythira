@@ -176,6 +176,8 @@ namespace proxygen_detail {
 constexpr const char* proxygen_endpoint_request_vote = "/v1/raft/request_vote";
 constexpr const char* proxygen_endpoint_append_entries = "/v1/raft/append_entries";
 constexpr const char* proxygen_endpoint_install_snapshot = "/v1/raft/install_snapshot";
+constexpr const char* proxygen_endpoint_request_pre_vote = "/v1/raft/request_pre_vote";
+constexpr const char* proxygen_endpoint_timeout_now = "/v1/raft/timeout_now";
 
 /// @brief Accumulated client-side response -- status code plus the fully
 ///     read body. Proxygen delivers the body across one or more `onBody`
@@ -566,6 +568,19 @@ public:
                                std::chrono::milliseconds timeout)
         -> future_template<kythira::install_snapshot_response<>>;
 
+    // Optional extensions (.kiro/specs/http-coap-pre-vote-timeout-now/). A
+    // peer on a build without the route answers 404, and one without a
+    // registered handler 501; both fail the future with
+    // `rpc_not_implemented_exception`, which the core treats as "older peer".
+    auto send_request_pre_vote(std::uint64_t target,
+                               const kythira::request_pre_vote_request<>& request,
+                               std::chrono::milliseconds timeout)
+        -> future_template<kythira::request_pre_vote_response<>>;
+
+    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+                          std::chrono::milliseconds timeout)
+        -> future_template<kythira::timeout_now_response<>>;
+
     /// @brief Validates the configured TLS material, then retires the
     ///     current `folly::SSLContext` (kept alive, not destroyed -- an
     ///     in-flight `HTTPUpstreamSession` may still reference it, Property
@@ -725,6 +740,17 @@ public:
                                                const kythira::install_snapshot_request<>&)>
                                                handler) -> void;
 
+    // Optional extensions. Left unregistered, their routes answer 501 rather
+    // than the mandatory RPCs' 500, so a caller can tell "cannot serve this"
+    // from "failed while serving it".
+    auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
+                                               const kythira::request_pre_vote_request<>&)>
+                                               handler) -> void;
+
+    auto register_timeout_now_handler(
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+            handler) -> void;
+
     auto start() -> void;
     auto stop() -> void;
     [[nodiscard]] auto is_running() const -> bool;
@@ -814,6 +840,10 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        _request_pre_vote_handler;
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        _timeout_now_handler;
 
     std::mutex _requests_mutex;
     std::size_t _live_requests{0};

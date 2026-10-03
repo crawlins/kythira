@@ -5,7 +5,9 @@
 
 #include <raft/http_transport.hpp>
 #include <raft/coap_utils.hpp>
+#include <raft/exceptions.hpp>
 #include <raft/future_default.hpp>
+#include <raft/transport_conformance_types.hpp>
 #include <httplib.h>
 #include <raft/httplib_listeners.hpp>
 #include <algorithm>
@@ -38,6 +40,8 @@ namespace {
 constexpr const char* endpoint_request_vote = "/v1/raft/request_vote";
 constexpr const char* endpoint_append_entries = "/v1/raft/append_entries";
 constexpr const char* endpoint_install_snapshot = "/v1/raft/install_snapshot";
+constexpr const char* endpoint_request_pre_vote = "/v1/raft/request_pre_vote";
+constexpr const char* endpoint_timeout_now = "/v1/raft/timeout_now";
 constexpr const char* header_content_type = "Content-Type";
 constexpr const char* header_content_length = "Content-Length";
 constexpr const char* header_user_agent = "User-Agent";
@@ -1135,12 +1139,19 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
 
         // Determine RPC type for metrics
         std::string rpc_type;
+        bool extension_rpc = false;
         if (endpoint == endpoint_request_vote) {
             rpc_type = "request_vote";
         } else if (endpoint == endpoint_append_entries) {
             rpc_type = "append_entries";
         } else if (endpoint == endpoint_install_snapshot) {
             rpc_type = "install_snapshot";
+        } else if (endpoint == endpoint_request_pre_vote) {
+            rpc_type = "request_pre_vote";
+            extension_rpc = true;
+        } else if (endpoint == endpoint_timeout_now) {
+            rpc_type = "timeout_now";
+            extension_rpc = true;
         }
 
         // Latency is measured across the whole operation, retries included: it
@@ -1407,6 +1418,14 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             latency_metric.add_duration(latency);
             latency_metric.emit();
 
+            // A peer on a build without this extension has no route for it.
+            // Only on an extension RPC: a 404 on a mandatory one means a
+            // misconfigured peer and keeps its ordinary error.
+            if (extension_rpc && result->status == 404) {
+                return make_future_with_exception<Types, Response>(
+                    kythira::rpc_not_implemented_exception(rpc_type, target));
+            }
+
             return make_future_with_exception<Types, Response>(kythira::http_client_error(
                 result->status,
                 std::format("HTTP client error {}: {}", result->status, result->body)));
@@ -1427,6 +1446,12 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             latency_metric.add_dimension("status", "error");
             latency_metric.add_duration(latency);
             latency_metric.emit();
+
+            // The peer has the route but no handler registered for it.
+            if (extension_rpc && result->status == 501) {
+                return make_future_with_exception<Types, Response>(
+                    kythira::rpc_not_implemented_exception(rpc_type, target));
+            }
 
             return make_future_with_exception<Types, Response>(kythira::http_server_error(
                 result->status,
@@ -1474,6 +1499,28 @@ auto cpp_httplib_client<Types>::send_install_snapshot(
         target, endpoint_install_snapshot, request, timeout);
 }
 
+// send_request_pre_vote implementation
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_client<Types>::send_request_pre_vote(
+    std::uint64_t target, const kythira::request_pre_vote_request<>& request,
+    std::chrono::milliseconds timeout) ->
+    typename Types::template future_template<kythira::request_pre_vote_response<>> {
+    return send_rpc<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+        target, endpoint_request_pre_vote, request, timeout);
+}
+
+// send_timeout_now implementation
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_client<Types>::send_timeout_now(std::uint64_t target,
+                                                 const kythira::timeout_now_request<>& request,
+                                                 std::chrono::milliseconds timeout) ->
+    typename Types::template future_template<kythira::timeout_now_response<>> {
+    return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+        target, endpoint_timeout_now, request, timeout);
+}
+
 // Server constructor implementation
 template<typename Types>
 requires kythira::transport_types<Types>
@@ -1486,6 +1533,8 @@ cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uin
       _request_vote_handler{},
       _append_entries_handler{},
       _install_snapshot_handler{},
+      _request_pre_vote_handler{},
+      _timeout_now_handler{},
       _bind_address{std::move(bind_address)},
       _bind_port{bind_port},
       _config{std::move(config)},
@@ -1797,6 +1846,26 @@ auto cpp_httplib_server<Types>::register_install_snapshot_handler(
     _install_snapshot_handler = std::move(handler);
 }
 
+// Register RequestPreVote handler
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_server<Types>::register_request_pre_vote_handler(
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        handler) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _request_pre_vote_handler = std::move(handler);
+}
+
+// Register TimeoutNow handler
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_server<Types>::register_timeout_now_handler(
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler)
+    -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _timeout_now_handler = std::move(handler);
+}
+
 // Generic RPC endpoint handler
 template<typename Types>
 requires kythira::transport_types<Types>
@@ -1809,6 +1878,7 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
 
     // Determine RPC type for metrics
     std::string rpc_type;
+    bool extension_rpc = false;
     std::string endpoint = http_req.path;
     if (endpoint == endpoint_request_vote) {
         rpc_type = "request_vote";
@@ -1816,6 +1886,12 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
         rpc_type = "append_entries";
     } else if (endpoint == endpoint_install_snapshot) {
         rpc_type = "install_snapshot";
+    } else if (endpoint == endpoint_request_pre_vote) {
+        rpc_type = "request_pre_vote";
+        extension_rpc = true;
+    } else if (endpoint == endpoint_timeout_now) {
+        rpc_type = "timeout_now";
+        extension_rpc = true;
     }
 
     try {
@@ -1828,8 +1904,11 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
             error_metric.add_one();
             error_metric.emit();
 
-            http_resp.status = 500;
-            http_resp.body = "Handler not registered";
+            // 501 for an extension: this server cannot serve the RPC at all,
+            // which the caller maps to "older peer". The mandatory three keep
+            // 500, since a node without them is broken rather than older.
+            http_resp.status = extension_rpc ? 501 : 500;
+            http_resp.body = extension_rpc ? "Not Implemented" : "Handler not registered";
             http_resp.set_header(header_content_type, "text/plain");
             // Let cpp-httplib handle Content-Length automatically
             return;
@@ -2001,6 +2080,10 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
                     static_cast<void>(_serializer.deserialize_append_entries_request(test_data));
                 } else if constexpr (std::is_same_v<Request, kythira::install_snapshot_request<>>) {
                     static_cast<void>(_serializer.deserialize_install_snapshot_request(test_data));
+                } else if constexpr (std::is_same_v<Request, kythira::request_pre_vote_request<>>) {
+                    static_cast<void>(_serializer.deserialize_request_pre_vote_request(test_data));
+                } else if constexpr (std::is_same_v<Request, kythira::timeout_now_request<>>) {
+                    static_cast<void>(_serializer.deserialize_timeout_now_request(test_data));
                 }
 
                 // If we get here, deserialization worked, so it's a handler exception
@@ -2067,6 +2150,20 @@ auto cpp_httplib_server<Types>::setup_endpoints(httplib::Server& server) -> void
                                               kythira::install_snapshot_response<>>(
                         req, resp, _install_snapshot_handler);
                 });
+
+    // RequestPreVote endpoint (optional extension; 501 when unregistered)
+    server.Post(endpoint_request_pre_vote,
+                [this](const httplib::Request& req, httplib::Response& resp) {
+                    this->handle_rpc_endpoint<kythira::request_pre_vote_request<>,
+                                              kythira::request_pre_vote_response<>>(
+                        req, resp, _request_pre_vote_handler);
+                });
+
+    // TimeoutNow endpoint (optional extension; 501 when unregistered)
+    server.Post(endpoint_timeout_now, [this](const httplib::Request& req, httplib::Response& resp) {
+        this->handle_rpc_endpoint<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+            req, resp, _timeout_now_handler);
+    });
 }
 
 // Start server
@@ -2150,5 +2247,42 @@ requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::bound_port() const -> std::uint16_t {
     return _bound_port.load();
 }
+
+// ── concept conformance (.kiro/specs/http-coap-pre-vote-timeout-now/, Requirement 2) ──
+//
+// Which Raft extensions this transport carries, as a compile-time fact.
+// node<Types> detects every extension with `if constexpr` and silently does
+// without, so the negative assertions matter as much as the positive ones: a
+// transport quietly losing PreVote or TimeoutNow changes what a deployment
+// can do with no other symptom. Mirrored by design §6's capability table.
+
+static_assert(kythira::network_client<cpp_httplib_client<transport_detail::conformance_types>>,
+              "cpp_httplib_client must satisfy network_client");
+static_assert(kythira::network_server<cpp_httplib_server<transport_detail::conformance_types>>,
+              "cpp_httplib_server must satisfy network_server");
+static_assert(
+    kythira::network_client_with_pre_vote<cpp_httplib_client<transport_detail::conformance_types>>,
+    "cpp_httplib_client must satisfy network_client_with_pre_vote");
+static_assert(
+    kythira::network_server_with_pre_vote<cpp_httplib_server<transport_detail::conformance_types>>,
+    "cpp_httplib_server must satisfy network_server_with_pre_vote");
+static_assert(kythira::network_client_with_timeout_now<
+                  cpp_httplib_client<transport_detail::conformance_types>>,
+              "cpp_httplib_client must satisfy network_client_with_timeout_now");
+static_assert(kythira::network_server_with_timeout_now<
+                  cpp_httplib_server<transport_detail::conformance_types>>,
+              "cpp_httplib_server must satisfy network_server_with_timeout_now");
+static_assert(!kythira::network_client_with_log_fetch<
+                  cpp_httplib_client<transport_detail::conformance_types>>,
+              "HTTP does not implement log fetch; see "
+              ".kiro/specs/http-coap-pre-vote-timeout-now/design.md §6");
+static_assert(!kythira::network_client_with_cluster_join<
+                  cpp_httplib_client<transport_detail::conformance_types>>,
+              "HTTP does not implement cluster join; see "
+              ".kiro/specs/http-coap-pre-vote-timeout-now/design.md §6");
+static_assert(!kythira::network_client_with_cluster_leave<
+                  cpp_httplib_client<transport_detail::conformance_types>>,
+              "HTTP does not implement cluster leave; see "
+              ".kiro/specs/http-coap-pre-vote-timeout-now/design.md §6");
 
 }  // namespace kythira
