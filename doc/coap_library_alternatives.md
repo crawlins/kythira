@@ -20,6 +20,7 @@ predictions survived contact with the code, because several did not.
 | Block-wise transfer | **Block2 only** — no Block1 at all | **Written here**: Block1 *and* Block2 |
 | DTLS | **PSK + PKI + RPK, via its OpenSSL plugin** (`--enable-tls`; RPK needs OpenSSL >= 3.2) | **Written here**: PSK, PKI and RPK (OpenSSL >= 3.2), OpenSSL over our own socket |
 | OSCORE / EDHOC | Not built in — supplied by kythira's own `raft/oscore.hpp` | Not built in — supplied by `raft/oscore.hpp` and `coap_edhoc_bootstrap.hpp` |
+| Revocation, `cn_validator`, ACE-OAuth | Same as libcoap: CRL check and validator in the `SSL_CTX` verify callback, ACE at construction | Same as libcoap: CRL check before the validator once the handshake completes, ACE at construction |
 | Build system | **autotools** | **none** (source files only) |
 | vcpkg port shape | `vcpkg_configure_make` (hard) | vendored `CMakeLists` (easy) |
 | Adapter size | Thin (bridge callbacks → futures) | Thicker, but far less than expected — see below |

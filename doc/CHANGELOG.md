@@ -70,6 +70,20 @@ current list of outstanding work, see [TODO.md](TODO.md).
   SAN for an IP literal, a dNSName SAN for a host name. It also sends SNI
   for host names. A deployment whose certificates do not carry the name or
   address peers dial will now fail to connect until they are reissued.
+- **Revocation, `cn_validator` and ACE-OAuth now work on the libnyoci and
+  cantcoap CoAP backends** (vulnerability audit M16, parity audit C2/C3). A
+  node with `revocation.enabled` on either alternate backend used to accept
+  a peer whose certificate was on the CRL, libnyoci ignored `cn_validator`
+  outright, and an ACE-configured node crashed construction with
+  `std::bad_variant_access` or silently kept stale static keys. All three
+  backends now share `coap_revocation::check()`, the new
+  `resolve_ace_bootstrap()` and `validate_pki_peer_policy()`.
+- **Breaking:** on every backend, `revocation.enabled` or a `cn_validator`
+  combined with `verify_peer_cert = false` is refused at construction, and an
+  `ace_bootstrap` whose profile disagrees with `security.mode`, or that is
+  combined with an EDHOC bootstrap, is refused before the AS is contacted.
+  libcoap previously ignored the first and failed later, or not at all, on the
+  second.
 
 ### What Changed (October 2, 2026)
 
