@@ -678,6 +678,7 @@ inline auto make_security_provider(const coap_security_config& config, coap_secu
                 throw coap_security_config_error(
                     "security.mode == dtls_pki requires pki_credentials in security.credentials");
             }
+            validate_pki_peer_policy(std::get<pki_credentials>(config.credentials));
             return std::make_unique<dtls_pki_provider>(
                 std::get<pki_credentials>(config.credentials), role);
         }

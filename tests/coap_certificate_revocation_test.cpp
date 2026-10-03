@@ -24,10 +24,7 @@
 #include <raft/coap_revocation.hpp>
 #include <raft/coap_security_impl.hpp>
 
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
-#include <openssl/x509v3.h>
+#include "coap_revocation_fixtures.hpp"
 #endif
 
 #include <cstdio>
@@ -49,175 +46,7 @@ using test_transport_types =
 #ifdef LIBCOAP_AVAILABLE
 namespace {
 
-auto make_key() -> EVP_PKEY* {
-    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
-    BOOST_REQUIRE(pctx != nullptr);
-    BOOST_REQUIRE(EVP_PKEY_keygen_init(pctx) == 1);
-    BOOST_REQUIRE(EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx, NID_X9_62_prime256v1) == 1);
-    EVP_PKEY* key = nullptr;
-    BOOST_REQUIRE(EVP_PKEY_keygen(pctx, &key) == 1);
-    EVP_PKEY_CTX_free(pctx);
-    return key;
-}
-
-auto add_extension(X509* cert, X509* issuer, int nid, const char* value) -> void {
-    X509V3_CTX ctx;
-    X509V3_set_ctx_nodb(&ctx);
-    X509V3_set_ctx(&ctx, issuer, cert, nullptr, nullptr, 0);
-    X509_EXTENSION* ext = X509V3_EXT_conf_nid(nullptr, &ctx, nid, value);
-    BOOST_REQUIRE(ext != nullptr);
-    X509_add_ext(cert, ext, -1);
-    X509_EXTENSION_free(ext);
-}
-
-auto make_cert(const char* common_name, long serial, EVP_PKEY* subject_key, X509* issuer,
-               EVP_PKEY* issuer_key) -> X509* {
-    X509* cert = X509_new();
-    BOOST_REQUIRE(cert != nullptr);
-    X509_set_version(cert, 2);
-    ASN1_INTEGER_set(X509_get_serialNumber(cert), serial);
-    X509_gmtime_adj(X509_getm_notBefore(cert), -60);
-    X509_gmtime_adj(X509_getm_notAfter(cert), 60L * 60L * 24L);
-    X509_set_pubkey(cert, subject_key);
-    X509_NAME* name = X509_get_subject_name(cert);
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                               reinterpret_cast<const unsigned char*>(common_name), -1, -1, 0);
-    X509_set_issuer_name(cert, issuer != nullptr ? X509_get_subject_name(issuer) : name);
-    if (issuer == nullptr) {
-        add_extension(cert, cert, NID_basic_constraints, "critical,CA:TRUE");
-        add_extension(cert, cert, NID_key_usage, "critical,keyCertSign,cRLSign");
-    }
-    BOOST_REQUIRE(X509_sign(cert, issuer_key, EVP_sha256()) > 0);
-    return cert;
-}
-
-auto make_crl(X509* ca, EVP_PKEY* ca_key, const std::vector<long>& revoked_serials) -> X509_CRL* {
-    X509_CRL* crl = X509_CRL_new();
-    BOOST_REQUIRE(crl != nullptr);
-    X509_CRL_set_version(crl, 1);
-    X509_CRL_set_issuer_name(crl, X509_get_subject_name(ca));
-    ASN1_TIME* last = ASN1_TIME_adj(nullptr, std::time(nullptr), 0, -60);
-    ASN1_TIME* next = ASN1_TIME_adj(nullptr, std::time(nullptr), 1, 0);
-    X509_CRL_set1_lastUpdate(crl, last);
-    X509_CRL_set1_nextUpdate(crl, next);
-    for (long serial : revoked_serials) {
-        X509_REVOKED* entry = X509_REVOKED_new();
-        ASN1_INTEGER* number = ASN1_INTEGER_new();
-        ASN1_INTEGER_set(number, serial);
-        X509_REVOKED_set_serialNumber(entry, number);
-        X509_REVOKED_set_revocationDate(entry, last);
-        X509_CRL_add0_revoked(crl, entry);
-        ASN1_INTEGER_free(number);
-    }
-    ASN1_TIME_free(last);
-    ASN1_TIME_free(next);
-    X509_CRL_sort(crl);
-    BOOST_REQUIRE(X509_CRL_sign(crl, ca_key, EVP_sha256()) > 0);
-    return crl;
-}
-
-auto pem_of(X509* cert) -> std::string {
-    BIO* bio = BIO_new(BIO_s_mem());
-    PEM_write_bio_X509(bio, cert);
-    char* data = nullptr;
-    const long len = BIO_get_mem_data(bio, &data);
-    std::string pem(data, static_cast<std::size_t>(len));
-    BIO_free(bio);
-    return pem;
-}
-
-auto der_of(X509* cert) -> std::vector<std::uint8_t> {
-    unsigned char* der = nullptr;
-    const int len = i2d_X509(cert, &der);
-    std::vector<std::uint8_t> bytes(der, der + len);
-    OPENSSL_free(der);
-    return bytes;
-}
-
-// One CA, a server certificate, a good and a revoked client certificate, a
-// CRL revoking the latter, and an unrelated CA's CRL, all on disk.
-struct revocation_pki {
-    std::filesystem::path dir;
-    std::string ca_file, crl_file, foreign_crl_file;
-    std::string server_cert_file, server_key_file;
-    std::string good_cert_file, good_key_file;
-    std::string revoked_cert_file, revoked_key_file;
-    X509* good_cert = nullptr;
-    X509* revoked_cert = nullptr;
-
-    revocation_pki() {
-        dir = std::filesystem::temp_directory_path() /
-              ("coap_revocation_test_" + std::to_string(std::random_device{}()));
-        std::filesystem::create_directories(dir);
-
-        EVP_PKEY* ca_key = make_key();
-        X509* ca = make_cert("kythira-test-ca", 1, ca_key, nullptr, ca_key);
-        EVP_PKEY* server_key = make_key();
-        X509* server = make_cert("localhost", 2, server_key, ca, ca_key);
-        EVP_PKEY* good_key = make_key();
-        good_cert = make_cert("good-client", 3, good_key, ca, ca_key);
-        EVP_PKEY* revoked_key = make_key();
-        revoked_cert = make_cert("revoked-client", 4, revoked_key, ca, ca_key);
-        X509_CRL* crl = make_crl(ca, ca_key, {4});
-
-        EVP_PKEY* foreign_key = make_key();
-        X509* foreign_ca = make_cert("unrelated-ca", 1, foreign_key, nullptr, foreign_key);
-        X509_CRL* foreign_crl = make_crl(foreign_ca, foreign_key, {});
-
-        ca_file = write("ca.pem", [&](FILE* f) { PEM_write_X509(f, ca); });
-        crl_file = write("crl.pem", [&](FILE* f) { PEM_write_X509_CRL(f, crl); });
-        foreign_crl_file =
-            write("foreign_crl.pem", [&](FILE* f) { PEM_write_X509_CRL(f, foreign_crl); });
-        server_cert_file = write("server.pem", [&](FILE* f) { PEM_write_X509(f, server); });
-        server_key_file = write_key("server.key", server_key);
-        good_cert_file = write("good.pem", [&](FILE* f) { PEM_write_X509(f, good_cert); });
-        good_key_file = write_key("good.key", good_key);
-        revoked_cert_file = write("revoked.pem", [&](FILE* f) { PEM_write_X509(f, revoked_cert); });
-        revoked_key_file = write_key("revoked.key", revoked_key);
-
-        X509_CRL_free(foreign_crl);
-        X509_free(foreign_ca);
-        EVP_PKEY_free(foreign_key);
-        X509_CRL_free(crl);
-        EVP_PKEY_free(revoked_key);
-        EVP_PKEY_free(good_key);
-        X509_free(server);
-        EVP_PKEY_free(server_key);
-        X509_free(ca);
-        EVP_PKEY_free(ca_key);
-    }
-
-    ~revocation_pki() {
-        X509_free(good_cert);
-        X509_free(revoked_cert);
-        std::error_code ec;
-        std::filesystem::remove_all(dir, ec);
-    }
-
-    revocation_pki(const revocation_pki&) = delete;
-    auto operator=(const revocation_pki&) -> revocation_pki& = delete;
-
-    [[nodiscard]] auto checking(std::string crl = {}, bool allow_missing = false) const
-        -> certificate_revocation_config {
-        return certificate_revocation_config{true, std::move(crl), allow_missing};
-    }
-
-private:
-    template<typename Writer> auto write(const char* name, Writer&& writer) -> std::string {
-        const auto path = (dir / name).string();
-        FILE* f = std::fopen(path.c_str(), "w");
-        BOOST_REQUIRE(f != nullptr);
-        writer(f);
-        std::fclose(f);
-        return path;
-    }
-
-    auto write_key(const char* name, EVP_PKEY* key) -> std::string {
-        return write(name, [&](FILE* f) {
-            PEM_write_PrivateKey(f, key, nullptr, nullptr, 0, nullptr, nullptr);
-        });
-    }
-};
+using namespace kythira::testing::revocation;
 
 auto pki_server_config(const revocation_pki& pki) -> coap_server_config {
     coap_server_config config;
@@ -352,6 +181,41 @@ BOOST_AUTO_TEST_CASE(legacy_fields_carry_revocation_into_pki_credentials) {
     BOOST_TEST(creds.revocation.enabled);
     BOOST_TEST(creds.revocation.crl_file == "crl.pem");
     BOOST_TEST(creds.revocation.allow_missing_crl);
+}
+
+// A revocation check or validator with peer verification off could never
+// reject anything on libcoap: its CN callback is only installed when
+// verify_peer_cert is set. Refused at construction, as on the other backends
+// (coap-alternate-backend-security-parity Requirement 4).
+BOOST_AUTO_TEST_CASE(policy_without_peer_verification_is_refused) {
+    revocation_pki pki;
+    test_transport_types::metrics_type metrics;
+
+    // Revocation through the legacy fields.
+    auto server_config = pki_server_config(pki);
+    server_config.verify_peer_cert = false;
+    auto client_config = pki_client_config(pki, pki.good_cert_file, pki.good_key_file);
+    client_config.verify_peer_cert = false;
+    client_config.revocation = pki.checking(pki.crl_file);
+    BOOST_CHECK_THROW((coap_server<test_transport_types>("127.0.0.1", 0, server_config, metrics)),
+                      coap_security_config_error);
+    BOOST_CHECK_THROW((coap_client<test_transport_types>({}, client_config, metrics)),
+                      coap_security_config_error);
+
+    // A validator through explicit credentials.
+    pki_credentials creds;
+    creds.cert_file = pki.server_cert_file;
+    creds.key_file = pki.server_key_file;
+    creds.verify_peer_cert = false;
+    creds.cn_validator = [](const std::string&) { return true; };
+    coap_server_config explicit_server;
+    explicit_server.security = {coap_auth_mode::dtls_pki, creds, std::nullopt};
+    coap_client_config explicit_client;
+    explicit_client.security = explicit_server.security;
+    BOOST_CHECK_THROW((coap_server<test_transport_types>("127.0.0.1", 0, explicit_server, metrics)),
+                      coap_security_config_error);
+    BOOST_CHECK_THROW((coap_client<test_transport_types>({}, explicit_client, metrics)),
+                      coap_security_config_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -115,6 +115,15 @@ whole chain from the leaf) and records the libcoap difference in
 `doc/coap_dtls_configuration.md` rather than changing libcoap's validator
 semantics under existing callers.
 
+**Task 1.1 finding (libcoap 4.3.5, OpenSSL backend).** Per depth.
+`tls_verify_call_back` in `src/coap_openssl.c` calls `validate_cn_call_back`
+for every certificate OpenSSL walks, passing `depth`, but only while OpenSSL's
+own `preverify_ok` is still 1. `dtls_pki_provider::validate_cn` ignores the
+depth, so on libcoap the revocation check runs on every certificate in the
+chain (the anchor included) and `cn_validator` also sees the CA certificates.
+As planned, the alternates stay leaf-only and the difference is documented in
+`doc/coap_dtls_configuration.md`.
+
 ### 4. cantcoap: extend the existing post-handshake check
 
 cantcoap owns its `SSL` objects, and `dtls_layer::drive_handshake` already
@@ -145,6 +154,17 @@ current behaviour first, because if libcoap genuinely enforces the policy
 with `verify_peer_cert = false` (it sets `verify_peer_cert = 0` in
 `coap_dtls_pki_t`, which may still invoke the CN callback), the parity
 direction flips and the requirement is amended before code is written.
+
+**Task 1.2 finding.** libcoap does not enforce either. `dtls_pki_provider`
+installs `validate_cn_call_back` only when `verify_peer_cert` is set, so with
+it off neither revocation nor the validator ever runs, silently. Requirement
+4.2 stands as written: all three backends now refuse the combination.
+
+**Placement.** The refusal is called from both alternates' `plan_security()`
+as well as from `apply_pki_credentials` / `dtls_layer::configure_pki`, because
+the libnyoci and cantcoap servers load their DTLS material in `start()`, not
+in the constructor. `plan_security()` is what makes the refusal a
+construction-time error on every backend.
 
 ## Components and interfaces
 

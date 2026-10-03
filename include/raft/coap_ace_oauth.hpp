@@ -147,4 +147,41 @@ inline auto run_ace_token_exchange(const ace_oauth_config& config)
     return creds;
 }
 
+// The ACE step every CoAP backend runs at construction, after
+// translate_legacy_fields() and before it chooses a channel. One function so
+// the backends cannot drift apart again (coap-alternate-backend-security-parity
+// Requirements 5 and 6).
+//
+// Checks that the requested profile and security.mode agree before any
+// network I/O, then, if ace_bootstrap is set, runs the token exchange and
+// replaces config.credentials with what the AS issued. A mismatch or an
+// ambiguous config throws coap_security_config_error; a failed exchange lets
+// coap_credential_bootstrap_error propagate. Never falls back to static or
+// absent credentials.
+inline auto resolve_ace_bootstrap(coap_security_config& config) -> void {
+    if (!config.ace_bootstrap) {
+        return;
+    }
+    const auto& ace = *config.ace_bootstrap;
+    const auto wanted = ace.target_profile == ace_target_profile::oscore ? coap_auth_mode::oscore
+                                                                         : coap_auth_mode::dtls_psk;
+    if (config.mode != wanted) {
+        throw coap_security_config_error(
+            "security.ace_bootstrap.target_profile == " + to_string(wanted) +
+            " requires security.mode == " + to_string(wanted) + ", but security.mode is " +
+            to_string(config.mode));
+    }
+    // The AS always issues a static context, so an EDHOC request alongside
+    // it would otherwise be dropped without a word.
+    if (const auto* osc = std::get_if<oscore_credentials>(&config.credentials);
+        osc != nullptr && osc->bootstrap_method == oscore_bootstrap::edhoc) {
+        throw coap_security_config_error(
+            "security.ace_bootstrap and an EDHOC bootstrap in security.credentials are both "
+            "set; configure one way of obtaining the OSCORE context");
+    }
+    auto result = run_ace_token_exchange(ace);
+    std::visit([&](auto&& creds) { config.credentials = std::forward<decltype(creds)>(creds); },
+               std::move(result));
+}
+
 }  // namespace kythira

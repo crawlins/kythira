@@ -362,3 +362,8 @@ and a translation unit selects a backend by which header it includes.
   is emitted; a CoAP proxy in the path would need the outer form too.
 - **Block1**, if InstallSnapshot over libnyoci ever matters: it would have to be
   implemented in the adapter, since libnyoci has no support to build on.
+- **Revocation, `cn_validator` and ACE-OAuth parity with libcoap**: closed by
+  `.kiro/specs/coap-alternate-backend-security-parity` (October 3, 2026). Both
+  used to be ignored here, and an ACE config crashed construction; the CRL
+  check and validator now run in the `SSL_CTX` verify callback, and ACE runs
+  in `plan_security()`. Tests: `tests/coap_libnyoci_security_parity_test.cpp`.
