@@ -2741,6 +2741,11 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_network_test(coap_dtls_cipher_suites_test coap_dtls_cipher_suites_test.cpp)
     set_tests_properties(coap_dtls_cipher_suites_test PROPERTIES
         TIMEOUT 300 LABELS "coap;coap-security;libcoap")
+    # OSCORE mode serves only OSCORE-protected requests (coap-transport-security
+    # Requirement 4).
+    add_network_test(coap_oscore_only_resources_test coap_oscore_only_resources_test.cpp)
+    set_tests_properties(coap_oscore_only_resources_test PROPERTIES
+        TIMEOUT 120 LABELS "coap;coap-security;integration;libcoap")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 
 if(KYTHIRA_BUILD_COAP_TRANSPORT)
