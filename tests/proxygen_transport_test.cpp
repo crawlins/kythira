@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <string>
@@ -30,6 +31,8 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -188,7 +191,12 @@ struct temp_mtls_material {
     std::filesystem::path client_key_path;
     std::filesystem::path client_cert_path;
 
-    temp_mtls_material() {
+    // @p server_subject and @p server_alt_names default to the 127.0.0.1
+    // identity every https:// URL in this file addresses; the server-identity
+    // tests pass another identity to get a server certificate that chains to
+    // the trusted CA but names some other peer.
+    explicit temp_mtls_material(const std::string& server_subject = "127.0.0.1",
+                                const std::string& server_alt_names = "IP:127.0.0.1") {
         auto dir = std::filesystem::temp_directory_path();
         auto unique = std::to_string(std::random_device{}());
         ca_key_path = dir / ("proxygen_mtls_ca_key_" + unique + ".pem");
@@ -219,7 +227,7 @@ struct temp_mtls_material {
             ext << "basicConstraints=critical,CA:false\n"
                 << "keyUsage=critical,digitalSignature\n"
                 << "extendedKeyUsage=serverAuth\n"
-                << "subjectAltName=IP:127.0.0.1\n";
+                << "subjectAltName=" << server_alt_names << "\n";
         }
         {
             std::ofstream ext(client_ext_path);
@@ -242,7 +250,7 @@ struct temp_mtls_material {
 
         run("openssl ecparam -genkey -name prime256v1 -out " + server_key_path.string());
         run("openssl req -new -key " + server_key_path.string() + " -out " +
-            server_csr_path.string() + " -subj \"/CN=127.0.0.1\"");
+            server_csr_path.string() + " -subj \"/CN=" + server_subject + "\"");
         run("openssl x509 -req -in " + server_csr_path.string() + " -CA " + ca_cert_path.string() +
             " -CAkey " + ca_key_path.string() + " -CAcreateserial -out " +
             server_cert_path.string() + " -days 1 -extfile " + server_ext_path.string());
@@ -891,6 +899,137 @@ BOOST_AUTO_TEST_CASE(generic_bridge_forced_matches_fast_path_result,
                                                                           : "generic_bridge"));
 
     server.stop();
+}
+
+// Sends one RequestVote over a verifying client that trusts @p mtls's CA, to
+// @p url; the server presents @p mtls's server certificate. Returns whether
+// the RPC completed, so each case below differs only in the identity the
+// certificate carries and the name the URL uses. @p verify is the client's
+// enable_ssl_verification.
+auto request_vote_over_tls_succeeds(const temp_mtls_material& mtls, std::uint16_t port,
+                                    const std::string& url, bool verify = true) -> bool {
+    folly::IOThreadPoolExecutor io_executor(2);
+    kythira::proxygen_server_config server_config;
+    server_config.enable_ssl = true;
+    server_config.ssl_cert_path = mtls.server_cert_path.string();
+    server_config.ssl_key_path = mtls.server_key_path.string();
+    kythira::proxygen_server<test_transport_types> server(
+        test_bind_address, port, server_config, recording_metrics{},
+        std::shared_ptr<folly::IOThreadPoolExecutorBase>(&io_executor, [](auto*) {}));
+    register_echo_handlers(server);
+    server.start();
+
+    kythira::proxygen_client_config client_config;
+    client_config.ca_cert_path = mtls.ca_cert_path.string();
+    client_config.enable_ssl_verification = verify;
+    std::unordered_map<std::uint64_t, std::string> node_map{{test_node_id, url}};
+    bool succeeded = false;
+    {
+        kythira::proxygen_client<test_transport_types> client(io_executor, node_map, client_config,
+                                                              recording_metrics{});
+        kythira::request_vote_request<> req{};
+        req._term = 9;
+        try {
+            auto resp = std::move(client.send_request_vote(test_node_id, req,
+                                                           kythira::testing::scaled_deadline(3000)))
+                            .get();
+            succeeded = resp.term() == 9;
+        } catch (const std::exception& e) {
+            BOOST_TEST_MESSAGE("request_vote to " << url << " failed: " << e.what());
+        }
+    }
+    server.stop();
+    return succeeded;
+}
+
+// Server identity (audit M15, the Proxygen half of PR #411's Beast fix): with
+// verification on, a certificate that chains to a trusted root is accepted
+// only for the peer it names. The positive cases matter as much as the
+// negative ones -- they pin that an IP literal is matched against an
+// iPAddress SAN and a host name against a dNSName SAN, so the check cannot
+// be "fixed" by rejecting everything.
+BOOST_AUTO_TEST_CASE(verified_tls_accepts_certificate_naming_the_ip_literal,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    temp_mtls_material mtls;
+    std::uint16_t port = 18284;
+    BOOST_TEST(
+        request_vote_over_tls_succeeds(mtls, port, "https://127.0.0.1:" + std::to_string(port)));
+}
+
+// The audit's attack: a valid, trusted certificate issued to some other peer.
+// Before the fix the handshake completed, because only the chain was checked.
+BOOST_AUTO_TEST_CASE(verified_tls_rejects_trusted_certificate_for_another_ip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    temp_mtls_material mtls("other-node.example", "DNS:other-node.example,IP:10.0.0.9");
+    std::uint16_t port = 18285;
+    BOOST_TEST(
+        !request_vote_over_tls_succeeds(mtls, port, "https://127.0.0.1:" + std::to_string(port)));
+}
+
+BOOST_AUTO_TEST_CASE(verified_tls_accepts_certificate_naming_the_host,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    temp_mtls_material mtls("localhost", "DNS:localhost");
+    std::uint16_t port = 18286;
+    BOOST_TEST(
+        request_vote_over_tls_succeeds(mtls, port, "https://localhost:" + std::to_string(port)));
+}
+
+// A certificate naming the peer's *address* does not vouch for a host name
+// that happens to resolve there, and a CN alone is not a dNSName SAN.
+BOOST_AUTO_TEST_CASE(verified_tls_rejects_trusted_certificate_for_another_host,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    temp_mtls_material mtls("localhost", "DNS:other-node.example,IP:127.0.0.1");
+    std::uint16_t port = 18287;
+    BOOST_TEST(
+        !request_vote_over_tls_succeeds(mtls, port, "https://localhost:" + std::to_string(port)));
+}
+
+// enable_ssl_verification=false must keep working against a mismatched
+// certificate: turning verification off turns the name check off too rather
+// than failing the connection.
+BOOST_AUTO_TEST_CASE(unverified_tls_ignores_certificate_name,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    temp_mtls_material mtls("other-node.example", "DNS:other-node.example");
+    std::uint16_t port = 18288;
+    BOOST_TEST(request_vote_over_tls_succeeds(
+        mtls, port, "https://127.0.0.1:" + std::to_string(port), /*verify=*/false));
+}
+
+// The check itself, without a handshake: what each certificate shape is
+// accepted for. Covers the cases a loopback server cannot reach -- a scoped
+// IPv6 literal, a partial wildcard, a missing certificate.
+BOOST_AUTO_TEST_CASE(peer_identity_error_matches_rfc6125_rules) {
+    auto make_cert = [](const std::string& alt_names) {
+        X509* cert = X509_new();
+        BOOST_REQUIRE(cert != nullptr);
+        X509V3_CTX ctx;
+        X509V3_set_ctx_nodb(&ctx);
+        X509V3_set_ctx(&ctx, cert, cert, nullptr, nullptr, 0);
+        X509_EXTENSION* ext =
+            X509V3_EXT_conf_nid(nullptr, &ctx, NID_subject_alt_name, alt_names.c_str());
+        BOOST_REQUIRE(ext != nullptr);
+        BOOST_REQUIRE(X509_add_ext(cert, ext, -1) == 1);
+        X509_EXTENSION_free(ext);
+        return std::unique_ptr<X509, decltype(&X509_free)>(cert, &X509_free);
+    };
+    using kythira::proxygen_detail::peer_identity_error;
+
+    auto ip_cert = make_cert("IP:10.0.0.1,IP:fe80::1");
+    BOOST_TEST(!peer_identity_error(ip_cert.get(), "10.0.0.1").has_value());
+    BOOST_TEST(!peer_identity_error(ip_cert.get(), "fe80::1%eth0").has_value());
+    BOOST_TEST(peer_identity_error(ip_cert.get(), "10.0.0.2").has_value());
+    // An address is never accepted as a dNSName's spelling of itself.
+    auto dns_spelling = make_cert("DNS:10.0.0.1");
+    BOOST_TEST(peer_identity_error(dns_spelling.get(), "10.0.0.1").has_value());
+
+    auto wildcard = make_cert("DNS:*.nodes.example,DNS:n*.example");
+    BOOST_TEST(!peer_identity_error(wildcard.get(), "a.nodes.example").has_value());
+    BOOST_TEST(peer_identity_error(wildcard.get(), "b.c.nodes.example").has_value());
+    BOOST_TEST(peer_identity_error(wildcard.get(), "n1.example").has_value());
+
+    BOOST_TEST(peer_identity_error(nullptr, "10.0.0.1").has_value());
+    // No host to check against: nothing to enforce.
+    BOOST_TEST(!peer_identity_error(nullptr, "").has_value());
 }
 
 // The server listens on every address a bind name resolves to, and the
