@@ -39,10 +39,13 @@
 #include <raft/key_object_store.hpp>
 #include <raft/object_store_backup.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <exception>
 #include <ostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace kythira {
@@ -114,13 +117,14 @@ inline auto require(const std::string& value, const char* flag) -> void {
 
 }  // namespace object_store_backup_cli_detail
 
-/// @brief The usage text. Both restore modes appear as **distinct verbs** with
-///        their own descriptions, because the entire point of separating them
-///        is that they cannot be confused for one another — a `--mode` flag on
-///        one verb would undo that.
-inline auto print_backup_cli_usage(std::ostream& out, std::string_view argv0,
-                                   const std::vector<std::string>& available_providers,
-                                   const std::vector<std::string>& unavailable_providers) -> void {
+/// @brief The usage text, with a credentials section listing what each
+///        compiled-in provider reads from the environment. Both restore modes appear as **distinct
+///        verbs** with their own descriptions, because the entire point of separating them is that
+///        they cannot be confused for one another — a `--mode` flag on one verb would undo that.
+inline auto print_backup_cli_usage(
+    std::ostream& out, std::string_view argv0, const std::vector<std::string>& available_providers,
+    const std::vector<std::string>& unavailable_providers,
+    const std::vector<std::pair<std::string, std::string>>& credential_hints) -> void {
     out << "usage: " << argv0 << " <verb> --provider <name> [options]\n"
         << "\n"
         << "Back up, inspect and restore a Raft node's cloud-object state.\n"
@@ -171,12 +175,43 @@ inline auto print_backup_cli_usage(std::ostream& out, std::string_view argv0,
     for (const auto& name : available_providers) {
         out << "  " << name << "\n";
     }
+    if (!credential_hints.empty()) {
+        // Environment only: a secret on argv is readable by every local user
+        // through `ps` and /proc.
+        out << "\ncredentials (read from the environment; secrets are never taken as flags):\n";
+        constexpr std::size_t k_column = 20;
+        for (const auto& [name, hint] : credential_hints) {
+            std::string_view rest = hint;
+            bool first = true;
+            while (true) {
+                const auto newline = rest.find('\n');
+                const auto line = rest.substr(0, newline);
+                const std::string label = first ? name : std::string{};
+                out << "  " << label
+                    << std::string(k_column - std::min(label.size(), k_column), ' ') << line
+                    << "\n";
+                first = false;
+                if (newline == std::string_view::npos) {
+                    break;
+                }
+                rest.remove_prefix(newline + 1);
+            }
+        }
+    }
     if (!unavailable_providers.empty()) {
         out << "\nnot compiled into this binary:\n";
         for (const auto& name : unavailable_providers) {
             out << "  " << name << "\n";
         }
     }
+}
+
+/// @brief The usage text without a credentials section, for callers that do
+///        not know which providers the binary carries.
+inline auto print_backup_cli_usage(std::ostream& out, std::string_view argv0,
+                                   const std::vector<std::string>& available_providers,
+                                   const std::vector<std::string>& unavailable_providers) -> void {
+    print_backup_cli_usage(out, argv0, available_providers, unavailable_providers, {});
 }
 
 /// @brief Parse argv into `backup_cli_args`, or throw `backup_cli_usage_error`.

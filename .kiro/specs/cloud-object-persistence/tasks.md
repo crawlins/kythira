@@ -1377,6 +1377,15 @@ Reference implementations to study before starting, in this order:
       open, plus the exit-code table and the note that Azure additionally needs
       `KYTHIRA_AZURE_STORAGE_ACCOUNT` (the bucket options name the *container*,
       which is not enough to build the endpoint).
+
+      **Follow-up (October 3, 2026):** the OCI and OSS arms shipped unable to
+      authenticate. Both built a default-constructed config, and neither
+      config type reads the environment, so nothing ever filled in the
+      credentials; the OCI arm also died by `SIGABRT` when its constructor's
+      namespace lookup threw outside any `try`. Fixed under
+      `.kiro/specs/object-backup-oci-oss-credentials/`: both arms now read
+      `KYTHIRA_OCI_*` / `KYTHIRA_ALIBABA_*`, and every arm exits 2 on a
+      construction failure.
       - _Requirements: 10.6, 16.4_
 
 - [~] 15. **Per-provider emulator / mock tiers** — **every sub-item is
