@@ -22,6 +22,15 @@ current list of outstanding work, see [TODO.md](TODO.md).
   are unchanged (pinned by golden vectors in
   `json_serializer_range_property_test`), so old and new nodes interoperate;
   the only payloads a new node refuses are ones no Kythira encoder emits.
+- **The Proxygen HTTP client checks the server certificate's name**
+  (vulnerability audit M15, the half PR #411 left after fixing Beast). With
+  `enable_ssl_verification` on, a certificate that chains to a trusted root
+  was accepted for any peer, so one node's certificate, or any public site's
+  when `ca_cert_path` is empty, could stand in for another. The client now
+  requires the certificate to name the host in the peer's URL: an iPAddress
+  SAN for an IP literal, a dNSName SAN for a host name. It also sends SNI
+  for host names. A deployment whose certificates do not carry the name or
+  address peers dial will now fail to connect until they are reissued.
 
 ### What Changed (October 2, 2026)
 

@@ -73,6 +73,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -324,8 +325,14 @@ struct session_pool {
     /// Every address the target resolved to; a connect tries them in order
     /// and stops at the first that connects.
     std::vector<folly::SocketAddress> addrs;
+    /// The host part of the target's URL: SNI on a TLS connect, and the
+    /// identity the peer's certificate must carry (audit M15).
+    std::string host;
     std::shared_ptr<folly::SSLContext> ssl_ctx;
     bool use_ssl{false};
+    /// `enable_ssl_verification`: when false, the certificate's name is no
+    /// more checked than its chain is.
+    bool verify_peer_identity{false};
     std::chrono::milliseconds connection_timeout{5000};
 };
 
@@ -336,9 +343,9 @@ struct session_pool {
 /// already arranges that, because that is also the only thread allowed to
 /// touch a session.
 inline auto acquire_session(const std::shared_ptr<session_pool>& pool, folly::EventBase* evb,
-                            const std::vector<folly::SocketAddress>& addrs,
+                            const std::vector<folly::SocketAddress>& addrs, const std::string& host,
                             std::shared_ptr<folly::SSLContext> ssl_ctx, bool use_ssl,
-                            std::chrono::milliseconds connection_timeout)
+                            bool verify_peer_identity, std::chrono::milliseconds connection_timeout)
     -> kythira::future_default<session_lease>;
 
 /// @brief Open a session to `pool->addrs[attempt]`, moving on to each later
@@ -389,6 +396,10 @@ public:
     auto connectError(const folly::AsyncSocketException& ex) -> void override;
 
 private:
+    /// Gives back the headroom this connect held, fails @p error to the
+    /// caller and to every RPC queued behind it, and deletes this bridge.
+    auto fail(std::exception_ptr error) -> void;
+
     folly::EventBase* _evb;
     proxygen::WheelTimerInstance _wheel_timer;
     proxygen::HTTPConnector _connector;
