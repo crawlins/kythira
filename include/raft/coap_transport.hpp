@@ -70,6 +70,11 @@ using coap_pdu_code_t = std::uint8_t;
 
 namespace kythira {
 
+class oscore_provider;
+namespace oscore {
+struct group_context_counters;
+}
+
 // kythira::coap_max_token_length is defined in coap_utils.hpp, which is
 // compiled with and without libcoap. Where libcoap really is present, hold it
 // to libcoap's own limit so the two definitions cannot drift apart.
@@ -355,6 +360,17 @@ public:
     /// exposed for testing (Requirement 9.1).
     [[nodiscard]] auto security_provider() const -> const coap_security_provider*;
 
+    /// Wipes every OSCORE context this endpoint holds for `group_id`, zeroing
+    /// the key material (.kiro/specs/coap-transport-multi-raft/ Requirement
+    /// 4.9). Call when the group's local replica is destroyed: merged away,
+    /// tombstoned or shut down. A no-op unless per-group contexts are on.
+    auto forget_oscore_group(std::uint64_t group_id) -> void;
+
+    /// Derivation and rejection counts of the per-group OSCORE contexts, or
+    /// nullopt when they are off (Requirement 4.8).
+    [[nodiscard]] auto oscore_group_counters() const
+        -> std::optional<oscore::group_context_counters>;
+
 private:
     /// Retained alongside `_registry` because the multicast and
     /// serialization-cache paths still encode with a fixed serializer;
@@ -376,6 +392,9 @@ private:
     // means libcoap's defaults. The libcoap context's app data points here,
     // which is how detail::libcoap_cipher_list_hook finds it mid-handshake.
     std::string _dtls_cipher_list;
+    /// _security_provider when it is the OSCORE one, else null: the send and
+    /// receive paths protect and verify each message through it.
+    oscore_provider* _oscore{nullptr};
     kythira::coap_client_config _config;
     metrics_type _metrics;
     mutable logger_type _logger;
@@ -632,6 +651,17 @@ public:
     /// exposed for testing (Requirement 9.1).
     [[nodiscard]] auto security_provider() const -> const coap_security_provider*;
 
+    /// Wipes every OSCORE context this endpoint holds for `group_id`, zeroing
+    /// the key material (.kiro/specs/coap-transport-multi-raft/ Requirement
+    /// 4.9). Call when the group's local replica is destroyed: merged away,
+    /// tombstoned or shut down. A no-op unless per-group contexts are on.
+    auto forget_oscore_group(std::uint64_t group_id) -> void;
+
+    /// Derivation and rejection counts of the per-group OSCORE contexts, or
+    /// nullopt when they are off (Requirement 4.8).
+    [[nodiscard]] auto oscore_group_counters() const
+        -> std::optional<oscore::group_context_counters>;
+
 private:
     /// See the client's own note: retained for the paths negotiation does not
     /// cover. Every negotiated request/response goes through `_registry`.
@@ -646,6 +676,9 @@ private:
     // means libcoap's defaults. The libcoap context's app data points here,
     // which is how detail::libcoap_cipher_list_hook finds it mid-handshake.
     std::string _dtls_cipher_list;
+    /// _security_provider when it is the OSCORE one, else null: the send and
+    /// receive paths protect and verify each message through it.
+    oscore_provider* _oscore{nullptr};
     address_type _bind_address;
     port_type _bind_port;
     // Set from the real bound address in start() -- see bound_port()'s own
@@ -721,11 +754,24 @@ private:
     auto cleanup_expired_messages() -> void;
 
     // Resource handler template
+    //
+    // `oscore_group` is set when the request arrived OSCORE-protected under a
+    // group's context, and the decoded request must then name that group.
+    // `request` and `response` are then the unprotected inner messages, which
+    // never touch the wire, so the body goes in whole rather than block-wise.
     template<typename Request, typename Response>
     auto handle_rpc_resource(coap_resource_t* resource, coap_session_t* session,
                              const coap_pdu_t* request, const coap_string_t* query,
-                             coap_pdu_t* response, std::function<Response(const Request&)> handler)
-        -> void;
+                             coap_pdu_t* response, std::function<Response(const Request&)> handler,
+                             std::optional<std::uint64_t> oscore_group = std::nullopt,
+                             bool oscore_inner = false) -> void;
+
+    // OSCORE (raft/oscore.hpp): every protected request arrives at one
+    // resource, since its Uri-Path is inside the ciphertext.
+    auto setup_oscore_resources() -> void;
+    auto handle_oscore_request(coap_resource_t* resource, coap_session_t* session,
+                               const coap_pdu_t* request, const coap_string_t* query,
+                               coap_pdu_t* response) -> void;
 
     // Block transfer methods
     auto should_use_block_transfer(const std::vector<std::byte>& payload) const -> bool;

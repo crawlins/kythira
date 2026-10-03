@@ -213,6 +213,124 @@ inline void report_trust_anchor_load(coap_context_t* ctx, const std::string& ca_
                      {{"ca_file", ca_file}});
     }
 }
+
+// ── OSCORE over a plain libcoap ─────────────────────────────────────────────
+// raft/oscore.hpp works on its own coap_message; libcoap works on coap_pdu_t.
+// These move a message between the two, so the send and receive paths can
+// protect and verify with Kythira's OSCORE while libcoap still does the
+// framing, retransmission and outer block-wise transfer.
+
+/// Every option of `pdu`, in wire order.
+[[nodiscard]] inline auto pdu_options(const coap_pdu_t* pdu) -> std::vector<oscore::coap_option> {
+    std::vector<oscore::coap_option> options;
+    coap_opt_iterator_t iter;
+    coap_option_iterator_init(pdu, &iter, COAP_OPT_ALL);
+    while (coap_opt_t* option = coap_option_next(&iter)) {
+        const auto* value = reinterpret_cast<const std::byte*>(coap_opt_value(option));
+        options.push_back(
+            oscore::coap_option{static_cast<std::uint16_t>(iter.number),
+                                std::vector<std::byte>(value, value + coap_opt_length(option))});
+    }
+    return options;
+}
+
+/// `pdu`'s whole body. COAP_BLOCK_SINGLE_BODY (configure_libcoap_block_mode)
+/// means libcoap has reassembled any block-wise transfer before a handler sees
+/// the PDU, so this is never one block of several.
+[[nodiscard]] inline auto pdu_body(const coap_pdu_t* pdu) -> std::vector<std::byte> {
+    std::size_t length = 0;
+    const std::uint8_t* data = nullptr;
+    std::size_t offset = 0;
+    std::size_t total = 0;
+    if (coap_get_data_large(pdu, &length, &data, &offset, &total) == 0) {
+        return {};
+    }
+    const auto* bytes = reinterpret_cast<const std::byte*>(data);
+    return {bytes, bytes + length};
+}
+
+/// The OSCORE view of a protected message as it arrived. Only the options RFC
+/// 8613 keeps outside the ciphertext are carried over: security_context merges
+/// the outer options into the message it decrypts, and the ones libcoap adds
+/// for its own block-wise transfer (Block1/2, Size1/2, Request-Tag) or by
+/// default (Content-Format) are hop-by-hop framing, not part of the exchange.
+[[nodiscard]] inline auto protected_message(const coap_pdu_t* pdu) -> oscore::coap_message {
+    oscore::coap_message message;
+    message.type = static_cast<std::uint8_t>(coap_pdu_get_type(pdu));
+    message.code = static_cast<std::uint8_t>(coap_pdu_get_code(pdu));
+    message.message_id = static_cast<std::uint16_t>(coap_pdu_get_mid(pdu));
+    const auto token = coap_pdu_get_token(pdu);
+    const auto* token_bytes = reinterpret_cast<const std::byte*>(token.s);
+    message.token.assign(token_bytes, token_bytes + token.length);
+    for (auto& option : pdu_options(pdu)) {
+        if (oscore::is_outer_option(option.number)) {
+            message.options.push_back(std::move(option));
+        }
+    }
+    message.payload = pdu_body(pdu);
+    message.has_payload = !message.payload.empty();
+    return message;
+}
+
+/// Adds `options` to `pdu` in ascending order, as libcoap requires.
+[[nodiscard]] inline auto add_options(coap_pdu_t* pdu, std::vector<oscore::coap_option> options)
+    -> bool {
+    std::stable_sort(options.begin(), options.end(),
+                     [](const auto& a, const auto& b) { return a.number < b.number; });
+    for (const auto& option : options) {
+        if (coap_add_option(pdu, option.number, option.value.size(),
+                            reinterpret_cast<const std::uint8_t*>(option.value.data())) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// A PDU holding `message`'s code, token, options and payload, built only to be
+/// read by the plaintext request and response paths after verification. It
+/// never goes on the wire, so its size is the message's, not the session's MTU.
+[[nodiscard]] inline auto unprotected_pdu(const oscore::coap_message& message)
+    -> std::unique_ptr<coap_pdu_t, void (*)(coap_pdu_t*)> {
+    std::size_t size = 64 + message.token.size() + message.payload.size();
+    for (const auto& option : message.options) {
+        size += 5 + option.value.size();
+    }
+    std::unique_ptr<coap_pdu_t, void (*)(coap_pdu_t*)> pdu{
+        coap_pdu_init(static_cast<coap_pdu_type_t>(message.type),
+                      static_cast<coap_pdu_code_t>(message.code), message.message_id, size),
+        &coap_delete_pdu};
+    if (!pdu) {
+        throw coap_transport_error("Failed to allocate an unprotected CoAP PDU");
+    }
+    if (coap_add_token(pdu.get(), message.token.size(),
+                       reinterpret_cast<const std::uint8_t*>(message.token.data())) == 0 ||
+        !add_options(pdu.get(), message.options) ||
+        (message.has_payload &&
+         coap_add_data(pdu.get(), message.payload.size(),
+                       reinterpret_cast<const std::uint8_t*>(message.payload.data())) == 0)) {
+        throw coap_transport_error("Failed to build an unprotected CoAP PDU");
+    }
+    return pdu;
+}
+
+/// The Uri-Path of a decrypted request, segments joined by '/'.
+[[nodiscard]] inline auto uri_path_of(const oscore::coap_message& message) -> std::string {
+    std::string path;
+    for (const auto& option : message.options) {
+        if (option.number == COAP_OPTION_URI_PATH) {
+            if (!path.empty()) {
+                path += '/';
+            }
+            path.append(reinterpret_cast<const char*>(option.value.data()), option.value.size());
+        }
+    }
+    return path;
+}
+
+/// RFC 8613 Section 9 registers application/oscore as Content-Format 10001.
+/// libcoap's block-wise response call always writes a Content-Format option,
+/// and this is the only value that says nothing about the plaintext.
+inline constexpr std::uint16_t content_format_application_oscore = 10001;
 }  // namespace detail
 #endif  // LIBCOAP_AVAILABLE
 
@@ -272,6 +390,12 @@ coap_client<Types>::coap_client(
             }
         }
 #endif
+        if (security.mode == coap_auth_mode::oscore && _config.oscore_groups.enabled) {
+            _security_provider = std::make_unique<oscore_provider>(
+                std::get<oscore_credentials>(security.credentials), coap_security_role::client,
+                _config.oscore_groups);
+        }
+        _oscore = dynamic_cast<oscore_provider*>(_security_provider.get());
     }
 
     // Initialize libcoap context
@@ -641,6 +765,12 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
             }
         }
 #endif
+        if (security.mode == coap_auth_mode::oscore && _config.oscore_groups.enabled) {
+            _security_provider = std::make_unique<oscore_provider>(
+                std::get<oscore_credentials>(security.credentials), coap_security_role::server,
+                _config.oscore_groups);
+        }
+        _oscore = dynamic_cast<oscore_provider*>(_security_provider.get());
     }
 
     // Initialize libcoap context
@@ -1799,6 +1929,32 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
 
     try {
 #ifdef LIBCOAP_AVAILABLE
+        // An OSCORE request's response is verified first, and everything
+        // below then reads the decrypted inner response as if it had arrived
+        // in the clear.
+        std::unique_ptr<coap_pdu_t, void (*)(coap_pdu_t*)> unprotected{nullptr, &coap_delete_pdu};
+        if (const auto& exchange = it->second->oscore) {
+            coap_opt_iterator_t oscore_iter;
+            if (coap_check_option(response, oscore::coap_option_oscore, &oscore_iter) == nullptr) {
+                // RFC 8613 Section 8.2: a server that cannot verify a request
+                // answers unprotected (4.01, or 4.02 for a bad option), and
+                // libcoap answers an unknown path unprotected too, so a plain
+                // error is read as the error it is below. A plain *success*
+                // would be an answer anyone on the path could have forged.
+                if (COAP_RESPONSE_CLASS(coap_pdu_get_code(response)) == 2) {
+                    it->second->reject_callback(std::make_exception_ptr(oscore::verification_error(
+                        "unprotected success response to an OSCORE-protected request")));
+                    _pending_requests.erase(it);
+                    return;
+                }
+            } else {
+                const auto inner = exchange->context->unprotect_response(
+                    detail::protected_message(response), exchange->binding);
+                unprotected = detail::unprotected_pdu(inner);
+                response = unprotected.get();
+            }
+        }
+
         // Real libcoap implementation
         // Extract response code
         coap_pdu_code_t response_code = coap_pdu_get_code(response);
@@ -2687,17 +2843,62 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             }
         }
 
+        // OSCORE: everything built so far -- Uri-Path, Content-Format, Accept
+        // and the body -- is the *inner* request. It is encrypted into a POST
+        // that carries only the OSCORE option and the ciphertext, and that
+        // outer PDU is what libcoap sends (and splits block-wise if large).
+        std::shared_ptr<oscore_exchange> oscore_state;
+        std::vector<std::byte> ciphertext;
+        const std::vector<std::byte>* wire_body = &serialized_request;
+        if (_oscore != nullptr) {
+            oscore::coap_message inner;
+            inner.type = static_cast<std::uint8_t>(coap_pdu_get_type(pdu));
+            inner.code = static_cast<std::uint8_t>(COAP_REQUEST_CODE_POST);
+            inner.message_id = static_cast<std::uint16_t>(coap_pdu_get_mid(pdu));
+            inner.token.assign(reinterpret_cast<const std::byte*>(token.data()),
+                               reinterpret_cast<const std::byte*>(token.data()) + token.size());
+            inner.options = detail::pdu_options(pdu);
+            inner.payload = serialized_request;
+            inner.has_payload = true;
+
+            std::optional<std::uint64_t> group;
+            if constexpr (requires { request.group_id(); }) {
+                group = static_cast<std::uint64_t>(request.group_id());
+            }
+            oscore_state = std::make_shared<oscore_exchange>();
+            oscore_state->context = _oscore->request_context(group);
+            auto outer = oscore_state->context->protect_request(inner, oscore_state->binding);
+
+            coap_pdu_t* protected_pdu =
+                coap_pdu_init(coap_pdu_get_type(pdu), static_cast<coap_pdu_code_t>(outer.code),
+                              coap_pdu_get_mid(pdu), pdu_size);
+            coap_delete_pdu(pdu);
+            pdu = protected_pdu;
+            if (!pdu ||
+                !coap_add_token(pdu, token.length(),
+                                reinterpret_cast<const uint8_t*>(token.c_str())) ||
+                !detail::add_options(pdu, std::move(outer.options))) {
+                if (pdu) {
+                    coap_delete_pdu(pdu);
+                }
+                coap_session_release(session);
+                throw coap_transport_error("Failed to build the OSCORE-protected PDU");
+            }
+            ciphertext = std::move(outer.payload);
+            wire_body = &ciphertext;
+        }
+
         // Body last: coap_add_data_large_request() must be the final change
         // to the PDU. libcoap splits it into Block1 transfers when it does not
         // fit one PDU and adds Size1/Request-Tag itself; a body that fits goes
         // out exactly as coap_add_data() would send it.
         if (_config.enable_block_transfer) {
-            if (should_use_block_transfer(serialized_request)) {
+            if (should_use_block_transfer(*wire_body)) {
                 _logger.debug("Using block-wise transfer for large payload",
-                              {{"payload_size", std::to_string(serialized_request.size())},
+                              {{"payload_size", std::to_string(wire_body->size())},
                                {"max_block_size", std::to_string(_config.max_block_size)}});
             }
-            auto* body = new std::vector<std::byte>(serialized_request);
+            auto* body = new std::vector<std::byte>(*wire_body);
             if (!coap_add_data_large_request(session, pdu, body->size(),
                                              reinterpret_cast<const uint8_t*>(body->data()),
                                              &detail::release_large_body, body)) {
@@ -2708,8 +2909,8 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                 throw coap_transport_error("Failed to add payload to PDU");
             }
         } else {
-            if (!coap_add_data(pdu, serialized_request.size(),
-                               reinterpret_cast<const uint8_t*>(serialized_request.data()))) {
+            if (!coap_add_data(pdu, wire_body->size(),
+                               reinterpret_cast<const uint8_t*>(wire_body->data()))) {
                 coap_delete_pdu(pdu);
                 coap_session_release(session);
                 throw coap_transport_error("Failed to add payload to PDU");
@@ -2751,6 +2952,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                 },
                 [promise](std::exception_ptr ex) { promise->setException(ex); }, serialized_request,
                 endpoint_uri, resource_path, confirmable);
+            pending_msg->oscore = std::move(oscore_state);
 
             _pending_requests[token] = std::move(pending_msg);
         }
@@ -2933,12 +3135,13 @@ auto coap_server<Types>::setup_resources() -> void {
         return;
     }
 
-    // Under OSCORE, libcoap still serves a plaintext request to a resource
-    // unless the resource says otherwise, so a server configured for OSCORE
-    // answered unprotected RPCs from anyone who could reach the port. The
-    // flag makes libcoap refuse them (4.01) before any handler runs.
-    const int raft_resource_flags =
-        _config.security.mode == coap_auth_mode::oscore ? COAP_RESOURCE_FLAGS_OSCORE_ONLY : 0;
+    // Under OSCORE the Raft paths are inside the ciphertext, so the requests
+    // arrive somewhere else entirely; see setup_oscore_resources().
+    if (_oscore != nullptr) {
+        setup_oscore_resources();
+        return;
+    }
+    const int raft_resource_flags = 0;
 
     // Register /raft/request_vote resource
     coap_resource_t* rv_resource =
@@ -3141,6 +3344,226 @@ auto coap_server<Types>::setup_resources() -> void {
     _metrics.add_dimension("resources_setup", "completed");
     _metrics.add_one();
     _metrics.emit();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::setup_oscore_resources() -> void {
+#ifdef LIBCOAP_AVAILABLE
+    // A protected request's Uri-Path is Class E: it travels inside the
+    // ciphertext, so the outer request names no path and libcoap routes it to
+    // the root resource. That one handler verifies it and dispatches on the
+    // decrypted path.
+    coap_resource_t* root = coap_resource_init(nullptr, 0);
+    if (root == nullptr) {
+        throw coap_transport_error("Failed to create the OSCORE resource");
+    }
+    coap_register_handler(
+        root, COAP_REQUEST_POST,
+        [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
+           const coap_string_t* query, coap_pdu_t* response) -> void {
+            auto* server = static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+            server->handle_oscore_request(resource, session, request, query, response);
+        });
+    coap_resource_set_userdata(root, this);
+    coap_add_resource(_coap_context, root);
+
+    // The plaintext paths stay registered only to refuse, so a peer that is
+    // not speaking OSCORE learns why (4.01) rather than that the path is
+    // missing (4.04), and no handler ever sees an unprotected RPC.
+    for (const auto* path : {"raft/request_vote", "raft/append_entries", "raft/install_snapshot",
+                             "raft/timeout_now"}) {
+        coap_resource_t* plain = coap_resource_init(coap_make_str_const(path), 0);
+        if (plain == nullptr) {
+            throw coap_transport_error(std::string{"Failed to create resource "} + path);
+        }
+        coap_register_handler(plain, COAP_REQUEST_POST,
+                              [](coap_resource_t*, coap_session_t*, const coap_pdu_t*,
+                                 const coap_string_t*, coap_pdu_t* response) -> void {
+                                  coap_pdu_set_code(response, COAP_RESPONSE_CODE_UNAUTHORIZED);
+                                  static constexpr std::string_view why = "OSCORE required";
+                                  coap_add_data(response, why.size(),
+                                                reinterpret_cast<const uint8_t*>(why.data()));
+                              });
+        coap_add_resource(_coap_context, plain);
+    }
+
+    _logger.info("Registered the OSCORE resource with libcoap",
+                 {{"per_group_contexts", _oscore->per_group_contexts() ? "true" : "false"}});
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::handle_oscore_request(coap_resource_t* resource, coap_session_t* session,
+                                               const coap_pdu_t* request,
+                                               const coap_string_t* query, coap_pdu_t* response)
+    -> void {
+#ifdef LIBCOAP_AVAILABLE
+    // RFC 8613 Section 8.2: a request that cannot be verified is answered
+    // unprotected -- there is no context to protect the answer with -- with
+    // 4.02 when the OSCORE option itself is unreadable and 4.01 otherwise.
+    const auto refuse = [&](coap_pdu_code_t code, std::string_view why) {
+        auto error_metric = _metrics;
+        error_metric.set_metric_name("coap.server.error");
+        error_metric.add_dimension("error_type", "oscore_verification");
+        error_metric.add_one();
+        error_metric.emit();
+        coap_pdu_set_code(response, code);
+        coap_add_data(response, why.size(), reinterpret_cast<const uint8_t*>(why.data()));
+    };
+
+    const auto outer = detail::protected_message(request);
+    std::shared_ptr<oscore::security_context> context;
+    std::optional<std::uint64_t> group;
+    oscore::request_binding binding;
+    oscore::coap_message inner;
+    try {
+        std::tie(context, group) = _oscore->verifying_context(outer);
+        inner = context->unprotect_request(outer, binding);
+    } catch (const oscore::verification_error& e) {
+        _logger.warning(
+            "OSCORE request failed verification",
+            {{"peer", coap_detail::session_peer_endpoint(session)}, {"error", e.what()}});
+        refuse(COAP_RESPONSE_CODE_UNAUTHORIZED, "OSCORE verification failed");
+        return;
+    } catch (const std::exception& e) {
+        _logger.warning(
+            "OSCORE request carried an unreadable OSCORE option",
+            {{"peer", coap_detail::session_peer_endpoint(session)}, {"error", e.what()}});
+        refuse(COAP_RESPONSE_CODE_BAD_OPTION, "OSCORE option unreadable");
+        return;
+    }
+
+    // The decrypted request runs through exactly the path a plaintext one
+    // does, as an unprotected PDU that never touches the wire; its answer is
+    // collected the same way and encrypted below.
+    auto inner_request = detail::unprotected_pdu(inner);
+    // Room for whatever the handler writes, bounded like any request body.
+    std::unique_ptr<coap_pdu_t, void (*)(coap_pdu_t*)> inner_response{
+        coap_pdu_init(COAP_MESSAGE_ACK, COAP_EMPTY_CODE, inner.message_id,
+                      _config.max_request_size + 1024),
+        &coap_delete_pdu};
+    if (!inner_response ||
+        coap_add_token(inner_response.get(), inner.token.size(),
+                       reinterpret_cast<const uint8_t*>(inner.token.data())) == 0) {
+        refuse(COAP_RESPONSE_CODE_INTERNAL_ERROR, "Failed to allocate the inner response");
+        return;
+    }
+
+    const auto path = detail::uri_path_of(inner);
+    const auto dispatch = [&](auto& handler, auto request_tag, auto response_tag) {
+        using request_type = typename decltype(request_tag)::type;
+        using response_type = typename decltype(response_tag)::type;
+        if (!handler) {
+            coap_pdu_set_code(inner_response.get(), COAP_RESPONSE_CODE_NOT_IMPLEMENTED);
+            return;
+        }
+        handle_rpc_resource<request_type, response_type>(resource, session, inner_request.get(),
+                                                         query, inner_response.get(), handler,
+                                                         group, true);
+    };
+    if (inner.code != COAP_REQUEST_CODE_POST) {
+        coap_pdu_set_code(inner_response.get(), COAP_RESPONSE_CODE_NOT_ALLOWED);
+    } else if (path == "raft/request_vote") {
+        dispatch(_request_vote_handler, std::type_identity<request_vote_request<>>{},
+                 std::type_identity<request_vote_response<>>{});
+    } else if (path == "raft/append_entries") {
+        dispatch(_append_entries_handler, std::type_identity<append_entries_request<>>{},
+                 std::type_identity<append_entries_response<>>{});
+    } else if (path == "raft/install_snapshot") {
+        dispatch(_install_snapshot_handler, std::type_identity<install_snapshot_request<>>{},
+                 std::type_identity<install_snapshot_response<>>{});
+    } else if (path == "raft/timeout_now") {
+        dispatch(_timeout_now_handler, std::type_identity<timeout_now_request<>>{},
+                 std::type_identity<timeout_now_response<>>{});
+    } else {
+        coap_pdu_set_code(inner_response.get(), COAP_RESPONSE_CODE_NOT_FOUND);
+    }
+    if (coap_pdu_get_code(inner_response.get()) == 0) {
+        coap_pdu_set_code(inner_response.get(), COAP_RESPONSE_CODE_INTERNAL_ERROR);
+    }
+
+    oscore::coap_message reply;
+    reply.type = static_cast<std::uint8_t>(COAP_MESSAGE_ACK);
+    reply.code = static_cast<std::uint8_t>(coap_pdu_get_code(inner_response.get()));
+    reply.message_id = inner.message_id;
+    reply.token = inner.token;
+    reply.options = detail::pdu_options(inner_response.get());
+    reply.payload = detail::pdu_body(inner_response.get());
+    reply.has_payload = !reply.payload.empty();
+
+    oscore::coap_message protected_reply;
+    try {
+        protected_reply = context->protect_response(reply, binding);
+    } catch (const std::exception& e) {
+        // The context was wiped between verify and reply: its group was
+        // destroyed mid-request.
+        _logger.warning("OSCORE response could not be protected", {{"error", e.what()}});
+        refuse(COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE, "OSCORE context destroyed");
+        return;
+    }
+
+    coap_pdu_set_code(response, static_cast<coap_pdu_code_t>(protected_reply.code));
+    if (!detail::add_options(response, std::move(protected_reply.options))) {
+        refuse(COAP_RESPONSE_CODE_INTERNAL_ERROR, "Failed to add the OSCORE option");
+        return;
+    }
+    // Raft's responses are small, so the ciphertext almost always fits one
+    // PDU; a larger one goes block-wise, as application/oscore.
+    if (coap_add_data(response, protected_reply.payload.size(),
+                      reinterpret_cast<const uint8_t*>(protected_reply.payload.data())) != 0) {
+        return;
+    }
+    if (!_config.enable_block_transfer) {
+        coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
+        return;
+    }
+    auto* body = new std::vector<std::byte>(std::move(protected_reply.payload));
+    if (!coap_add_data_large_response(resource, session, request, response, query,
+                                      detail::content_format_application_oscore, -1, 0,
+                                      body->size(), reinterpret_cast<const uint8_t*>(body->data()),
+                                      &detail::release_large_body, body)) {
+        // release_func has already freed `body`.
+        coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
+    }
+#else
+    (void)resource;
+    (void)session;
+    (void)request;
+    (void)query;
+    (void)response;
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::forget_oscore_group(std::uint64_t group_id) -> void {
+    if (_oscore != nullptr) {
+        _oscore->forget_group(group_id);
+    }
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::oscore_group_counters() const
+    -> std::optional<oscore::group_context_counters> {
+    return _oscore != nullptr ? _oscore->group_counters() : std::nullopt;
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::forget_oscore_group(std::uint64_t group_id) -> void {
+    if (_oscore != nullptr) {
+        _oscore->forget_group(group_id);
+    }
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::oscore_group_counters() const
+    -> std::optional<oscore::group_context_counters> {
+    return _oscore != nullptr ? _oscore->group_counters() : std::nullopt;
 }
 
 template<typename Types>
@@ -4027,8 +4450,9 @@ template<typename Request, typename Response>
 auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_session_t* session,
                                              const coap_pdu_t* request, const coap_string_t* query,
                                              coap_pdu_t* response,
-                                             std::function<Response(const Request&)> handler)
-    -> void {
+                                             std::function<Response(const Request&)> handler,
+                                             std::optional<std::uint64_t> oscore_group,
+                                             bool oscore_inner) -> void {
     // Generic RPC resource handler with comprehensive error handling
     try {
         // Only at the limit is there anything to reclaim. This used to run
@@ -4233,6 +4657,24 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
             return;
         }
 
+        // A group's OSCORE context vouches for that group's traffic only. A
+        // peer holding one group's keys must not reach another group's state
+        // machine through it, so the decrypted request has to name the group
+        // whose context verified it.
+        if (oscore_group) {
+            bool names_group = false;
+            if constexpr (requires { deserialized_request.group_id(); }) {
+                names_group =
+                    static_cast<std::uint64_t>(deserialized_request.group_id()) == *oscore_group;
+            }
+            if (!names_group) {
+                _logger.warning("OSCORE request names a group other than its context's",
+                                {{"context_group", std::to_string(*oscore_group)}});
+                coap_pdu_set_code(response, COAP_RESPONSE_CODE_UNAUTHORIZED);
+                return;
+            }
+        }
+
         // Call the registered handler
         Response rpc_response;
         try {
@@ -4273,7 +4715,9 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         const auto response_format =
             coap_utils::media_type_to_coap_content_format(*output_media_type);
 
-        if (_config.enable_block_transfer && response_format) {
+        // The inner response of an OSCORE exchange never goes on the wire;
+        // it is encrypted whole, and the ciphertext goes block-wise instead.
+        if (_config.enable_block_transfer && response_format && !oscore_inner) {
             if (should_use_block_transfer(serialized_response)) {
                 _logger.debug("Using Block2 transfer for large response",
                               {{"response_size", std::to_string(serialized_response.size())},
