@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Defconfigs that no .github/workflows/*.yml applies, each with the reason.
+# Checked by scripts/kconfig/check_defconfig_usage.py in CI's kconfig-check
+# job: a defconfig that is neither applied nor listed here fails the job, and
+# so does an entry here for a defconfig that is now applied or was deleted.
+#
+# Format: <name>_defconfig  # <reason>
+
+minimal_defconfig   # applied by config-variants once ci-build-matrix-coverage Task 8 lands
+no_cloud_defconfig  # applied by config-variants once ci-build-matrix-coverage Task 8 lands

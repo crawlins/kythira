@@ -3,6 +3,19 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 3, 2026)
+
+- **CI checks every defconfig against Kconfig.** A new `kconfig-check` job
+  in `ci.yml` runs `scripts/kconfig/check_defconfigs.py` on every PR and
+  `main` push, with no vcpkg and no configure. The script itself was not
+  catching the case it exists for: Kconfiglib ignores an assignment to an
+  undefined symbol unless `warn_assign_undef` is set, so a defconfig naming
+  a renamed or removed symbol passed. It now sets that and the two
+  duplicate-assignment warnings. The same job runs the new
+  `check_defconfig_usage.py`, which fails when a `configs/*_defconfig` is
+  applied by no workflow and is not listed, with a reason, in
+  `configs/defconfig-usage-allowlist.txt` (ci-build-matrix-coverage Task 2).
+
 ### What Changed (October 2, 2026)
 
 - **CI cloud identities trust only the `real-cloud-tests` environment.**
