@@ -6848,10 +6848,20 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                 }
 
                 if (response.success()) {
-                    // Success - update next_index and match_index
+                    // Success - update next_index and match_index. Only ever
+                    // forward: heartbeats and AppendEntries to one follower
+                    // overlap, so a reply to an older, shorter request can
+                    // land after a newer one. Taking it as-is moved
+                    // match_index backwards and, once the log was compacted,
+                    // pushed next_index behind the snapshot and made an
+                    // up-to-date follower take an InstallSnapshot.
                     auto new_match_index = next_idx + entries_to_send.size() - 1;
-                    _next_index[target] = new_match_index + 1;
-                    _match_index[target] = new_match_index;
+                    if (new_match_index > _match_index[target]) {
+                        _match_index[target] = new_match_index;
+                    }
+                    if (new_match_index + 1 > _next_index[target]) {
+                        _next_index[target] = new_match_index + 1;
+                    }
 
                     // Remove from unresponsive set
                     _unresponsive_followers.erase(target);
