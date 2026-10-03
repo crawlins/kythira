@@ -192,7 +192,6 @@ fi
 # boundary to constrain. .kiro/specs/ci-real-cloud-tests/ Requirement 3.3.
 
 echo "[step] Build bundle policy for: ${BUNDLES}"
-STATEMENTS="[]"
 IFS=',' read -ra BUNDLE_LIST <<< "${BUNDLES}"
 for bundle in "${BUNDLE_LIST[@]}"; do
     POLICY_FILE="${POLICY_DIR}/${bundle}.json"
@@ -216,21 +215,12 @@ for bundle in "${BUNDLE_LIST[@]}"; do
             echo "  scoping '${bundle}' to bucket ${BUCKET}"
         fi
     fi
-    BUNDLE_STATEMENTS=$(sed -e "s/{{ACCOUNT_ID}}/${ACCOUNT_ID}/g" \
-                            -e "s/{{BUCKET}}/${BUCKET}/g" "${POLICY_FILE}")
-    STATEMENTS=$(python3 -c "
-import json, sys
-a = json.loads(sys.argv[1])
-b = json.loads(sys.argv[2])
-print(json.dumps(a + b))
-" "${STATEMENTS}" "${BUNDLE_STATEMENTS}")
 done
-BUNDLE_POLICY=$(python3 -c "
-import json, sys
-print(json.dumps({'Version': '2012-10-17', 'Statement': json.loads(sys.argv[1]) + [
-    {'Sid': 'StsGetCallerIdentity', 'Effect': 'Allow', 'Action': 'sts:GetCallerIdentity', 'Resource': '*'}
-]}))
-" "${STATEMENTS}")
+# render-ci-policy.py substitutes the placeholders, collapses the tagging
+# statements the EC2 bundles share (IAM rejects a repeated Sid) and refuses
+# a document over the inline policy size limit. CI runs its --check mode.
+BUNDLE_POLICY=$(python3 "${REPO_ROOT}/scripts/ci-cloud-credentials/aws/render-ci-policy.py" \
+    --bundles "${BUNDLES}" --account-id "${ACCOUNT_ID}" --bucket "${BUCKET}")
 
 echo "[step] Ensure inline policy: ${ROLE_NAME}-policy"
 # put-role-policy replaces the named policy's content wholesale — running

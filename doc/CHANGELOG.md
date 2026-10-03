@@ -3,6 +3,19 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 3, 2026)
+
+- **The AWS CI identity can only stop, start, terminate or retag instances
+  it launched** (vulnerability audit M2). Those actions were granted on
+  `Resource: "*"` in five bundles, so CI could terminate any instance in the
+  account. Each bundle now conditions them on the tag its suite applies at
+  launch (`kythira:managed-by`, `kythira:built-by`, `kythira-perf-run` or
+  `kythira:suite`), and `ec2:CreateTags` is no longer unconditioned anywhere,
+  since that would let CI tag a foreign instance into scope. A new
+  `render-ci-policy.py` merges the bundles for `provision-oidc-role.sh` and,
+  as the `aws-ci-policies` CI job, fails on any unconditioned instance
+  action. The live role changes only when the scripts are re-run.
+
 ### What Changed (October 2, 2026)
 
 - **CI cloud identities trust only the `real-cloud-tests` environment.**

@@ -22,10 +22,8 @@
       "ec2:CreateKeyPair",
       "ec2:DeleteKeyPair",
       "ec2:RunInstances",
-      "ec2:TerminateInstances",
       "ec2:DescribeInstances",
       "ec2:DescribeInstanceStatus",
-      "ec2:CreateTags",
       "ec2:CreateNetworkAcl",
       "ec2:DeleteNetworkAcl",
       "ec2:CreateNetworkAclEntry",
@@ -33,5 +31,59 @@
       "ec2:ReplaceNetworkAclAssociation"
     ],
     "Resource": "*"
+  },
+  {
+    "Sid": "CaClusterNodeInstancesOwnedOnly",
+    "Effect": "Allow",
+    "Action": [
+      "ec2:CreateTags",
+      "ec2:TerminateInstances"
+    ],
+    "Resource": "arn:aws:ec2:*:{{ACCOUNT_ID}}:instance/*",
+    "Condition": {
+      "StringEquals": {
+        "aws:ResourceTag/kythira:managed-by": "ec2_quorum_manager"
+      }
+    }
+  },
+  {
+    "Sid": "Ec2TagOnCreate",
+    "Effect": "Allow",
+    "Action": "ec2:CreateTags",
+    "Resource": "*",
+    "Condition": {
+      "StringEquals": {
+        "ec2:CreateAction": [
+          "AllocateAddress",
+          "CreateImage",
+          "CreateInternetGateway",
+          "CreateKeyPair",
+          "CreateLaunchTemplate",
+          "CreateNatGateway",
+          "CreateNetworkAcl",
+          "CreatePlacementGroup",
+          "CreateRouteTable",
+          "CreateSecurityGroup",
+          "CreateSnapshot",
+          "CreateSubnet",
+          "CreateVolume",
+          "CreateVpc",
+          "RunInstances"
+        ]
+      }
+    }
+  },
+  {
+    "Sid": "Ec2TagExistingNonInstanceResources",
+    "Effect": "Allow",
+    "Action": "ec2:CreateTags",
+    "NotResource": "arn:aws:ec2:*:{{ACCOUNT_ID}}:instance/*",
+    "Condition": {
+      "ForAllValues:StringNotEquals": {
+        "aws:TagKeys": [
+          "kythira:suite"
+        ]
+      }
+    }
   }
 ]

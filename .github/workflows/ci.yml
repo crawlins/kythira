@@ -2171,6 +2171,21 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
+  # Static lint of the AWS CI role's bundle policies: no statement may stop,
+  # start, terminate or retag an EC2 instance without a tag condition, the
+  # bundles' shared statements must agree, and every bundle together must fit
+  # IAM's inline policy limit. Needs no AWS credentials. The live role only
+  # changes when provision-oidc-role.sh is re-run, so this is the one place a
+  # regression in policies/ shows up before it reaches the account.
+  aws-ci-policies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Lint the AWS CI bundle policies
+        run: python3 scripts/ci-cloud-credentials/aws/render-ci-policy.py --check
+
   docs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
