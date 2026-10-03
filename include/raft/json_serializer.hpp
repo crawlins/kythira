@@ -7,9 +7,15 @@
 #include <raft/exceptions.hpp>
 
 #include <boost/json.hpp>
-#include <vector>
+#include <concepts>
 #include <cstddef>
+#include <cstdint>
+#include <new>
 #include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace kythira {
 
@@ -36,11 +42,7 @@ public:
         if (!obj.contains("group_id")) {
             return GroupId{};
         }
-        if constexpr (std::same_as<GroupId, std::string>) {
-            return std::string(obj.at("group_id").as_string());
-        } else {
-            return static_cast<GroupId>(obj.at("group_id").as_int64());
-        }
+        return read_id<GroupId>(obj, "group_id");
     }
 
     // Serialize RequestVote Request
@@ -216,45 +218,35 @@ public:
              typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_vote_request(const Data& data) const
         -> request_vote_request<NodeId, TermId, LogIndex, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("request_vote_request", [&] {
+            const auto obj = parse_object(data, "request_vote_request");
 
-        if (obj["type"].as_string() != "request_vote_request") {
-            throw serialization_exception("Invalid message type for request_vote_request");
-        }
+            request_vote_request<NodeId, TermId, LogIndex, GroupId> req;
+            req._group_id = decode_group_id<GroupId>(obj);
+            req._term = read_int<TermId>(obj, "term");
+            req._last_log_index = read_int<LogIndex>(obj, "last_log_index");
+            req._last_log_term = read_int<TermId>(obj, "last_log_term");
 
-        request_vote_request<NodeId, TermId, LogIndex, GroupId> req;
-        req._group_id = decode_group_id<GroupId>(obj);
-        req._term = static_cast<TermId>(obj["term"].as_int64());
-        req._last_log_index = static_cast<LogIndex>(obj["last_log_index"].as_int64());
-        req._last_log_term = static_cast<TermId>(obj["last_log_term"].as_int64());
+            req._candidate_id = read_id<NodeId>(obj, "candidate_id");
 
-        if constexpr (std::same_as<NodeId, std::string>) {
-            req._candidate_id = std::string(obj["candidate_id"].as_string());
-        } else {
-            req._candidate_id = static_cast<NodeId>(obj["candidate_id"].as_int64());
-        }
-
-        return req;
+            return req;
+        });
     }
 
     // Deserialize RequestVote Response
     template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_vote_response(const Data& data) const
         -> request_vote_response<TermId, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("request_vote_response", [&] {
+            const auto obj = parse_object(data, "request_vote_response");
 
-        if (obj["type"].as_string() != "request_vote_response") {
-            throw serialization_exception("Invalid message type for request_vote_response");
-        }
+            request_vote_response<TermId, GroupId> resp;
+            resp._group_id = decode_group_id<GroupId>(obj);
+            resp._term = read_int<TermId>(obj, "term");
+            resp._vote_granted = read_bool(obj, "vote_granted");
 
-        request_vote_response<TermId, GroupId> resp;
-        resp._group_id = decode_group_id<GroupId>(obj);
-        resp._term = static_cast<TermId>(obj["term"].as_int64());
-        resp._vote_granted = obj["vote_granted"].as_bool();
-
-        return resp;
+            return resp;
+        });
     }
 
     // Deserialize RequestPreVote Request
@@ -262,45 +254,35 @@ public:
              typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_pre_vote_request(const Data& data) const
         -> request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("request_pre_vote_request", [&] {
+            const auto obj = parse_object(data, "request_pre_vote_request");
 
-        if (obj["type"].as_string() != "request_pre_vote_request") {
-            throw serialization_exception("Invalid message type for request_pre_vote_request");
-        }
+            request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> req;
+            req._group_id = decode_group_id<GroupId>(obj);
+            req._term = read_int<TermId>(obj, "term");
+            req._last_log_index = read_int<LogIndex>(obj, "last_log_index");
+            req._last_log_term = read_int<TermId>(obj, "last_log_term");
 
-        request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> req;
-        req._group_id = decode_group_id<GroupId>(obj);
-        req._term = static_cast<TermId>(obj["term"].as_int64());
-        req._last_log_index = static_cast<LogIndex>(obj["last_log_index"].as_int64());
-        req._last_log_term = static_cast<TermId>(obj["last_log_term"].as_int64());
+            req._candidate_id = read_id<NodeId>(obj, "candidate_id");
 
-        if constexpr (std::same_as<NodeId, std::string>) {
-            req._candidate_id = std::string(obj["candidate_id"].as_string());
-        } else {
-            req._candidate_id = static_cast<NodeId>(obj["candidate_id"].as_int64());
-        }
-
-        return req;
+            return req;
+        });
     }
 
     // Deserialize RequestPreVote Response
     template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_request_pre_vote_response(const Data& data) const
         -> request_pre_vote_response<TermId, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("request_pre_vote_response", [&] {
+            const auto obj = parse_object(data, "request_pre_vote_response");
 
-        if (obj["type"].as_string() != "request_pre_vote_response") {
-            throw serialization_exception("Invalid message type for request_pre_vote_response");
-        }
+            request_pre_vote_response<TermId, GroupId> resp;
+            resp._group_id = decode_group_id<GroupId>(obj);
+            resp._term = read_int<TermId>(obj, "term");
+            resp._vote_granted = read_bool(obj, "vote_granted");
 
-        request_pre_vote_response<TermId, GroupId> resp;
-        resp._group_id = decode_group_id<GroupId>(obj);
-        resp._term = static_cast<TermId>(obj["term"].as_int64());
-        resp._vote_granted = obj["vote_granted"].as_bool();
-
-        return resp;
+            return resp;
+        });
     }
 
     // Deserialize TimeoutNow Request
@@ -308,44 +290,34 @@ public:
              typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_timeout_now_request(const Data& data) const
         -> timeout_now_request<NodeId, TermId, LogIndex, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("timeout_now_request", [&] {
+            const auto obj = parse_object(data, "timeout_now_request");
 
-        if (obj["type"].as_string() != "timeout_now_request") {
-            throw serialization_exception("Invalid message type for timeout_now_request");
-        }
+            timeout_now_request<NodeId, TermId, LogIndex, GroupId> req;
+            req._group_id = decode_group_id<GroupId>(obj);
+            req._term = read_int<TermId>(obj, "term");
+            req._last_log_index = read_int<LogIndex>(obj, "last_log_index");
 
-        timeout_now_request<NodeId, TermId, LogIndex, GroupId> req;
-        req._group_id = decode_group_id<GroupId>(obj);
-        req._term = static_cast<TermId>(obj["term"].as_int64());
-        req._last_log_index = static_cast<LogIndex>(obj["last_log_index"].as_int64());
+            req._leader_id = read_id<NodeId>(obj, "leader_id");
 
-        if constexpr (std::same_as<NodeId, std::string>) {
-            req._leader_id = std::string(obj["leader_id"].as_string());
-        } else {
-            req._leader_id = static_cast<NodeId>(obj["leader_id"].as_int64());
-        }
-
-        return req;
+            return req;
+        });
     }
 
     // Deserialize TimeoutNow Response
     template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_timeout_now_response(const Data& data) const
         -> timeout_now_response<TermId, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("timeout_now_response", [&] {
+            const auto obj = parse_object(data, "timeout_now_response");
 
-        if (obj["type"].as_string() != "timeout_now_response") {
-            throw serialization_exception("Invalid message type for timeout_now_response");
-        }
+            timeout_now_response<TermId, GroupId> resp;
+            resp._group_id = decode_group_id<GroupId>(obj);
+            resp._term = read_int<TermId>(obj, "term");
+            resp._success = read_bool(obj, "success");
 
-        timeout_now_response<TermId, GroupId> resp;
-        resp._group_id = decode_group_id<GroupId>(obj);
-        resp._term = static_cast<TermId>(obj["term"].as_int64());
-        resp._success = obj["success"].as_bool();
-
-        return resp;
+            return resp;
+        });
     }
 
     // Deserialize AppendEntries Request
@@ -354,41 +326,22 @@ public:
              typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_append_entries_request(const Data& data) const
         -> append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("append_entries_request", [&] {
+            const auto obj = parse_object(data, "append_entries_request");
 
-        if (obj["type"].as_string() != "append_entries_request") {
-            throw serialization_exception("Invalid message type for append_entries_request");
-        }
+            append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> req;
+            req._group_id = decode_group_id<GroupId>(obj);
+            req._term = read_int<TermId>(obj, "term");
+            req._prev_log_index = read_int<LogIndex>(obj, "prev_log_index");
+            req._prev_log_term = read_int<TermId>(obj, "prev_log_term");
+            req._leader_commit = read_int<LogIndex>(obj, "leader_commit");
 
-        append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> req;
-        req._group_id = decode_group_id<GroupId>(obj);
-        req._term = static_cast<TermId>(obj["term"].as_int64());
-        req._prev_log_index = static_cast<LogIndex>(obj["prev_log_index"].as_int64());
-        req._prev_log_term = static_cast<TermId>(obj["prev_log_term"].as_int64());
-        req._leader_commit = static_cast<LogIndex>(obj["leader_commit"].as_int64());
+            req._leader_id = read_id<NodeId>(obj, "leader_id");
 
-        if constexpr (std::same_as<NodeId, std::string>) {
-            req._leader_id = std::string(obj["leader_id"].as_string());
-        } else {
-            req._leader_id = static_cast<NodeId>(obj["leader_id"].as_int64());
-        }
+            req._entries = read_entries<LogEntry, TermId, LogIndex>(obj);
 
-        // Deserialize entries
-        const auto& entries_array = obj["entries"].as_array();
-        for (const auto& entry_val : entries_array) {
-            const auto& entry_obj = entry_val.as_object();
-            LogEntry entry;
-            entry._term = static_cast<TermId>(entry_obj.at("term").as_int64());
-            entry._index = static_cast<LogIndex>(entry_obj.at("index").as_int64());
-            entry._command = base64_to_bytes(std::string(entry_obj.at("command").as_string()));
-            entry._type = entry_obj.contains("entry_type")
-                              ? static_cast<entry_type>(entry_obj.at("entry_type").as_int64())
-                              : entry_type::normal;
-            req._entries.push_back(entry);
-        }
-
-        return req;
+            return req;
+        });
     }
 
     // Deserialize AppendEntries Response
@@ -396,27 +349,24 @@ public:
              typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_append_entries_response(const Data& data) const
         -> append_entries_response<TermId, LogIndex, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("append_entries_response", [&] {
+            const auto obj = parse_object(data, "append_entries_response");
 
-        if (obj["type"].as_string() != "append_entries_response") {
-            throw serialization_exception("Invalid message type for append_entries_response");
-        }
+            append_entries_response<TermId, LogIndex, GroupId> resp;
+            resp._group_id = decode_group_id<GroupId>(obj);
+            resp._term = read_int<TermId>(obj, "term");
+            resp._success = read_bool(obj, "success");
 
-        append_entries_response<TermId, LogIndex, GroupId> resp;
-        resp._group_id = decode_group_id<GroupId>(obj);
-        resp._term = static_cast<TermId>(obj["term"].as_int64());
-        resp._success = obj["success"].as_bool();
+            if (obj.contains("conflict_index")) {
+                resp._conflict_index = read_int<LogIndex>(obj, "conflict_index");
+            }
 
-        if (obj.contains("conflict_index")) {
-            resp._conflict_index = static_cast<LogIndex>(obj["conflict_index"].as_int64());
-        }
+            if (obj.contains("conflict_term")) {
+                resp._conflict_term = read_int<TermId>(obj, "conflict_term");
+            }
 
-        if (obj.contains("conflict_term")) {
-            resp._conflict_term = static_cast<TermId>(obj["conflict_term"].as_int64());
-        }
-
-        return resp;
+            return resp;
+        });
     }
 
     // Deserialize InstallSnapshot Request
@@ -424,47 +374,37 @@ public:
              typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_install_snapshot_request(const Data& data) const
         -> install_snapshot_request<NodeId, TermId, LogIndex, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("install_snapshot_request", [&] {
+            const auto obj = parse_object(data, "install_snapshot_request");
 
-        if (obj["type"].as_string() != "install_snapshot_request") {
-            throw serialization_exception("Invalid message type for install_snapshot_request");
-        }
+            install_snapshot_request<NodeId, TermId, LogIndex, GroupId> req;
+            req._group_id = decode_group_id<GroupId>(obj);
+            req._term = read_int<TermId>(obj, "term");
+            req._last_included_index = read_int<LogIndex>(obj, "last_included_index");
+            req._last_included_term = read_int<TermId>(obj, "last_included_term");
+            req._offset = read_int<std::size_t>(obj, "offset");
+            req._data = read_bytes(obj, "data");
+            req._done = read_bool(obj, "done");
 
-        install_snapshot_request<NodeId, TermId, LogIndex, GroupId> req;
-        req._group_id = decode_group_id<GroupId>(obj);
-        req._term = static_cast<TermId>(obj["term"].as_int64());
-        req._last_included_index = static_cast<LogIndex>(obj["last_included_index"].as_int64());
-        req._last_included_term = static_cast<TermId>(obj["last_included_term"].as_int64());
-        req._offset = static_cast<std::size_t>(obj["offset"].as_int64());
-        req._data = base64_to_bytes(std::string(obj["data"].as_string()));
-        req._done = obj["done"].as_bool();
+            req._leader_id = read_id<NodeId>(obj, "leader_id");
 
-        if constexpr (std::same_as<NodeId, std::string>) {
-            req._leader_id = std::string(obj["leader_id"].as_string());
-        } else {
-            req._leader_id = static_cast<NodeId>(obj["leader_id"].as_int64());
-        }
-
-        return req;
+            return req;
+        });
     }
 
     // Deserialize InstallSnapshot Response
     template<typename TermId = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_install_snapshot_response(const Data& data) const
         -> install_snapshot_response<TermId, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("install_snapshot_response", [&] {
+            const auto obj = parse_object(data, "install_snapshot_response");
 
-        if (obj["type"].as_string() != "install_snapshot_response") {
-            throw serialization_exception("Invalid message type for install_snapshot_response");
-        }
+            install_snapshot_response<TermId, GroupId> resp;
+            resp._group_id = decode_group_id<GroupId>(obj);
+            resp._term = read_int<TermId>(obj, "term");
 
-        install_snapshot_response<TermId, GroupId> resp;
-        resp._group_id = decode_group_id<GroupId>(obj);
-        resp._term = static_cast<TermId>(obj["term"].as_int64());
-
-        return resp;
+            return resp;
+        });
     }
 
     // Serialize ClusterJoin Request
@@ -502,47 +442,33 @@ public:
     template<typename NodeId = std::uint64_t, typename Address = std::string>
     [[nodiscard]] auto deserialize_cluster_join_request(const Data& data) const
         -> cluster_join_request<NodeId, Address> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("cluster_join_request", [&] {
+            const auto obj = parse_object(data, "cluster_join_request");
 
-        if (obj["type"].as_string() != "cluster_join_request") {
-            throw serialization_exception("Invalid message type for cluster_join_request");
-        }
-
-        cluster_join_request<NodeId, Address> req;
-        if constexpr (std::same_as<NodeId, std::string>) {
-            req.node_id = std::string(obj["node_id"].as_string());
-        } else {
-            req.node_id = static_cast<NodeId>(obj["node_id"].as_int64());
-        }
-        req.contact_address = std::string(obj["contact_address"].as_string());
-        return req;
+            cluster_join_request<NodeId, Address> req;
+            req.node_id = read_id<NodeId>(obj, "node_id");
+            req.contact_address = read_string(obj, "contact_address");
+            return req;
+        });
     }
 
     // Deserialize ClusterJoin Response
     template<typename NodeId = std::uint64_t, typename Address = std::string>
     [[nodiscard]] auto deserialize_cluster_join_response(const Data& data) const
         -> cluster_join_response<NodeId, Address> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("cluster_join_response", [&] {
+            const auto obj = parse_object(data, "cluster_join_response");
 
-        if (obj["type"].as_string() != "cluster_join_response") {
-            throw serialization_exception("Invalid message type for cluster_join_response");
-        }
-
-        cluster_join_response<NodeId, Address> resp;
-        resp.accepted = obj["accepted"].as_bool();
-        if (obj.contains("redirect_node_id")) {
-            peer_info<NodeId, Address> pi;
-            if constexpr (std::same_as<NodeId, std::string>) {
-                pi.node_id = std::string(obj["redirect_node_id"].as_string());
-            } else {
-                pi.node_id = static_cast<NodeId>(obj["redirect_node_id"].as_int64());
+            cluster_join_response<NodeId, Address> resp;
+            resp.accepted = read_bool(obj, "accepted");
+            if (obj.contains("redirect_node_id")) {
+                peer_info<NodeId, Address> pi;
+                pi.node_id = read_id<NodeId>(obj, "redirect_node_id");
+                pi.address = read_string(obj, "redirect_address");
+                resp.redirect = pi;
             }
-            pi.address = std::string(obj["redirect_address"].as_string());
-            resp.redirect = pi;
-        }
-        return resp;
+            return resp;
+        });
     }
 
     // Serialize ClusterLeave Request
@@ -572,46 +498,32 @@ public:
     template<typename NodeId = std::uint64_t, typename Address = std::string>
     [[nodiscard]] auto deserialize_cluster_leave_request(const Data& data) const
         -> cluster_leave_request<NodeId, Address> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("cluster_leave_request", [&] {
+            const auto obj = parse_object(data, "cluster_leave_request");
 
-        if (obj["type"].as_string() != "cluster_leave_request") {
-            throw serialization_exception("Invalid message type for cluster_leave_request");
-        }
-
-        cluster_leave_request<NodeId, Address> req;
-        if constexpr (std::same_as<NodeId, std::string>) {
-            req.node_id = std::string(obj["node_id"].as_string());
-        } else {
-            req.node_id = static_cast<NodeId>(obj["node_id"].as_int64());
-        }
-        return req;
+            cluster_leave_request<NodeId, Address> req;
+            req.node_id = read_id<NodeId>(obj, "node_id");
+            return req;
+        });
     }
 
     // Deserialize ClusterLeave Response
     template<typename NodeId = std::uint64_t, typename Address = std::string>
     [[nodiscard]] auto deserialize_cluster_leave_response(const Data& data) const
         -> cluster_leave_response<NodeId, Address> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("cluster_leave_response", [&] {
+            const auto obj = parse_object(data, "cluster_leave_response");
 
-        if (obj["type"].as_string() != "cluster_leave_response") {
-            throw serialization_exception("Invalid message type for cluster_leave_response");
-        }
-
-        cluster_leave_response<NodeId, Address> resp;
-        resp.accepted = obj["accepted"].as_bool();
-        if (obj.contains("redirect_node_id")) {
-            peer_info<NodeId, Address> pi;
-            if constexpr (std::same_as<NodeId, std::string>) {
-                pi.node_id = std::string(obj["redirect_node_id"].as_string());
-            } else {
-                pi.node_id = static_cast<NodeId>(obj["redirect_node_id"].as_int64());
+            cluster_leave_response<NodeId, Address> resp;
+            resp.accepted = read_bool(obj, "accepted");
+            if (obj.contains("redirect_node_id")) {
+                peer_info<NodeId, Address> pi;
+                pi.node_id = read_id<NodeId>(obj, "redirect_node_id");
+                pi.address = read_string(obj, "redirect_address");
+                resp.redirect = pi;
             }
-            pi.address = std::string(obj["redirect_address"].as_string());
-            resp.redirect = pi;
-        }
-        return resp;
+            return resp;
+        });
     }
 
     // Serialize FetchLogEntries Request
@@ -659,23 +571,16 @@ public:
              typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_request(const Data& data) const
         -> fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("fetch_log_entries_request", [&] {
+            const auto obj = parse_object(data, "fetch_log_entries_request");
 
-        if (obj["type"].as_string() != "fetch_log_entries_request") {
-            throw serialization_exception("Invalid message type for fetch_log_entries_request");
-        }
-
-        fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> req;
-        req._group_id = decode_group_id<GroupId>(obj);
-        if constexpr (std::same_as<NodeId, std::string>) {
-            req._requester_id = std::string(obj["requester_id"].as_string());
-        } else {
-            req._requester_id = static_cast<NodeId>(obj["requester_id"].as_int64());
-        }
-        req._from_index = static_cast<LogIndex>(obj["from_index"].as_int64());
-        req._to_index = static_cast<LogIndex>(obj["to_index"].as_int64());
-        return req;
+            fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> req;
+            req._group_id = decode_group_id<GroupId>(obj);
+            req._requester_id = read_id<NodeId>(obj, "requester_id");
+            req._from_index = read_int<LogIndex>(obj, "from_index");
+            req._to_index = read_int<LogIndex>(obj, "to_index");
+            return req;
+        });
     }
 
     // Deserialize FetchLogEntries Response
@@ -683,33 +588,19 @@ public:
              typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_response(const Data& data) const
         -> fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> {
-        auto json_str = bytes_to_string(data);
-        auto obj = boost::json::parse(json_str).as_object();
+        return guarded("fetch_log_entries_response", [&] {
+            const auto obj = parse_object(data, "fetch_log_entries_response");
 
-        if (obj["type"].as_string() != "fetch_log_entries_response") {
-            throw serialization_exception("Invalid message type for fetch_log_entries_response");
-        }
+            fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> resp;
+            resp._group_id = decode_group_id<GroupId>(obj);
+            resp._responder_id = read_int<std::uint64_t>(obj, "responder_id");
+            resp._available = read_bool(obj, "available");
+            resp._prev_log_term = read_int<TermId>(obj, "prev_log_term");
 
-        fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> resp;
-        resp._group_id = decode_group_id<GroupId>(obj);
-        resp._responder_id = static_cast<std::uint64_t>(obj["responder_id"].as_int64());
-        resp._available = obj["available"].as_bool();
-        resp._prev_log_term = static_cast<TermId>(obj["prev_log_term"].as_int64());
+            resp._entries = read_entries<LogEntry, TermId, LogIndex>(obj);
 
-        const auto& entries_array = obj["entries"].as_array();
-        for (const auto& entry_val : entries_array) {
-            const auto& entry_obj = entry_val.as_object();
-            LogEntry entry;
-            entry._term = static_cast<TermId>(entry_obj.at("term").as_int64());
-            entry._index = static_cast<LogIndex>(entry_obj.at("index").as_int64());
-            entry._command = base64_to_bytes(std::string(entry_obj.at("command").as_string()));
-            entry._type = entry_obj.contains("entry_type")
-                              ? static_cast<entry_type>(entry_obj.at("entry_type").as_int64())
-                              : entry_type::normal;
-            resp._entries.push_back(entry);
-        }
-
-        return resp;
+            return resp;
+        });
     }
 
     // Generic deserialize method that dispatches to specific deserialize methods
@@ -770,34 +661,209 @@ private:
         return result;
     }
 
-    // Helper to convert bytes to string
-    [[nodiscard]] auto bytes_to_string(const Data& data) const -> std::string {
-        std::string result;
-        result.reserve(std::ranges::size(data));
-        for (auto b : data) {
-            result.push_back(static_cast<char>(b));
-        }
-        return result;
+    // ── checked decoding (.kiro/specs/json-serializer-input-validation) ─────
+    //
+    // Every field read on a decode path goes through these accessors, so a
+    // missing field, a wrong JSON kind, an out-of-range number or bad base64
+    // surfaces as serialization_exception naming the field, never as a
+    // wrapped-around value or a Boost.JSON exception.
+
+    [[noreturn]] static auto fail(std::string_view key, std::string_view reason) -> void {
+        throw serialization_exception("JSON decode: field '" + std::string(key) +
+                                      "': " + std::string(reason));
     }
 
-    // Helper to convert bytes to base64
-    [[nodiscard]] auto bytes_to_base64(const std::vector<std::byte>& data) const -> std::string {
+    [[noreturn]] static auto fail_kind(std::string_view key, std::string_view expected,
+                                       const boost::json::value& v) -> void {
+        fail(key, "expected " + std::string(expected) + ", got " +
+                      std::string(boost::json::to_string(v.kind())));
+    }
+
+    // Converts any library exception escaping `decode` into
+    // serialization_exception. std::bad_alloc passes through so memory pressure
+    // is not reported as a protocol error.
+    template<typename F>
+    static auto guarded(const char* message_type, F&& decode) -> decltype(decode()) {
+        try {
+            return std::forward<F>(decode)();
+        } catch (const serialization_exception&) {
+            throw;
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (const std::exception& e) {
+            throw serialization_exception(std::string("JSON decode (") + message_type +
+                                          "): " + e.what());
+        }
+    }
+
+    // Parses `data` as a JSON object and checks its "type" discriminant.
+    [[nodiscard]] static auto parse_object(const Data& data, std::string_view expected_type)
+        -> boost::json::object {
+        std::string text;
+        text.reserve(std::ranges::size(data));
+        for (auto b : data) {
+            text.push_back(static_cast<char>(b));
+        }
+
+        boost::system::error_code ec;
+        auto parsed = boost::json::parse(text, ec);
+        if (ec) {
+            throw serialization_exception("JSON decode (" + std::string(expected_type) +
+                                          "): invalid JSON: " + ec.message());
+        }
+        if (!parsed.is_object()) {
+            throw serialization_exception("JSON decode (" + std::string(expected_type) +
+                                          "): top-level value is not an object");
+        }
+        auto obj = std::move(parsed.get_object());
+        if (read_string(obj, "type") != expected_type) {
+            throw serialization_exception("Invalid message type for " + std::string(expected_type));
+        }
+        return obj;
+    }
+
+    // Uses if_contains rather than operator[], which would insert a null.
+    [[nodiscard]] static auto require(const boost::json::object& obj, std::string_view key)
+        -> const boost::json::value& {
+        const auto* v = obj.if_contains(key);
+        if (v == nullptr) {
+            fail(key, "missing");
+        }
+        return *v;
+    }
+
+    // Accepts both Boost.JSON integer kinds: the parser yields kind::uint64
+    // for values at or above 2^63, which the encoder emits for large
+    // std::uint64_t fields. Doubles are rejected even when integral; the
+    // encoder never emits them and accepting them would admit rounding.
+    template<std::integral Target>
+    [[nodiscard]] static auto to_int(const boost::json::value& v, std::string_view key) -> Target {
+        switch (v.kind()) {
+            case boost::json::kind::int64: {
+                const std::int64_t i = v.get_int64();
+                if (std::is_unsigned_v<Target> && i < 0) {
+                    fail(key, "negative value for unsigned field");
+                }
+                if (!std::in_range<Target>(i)) {
+                    fail(key, "value out of range");
+                }
+                return static_cast<Target>(i);
+            }
+            case boost::json::kind::uint64: {
+                const std::uint64_t u = v.get_uint64();
+                if (!std::in_range<Target>(u)) {
+                    fail(key, "value out of range");
+                }
+                return static_cast<Target>(u);
+            }
+            default:
+                fail_kind(key, "integer", v);
+        }
+    }
+
+    template<typename Target>
+    requires std::integral<Target> || std::is_enum_v<Target>
+    [[nodiscard]] static auto read_int(const boost::json::object& obj, std::string_view key)
+        -> Target {
+        if constexpr (std::is_enum_v<Target>) {
+            return static_cast<Target>(
+                to_int<std::underlying_type_t<Target>>(require(obj, key), key));
+        } else {
+            return to_int<Target>(require(obj, key), key);
+        }
+    }
+
+    [[nodiscard]] static auto read_bool(const boost::json::object& obj, std::string_view key)
+        -> bool {
+        const auto& v = require(obj, key);
+        if (!v.is_bool()) {
+            fail_kind(key, "bool", v);
+        }
+        return v.get_bool();
+    }
+
+    [[nodiscard]] static auto read_string(const boost::json::object& obj, std::string_view key)
+        -> std::string {
+        const auto& v = require(obj, key);
+        if (!v.is_string()) {
+            fail_kind(key, "string", v);
+        }
+        return std::string(v.get_string());
+    }
+
+    [[nodiscard]] static auto read_array(const boost::json::object& obj, std::string_view key)
+        -> const boost::json::array& {
+        const auto& v = require(obj, key);
+        if (!v.is_array()) {
+            fail_kind(key, "array", v);
+        }
+        return v.get_array();
+    }
+
+    [[nodiscard]] static auto read_object(const boost::json::value& v, std::string_view what)
+        -> const boost::json::object& {
+        if (!v.is_object()) {
+            fail_kind(what, "object", v);
+        }
+        return v.get_object();
+    }
+
+    [[nodiscard]] static auto read_bytes(const boost::json::object& obj, std::string_view key)
+        -> std::vector<std::byte> {
+        const auto& v = require(obj, key);
+        if (!v.is_string()) {
+            fail_kind(key, "base64 string", v);
+        }
+        return base64_to_bytes(v.get_string(), key);
+    }
+
+    template<typename Id>
+    [[nodiscard]] static auto read_id(const boost::json::object& obj, std::string_view key) -> Id {
+        if constexpr (std::same_as<Id, std::string>) {
+            return read_string(obj, key);
+        } else {
+            return read_int<Id>(obj, key);
+        }
+    }
+
+    template<typename LogEntry, typename TermId, typename LogIndex>
+    [[nodiscard]] static auto read_entries(const boost::json::object& obj)
+        -> std::vector<LogEntry> {
+        std::vector<LogEntry> entries;
+        for (const auto& entry_val : read_array(obj, "entries")) {
+            const auto& entry_obj = read_object(entry_val, "entries[]");
+            LogEntry entry;
+            entry._term = read_int<TermId>(entry_obj, "term");
+            entry._index = read_int<LogIndex>(entry_obj, "index");
+            entry._command = read_bytes(entry_obj, "command");
+            entry._type = entry_obj.contains("entry_type")
+                              ? read_int<entry_type>(entry_obj, "entry_type")
+                              : entry_type::normal;
+            entries.push_back(std::move(entry));
+        }
+        return entries;
+    }
+
+    // Helper to convert bytes to base64. The accumulator is unsigned and
+    // masked to the bits still pending, so no shift can overflow.
+    [[nodiscard]] static auto bytes_to_base64(const std::vector<std::byte>& data) -> std::string {
         static const char* base64_chars =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
             "abcdefghijklmnopqrstuvwxyz"
             "0123456789+/";
 
         std::string result;
-        int val = 0;
+        std::uint32_t val = 0;
         int valb = -6;
 
         for (auto b : data) {
-            val = (val << 8) + static_cast<unsigned char>(b);
+            val = (val << 8) | static_cast<unsigned char>(b);
             valb += 8;
             while (valb >= 0) {
                 result.push_back(base64_chars[(val >> valb) & 0x3F]);
                 valb -= 6;
             }
+            val &= (1u << (valb + 6)) - 1u;
         }
 
         if (valb > -6) {
@@ -811,8 +877,12 @@ private:
         return result;
     }
 
-    // Helper to convert base64 to bytes
-    [[nodiscard]] auto base64_to_bytes(const std::string& base64) const -> std::vector<std::byte> {
+    // Strict RFC 4648 §4 decoder: the whole string is validated, so a damaged
+    // field is rejected instead of truncated. Only the canonical form that
+    // bytes_to_base64 emits is accepted (zero pad bits), so each byte string
+    // has exactly one encoding.
+    [[nodiscard]] static auto base64_to_bytes(std::string_view base64, std::string_view key)
+        -> std::vector<std::byte> {
         static const unsigned char base64_table[256] = {
             64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
             64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62,
@@ -827,20 +897,38 @@ private:
             64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
             64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64};
 
+        const std::size_t n = base64.size();
+        if (n % 4 != 0) {
+            fail(key, "base64 length not a multiple of 4");
+        }
+
+        std::size_t pad = 0;
+        if (n > 0 && base64[n - 1] == '=') {
+            pad = base64[n - 2] == '=' ? 2 : 1;
+        }
+
         std::vector<std::byte> result;
-        int val = 0;
+        result.reserve((n / 4) * 3);
+        std::uint32_t val = 0;
         int valb = -8;
 
-        for (unsigned char c : base64) {
-            if (base64_table[c] == 64) {
-                break;
+        for (std::size_t i = 0; i < n - pad; ++i) {
+            const auto c = static_cast<unsigned char>(base64[i]);
+            const unsigned char sextet = base64_table[c];
+            if (sextet == 64) {
+                fail(key, c == '=' ? "misplaced base64 padding" : "invalid base64 character");
             }
-            val = (val << 6) + base64_table[c];
+            val = (val << 6) | sextet;
             valb += 6;
             if (valb >= 0) {
                 result.push_back(static_cast<std::byte>((val >> valb) & 0xFF));
                 valb -= 8;
             }
+            val &= (1u << (valb + 8)) - 1u;
+        }
+
+        if (val != 0) {
+            fail(key, "non-zero base64 pad bits");
         }
 
         return result;
