@@ -4,7 +4,7 @@
 #pragma once
 
 #include <raft/coap_transport.hpp>
-#include <raft/coap_conformance_types.hpp>
+#include <raft/transport_conformance_types.hpp>
 #include <raft/coap_security_impl.hpp>
 #include <raft/net_bind.hpp>
 #include <algorithm>

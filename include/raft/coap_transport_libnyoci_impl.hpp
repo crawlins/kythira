@@ -64,7 +64,7 @@
 // translate_legacy_fields(), shared with the libcoap backend. NOT
 // raft/coap_transport.hpp — see the header comment above.
 #include <raft/coap_transport_config.hpp>
-#include <raft/coap_conformance_types.hpp>
+#include <raft/transport_conformance_types.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
 #include <raft/coap_ace_oauth.hpp>
