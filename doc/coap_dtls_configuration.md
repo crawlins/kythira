@@ -293,7 +293,10 @@ config.session_timeout = std::chrono::seconds{3600};  // 1 hour session lifetime
 
 ### Certificate Revocation
 
-For production deployments, consider certificate revocation checking:
+Revocation is checked against an explicitly configured CRL file, off by
+default. When enabled it fails closed: a CRL that cannot be read, a missing
+`ca_file`, or (unless `allow_missing_crl`) an issuer with no CRL rejects the
+peer, just as a listed serial does. OCSP is not implemented.
 
 ```cpp
 coap_client_config config;
@@ -302,8 +305,38 @@ config.cert_file = "/path/to/cert.pem";
 config.key_file = "/path/to/key.pem";
 config.ca_file = "/path/to/ca-cert.pem";
 config.verify_peer_cert = true;
-// Note: CRL/OCSP support depends on libcoap build configuration
+config.revocation = {.enabled = true, .crl_file = "/path/to/crl.pem"};
 ```
+
+### Same behaviour on every CoAP backend
+
+`pki_credentials::revocation`, `pki_credentials::cn_validator` and
+`coap_security_config::ace_bootstrap` behave the same on the libcoap, libnyoci
+and cantcoap backends, so a node can switch backend without its security
+changing underneath it:
+
+- **Revocation** runs through `coap_revocation::check()` on all three, before
+  the `cn_validator`, and a revoked peer is refused without the validator
+  being called. libnyoci refuses inside the handshake (the peer gets a fatal
+  alert); cantcoap refuses right after it, before the session carries any CoAP
+  message.
+- **`cn_validator`** gets the peer's certificate in PEM after chain validation
+  has passed. Returning false or throwing refuses the peer. On libnyoci and
+  cantcoap it sees the leaf only. On libcoap it is called once per chain depth,
+  so it may also see the issuing CA certificates: write a validator that
+  accepts a CA certificate it does not care about.
+- **A policy that cannot run is refused.** Setting `revocation.enabled` or a
+  `cn_validator` together with `verify_peer_cert = false` throws
+  `coap_security_config_error` at construction: without peer verification a
+  server never asks for a client certificate, so the check could never reject
+  anything.
+- **ACE-OAuth** runs the token exchange at construction on every backend and
+  replaces `credentials` with what the Authorization Server issued. The
+  profile must match `security.mode` (`dtls_psk` with `dtls_psk`, `oscore` with
+  `oscore`), and ACE cannot be combined with an EDHOC bootstrap; both are
+  refused with `coap_security_config_error` before the AS is contacted. An
+  unreachable or refusing AS fails construction with
+  `coap_credential_bootstrap_error`; nothing falls back to static credentials.
 
 ## Security Best Practices
 
