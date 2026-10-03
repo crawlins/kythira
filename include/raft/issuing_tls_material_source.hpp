@@ -19,11 +19,15 @@
 /// the certificate's validity has elapsed. A failure keeps the current
 /// material, emits `tls_material_source.renewal.failed` and retries with
 /// capped exponential backoff; a certificate that expires meanwhile emits
-/// `tls_material_source.expired`. Nothing empty is ever published, and the
-/// key never touches disk here.
+/// `tls_material_source.expired`. A provider whose `chain_pem` does not start
+/// with the leaf gets the leaf prepended and emits
+/// `tls_material_source.chain.leaf_prepended`, so the provider bug stays
+/// visible. Nothing empty is ever published, and the key never touches disk
+/// here.
 
 #include <raft/certificate_provider.hpp>
 #include <raft/metrics.hpp>
+#include <raft/pem_chain.hpp>
 #include <raft/tls_material_source.hpp>
 
 #include <openssl/asn1.h>
@@ -168,9 +172,22 @@ private:
         if (not_after <= not_before) {
             throw std::invalid_argument("issued certificate has an empty validity window");
         }
-        tls_material m{.certificate_chain_pem = signed_cert.chain_pem.empty()
-                                                    ? signed_cert.certificate_pem
-                                                    : signed_cert.chain_pem,
+        // Guard against a provider that returns the issuer chain without the
+        // leaf: publishing it would pair the CA's certificate with the leaf's
+        // key. Prepend the leaf and say so, rather than fail forever or
+        // correct silently (`.kiro/specs/oci-ca-chain-leaf/` Requirement 3).
+        std::string chain = signed_cert.chain_pem;
+        if (chain.empty()) {
+            chain = signed_cert.certificate_pem;
+        } else {
+            auto certs = pem_chain::split_certificates(chain);
+            if (certs.empty() ||
+                !pem_chain::same_certificate(certs.front(), signed_cert.certificate_pem)) {
+                chain = pem_chain::leaf_first(signed_cert.certificate_pem, chain);
+                emit("tls_material_source.chain.leaf_prepended");
+            }
+        }
+        tls_material m{.certificate_chain_pem = std::move(chain),
                        .private_key_pem = std::move(csr.private_key_pem),
                        .root_certificates_pem = std::move(roots)};
         publish(std::move(m), "issuing_tls_material_source");
