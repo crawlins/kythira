@@ -18,6 +18,35 @@ current list of outstanding work, see [TODO.md](TODO.md).
   `lazily_created_replica_count()` is now incremented before the new
   replica becomes visible, so a caller that can see the replica also sees
   the count.
+- **PreVote and TimeoutNow on the HTTP transports, PreVote on CoAP**
+  (`.kiro/specs/http-coap-pre-vote-timeout-now/`). cpp-httplib, Beast and
+  Proxygen serve `/v1/raft/request_pre_vote` and `/v1/raft/timeout_now`, and
+  all three CoAP backends serve `/raft/request_pre_vote`. On these transports
+  an isolated follower no longer deposes a healthy leader when it rejoins, and
+  `transfer_leadership()` / `scatter()` on a multi-Raft host over HTTP now
+  move leadership instead of ending `unsupported`. Election timing on HTTP and
+  CoAP clusters changes accordingly: a node spends one round trip on a
+  pre-vote before campaigning. See `doc/http_transport_endpoints.md`.
+- **Rolling-upgrade behaviour.** A peer that answers an extension RPC with
+  HTTP 404/501 or CoAP 4.04/5.01 raises the new, non-retryable
+  `rpc_not_implemented_exception`. Raft counts such a pre-vote as granted, so
+  a cluster part-way through the upgrade keeps electing leaders; each node
+  warns once per older peer and counts every occurrence in
+  `raft.pre_vote.peer_not_implemented`. A TimeoutNow answered that way ends
+  the transfer with `leader_transfer_unsupported_exception`. A server with no
+  extension handler registered answers 501 (HTTP) or 5.01 (CoAP); the
+  mandatory RPCs keep their existing status codes.
+- **A leader with a live quorum refuses pre-votes.** `handle_request_pre_vote()`
+  granted a pre-vote from a node whose log was current even when the receiver
+  was the leader itself, so in a three-node cluster a rejoining follower could
+  collect a pre-vote majority and raise its term. A leader now refuses while a
+  majority of voters, itself included, answered it within an election timeout
+  (etcd's CheckQuorum lease); one that has lost touch with a majority still
+  grants, so it can be replaced. Found by the new HTTP isolated-follower test.
+- `include/raft/coap_conformance_types.hpp` is renamed
+  `transport_conformance_types.hpp` (namespace `kythira::transport_detail`),
+  since the HTTP headers now use it too; `kythira::coap_detail::conformance_types`
+  remains as an alias.
 
 ### What Changed (October 5, 2026)
 

@@ -114,6 +114,9 @@ must not re-derive them:
   (`group_transport.hpp:257,272,313`), so an HTTP row simply has no leadership
   transfer — **the same class of limitation as CoAP's documented lack of
   TimeoutNow**, reached by the same mechanism.
+  *Superseded:* `.kiro/specs/http-coap-pre-vote-timeout-now/` added PreVote
+  and TimeoutNow to all three HTTP transports and PreVote to CoAP, so HTTP and
+  CoAP rows now have leadership transfer. Log fetch is still absent on both.
 - **None of the real transports is movable.** `boost_beast_client` and
   `proxygen_client` delete their move constructors outright; `cpp_httplib_client`
   holds a `std::mutex` and a `std::jthread`. `multi_raft_config` holds
