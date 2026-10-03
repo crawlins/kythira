@@ -496,6 +496,19 @@ struct multi_raft_config {
     /// Idle time before a group may hibernate. Defaults to
     /// `10 * config.heartbeat_interval()`.
     std::optional<std::chrono::milliseconds> hibernate_after{};
+    /// Longest a group sleeps before the host wakes it to check that its
+    /// leader is still alive. Defaults to `10 * hibernate_after`.
+    ///
+    /// A hibernating follower is not ticked, so its election timer cannot
+    /// fire, and a dead leader sends nothing that would wake it. This check is
+    /// what keeps that group from staying leaderless until a client happens to
+    /// address it. A hibernating leader wakes after this interval and sends a
+    /// round of heartbeats. A hibernating follower wakes one maximum election
+    /// timeout later, so a live leader's heartbeat always reaches it first. A
+    /// follower that wakes and still hears nothing campaigns as usual. The
+    /// leader-failure bound under hibernation is therefore this interval, plus
+    /// one maximum election timeout, plus an election.
+    std::optional<std::chrono::milliseconds> hibernation_check_interval{};
 
     /// How often the policy phase runs. Policy evaluation is far coarser than
     /// the tick and running it every tick would dominate the loop.
@@ -1360,6 +1373,11 @@ private:
         /// must not acquire a dependency on synchronised clocks.
         std::atomic<std::int64_t> _last_activity_ns{0};
         std::atomic<bool> _hibernating{false};
+        /// When the group last went to sleep, and whether it led then. These
+        /// pick which side of the liveness check applies; see
+        /// `multi_raft_config::hibernation_check_interval`.
+        std::atomic<std::int64_t> _hibernated_since_ns{0};
+        std::atomic<bool> _hibernated_as_leader{false};
 
         mutable std::mutex _deferred_mutex;
         std::vector<std::function<void()>> _deferred;
@@ -1498,6 +1516,8 @@ private:
     [[nodiscard]] auto hibernation_enabled(std::size_t group_count) const -> bool;
     [[nodiscard]] auto leader_hibernate_after() const -> std::chrono::nanoseconds;
     [[nodiscard]] auto follower_hibernate_after() const -> std::chrono::nanoseconds;
+    [[nodiscard]] auto hibernation_check_interval() const -> std::chrono::nanoseconds;
+    [[nodiscard]] auto liveness_check_due(const group_state& g, std::int64_t now) const -> bool;
 
     auto persist_tombstones() -> void;
 

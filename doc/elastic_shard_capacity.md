@@ -101,14 +101,14 @@ managers underneath it.
 
 | Manager | Grows by | Idempotency key | Placement group | Group-target refinement |
 |---|---|---|---|---|
-| `aws_ec2_quorum_manager` | `RunInstances` | not yet carried; unkeyed reconciliation | subnet / AZ | no |
-| `aws_asg_quorum_manager` | ASG desired capacity | not yet carried; unkeyed reconciliation | ASG per group | no |
-| `azure_vm_quorum_manager` | VM create | not yet carried; unkeyed reconciliation | zone / availability set | no |
-| `azure_vmss_quorum_manager` | VMSS capacity | not yet carried; unkeyed reconciliation | scale set per group | no |
-| `gcp_compute_quorum_manager` | instance insert | not yet carried; unkeyed reconciliation | zone | no |
-| `gcp_mig_quorum_manager` | MIG target size | not yet carried; unkeyed reconciliation | MIG per group | no |
-| `oci_instance_pool_quorum_manager` | pool size | not yet carried; unkeyed reconciliation | AD / pool | no |
-| `alibaba_ess_quorum_manager` | ESS capacity | not yet carried; unkeyed reconciliation | scaling group | no |
+| `aws_ec2_quorum_manager` | `RunInstances` | EC2 tag `kythira:idempotency-key` | subnet / AZ | no |
+| `aws_asg_quorum_manager` | ASG desired capacity | not carried (group-capacity); unkeyed reconciliation | ASG per group | no |
+| `azure_vm_quorum_manager` | VM create | resource tag `kythira:idempotency-key` | zone / availability set | no |
+| `azure_vmss_quorum_manager` | VMSS capacity | not carried (group-capacity); unkeyed reconciliation | scale set per group | no |
+| `gcp_compute_quorum_manager` | instance insert | label `kythira-idempotency-key` | zone | no |
+| `gcp_mig_quorum_manager` | MIG target size | not carried (group-capacity); unkeyed reconciliation | MIG per group | no |
+| `oci_instance_pool_quorum_manager` | pool size | not carried (group-capacity); unkeyed reconciliation | AD / pool | no |
+| `alibaba_ess_quorum_manager` | ESS capacity | not carried (group-capacity); unkeyed reconciliation | scaling group | no |
 | `docker_quorum_manager` | container run | container label `kythira.idempotency-key` | logical label | no |
 | `no_op_quorum_manager` | refuses | — | — | — |
 
@@ -121,9 +121,27 @@ refinement" is `resizable_quorum_manager` (`set_group_target`). It lets a
 group-capacity manager's own notion of a group's size follow the controller's.
 The controller detects both refinements with concepts and needs neither.
 
-Each cloud manager tags or labels what it creates already, so carrying the key
-is a per-manager change on that existing metadata path. Until a manager makes
-it, the table says so rather than implying it does.
+The keyed managers attach the key in the create call itself — RunInstances'
+TagSpecifications, the VM's `PUT`, the `instances.insert` resource — so it
+exists from the instant the machine does, which is what lets a successor find a
+machine whose creator died before learning its id. Their lookups count a
+stopped machine (a stopped EC2 instance, a GCE `TERMINATED` instance, a
+deallocated VM, a stopped container): it still exists, still bills for its
+disk, and still has to be reaped. They skip one already being destroyed.
+
+GCP label values allow only lowercase letters, digits, `-` and `_`, up to 63
+characters. The controller's own keys fit and are written verbatim. A key that
+does not is mapped deterministically (`gcp_idempotency_label_value`: a hash of
+the key plus a sanitised prefix), so the label is still derivable from the
+ledger alone.
+
+The group-capacity managers do not carry the key, and that is a limit of how
+they grow rather than unfinished work: they raise a target size and the
+provider launches the instance, so there is no create call of theirs to attach
+it to. Tagging the instance afterwards would reopen exactly the window the key
+exists to close. They reconcile by node id and join deadline instead, as
+[Residual failure modes](#residual-failure-modes) describes, and the table says
+so rather than implying otherwise.
 
 ## Wiring
 

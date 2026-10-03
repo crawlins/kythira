@@ -389,6 +389,186 @@ public:
     /// attempts (Requirement 5 AC 4).
     auto provision_node(std::string target_group, std::optional<NodeId> replacing)
         -> kythira::future_default<peer_info<NodeId, Address>> {
+        return provision(std::move(target_group), replacing, std::nullopt);
+    }
+
+    // ── idempotency keys (elastic-shard-capacity Requirement 8.2) ────────────
+
+    /// @brief `provision_node`, with `key` carried as the instance label
+    ///        `kythira-idempotency-key`.
+    ///
+    /// The label is part of the `instances.insert` resource, so it exists from
+    /// the instant the instance does: a controller that dies before recording
+    /// the node id leaves an instance its successor can still find by the key
+    /// it recorded *before* the call. GCP label values are restricted (lowercase
+    /// letters, digits, `-`, `_`, at most 63 characters), so the value written
+    /// is `gcp_idempotency_label_value(key)` — the key itself whenever it is
+    /// already label-safe, which the controller's own keys are.
+    auto provision_node_keyed(std::string target_group, std::optional<NodeId> replacing,
+                              const std::string& key)
+        -> kythira::future_default<peer_info<NodeId, Address>> {
+        return provision(std::move(target_group), replacing, gcp_idempotency_label_value(key));
+    }
+
+    /// @brief The instance this cluster created under `key`, if one exists.
+    ///
+    /// One label-filtered `instances.list` per configured zone (GCE's list is
+    /// zone-scoped). Every listed instance counts, whatever its `status`:
+    /// `TERMINATED` is GCE's word for *stopped* — the instance and its boot disk
+    /// still exist and still need deleting, which is why `docker_quorum_manager`
+    /// counts stopped containers too. A deleted instance drops out of the list,
+    /// and one caught mid-delete is harmless to report: reaping it ends in the
+    /// `NOT_FOUND` that `decommission_node` already treats as success.
+    ///
+    /// The returned address is `<networkIP>:<node_port>`, or empty when the
+    /// instance has no network interface IP yet; the controller reads only the
+    /// node id from a lookup.
+    auto find_by_idempotency_key(const std::string& key)
+        -> kythira::future_default<std::optional<peer_info<NodeId, Address>>> {
+        using result = std::optional<peer_info<NodeId, Address>>;
+        try {
+            fiu_do_on("raft/gcp/compute/find_by_idempotency_key",
+                      throw std::runtime_error("fault: raft/gcp/compute/find_by_idempotency_key"););
+
+            const std::string label = gcp_idempotency_label_value(key);
+            for (const auto& [zone, _] : _config.subnetwork_by_group) {
+                google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
+                req.set_project(_config.gcp.project_id);
+                req.set_zone(zone);
+                req.set_filter(gcp_idempotency_key_filter(_config.cluster_name, label));
+                for (auto const& maybe_inst : _instances.ListInstances(req)) {
+                    if (!maybe_inst) {
+                        throw std::runtime_error("gcp instances.list (" + zone +
+                                                 "): " + maybe_inst.status().message());
+                    }
+                    if (auto peer = keyed_instance_peer(*maybe_inst, _config.cluster_name, label,
+                                                        _config.node_port)) {
+                        return future_factory_default::makeFuture(result{std::move(*peer)});
+                    }
+                }
+            }
+            return future_factory_default::makeFuture(result{});
+        } catch (const std::exception& ex) {
+            return future_factory_default::makeExceptionalFuture<result>(
+                std::make_exception_ptr(std::runtime_error(
+                    std::string("gcp_compute_quorum_manager::find_by_idempotency_key: ") +
+                    ex.what())));
+        }
+    }
+
+    /// @brief The peer @p instance stands for when it is @p cluster_name's
+    ///        instance carrying @p label_value; `std::nullopt` otherwise.
+    ///
+    /// `instances.list` already filtered on both labels; this re-checks them so
+    /// an endpoint that ignores the filter (a test double, an emulator) cannot
+    /// hand back another cluster's machine. Pure — public for testing.
+    [[nodiscard]] static auto keyed_instance_peer(
+        const google::cloud::cpp::compute::v1::Instance& instance, const std::string& cluster_name,
+        const std::string& label_value, std::uint16_t node_port)
+        -> std::optional<peer_info<NodeId, Address>> {
+        const auto& labels = instance.labels();
+        auto cl = labels.find("kythira-cluster");
+        auto k = labels.find(std::string{gcp_idempotency_key_label});
+        if (cl == labels.end() || cl->second != cluster_name || k == labels.end() ||
+            k->second != label_value) {
+            return std::nullopt;
+        }
+        auto id = instance_name_to_node_id(cluster_name, instance.name());
+        if (!id) {
+            return std::nullopt;
+        }
+        std::string addr;
+        if (instance.network_interfaces_size() > 0 &&
+            !instance.network_interfaces(0).network_ip().empty()) {
+            addr = instance.network_interfaces(0).network_ip() + ":" + std::to_string(node_port);
+        }
+        return peer_info<NodeId, Address>{*id, static_cast<Address>(addr)};
+    }
+
+    /// @brief The resource `instances.insert` receives for one node. Pure (no
+    ///        API call) — public for testing. @p key_label, when set, is the
+    ///        already-mapped `gcp_idempotency_label_value`.
+    [[nodiscard]] auto build_instance(
+        const std::string& name, const NodeId& node_id, const std::string& target_group,
+        const std::string& subnetwork,
+        const std::optional<std::string>& key_label = std::nullopt) const
+        -> google::cloud::cpp::compute::v1::Instance {
+        google::cloud::cpp::compute::v1::Instance instance;
+        instance.set_name(name);
+        instance.set_machine_type("zones/" + target_group + "/machineTypes/" +
+                                  _config.machine_type);
+
+        auto* disk = instance.add_disks();
+        disk->set_boot(true);
+        disk->set_auto_delete(true);
+        auto* params = disk->mutable_initialize_params();
+        params->set_source_image(_config.boot_disk_image);
+        // Compute encodes int64 fields like diskSizeGb as decimal strings.
+        params->set_disk_size_gb(std::to_string(_config.boot_disk_size_gb));
+
+        // Both fields accept a short name or a reference; `instances.insert`
+        // accepts only the latter, so qualify short names here.
+        auto* ni = instance.add_network_interfaces();
+        ni->set_network(gcp_qualify_network(_config.network));
+        ni->set_subnetwork(gcp_qualify_subnetwork(subnetwork, target_group));
+
+        if (!_config.service_account_email.empty()) {
+            auto* sa = instance.add_service_accounts();
+            sa->set_email(_config.service_account_email);
+            for (const auto& scope : _config.service_account_scopes) {
+                sa->add_scopes(scope);
+            }
+        }
+
+        // Metadata: startup-script (rendered) + enable-guest-attributes=TRUE.
+        auto* metadata = instance.mutable_metadata();
+        if (!_config.startup_script_template.empty()) {
+            auto* item = metadata->add_items();
+            item->set_key("startup-script");
+            item->set_value(render_startup_script(node_id, target_group));
+        }
+        {
+            auto* item = metadata->add_items();
+            item->set_key("enable-guest-attributes");
+            item->set_value("TRUE");
+        }
+
+        // Labels: the six standard labels plus extra_labels (which never
+        // override the standard set), plus the idempotency key when there is
+        // one — set last so no extra label can shadow the value reconciliation
+        // reads.
+        auto& labels = *instance.mutable_labels();
+        labels["kythira-cluster"] = _config.cluster_name;
+        labels["kythira-node-id"] = node_id_str(node_id);
+        labels["kythira-group"] = target_group;
+        labels["kythira-managed-by"] = "kythira-gce-quorum-manager";
+        labels["kythira-market"] = _config.spot ? "spot" : "standard";
+        labels["kythira-placement"] = placement_label(target_group);
+        for (const auto& [k, v] : _config.extra_labels) {
+            if (labels.find(k) == labels.end()) {
+                labels[k] = v;
+            }
+        }
+        if (key_label) {
+            labels[std::string{gcp_idempotency_key_label}] = *key_label;
+        }
+
+        if (_config.spot) {
+            instance.mutable_scheduling()->set_provisioning_model("SPOT");
+        }
+
+        if (auto it = _config.placement_by_group.find(target_group);
+            it != _config.placement_by_group.end() && !it->second.self_link.empty()) {
+            instance.add_resource_policies(it->second.self_link);
+        }
+
+        return instance;
+    }
+
+private:
+    auto provision(std::string target_group, std::optional<NodeId> replacing,
+                   std::optional<std::string> key_label)
+        -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
             auto sit = _config.subnetwork_by_group.find(target_group);
             if (sit == _config.subnetwork_by_group.end()) {
@@ -411,7 +591,7 @@ public:
                 fiu_do_on("raft/gcp/compute/insert_instance",
                           throw std::runtime_error("fault: raft/gcp/compute/insert_instance"););
 
-                auto instance = build_instance(name, new_id, target_group, subnetwork);
+                auto instance = build_instance(name, new_id, target_group, subnetwork, key_label);
                 auto insert =
                     _instances.InsertInstance(_config.gcp.project_id, target_group, instance).get();
                 if (!insert) {
@@ -483,6 +663,7 @@ public:
         }
     }
 
+public:
     /// @brief Deletes the GCE instance for @p node_id and awaits the delete zone
     ///        operation. `NOT_FOUND` is treated as idempotent success.
     auto decommission_node(const NodeId& node_id) -> kythira::future_default<void> {
@@ -638,76 +819,6 @@ private:
             return "compact";
         }
         return "none";
-    }
-
-    auto build_instance(const std::string& name, const NodeId& node_id,
-                        const std::string& target_group, const std::string& subnetwork) const
-        -> google::cloud::cpp::compute::v1::Instance {
-        google::cloud::cpp::compute::v1::Instance instance;
-        instance.set_name(name);
-        instance.set_machine_type("zones/" + target_group + "/machineTypes/" +
-                                  _config.machine_type);
-
-        auto* disk = instance.add_disks();
-        disk->set_boot(true);
-        disk->set_auto_delete(true);
-        auto* params = disk->mutable_initialize_params();
-        params->set_source_image(_config.boot_disk_image);
-        // Compute encodes int64 fields like diskSizeGb as decimal strings.
-        params->set_disk_size_gb(std::to_string(_config.boot_disk_size_gb));
-
-        // Both fields accept a short name or a reference; `instances.insert`
-        // accepts only the latter, so qualify short names here.
-        auto* ni = instance.add_network_interfaces();
-        ni->set_network(gcp_qualify_network(_config.network));
-        ni->set_subnetwork(gcp_qualify_subnetwork(subnetwork, target_group));
-
-        if (!_config.service_account_email.empty()) {
-            auto* sa = instance.add_service_accounts();
-            sa->set_email(_config.service_account_email);
-            for (const auto& scope : _config.service_account_scopes) {
-                sa->add_scopes(scope);
-            }
-        }
-
-        // Metadata: startup-script (rendered) + enable-guest-attributes=TRUE.
-        auto* metadata = instance.mutable_metadata();
-        if (!_config.startup_script_template.empty()) {
-            auto* item = metadata->add_items();
-            item->set_key("startup-script");
-            item->set_value(render_startup_script(node_id, target_group));
-        }
-        {
-            auto* item = metadata->add_items();
-            item->set_key("enable-guest-attributes");
-            item->set_value("TRUE");
-        }
-
-        // Labels: the six standard labels plus extra_labels (which never
-        // override the standard set).
-        auto& labels = *instance.mutable_labels();
-        labels["kythira-cluster"] = _config.cluster_name;
-        labels["kythira-node-id"] = node_id_str(node_id);
-        labels["kythira-group"] = target_group;
-        labels["kythira-managed-by"] = "kythira-gce-quorum-manager";
-        labels["kythira-market"] = _config.spot ? "spot" : "standard";
-        labels["kythira-placement"] = placement_label(target_group);
-        for (const auto& [k, v] : _config.extra_labels) {
-            if (labels.find(k) == labels.end()) {
-                labels[k] = v;
-            }
-        }
-
-        if (_config.spot) {
-            instance.mutable_scheduling()->set_provisioning_model("SPOT");
-        }
-
-        if (auto it = _config.placement_by_group.find(target_group);
-            it != _config.placement_by_group.end() && !it->second.self_link.empty()) {
-            instance.add_resource_policies(it->second.self_link);
-        }
-
-        return instance;
     }
 
     [[nodiscard]] auto render_startup_script(const NodeId& node_id, const std::string& zone) const

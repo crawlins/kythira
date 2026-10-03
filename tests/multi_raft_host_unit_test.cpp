@@ -679,4 +679,160 @@ BOOST_AUTO_TEST_CASE(a_woken_group_still_elects_a_leader, *boost::unit_test::tim
     host.stop();
 }
 
+// ── task 12: hibernation liveness across hosts ──────────────────────────────
+
+/// Three hosts on one fabric, each holding a replica of group 1, ticked in
+/// lock-step from the test thread. A host that is "dead" is skipped by the
+/// ticker and dropped by the fabric, which is everything a crashed process
+/// does to its peers.
+struct three_host_cluster {
+    static constexpr group_id_type k_group = 1;
+
+    explicit three_host_cluster(std::chrono::milliseconds check_interval) {
+        for (std::uint64_t id = 1; id <= 3; ++id) {
+            auto cfg = make_config(fabric, id);
+            cfg.hibernation = hibernation_mode::on;
+            cfg.hibernate_after = std::chrono::milliseconds{20};
+            cfg.hibernation_check_interval = check_interval;
+            hosts.push_back(std::make_unique<host_type>(std::move(cfg)));
+        }
+        for (auto& h : hosts) {
+            h->create_group(k_group, {1, 2, 3});
+            h->start();
+        }
+    }
+
+    ~three_host_cluster() {
+        for (auto& h : hosts) {
+            h->stop();
+        }
+    }
+
+    three_host_cluster(const three_host_cluster&) = delete;
+    auto operator=(const three_host_cluster&) -> three_host_cluster& = delete;
+
+    [[nodiscard]] auto host(std::uint64_t id) -> host_type& { return *hosts[id - 1]; }
+
+    auto kill(std::uint64_t id) -> void {
+        dead.insert(id);
+        fabric.kill(id);
+    }
+
+    template<typename Predicate>
+    auto tick_until(Predicate predicate, std::chrono::milliseconds budget) -> bool {
+        const auto deadline = std::chrono::steady_clock::now() + budget;
+        while (std::chrono::steady_clock::now() < deadline) {
+            for (std::uint64_t id = 1; id <= 3; ++id) {
+                if (!dead.contains(id)) {
+                    host(id).tick();
+                }
+            }
+            if (predicate()) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        return predicate();
+    }
+
+    /// The live replica that leads, if exactly one does.
+    [[nodiscard]] auto leader() -> std::optional<std::uint64_t> {
+        std::optional<std::uint64_t> found;
+        for (std::uint64_t id = 1; id <= 3; ++id) {
+            if (dead.contains(id) || !host(id).group_node(k_group)->is_leader()) {
+                continue;
+            }
+            if (found) {
+                return std::nullopt;
+            }
+            found = id;
+        }
+        return found;
+    }
+
+    [[nodiscard]] auto all_live_hibernating() -> bool {
+        for (std::uint64_t id = 1; id <= 3; ++id) {
+            if (!dead.contains(id) && !host(id).is_hibernating(k_group)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto max_term() -> std::uint64_t {
+        std::uint64_t term = 0;
+        for (std::uint64_t id = 1; id <= 3; ++id) {
+            term = std::max(term, host(id).group_node(k_group)->get_current_term());
+        }
+        return term;
+    }
+
+    message_fabric fabric{4};
+    std::vector<std::unique_ptr<host_type>> hosts;
+    std::set<std::uint64_t> dead;
+};
+
+BOOST_AUTO_TEST_CASE(a_leader_failure_while_hibernating_still_triggers_an_election,
+                     *boost::unit_test::timeout(60)) {
+    // Task 12's liveness clause: "a leader failure still triggers an election
+    // within the expected bound". A hibernated follower is not ticked, so its
+    // election timer cannot fire; and a dead leader sends nothing that could
+    // wake it. Without the host's own periodic check the group would stay
+    // leaderless until a client happened to address it.
+    //
+    // The bound is `hibernation_check_interval` plus the follower's grace
+    // (one maximum election timeout) plus an election. The budget below is
+    // that, with slack for a loaded CI runner.
+    constexpr auto check = std::chrono::milliseconds{300};
+    three_host_cluster c{check};
+
+    BOOST_REQUIRE(c.tick_until([&] { return c.leader().has_value(); }, std::chrono::seconds{5}));
+    BOOST_REQUIRE(c.tick_until([&] { return c.all_live_hibernating(); }, std::chrono::seconds{5}));
+    const auto old_leader = *c.leader();
+    const auto old_term = c.max_term();
+
+    c.kill(old_leader);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool elected = c.tick_until(
+        [&] {
+            const auto l = c.leader();
+            return l.has_value() && *l != old_leader;
+        },
+        std::chrono::seconds{10});
+    const auto took = std::chrono::steady_clock::now() - t0;
+    BOOST_REQUIRE(elected);
+    BOOST_CHECK_GT(c.max_term(), old_term);
+    BOOST_TEST_MESSAGE("re-elected after "
+                       << std::chrono::duration_cast<std::chrono::milliseconds>(took).count()
+                       << " ms");
+    BOOST_CHECK_LT(std::chrono::duration_cast<std::chrono::milliseconds>(took).count(),
+                   (check + std::chrono::milliseconds{80} + std::chrono::seconds{2}).count());
+}
+
+BOOST_AUTO_TEST_CASE(a_live_hibernating_leader_is_not_deposed_by_the_liveness_check,
+                     *boost::unit_test::timeout(60)) {
+    // The other half of the same mechanism. A follower that wakes itself to
+    // look for its leader must find that leader awake already, or every check
+    // interval would buy an election. The leader's own check runs one grace
+    // period earlier than its followers', so its heartbeat arrives first.
+    constexpr auto check = std::chrono::milliseconds{200};
+    three_host_cluster c{check};
+
+    BOOST_REQUIRE(c.tick_until([&] { return c.leader().has_value(); }, std::chrono::seconds{5}));
+    BOOST_REQUIRE(c.tick_until([&] { return c.all_live_hibernating(); }, std::chrono::seconds{5}));
+    const auto leader = *c.leader();
+    const auto term = c.max_term();
+
+    // Ten check intervals: each is a leader wake, a round of heartbeats, and
+    // the whole group falling asleep again.
+    static_cast<void>(c.tick_until([] { return false; }, 10 * check));
+
+    BOOST_CHECK_EQUAL(c.max_term(), term);
+    BOOST_REQUIRE(c.leader().has_value());
+    BOOST_CHECK_EQUAL(*c.leader(), leader);
+    // And the check does not keep the group awake: it goes back to sleep.
+    BOOST_CHECK(c.tick_until([&] { return c.all_live_hibernating(); }, std::chrono::seconds{2}));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

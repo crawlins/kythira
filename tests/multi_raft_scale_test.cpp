@@ -215,6 +215,13 @@ public:
             cfg.hibernation = hibernation;
             cfg.hibernation_group_threshold = hibernation_threshold;
             cfg.hibernate_after = std::chrono::milliseconds{200};
+            // The leader-liveness check would otherwise wake every leader
+            // about 2 s after it fell asleep, and a thousand groups that fell
+            // asleep together wake together. These cases measure tick cost and
+            // wake isolation, so a timed tick or the one-tick window after
+            // `wake()` must not land on that wave. The check has its own cases
+            // in multi_raft_host_unit_test.
+            cfg.hibernation_check_interval = std::chrono::hours{1};
             // Long enough that the policy phase never runs during a timing
             // sample; the subject is the tick, not the policy.
             cfg.policy_interval = std::chrono::hours{1};

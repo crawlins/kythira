@@ -112,10 +112,55 @@ BOOST_AUTO_TEST_CASE(qualify_subnetwork_passes_references_through) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// The idempotency-key label mapping is SDK-free for the same reason as the
+// validators: a successor controller must derive the very label its
+// predecessor wrote, so the mapping is worth covering on every build.
+
+BOOST_AUTO_TEST_SUITE(gcp_idempotency_label)
+
+BOOST_AUTO_TEST_CASE(controller_keys_are_used_verbatim) {
+    // The shape `elastic_capacity_controller::new_key` mints.
+    const std::string key = "cap-7-1759363200000-9f86d081884c7d65";
+    BOOST_CHECK_EQUAL(kythira::gcp_idempotency_label_value(key), key);
+}
+
+BOOST_AUTO_TEST_CASE(unsafe_keys_map_to_a_valid_label) {
+    for (const std::string key :
+         {std::string("Cap-UPPER"), std::string("cap:with/colons"), std::string("9-leading-digit"),
+          std::string("cap-18446744073709551615-1759363200000-ffffffffffffffff-x"),
+          std::string(200, 'a'), std::string("")}) {
+        const auto v = kythira::gcp_idempotency_label_value(key);
+        BOOST_TEST_CONTEXT("key '" << key << "' -> '" << v << "'") {
+            BOOST_CHECK(kythira::is_valid_gcp_label(v));
+            BOOST_CHECK_LE(v.size(), 63u);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(mapping_is_deterministic_and_keeps_keys_apart) {
+    const std::string a(100, 'a');
+    const std::string b = std::string(99, 'a') + "b";  // same sanitised prefix
+    BOOST_CHECK_EQUAL(kythira::gcp_idempotency_label_value(a),
+                      kythira::gcp_idempotency_label_value(a));
+    BOOST_CHECK_NE(kythira::gcp_idempotency_label_value(a),
+                   kythira::gcp_idempotency_label_value(b));
+    BOOST_CHECK_NE(kythira::gcp_idempotency_label_value("Cap-X"),
+                   kythira::gcp_idempotency_label_value("cap-x"));
+}
+
+BOOST_AUTO_TEST_CASE(filter_selects_cluster_and_key) {
+    BOOST_CHECK_EQUAL(
+        kythira::gcp_idempotency_key_filter("test-cluster", "cap-1-2-3"),
+        R"((labels.kythira-cluster = "test-cluster") (labels.kythira-idempotency-key = "cap-1-2-3"))");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 #ifdef KYTHIRA_HAS_GCP_SDK
 
 #include "gcp_fake_compute_clients.hpp"
 
+#include <raft/elastic_capacity_controller.hpp>
 #include <raft/gcp_compute_quorum_manager.hpp>
 #include <raft/gcp_mig_quorum_manager.hpp>
 #include <raft/gcp_operation_wait.hpp>
@@ -402,6 +447,77 @@ BOOST_AUTO_TEST_CASE(mig_maintain_quorum_fault_returns_exceptional_future) {
 BOOST_AUTO_TEST_SUITE_END()
 
 #endif  // FIU_ENABLE
+
+// ── Idempotency keys (elastic-shard-capacity Requirement 8.2) ───────────────
+//
+// The instance resource and the per-instance match are pure, so these need no
+// API call; the list/insert round trips themselves are what the fault cases
+// above and the real-GCE suite cover.
+
+BOOST_AUTO_TEST_SUITE(gcp_compute_idempotency_key)
+
+using compute_mgr_t = kythira::gcp_compute_quorum_manager<std::uint64_t, std::string>;
+
+// The capacity controller detects keyed provisioning by this concept; a
+// signature drift would silently drop the manager back to unkeyed matching.
+static_assert(kythira::keyed_quorum_manager<compute_mgr_t>);
+
+BOOST_AUTO_TEST_CASE(insert_resource_carries_the_key_label) {
+    compute_mgr_t mgr{valid_compute_config()};
+    auto inst = mgr.build_instance("kythira-test-cluster-42", 42, "us-central1-a", "default",
+                                   std::string("cap-1-2-3"));
+    BOOST_REQUIRE(inst.labels().count("kythira-idempotency-key") == 1);
+    BOOST_CHECK_EQUAL(inst.labels().at("kythira-idempotency-key"), "cap-1-2-3");
+
+    auto unkeyed = mgr.build_instance("kythira-test-cluster-42", 42, "us-central1-a", "default");
+    BOOST_CHECK(unkeyed.labels().count("kythira-idempotency-key") == 0);
+}
+
+BOOST_AUTO_TEST_CASE(key_label_wins_over_an_extra_label_of_the_same_name) {
+    auto cfg = valid_compute_config();
+    cfg.extra_labels["kythira-idempotency-key"] = "stale";
+    compute_mgr_t mgr{cfg};
+    auto inst = mgr.build_instance("kythira-test-cluster-42", 42, "us-central1-a", "default",
+                                   std::string("cap-1-2-3"));
+    BOOST_CHECK_EQUAL(inst.labels().at("kythira-idempotency-key"), "cap-1-2-3");
+}
+
+BOOST_AUTO_TEST_CASE(keyed_instance_peer_matches_cluster_and_key) {
+    compute_mgr_t mgr{valid_compute_config()};
+    auto inst = mgr.build_instance("kythira-test-cluster-42", 42, "us-central1-a", "default",
+                                   std::string("cap-1-2-3"));
+    inst.mutable_network_interfaces(0)->set_network_ip("10.128.0.7");
+    // TERMINATED is GCE's "stopped": it still exists, so it still counts.
+    inst.set_status("TERMINATED");
+
+    auto peer = compute_mgr_t::keyed_instance_peer(inst, "test-cluster", "cap-1-2-3", 7000);
+    BOOST_REQUIRE(peer.has_value());
+    BOOST_CHECK_EQUAL(peer->node_id, 42u);
+    BOOST_CHECK_EQUAL(peer->address, "10.128.0.7:7000");
+
+    BOOST_CHECK(!compute_mgr_t::keyed_instance_peer(inst, "test-cluster", "cap-9", 7000));
+    BOOST_CHECK(!compute_mgr_t::keyed_instance_peer(inst, "other-cluster", "cap-1-2-3", 7000));
+}
+
+#ifdef FIU_ENABLE
+BOOST_AUTO_TEST_CASE(find_by_idempotency_key_fault_returns_exceptional_future) {
+    compute_mgr_t mgr{valid_compute_config()};
+    fiu_enable("raft/gcp/compute/find_by_idempotency_key", 1, nullptr, 0);
+    auto fut = mgr.find_by_idempotency_key("cap-1-2-3");
+    fiu_disable("raft/gcp/compute/find_by_idempotency_key");
+    BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(keyed_provision_shares_the_insert_fault) {
+    compute_mgr_t mgr{valid_compute_config()};
+    fiu_enable("raft/gcp/compute/insert_instance", 1, nullptr, 0);
+    auto fut = mgr.provision_node_keyed("us-central1-a", std::nullopt, "cap-1-2-3");
+    fiu_disable("raft/gcp/compute/insert_instance");
+    BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
+}
+#endif  // FIU_ENABLE
+
+BOOST_AUTO_TEST_SUITE_END()
 
 // ── provision_node target-group rejection (no API call needed) ──────────────
 

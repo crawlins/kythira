@@ -69,6 +69,31 @@ if(TARGET Boost::beast OR Boost_FOUND)
     target_compile_definitions(multi_raft_node PRIVATE KYTHIRA_BENCH_HAS_BEAST)
 endif()
 
+# Proxygen on the same terms as the benchmark suite (tests/CMakeLists.txt's
+# bench targets): `--transport proxygen` exists exactly when the Tier B
+# proxygen rows do. Its two instantiations are their own translation units,
+# added only here, so a build without Proxygen compiles nothing extra.
+#
+# The macro is set on main.cpp (for the dispatch) and the two Proxygen
+# translation units ONLY, not target-wide. Target-wide it would make the four
+# httplib/beast translation units parse the Proxygen and Folly I/O headers
+# through host_stacks.hpp and the harness header -- compiler memory added to
+# the very objects the split above exists to keep under budget, for templates
+# none of them instantiates.
+if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+    target_sources(multi_raft_node PRIVATE
+        run_proxygen_json.cpp
+        run_proxygen_cbor.cpp
+    )
+    set_property(SOURCE main.cpp run_proxygen_json.cpp run_proxygen_cbor.cpp
+        APPEND PROPERTY COMPILE_DEFINITIONS KYTHIRA_BENCH_HAS_PROXYGEN)
+    target_link_libraries(multi_raft_node PRIVATE
+        proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
+else()
+    message(STATUS "multi_raft_node: --transport proxygen unavailable "
+                   "(requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+endif()
+
 # The EC2 tag-scan discovery back-end, when the SDK is present
 # (.kiro/specs/multi-machine-placement/ task 8). OPTIONAL on purpose, and
 # guarded exactly as aws_ec2_quorum_manager is: a host built without the SDK
@@ -91,7 +116,7 @@ endif()
 # 5,649 MiB -- so three of them at once under `-j3` would put the runner right
 # back over 16 GiB. `heavy_tu` (declared in the top-level CMakeLists.txt, where
 # the full measurement table lives) admits one at a time, which is what makes
-# the four of them safe to have.
+# the four of them -- six with Proxygen -- safe to have.
 #
 # The property is per-target, so main.cpp and config.cpp are serialised with
 # them. That costs nothing worth naming: 25 s and 3 s respectively, against

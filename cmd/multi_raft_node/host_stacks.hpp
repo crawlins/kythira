@@ -30,7 +30,11 @@
 /// parallel. Nothing here changed behaviour: the same templates, instantiated
 /// the same way, in four files instead of one.
 ///
-/// The declarations of those four entry points live in `host_runners.hpp`.
+/// Proxygen, when compiled in, follows the same rule: `run_proxygen_json.cpp`
+/// and `run_proxygen_cbor.cpp` hold one instantiation each. A fifth and sixth
+/// stack in any existing translation unit would undo the split.
+///
+/// The declarations of those entry points live in `host_runners.hpp`.
 
 #include "config.hpp"
 #include "control_server.hpp"
@@ -55,6 +59,14 @@
 #include <raft/beast_http_transport_impl.hpp>
 #endif
 
+#if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
+#include <raft/proxygen_http_transport.hpp>
+#include <raft/proxygen_http_transport_impl.hpp>
+
+#include <folly/executors/IOThreadPoolExecutor.h>
+#endif
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -170,6 +182,77 @@ template<typename Serializer> struct beast_stack {
 };
 #endif
 
+#if defined(KYTHIRA_BENCH_HAS_PROXYGEN)
+/// @brief Proxygen: asynchronous on a `folly::IOThreadPoolExecutor` this stack
+///        owns, mirroring the harness's `proxygen_http_transport` fixture.
+///
+/// The server and client are held by `unique_ptr` rather than by value for one
+/// reason: `shutdown()` has to destroy them in a specific order — client, then
+/// server, then join the executor — and a value member cannot be destroyed
+/// early. That is the harness's order, and it is the shutdown sequence whose
+/// absence this host used to refuse `--transport proxygen` over.
+///
+/// The executor is shared with the server (which keeps a reference) and lent
+/// to the client by reference, so it is declared first and outlives both.
+/// `run_host` calls `shutdown()` only after `host->stop()` and `host.reset()`,
+/// so no Raft RPC is in flight on these threads when they are torn down.
+template<typename Serializer> struct proxygen_stack {
+    using bundle = kythira::testing::harness_transport_types<Serializer>;
+    using client_type = kythira::proxygen_client<bundle>;
+    using server_type = kythira::proxygen_server<bundle>;
+    static constexpr std::string_view k_name = "proxygen";
+
+    explicit proxygen_stack(const node_options& opt)
+        : _io(std::make_shared<folly::IOThreadPoolExecutor>(
+              std::max(2U, std::thread::hardware_concurrency() / 2))),
+          _server(std::make_unique<server_type>(opt._bind_address, opt._raft_port,
+                                                server_config(opt), kythira::noop_metrics{}, _io)),
+          _client(std::make_unique<client_type>(*_io, url_map(opt), client_config(opt),
+                                                kythira::noop_metrics{})) {}
+
+    ~proxygen_stack() { shutdown(); }
+    proxygen_stack(const proxygen_stack&) = delete;
+    auto operator=(const proxygen_stack&) -> proxygen_stack& = delete;
+
+    auto server() -> server_type& { return *_server; }
+    auto client() -> client_type& { return *_client; }
+
+    /// Called only after the host has been stopped. Client first (its pooled
+    /// sessions live on the executor's event bases), then server, then the
+    /// executor's threads — the same order as the harness fixture's
+    /// `shutdown()`.
+    auto shutdown() -> void {
+        if (_stopped.exchange(true)) {
+            return;
+        }
+        _client.reset();
+        _server.reset();
+        _io->join();
+    }
+
+    // The same timeouts `httplib_stack` derives from `--op-timeout`, on the
+    // fields Proxygen's configs share with cpp-httplib's. Everything else stays
+    // at the transport's defaults, as it does in the Tier B fixture.
+    static auto client_config(const node_options& opt) -> kythira::proxygen_client_config {
+        kythira::proxygen_client_config cfg;
+        cfg.connection_timeout = std::chrono::milliseconds{2000};
+        cfg.request_timeout = opt._op_timeout;
+        return cfg;
+    }
+    static auto server_config(const node_options& opt) -> kythira::proxygen_server_config {
+        kythira::proxygen_server_config cfg;
+        cfg.request_timeout = std::chrono::duration_cast<std::chrono::seconds>(
+            opt._op_timeout + std::chrono::seconds{2});
+        return cfg;
+    }
+
+    std::shared_ptr<folly::IOThreadPoolExecutor> _io;
+    std::unique_ptr<server_type> _server;
+    std::unique_ptr<client_type> _client;
+    std::atomic<bool> _stopped{false};
+};
+#endif
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The host's `raft_types`
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,7 +327,7 @@ template<typename Stack> struct host_types {
 /// @brief What a host with no elastic capacity adds to its configuration:
 ///        nothing. See `capacity_plane.hpp` for the one that adds something,
 ///        which only `run_httplib_json.cpp` instantiates — keeping the
-///        controller's templates out of the other three translation units is
+///        controller's templates out of the other translation units is
 ///        the same compile-memory budget the split into four files protects.
 struct no_capacity {
     template<typename Config> auto configure(Config&, const node_options&) -> void {}

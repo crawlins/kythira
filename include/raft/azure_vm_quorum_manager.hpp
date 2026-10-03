@@ -392,7 +392,88 @@ public:
     /// Provisions a new VM into `target_group`'s subnet. Creates the NIC first,
     /// then the VM; on any failure after the NIC is created, best-effort deletes
     /// what was already created before returning an exceptional Future.
-    auto provision_node(std::string target_group, std::optional<NodeId> /*replacing*/)
+    auto provision_node(std::string target_group, std::optional<NodeId> replacing)
+        -> kythira::future_default<peer_info<NodeId, Address>> {
+        return provision(std::move(target_group), replacing, std::nullopt);
+    }
+
+    // ── idempotency keys (elastic-shard-capacity Requirement 8.2) ────────────
+
+    /// The ARM tag that carries a capacity controller's idempotency key.
+    static constexpr const char* idempotency_key_tag = "kythira:idempotency-key";
+
+    /// @brief `provision_node`, with `key` carried as the VM tag
+    ///        `kythira:idempotency-key`.
+    ///
+    /// The tag is part of the VM's own `PUT`, so it exists from the instant the
+    /// VM does: a controller that dies before recording the node id leaves a
+    /// VM its successor can still find by the key it recorded *before* the
+    /// call. (The NIC, created by an earlier `PUT`, is not keyed: a crash
+    /// between the two leaves a NIC and no VM, which no lookup by key could
+    /// reap anyway, since `decommission_node` takes a node id.)
+    auto provision_node_keyed(std::string target_group, std::optional<NodeId> replacing,
+                              const std::string& key)
+        -> kythira::future_default<peer_info<NodeId, Address>> {
+        return provision(std::move(target_group), replacing, key);
+    }
+
+    /// @brief The VM this cluster created under `key`, if one still exists.
+    ///
+    /// Reads the resource group's VM list -- the same unfiltered list
+    /// `next_node_id` reads, for the same reason: `Microsoft.Compute` rejects a
+    /// tag `$filter` -- following `nextLink`, and matches `kythira:cluster` and
+    /// `kythira:idempotency-key` client-side.
+    ///
+    /// A deallocated or stopped VM counts, as a stopped container does for
+    /// `docker_quorum_manager`: it still exists, still holds its disk and NIC,
+    /// and still needs deleting. A VM whose `provisioningState` is `Deleting`
+    /// does not: it is already on its way out, and reporting it would only bind
+    /// an intent to a machine that cannot join.
+    ///
+    /// The returned address is `<NIC private IP>:<node_port>`, read with one
+    /// more GET; it is empty when that read fails or the NIC has no IP yet --
+    /// the controller reads only the node id from a lookup, and a lookup that
+    /// failed over an address would hide a machine that does exist.
+    auto find_by_idempotency_key(const std::string& key)
+        -> kythira::future_default<std::optional<peer_info<NodeId, Address>>> {
+        using result = std::optional<peer_info<NodeId, Address>>;
+        try {
+            fiu_do_on("raft/azure/vm/find_by_idempotency_key",
+                      throw std::runtime_error("fault: raft/azure/vm/find_by_idempotency_key"););
+
+            auto page = arm_get(std::string("/providers/Microsoft.Compute/virtualMachines"
+                                            "?api-version=") +
+                                compute_api_version);
+            for (;;) {
+                if (const auto* value =
+                        page.is_object() ? page.as_object().if_contains("value") : nullptr;
+                    value != nullptr && value->is_array()) {
+                    for (const auto& vm : value->as_array()) {
+                        if (auto id = keyed_vm_node_id(vm, key)) {
+                            return future_factory_default::makeFuture(
+                                result{peer_info<NodeId, Address>{*id, vm_address(*id)}});
+                        }
+                    }
+                }
+                const auto* next =
+                    page.is_object() ? page.as_object().if_contains("nextLink") : nullptr;
+                if (next == nullptr || !next->is_string() || next->as_string().empty()) {
+                    break;
+                }
+                page = arm_get_url(std::string(next->as_string()));
+            }
+            return future_factory_default::makeFuture(result{});
+        } catch (const std::exception& ex) {
+            return future_factory_default::makeExceptionalFuture<result>(
+                std::make_exception_ptr(std::runtime_error(
+                    std::string("azure_vm_quorum_manager::find_by_idempotency_key: ") +
+                    ex.what())));
+        }
+    }
+
+private:
+    auto provision(std::string target_group, std::optional<NodeId> /*replacing*/,
+                   std::optional<std::string> key)
         -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
             fiu_do_on("raft/azure/vm/create_vm",
@@ -508,7 +589,7 @@ public:
 
                 boost::json::object vm_body;
                 vm_body["location"] = _cfg.azure.location;
-                vm_body["tags"] = build_tags(new_id, target_group);
+                vm_body["tags"] = build_tags(new_id, target_group, key);
                 apply_placement_fields(vm_body, vm_body_props, target_group);
                 apply_priority_fields(vm_body_props);
                 vm_body["properties"] = std::move(vm_body_props);
@@ -577,6 +658,7 @@ public:
         }
     }
 
+public:
     /// Deletes the VM identified by node_id, then its NIC. A 404 on the VM
     /// delete is treated as success (idempotent). NIC deletion failures are
     /// logged but never propagated — they don't affect whether the node is
@@ -801,6 +883,20 @@ private:
         return parse_response(*response);
     }
 
+    /// GET an absolute URL ARM handed back -- a list's `nextLink` -- rather
+    /// than a path under `_arm_base`.
+    [[nodiscard]] auto arm_get_url(const std::string& absolute_url) const -> boost::json::value {
+        Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get,
+                                           Azure::Core::Url(absolute_url));
+        Azure::Core::Context context;
+        if (_cfg.azure.api_timeout.count() > 0) {
+            context = context.WithDeadline(
+                Azure::DateTime(std::chrono::system_clock::now() + _cfg.azure.api_timeout));
+        }
+        auto response = _pipeline->Send(request, context);
+        return parse_response(*response);
+    }
+
     [[nodiscard]] auto arm_put(const std::string& path, const boost::json::value& body) const
         -> boost::json::value {
         auto response = do_send(Azure::Core::Http::HttpMethod::Put, path, &body);
@@ -926,7 +1022,63 @@ private:
         }
     }
 
-    [[nodiscard]] auto build_tags(const NodeId& nid, const std::string& group) const
+    /// The node id of @p vm when it is this cluster's VM carrying @p key and is
+    /// not being deleted; `std::nullopt` otherwise.
+    [[nodiscard]] auto keyed_vm_node_id(const boost::json::value& vm, const std::string& key) const
+        -> std::optional<NodeId> {
+        if (!vm.is_object()) {
+            return std::nullopt;
+        }
+        const auto* tags = vm.as_object().if_contains("tags");
+        if (tags == nullptr || !tags->is_object()) {
+            return std::nullopt;
+        }
+        auto tag_is = [&](const char* name, const std::string& want) {
+            const auto* v = tags->as_object().if_contains(name);
+            return v != nullptr && v->is_string() && std::string(v->as_string()) == want;
+        };
+        if (!tag_is("kythira:cluster", _cfg.cluster_name) || !tag_is(idempotency_key_tag, key)) {
+            return std::nullopt;
+        }
+        if (const auto* props = vm.as_object().if_contains("properties");
+            props != nullptr && props->is_object()) {
+            if (const auto* state = props->as_object().if_contains("provisioningState");
+                state != nullptr && state->is_string() && state->as_string() == "Deleting") {
+                return std::nullopt;
+            }
+        }
+        const auto* name = vm.as_object().if_contains("name");
+        if (name == nullptr || !name->is_string()) {
+            return std::nullopt;
+        }
+        return vm_name_to_node_id(std::string(name->as_string()));
+    }
+
+    /// `<NIC private IP>:<node_port>` for @p nid, or empty when it cannot be
+    /// read (see `find_by_idempotency_key`).
+    [[nodiscard]] auto vm_address(const NodeId& nid) const -> Address {
+        try {
+            auto nic = arm_get("/providers/Microsoft.Network/networkInterfaces/" +
+                               node_id_to_vm_name(nid) + "-nic?api-version=" + network_api_version);
+            const auto& ip_configs = nic.at("properties").at("ipConfigurations").as_array();
+            if (!ip_configs.empty()) {
+                const auto* ip =
+                    ip_configs[0].at("properties").as_object().if_contains("privateIPAddress");
+                if (ip != nullptr && ip->is_string() && !ip->as_string().empty()) {
+                    return static_cast<Address>(std::string(ip->as_string()) + ":" +
+                                                std::to_string(_cfg.node_port));
+                }
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[azure_vm_quorum_manager::find_by_idempotency_key] NIC read for "
+                      << node_id_to_vm_name(nid) << " failed (address left empty): " << ex.what()
+                      << "\n";
+        }
+        return static_cast<Address>(std::string{});
+    }
+
+    [[nodiscard]] auto build_tags(const NodeId& nid, const std::string& group,
+                                  const std::optional<std::string>& key = std::nullopt) const
         -> boost::json::object {
         std::string placement_val = "none";
         if (auto it = _cfg.placement_by_group.find(group); it != _cfg.placement_by_group.end()) {
@@ -951,6 +1103,10 @@ private:
         tags["kythira:placement"] = placement_val;
         for (const auto& [k, v] : _cfg.extra_tags) {
             tags[k] = v;
+        }
+        // Last, so no extra tag can shadow the value reconciliation reads.
+        if (key) {
+            tags[idempotency_key_tag] = *key;
         }
         return tags;
     }
