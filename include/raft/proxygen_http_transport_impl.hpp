@@ -5,6 +5,8 @@
 
 #include <raft/net_bind.hpp>
 #include <raft/proxygen_http_transport.hpp>
+#include <raft/exceptions.hpp>
+#include <raft/transport_conformance_types.hpp>
 
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/AsyncSSLSocket.h>
@@ -245,7 +247,20 @@ auto proxygen_rpc_type_name(std::string_view endpoint) -> std::string {
     if (endpoint == proxygen_detail::proxygen_endpoint_fetch_log_entries) {
         return "fetch_log_entries";
     }
+    if (endpoint == proxygen_detail::proxygen_endpoint_request_pre_vote) {
+        return "request_pre_vote";
+    }
+    if (endpoint == proxygen_detail::proxygen_endpoint_timeout_now) {
+        return "timeout_now";
+    }
     return "unknown";
+}
+
+// The optional extensions, by `proxygen_rpc_type_name`. Only these map a 404
+// or 501 to `rpc_not_implemented_exception`: a peer missing a mandatory RPC is
+// misconfigured, not older.
+auto proxygen_is_extension_rpc(std::string_view rpc_type) -> bool {
+    return rpc_type == "request_pre_vote" || rpc_type == "timeout_now";
 }
 
 // The `default` here is a genuine hazard: it labels any status this switch does
@@ -267,6 +282,8 @@ auto proxygen_status_reason(unsigned status_code) -> std::string {
             return "Not Acceptable";
         case 415:
             return "Unsupported Media Type";
+        case 501:
+            return "Not Implemented";
         default:
             return "Internal Server Error";
     }
@@ -1394,6 +1411,10 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                                     std::format("Failed to deserialize response: {}", e.what()));
                             }
                         }
+                        if (proxygen_is_extension_rpc(rpc_type) &&
+                            (resp.status_code == 404 || resp.status_code == 501)) {
+                            throw kythira::rpc_not_implemented_exception(rpc_type, target);
+                        }
                         if (resp.status_code >= 400 && resp.status_code < 500) {
                             // Carry `Accept-Post` on the exception: the 415
                             // retry runs in a `thenError` continuation, where
@@ -1578,6 +1599,10 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                                     std::format("Failed to deserialize response: {}", e.what()));
                             }
                         }
+                        if (proxygen_is_extension_rpc(rpc_type) &&
+                            (resp.status_code == 404 || resp.status_code == 501)) {
+                            throw kythira::rpc_not_implemented_exception(rpc_type, target);
+                        }
                         if (resp.status_code >= 400 && resp.status_code < 500) {
                             // Carry `Accept-Post` on the exception: the 415
                             // retry runs in a `thenError` continuation, where
@@ -1660,6 +1685,25 @@ auto proxygen_client<Types>::send_fetch_log_entries(
     std::chrono::milliseconds timeout) -> future_template<kythira::fetch_log_entries_response<>> {
     return send_rpc<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
         target, proxygen_detail::proxygen_endpoint_fetch_log_entries, request, timeout);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::send_request_pre_vote(
+    std::uint64_t target, const kythira::request_pre_vote_request<>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::request_pre_vote_response<>> {
+    return send_rpc<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+        target, proxygen_detail::proxygen_endpoint_request_pre_vote, request, timeout);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::send_timeout_now(std::uint64_t target,
+                                              const kythira::timeout_now_request<>& request,
+                                              std::chrono::milliseconds timeout)
+    -> future_template<kythira::timeout_now_response<>> {
+    return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+        target, proxygen_detail::proxygen_endpoint_timeout_now, request, timeout);
 }
 
 // ---------------------------------------------------------------------------
@@ -2121,6 +2165,24 @@ auto proxygen_server<Types>::register_fetch_log_entries_handler(
 
 template<typename Types>
 requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::register_request_pre_vote_handler(
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        handler) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _request_pre_vote_handler = std::move(handler);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::register_timeout_now_handler(
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler)
+    -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _timeout_now_handler = std::move(handler);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
 auto proxygen_server<Types>::start() -> void {
     {
         std::lock_guard<std::mutex> lock(_start_mutex);
@@ -2307,7 +2369,7 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
 
     auto handle = [&]<typename Request, typename Response>(
                       const std::function<Response(const Request&)>& handler,
-                      std::string_view rpc_type) {
+                      std::string_view rpc_type, bool extension_rpc = false) {
         auto start_time = std::chrono::steady_clock::now();
         auto received_metric = _metrics;
         received_metric.set_metric_name("proxygen_http.server.request.received");
@@ -2316,8 +2378,11 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
         received_metric.emit();
 
         if (!handler) {
-            status_code = 500;
-            response_body = "Handler not registered";
+            // 501 for an extension: this server cannot serve the RPC at all,
+            // which the caller maps to "older peer". The mandatory three keep
+            // 500, since a node without them is broken rather than older.
+            status_code = extension_rpc ? 501 : 500;
+            response_body = extension_rpc ? "Not Implemented" : "Handler not registered";
             return;
         }
 
@@ -2400,6 +2465,13 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
         handle.template
         operator()<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
             _fetch_log_entries_handler, "fetch_log_entries");
+    } else if (target == proxygen_detail::proxygen_endpoint_request_pre_vote) {
+        handle.template
+        operator()<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+            _request_pre_vote_handler, "request_pre_vote", true);
+    } else if (target == proxygen_detail::proxygen_endpoint_timeout_now) {
+        handle.template operator()<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+            _timeout_now_handler, "timeout_now", true);
     } else {
         status_code = 404;
         response_body = "Not Found";
@@ -2410,5 +2482,42 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
         error_metric.emit();
     }
 }
+
+// ── concept conformance (.kiro/specs/http-coap-pre-vote-timeout-now/, Requirement 2) ──
+//
+// Which Raft extensions this transport carries, as a compile-time fact; see
+// the matching block in http_transport_impl.hpp for why the negative
+// assertions matter as much as the positive ones.
+
+static_assert(kythira::network_client<proxygen_client<transport_detail::conformance_types>>,
+              "proxygen_client must satisfy network_client");
+static_assert(kythira::network_server<proxygen_server<transport_detail::conformance_types>>,
+              "proxygen_server must satisfy network_server");
+static_assert(
+    kythira::network_client_with_pre_vote<proxygen_client<transport_detail::conformance_types>>,
+    "proxygen_client must satisfy network_client_with_pre_vote");
+static_assert(
+    kythira::network_server_with_pre_vote<proxygen_server<transport_detail::conformance_types>>,
+    "proxygen_server must satisfy network_server_with_pre_vote");
+static_assert(
+    kythira::network_client_with_timeout_now<proxygen_client<transport_detail::conformance_types>>,
+    "proxygen_client must satisfy network_client_with_timeout_now");
+static_assert(
+    kythira::network_server_with_timeout_now<proxygen_server<transport_detail::conformance_types>>,
+    "proxygen_server must satisfy network_server_with_timeout_now");
+static_assert(
+    kythira::network_client_with_log_fetch<proxygen_client<transport_detail::conformance_types>>,
+    "proxygen_client must satisfy network_client_with_log_fetch");
+static_assert(
+    kythira::network_server_with_log_fetch<proxygen_server<transport_detail::conformance_types>>,
+    "proxygen_server must satisfy network_server_with_log_fetch");
+static_assert(!kythira::network_client_with_cluster_join<
+                  proxygen_client<transport_detail::conformance_types>>,
+              "HTTP does not implement cluster join; see "
+              ".kiro/specs/http-coap-pre-vote-timeout-now/design.md §6");
+static_assert(!kythira::network_client_with_cluster_leave<
+                  proxygen_client<transport_detail::conformance_types>>,
+              "HTTP does not implement cluster leave; see "
+              ".kiro/specs/http-coap-pre-vote-timeout-now/design.md §6");
 
 }  // namespace kythira
