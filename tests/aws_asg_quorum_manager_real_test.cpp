@@ -231,10 +231,12 @@ auto ec2_filter(const std::string& name, const std::string& value) -> Aws::EC2::
     return f;
 }
 
-// The manager derives a node's id from its instance id; the cases go the other
-// way to look the instance up.
-auto ec2_id_of(asg_node_id nid) -> std::string {
-    return kythira::aws_ec2_quorum_manager<asg_node_id>::node_id_to_ec2_id(nid);
+// The cases look a node's instance up through the manager: in numeric mode
+// that reads the kythira:node-id tag it wrote when it adopted the instance.
+auto ec2_id_of(const asg_manager& mgr, asg_node_id nid) -> std::string {
+    auto id = mgr.instance_id_of(nid);
+    BOOST_REQUIRE_MESSAGE(id.has_value(), "no instance carries node id " << nid);
+    return *id;
 }
 
 auto tag_value(const Aws::Vector<Aws::EC2::Model::Tag>& tags, const std::string& key)
@@ -641,7 +643,7 @@ struct AsgRealFixture : signal_cleanup_target {
         -> kythira::peer_info<asg_node_id, std::string> {
         const auto requested = std::chrono::steady_clock::now();
         auto p = std::move(mgr.provision_node(group, std::nullopt)).get();
-        const auto id = ec2_id_of(p.node_id);
+        const auto id = ec2_id_of(mgr, p.node_id);
         auto inst = describe_instance(id);
         BOOST_REQUIRE_MESSAGE(inst.has_value(),
                               "provisioned instance " + id + " not returned by DescribeInstances");
@@ -1107,7 +1109,7 @@ BOOST_AUTO_TEST_CASE(provision_node_increases_desired_capacity, *boost::unit_tes
     const int capacity = before->GetDesiredCapacity();
 
     auto p = provision(mgr, group);
-    const auto id = ec2_id_of(p.node_id);
+    const auto id = ec2_id_of(mgr, p.node_id);
 
     auto after = describe_group(group_name);
     BOOST_REQUIRE(after.has_value());
@@ -1162,7 +1164,7 @@ BOOST_AUTO_TEST_CASE(assess_detects_stopped_instance, *boost::unit_test::timeout
     asg_manager mgr{mgr_cfg};
     const auto& group = azs.front();
     auto p = provision(mgr, group);
-    const auto id = ec2_id_of(p.node_id);
+    const auto id = ec2_id_of(mgr, p.node_id);
 
     Aws::EC2::Model::StopInstancesRequest stop;
     stop.AddInstanceIds(id);
@@ -1191,7 +1193,7 @@ BOOST_AUTO_TEST_CASE(decommission_removes_instance, *boost::unit_test::timeout(2
     const int capacity = before->GetDesiredCapacity();
 
     auto p = provision(mgr, azs.front());
-    const auto id = ec2_id_of(p.node_id);
+    const auto id = ec2_id_of(mgr, p.node_id);
     {
         const auto err = decommission_error(mgr, p.node_id);
         BOOST_REQUIRE_MESSAGE(err.empty(), "decommission_node: " + err);
@@ -1219,7 +1221,7 @@ BOOST_AUTO_TEST_CASE(decommission_is_idempotent, *boost::unit_test::timeout(2700
     const auto& group = azs.front();
     const auto& group_name = asg_names.front();
 
-    // A well-formed instance id that names no instance.
+    // A node id no instance carries.
     {
         const auto err = decommission_error(mgr, asg_node_id{1});
         BOOST_CHECK_MESSAGE(err.empty(), "decommission of an unknown instance: " + err);
@@ -1227,8 +1229,8 @@ BOOST_AUTO_TEST_CASE(decommission_is_idempotent, *boost::unit_test::timeout(2700
 
     auto gone = provision(mgr, group);
     auto bystander = provision(mgr, group);
-    const auto gone_id = ec2_id_of(gone.node_id);
-    const auto bystander_id = ec2_id_of(bystander.node_id);
+    const auto gone_id = ec2_id_of(mgr, gone.node_id);
+    const auto bystander_id = ec2_id_of(mgr, bystander.node_id);
     auto before = describe_group(group_name);
     BOOST_REQUIRE(before.has_value());
     const int capacity = before->GetDesiredCapacity();
@@ -1267,7 +1269,7 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_restores_full_cluster, *boost::unit_test::t
     const auto& group = azs.front();
     const auto& group_name = asg_names.front();
     auto p = provision(mgr, group);
-    const auto id = ec2_id_of(p.node_id);
+    const auto id = ec2_id_of(mgr, p.node_id);
 
     Aws::EC2::Model::TerminateInstancesRequest term;
     term.AddInstanceIds(id);
@@ -1303,7 +1305,7 @@ BOOST_AUTO_TEST_CASE(multi_az_topology, *boost::unit_test::timeout(2400)) {
     asg_manager mgr{mgr_cfg};
     for (std::size_t i = 0; i < azs.size(); ++i) {
         auto p = provision(mgr, azs[i]);
-        const auto id = ec2_id_of(p.node_id);
+        const auto id = ec2_id_of(mgr, p.node_id);
         auto inst = describe_instance(id);
         BOOST_REQUIRE(inst.has_value());
         BOOST_CHECK_EQUAL(std::string(inst->GetPlacement().GetAvailabilityZone()), azs[i]);

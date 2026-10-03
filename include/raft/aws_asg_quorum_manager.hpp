@@ -29,6 +29,7 @@
 #include <aws/ec2/model/TerminateInstancesRequest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <string_view>
 #include <chrono>
 #include <cstdint>
@@ -75,16 +76,19 @@ struct aws_asg_quorum_manager_config {
 /// consistent with how the ASG's own EC2 health-check type works.  The constructor validates
 /// that every configured ASG uses EC2 health checks; it throws if any ASG uses ELB checks.
 ///
-/// Node identity is derived from the EC2 instance ID using `aws_ec2_quorum_manager`'s
-/// `ec2_id_to_node_id` / `node_id_to_ec2_id` helpers, making the node-to-EC2 mapping
-/// a pure computation without tag scans.
+/// Node identity follows `aws_ec2_quorum_manager` and shares its id mapping: with
+/// `aws_ec2_node_id` (or `std::string` holding its canonical text) the node id is the
+/// instance the ASG launched; with an unsigned integer it is allocated when the new
+/// instance is adopted, written to `kythira:node-id`, and looked up by that tag.
 ///
-/// @tparam NodeId  Node identifier type; defaults to `uint64_t`.
+/// @tparam NodeId  Node identifier type; defaults to `uint64_t`. An unsigned integer,
+///                 `std::string` or `aws_ec2_node_id`.
 /// @tparam Address Network address type; defaults to `std::string`.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires node_id<NodeId>
 class aws_asg_quorum_manager {
     using ec2_mgr_t = aws_ec2_quorum_manager<NodeId, Address>;
+    static constexpr bool instance_is_node_id = ec2_mgr_t::instance_is_node_id;
 
 public:
     using node_id_type = NodeId;
@@ -112,6 +116,14 @@ public:
             if (_cfg.asg_by_group.find(gt.group_id) == _cfg.asg_by_group.end()) {
                 throw std::invalid_argument(
                     "aws_asg_quorum_manager: no ASG configured for group: " + gt.group_id);
+            }
+        }
+        if constexpr (instance_is_node_id) {
+            if (!aws_ec2_rules::valid_region(_cfg.aws.region)) {
+                throw std::invalid_argument(
+                    "aws_asg_quorum_manager: aws.region must name a region when the node id is "
+                    "the instance (got '" +
+                    _cfg.aws.region + "')");
             }
         }
         Aws::Client::ClientConfiguration client_cfg;
@@ -161,10 +173,10 @@ public:
         }
     }
 
-    /// @brief Assesses cluster health via EC2 `DescribeInstanceStatus`.
+    /// @brief Assesses cluster health from EC2 instance state.
     ///
-    /// A node is live iff its instance state is `running`.
-    /// `SetIncludeAllInstances(true)` ensures transitioning instances are visible.
+    /// A node is live iff its instance state is `running`. A node with no instance,
+    /// or whose id names another region, is unreachable.
     ///
     /// @param cluster Full cluster membership with placement-group annotations.
     /// @return Future containing the health report, or an exceptional Future on API error.
@@ -178,27 +190,14 @@ public:
                 return build_health(cluster, {});
             }
 
-            Aws::EC2::Model::DescribeInstanceStatusRequest req;
+            std::vector<NodeId> ids;
+            ids.reserve(cluster.size());
             for (const auto& np : cluster) {
-                req.AddInstanceIds(ec2_mgr_t::node_id_to_ec2_id(np.node_id));
+                ids.push_back(np.node_id);
+                raise_id_floor(np.node_id);
             }
-            req.SetIncludeAllInstances(true);
-
-            auto outcome = _ec2->DescribeInstanceStatus(req);
-            if (!outcome.IsSuccess()) {
-                throw std::runtime_error("ec2 DescribeInstanceStatus: " +
-                                         std::string(outcome.GetError().GetMessage()));
-            }
-
-            std::map<std::string, bool> live_map;
-            for (const auto& status : outcome.GetResult().GetInstanceStatuses()) {
-                bool running = (status.GetInstanceState().GetName() ==
-                                Aws::EC2::Model::InstanceStateName::running);
-                auto nid = ec2_mgr_t::ec2_id_to_node_id(std::string(status.GetInstanceId()));
-                live_map[node_id_str(nid)] = running;
-            }
-
-            return build_health(cluster, live_map);
+            return build_health(
+                cluster, ec2_mgr_t::live_by_node(*_ec2, _cfg.aws.region, _cfg.cluster_name, ids));
         } catch (const std::exception& ex) {
             return future_factory_default::makeExceptionalFuture<
                 quorum_health<NodeId, std::string>>(std::make_exception_ptr(std::runtime_error(
@@ -284,7 +283,8 @@ public:
     /// restored to its original value before returning an exceptional Future.
     ///
     /// The `replacing` hint is accepted but unused; the new instance always gets a
-    /// fresh EC2 ID and therefore a new `NodeId`.
+    /// fresh EC2 ID and therefore a new `NodeId` (in numeric mode, one allocated
+    /// from the cluster's `kythira:node-id` tags once the instance is found).
     ///
     /// @param target_group Placement-group key in `asg_by_group`.
     /// @param replacing    Ignored; present for interface compatibility.
@@ -391,7 +391,21 @@ public:
                 throw std::runtime_error("asg provision timeout for group: " + target_group);
             }
 
-            NodeId new_id = ec2_mgr_t::ec2_id_to_node_id(new_ec2_id);
+            NodeId new_id{};
+            if constexpr (instance_is_node_id) {
+                auto from_instance = ec2_mgr_t::node_id_for_instance(_cfg.aws.region, new_ec2_id);
+                if (!from_instance) {
+                    throw std::runtime_error(
+                        "ASG launched an instance whose id is not a valid "
+                        "EC2 id in " +
+                        _cfg.aws.region + ": '" + new_ec2_id + "'");
+                }
+                new_id = std::move(*from_instance);
+            } else {
+                new_id = ec2_mgr_t::allocate_numeric_node_id(*_ec2, _cfg.cluster_name,
+                                                             _id_floor->load());
+                raise_id_floor(new_id);
+            }
             apply_tags(new_ec2_id, new_id, target_group);
             Address addr = static_cast<Address>(private_ip + ":" + std::to_string(_cfg.node_port));
             return future_factory_default::makeFuture(peer_info<NodeId, Address>{new_id, addr});
@@ -436,7 +450,17 @@ public:
             fiu_do_on("raft/aws/asg/terminate_instance",
                       throw std::runtime_error("fault: raft/aws/asg/terminate_instance"););
 
-            std::string ec2_id = ec2_mgr_t::node_id_to_ec2_id(node_id);
+            auto found = instance_id_of(node_id);
+            if (!found) {
+                if constexpr (instance_is_node_id) {
+                    throw std::invalid_argument("node " + node_id_str(node_id) +
+                                                " is not an EC2 instance in " + _cfg.aws.region);
+                } else {
+                    // No instance carries this id any more: already gone.
+                    return future_factory_default::makeFuture();
+                }
+            }
+            const std::string ec2_id = *found;
             Aws::AutoScaling::Model::TerminateInstanceInAutoScalingGroupRequest req;
             req.SetInstanceId(ec2_id);
             req.SetShouldDecrementDesiredCapacity(true);
@@ -508,27 +532,52 @@ public:
     /// @brief Returns the desired topology from the configuration.
     [[nodiscard]] auto topology() const -> desired_topology<std::string> { return _cfg.topology; }
 
+    /// @brief The instance a node runs on, or nullopt when there is none; see
+    ///        `aws_ec2_quorum_manager::instance_id_of`.
+    [[nodiscard]] auto instance_id_of(const NodeId& nid) const -> std::optional<std::string> {
+        if constexpr (instance_is_node_id) {
+            return ec2_mgr_t::instance_id_for_node(_cfg.aws.region, nid);
+        } else {
+            auto found = ec2_mgr_t::find_numeric_instances(*_ec2, _cfg.cluster_name, {nid});
+            auto it = found.find(node_id_str(nid));
+            if (it == found.end() || it->second.empty()) {
+                return std::nullopt;
+            }
+            return ec2_mgr_t::preferred_instance(it->second).instance_id;
+        }
+    }
+
+    /// @brief The node id of an instance, or nullopt when it is not one of this
+    ///        cluster's nodes; see `aws_ec2_quorum_manager::node_id_of_instance`.
+    [[nodiscard]] auto node_id_of_instance(const std::string& ec2_id) const
+        -> std::optional<NodeId> {
+        if constexpr (instance_is_node_id) {
+            return ec2_mgr_t::node_id_for_instance(_cfg.aws.region, ec2_id);
+        } else {
+            return ec2_mgr_t::numeric_node_id_of_instance(*_ec2, _cfg.cluster_name, ec2_id);
+        }
+    }
+
 private:
     aws_asg_quorum_manager_config _cfg;
     std::shared_ptr<Aws::AutoScaling::AutoScalingClient> _asg;
     std::shared_ptr<Aws::EC2::EC2Client> _ec2;
+    /// Numeric mode: the highest id allocated or assessed; see
+    /// `aws_ec2_quorum_manager::allocate_numeric_node_id`.
+    std::shared_ptr<std::atomic<std::uint64_t>> _id_floor =
+        std::make_shared<std::atomic<std::uint64_t>>(0);
 
-    static auto node_id_str(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
+    void raise_id_floor(const NodeId& nid) {
+        if constexpr (!instance_is_node_id) {
+            auto v = static_cast<std::uint64_t>(nid);
+            auto cur = _id_floor->load();
+            while (cur < v && !_id_floor->compare_exchange_weak(cur, v)) {
+            }
         }
     }
 
-    static auto find_tag(const Aws::Vector<Aws::EC2::Model::Tag>& tags, const std::string& key)
-        -> std::optional<std::string> {
-        for (const auto& tag : tags) {
-            if (std::string(tag.GetKey()) == key) {
-                return std::string(tag.GetValue());
-            }
-        }
-        return std::nullopt;
+    static auto node_id_str(const NodeId& id) -> std::string {
+        return node_id_traits<NodeId>::to_text(id);
     }
 
     [[nodiscard]] auto build_health(const std::vector<node_placement<NodeId, std::string>>& cluster,
@@ -605,7 +654,11 @@ private:
         };
         Aws::EC2::Model::CreateTagsRequest req;
         req.AddResources(ec2_id);
-        req.AddTags(make_tag("Name", "kythira-" + _cfg.cluster_name + "-" + node_id_str(nid)));
+        std::string name_suffix = node_id_str(nid);
+        if constexpr (instance_is_node_id) {
+            name_suffix = ec2_id;  // canonical text holds ':' and repeats the instance id
+        }
+        req.AddTags(make_tag("Name", "kythira-" + _cfg.cluster_name + "-" + name_suffix));
         req.AddTags(make_tag("kythira:cluster", _cfg.cluster_name));
         req.AddTags(make_tag("kythira:node-id", node_id_str(nid)));
         req.AddTags(make_tag("kythira:group", group));
@@ -617,6 +670,9 @@ private:
 static_assert(quorum_manager<aws_asg_quorum_manager<std::uint64_t, std::string>, std::uint64_t,
                              std::string, std::string>,
               "aws_asg_quorum_manager must satisfy quorum_manager");
+static_assert(quorum_manager<aws_asg_quorum_manager<aws_ec2_node_id, std::string>, aws_ec2_node_id,
+                             std::string, std::string>,
+              "aws_asg_quorum_manager<aws_ec2_node_id> must satisfy quorum_manager");
 
 }  // namespace kythira
 

@@ -1316,9 +1316,13 @@ struct RealEc2Fixture : signal_cleanup_target {
                                                    std::string(out.GetError().GetMessage()));
         for (const auto& res : out.GetResult().GetReservations()) {
             for (const auto& inst : res.GetInstances()) {
-                live.push_back({.node_id = kythira::aws_ec2_quorum_manager<>::ec2_id_to_node_id(
-                                    std::string(inst.GetInstanceId())),
-                                .group_id = find_tag_val(inst.GetTags(), "kythira:group")});
+                // Read from the tag the manager wrote at launch, not asked of it.
+                auto nid = kythira::node_id_traits<std::uint64_t>::from_text(
+                    find_tag_val(inst.GetTags(), "kythira:node-id"));
+                BOOST_REQUIRE_MESSAGE(nid.has_value(), std::string(inst.GetInstanceId())
+                                                           << " has no numeric kythira:node-id");
+                live.push_back(
+                    {.node_id = *nid, .group_id = find_tag_val(inst.GetTags(), "kythira:group")});
             }
         }
         return live;
@@ -1643,8 +1647,7 @@ BOOST_AUTO_TEST_CASE(quarantine_sg_causes_unreachable, *boost::unit_test::timeou
     cluster.push_back({.node_id = peer.node_id, .group_id = "AZ1"});
     track_instances(1);
 
-    // EC2 ID is derived directly from node_id — no DescribeInstances lookup.
-    std::string ec2_id = kythira::aws_ec2_quorum_manager<>::node_id_to_ec2_id(peer.node_id);
+    std::string ec2_id = mgr.instance_id_of(peer.node_id).value();
 
     // Stop the instance (state: stopped → non-running).
     stop_instance(ec2_id);
@@ -1694,7 +1697,7 @@ BOOST_AUTO_TEST_CASE(process_crash_via_ssh_kill, *boost::unit_test::timeout(1500
     // Exercise the SSH path to the bastion.
     BOOST_CHECK_NO_THROW(ssh_execute(priv_ip, "true"));
 
-    std::string ec2_id = kythira::aws_ec2_quorum_manager<>::node_id_to_ec2_id(peer.node_id);
+    std::string ec2_id = mgr.instance_id_of(peer.node_id).value();
     stop_instance(ec2_id);
 
     auto health = mgr.assess_quorum(cluster).get();
@@ -1791,7 +1794,7 @@ BOOST_AUTO_TEST_CASE(az_outage_during_rolling_deployment, *boost::unit_test::tim
     }
     track_instances(9);
 
-    // AZ3: terminate all 3 (decommission_node uses node_id_to_ec2_id internally).
+    // AZ3: terminate all 3 (decommission_node finds each instance by its kythira:node-id tag).
     for (auto nid : by_az["AZ3"]) {
         BOOST_CHECK_NO_THROW(mgr.decommission_node(nid).get());
     }

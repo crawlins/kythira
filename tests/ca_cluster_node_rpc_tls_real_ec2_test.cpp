@@ -917,7 +917,7 @@ BOOST_FIXTURE_TEST_CASE(bootstrap_and_cutover_survives_bootstrap_credential_dele
         (void)subnet_id;
         auto peer = mgr.provision_node(az, std::nullopt).get();
         cluster.push_back({.node_id = peer.node_id, .group_id = az});
-        auto ip = public_ip_of(kythira::aws_ec2_quorum_manager<>::node_id_to_ec2_id(peer.node_id));
+        auto ip = public_ip_of(mgr.instance_id_of(peer.node_id).value());
         BOOST_REQUIRE_MESSAGE(!ip.empty(), "no public IP found for node " << peer.node_id);
         public_ips.push_back(ip);
         track_instance("node " + std::to_string(peer.node_id) + " (" + az + ")", cfg.instance_type);
@@ -1034,7 +1034,7 @@ BOOST_FIXTURE_TEST_CASE(staggered_third_node_join_maintains_connectivity,
     for (const auto& az : azs) {
         auto peer = mgr.provision_node(az, std::nullopt).get();
         cluster.push_back({.node_id = peer.node_id, .group_id = az});
-        auto ip = public_ip_of(kythira::aws_ec2_quorum_manager<>::node_id_to_ec2_id(peer.node_id));
+        auto ip = public_ip_of(mgr.instance_id_of(peer.node_id).value());
         BOOST_REQUIRE_MESSAGE(!ip.empty(), "no public IP for node " << peer.node_id);
         public_ips.push_back(ip);
         track_instance("node " + std::to_string(peer.node_id) + " (" + az + ")", cfg.instance_type);
@@ -1146,7 +1146,7 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
     for (const auto& az : azs) {
         auto peer = mgr.provision_node(az, std::nullopt).get();
         cluster.push_back({.node_id = peer.node_id, .group_id = az});
-        auto ip = public_ip_of(kythira::aws_ec2_quorum_manager<>::node_id_to_ec2_id(peer.node_id));
+        auto ip = public_ip_of(mgr.instance_id_of(peer.node_id).value());
         BOOST_REQUIRE_MESSAGE(!ip.empty(), "no public IP for node " << peer.node_id);
         public_ips.push_back(ip);
         track_instance("node " + std::to_string(peer.node_id) + " (" + az + ")", cfg.instance_type);
@@ -1312,7 +1312,7 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
     for (const auto& az : azs) {
         auto peer = mgr.provision_node(az, std::nullopt).get();
         cluster.push_back({.node_id = peer.node_id, .group_id = az});
-        auto ip = public_ip_of(kythira::aws_ec2_quorum_manager<>::node_id_to_ec2_id(peer.node_id));
+        auto ip = public_ip_of(mgr.instance_id_of(peer.node_id).value());
         BOOST_REQUIRE_MESSAGE(!ip.empty(), "no public IP for node " << peer.node_id);
         public_ips.push_back(ip);
         track_instance("node " + std::to_string(peer.node_id) + " (" + az + ")", cfg.instance_type);

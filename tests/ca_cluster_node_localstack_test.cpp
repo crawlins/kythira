@@ -29,11 +29,10 @@
 //   build/tests/ca_cluster_node_localstack_test
 //   docker compose -f docker/aws-localstack-compose.yml down
 //
-// A plain LocalStack container is not enough. Its instance IDs are 17
-// random hex digits, and aws_ec2_quorum_manager derives its uint64_t node id
-// from that hex value, so provision_node() overflows for about 15 of every
-// 16 instances. The compose file's ready hook gives instances the i-0 + 16
-// hex digit shape real AWS uses.
+// A plain LocalStack container is enough: its instance ids are 17 random hex
+// digits, which used to overflow the manager's old uint64_t derivation, but
+// the numeric node id now comes from the kythira:node-id tag the manager
+// allocates (cloud-composite-node-ids Requirement 11).
 
 #define BOOST_TEST_MODULE ca_cluster_node_localstack_test
 #include <boost/test/unit_test.hpp>
@@ -373,14 +372,13 @@ BOOST_FIXTURE_TEST_CASE(three_az_topology_provisions_and_replaces_one_node_per_a
     // The group_id above is only what this test asked for. Check where each
     // instance actually landed: its subnet must be its own AZ's, and the
     // manager's launch tags must name that same group.
-    using manager_t = kythira::aws_ec2_quorum_manager<>;
     std::map<std::string, described_instance> by_id;
     for (auto& d : describe_live_instances(*ec2, vpc_id)) {
         by_id[d.instance_id] = d;
     }
     BOOST_TEST(by_id.size() == 3u);
     for (const auto& p : cluster) {
-        auto it = by_id.find(manager_t::node_id_to_ec2_id(p.node_id));
+        auto it = by_id.find(mgr.instance_id_of(p.node_id).value_or(""));
         BOOST_REQUIRE_MESSAGE(it != by_id.end(),
                               "provisioned node " << p.node_id << " not found in the VPC");
         BOOST_TEST(it->second.subnet_id == subnet_by_az.at(p.group_id));
@@ -393,7 +391,7 @@ BOOST_FIXTURE_TEST_CASE(three_az_topology_provisions_and_replaces_one_node_per_a
     // Lose one instance the way a real failure would: terminated outside
     // the manager, which only finds out through its next assessment.
     const auto victim = cluster[1];
-    const std::string victim_ec2_id = manager_t::node_id_to_ec2_id(victim.node_id);
+    const std::string victim_ec2_id = mgr.instance_id_of(victim.node_id).value_or("");
     {
         Aws::EC2::Model::TerminateInstancesRequest term;
         term.AddInstanceIds(victim_ec2_id);
@@ -431,7 +429,7 @@ BOOST_FIXTURE_TEST_CASE(three_az_topology_provisions_and_replaces_one_node_per_a
     // and its kythira:group tag. The two healthy AZs got nothing.
     std::set<std::string> known;
     for (const auto& p : cluster) {
-        known.insert(manager_t::node_id_to_ec2_id(p.node_id));
+        known.insert(mgr.instance_id_of(p.node_id).value_or(""));
     }
     std::vector<described_instance> fresh;
     for (auto& d : describe_live_instances(*ec2, vpc_id)) {
@@ -445,8 +443,9 @@ BOOST_FIXTURE_TEST_CASE(three_az_topology_provisions_and_replaces_one_node_per_a
     BOOST_TEST(fresh[0].group_tag == victim.group_id);
     BOOST_TEST_MESSAGE("replacement " << fresh[0].instance_id << " in " << victim.group_id);
 
-    cluster[1] = {.node_id = manager_t::ec2_id_to_node_id(fresh[0].instance_id),
-                  .group_id = victim.group_id};
+    auto fresh_id = mgr.node_id_of_instance(fresh[0].instance_id);
+    BOOST_REQUIRE_MESSAGE(fresh_id.has_value(), fresh[0].instance_id << " carries no node id");
+    cluster[1] = {.node_id = *fresh_id, .group_id = victim.group_id};
     auto after = mgr.assess_quorum(cluster).get();
     BOOST_TEST(after.live_node_count == 3u);
     for (const auto& g : after.groups) {
