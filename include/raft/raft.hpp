@@ -4898,6 +4898,21 @@ auto node<Types>::handle_request_pre_vote(const request_pre_vote_request_type& r
         return request_pre_vote_response_type{_current_term, false};
     }
 
+    // A leader is in contact with a leader by definition: itself. Without
+    // this it granted a pre-vote from any follower with an up-to-date log,
+    // since `_last_leader_contact` only records contact from *another*
+    // leader. One grant plus the candidate's own vote is a majority of
+    // three, so a follower cut off from the leader's heartbeats could pass
+    // its pre-vote round, campaign at a higher term and depose a healthy
+    // leader on rejoining: the disruption PreVote exists to prevent (found
+    // by http_pre_vote_timeout_now_test; etcd's leader refuses the same way).
+    if (_state == kythira::server_state::leader) {
+        _logger.debug("Denying pre-vote: this node is the leader",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"candidate", node_id_to_string(request.candidate_id())}});
+        return request_pre_vote_response_type{_current_term, false};
+    }
+
     if (_last_leader_contact.has_value()) {
         auto now = std::chrono::steady_clock::now();
         auto since_leader_contact =
