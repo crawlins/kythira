@@ -200,6 +200,12 @@ the socket. That principle paid for itself the first time it was tested.
 
 ## Follow-ups
 
+- **Revocation, `cn_validator` and ACE-OAuth parity with libcoap**: closed by
+  `.kiro/specs/coap-alternate-backend-security-parity` (October 3, 2026).
+  Revocation used to be ignored here, and an ACE config crashed construction;
+  the CRL check now runs in `check_established_peer()` ahead of the validator,
+  and ACE runs in `plan_security()`. Tests:
+  `tests/coap_cantcoap_security_parity_test.cpp`.
 - **arm64**, unverified here as for the other backends — no cross toolchain.
 - **Cross-backend interop tests** still need two processes, since no two CoAP
   backends can share a translation unit. EDHOC and DTLS are both meant to
