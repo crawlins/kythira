@@ -28,12 +28,23 @@
 /// rather than silently provisioning into the wrong failure domain. The caller
 /// deploys one manager per AD; see `docker/oci_quorum_manager/README.md`.
 ///
+/// **A timed-out provision detaches its own launch, by id**
+/// (`.kiro/specs/group-scale-up-rollback/`). Every instance absent from the
+/// pre-growth snapshot is detached with `isDecrementSize` and
+/// `isAutoTerminate`; the pool size is written back blind only when there is
+/// none, and the listing after that write is audited for a member it cost.
+/// Instance pools have no scale-in protection, so that audit is a report,
+/// not a prevention: the window is one listing-to-resize round trip. Run one
+/// manager per pool, since an instance another tool adds mid-provision is
+/// "fresh" and would be detached on a timeout.
+///
 /// Header-only and always compiled — there is no OCI SDK to detect. The kconfig
 /// flag `CONFIG_OCI_QUORUM_MANAGER` selects whether the *tests* for it are built,
 /// not whether the header works.
 
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
+#include <raft/group_scale_rollback.hpp>
 #include <raft/oci_client_config.hpp>
 #include <raft/oci_http_client.hpp>
 #include <raft/quorum_management.hpp>
@@ -507,11 +518,11 @@ public:
     /// @brief Grows the pool by one, tags the new instance, and returns its
     ///        address (Requirements 6.1-6.9).
     ///
-    /// The "newly launched instance" heuristic is *absence of a
-    /// `kythira-node-id` tag*, the same one `aws_asg_quorum_manager` uses. It
-    /// works because this manager is the only writer of that tag and writes it
-    /// immediately; it does mean an operator who launches an instance into the
-    /// pool by hand mid-provision can have it adopted instead.
+    /// The newly launched instance is one **absent from the pre-growth
+    /// snapshot** and carrying no `kythira-node-id` tag. The snapshot keeps an
+    /// untagged instance that predates the call from being adopted (or, on a
+    /// timeout, detached); an operator who launches an instance into the pool
+    /// by hand mid-provision can still have it adopted instead.
     auto provision_node(std::string target_group, std::optional<NodeId> replacing)
         -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
@@ -539,6 +550,13 @@ public:
                 throw std::runtime_error("GetInstancePool returned no usable size for " +
                                          _cfg.instance_pool_id);
             }
+
+            // Every member, in every lifecycle state, before the grow call
+            // (group-scale-up-rollback Requirement 1). Only an instance
+            // absent from it is this call's to adopt or to remove on
+            // timeout. A failed listing fails the provision before the pool
+            // grows.
+            const auto pre_growth = list_pool_instance_ids();
 
             set_pool_size(orig_size + 1);
 
@@ -574,6 +592,13 @@ public:
                     if (inst.lifecycle_state != "RUNNING") {
                         continue;
                     }
+                    // Fresh **and** untagged: the snapshot keeps an untagged
+                    // instance that predates this call (an operator's, or one
+                    // a previous timeout left) from being adopted, and the
+                    // tag test keeps another cluster's members out.
+                    if (std::ranges::find(pre_growth, inst.id) != pre_growth.end()) {
+                        continue;
+                    }
                     if (!inst.freeform_tags.contains(oci_detail::tag_node_id)) {
                         launched = inst;
                         break;
@@ -585,20 +610,24 @@ public:
             }
 
             if (!launched.has_value()) {
-                // Requirement 6.7: best-effort rollback. Best-effort because the
-                // instance may yet appear, and because there is nothing else
-                // available — with no identified instance there is nothing
-                // specific to terminate, the same limitation the ASG manager has.
+                // Requirement 6.7, as group-scale-up-rollback refines it:
+                // detach the instance this call caused, by id, and lower the
+                // pool size blind only when there is none. OCI picks the
+                // victim of a blind size decrease itself and knows nothing of
+                // Raft voters, and instance pools have no scale-in protection
+                // to stop it choosing one.
                 try {
-                    set_pool_size(orig_size);
+                    snapshot = describe_pool_instances();
                 } catch (const std::exception& ex) {
-                    std::cerr << "[oci_instance_pool_quorum_manager::provision_node] size rollback "
-                                 "to "
-                              << orig_size << " failed: " << ex.what() << "\n";
+                    std::cerr << "[oci_instance_pool_quorum_manager::provision_node] final "
+                                 "listing failed, using the last poll: "
+                              << ex.what() << "\n";
                 }
+                const auto rollback = undo_scale_up(pre_growth, snapshot, orig_size);
                 throw std::runtime_error("timed out after " +
                                          std::to_string(_cfg.provision_timeout.count()) +
-                                         "s waiting for a new instance in " + target_group);
+                                         "s waiting for a new instance in " + target_group + "; " +
+                                         group_rollback::describe(rollback, orig_size + 1));
             }
 
             // Computed from the same snapshot the candidate came from, rather
@@ -966,6 +995,18 @@ private:
     /// until it was cleaned up by hand. Doing nothing here is not a neutral
     /// choice.
     auto best_effort_detach(const std::string& instance_id) const noexcept -> void {
+        if (const auto error = try_detach(instance_id); !error.empty()) {
+            std::cerr << "[oci_instance_pool_quorum_manager::provision_node] could not clean up "
+                      << instance_id << " after a failed provision; it may still be running and "
+                      << "billing: " << error << "\n";
+        }
+    }
+
+    /// Detach-and-terminate with the size decrement, after waiting for the
+    /// pool to settle. Returns the error, or `""` on success; an instance no
+    /// longer in the pool counts as detached, the same rule
+    /// `decommission_node` applies.
+    [[nodiscard]] auto try_detach(const std::string& instance_id) const noexcept -> std::string {
         try {
             await_pool_running(_cfg.provision_timeout);
             boost::json::object detach;
@@ -976,11 +1017,95 @@ private:
                 "iaas", "POST",
                 "/20160918/instancePools/" + _cfg.instance_pool_id + "/actions/detachInstance",
                 boost::json::serialize(detach));
+            return {};
         } catch (const std::exception& ex) {
-            std::cerr << "[oci_instance_pool_quorum_manager::provision_node] could not clean up "
-                      << instance_id << " after a failed provision; it may still be running and "
-                      << "billing: " << ex.what() << "\n";
+            std::string what = ex.what();
+            if (what.find("not found") != std::string::npos ||
+                what.find("NotFound") != std::string::npos) {
+                return {};
+            }
+            return what.empty() ? std::string{"unknown error"} : what;
         }
+    }
+
+    /// OCI instance lifecycle states mapped onto the rollback planner's
+    /// classes. `STOPPED` is terminal because a pool does not restart a
+    /// stopped member. Anything unrecognised counts as pending.
+    [[nodiscard]] static auto rollback_state(const std::string& lifecycle)
+        -> group_rollback::member_state {
+        if (lifecycle == "RUNNING") {
+            return group_rollback::member_state::live;
+        }
+        if (lifecycle == "TERMINATING" || lifecycle == "TERMINATED" || lifecycle == "STOPPING" ||
+            lifecycle == "STOPPED") {
+            return group_rollback::member_state::terminal;
+        }
+        return group_rollback::member_state::pending;
+    }
+
+    [[nodiscard]] static auto rollback_listing(const std::vector<oci_detail::instance_view>& views)
+        -> std::vector<group_rollback::listed_member> {
+        std::vector<group_rollback::listed_member> out;
+        out.reserve(views.size());
+        for (const auto& inst : views) {
+            std::string node;
+            if (const auto tag = inst.freeform_tags.find(oci_detail::tag_node_id);
+                tag != inst.freeform_tags.end()) {
+                node = tag->second;
+            }
+            out.push_back({.id = inst.id,
+                           .state = rollback_state(inst.lifecycle_state),
+                           .lifecycle = inst.lifecycle_state,
+                           .node = std::move(node)});
+        }
+        return out;
+    }
+
+    /// @brief The timeout path's rollback (group-scale-up-rollback
+    ///        Requirements 2, 3 and 5). Never throws: every failure is
+    ///        recorded in the outcome so the timeout stays the reason.
+    [[nodiscard]] auto undo_scale_up(const std::vector<std::string>& pre_growth,
+                                     const std::vector<oci_detail::instance_view>& listing,
+                                     std::int64_t orig_size) const noexcept
+        -> group_rollback::rollback_outcome {
+        group_rollback::rollback_outcome outcome;
+        try {
+            outcome.final_listing = rollback_listing(listing);
+            outcome.plan =
+                group_rollback::plan_scale_up_rollback(pre_growth, outcome.final_listing);
+            for (const auto& id : outcome.plan.remove) {
+                // `try_detach` waits out SCALING first: OCI refuses a detach
+                // with 409 IncorrectState until the pool settles (2.4).
+                if (auto error = try_detach(id); error.empty()) {
+                    outcome.removed.push_back(id);
+                } else {
+                    outcome.removal_failures.emplace_back(id, std::move(error));
+                }
+            }
+            if (!outcome.plan.restore_desired_size) {
+                return outcome;
+            }
+            try {
+                set_pool_size(orig_size);
+                outcome.restored_size = orig_size;
+            } catch (const std::exception& ex) {
+                outcome.restore_error = ex.what();
+                return outcome;
+            }
+            const auto after = group_rollback::settle_listing(
+                [this] { return rollback_listing(describe_pool_instances()); },
+                group_rollback::settle_window(_cfg.provision_timeout, _cfg.poll_interval),
+                _cfg.poll_interval);
+            if (after.has_value()) {
+                outcome.audit =
+                    group_rollback::audit_after_shrink(pre_growth, outcome.final_listing, *after);
+            } else {
+                outcome.audit_unavailable = true;
+            }
+        } catch (const std::exception& ex) {
+            outcome.restore_error = std::string("rollback aborted: ") + ex.what();
+        }
+        return outcome;
     }
 
     /// Wait for the pool to be `RUNNING` before acting on it.
