@@ -133,7 +133,7 @@ lives here. Each `Sid` names the rule it follows.
 | `…DescribeNoResourceLevelPermissions` | `*` | Auto Scaling and EC2 `Describe*` actions do not support resource-level permissions at all; a narrower `Resource` is not "tighter", it is a policy that never matches. |
 | `…MutateKythiraGroupsOnly` | ASGs named `kythira-asgtest-*` | Auto Scaling *does* support resource-level permissions for these actions, so the suite can only create, resize, terminate into, tag or delete groups under its own prefix. The test fixture MUST name its groups with that prefix. |
 | `…CreateFixtureResourcesNotYetTaggable` | `*` | The resource does not exist yet, so there is nothing to scope to. `ec2:RunInstances` is here because `CreateAutoScalingGroup` with a launch template is authorised against the **caller's** permission to launch from that template, across every resource type a launch touches (image, subnet, security group, network interface, volume). |
-| `…StopAndTearDownSuiteTaggedOnly` | `*`, conditioned on `kythira:suite=aws-asg-quorum-manager` | Destructive EC2 actions only reach resources the fixture tagged. The fixture MUST tag its VPC, subnets, security group, launch template and (via the launch template's tag specification and ASG tag propagation) its instances. The key is deliberately **not** `kythira:managed-by`: the manager itself overwrites that tag on every instance it provisions (`asg_quorum_manager`), which would put those instances outside the condition. |
+| `…StopAndTearDownSuiteTaggedOnly` | `*`, conditioned on `kythira:suite=aws-asg-quorum-manager` | Destructive EC2 actions, and retagging (the manager's own `CreateTags` on the instances it adopts), only reach resources the fixture tagged. The fixture MUST tag its VPC, subnets, security group, launch template and (via the launch template's tag specification and ASG tag propagation) its instances. The key is deliberately **not** `kythira:managed-by`: the manager itself overwrites that tag on every instance it provisions (`asg_quorum_manager`), which would put those instances outside the condition. |
 
 Not granted, on purpose:
 
@@ -150,6 +150,75 @@ Verify as the CI principal, not as admin: a probe made with the admin
 credentials proves nothing about this role. After provisioning, assume
 `kythira-ci-real-cloud-tests` (or dispatch a run) and confirm one
 `DescribeAutoScalingGroups` call succeeds.
+
+## Instance actions are tag-scoped
+
+No bundle lets CI stop, start, terminate or retag an EC2 instance it did not
+launch. Each bundle's `…InstancesOwnedOnly` statement grants those actions on
+instances only, under a condition on a tag the suite applies **in the
+`RunInstances` request itself** (a tag added by a later `CreateTags` would
+leave a window in which the suite could not clean up its own instance):
+
+| Bundle | Instance actions | Condition |
+|---|---|---|
+| `ec2-quorum-manager` | `CreateTags`, `StartInstances`, `StopInstances`, `TerminateInstances` | `kythira:managed-by` is `ec2_quorum_manager` (every node the manager launches) or `aws_quorum_manager_real_ec2_test` (that suite's bastion) |
+| `ca-cluster-node`, `ca-cluster-node-rpc-tls` | `CreateTags`, `TerminateInstances` | `kythira:managed-by` is `ec2_quorum_manager`; both suites launch every instance through the manager |
+| `ami-build` | `CreateTags`, `StopInstances`, `TerminateInstances` | `kythira:built-by` is `packer`, from the template's `run_tags` |
+| `perf-cloud` | `CreateTags`, `TerminateInstances` | `kythira-perf-run` is present; its value is per-run, so the key is what is checked |
+| `asg-quorum-manager` | `CreateTags`, `StopInstances`, `TerminateInstances` | `kythira:suite` is `aws-asg-quorum-manager` (see the table above) |
+
+The condition only means something if CI cannot put the tag on someone
+else's instance, so `ec2:CreateTags` is the one action that is scoped
+everywhere, not only in the statements above. Every EC2 bundle carries the
+same two tagging statements:
+
+- `Ec2TagOnCreate`: tags applied by the request that creates the resource
+  (`ec2:CreateAction`), on any resource type. A resource CI is creating is
+  CI's by definition.
+- `Ec2TagExistingNonInstanceResources`: later tags on anything that is
+  **not** an instance (`NotResource`), as long as the request does not set
+  `kythira:suite`. That key is what `asg-quorum-manager` conditions its
+  VPC, subnet, security group and launch template deletes on, so letting CI
+  add it to an existing resource would let CI delete that resource.
+
+Retagging an existing instance is allowed only through an
+`…InstancesOwnedOnly` statement, that is, only on an instance already in
+scope. `render-ci-policy.py` collapses the shared statements to one copy
+when it merges bundles (IAM rejects a repeated `Sid`, and the role's inline
+policy has 10,240 characters for every bundle together), and its `--check`
+mode, run by the `aws-ci-policies` CI job, fails on any statement that
+grants an instance-changing action on instances without a condition.
+
+What is still `Resource: "*"`: `RunInstances` and the other create
+actions, which have no existing resource to scope to; the `Describe*`
+actions, which support no resource-level permissions; and the deletes of
+VPCs, subnets, security groups, key pairs, volumes, snapshots and AMIs in
+every bundle but `asg-quorum-manager`. `ami-build`'s `CreateImage` and
+`CreateSnapshot` can still read any instance's or volume's disk, though no
+bundle can share the result outside the account. The account is a CI-only
+account, which is what keeps those Low; the next step, if that changes, is
+a dedicated account rather than more conditions.
+
+### Applying this change
+
+Editing these files changes nothing in AWS. Re-run the provisioning
+scripts with every bundle the identity already has, because each run
+replaces the policy wholesale:
+
+```sh
+scripts/ci-cloud-credentials/aws/provision-oidc-role.sh \
+    --github-org crawlins --github-repo kythira \
+    --bundles <every bundle the role already has>
+# and, if a developer user exists:
+scripts/ci-cloud-credentials/aws/provision-developer-user.sh \
+    --bundles <every bundle the user already has>
+```
+
+Then dispatch one real-cloud run per bundle you use. A suite whose
+instance lacks the expected tag fails its teardown with
+`UnauthorizedOperation` on `TerminateInstances` (or on `CreateTags` for a
+standalone retag); the fix is to tag the instance at launch, not to widen
+the condition.
 
 ## Verifying setup worked
 

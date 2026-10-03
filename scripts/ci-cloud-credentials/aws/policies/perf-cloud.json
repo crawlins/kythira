@@ -3,11 +3,63 @@
     "Sid": "PerfCloudInstanceLifecycle",
     "Effect": "Allow",
     "Action": [
-      "ec2:RunInstances",
-      "ec2:TerminateInstances",
-      "ec2:CreateTags"
+      "ec2:RunInstances"
     ],
     "Resource": "*"
+  },
+  {
+    "Sid": "PerfCloudInstancesOwnedOnly",
+    "Effect": "Allow",
+    "Action": [
+      "ec2:CreateTags",
+      "ec2:TerminateInstances"
+    ],
+    "Resource": "arn:aws:ec2:*:{{ACCOUNT_ID}}:instance/*",
+    "Condition": {
+      "Null": {
+        "aws:ResourceTag/kythira-perf-run": "false"
+      }
+    }
+  },
+  {
+    "Sid": "Ec2TagOnCreate",
+    "Effect": "Allow",
+    "Action": "ec2:CreateTags",
+    "Resource": "*",
+    "Condition": {
+      "StringEquals": {
+        "ec2:CreateAction": [
+          "AllocateAddress",
+          "CreateImage",
+          "CreateInternetGateway",
+          "CreateKeyPair",
+          "CreateLaunchTemplate",
+          "CreateNatGateway",
+          "CreateNetworkAcl",
+          "CreatePlacementGroup",
+          "CreateRouteTable",
+          "CreateSecurityGroup",
+          "CreateSnapshot",
+          "CreateSubnet",
+          "CreateVolume",
+          "CreateVpc",
+          "RunInstances"
+        ]
+      }
+    }
+  },
+  {
+    "Sid": "Ec2TagExistingNonInstanceResources",
+    "Effect": "Allow",
+    "Action": "ec2:CreateTags",
+    "NotResource": "arn:aws:ec2:*:{{ACCOUNT_ID}}:instance/*",
+    "Condition": {
+      "ForAllValues:StringNotEquals": {
+        "aws:TagKeys": [
+          "kythira:suite"
+        ]
+      }
+    }
   },
   {
     "Sid": "PerfCloudEphemeralAccessPath",
