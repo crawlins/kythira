@@ -134,6 +134,29 @@ inline auto libcoap_cipher_list_hook(void* tls_session, coap_dtls_pki_t* /*setup
     }
     return SSL_CTX_set_cipher_list(SSL_get_SSL_CTX(ssl), list.c_str()) == 1;
 }
+// Requirement 7.2: asks the linked libcoap whether it can do DTLS with this
+// credential type at all, before any context or session is touched. A libcoap
+// built without DTLS otherwise accepts the credentials and then fails every
+// handshake, or never starts one.
+inline auto check_dtls_capability(coap_auth_mode mode, coap_auth_mode flavour) -> void {
+    switch (flavour) {
+        case coap_auth_mode::dtls_psk:
+            require_dtls_capability(mode, "PSK", coap_dtls_is_supported() != 0,
+                                    coap_dtls_psk_is_supported() != 0);
+            return;
+        case coap_auth_mode::dtls_pki:
+            require_dtls_capability(mode, "PKI", coap_dtls_is_supported() != 0,
+                                    coap_dtls_pki_is_supported() != 0);
+            return;
+        case coap_auth_mode::dtls_rpk:
+            require_dtls_capability(mode, "RPK", coap_dtls_is_supported() != 0,
+                                    coap_dtls_rpk_is_supported() != 0);
+            return;
+        case coap_auth_mode::none:
+        case coap_auth_mode::oscore:
+            return;
+    }
+}
 #endif
 
 inline auto bytes_to_hex(const std::vector<std::byte>& bytes) -> std::string {
@@ -192,6 +215,7 @@ public:
 
     auto configure_session(coap_context_t* ctx) -> void override {
 #ifdef LIBCOAP_AVAILABLE
+        detail::check_dtls_capability(coap_auth_mode::dtls_psk, coap_auth_mode::dtls_psk);
         if (_role == coap_security_role::client) {
             if (coap_context_set_psk(ctx, _creds.identity.c_str(),
                                      reinterpret_cast<const uint8_t*>(_creds.key.data()),
@@ -237,6 +261,22 @@ public:
     [[nodiscard]] auto credentials() const -> const psk_credentials& { return _creds; }
 
 #ifdef LIBCOAP_AVAILABLE
+    // The client's identity and key as libcoap's per-session PSK setup.
+    // libcoap keeps a client's PSK on the session, not the context (see
+    // coap_client::new_dtls_client_session()), so a client session that has
+    // to carry it is made from this. Points into this provider's credentials:
+    // use it within the lifetime of the provider. libcoap copies it.
+    [[nodiscard]] auto client_setup() const -> coap_dtls_cpsk_t {
+        coap_dtls_cpsk_t setup;
+        std::memset(&setup, 0, sizeof(setup));
+        setup.version = COAP_DTLS_CPSK_SETUP_VERSION;
+        setup.psk_info.identity.s = reinterpret_cast<const uint8_t*>(_creds.identity.data());
+        setup.psk_info.identity.length = _creds.identity.size();
+        setup.psk_info.key.s = reinterpret_cast<const uint8_t*>(_creds.key.data());
+        setup.psk_info.key.length = _creds.key.size();
+        return setup;
+    }
+
     // The server-side identity-matching decision (Requirement 2.1), public
     // so it can be exercised directly by tests without needing a full DTLS
     // handshake to reach it — coap_context_set_psk2() only ever invokes this
@@ -278,6 +318,25 @@ public:
 
     auto configure_session(coap_context_t* ctx) -> void override {
 #ifdef LIBCOAP_AVAILABLE
+        detail::check_dtls_capability(coap_auth_mode::dtls_pki, coap_auth_mode::dtls_pki);
+        auto pki_config = setup();
+        if (coap_context_set_pki(ctx, &pki_config) == 0) {
+            throw coap_security_error("Failed to configure DTLS PKI context");
+        }
+        if (!detail::install_pki_trust_anchors(ctx, _creds.ca_file)) {
+            throw coap_security_error("Failed to load DTLS trust anchors from: " + _creds.ca_file);
+        }
+#else
+        (void)ctx;
+#endif
+    }
+
+#ifdef LIBCOAP_AVAILABLE
+    // This provider's certificate setup as libcoap takes it, for the context
+    // (configure_session()) or for a session that carries its own (an OSCORE
+    // session over DTLS). Points into this provider, whose address the CN
+    // callback captures: use it within the lifetime of the provider.
+    [[nodiscard]] auto setup() -> coap_dtls_pki_t {
         coap_dtls_pki_t pki_config;
         std::memset(&pki_config, 0, sizeof(pki_config));
         pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;
@@ -304,16 +363,9 @@ public:
         if (!_creds.cipher_suites.empty()) {
             pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
         }
-        if (coap_context_set_pki(ctx, &pki_config) == 0) {
-            throw coap_security_error("Failed to configure DTLS PKI context");
-        }
-        if (!detail::install_pki_trust_anchors(ctx, _creds.ca_file)) {
-            throw coap_security_error("Failed to load DTLS trust anchors from: " + _creds.ca_file);
-        }
-#else
-        (void)ctx;
-#endif
+        return pki_config;
     }
+#endif
 
     auto create_client_session(coap_context_t* ctx, const coap_address_t* local_if,
                                const coap_address_t* server_addr, std::uint8_t proto)
@@ -408,13 +460,14 @@ public:
         // hard-coded 0 there. coap_context_set_pki() still accepts the
         // config, so without this check an RPK transport constructs cleanly
         // and then fails every handshake.
-        if (coap_dtls_rpk_is_supported() == 0) {
+        if (coap_dtls_is_supported() != 0 && coap_dtls_rpk_is_supported() == 0) {
             throw coap_unsupported_security_mode_error(
                 coap_auth_mode::dtls_rpk,
                 "the linked libcoap's TLS backend has no raw public key (RFC 7250) support; "
                 "libcoap's OpenSSL, Mbed TLS and wolfSSL backends never have it, "
                 "its GnuTLS and TinyDTLS backends do");
         }
+        detail::check_dtls_capability(coap_auth_mode::dtls_rpk, coap_auth_mode::dtls_rpk);
         coap_dtls_pki_t pki_config;
         std::memset(&pki_config, 0, sizeof(pki_config));
         pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;
@@ -499,18 +552,44 @@ private:
 // base class default); the real work happens in configure_session() (server)
 // and create_client_session() (client, since coap_new_client_session_oscore()
 // takes the OSCORE configuration directly and consumes/frees it per call).
+//
+// OSCORE over DTLS (Requirement 4.2): given DTLS credentials as well, the
+// provider owns a DTLS provider for them and layers the two. The server's
+// context gets both the DTLS credentials and the OSCORE configuration, so a
+// request has to arrive over DTLS and carry valid OSCORE. The client makes
+// every session with libcoap's combined constructor, over COAP_PROTO_DTLS
+// whatever protocol it was asked for: a session that silently dropped to
+// plain UDP would lose the outer layer the configuration asked for.
 
 class oscore_provider final : public coap_security_provider {
 public:
-    oscore_provider(oscore_credentials creds, coap_security_role role)
+    oscore_provider(oscore_credentials creds, coap_security_role role,
+                    std::optional<oscore_dtls_credentials> dtls = std::nullopt)
         : _creds(std::move(creds)),
           _role(role),
           _sequence{oscore::sequence_store_for(_creds.sequence_state_dir),
-                    oscore::security_context::state_key(_creds, "SSN", _creds.sender_id, {})} {}
+                    oscore::security_context::state_key(_creds, "SSN", _creds.sender_id, {})} {
+        if (dtls) {
+            if (auto* psk = std::get_if<psk_credentials>(&*dtls)) {
+                _dtls_psk = std::make_unique<dtls_psk_provider>(std::move(*psk), role);
+            } else {
+                _dtls_pki = std::make_unique<dtls_pki_provider>(
+                    std::get<pki_credentials>(std::move(*dtls)), role);
+            }
+        }
+    }
 
     auto configure_session(coap_context_t* ctx) -> void override {
 #ifdef LIBCOAP_AVAILABLE
         check_capability();
+        check_dtls_layer_capability();
+        // Both layers' capabilities are checked before either touches the
+        // context, so a missing one leaves no half-configured state behind.
+        if (_dtls_psk) {
+            _dtls_psk->configure_session(ctx);
+        } else if (_dtls_pki) {
+            _dtls_pki->configure_session(ctx);
+        }
         if (_role == coap_security_role::server) {
             auto* conf = build_oscore_conf();
             if (coap_context_oscore_server(ctx, conf) == 0) {
@@ -532,6 +611,21 @@ public:
         -> coap_session_t* override {
 #ifdef LIBCOAP_AVAILABLE
         check_capability();
+        check_dtls_layer_capability();
+        // Each call below frees the OSCORE configuration it is given, so it
+        // is built last, once nothing else can throw.
+        if (_dtls_psk) {
+            const auto session_proto = dtls_proto(proto);
+            auto setup = _dtls_psk->client_setup();
+            return coap_new_client_session_oscore_psk(ctx, local_if, server_addr, session_proto,
+                                                      &setup, build_oscore_conf());
+        }
+        if (_dtls_pki) {
+            const auto session_proto = dtls_proto(proto);
+            auto setup = _dtls_pki->setup();
+            return coap_new_client_session_oscore_pki(ctx, local_if, server_addr, session_proto,
+                                                      &setup, build_oscore_conf());
+        }
         auto* conf = build_oscore_conf();
         return coap_new_client_session_oscore(ctx, local_if, server_addr,
                                               static_cast<coap_proto_t>(proto), conf);
@@ -574,6 +668,11 @@ public:
 
     [[nodiscard]] auto credentials() const -> const oscore_credentials& { return _creds; }
 
+    // Whether sessions run inside DTLS (Requirement 4.2's combined mode).
+    [[nodiscard]] auto layered_over_dtls() const -> bool {
+        return _dtls_psk != nullptr || _dtls_pki != nullptr;
+    }
+
 private:
     // Where this provider's libcoap contexts take their Sender Sequence
     // Numbers from: the same store and key a security_context built from these
@@ -612,6 +711,26 @@ private:
             throw coap_unsupported_security_mode_error(coap_auth_mode::oscore,
                                                        "OSCORE not compiled into linked libcoap");
         }
+    }
+
+    auto check_dtls_layer_capability() const -> void {
+        if (_dtls_psk) {
+            detail::check_dtls_capability(coap_auth_mode::oscore, coap_auth_mode::dtls_psk);
+        } else if (_dtls_pki) {
+            detail::check_dtls_capability(coap_auth_mode::oscore, coap_auth_mode::dtls_pki);
+        }
+    }
+
+    // The outer layer is DTLS over UDP; anything else asked for is refused
+    // rather than run without it.
+    static auto dtls_proto(std::uint8_t requested) -> coap_proto_t {
+        const auto proto = static_cast<coap_proto_t>(requested);
+        if (proto != COAP_PROTO_UDP && proto != COAP_PROTO_DTLS) {
+            throw coap_security_config_error(
+                "OSCORE over DTLS runs over UDP only; TCP and WebSocket sessions are not "
+                "supported");
+        }
+        return COAP_PROTO_DTLS;
     }
 
     [[nodiscard]] auto build_oscore_conf() const -> coap_oscore_conf_t* {
@@ -656,12 +775,21 @@ private:
     oscore_credentials _creds;
     coap_security_role _role;
     sequence_state _sequence;
+    // At most one is set: the DTLS layer under OSCORE, if any. Held by
+    // pointer because libcoap keeps the address of each for its callbacks.
+    std::unique_ptr<dtls_psk_provider> _dtls_psk;
+    std::unique_ptr<dtls_pki_provider> _dtls_pki;
 };
 
 // ── factory ────────────────────────────────────────────────────────────────
 
 inline auto make_security_provider(const coap_security_config& config, coap_security_role role)
     -> std::unique_ptr<coap_security_provider> {
+    if (config.oscore_dtls && config.mode != coap_auth_mode::oscore) {
+        throw coap_security_config_error(
+            "security.oscore_dtls layers DTLS under OSCORE and needs security.mode == oscore; "
+            "for DTLS alone set security.mode to dtls_psk or dtls_pki");
+    }
     switch (config.mode) {
         case coap_auth_mode::none:
             return std::make_unique<no_auth_provider>();
@@ -696,7 +824,7 @@ inline auto make_security_provider(const coap_security_config& config, coap_secu
                     "security.credentials");
             }
             return std::make_unique<oscore_provider>(
-                std::get<oscore_credentials>(config.credentials), role);
+                std::get<oscore_credentials>(config.credentials), role, config.oscore_dtls);
         }
     }
     throw coap_security_config_error("Unknown coap_auth_mode");
