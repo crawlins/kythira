@@ -650,6 +650,11 @@ implementation backed by OCI Certificates Management, matching the shape of
 `aws_acm_pca_provider`, so I can issue TLS certificates for cluster nodes
 running on OCI without operating a local `certificate_authority`.
 
+> **Note (`chain_pem` shape):** `sign_csr()`'s `chain_pem` is leaf-first,
+> assembled from `certificatePem` and `certChainPem`; returning
+> `certChainPem` alone dropped the leaf. See
+> `.kiro/specs/oci-ca-chain-leaf/`.
+
 #### Acceptance Criteria
 
 1. **Confirmed by Task 0's spike** (`spike-notes.md`, Finding 3, sourced

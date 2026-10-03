@@ -59,6 +59,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -67,6 +68,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace kythira::testing {
@@ -114,6 +117,27 @@ public:
         /// non-zero, and then sees `ACTIVE` on call N+1.
         int creating_polls_remaining{0};
         std::vector<certificate_version_state> versions;
+        /// The leaf and issuer chain the signer returned at `CreateCertificate`;
+        /// both empty when no signer is installed (placeholder PEM is served).
+        std::string leaf_pem;
+        std::string issuer_chain_pem;
+    };
+
+    /// Signs a CSR and returns {leaf_pem, issuer_chain_pem}. When unset, the
+    /// mock returns placeholder PEM as it always has.
+    ///
+    /// A callback rather than a built-in CA so that only the targets that want
+    /// real certificates link `certificate_authority`
+    /// (`.kiro/specs/oci-ca-chain-leaf/` design).
+    using certificate_signer =
+        std::function<std::pair<std::string, std::string>(const std::string& csr_pem)>;
+
+    /// What `GetCertificateBundle` serves as `certChainPem`.
+    enum class chain_mode {
+        issuers_only,   ///< The issuer chain alone, as real OCI does (default).
+        leaf_included,  ///< The leaf followed by the issuer chain.
+        empty,          ///< An empty string.
+        garbage,        ///< Text holding no certificate.
     };
 
     explicit oci_mock_server(std::uint16_t port, std::string availability_domain = "kIdk:PHX-AD-1")
@@ -287,8 +311,24 @@ public:
         return out;
     }
 
+    /// Installs a real signer for `CreateCertificate`, and makes @p root_pem
+    /// what `GetCertificateAuthorityBundle` answers with.
+    auto set_certificate_signer(certificate_signer signer, std::string root_pem) -> void {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        _certificate_signer = std::move(signer);
+        _root_pem = std::move(root_pem);
+    }
+
+    auto set_cert_chain_mode(chain_mode mode) -> void {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        _chain_mode = mode;
+    }
+
     /// The PEM `GetCertificateAuthorityBundle` answers with.
-    [[nodiscard]] auto root_pem() const -> std::string { return _root_pem; }
+    [[nodiscard]] auto root_pem() const -> std::string {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        return _root_pem;
+    }
 
     /// How many times each route was hit, keyed `"{METHOD} {path-pattern}"`.
     ///
@@ -1053,6 +1093,16 @@ private:
             cert.name = string_field(*obj, "name");
             cert.issuer_certificate_authority_id = issuer;
             cert.csr_pem = csr_pem;
+            if (_certificate_signer) {
+                try {
+                    std::tie(cert.leaf_pem, cert.issuer_chain_pem) = _certificate_signer(csr_pem);
+                } catch (const std::exception& ex) {
+                    --_certificate_counter;
+                    error_reply(resp, 400, "InvalidParameter",
+                                std::string("csrPem could not be signed: ") + ex.what());
+                    return;
+                }
+            }
             cert.creating_polls_remaining = _certificate_creating_polls;
             cert.lifecycle_state = cert.creating_polls_remaining > 0 ? "CREATING" : "ACTIVE";
             cert.versions.push_back(certificate_version_state{
@@ -1192,9 +1242,26 @@ private:
             bundle["certificateId"] = it->second.id;
             bundle["versionNumber"] = version.version_number;
             bundle["serialNumber"] = version.serial_number;
-            bundle["certificatePem"] = "-----BEGIN CERTIFICATE-----\nmock-leaf-" + it->second.id +
-                                       "\n-----END CERTIFICATE-----\n";
-            bundle["certChainPem"] = _root_pem;
+            const auto& cert = it->second;
+            const auto leaf = cert.leaf_pem.empty() ? "-----BEGIN CERTIFICATE-----\nmock-leaf-" +
+                                                          cert.id + "\n-----END CERTIFICATE-----\n"
+                                                    : cert.leaf_pem;
+            const auto issuers = cert.leaf_pem.empty() ? _root_pem : cert.issuer_chain_pem;
+            bundle["certificatePem"] = leaf;
+            switch (_chain_mode) {
+                case chain_mode::issuers_only:
+                    bundle["certChainPem"] = issuers;
+                    break;
+                case chain_mode::leaf_included:
+                    bundle["certChainPem"] = leaf + issuers;
+                    break;
+                case chain_mode::empty:
+                    bundle["certChainPem"] = "";
+                    break;
+                case chain_mode::garbage:
+                    bundle["certChainPem"] = "not a certificate chain";
+                    break;
+            }
             json_reply(resp, bundle);
         });
 
@@ -1296,6 +1363,8 @@ private:
     std::uint64_t _instance_counter{0};
     std::uint64_t _certificate_counter{0};
     int _certificate_creating_polls{0};
+    certificate_signer _certificate_signer;
+    chain_mode _chain_mode{chain_mode::issuers_only};
     std::vector<std::string> _pool_membership;
     /// Object Storage's keyspace (task 15.4). One flat map, because that is
     /// what the service is: `bucket/key` -> bytes plus the ETag OCI mints.

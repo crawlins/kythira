@@ -4087,6 +4087,11 @@ endif()
 
 if(_KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER AND TARGET OpenSSL::SSL AND TARGET httplib::httplib)
     kythira_add_oci_test(oci_certificates_provider_mock_test)
+    # The mock signs CSRs with a real certificate_authority, and the
+    # composition case drives issuing_tls_material_source, which needs
+    # generate_key_and_csr() (.kiro/specs/oci-ca-chain-leaf/).
+    target_sources(oci_certificates_provider_mock_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/certificate_authority.cpp)
     add_test(NAME oci_certificates_provider_mock_test COMMAND oci_certificates_provider_mock_test)
     set_tests_properties(oci_certificates_provider_mock_test PROPERTIES
         TIMEOUT 600
@@ -5967,7 +5972,8 @@ endif()
 # Transport-neutral, so registered outside the gRPC gate: they need only
 # certificate_authority (and, for the issuing source, its provider concept).
 if(TARGET certificate_authority)
-    foreach(source_test tls_material_source_unit_test issuing_tls_material_source_unit_test)
+    foreach(source_test tls_material_source_unit_test issuing_tls_material_source_unit_test
+                        pem_chain_unit_test)
         add_executable(${source_test} ${source_test}.cpp)
         target_link_libraries(${source_test} PRIVATE
             certificate_authority Boost::unit_test_framework OpenSSL::SSL OpenSSL::Crypto)

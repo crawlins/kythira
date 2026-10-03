@@ -15,6 +15,7 @@
 #include <raft/certificate_authority.hpp>
 #include <raft/certificate_provider.hpp>
 #include <raft/issuing_tls_material_source.hpp>
+#include <raft/pem_chain.hpp>
 
 #include "recording_metrics.hpp"
 
@@ -46,10 +47,18 @@ public:
         if (failing.load()) {
             throw std::runtime_error("provider unavailable");
         }
-        return _local.sign_csr(std::move(csr_pem), std::move(options));
+        if (!strip_leaf.load()) {
+            return _local.sign_csr(std::move(csr_pem), std::move(options));
+        }
+        // The OCI bug (.kiro/specs/oci-ca-chain-leaf/): chain_pem holds the
+        // issuer chain alone.
+        auto material = _local.sign_csr(std::move(csr_pem), std::move(options)).get();
+        material.chain_pem = _local.root_certificate_pem().get();
+        return kythira::future_factory_default::makeReadyFuture(std::move(material));
     }
 
     std::atomic<bool> failing{false};
+    std::atomic<bool> strip_leaf{false};
     std::atomic<int> calls{0};
 
 private:
@@ -205,4 +214,38 @@ BOOST_AUTO_TEST_CASE(invalid_options_are_refused) {
     BOOST_CHECK_THROW((kythira::issuing_tls_material_source<switchable_provider>(
                           nullptr, options_with_validity(std::chrono::hours(1)))),
                       std::invalid_argument);
+}
+
+// .kiro/specs/oci-ca-chain-leaf/ Requirement 3: a provider whose chain_pem
+// lacks the leaf still yields a working identity, and the correction is
+// reported once per affected issuance. A correct provider is untouched.
+BOOST_AUTO_TEST_CASE(an_issuer_only_chain_gets_the_leaf_prepended_and_reported) {
+    raft::testing::certificate_authority ca;
+    auto provider = std::make_shared<switchable_provider>(ca);
+    provider->strip_leaf = true;
+    recording_metrics metrics;
+    kythira::issuing_tls_material_source<switchable_provider, recording_metrics> source(
+        provider, options_with_validity(std::chrono::hours(1)), metrics);
+    const auto& rec = *metrics.recorder();
+
+    BOOST_REQUIRE_EQUAL(source.generation(), 1U);
+    auto m = source.current();
+    BOOST_REQUIRE(m);
+    BOOST_CHECK_NO_THROW(kythira::validate_tls_material(*m, "issued"));
+    auto certs = kythira::pem_chain::split_certificates(m->certificate_chain_pem);
+    BOOST_REQUIRE_EQUAL(certs.size(), 2U);
+    BOOST_TEST(kythira::pem_chain::same_certificate(certs.back(), ca.root_certificate_pem()));
+    BOOST_TEST(rec.count_named("tls_material_source.chain.leaf_prepended") == 1U);
+    BOOST_TEST(rec.count_named("tls_material_source.renewal.failed") == 0U);
+
+    source.refresh();
+    BOOST_TEST(source.generation() == 2U);
+    BOOST_TEST(rec.count_named("tls_material_source.chain.leaf_prepended") == 2U);
+
+    // A provider that gets the shape right: published as is, no metric.
+    provider->strip_leaf = false;
+    source.refresh();
+    BOOST_TEST(source.generation() == 3U);
+    BOOST_TEST(rec.count_named("tls_material_source.chain.leaf_prepended") == 2U);
+    BOOST_CHECK_NO_THROW(kythira::validate_tls_material(*source.current(), "issued"));
 }

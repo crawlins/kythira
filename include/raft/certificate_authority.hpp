@@ -69,7 +69,8 @@ struct leaf_certificate_options {
 struct pem_material {
     std::string certificate_pem;
     std::string private_key_pem;  ///< Empty for `sign_csr()` results — the CA never sees the key.
-    std::string chain_pem;        ///< Leaf + root, PEM-concatenated; empty for the root itself.
+    std::string chain_pem;        ///< Leaf first, then each issuer up to and including the
+                                  ///< root, PEM-concatenated. Empty only for the root itself.
     std::uint64_t serial{0};      ///< Exposed so `revoke()` can match without reparsing PEM.
 };
 
