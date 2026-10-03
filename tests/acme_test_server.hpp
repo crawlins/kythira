@@ -19,6 +19,7 @@
 
 #include <raft/acme_jws.hpp>
 #include <raft/certificate_authority.hpp>
+#include <raft/certificate_provider.hpp>
 #include <raft/fault_injection.hpp>
 
 #include <httplib.h>
@@ -166,6 +167,10 @@ struct acme_test_server_options {
     // dns_discovery_bind_integration_test runs dns-01 against real BIND.
     std::string dns01_resolver_address;
     std::uint16_t dns01_resolver_port{53};
+    // Misbehaving-CA hook: certify a key the server generates itself instead
+    // of the one in the client's CSR, so a client that skips the leaf/CSR
+    // key comparison can be caught accepting a certificate it holds no key for.
+    bool substitute_leaf_key{false};
 };
 
 class acme_test_server {
@@ -920,6 +925,12 @@ private:
                 sign_opts.server_auth = true;
                 sign_opts.client_auth = false;
 
+                if (_opts.substitute_leaf_key) {
+                    leaf_certificate_options foreign;
+                    foreign.dns_names = sign_opts.dns_names;
+                    foreign.ip_addresses = sign_opts.ip_addresses;
+                    csr_pem = generate_key_and_csr(foreign).csr_pem;
+                }
                 auto material = _ca.sign_csr(csr_pem, sign_opts);
                 order.certificate_pem = material.certificate_pem;
                 order.chain_pem = material.certificate_pem + _ca.root_certificate_pem();

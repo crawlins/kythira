@@ -373,6 +373,7 @@ BOOST_AUTO_TEST_CASE(sign_csr_via_dns01_against_bind, *boost::unit_test::timeout
 
     acme_certificate_provider_config config;
     config.directory_url = acme.directory_url();
+    config.trust_anchors_pem = acme.root_certificate_pem();
     config.challenge = acme_certificate_provider_config::challenge_type::dns_01;
     config.dns01.server = k_server;
     config.dns01.port = server().port;
