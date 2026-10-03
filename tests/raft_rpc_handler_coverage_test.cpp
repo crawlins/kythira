@@ -159,14 +159,16 @@ BOOST_AUTO_TEST_CASE(follower_grants_vote_for_higher_term, *boost::unit_test::ti
     auto net2 = sim.create_node("2");  // fake peer / "candidate"
     connect(sim, "1", "2");
 
-    node_t raft1{1,
-                 test_raft_types::network_client_type{net1, ser_t{}},
-                 test_raft_types::network_server_type{net1, ser_t{}},
-                 test_raft_types::persistence_engine_type{},
-                 kythira::console_logger{kythira::log_level::error},
-                 test_raft_types::metrics_type{},
-                 test_raft_types::membership_manager_type{},
-                 fast_cfg()};
+    node_t raft1{{
+        .node_id = 1,
+        .network_client = test_raft_types::network_client_type{net1, ser_t{}},
+        .network_server = test_raft_types::network_server_type{net1, ser_t{}},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = fast_cfg(),
+    }};
     // Peer 2 must be a voter in raft1's configuration: RequestVote from a
     // server outside it is ignored (raft-consensus Req 9.6).
     raft1.set_cluster_configuration({1, 2});
@@ -199,14 +201,16 @@ BOOST_AUTO_TEST_CASE(follower_rejects_lower_term_vote, *boost::unit_test::timeou
     auto net2 = sim.create_node("2");
     connect(sim, "1", "2");
 
-    node_t raft1{1,
-                 test_raft_types::network_client_type{net1, ser_t{}},
-                 test_raft_types::network_server_type{net1, ser_t{}},
-                 test_raft_types::persistence_engine_type{},
-                 kythira::console_logger{kythira::log_level::error},
-                 test_raft_types::metrics_type{},
-                 test_raft_types::membership_manager_type{},
-                 fast_cfg()};
+    node_t raft1{{
+        .node_id = 1,
+        .network_client = test_raft_types::network_client_type{net1, ser_t{}},
+        .network_server = test_raft_types::network_server_type{net1, ser_t{}},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = fast_cfg(),
+    }};
     // Peer 2 must be a voter in raft1's configuration: RequestVote from a
     // server outside it is ignored (raft-consensus Req 9.6).
     raft1.set_cluster_configuration({1, 2});
@@ -250,14 +254,16 @@ BOOST_AUTO_TEST_CASE(follower_accepts_heartbeat_from_leader, *boost::unit_test::
     auto net2 = sim.create_node("2");  // fake leader
     connect(sim, "1", "2");
 
-    node_t raft1{1,
-                 test_raft_types::network_client_type{net1, ser_t{}},
-                 test_raft_types::network_server_type{net1, ser_t{}},
-                 test_raft_types::persistence_engine_type{},
-                 kythira::console_logger{kythira::log_level::error},
-                 test_raft_types::metrics_type{},
-                 test_raft_types::membership_manager_type{},
-                 fast_cfg()};
+    node_t raft1{{
+        .node_id = 1,
+        .network_client = test_raft_types::network_client_type{net1, ser_t{}},
+        .network_server = test_raft_types::network_server_type{net1, ser_t{}},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = fast_cfg(),
+    }};
     raft1.start();
     BOOST_CHECK_EQUAL(raft1.get_state(), kythira::server_state::follower);
 
@@ -288,14 +294,16 @@ BOOST_AUTO_TEST_CASE(follower_rejects_stale_append_entries, *boost::unit_test::t
     auto net2 = sim.create_node("2");
     connect(sim, "1", "2");
 
-    node_t raft1{1,
-                 test_raft_types::network_client_type{net1, ser_t{}},
-                 test_raft_types::network_server_type{net1, ser_t{}},
-                 test_raft_types::persistence_engine_type{},
-                 kythira::console_logger{kythira::log_level::error},
-                 test_raft_types::metrics_type{},
-                 test_raft_types::membership_manager_type{},
-                 fast_cfg()};
+    node_t raft1{{
+        .node_id = 1,
+        .network_client = test_raft_types::network_client_type{net1, ser_t{}},
+        .network_server = test_raft_types::network_server_type{net1, ser_t{}},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = fast_cfg(),
+    }};
     // Peer 2 must be a voter in raft1's configuration: RequestVote from a
     // server outside it is ignored (raft-consensus Req 9.6).
     raft1.set_cluster_configuration({1, 2});
@@ -335,14 +343,16 @@ BOOST_AUTO_TEST_CASE(follower_processes_snapshot, *boost::unit_test::timeout(15)
     auto net2 = sim.create_node("2");
     connect(sim, "1", "2");
 
-    node_t raft1{1,
-                 test_raft_types::network_client_type{net1, ser_t{}},
-                 test_raft_types::network_server_type{net1, ser_t{}},
-                 test_raft_types::persistence_engine_type{},
-                 kythira::console_logger{kythira::log_level::error},
-                 test_raft_types::metrics_type{},
-                 test_raft_types::membership_manager_type{},
-                 fast_cfg()};
+    node_t raft1{{
+        .node_id = 1,
+        .network_client = test_raft_types::network_client_type{net1, ser_t{}},
+        .network_server = test_raft_types::network_server_type{net1, ser_t{}},
+        .persistence = test_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = test_raft_types::metrics_type{},
+        .membership = test_raft_types::membership_manager_type{},
+        .config = fast_cfg(),
+    }};
     raft1.start();
 
     // Send InstallSnapshot from a leader with term=2

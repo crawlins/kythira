@@ -133,15 +133,18 @@ BOOST_AUTO_TEST_CASE(follower_to_candidate_transition_logged) {
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
 
-        auto node = kythira::node<test_raft_types>{
-            node_id,
-            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::persistence_engine_type{},
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+        auto node = kythira::node<test_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            .network_server =
+                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            .persistence = test_raft_types::persistence_engine_type{},
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         node.start();
 
@@ -186,15 +189,18 @@ BOOST_AUTO_TEST_CASE(candidate_to_leader_transition_logged) {
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
 
-        auto node = kythira::node<test_raft_types>{
-            node_id,
-            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::persistence_engine_type{},
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+        auto node = kythira::node<test_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            .network_server =
+                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            .persistence = test_raft_types::persistence_engine_type{},
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         node.start();
 
@@ -258,17 +264,20 @@ BOOST_AUTO_TEST_CASE(leader_to_follower_transition_logged) {
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
 
-        auto node1 = kythira::node<test_raft_types>{
-            node1_id,
-            test_raft_types::network_client_type{
-                sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            test_raft_types::network_server_type{
-                sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            std::move(persistence1),
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+        auto node1 = kythira::node<test_raft_types>{{
+            .node_id = node1_id,
+            .network_client =
+                test_raft_types::network_client_type{
+                    sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .network_server =
+                test_raft_types::network_server_type{
+                    sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .persistence = std::move(persistence1),
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         node1.start();
 
@@ -357,17 +366,20 @@ BOOST_AUTO_TEST_CASE(candidate_to_follower_transition_logged) {
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
 
-        auto node1 = kythira::node<test_raft_types>{
-            node1_id,
-            test_raft_types::network_client_type{
-                sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            test_raft_types::network_server_type{
-                sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            std::move(persistence1),
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+        auto node1 = kythira::node<test_raft_types>{{
+            .node_id = node1_id,
+            .network_client =
+                test_raft_types::network_client_type{
+                    sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .network_server =
+                test_raft_types::network_server_type{
+                    sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            .persistence = std::move(persistence1),
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         node1.start();
 

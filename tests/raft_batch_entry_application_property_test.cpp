@@ -334,15 +334,18 @@ BOOST_AUTO_TEST_CASE(property_single_node_batch_application, *boost::unit_test::
         config._heartbeat_interval = heartbeat_interval;
         config._rpc_timeout = rpc_timeout;
 
-        auto node = kythira::node<test_raft_types>{
-            node_id,
-            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-            test_raft_types::persistence_engine_type{},
-            test_raft_types::logger_type{kythira::log_level::error},
-            test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{},
-            config};
+        auto node = kythira::node<test_raft_types>{{
+            .node_id = node_id,
+            .network_client =
+                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            .network_server =
+                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            .persistence = test_raft_types::persistence_engine_type{},
+            .logger = test_raft_types::logger_type{kythira::log_level::error},
+            .metrics = test_raft_types::metrics_type{},
+            .membership = test_raft_types::membership_manager_type{},
+            .config = config,
+        }};
 
         node.start();
 

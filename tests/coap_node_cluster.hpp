@@ -276,13 +276,16 @@ public:
                                                                kythira::noop_metrics{}));
         }
         for (auto id : _ids) {
-            auto n = std::make_unique<node_type>(
-                id, typename types::network_client_type{*_clients.at(id)},
-                typename types::network_server_type{*_servers.at(id)},
-                typename types::persistence_engine_type{},
-                typename types::logger_type{kythira::log_level::error},
-                typename types::metrics_type{}, typename types::membership_manager_type{},
-                raft_config);
+            auto n = std::make_unique<node_type>(kythira::node_config<types>{
+                .node_id = id,
+                .network_client = typename types::network_client_type{*_clients.at(id)},
+                .network_server = typename types::network_server_type{*_servers.at(id)},
+                .persistence = typename types::persistence_engine_type{},
+                .logger = typename types::logger_type{kythira::log_level::error},
+                .metrics = typename types::metrics_type{},
+                .membership = typename types::membership_manager_type{},
+                .config = raft_config,
+            });
             n->set_cluster_configuration(_ids);
             _nodes.emplace(id, std::move(n));
         }

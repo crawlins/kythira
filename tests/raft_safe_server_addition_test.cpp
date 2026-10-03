@@ -154,16 +154,18 @@ bool contains(const std::vector<std::uint64_t>& ids, std::uint64_t id) {
 
 test_node make_node(std::uint64_t id, sim_t& sim, const kythira::raft_configuration& cfg) {
     auto net = sim.create_node(std::to_string(id));
-    return test_node{id,
-                     {net, test_types::serializer_type{}},
-                     {net, test_types::serializer_type{}},
-                     {},
-                     kythira::console_logger{},
-                     {},
-                     {},
-                     cfg,
-                     std::to_string(id),
-                     preset_peer_discovery<std::uint64_t, std::string>{}};
+    return test_node{{
+        .node_id = id,
+        .network_client = {net, test_types::serializer_type{}},
+        .network_server = {net, test_types::serializer_type{}},
+        .persistence = {},
+        .logger = kythira::console_logger{},
+        .metrics = {},
+        .membership = {},
+        .config = cfg,
+        .self_address = std::to_string(id),
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+    }};
 }
 
 // Elects node1 as leader of {1, 2, 3}.

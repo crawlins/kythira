@@ -189,16 +189,18 @@ void bconnect_all(bsim_t& sim, std::initializer_list<std::string> addrs) {
 bootstrap_node_type make_bootstrap_node(std::uint64_t id, auto net,
                                         kythira::raft_configuration cfg = make_fast_config()) {
     auto ser = bootstrap_raft_types::serializer_type{};
-    return bootstrap_node_type{id,
-                               bootstrap_raft_types::network_client_type{net, ser},
-                               bootstrap_raft_types::network_server_type{net, ser},
-                               bootstrap_raft_types::persistence_engine_type{},
-                               kythira::console_logger{},
-                               bootstrap_raft_types::metrics_type{},
-                               bootstrap_raft_types::membership_manager_type{},
-                               cfg,
-                               std::to_string(id),
-                               preset_peer_discovery<std::uint64_t, std::string>{}};
+    return bootstrap_node_type{{
+        .node_id = id,
+        .network_client = bootstrap_raft_types::network_client_type{net, ser},
+        .network_server = bootstrap_raft_types::network_server_type{net, ser},
+        .persistence = bootstrap_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = bootstrap_raft_types::metrics_type{},
+        .membership = bootstrap_raft_types::membership_manager_type{},
+        .config = cfg,
+        .self_address = std::to_string(id),
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+    }};
 }
 
 // Elect a single-node cluster: sleep past election timeout then drive the check.
@@ -220,18 +222,19 @@ bootstrap_node_type make_joining_node(std::uint64_t id, auto net, std::uint64_t 
                                       std::string leader_addr,
                                       kythira::raft_configuration cfg = make_cluster_config()) {
     auto ser = bootstrap_raft_types::serializer_type{};
-    return bootstrap_node_type{
-        id,
-        bootstrap_raft_types::network_client_type{net, ser},
-        bootstrap_raft_types::network_server_type{net, ser},
-        bootstrap_raft_types::persistence_engine_type{},
-        kythira::console_logger{},
-        bootstrap_raft_types::metrics_type{},
-        bootstrap_raft_types::membership_manager_type{},
-        cfg,
-        std::to_string(id),
-        preset_peer_discovery<std::uint64_t, std::string>(
-            std::vector<kythira::peer_info<std::uint64_t, std::string>>{{leader_id, leader_addr}})};
+    return bootstrap_node_type{{
+        .node_id = id,
+        .network_client = bootstrap_raft_types::network_client_type{net, ser},
+        .network_server = bootstrap_raft_types::network_server_type{net, ser},
+        .persistence = bootstrap_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = bootstrap_raft_types::metrics_type{},
+        .membership = bootstrap_raft_types::membership_manager_type{},
+        .config = cfg,
+        .self_address = std::to_string(id),
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>(
+            std::vector<kythira::peer_info<std::uint64_t, std::string>>{{leader_id, leader_addr}}),
+    }};
 }
 
 // Record of every peer_discovery call a node makes. Shared so the test keeps
@@ -304,16 +307,18 @@ counting_node_type make_counting_node(
     bootstrap_raft_types::persistence_engine_type persistence = {},
     kythira::raft_configuration cfg = make_cluster_config()) {
     auto ser = bootstrap_raft_types::serializer_type{};
-    return counting_node_type{id,
-                              bootstrap_raft_types::network_client_type{net, ser},
-                              bootstrap_raft_types::network_server_type{net, ser},
-                              std::move(persistence),
-                              kythira::console_logger{},
-                              bootstrap_raft_types::metrics_type{},
-                              bootstrap_raft_types::membership_manager_type{},
-                              cfg,
-                              std::to_string(id),
-                              counting_peer_discovery{std::move(probe), std::move(peers)}};
+    return counting_node_type{{
+        .node_id = id,
+        .network_client = bootstrap_raft_types::network_client_type{net, ser},
+        .network_server = bootstrap_raft_types::network_server_type{net, ser},
+        .persistence = std::move(persistence),
+        .logger = kythira::console_logger{},
+        .metrics = bootstrap_raft_types::metrics_type{},
+        .membership = bootstrap_raft_types::membership_manager_type{},
+        .config = cfg,
+        .self_address = std::to_string(id),
+        .peer_discovery = counting_peer_discovery{std::move(probe), std::move(peers)},
+    }};
 }
 
 // Persistence for a node that ran before: a non-zero term makes
@@ -470,18 +475,19 @@ BOOST_AUTO_TEST_CASE(fresh_node_with_no_op_starts_ok, *boost::unit_test::timeout
     auto net = sim.create_node("node1");
     auto ser = bootstrap_raft_types::serializer_type{};
 
-    bootstrap_node_type node{
-        1,
-        bootstrap_raft_types::network_client_type{net, ser},
-        bootstrap_raft_types::network_server_type{net, ser},
-        bootstrap_raft_types::persistence_engine_type{},
-        kythira::console_logger{},
-        bootstrap_raft_types::metrics_type{},
-        bootstrap_raft_types::membership_manager_type{},
-        make_fast_config(),
-        "node1",
-        preset_peer_discovery<std::uint64_t, std::string>{}  // empty → single-node
-    };
+    // An empty peer discovery: the node starts as a single-node cluster.
+    bootstrap_node_type node{{
+        .node_id = 1,
+        .network_client = bootstrap_raft_types::network_client_type{net, ser},
+        .network_server = bootstrap_raft_types::network_server_type{net, ser},
+        .persistence = bootstrap_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = bootstrap_raft_types::metrics_type{},
+        .membership = bootstrap_raft_types::membership_manager_type{},
+        .config = make_fast_config(),
+        .self_address = "node1",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+    }};
     BOOST_CHECK_NO_THROW(node.start());
     node.stop();
 }
@@ -498,16 +504,18 @@ BOOST_AUTO_TEST_CASE(stop_cancels_bootstrap_retry_loop, *boost::unit_test::timeo
     using pi = kythira::peer_info<std::uint64_t, std::string>;
     preset_peer_discovery<std::uint64_t, std::string> disc{{pi{99, "ghost_node:9000"}}};
 
-    bootstrap_node_type node{1,
-                             bootstrap_raft_types::network_client_type{net, ser},
-                             bootstrap_raft_types::network_server_type{net, ser},
-                             bootstrap_raft_types::persistence_engine_type{},
-                             kythira::console_logger{},
-                             bootstrap_raft_types::metrics_type{},
-                             bootstrap_raft_types::membership_manager_type{},
-                             make_fast_config(),
-                             "node1",
-                             std::move(disc)};
+    bootstrap_node_type node{{
+        .node_id = 1,
+        .network_client = bootstrap_raft_types::network_client_type{net, ser},
+        .network_server = bootstrap_raft_types::network_server_type{net, ser},
+        .persistence = bootstrap_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = bootstrap_raft_types::metrics_type{},
+        .membership = bootstrap_raft_types::membership_manager_type{},
+        .config = make_fast_config(),
+        .self_address = "node1",
+        .peer_discovery = std::move(disc),
+    }};
 
     // Run start() in a background thread (it blocks on the bootstrap retry loop)
     std::promise<void> done;
@@ -1119,18 +1127,19 @@ BOOST_AUTO_TEST_CASE(leader_accepts_join_via_network, *boost::unit_test::timeout
 
     // Node 2: fresh node, peer discovery returns node 1 (the leader)
     auto ser2 = bootstrap_raft_types::serializer_type{};
-    bootstrap_node_type node2{
-        2,
-        bootstrap_raft_types::network_client_type{net2, ser2},
-        bootstrap_raft_types::network_server_type{net2, ser2},
-        bootstrap_raft_types::persistence_engine_type{},
-        kythira::console_logger{},
-        bootstrap_raft_types::metrics_type{},
-        bootstrap_raft_types::membership_manager_type{},
-        cfg,
-        "2",
-        preset_peer_discovery<std::uint64_t, std::string>(
-            std::vector<kythira::peer_info<std::uint64_t, std::string>>{{1u, "1"}})};
+    bootstrap_node_type node2{{
+        .node_id = 2,
+        .network_client = bootstrap_raft_types::network_client_type{net2, ser2},
+        .network_server = bootstrap_raft_types::network_server_type{net2, ser2},
+        .persistence = bootstrap_raft_types::persistence_engine_type{},
+        .logger = kythira::console_logger{},
+        .metrics = bootstrap_raft_types::metrics_type{},
+        .membership = bootstrap_raft_types::membership_manager_type{},
+        .config = cfg,
+        .self_address = "2",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>(
+            std::vector<kythira::peer_info<std::uint64_t, std::string>>{{1u, "1"}}),
+    }};
 
     // start() blocks until ClusterJoin is accepted; run in background thread
     std::promise<void> joined;

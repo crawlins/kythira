@@ -170,16 +170,18 @@ BOOST_AUTO_TEST_CASE(add_server_resolves_and_cluster_grows, *boost::unit_test::t
 
         auto cfg = make_fast_config();
         auto make_node = [&](std::uint64_t id, auto net) {
-            return test_node{id,
-                             {net, test_types::serializer_type{}},
-                             {net, test_types::serializer_type{}},
-                             {},
-                             kythira::console_logger{},
-                             {},
-                             {},
-                             cfg,
-                             std::to_string(id),
-                             preset_peer_discovery<std::uint64_t, std::string>{}};
+            return test_node{{
+                .node_id = id,
+                .network_client = {net, test_types::serializer_type{}},
+                .network_server = {net, test_types::serializer_type{}},
+                .persistence = {},
+                .logger = kythira::console_logger{},
+                .metrics = {},
+                .membership = {},
+                .config = cfg,
+                .self_address = std::to_string(id),
+                .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+            }};
         };
 
         auto node1 = make_node(1, net1);
@@ -256,16 +258,18 @@ BOOST_AUTO_TEST_CASE(command_applied_on_all_nodes_after_add, *boost::unit_test::
 
     auto cfg = make_fast_config();
     auto make_node = [&](std::uint64_t id, auto net) {
-        return test_node{id,
-                         {net, test_types::serializer_type{}},
-                         {net, test_types::serializer_type{}},
-                         {},
-                         kythira::console_logger{},
-                         {},
-                         {},
-                         cfg,
-                         std::to_string(id),
-                         preset_peer_discovery<std::uint64_t, std::string>{}};
+        return test_node{{
+            .node_id = id,
+            .network_client = {net, test_types::serializer_type{}},
+            .network_server = {net, test_types::serializer_type{}},
+            .persistence = {},
+            .logger = kythira::console_logger{},
+            .metrics = {},
+            .membership = {},
+            .config = cfg,
+            .self_address = std::to_string(id),
+            .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{},
+        }};
     };
 
     auto node1 = make_node(1, net1);
