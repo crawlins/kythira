@@ -633,9 +633,13 @@ documented in `doc/elastic_shard_capacity.md`.
 10. **Moves prefer shards the source does not lead.** Among equally weighted
     candidates, `pick_shard_for` takes a shard whose leader is not the source.
     Moving a replica off its leader costs a leadership transfer, which is an
-    election at best. On a transport without TimeoutNow (cpp-httplib) the host
-    refuses the transfer as `unsupported`, and the move is abandoned with the
-    target already voting. That shard is then left one voter over.
+    election at best. On a transport without TimeoutNow (cpp-httplib, when
+    this was written) the host refused the transfer as `unsupported`, and the
+    move was abandoned with the target already voting, leaving that shard one
+    voter over. All three HTTP transports carry TimeoutNow since
+    `.kiro/specs/http-coap-pre-vote-timeout-now/`, so the preference now only
+    saves an election; `unsupported` remains possible against a peer that has
+    not been upgraded yet.
 11. **Task 16 found three pre-existing host bugs, all fixed here because the
     scenario cannot pass with any of them:**
     - **Docker over a unix socket answered 400 to every call.** cpp-httplib
