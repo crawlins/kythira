@@ -13,6 +13,12 @@ passes against this spec's own (since-split) test binaries found and fixed
 six more real bugs beyond what that run surfaced — see
 `## Known Follow-ups` for the full accounting.
 
+> **Requirement 11.3 enforcement (2026-10-03):** `max_concurrent_connections`
+> was documented here but read by nothing, and the 413 path skipped requests
+> whose declared `Content-Length` was over the limit (Beast raises
+> `body_limit` before it marks the header done). Both are fixed by
+> `.kiro/specs/http-server-request-limits/`, which owns that work.
+
 **Last Updated**: August 2, 2026 (round-4 ThreadSanitizer findings: the
 Round 2 segfault fix verified working, a connection-pool use-after-free
 found and fixed, and the strand-serialization race root-caused and fixed;

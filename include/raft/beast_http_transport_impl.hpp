@@ -1208,12 +1208,14 @@ template<typename Types, typename Stream>
 class server_session : public std::enable_shared_from_this<server_session<Types, Stream>> {
 public:
     server_session(Stream stream, boost_beast_server<Types>* server,
-                   std::chrono::seconds request_timeout, std::size_t max_request_body_size)
+                   std::chrono::seconds request_timeout, std::size_t max_request_body_size,
+                   http_detail::connection_gate::slot slot)
         : _stream(std::move(stream)),
           _executor(beast::get_lowest_layer(_stream).get_executor()),
           _server(server),
           _request_timeout(request_timeout),
-          _max_request_body_size(max_request_body_size) {}
+          _max_request_body_size(max_request_body_size),
+          _slot(std::move(slot)) {}
 
     auto run() -> void {
         // A closer, not just a start/finish counter: a session sitting idle
@@ -1324,6 +1326,7 @@ private:
         } catch (...) {
         }
         if (is_body_limit_exceeded && _parser) {
+            _server->note_request_too_large();
             auto self = this->shared_from_this();
             auto res = std::make_shared<beast_http::response<beast_http::string_body>>(
                 beast_http::status::payload_too_large, _parser->get().version());
@@ -1453,6 +1456,10 @@ private:
     std::optional<beast_http::request_parser<beast_http::string_body>> _parser;
     beast_http::request<beast_http::string_body> _req;
     bool _should_keep_alive{false};
+    // This connection's share of max_concurrent_connections. Released when
+    // the session is destroyed, i.e. after the last continuation holding
+    // `self` lets go, which is after the socket is shut down in finish().
+    http_detail::connection_gate::slot _slot;
     // No _pending member: run()/read_loop() end their chains with .detach()
     // instead of storing the Future. Storing it was an attempt at exactly
     // the backend-neutrality .detach() actually provides, but it had the
@@ -1485,7 +1492,8 @@ boost_beast_server<Types>::boost_beast_server(net::io_context& ioc, std::string 
       _bind_address(std::move(bind_address)),
       _bind_port(bind_port),
       _config(std::move(config)),
-      _metrics(std::move(metrics)) {
+      _metrics(std::move(metrics)),
+      _gate(std::make_shared<http_detail::connection_gate>(_config.max_concurrent_connections)) {
     validate_certificate_files();
 }
 
@@ -1723,6 +1731,15 @@ auto boost_beast_server<Types>::accept_post_header() const -> std::string {
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
+auto boost_beast_server<Types>::note_request_too_large() -> void {
+    auto metric = _metrics;
+    metric.set_metric_name("beast_http.server.request_too_large");
+    metric.add_one();
+    metric.emit();
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
 auto boost_beast_server<Types>::register_session(std::function<void()> closer) -> std::size_t {
     std::lock_guard<std::mutex> lock(_sessions_mutex);
     auto id = _next_session_id++;
@@ -1867,19 +1884,33 @@ auto boost_beast_server<Types>::do_accept(std::shared_ptr<net::ip::tcp::acceptor
             return;  // stop() closed the acceptors -- do not recurse.
         }
         if (!ec) {
-            if (_config.enable_ssl) {
+            // Ask for a slot before anything is read or a handshake starts:
+            // a refused connection should cost one accept() and nothing more.
+            auto slot = _gate->try_acquire();
+            if (!slot) {
+                // RST rather than FIN: SO_LINGER {1, 0} makes close() drop
+                // the socket at once instead of parking it in TIME_WAIT, the
+                // same thing wangle's Acceptor does when it sheds load.
+                boost::system::error_code ignored;
+                socket.set_option(net::socket_base::linger(true, 0), ignored);
+                socket.close(ignored);
+                auto metric = _metrics;
+                metric.set_metric_name("beast_http.server.connection_refused");
+                metric.add_one();
+                metric.emit();
+            } else if (_config.enable_ssl) {
                 beast::ssl_stream<beast::tcp_stream> stream(std::move(socket), *_ssl_ctx);
                 auto session = std::make_shared<
                     beast_detail::server_session<Types, beast::ssl_stream<beast::tcp_stream>>>(
-                    std::move(stream), this, _config.request_timeout,
-                    _config.max_request_body_size);
+                    std::move(stream), this, _config.request_timeout, _config.max_request_body_size,
+                    std::move(slot));
                 session->run();
             } else {
                 beast::tcp_stream stream(std::move(socket));
                 auto session =
                     std::make_shared<beast_detail::server_session<Types, beast::tcp_stream>>(
                         std::move(stream), this, _config.request_timeout,
-                        _config.max_request_body_size);
+                        _config.max_request_body_size, std::move(slot));
                 session->run();
             }
         }

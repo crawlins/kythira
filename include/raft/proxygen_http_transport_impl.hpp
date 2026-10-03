@@ -12,6 +12,7 @@
 #include <proxygen/lib/http/HTTPException.h>
 #include <proxygen/lib/http/HTTPConstants.h>
 #include <proxygen/lib/http/ProxygenErrorEnum.h>
+#include <proxygen/lib/http/session/HTTPSessionBase.h>
 
 #include <wangle/acceptor/Acceptor.h>
 
@@ -27,11 +28,14 @@
 #include <openssl/asn1.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <exception>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace kythira {
@@ -1564,9 +1568,27 @@ namespace proxygen_detail {
 
 template<typename Types> class rpc_request_handler final : public proxygen::RequestHandler {
 public:
-    explicit rpc_request_handler(proxygen_server<Types>* server) : _server(server) {}
+    explicit rpc_request_handler(proxygen_server<Types>* server)
+        : _server(server), _limit(server->max_request_body_size()) {}
 
     auto onRequest(std::unique_ptr<proxygen::HTTPMessage> headers) noexcept -> void override {
+        // Registered first and unconditionally: requestComplete()/onError()
+        // call request_finished() on every path, the 413 ones included.
+        _request_id = _server->register_request();
+        // A declared length over the limit is refused here, before a single
+        // body byte is buffered. An unparseable or absent length is not
+        // refused up front; onBody's running total still applies.
+        const auto& declared =
+            headers->getHeaders().getSingleOrEmpty(proxygen::HTTP_HEADER_CONTENT_LENGTH);
+        if (!declared.empty()) {
+            std::uint64_t length = 0;
+            auto [end, ec] =
+                std::from_chars(declared.data(), declared.data() + declared.size(), length);
+            if (ec == std::errc{} && end == declared.data() + declared.size() && length > _limit) {
+                reject_too_large();
+                return;
+            }
+        }
         _path = headers->getPath();
         // Header mechanics live here (this owns the HTTPMessage); negotiation
         // policy lives in dispatch(). An absent Content-Type means a peer that
@@ -1577,20 +1599,32 @@ public:
             _request_media_type = _server->default_media_type();
         }
         _accepted = message_accept_list(*headers);
-        _request_id = _server->register_request();
     }
 
     auto onBody(std::unique_ptr<folly::IOBuf> body) noexcept -> void override {
-        if (body) {
-            body->coalesce();
-            const auto* data = reinterpret_cast<const std::byte*>(body->data());
-            _body.insert(_body.end(), data, data + body->length());
+        if (_rejected || !body) {
+            return;  // after a 413, whatever is still in flight is dropped
+        }
+        // Count before copying: checking after the copy, as this used to,
+        // bounds nothing, since the bytes are already in memory by then.
+        _received += body->computeChainDataLength();
+        if (_received > _limit) {
+            std::vector<std::byte>().swap(_body);
+            reject_too_large();
+            return;
+        }
+        for (const auto& range : *body) {
+            const auto* data = reinterpret_cast<const std::byte*>(range.data());
+            _body.insert(_body.end(), data, data + range.size());
         }
     }
 
     auto onUpgrade(proxygen::UpgradeProtocol) noexcept -> void override {}
 
     auto onEOM() noexcept -> void override {
+        if (_rejected) {
+            return;  // the 413 already went out; never answer twice
+        }
         std::string response_body;
         unsigned status_code = 200;
         std::string response_media_type;
@@ -1628,12 +1662,109 @@ public:
     }
 
 private:
+    // One 413 per request, matching Beast's text and headers.
+    // `Connection: close` because unread body bytes still on the wire would
+    // otherwise be parsed as the next request; Proxygen closes the session
+    // once this transaction is done, which discards them. Responding before
+    // the request's EOM is legal HTTP/1.1, and the transaction still ends in
+    // exactly one requestComplete() or onError().
+    auto reject_too_large() noexcept -> void {
+        _rejected = true;
+        _server->note_request_too_large();
+        proxygen::ResponseBuilder(downstream_)
+            .status(413, "Payload Too Large")
+            .header(proxygen::HTTP_HEADER_CONTENT_TYPE, "text/plain")
+            .header(proxygen::HTTP_HEADER_CONNECTION, "close")
+            .body(std::string("Request body exceeds maximum allowed size"))
+            .sendWithEOM();
+    }
+
     proxygen_server<Types>* _server;
+    std::size_t _limit;
+    std::size_t _received{0};
+    bool _rejected{false};
     std::string _path;
     std::string _request_media_type;
     std::vector<std::string> _accepted;
     std::vector<std::byte> _body;
     std::size_t _request_id{0};
+};
+
+// max_concurrent_connections (.kiro/specs/http-server-request-limits/).
+// HTTPServerAcceptor is final, so canAccept() is out of reach; this uses the
+// public session callbacks instead. onCreate runs on the session's own
+// EventBase as the session is built, before any request on it is parsed, and
+// onDestroy as it is torn down, so the slot's lifetime is the session's.
+//
+// A session that gets no slot cannot be dropped from inside onCreate
+// (Proxygen forbids starting asynchronous work there, and the session is
+// still being constructed), so the drop is queued with runInLoop, which runs
+// at the end of the current loop iteration, before the session's first read.
+template<typename Metrics>
+class session_limiter final : public proxygen::HTTPSessionBase::InfoCallback {
+public:
+    session_limiter(std::shared_ptr<kythira::http_detail::connection_gate> gate, Metrics metrics)
+        : _state(std::make_shared<state>()), _gate(std::move(gate)), _metrics(std::move(metrics)) {}
+
+    auto onCreate(const proxygen::HTTPSessionBase& session) -> void override {
+        auto slot = _gate->try_acquire();
+        const bool refused = !slot;
+        std::uint64_t id = 0;
+        {
+            std::lock_guard<std::mutex> lock(_state->mutex);
+            id = ++_state->next_id;
+            _state->sessions.insert_or_assign(&session, entry{std::move(slot), id});
+        }
+        if (!refused) {
+            return;
+        }
+        auto metric = _metrics;
+        metric.set_metric_name("proxygen_http.server.connection_refused");
+        metric.add_one();
+        metric.emit();
+        auto* evb = session.getEventBase();
+        if (evb == nullptr) {
+            return;
+        }
+        // Captures the shared state, not `this`: the EventBase belongs to an
+        // executor that can outlive this server. The id guards against the
+        // session having gone, and another taken its address, before the
+        // callback runs; both run on this EventBase, so they cannot race.
+        evb->runInLoop([state = _state, target = &session, id] {
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                auto it = state->sessions.find(target);
+                if (it == state->sessions.end() || it->second.id != id) {
+                    return;
+                }
+            }
+            // The session object itself is not const; only the callback's
+            // view of it is.
+            const_cast<proxygen::HTTPSessionBase*>(target)->dropConnection(
+                "max_concurrent_connections reached");
+        });
+    }
+
+    auto onDestroy(const proxygen::HTTPSessionBase& session) -> void override {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        _state->sessions.erase(&session);  // releases the slot, if it held one
+    }
+
+private:
+    struct entry {
+        kythira::http_detail::connection_gate::slot slot;
+        std::uint64_t id;
+    };
+    // One map for every EventBase. Touched once per connection open and
+    // close, so a mutex costs nothing worth sharding over.
+    struct state {
+        std::mutex mutex;
+        std::unordered_map<const proxygen::HTTPSessionBase*, entry> sessions;
+        std::uint64_t next_id{0};
+    };
+    std::shared_ptr<state> _state;
+    std::shared_ptr<kythira::http_detail::connection_gate> _gate;
+    Metrics _metrics;
 };
 
 template<typename Types> class rpc_handler_factory final : public proxygen::RequestHandlerFactory {
@@ -1667,7 +1798,10 @@ proxygen_server<Types>::proxygen_server(
       _bind_port(bind_port),
       _config(std::move(config)),
       _metrics(std::move(metrics)),
-      _io_executor(std::move(io_executor)) {
+      _io_executor(std::move(io_executor)),
+      _gate(std::make_shared<http_detail::connection_gate>(_config.max_concurrent_connections)),
+      _session_limiter(
+          std::make_unique<proxygen_detail::session_limiter<metrics_type>>(_gate, _metrics)) {
     validate_certificate_files();
 }
 
@@ -1918,6 +2052,7 @@ auto proxygen_server<Types>::start() -> void {
     }
 
     _http_server = std::make_unique<proxygen::HTTPServer>(std::move(options));
+    _http_server->setSessionInfoCallback(_session_limiter.get());
     _http_server->bind(ip_configs);
 
     // Requirement 5.1: HTTPServer::start() genuinely blocks the calling
@@ -1999,6 +2134,15 @@ template<typename Types>
 requires kythira::proxygen_future_default_transport_types<Types>
 auto proxygen_server<Types>::is_running() const -> bool {
     return _running.load();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::note_request_too_large() -> void {
+    auto metric = _metrics;
+    metric.set_metric_name("proxygen_http.server.request_too_large");
+    metric.add_one();
+    metric.emit();
 }
 
 template<typename Types>

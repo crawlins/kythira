@@ -45,6 +45,7 @@
 #include <raft/metrics.hpp>
 #include <raft/serializer_registry.hpp>
 #include <raft/http_content_negotiation.hpp>
+#include <raft/http_connection_gate.hpp>
 #include <raft/peer_capability_cache.hpp>
 #include <raft/future_default.hpp>
 #include <raft/future.hpp>
@@ -139,16 +140,28 @@ struct proxygen_client_config {
 
 /// @brief Server configuration. Field-for-field match with
 ///     `cpp_httplib_server_config`/`boost_beast_server_config` (Requirement
-///     11.2). `max_concurrent_connections` has no direct
-///     `proxygen::HTTPServerOptions` equivalent (Requirement 11.3) --
-///     Proxygen has no single "reject beyond N connections" knob; this is
-///     approximated by `proxygen_server` via its own accept-time counter
-///     that closes new connections past the limit (see
-///     proxygen_http_transport_impl.hpp), the same "document the
-///     equivalent enforcement" precedent
-///     `.kiro/specs/boost-beast-http-transport/` Requirement 11.3 used.
+///     11.2).
 struct proxygen_server_config {
+    /// Most connections the server holds open at once, across every listener
+    /// (a "*" bind's 0.0.0.0 and :: share one count). Proxygen has no such
+    /// knob of its own (`HTTPServerAcceptor` is `final`, so its `canAccept()`
+    /// cannot be overridden), so `proxygen_server` registers an
+    /// `HTTPSession::InfoCallback` that asks a `http_detail::connection_gate`
+    /// for a slot in `onCreate` and gives it back in `onDestroy`. A session
+    /// that gets no slot is dropped with an RST from the next event-loop turn,
+    /// before any request on it is read; the client sees a connection reset
+    /// or EOF. The session exists only after accept, and for TLS only after
+    /// the handshake, so a refused TLS connection has still cost a handshake.
+    /// 0 is refused by the constructor with `std::invalid_argument`.
+    /// (.kiro/specs/http-server-request-limits/.)
     std::size_t max_concurrent_connections{100};
+    /// Largest request body, in bytes, the server reads (inclusive). A
+    /// `Content-Length` over it is answered `413 Payload Too Large`
+    /// (`text/plain`, `Connection: close`) from the request's headers, before
+    /// any body byte is buffered; a chunked or understated body is counted as
+    /// it arrives and refused the same way the moment it crosses the limit.
+    /// Either way the handler never sees the request and the connection is
+    /// closed after the 413.
     std::size_t max_request_body_size{10 * 1024 * 1024};  // 10 MB
     std::chrono::seconds request_timeout{30};
     bool enable_ssl{false};
@@ -790,6 +803,18 @@ public:
     auto register_request() -> std::size_t;
     auto request_finished(std::size_t request_id) -> void;
 
+    /// @brief `max_request_body_size`, read by each request's handler.
+    [[nodiscard]] auto max_request_body_size() const -> std::size_t {
+        return _config.max_request_body_size;
+    }
+
+    /// @brief Counts a request refused with 413
+    ///     (`proxygen_http.server.request_too_large`).
+    auto note_request_too_large() -> void;
+
+    /// @brief Connections held open right now. For tests and diagnostics.
+    [[nodiscard]] auto live_connections() const -> std::size_t { return _gate->live(); }
+
 private:
     std::string _bind_address;
     std::uint16_t _bind_port;
@@ -800,6 +825,13 @@ private:
     /// peer in a format it did not itself choose.
     serializer_registry_type _registry;
     std::shared_ptr<folly::IOThreadPoolExecutorBase> _io_executor;
+    /// `max_concurrent_connections`, shared by every listener. A
+    /// `shared_ptr` because each live session's slot keeps it alive.
+    std::shared_ptr<http_detail::connection_gate> _gate;
+    /// Hands out and takes back `_gate` slots as sessions come and go.
+    /// Sessions hold it by raw pointer, so it is declared before
+    /// `_http_server` and therefore destroyed after it (and its sessions).
+    std::unique_ptr<proxygen::HTTPSessionBase::InfoCallback> _session_limiter;
     std::unique_ptr<proxygen::HTTPServer> _http_server;
     std::thread _server_thread;
     std::mutex _start_mutex;
