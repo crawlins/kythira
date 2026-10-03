@@ -5,7 +5,8 @@
 """Load every configs/*_defconfig against Kconfig, fail on any parse warning.
 
 Catches drift between Kconfig edits and stale defconfigs (Requirement 5.4).
-Wired into CI as the `kconfig-check` CMake target, not into the normal build.
+Exposed as the `kconfig-check` CMake target, and run directly (no configure
+needed) by the `kconfig-check` job in .github/workflows/ci.yml.
 """
 import glob
 import os
@@ -28,6 +29,13 @@ def main() -> int:
     failed = False
     for path in defconfigs:
         kconf = kconfiglib.Kconfig(kconfig_file)
+        # Off by default in Kconfiglib, which silently drops an assignment to a
+        # symbol Kconfig no longer defines. That stale-symbol case is the one
+        # this check exists for, so turn it on, plus the two duplicate-
+        # assignment warnings (a later line silently winning over an earlier).
+        kconf.warn_assign_undef = True
+        kconf.warn_assign_override = True
+        kconf.warn_assign_redun = True
         kconf.load_config(path)
         if kconf.warnings:
             failed = True

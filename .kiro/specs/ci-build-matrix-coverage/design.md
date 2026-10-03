@@ -66,15 +66,20 @@ the target, because the target only exists after a CMake configure, and a
 configure needs the vcpkg tree. The script is the target's whole body
 (`CMakeLists.txt:2050-2056`), so the two cannot drift.
 
-`check_defconfigs.py` already fails on any Kconfiglib warning, including
-"symbol referenced in defconfig no longer exists", which is exactly what
-kconfig-integration Req 5.4 asks for, so it needs no change.
+`check_defconfigs.py` fails on any Kconfiglib warning. Kconfiglib does not
+warn about an assignment to an undefined symbol unless `warn_assign_undef`
+is set, and it is off by default, so as first written the script passed a
+defconfig naming a removed symbol. It now sets `warn_assign_undef`,
+`warn_assign_override` and `warn_assign_redun`, which is what
+kconfig-integration Req 5.4 asks for.
 
 `check_defconfig_usage.py` (new, ~40 lines) lists `configs/*_defconfig`,
 greps `.github/workflows/*.yml` for each file name, and fails for any file
-with no match that is not in `configs/defconfig-usage-allowlist.txt`. The
-allowlist is a plain `name  # reason` file. It starts empty: after this spec,
-every defconfig is applied by some job.
+with no match that is not in `configs/defconfig-usage-allowlist.txt`. A match
+on a comment line does not count. The allowlist is a plain `name  # reason`
+file; an entry with no reason, or for a defconfig that is now applied or no
+longer exists, is also an error. After this spec it is empty: every
+defconfig is applied by some job.
 
 ### 2. `alt-coap-backends` job (Requirement 1)
 
