@@ -998,6 +998,17 @@ target_link_libraries(shard_group_id_wire_property_test PRIVATE
 )
 target_compile_features(shard_group_id_wire_property_test PRIVATE cxx_std_23)
 add_test(NAME shard_group_id_wire_property_test COMMAND shard_group_id_wire_property_test)
+
+# Composite cloud node ids and node_id_traits (cloud-composite-node-ids spec,
+# Requirement 14.1/14.2). Header-only, no cloud SDK, so outside every gate.
+foreach(_node_id_test composite_node_id_test node_id_traits_test)
+    add_executable(${_node_id_test} ${_node_id_test}.cpp)
+    target_link_libraries(${_node_id_test} PRIVATE Boost::unit_test_framework)
+    target_include_directories(${_node_id_test} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(${_node_id_test} PRIVATE cxx_std_23)
+    add_test(NAME ${_node_id_test} COMMAND ${_node_id_test})
+    set_tests_properties(${_node_id_test} PROPERTIES TIMEOUT 60 LABELS "unit;raft;node_id")
+endforeach()
 add_raft_completion_test(group_transport_unit_test group_transport_unit_test.cpp)
 add_raft_completion_test(group_storage_unit_test group_storage_unit_test.cpp)
 add_raft_completion_test(striped_executor_unit_test striped_executor_unit_test.cpp)
