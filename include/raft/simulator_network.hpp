@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <shared_mutex>
+#include <thread>
 #include <chrono>
 
 namespace kythira {
@@ -118,7 +119,7 @@ public:
                 }
 
                 // Wait for response - return the future directly (will be flattened)
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::request_vote_response<> {
@@ -167,7 +168,7 @@ public:
                 }
 
                 // Wait for response - return the future directly (will be flattened)
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::request_pre_vote_response<> {
@@ -207,7 +208,7 @@ public:
                 if (!success) {
                     throw kythira::network_exception("Failed to send TimeoutNow RPC");
                 }
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::timeout_now_response<> {
@@ -253,7 +254,7 @@ public:
                 }
 
                 // Wait for response - return the future directly
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::append_entries_response<> {
@@ -300,7 +301,7 @@ public:
                 }
 
                 // Wait for response - return the future directly
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::install_snapshot_response<> {
@@ -333,7 +334,7 @@ public:
                 if (!success) {
                     throw kythira::network_exception("Failed to send ClusterJoin RPC");
                 }
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::cluster_join_response<NodeId> {
@@ -365,7 +366,7 @@ public:
                 if (!success) {
                     throw kythira::network_exception("Failed to send ClusterLeave RPC");
                 }
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::cluster_leave_response<NodeId> {
@@ -401,7 +402,7 @@ public:
                 if (!success) {
                     throw kythira::network_exception("Failed to send FetchLogEntries RPC");
                 }
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::fetch_log_entries_response<NodeId> {
@@ -420,6 +421,36 @@ private:
     node_type _node;
     Serializer _serializer;
     unsigned short _rpc_port;
+
+    // Waits for the reply on a thread of its own and hands it back as a
+    // future.
+    //
+    // The simulator's receive blocks its caller until a message arrives or
+    // the timeout passes. On a future backend that runs continuations inline
+    // (stdexec, Folly) that caller is whichever thread sent the RPC, so a
+    // node sending to N peers waited for each reply in turn on its ticker
+    // thread: a crashed or lossy peer then stalled every other RPC, including
+    // the leader's heartbeats and a candidate's other vote requests, for an
+    // RPC timeout per retry, longer than an election timeout. Elections never
+    // finished once a peer was down. A real transport returns at once and
+    // completes the future when the reply arrives, which this restores (the
+    // boost backend already behaved this way, as its then() runs on a new
+    // thread). The thread holds the simulator node, not this client, and the
+    // simulator's own drain covers a receive still waiting at shutdown.
+    auto receive_reply(unsigned short reply_port, std::chrono::milliseconds timeout)
+        -> kythira::future_default<typename NetworkTypes::message_type> {
+        using reply_type = typename NetworkTypes::message_type;
+        kythira::promise_default<reply_type> promise;
+        auto future = promise.getFuture();
+        std::thread([node = _node, reply_port, timeout, promise = std::move(promise)]() mutable {
+            try {
+                promise.setValue(node->receive(reply_port, timeout).get());
+            } catch (...) {
+                promise.setException(std::current_exception());
+            }
+        }).detach();
+        return future;
+    }
 
     /// @brief A source port no other call in flight is using, for one RPC.
     ///
