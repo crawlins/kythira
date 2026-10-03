@@ -155,6 +155,9 @@ kythira::raft_configuration make_fast_config() {
     cfg._rpc_timeout = std::chrono::milliseconds{200};
     cfg._progress_gossip_interval = std::chrono::milliseconds{25};
     cfg._catch_up_fetch_timeout = std::chrono::milliseconds{300};
+    // These clusters commit a handful of entries, far below the default
+    // 50-entry gap threshold, so any gap must trigger a fetch here.
+    cfg._catch_up_gap_threshold = 0;
     return cfg;
 }
 

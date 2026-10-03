@@ -25,6 +25,7 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace kythira {
@@ -57,6 +58,14 @@ concept peer2peer_replicator =
         {
             replicator.find_catch_up_source(from_index, to_index, timeout)
         } -> std::same_as<kythira::future_default<std::optional<peer_info<NodeId, Address>>>>;
+        /// The highest `last_log_index` across every progress digest this
+        /// instance currently holds for a member peer, or `std::nullopt` if it
+        /// holds none. A pure local read with no network I/O; `node<Types>`
+        /// subtracts its own last index from it to get the catch-up gap
+        /// (peer2peer-log-replication Requirement 4.1).
+        {
+            std::as_const(replicator).highest_known_last_log_index()
+        } -> std::same_as<std::optional<LogIndex>>;
         /// Replace this instance's notion of current core cluster membership.
         /// This is the replicator's *only* source of truth for "who's in the
         /// cluster" — no separately/independently maintained peer list.
@@ -89,6 +98,11 @@ public:
         -> kythira::future_default<std::optional<peer_info<NodeId, Address>>> {
         return kythira::future_factory_default::makeFuture(
             std::optional<peer_info<NodeId, Address>>{});
+    }
+
+    /// @brief Always `std::nullopt` — no digests, so never a catch-up gap.
+    [[nodiscard]] auto highest_known_last_log_index() const -> std::optional<LogIndex> {
+        return std::nullopt;
     }
 
     /// @brief No-op; always succeeds immediately.
@@ -156,6 +170,21 @@ public:
         }
         return kythira::future_factory_default::makeFuture(
             std::optional<peer_info<NodeId, Address>>{});
+    }
+
+    /// @brief Highest advertised `last_log_index` among this instance's own
+    /// members, under the same membership filter as `find_catch_up_source`.
+    [[nodiscard]] auto highest_known_last_log_index() const -> std::optional<LogIndex> {
+        auto members = _member_ids.rlock();
+        auto locked = _table->rlock();
+        std::optional<LogIndex> highest;
+        for (const auto& [id, digest] : *locked) {
+            if (members->contains(id) &&
+                (!highest.has_value() || digest.last_log_index > *highest)) {
+                highest = digest.last_log_index;
+            }
+        }
+        return highest;
     }
 
     auto update_membership(std::vector<NodeId> member_ids) -> kythira::future_default<void> {
