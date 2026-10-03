@@ -3,24 +3,22 @@
 
 #include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.4**
-// Client/server round-trip under plain OSCORE, verifying the payload
-// round-trips correctly and that a session with a mismatched master secret
-// (standing in for a tampered/forged ciphertext, since the wire-level
-// tampering itself would need raw packet interception rather than the
-// coap_context_t-level API this test operates at) is rejected rather than
-// silently accepted.
+// Client/server round trip under OSCORE over real libcoap sockets, checking
+// that the payload comes back and that a client holding a different master
+// secret is refused rather than answered.
 //
-// This drives oscore_provider directly against real libcoap contexts, not
-// through coap_client<Types>/coap_server<Types> — LIBCOAP_AVAILABLE has
-// never been defined anywhere in this project's default build (the
-// coap-transport spec's own tests all run libcoap's stub code path), so
-// turning it on for the templated transport for the first time here would
-// pull in ~40 other #ifdef LIBCOAP_AVAILABLE branches across
-// coap_transport_impl.hpp that have never been compiled before — a much
-// larger, unrelated risk than this spec's actual scope (the new provider
-// classes). Only built when the vcpkg "edhoc"-independent, always-available
-// libcoap::coap-3 target is linked (see tests/CMakeLists.txt); the whole
-// file is a no-op fallback otherwise.
+// OSCORE on the libcoap backend is Kythira's own (raft/oscore.hpp): libcoap
+// carries option 9 as an ordinary registered option and oscore_provider owns
+// the Security Contexts (see its class comment). This test drives that
+// contract directly, without coap_client<Types>/coap_server<Types>, so it
+// checks the provider against libcoap alone: configure_session() makes
+// libcoap pass a protected request through to the handler intact, and the
+// provider's contexts protect and verify both directions.
+// coap_oscore_id_context_test covers the same path through the transport.
+//
+// The linked libcoap must be built without its own OSCORE
+// (vcpkg-overlays/libcoap). Against one built with it, the provider refuses,
+// and that refusal is what this test checks instead.
 #define BOOST_TEST_MODULE coap_oscore_integration_test
 #include <boost/test/unit_test.hpp>
 
@@ -32,12 +30,16 @@
 
 #include <coap3/coap.h>
 
+#include <arpa/inet.h>
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace kythira;
 
@@ -45,24 +47,53 @@ namespace {
 
 constexpr const char* kResourcePath = "echo";
 
-// Registers a resource that copies the request payload verbatim into the
-// 2.04 Changed response.
-auto register_echo_resource(coap_context_t* ctx) -> void {
-    coap_str_const_t* uri = coap_new_str_const(reinterpret_cast<const uint8_t*>(kResourcePath),
-                                               std::strlen(kResourcePath));
-    coap_resource_t* resource = coap_resource_init(uri, 0);
-    coap_register_request_handler(resource, COAP_REQUEST_POST,
-                                  [](coap_resource_t*, coap_session_t*, const coap_pdu_t* request,
-                                     const coap_string_t*, coap_pdu_t* response) {
-                                      const uint8_t* data = nullptr;
-                                      std::size_t len = 0;
-                                      coap_get_data(request, &len, &data);
-                                      coap_pdu_set_code(response, COAP_RESPONSE_CODE_CHANGED);
-                                      if (len > 0) {
-                                          coap_add_data(response, len, data);
-                                      }
-                                  });
-    coap_add_resource(ctx, resource);
+auto options_of(const coap_pdu_t* pdu) -> std::vector<oscore::coap_option> {
+    std::vector<oscore::coap_option> options;
+    coap_opt_iterator_t iter;
+    coap_option_iterator_init(pdu, &iter, COAP_OPT_ALL);
+    while (coap_opt_t* option = coap_option_next(&iter)) {
+        const auto* value = reinterpret_cast<const std::byte*>(coap_opt_value(option));
+        options.push_back(oscore::coap_option{static_cast<std::uint16_t>(iter.number),
+                                              {value, value + coap_opt_length(option)}});
+    }
+    return options;
+}
+
+/// The protected message as it arrived: code, token, OSCORE option, payload.
+auto outer_of(const coap_pdu_t* pdu) -> oscore::coap_message {
+    oscore::coap_message message;
+    message.type = static_cast<std::uint8_t>(coap_pdu_get_type(pdu));
+    message.code = static_cast<std::uint8_t>(coap_pdu_get_code(pdu));
+    message.message_id = static_cast<std::uint16_t>(coap_pdu_get_mid(pdu));
+    const auto token = coap_pdu_get_token(pdu);
+    const auto* token_bytes = reinterpret_cast<const std::byte*>(token.s);
+    message.token.assign(token_bytes, token_bytes + token.length);
+    for (auto& option : options_of(pdu)) {
+        if (oscore::is_outer_option(option.number)) {
+            message.options.push_back(std::move(option));
+        }
+    }
+    std::size_t length = 0;
+    const std::uint8_t* data = nullptr;
+    if (coap_get_data(pdu, &length, &data) != 0) {
+        const auto* bytes = reinterpret_cast<const std::byte*>(data);
+        message.payload.assign(bytes, bytes + length);
+        message.has_payload = true;
+    }
+    return message;
+}
+
+auto write_into(coap_pdu_t* pdu, oscore::coap_message message) -> void {
+    std::stable_sort(message.options.begin(), message.options.end(),
+                     [](const auto& a, const auto& b) { return a.number < b.number; });
+    for (const auto& option : message.options) {
+        BOOST_REQUIRE(coap_add_option(pdu, option.number, option.value.size(),
+                                      reinterpret_cast<const uint8_t*>(option.value.data())) != 0);
+    }
+    if (message.has_payload) {
+        BOOST_REQUIRE(coap_add_data(pdu, message.payload.size(),
+                                    reinterpret_cast<const uint8_t*>(message.payload.data())) != 0);
+    }
 }
 
 auto make_loopback_addr(std::uint16_t port) -> coap_address_t {
@@ -80,6 +111,9 @@ auto make_loopback_addr(std::uint16_t port) -> coap_address_t {
 // needing to introspect the bound socket for its ephemeral port.
 constexpr std::uint16_t kServerPort = 18720;
 
+/// A server whose only resource is the root, as the libcoap backend's is under
+/// OSCORE: the real path is inside the ciphertext. It verifies, checks the
+/// inner path, and echoes the inner payload back protected.
 struct oscore_server {
     coap_context_t* ctx{nullptr};
     oscore_provider provider;
@@ -89,11 +123,49 @@ struct oscore_server {
     explicit oscore_server(oscore_credentials creds)
         : ctx(coap_new_context(nullptr)), provider(std::move(creds), coap_security_role::server) {
         coap_startup();
-
         BOOST_REQUIRE(ctx != nullptr);
         coap_context_set_block_mode(ctx, COAP_BLOCK_USE_LIBCOAP | COAP_BLOCK_SINGLE_BODY);
         provider.configure_session(ctx);
-        register_echo_resource(ctx);
+
+        coap_resource_t* root = coap_resource_init(nullptr, 0);
+        coap_resource_set_userdata(root, this);
+        coap_register_request_handler(
+            root, COAP_REQUEST_POST,
+            [](coap_resource_t* resource, coap_session_t*, const coap_pdu_t* request,
+               const coap_string_t*, coap_pdu_t* response) {
+                auto* self = static_cast<oscore_server*>(coap_resource_get_userdata(resource));
+                try {
+                    const auto outer = outer_of(request);
+                    auto [context, group] = self->provider.verifying_context(outer);
+                    oscore::request_binding binding;
+                    const auto inner = context->unprotect_request(outer, binding);
+
+                    oscore::coap_message reply;
+                    reply.type = static_cast<std::uint8_t>(COAP_MESSAGE_ACK);
+                    reply.code = static_cast<std::uint8_t>(COAP_RESPONSE_CODE_CHANGED);
+                    reply.token = inner.token;
+                    std::string path;
+                    for (const auto& option : inner.options) {
+                        if (option.number == COAP_OPTION_URI_PATH) {
+                            path.append(reinterpret_cast<const char*>(option.value.data()),
+                                        option.value.size());
+                        }
+                    }
+                    if (path != kResourcePath) {
+                        reply.code = static_cast<std::uint8_t>(COAP_RESPONSE_CODE_NOT_FOUND);
+                    } else {
+                        reply.payload = inner.payload;
+                        reply.has_payload = inner.has_payload;
+                    }
+                    const auto protected_reply = context->protect_response(reply, binding);
+                    coap_pdu_set_code(response, static_cast<coap_pdu_code_t>(protected_reply.code));
+                    write_into(response, protected_reply);
+                } catch (const oscore::verification_error&) {
+                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_UNAUTHORIZED);
+                }
+            });
+        coap_add_resource(ctx, root);
+
         auto addr = make_loopback_addr(kServerPort);
         coap_endpoint_t* ep = coap_new_endpoint(ctx, &addr, COAP_PROTO_UDP);
         BOOST_REQUIRE(ep != nullptr);
@@ -115,74 +187,38 @@ struct oscore_server {
     }
 };
 
-// State shared with the response handler below: the resource path/payload
-// needed to build a retry request, and where the final echoed payload ends
-// up once one actually arrives.
 struct client_exchange_state {
-    std::string payload;
-    std::optional<std::string> result;
+    std::shared_ptr<oscore::security_context> context;
+    oscore::request_binding binding;
+    std::optional<coap_pdu_code_t> code;
+    std::optional<std::string> echoed;
 };
 
-auto build_request_pdu(coap_session_t* session, const std::string& payload,
-                       const coap_opt_t* echo_opt) -> coap_pdu_t* {
-    coap_pdu_t* pdu =
-        coap_pdu_init(COAP_MESSAGE_CON, COAP_REQUEST_CODE_POST, coap_new_message_id(session),
-                      coap_session_max_pdu_size(session));
-    BOOST_REQUIRE(pdu != nullptr);
-    coap_add_option(pdu, COAP_OPTION_URI_PATH, std::strlen(kResourcePath),
-                    reinterpret_cast<const uint8_t*>(kResourcePath));
-    if (echo_opt != nullptr) {
-        coap_add_option(pdu, COAP_OPTION_ECHO, coap_opt_length(echo_opt), coap_opt_value(echo_opt));
-    }
-    coap_add_data(pdu, payload.size(), reinterpret_cast<const uint8_t*>(payload.data()));
-    return pdu;
-}
-
-// Sends a single confirmable POST of `payload` to the server and blocks
-// (via the client context's own I/O loop) until either the payload echoes
-// back or `timeout` elapses. Transparently handles the RFC 9175/RFC 8613
-// Appendix B.1.2 Echo challenge a freshly-started OSCORE server issues on
-// its first contact with a given Recipient ID (4.01 Unauthorized + an Echo
-// option): resends the same request with that Echo option copied in, the
-// same way a real OSCORE-aware CoAP client library would.
+/// Sends one protected POST of `payload` to the echo path and waits for the
+/// answer. Returns the echoed payload when a verified 2.04 came back.
 auto send_and_await_echo(oscore_credentials client_creds, const std::string& payload,
-                         std::chrono::milliseconds timeout) -> std::optional<std::string> {
+                         std::chrono::milliseconds timeout) -> client_exchange_state {
     oscore_provider provider(std::move(client_creds), coap_security_role::client);
     coap_context_t* ctx = coap_new_context(nullptr);
     BOOST_REQUIRE(ctx != nullptr);
-    // As the transport's client does (configure_libcoap_block_mode). Besides
-    // block-wise transfer this is what lets libcoap answer the server's
-    // Appendix B.1.2 Echo challenge itself: it resends from the request state
-    // it keeps only in this mode, and swallows the 4.01, so the handler below
-    // only sees it if libcoap could not.
-    coap_context_set_block_mode(ctx, COAP_BLOCK_USE_LIBCOAP | COAP_BLOCK_SINGLE_BODY);
+    provider.configure_session(ctx);
 
     client_exchange_state state;
-    state.payload = payload;
     coap_register_response_handler(
         ctx,
         [](coap_session_t* session, const coap_pdu_t*, const coap_pdu_t* received,
            coap_mid_t) -> coap_response_t {
             auto* st = static_cast<client_exchange_state*>(coap_session_get_app_data(session));
-            auto code = coap_pdu_get_code(received);
-            if (code == COAP_RESPONSE_CODE_UNAUTHORIZED) {
-                coap_opt_iterator_t opt_iter;
-                coap_opt_t* echo_opt = coap_check_option(received, COAP_OPTION_ECHO, &opt_iter);
-                if (echo_opt != nullptr) {
-                    coap_send(session, build_request_pdu(session, st->payload, echo_opt));
-                    return COAP_RESPONSE_OK;
-                }
+            st->code = coap_pdu_get_code(received);
+            coap_opt_iterator_t iter;
+            if (coap_check_option(received, oscore::coap_option_oscore, &iter) == nullptr) {
+                // An unprotected answer: the server could not verify us.
+                return COAP_RESPONSE_OK;
             }
-            // Anything other than a real 2.04 Changed (e.g. an OSCORE
-            // decryption-failure error response, or an Echo challenge with
-            // no Echo option for some reason) is not a valid echo — leave
-            // st->result unset so the caller's timeout loop reports failure
-            // rather than treating an error body as a successful round trip.
-            if (code == COAP_RESPONSE_CODE_CHANGED) {
-                const uint8_t* data = nullptr;
-                std::size_t len = 0;
-                coap_get_data(received, &len, &data);
-                st->result = std::string(reinterpret_cast<const char*>(data), len);
+            const auto inner = st->context->unprotect_response(outer_of(received), st->binding);
+            if (inner.code == COAP_RESPONSE_CODE_CHANGED) {
+                st->echoed = std::string(reinterpret_cast<const char*>(inner.payload.data()),
+                                         inner.payload.size());
             }
             return COAP_RESPONSE_OK;
         });
@@ -193,16 +229,36 @@ auto send_and_await_echo(oscore_credentials client_creds, const std::string& pay
     BOOST_REQUIRE(session != nullptr);
     coap_session_set_app_data(session, &state);
 
-    coap_send(session, build_request_pdu(session, payload, nullptr));
+    const std::vector<std::byte> token{std::byte{0x2A}, std::byte{0x17}};
+    oscore::coap_message inner;
+    inner.code = static_cast<std::uint8_t>(COAP_REQUEST_CODE_POST);
+    inner.token = token;
+    const auto* path = reinterpret_cast<const std::byte*>(kResourcePath);
+    inner.options.push_back(
+        oscore::coap_option{COAP_OPTION_URI_PATH, {path, path + std::strlen(kResourcePath)}});
+    const auto* body = reinterpret_cast<const std::byte*>(payload.data());
+    inner.payload.assign(body, body + payload.size());
+    inner.has_payload = true;
 
-    auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!state.result.has_value() && std::chrono::steady_clock::now() < deadline) {
+    state.context = provider.request_context(std::nullopt);
+    const auto outer = state.context->protect_request(inner, state.binding);
+
+    coap_pdu_t* pdu =
+        coap_pdu_init(COAP_MESSAGE_CON, static_cast<coap_pdu_code_t>(outer.code),
+                      coap_new_message_id(session), coap_session_max_pdu_size(session));
+    BOOST_REQUIRE(pdu != nullptr);
+    coap_add_token(pdu, token.size(), reinterpret_cast<const uint8_t*>(token.data()));
+    write_into(pdu, outer);
+    coap_send(session, pdu);
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!state.code.has_value() && std::chrono::steady_clock::now() < deadline) {
         coap_io_process(ctx, 50);
     }
 
     coap_session_release(session);
     coap_free_context(ctx);
-    return state.result;
+    return state;
 }
 
 auto make_oscore_credentials(std::vector<std::byte> sender_id, std::vector<std::byte> recipient_id,
@@ -217,60 +273,98 @@ auto make_oscore_credentials(std::vector<std::byte> sender_id, std::vector<std::
     return creds;
 }
 
+auto libcoap_has_its_own_oscore() -> bool {
+    coap_startup();
+    return coap_oscore_is_supported() != 0;
+}
+
 }  // namespace
 
 BOOST_AUTO_TEST_SUITE(coap_oscore_integration_tests)
 
 BOOST_AUTO_TEST_CASE(oscore_round_trip_echoes_payload,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(25))) {
+    if (libcoap_has_its_own_oscore()) {
+        BOOST_TEST_MESSAGE("linked libcoap has its own OSCORE; see the refusal case");
+        return;
+    }
     auto secret = std::vector<std::byte>(16, std::byte{0x77});
     oscore_server server(make_oscore_credentials({std::byte{0x01}}, {std::byte{0x00}}, secret));
     // Give the server's endpoint a moment to be ready for datagrams.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     auto client_creds = make_oscore_credentials({std::byte{0x00}}, {std::byte{0x01}}, secret);
-    auto response = send_and_await_echo(std::move(client_creds), "hello-oscore",
-                                        std::chrono::milliseconds(5000));
+    const auto state = send_and_await_echo(std::move(client_creds), "hello-oscore",
+                                           std::chrono::milliseconds(5000));
 
-    BOOST_REQUIRE(response.has_value());
-    BOOST_CHECK_EQUAL(*response, "hello-oscore");
+    BOOST_REQUIRE(state.echoed.has_value());
+    BOOST_CHECK_EQUAL(*state.echoed, "hello-oscore");
+    // The outer code of a protected response is 2.04 whatever the inner one.
+    BOOST_CHECK(state.code == COAP_RESPONSE_CODE_CHANGED);
 }
 
 BOOST_AUTO_TEST_CASE(mismatched_master_secret_is_rejected,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(25))) {
+    if (libcoap_has_its_own_oscore()) {
+        BOOST_TEST_MESSAGE("linked libcoap has its own OSCORE; see the refusal case");
+        return;
+    }
     auto server_secret = std::vector<std::byte>(16, std::byte{0x11});
     oscore_server server(
         make_oscore_credentials({std::byte{0x01}}, {std::byte{0x00}}, server_secret));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    // Wrong key: the server can't decrypt/verify this, so no valid echo
-    // response should ever arrive.
+    // Wrong key: the server can't verify this, so it answers 4.01 unprotected
+    // and nothing is echoed.
     auto wrong_secret = std::vector<std::byte>(16, std::byte{0x22});
     auto client_creds = make_oscore_credentials({std::byte{0x00}}, {std::byte{0x01}}, wrong_secret);
-    auto response = send_and_await_echo(std::move(client_creds), "hello-oscore",
-                                        std::chrono::milliseconds(2000));
+    const auto state = send_and_await_echo(std::move(client_creds), "hello-oscore",
+                                           std::chrono::milliseconds(2000));
 
-    BOOST_CHECK(!response.has_value());
+    BOOST_CHECK(!state.echoed.has_value());
+    BOOST_CHECK(state.code == COAP_RESPONSE_CODE_UNAUTHORIZED);
 }
 
-// Each client session builds its own libcoap OSCORE context. They used to all
-// start at Sender Sequence Number 0, so a second session under the same key
-// reused the first one's nonces, and the server's replay window refused it.
-// Now each session starts above every number the key has already used.
+// A libcoap with its own OSCORE drops every protected request before any
+// handler sees it, so the provider must refuse up front rather than start a
+// server that silently answers nothing.
+BOOST_AUTO_TEST_CASE(a_libcoap_with_its_own_oscore_is_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(25))) {
+    if (!libcoap_has_its_own_oscore()) {
+        BOOST_TEST_MESSAGE(
+            "linked libcoap is built without OSCORE, as required; nothing to refuse");
+        return;
+    }
+    oscore_provider provider(make_oscore_credentials({std::byte{0x01}}, {std::byte{0x00}},
+                                                     std::vector<std::byte>(16, std::byte{0x77})),
+                             coap_security_role::server);
+    coap_context_t* ctx = coap_new_context(nullptr);
+    BOOST_CHECK_THROW(provider.configure_session(ctx), coap_unsupported_security_mode_error);
+    coap_free_context(ctx);
+}
+
+// Each client session builds its own Security Context. They used to all start
+// at Sender Sequence Number 0, so a second session under the same key reused
+// the first one's nonces, and the server's replay window refused it. Now each
+// context starts above every number the key has already used.
 BOOST_AUTO_TEST_CASE(a_second_session_on_the_same_key_reuses_no_sequence_number,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(25))) {
+    if (libcoap_has_its_own_oscore()) {
+        BOOST_TEST_MESSAGE("linked libcoap has its own OSCORE, which the provider refuses");
+        return;
+    }
     auto secret = std::vector<std::byte>(16, std::byte{0x55});
     oscore_server server(make_oscore_credentials({std::byte{0x01}}, {std::byte{0x00}}, secret));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     const auto client_creds = make_oscore_credentials({std::byte{0x00}}, {std::byte{0x01}}, secret);
     const auto first = send_and_await_echo(client_creds, "first", std::chrono::milliseconds(5000));
-    BOOST_REQUIRE(first.has_value());
-    BOOST_CHECK_EQUAL(*first, "first");
+    BOOST_REQUIRE(first.echoed.has_value());
+    BOOST_CHECK_EQUAL(*first.echoed, "first");
     const auto second =
         send_and_await_echo(client_creds, "second", std::chrono::milliseconds(5000));
-    BOOST_REQUIRE(second.has_value());
-    BOOST_CHECK_EQUAL(*second, "second");
+    BOOST_REQUIRE(second.echoed.has_value());
+    BOOST_CHECK_EQUAL(*second.echoed, "second");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

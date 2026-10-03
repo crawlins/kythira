@@ -269,21 +269,36 @@ BOOST_AUTO_TEST_CASE(rpk_create_client_session_and_callback,
     coap_free_context(ctx);
 }
 
-BOOST_AUTO_TEST_CASE(oscore_client_role_configure_session_is_noop_and_add_recipient_works,
+// OSCORE is Kythira's own on this backend (oscore_provider), so configuring a
+// context only registers the OSCORE option, and only against a libcoap built
+// without its own OSCORE; against one built with it, both roles refuse.
+BOOST_AUTO_TEST_CASE(oscore_configure_session_follows_the_linked_libcoap,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     oscore_credentials creds;
     creds.sender_id = {std::byte{0x00}};
     creds.recipient_id = {std::byte{0x01}};
     creds.master_secret = std::vector<std::byte>(16, std::byte{0x55});
+    const bool own_oscore = coap_oscore_is_supported() != 0;
 
     oscore_provider client_provider(creds, coap_security_role::client);
     auto* client_ctx = make_context();
-    BOOST_CHECK_NO_THROW(client_provider.configure_session(client_ctx));
+    if (own_oscore) {
+        BOOST_CHECK_THROW(client_provider.configure_session(client_ctx),
+                          coap_unsupported_security_mode_error);
+    } else {
+        BOOST_CHECK_NO_THROW(client_provider.configure_session(client_ctx));
+    }
     coap_free_context(client_ctx);
 
     oscore_provider server_provider(creds, coap_security_role::server);
     auto* server_ctx = make_context();
-    server_provider.configure_session(server_ctx);
+    if (own_oscore) {
+        BOOST_CHECK_THROW(server_provider.configure_session(server_ctx),
+                          coap_unsupported_security_mode_error);
+    } else {
+        BOOST_CHECK_NO_THROW(server_provider.configure_session(server_ctx));
+    }
+    // Kept for source compatibility; there is no libcoap recipient list now.
     std::vector<std::byte> extra_peer = {std::byte{0x02}};
     BOOST_CHECK_NO_THROW(server_provider.add_recipient(server_ctx, extra_peer));
     coap_free_context(server_ctx);

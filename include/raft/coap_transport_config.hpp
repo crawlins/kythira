@@ -57,6 +57,46 @@ enum class coap_message_reliability {
     always_confirmable,
 };
 
+/// Per-Raft-group OSCORE Security Contexts
+/// (.kiro/specs/coap-transport-multi-raft/ Requirement 4, tasks 9-11).
+///
+/// Off by default, so OSCORE traffic is exactly what it was: one Security
+/// Context per credential set, no `kid context` on the wire. On, every request
+/// that names a Raft group (`request.group_id()`) is protected under a context
+/// whose ID Context is `group_id || boot_nonce`, derived from the configured
+/// credentials with one HKDF per group (raft/oscore_group_contexts.hpp). Each
+/// group then has its own keys, Sender Sequence Number and 64-entry replay
+/// window, so one busy group cannot push another's Partial IVs out of a shared
+/// window, and a restart never reissues a Partial IV under a key it already
+/// used.
+struct coap_oscore_group_config {
+    bool enabled{false};
+    /// Server side, required when enabled: whether this node hosts a group. A
+    /// `kid context` naming any other group is refused before any key is
+    /// derived, so a stranger cannot make the server do HKDF work, or hold
+    /// state, for groups that do not exist here (Requirement 4.8).
+    std::function<bool(std::uint64_t)> hosts_group;
+    /// Server side: live recipient contexts per peer credential, evicted least
+    /// recently used first.
+    std::size_t max_recipient_contexts_per_peer{4096};
+    /// Server side: a recipient context unused this long is dropped, long
+    /// enough that a peer restarting under a new boot nonce does not lose
+    /// in-flight messages under its old one.
+    std::chrono::seconds recipient_idle_ttl{std::chrono::minutes{10}};
+    /// Client side: the boot nonce mixed into this node's ID Contexts. Empty
+    /// means the process's own (oscore::process_boot_nonce()), which is right
+    /// for one node per process. Several nodes in one process, as in tests,
+    /// must each set their own: nodes sharing credentials and a boot nonce
+    /// derive the same sender keys and would reuse nonces with each other.
+    std::vector<std::byte> boot_nonce;
+};
+
+/// One OSCORE-protected request in flight on the libcoap backend: the context
+/// that protected it and what verifying its response needs. Defined in
+/// raft/coap_security_impl.hpp, which is the only header that may name the
+/// OSCORE types alongside libcoap's.
+struct oscore_exchange;
+
 // Message tracking structures - using callbacks to work with generic future types
 struct pending_message {
     std::string token;
@@ -75,6 +115,9 @@ struct pending_message {
     std::string target_endpoint;
     std::string resource_path;
     bool is_confirmable{true};
+    /// Set when the request went out OSCORE-protected; its response must then
+    /// verify under the same context, and a plaintext success is refused.
+    std::shared_ptr<oscore_exchange> oscore;
 
     pending_message(std::string tok, std::uint16_t msg_id, std::chrono::milliseconds to,
                     std::function<void(std::vector<std::byte>, const std::string&)> resolve_cb,
@@ -163,6 +206,10 @@ struct coap_client_config {
     // coap_credential_bootstrap_error (Requirement 5.4) rather than
     // guessing at a transport.
     std::function<std::unique_ptr<edhoc_transport>()> edhoc_transport_factory;
+
+    // Per-group OSCORE contexts; see coap_oscore_group_config. Only `enabled`
+    // matters on a client.
+    coap_oscore_group_config oscore_groups{};
 };
 
 struct coap_server_config {
@@ -207,6 +254,9 @@ struct coap_server_config {
     // See coap_client_config::edhoc_transport_factory for the same
     // semantics (Requirement 5.2).
     std::function<std::unique_ptr<edhoc_transport>()> edhoc_transport_factory;
+
+    // Per-group OSCORE contexts; see coap_oscore_group_config.
+    coap_oscore_group_config oscore_groups{};
 };
 
 /// Retransmission tuned for Raft-rate traffic, where the consensus layer
