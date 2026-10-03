@@ -6241,6 +6241,35 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(coap_cantcoap_dtls_test PROPERTIES
         TIMEOUT 300 LABELS "coap;cantcoap;security;integration")
 
+    # Revocation, cn_validator and ACE-OAuth on the two alternate backends,
+    # held to the same cases (coap_alternate_security_parity_cases.hpp) so
+    # they behave as libcoap does (coap-alternate-backend-security-parity).
+    # Each collapses to one skipped case when its backend is not built.
+    foreach(_kythira_parity_backend libnyoci cantcoap)
+        set(_kythira_parity_test coap_${_kythira_parity_backend}_security_parity_test)
+        add_executable(${_kythira_parity_test} ${_kythira_parity_test}.cpp)
+        target_link_libraries(${_kythira_parity_test} PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        if(TARGET Folly::folly)
+            target_link_libraries(${_kythira_parity_test} PRIVATE Folly::folly)
+        endif()
+        if(TARGET OpenSSL::SSL)
+            target_link_libraries(${_kythira_parity_test} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        endif()
+        if(TARGET httplib::httplib)
+            target_link_libraries(${_kythira_parity_test} PRIVATE httplib::httplib)
+        endif()
+        target_compile_features(${_kythira_parity_test} PRIVATE cxx_std_23)
+        add_test(NAME ${_kythira_parity_test} COMMAND ${_kythira_parity_test})
+        set_tests_properties(${_kythira_parity_test} PROPERTIES
+            TIMEOUT 600 LABELS "coap;${_kythira_parity_backend};dtls;integration")
+    endforeach()
+    unset(_kythira_parity_test)
+    unset(_kythira_parity_backend)
+
     # ── OSCORE (RFC 8613) ────────────────────────────────────────────────────────
     # The conformance suite for include/raft/oscore.hpp, checked against every test
     # vector in RFC 8613 Appendix C. Deliberately depends on nothing but OpenSSL and

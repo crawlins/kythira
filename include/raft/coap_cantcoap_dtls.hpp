@@ -49,9 +49,9 @@
 /// - dtls_pki: certificate chain, private key and CA from `pki_credentials`,
 ///   `verify_peer_cert` mapped to `SSL_VERIFY_PEER` (and, on a server, to
 ///   requiring a client certificate), `cipher_suites` to the cipher list, and
-///   `cn_validator` run on the peer's certificate once the handshake is done.
-///   Peers are addressed by IP, so there is no hostname check; that is what
-///   `cn_validator` is for.
+///   `revocation` then `cn_validator` run on the peer's certificate once the
+///   handshake is done, before the session carries any CoAP message. Peers are addressed by IP, so
+///   there is no hostname check; that is what `cn_validator` is for.
 /// - dtls_rpk: RFC 7250 raw public keys, which OpenSSL only grew in 3.2. On an
 ///   older OpenSSL it is refused at construction, naming the version.
 /// - The server answers every ClientHello with a HelloVerifyRequest cookie
@@ -68,6 +68,7 @@
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_dtls_cipher_suites.hpp>
 #include <raft/coap_security.hpp>
+#include <raft/coap_revocation.hpp>
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -437,6 +438,7 @@ private:
     }
 
     auto configure_pki(const pki_credentials& creds) -> void {
+        validate_pki_peer_policy(creds);
         if (_role == coap_security_role::server &&
             (creds.cert_file.empty() || creds.key_file.empty())) {
             throw coap_security_config_error("a dtls_pki server needs a certificate and a key");
@@ -479,6 +481,8 @@ private:
             SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_NONE, nullptr);
         }
         _cn_validator = creds.cn_validator;
+        _ca_file = creds.ca_file;
+        _revocation = creds.revocation;
     }
 
     auto configure_rpk(const rpk_credentials& creds) -> void {
@@ -653,9 +657,10 @@ private:
         return false;
     }
 
-    /// Checks the handshake itself cannot make: the RPK pin and the
-    /// application's own certificate validator. Returns why the peer is
-    /// refused, or an empty string.
+    /// Checks the handshake itself cannot make: the RPK pin, the CRL check and
+    /// the application's own certificate validator. Returns why the peer is
+    /// refused, or an empty string. Runs before the session is marked
+    /// established, so nothing queued or inbound crosses a refused one.
     [[nodiscard]] auto check_established_peer(session& current) -> std::string {
 #if OPENSSL_VERSION_NUMBER >= 0x30200000L
         if (_rpk) {
@@ -672,6 +677,20 @@ private:
             return "the peer's raw public key is not one this side trusts";
         }
 #endif
+        // Revocation first, so a revoked peer is refused without the
+        // validator ever seeing it (as dtls_pki_provider::validate_cn does).
+        if (_revocation.enabled) {
+            X509* peer_cert = SSL_get0_peer_certificate(current.ssl.get());
+            if (peer_cert == nullptr) {
+                return "the peer presented no certificate for the revocation check";
+            }
+            // The peer's chain as sent; on a server it excludes the leaf,
+            // which is exactly what "untrusted intermediates" wants.
+            if (const auto refusal = coap_revocation::check(
+                    peer_cert, _ca_file, _revocation, SSL_get_peer_cert_chain(current.ssl.get()))) {
+                return "the peer's certificate failed the revocation check: " + *refusal;
+            }
+        }
         if (_cn_validator) {
             X509* peer_cert = SSL_get0_peer_certificate(current.ssl.get());
             if (peer_cert == nullptr) {
@@ -681,7 +700,13 @@ private:
             PEM_write_bio_X509(bio.get(), peer_cert);
             char* pem = nullptr;
             const long length = BIO_get_mem_data(bio.get(), &pem);
-            if (!_cn_validator(std::string(pem, static_cast<std::size_t>(length)))) {
+            bool accepted = false;
+            try {
+                accepted = _cn_validator(std::string(pem, static_cast<std::size_t>(length)));
+            } catch (...) {
+                accepted = false;
+            }
+            if (!accepted) {
                 return "the peer's certificate was refused by the configured validator";
             }
         }
@@ -867,6 +892,8 @@ private:
 
     psk_credentials _psk;
     std::function<bool(const std::string&)> _cn_validator;
+    std::string _ca_file;
+    certificate_revocation_config _revocation;
     [[maybe_unused]] bool _rpk{false};  // read only where OpenSSL has RFC 7250
     std::vector<std::vector<std::byte>> _trusted_rpks;
 

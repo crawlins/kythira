@@ -15,79 +15,18 @@
 
 #include <raft/coap_ace_oauth.hpp>
 
-#include <httplib.h>
-#include <boost/json.hpp>
+#ifdef LIBCOAP_AVAILABLE
+#include <raft/future_default.hpp>
+#include <raft/coap_transport.hpp>
+#include <raft/coap_transport_impl.hpp>
+#include <raft/json_serializer.hpp>
+#endif
 
-#include <chrono>
-#include <thread>
+#include "coap_ace_mock_as.hpp"
 
 using namespace kythira;
 
-namespace {
-
-// A minimal mock AS: /token responds according to which case name is
-// passed in the request's "scope" field, so a single server instance can
-// drive every test case below.
-class mock_authorization_server {
-public:
-    mock_authorization_server() {
-        _server.Post("/token", [](const httplib::Request& req, httplib::Response& res) {
-            auto body = boost::json::parse(req.body).as_object();
-            auto scope = std::string(body.at("scope").as_string());
-            auto profile = std::string(body.at("ace_profile").as_string());
-
-            if (scope == "deny-me") {
-                res.status = 403;
-                res.set_content(R"({"error":"access_denied"})", "application/json");
-                return;
-            }
-            if (scope == "malformed") {
-                res.status = 200;
-                res.set_content("not json", "text/plain");
-                return;
-            }
-
-            if (profile == "coap_dtls") {
-                boost::json::object response{
-                    {"psk_identity", "issued-identity-" + scope},
-                    {"psk_key_hex", "0102030405060708090a0b0c0d0e0f10"},
-                };
-                res.set_content(boost::json::serialize(response), "application/json");
-            } else {
-                boost::json::object response{
-                    {"sender_id_hex", "00"},
-                    {"recipient_id_hex", "01"},
-                    {"master_secret_hex", "0102030405060708090a0b0c0d0e0f10"},
-                    {"master_salt_hex", "0102030405060708"},
-                    {"aead_algorithm", "AES-CCM-16-64-128"},
-                };
-                res.set_content(boost::json::serialize(response), "application/json");
-            }
-        });
-
-        _actual_port = _server.bind_to_any_port("127.0.0.1");
-        BOOST_REQUIRE_MESSAGE(_actual_port > 0, "mock AS failed to bind");
-        _thread = std::jthread([this](std::stop_token) { _server.listen_after_bind(); });
-
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!_server.is_running() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
-
-    ~mock_authorization_server() { _server.stop(); }
-
-    [[nodiscard]] auto token_endpoint() const -> std::string {
-        return "http://127.0.0.1:" + std::to_string(_actual_port) + "/token";
-    }
-
-private:
-    httplib::Server _server;
-    int _actual_port{0};
-    std::jthread _thread;
-};
-
-}  // namespace
+using kythira::testing::mock_authorization_server;
 
 BOOST_AUTO_TEST_SUITE(coap_ace_oauth_tests)
 
@@ -166,5 +105,105 @@ BOOST_AUTO_TEST_CASE(unreachable_as_throws_bootstrap_error,
 
     BOOST_CHECK_THROW(run_ace_token_exchange(config), coap_credential_bootstrap_error);
 }
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── resolve_ace_bootstrap(): the step every CoAP backend runs ─────────────
+// (coap-alternate-backend-security-parity Requirements 5 and 6)
+
+BOOST_AUTO_TEST_SUITE(resolve_ace_bootstrap_tests)
+
+namespace {
+
+auto ace_config(std::string endpoint, ace_target_profile profile, coap_auth_mode mode)
+    -> coap_security_config {
+    ace_oauth_config ace;
+    ace.as_token_endpoint = std::move(endpoint);
+    ace.client_id = "node-1";
+    ace.client_secret = "secret";
+    ace.scope = "raft-cluster";
+    ace.target_profile = profile;
+    coap_security_config config;
+    config.mode = mode;
+    config.ace_bootstrap = ace;
+    return config;
+}
+
+// Nothing listens on port 1, so reaching the AS would raise
+// coap_credential_bootstrap_error instead: a config_error proves the
+// refusal came first.
+constexpr const char* unreachable_as = "http://127.0.0.1:1/token";
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(replaces_static_credentials_with_the_issued_ones,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    mock_authorization_server as;
+    auto config =
+        ace_config(as.token_endpoint(), ace_target_profile::dtls_psk, coap_auth_mode::dtls_psk);
+    config.credentials = psk_credentials{"stale-static-identity", {std::byte{1}}};
+    resolve_ace_bootstrap(config);
+    BOOST_REQUIRE(std::holds_alternative<psk_credentials>(config.credentials));
+    BOOST_TEST(std::get<psk_credentials>(config.credentials).identity ==
+               "issued-identity-raft-cluster");
+}
+
+BOOST_AUTO_TEST_CASE(no_ace_bootstrap_leaves_the_config_alone) {
+    coap_security_config config;
+    config.mode = coap_auth_mode::dtls_psk;
+    config.credentials = psk_credentials{"static", {std::byte{1}}};
+    resolve_ace_bootstrap(config);
+    BOOST_TEST(std::get<psk_credentials>(config.credentials).identity == "static");
+}
+
+BOOST_AUTO_TEST_CASE(profile_that_disagrees_with_mode_is_refused_before_the_as) {
+    for (const auto& [profile, mode] :
+         {std::pair{ace_target_profile::dtls_psk, coap_auth_mode::oscore},
+          std::pair{ace_target_profile::dtls_psk, coap_auth_mode::none},
+          std::pair{ace_target_profile::dtls_psk, coap_auth_mode::dtls_pki},
+          std::pair{ace_target_profile::oscore, coap_auth_mode::dtls_psk},
+          std::pair{ace_target_profile::oscore, coap_auth_mode::none}}) {
+        auto config = ace_config(unreachable_as, profile, mode);
+        BOOST_CHECK_THROW(resolve_ace_bootstrap(config), coap_security_config_error);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(ace_together_with_edhoc_is_refused_as_ambiguous) {
+    auto config = ace_config(unreachable_as, ace_target_profile::oscore, coap_auth_mode::oscore);
+    oscore_credentials creds;
+    creds.bootstrap_method = oscore_bootstrap::edhoc;
+    config.credentials = creds;
+    BOOST_CHECK_THROW(resolve_ace_bootstrap(config), coap_security_config_error);
+}
+
+#ifdef LIBCOAP_AVAILABLE
+// The libcoap constructors run the same helper, so they refuse the same
+// configs at construction with the same error.
+using libcoap_types =
+    kythira::default_transport_types<kythira::future_default<kythira::request_vote_response<>>,
+                                     kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                     kythira::noop_metrics, kythira::console_logger>;
+
+BOOST_AUTO_TEST_CASE(libcoap_refuses_mismatch_and_ambiguity_at_construction) {
+    auto mismatch =
+        ace_config(unreachable_as, ace_target_profile::oscore, coap_auth_mode::dtls_psk);
+    auto ambiguous = ace_config(unreachable_as, ace_target_profile::oscore, coap_auth_mode::oscore);
+    oscore_credentials edhoc;
+    edhoc.bootstrap_method = oscore_bootstrap::edhoc;
+    ambiguous.credentials = edhoc;
+
+    for (const auto& security : {mismatch, ambiguous}) {
+        coap_client_config client_config;
+        client_config.security = security;
+        BOOST_CHECK_THROW((coap_client<libcoap_types>({}, client_config, kythira::noop_metrics{})),
+                          coap_security_config_error);
+        coap_server_config server_config;
+        server_config.security = security;
+        BOOST_CHECK_THROW(
+            (coap_server<libcoap_types>("127.0.0.1", 0, server_config, kythira::noop_metrics{})),
+            coap_security_config_error);
+    }
+}
+#endif  // LIBCOAP_AVAILABLE
 
 BOOST_AUTO_TEST_SUITE_END()
