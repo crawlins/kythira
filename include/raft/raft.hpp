@@ -1299,6 +1299,10 @@ private:
     /// when @p index is the last entry it covers. Empty for any other index
     /// this node no longer (or does not yet) hold.
     [[nodiscard]] auto term_at(log_index_type index) const -> std::optional<term_id_type>;
+    /// Whether the log holds a configuration entry after @p index. A server
+    /// uses the latest configuration in its log, committed or not (Raft
+    /// §6), so a committed entry with a later one behind it is stale.
+    [[nodiscard]] auto has_later_configuration_entry(log_index_type index) const -> bool;
 
     // Replication helpers
     auto send_append_entries_to(node_id_type target) -> void;
@@ -6934,6 +6938,16 @@ auto node<Types>::term_at(log_index_type index) const -> std::optional<term_id_t
 }
 
 template<raft_types Types>
+auto node<Types>::has_later_configuration_entry(log_index_type index) const -> bool {
+    for (auto it = _log.rbegin(); it != _log.rend() && it->index() > index; ++it) {
+        if (it->type() == entry_type::configuration) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template<raft_types Types>
 
 auto node<Types>::get_log_entry(log_index_type index) const -> std::optional<log_entry_type> {
     // Handle invalid index
@@ -8042,9 +8056,17 @@ auto node<Types>::apply_committed_entries() -> void {
                     }
                 }
             }
-            _configuration = new_config;
+            // Two learner adds in flight append two plain entries back to
+            // back. Committing the first must not roll _configuration back
+            // to it, nor prune the second's learner from _next_index below:
+            // nothing would ever re-add it, so the leader would stop
+            // replicating to that learner for good.
+            const bool superseded = has_later_configuration_entry(entry.index());
+            if (!superseded) {
+                _configuration = new_config;
+                sync_peer2peer_membership();
+            }
             _awaiting_admission = false;
-            sync_peer2peer_membership();
             _config_synchronizer.notify_configuration_committed(new_config, entry.index());
             // add_learner()/remove_learner() register on _commit_waiter (not
             // _config_synchronizer, which only tracks the joint/final voting-set
@@ -8076,7 +8098,7 @@ auto node<Types>::apply_committed_entries() -> void {
                               {"c_new_index", std::to_string(c_new_entry.index())}});
             }
 
-            if (!new_config.is_joint_consensus()) {
+            if (!new_config.is_joint_consensus() && !superseded) {
                 // C_new (or a plain learner-only) commit: remove peers that are no
                 // longer tracked at all — checked against BOTH the voting set and the
                 // learner set, so add_learner()'s freshly-admitted learner (present only
