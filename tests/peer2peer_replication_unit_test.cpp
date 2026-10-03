@@ -53,6 +53,8 @@ BOOST_AUTO_TEST_CASE(no_op_replicator_always_succeeds_and_returns_nullopt) {
     auto source_fut = replicator.find_catch_up_source(1, 100, std::chrono::milliseconds{100});
     auto source = std::move(source_fut).get();
     BOOST_CHECK(!source.has_value());
+
+    BOOST_CHECK(!replicator.highest_known_last_log_index().has_value());
 }
 
 // ── Requirement 9.1: static_peer2peer_replicator ───────────────────────────
@@ -137,4 +139,30 @@ BOOST_AUTO_TEST_CASE(static_replicator_empty_before_first_update_membership) {
     auto source =
         std::move(node2_view.find_catch_up_source(1, 200, std::chrono::milliseconds{100})).get();
     BOOST_CHECK(!source.has_value());
+}
+
+// ── Requirement 4.1: highest known last_log_index ──────────────────────────
+
+BOOST_AUTO_TEST_CASE(static_replicator_highest_known_counts_only_members) {
+    auto table = std::make_shared<replicator_t::table_type>();
+    replicator_t node1_view(table);
+    replicator_t node2_view(table);
+    replicator_t node3_view(table);
+
+    BOOST_CHECK(!node2_view.highest_known_last_log_index().has_value());
+
+    std::move(node1_view.advertise_progress(1, "addr1", 2, 40)).get();
+    std::move(node2_view.advertise_progress(2, "addr2", 2, 10)).get();
+    std::move(node3_view.advertise_progress(3, "addr3", 2, 900)).get();
+
+    // node3 is not in node2's membership, so its 900 never counts.
+    std::move(node2_view.update_membership({1, 2})).get();
+    auto highest = node2_view.highest_known_last_log_index();
+    BOOST_REQUIRE(highest.has_value());
+    BOOST_CHECK_EQUAL(*highest, 40u);
+
+    std::move(node2_view.update_membership({1, 2, 3})).get();
+    highest = node2_view.highest_known_last_log_index();
+    BOOST_REQUIRE(highest.has_value());
+    BOOST_CHECK_EQUAL(*highest, 900u);
 }

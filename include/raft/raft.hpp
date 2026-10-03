@@ -1407,8 +1407,10 @@ private:
     // _config.progress_gossip_interval() (Requirement 3).
     auto maybe_gossip_progress() -> void;
 
-    // Detects the catch-up gap and, if it exceeds _config.catch_up_gap_threshold(),
-    // fetches missing entries from a peer (Requirement 4-7).
+    // Computes the catch-up gap (the highest last_log_index the replicator
+    // knows of minus this node's own) and, only if it exceeds
+    // _config.catch_up_gap_threshold(), fetches missing entries from a peer
+    // (Requirement 4-7).
     auto maybe_catch_up_from_peer() -> void;
 
     // ── Quorum management helpers (Req 12-15) ────────────────────────────────
@@ -7747,9 +7749,22 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
         if (_catch_up_in_flight) {
             return;
         }
-        from_index = get_last_log_index() + 1;
+        // Requirement 4.1/4.2: only a gap larger than catch_up_gap_threshold
+        // is worth a peer fetch. A smaller one closes in a single leader
+        // AppendEntries batch, and fetching it would add a second writer to
+        // the log tail for no gain. No digest at all means no gap.
+        auto last_index = get_last_log_index();
+        auto highest_known = _peer2peer_replicator.highest_known_last_log_index();
+        if (!highest_known.has_value() || *highest_known <= last_index ||
+            static_cast<std::uint64_t>(*highest_known - last_index) <=
+                _config.catch_up_gap_threshold()) {
+            return;
+        }
+        from_index = last_index + 1;
         auto max_entries = static_cast<log_index_type>(_config.catch_up_fetch_max_entries());
         to_index = max_entries > 0 ? from_index + max_entries - 1 : from_index;
+        // Never ask for more than anyone is known to hold.
+        to_index = std::min(to_index, *highest_known);
         timeout = _config.catch_up_fetch_timeout();
         _catch_up_in_flight = true;
     }
