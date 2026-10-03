@@ -58,6 +58,7 @@
 #include <raft/metrics.hpp>
 #include <raft/serializer_registry.hpp>
 #include <raft/http_content_negotiation.hpp>
+#include <raft/http_connection_gate.hpp>
 #include <raft/peer_capability_cache.hpp>
 #include <raft/future_default.hpp>
 #include <concepts/future.hpp>
@@ -167,7 +168,18 @@ struct boost_beast_client_config {
 /// @brief Server configuration. Field-for-field match with
 ///     `cpp_httplib_server_config` (Requirement 11).
 struct boost_beast_server_config {
+    /// Most connections the server holds open at once, across every listener
+    /// (a "*" bind's 0.0.0.0 and :: share one count). `do_accept` asks a
+    /// `http_detail::connection_gate` for a slot before building the stream;
+    /// past the limit the socket is closed with an RST before anything is
+    /// read or a TLS handshake starts, and the client sees a connection reset
+    /// or EOF. The slot is released when the session is destroyed. 0 is
+    /// refused by the constructor with `std::invalid_argument`.
     std::size_t max_concurrent_connections{100};
+    /// Largest request body, in bytes, the server reads (inclusive). The
+    /// session's parser enforces it with `body_limit`; a request over it, by
+    /// `Content-Length` or by chunks, is answered `413 Payload Too Large`
+    /// (`text/plain`, `Connection: close`) and the connection is closed.
     std::size_t max_request_body_size{10 * 1024 * 1024};  // 10 MB
     std::chrono::seconds request_timeout{30};
     bool enable_ssl{false};
@@ -1025,6 +1037,15 @@ public:
     /// mechanics.
     [[nodiscard]] auto accept_post_header() const -> std::string;
 
+    /// @brief Counts a request refused with 413 for exceeding
+    ///     `max_request_body_size` (`beast_http.server.request_too_large`).
+    ///     Called by the session, which holds no metrics of its own.
+    auto note_request_too_large() -> void;
+
+    /// @brief Connections held open right now, and the configured ceiling.
+    ///     For tests and diagnostics.
+    [[nodiscard]] auto live_connections() const -> std::size_t { return _gate->live(); }
+
 private:
     net::io_context& _ioc;
     serializer_type _serializer;
@@ -1044,6 +1065,10 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    /// `max_concurrent_connections`, shared by every acceptor. A
+    /// `shared_ptr` because each session's slot keeps it alive, so a session
+    /// torn down after this server is gone still releases safely.
+    std::shared_ptr<http_detail::connection_gate> _gate;
     std::atomic<bool> _running{false};
     std::mutex _sessions_mutex;
     std::unordered_map<std::size_t, std::function<void()>> _session_closers;

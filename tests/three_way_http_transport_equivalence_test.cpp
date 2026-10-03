@@ -28,6 +28,7 @@
 
 #include <raft/http_transport.hpp>
 #include <raft/http_transport_impl.hpp>
+#include "http_limit_test_helpers.hpp"
 #include <raft/beast_http_transport.hpp>
 #include <raft/beast_http_transport_impl.hpp>
 #include <raft/proxygen_http_transport.hpp>
@@ -314,6 +315,65 @@ BOOST_AUTO_TEST_CASE(connection_failure_is_reported_as_exception_by_all_three_tr
         std::move(proxygen_client_inst.send_request_vote(test_node_id, req, rpc_timeout)).get(),
         std::exception);
 
+    work_guard.reset();
+    ioc.stop();
+    for (auto& t : io_threads) {
+        t.join();
+    }
+}
+
+// .kiro/specs/http-server-request-limits/ Requirement 6.5: one byte over
+// max_request_body_size, with a Content-Length, gets the same status and
+// Content-Type from every server, read off the wire.
+BOOST_AUTO_TEST_CASE(oversized_body_is_refused_the_same_way_by_all_three_transports,
+                     *boost::unit_test::timeout(60)) {
+    constexpr std::uint16_t http_port = 28399;
+    constexpr std::uint16_t beast_port = 28400;
+    constexpr std::uint16_t proxygen_port = 28401;
+    constexpr std::size_t limit = 64;
+
+    kythira::cpp_httplib_server_config http_config;
+    http_config.max_request_body_size = limit;
+    kythira::cpp_httplib_server<http_types> http_server("127.0.0.1", http_port, http_config,
+                                                        kythira::noop_metrics{});
+    register_echo_handlers(http_server);
+    http_server.start();
+
+    boost::asio::io_context ioc;
+    auto work_guard = boost::asio::make_work_guard(ioc);
+    std::vector<std::thread> io_threads;
+    for (int i = 0; i < 2; ++i) {
+        io_threads.emplace_back([&ioc] { ioc.run(); });
+    }
+    kythira::boost_beast_server_config beast_config;
+    beast_config.max_request_body_size = limit;
+    kythira::boost_beast_server<beast_types> beast_server(ioc, "127.0.0.1", beast_port,
+                                                          beast_config, kythira::noop_metrics{});
+    register_echo_handlers(beast_server);
+    beast_server.start();
+
+    auto io_executor = std::make_shared<folly::IOThreadPoolExecutor>(2);
+    kythira::proxygen_server_config proxygen_config;
+    proxygen_config.max_request_body_size = limit;
+    kythira::proxygen_server<proxygen_types> proxygen_server_inst(
+        "127.0.0.1", proxygen_port, proxygen_config, kythira::noop_metrics{}, io_executor);
+    register_echo_handlers(proxygen_server_inst);
+    proxygen_server_inst.start();
+
+    namespace limits = kythira::testing::http_limits;
+    for (auto port : {http_port, beast_port, proxygen_port}) {
+        BOOST_TEST_INFO("port " << port);
+        limits::raw_connection conn("127.0.0.1", port);
+        BOOST_REQUIRE(conn.connected());
+        conn.send_all(limits::sized_request(limit + 1));
+        auto headers = conn.read_headers(std::chrono::seconds(10));
+        BOOST_TEST(limits::status_of(headers) == 413);
+        BOOST_TEST(limits::header_of(headers, "Content-Type") == "text/plain");
+    }
+
+    http_server.stop();
+    beast_server.stop();
+    proxygen_server_inst.stop();
     work_guard.reset();
     ioc.stop();
     for (auto& t : io_threads) {

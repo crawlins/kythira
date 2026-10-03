@@ -1613,6 +1613,26 @@ auto cpp_httplib_server<Types>::load_server_certificates() -> void {
 #endif
 }
 
+namespace http_detail {
+
+// max_request_body_size on one listener. httplib answers an oversized body
+// 413 by itself but with no body or Content-Type; the error handler fills in
+// the same text/plain body Beast and Proxygen send, so a peer sees one answer
+// whichever transport it reached (.kiro/specs/http-server-request-limits/
+// Requirement 6.5). Every other error status is left as the route set it.
+inline auto apply_request_body_limit(httplib::Server& server, std::size_t limit) -> void {
+    server.set_payload_max_length(limit);
+    server.set_error_handler([](const httplib::Request&, httplib::Response& res) {
+        if (res.status == 413 && res.body.empty()) {
+            res.set_content("Request body exceeds maximum allowed size", "text/plain");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
+}
+
+}  // namespace http_detail
+
 // Configure SSL for server: constructs the real httplib::SSLServer listener
 // (Requirement 14) and applies cipher-suite/TLS-version/client-cert-auth
 // configuration to its live SSL_CTX* — the same context handshakes actually
@@ -1652,7 +1672,7 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> std::unique_ptr<httpli
         SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
     }
 
-    ssl_server->set_payload_max_length(_config.max_request_body_size);
+    http_detail::apply_request_body_limit(*ssl_server, _config.max_request_body_size);
     ssl_server->set_read_timeout(_config.request_timeout.count());
     ssl_server->set_write_timeout(_config.request_timeout.count());
     // **The site that is easy to miss.** The SSL server is built in a
@@ -1682,7 +1702,7 @@ auto cpp_httplib_server<Types>::make_listener() -> std::unique_ptr<httplib::Serv
         }
     }
     auto server = std::make_unique<httplib::Server>();
-    server->set_payload_max_length(_config.max_request_body_size);
+    http_detail::apply_request_body_limit(*server, _config.max_request_body_size);
     server->set_read_timeout(_config.request_timeout.count());
     server->set_write_timeout(_config.request_timeout.count());
     // See the client's equivalent. A response is as small and as

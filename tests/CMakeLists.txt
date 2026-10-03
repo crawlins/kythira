@@ -1515,6 +1515,9 @@ add_raft_completion_test(learner_capacity_decoupling_test learner_capacity_decou
 # HTTP transport tests
 add_network_test(http_exceptions_test http_exceptions_test.cpp)
 add_network_test(http_config_test http_config_test.cpp)
+# http-server-request-limits task 2.2: no transport dependency, so it is
+# outside every HTTP transport gate and runs on every leg.
+add_network_test(http_connection_gate_unit_test http_connection_gate_unit_test.cpp)
 
 if(KYTHIRA_BUILD_COAP_TRANSPORT)
     # CoAP transport tests
