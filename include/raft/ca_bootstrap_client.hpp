@@ -147,46 +147,51 @@ namespace ca_bootstrap_detail {
 
     httplib::Client client(base_url);
     // Deliberately NOT calling enable_server_certificate_verification(false):
-    // per cpp-httplib's actual SSLClient::initialize_ssl(), that flag gates
-    // the ENTIRE verification block, including the custom
-    // server_certificate_verifier_ callback below — disabling it would skip
-    // pinning too, not just the normal chain check. Verification stays
-    // enabled; the callback below is what replaces the normal chain check
-    // with the pinned-fingerprint decision, returning CertificateAccepted/
-    // CertificateRejected explicitly so the normal chain-verification
-    // fallback (for a NoDecisionMade return) never runs either.
+    // cpp-httplib's setup_client_tls_session() only falls back to the normal
+    // chain check when the session verifier below returns NoDecisionMade, and
+    // that flag gates exactly that fallback. Keeping it enabled means a
+    // future NoDecisionMade return can never silently accept an unverified
+    // chain. The verifier always answers CertificateAccepted/
+    // CertificateRejected explicitly, so the pinned-fingerprint decision is
+    // the whole verification. It is a session verifier (post-handshake, one
+    // call with the whole session) rather than set_server_certificate_verifier,
+    // which since cpp-httplib's TLS abstraction layer is a per-certificate
+    // callback and cannot see the chain the leaf check needs.
     client.set_connection_timeout(10, 0);
     client.set_read_timeout(10, 0);
 
     std::string observed_fingerprint;
     bool saw_chain = false;
-    client.set_server_certificate_verifier([&](SSL* ssl) -> httplib::SSLVerifierResponse {
-        auto* chain = SSL_get_peer_cert_chain(ssl);
-        if (chain == nullptr) {
-            return httplib::SSLVerifierResponse::CertificateRejected;
-        }
-        X509* root = ca_bootstrap_detail::root_of_chain(chain);
-        if (root == nullptr) {
-            return httplib::SSLVerifierResponse::CertificateRejected;
-        }
-        saw_chain = true;
-        try {
-            observed_fingerprint = ca_bootstrap_detail::sha256_fingerprint_hex_bare(root);
-        } catch (const std::exception&) {
-            return httplib::SSLVerifierResponse::CertificateRejected;
-        }
-        if (observed_fingerprint != normalized_expected) {
-            return httplib::SSLVerifierResponse::CertificateRejected;
-        }
-        // The pinned root is public, so a matching root in the presented
-        // list proves nothing by itself: an on-path attacker can send
-        // [its own leaf, the genuine root], and the handshake then only
-        // proves possession of the ATTACKER's leaf key. Accept only if the
-        // leaf actually chains to the pinned root.
-        return ca_bootstrap_detail::leaf_chains_to(ssl, root, chain)
-                   ? httplib::SSLVerifierResponse::CertificateAccepted
-                   : httplib::SSLVerifierResponse::CertificateRejected;
-    });
+    client.set_session_verifier(
+        [&](httplib::tls::session_t session) -> httplib::SSLVerifierResponse {
+            // OpenSSL backend: the opaque session handle is the SSL*.
+            auto* ssl = static_cast<SSL*>(session);
+            auto* chain = SSL_get_peer_cert_chain(ssl);
+            if (chain == nullptr) {
+                return httplib::SSLVerifierResponse::CertificateRejected;
+            }
+            X509* root = ca_bootstrap_detail::root_of_chain(chain);
+            if (root == nullptr) {
+                return httplib::SSLVerifierResponse::CertificateRejected;
+            }
+            saw_chain = true;
+            try {
+                observed_fingerprint = ca_bootstrap_detail::sha256_fingerprint_hex_bare(root);
+            } catch (const std::exception&) {
+                return httplib::SSLVerifierResponse::CertificateRejected;
+            }
+            if (observed_fingerprint != normalized_expected) {
+                return httplib::SSLVerifierResponse::CertificateRejected;
+            }
+            // The pinned root is public, so a matching root in the presented
+            // list proves nothing by itself: an on-path attacker can send
+            // [its own leaf, the genuine root], and the handshake then only
+            // proves possession of the ATTACKER's leaf key. Accept only if the
+            // leaf actually chains to the pinned root.
+            return ca_bootstrap_detail::leaf_chains_to(ssl, root, chain)
+                       ? httplib::SSLVerifierResponse::CertificateAccepted
+                       : httplib::SSLVerifierResponse::CertificateRejected;
+        });
 
     httplib::Headers headers;
     if (!auth_token.empty()) {

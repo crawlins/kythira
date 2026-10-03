@@ -372,7 +372,7 @@ private:
         // mocks check the signature against the bytes that *arrived*, so both
         // sides re-encode consistently and agree. Only a service that signs
         // independently can disagree.
-        client->set_url_encode(false);
+        client->set_path_encode(false);
         return client;
     }
 

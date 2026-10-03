@@ -893,7 +893,7 @@ auto cpp_httplib_client<Types>::configure_ssl_client(httplib::Client* client) ->
             throw kythira::ssl_configuration_error(
                 "Mutual TLS needs both client_cert_path and client_key_path");
         }
-        SSL_CTX* ctx = client->ssl_context();
+        auto* ctx = static_cast<SSL_CTX*>(client->tls_context());
         if (ctx == nullptr) {
             throw kythira::ssl_configuration_error(
                 "Client has no SSL context to load the client certificate into");
@@ -929,7 +929,7 @@ auto cpp_httplib_client<Types>::configure_ssl_client(httplib::Client* client) ->
     // restricted cipher list, still offered cpp-httplib's defaults.
     // httplib::Client only hands out a context when it wraps an SSLClient,
     // which every https:// URL does.
-    SSL_CTX* ctx = client->ssl_context();
+    auto* ctx = static_cast<SSL_CTX*>(client->tls_context());
     if (ctx == nullptr) {
         throw kythira::ssl_configuration_error(
             "HTTPS client has no SSL context to apply cipher and TLS version settings to");
@@ -1756,7 +1756,7 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> std::unique_ptr<httpli
                         _config.ssl_cert_path, _config.ssl_key_path));
     }
 
-    SSL_CTX* ctx = ssl_server->ssl_context();
+    auto* ctx = static_cast<SSL_CTX*>(ssl_server->tls_context());
     configure_ssl_context(ctx, _config.cipher_suites, _config.min_tls_version,
                           _config.max_tls_version);
 
@@ -1842,7 +1842,7 @@ auto cpp_httplib_server<Types>::reload_tls_material() -> void {
 
     // Every listener (one per bind address) has its own SSL_CTX.
     for (auto* ssl_server : ssl_servers) {
-        SSL_CTX* ctx = ssl_server->ssl_context();
+        auto* ctx = static_cast<SSL_CTX*>(ssl_server->tls_context());
         if (SSL_CTX_use_certificate_chain_file(ctx, _config.ssl_cert_path.c_str()) != 1 ||
             SSL_CTX_use_PrivateKey_file(ctx, _config.ssl_key_path.c_str(), SSL_FILETYPE_PEM) != 1 ||
             SSL_CTX_check_private_key(ctx) != 1) {

@@ -270,7 +270,8 @@ auto find_leader(const std::vector<std::unique_ptr<rpc_tls_node_process>>& nodes
             httplib::Client c("127.0.0.1", nodes[i]->http_port);
             c.set_connection_timeout(1, 0);
             c.set_read_timeout(10, 0);
-            auto res = c.Get("/v1/root-ca", {{"Authorization", "Bearer " + auth_token}});
+            auto res =
+                c.Get("/v1/root-ca", httplib::Headers{{"Authorization", "Bearer " + auth_token}});
             if (res && res->status == 200 && !res->body.empty()) {
                 return leader_probe_result{i};
             }
