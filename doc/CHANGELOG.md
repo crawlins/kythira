@@ -12,6 +12,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
   replacement past that group's target, then removes and decommissions the
   dead voter. The emptied group is not refilled while other groups hold
   surplus voters for it.
+- **A second learner added while the first is still committing keeps
+  replicating** (`include/raft/raft.hpp`). Committing the first learner's
+  configuration entry rolled the leader back to that configuration and
+  dropped the second learner from replication, so it never heard from the
+  leader again and, once promoted, could elect itself leader of its own
+  one-node cluster. A committed configuration entry with a later one behind
+  it in the log is now superseded: it no longer replaces the configuration
+  or prunes replication targets.
 - **The placement map survives a leader change.** Configuration entries now
   carry each member's placement group (string group ids only), so a node
   provisioned after bootstrap keeps its group on every replica instead of
