@@ -126,6 +126,7 @@ inline constexpr const char* cantcoap_request_vote_path = "/raft/request_vote";
 inline constexpr const char* cantcoap_append_entries_path = "/raft/append_entries";
 inline constexpr const char* cantcoap_install_snapshot_path = "/raft/install_snapshot";
 inline constexpr const char* cantcoap_timeout_now_path = "/raft/timeout_now";
+inline constexpr const char* cantcoap_fetch_log_entries_path = "/raft/fetch_log_entries";
 
 /// How long the loop blocks in poll() before servicing timers. Bounds both
 /// retransmission granularity and how quickly stop() is noticed.
@@ -619,6 +620,18 @@ public:
         return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
             target, cantcoap_timeout_now_path, request, timeout,
             coap_message_reliability::always_confirmable);
+    }
+
+    /// Peer-to-peer catch-up (network_client_with_log_fetch). Follows
+    /// `use_confirmable_messages` like AppendEntries; a large response comes
+    /// back block-wise.
+    auto send_fetch_log_entries(std::uint64_t target,
+                                const kythira::fetch_log_entries_request<>& request,
+                                std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::fetch_log_entries_response<>> {
+        return send_rpc<kythira::fetch_log_entries_request<>,
+                        kythira::fetch_log_entries_response<>>(
+            target, cantcoap_fetch_log_entries_path, request, timeout);
     }
 
     [[nodiscard]] auto bound_port() const -> std::uint16_t {
@@ -1441,6 +1454,18 @@ public:
         _timeout_now_handler = std::move(handler);
     }
 
+    /// Optional extension (network_server_with_log_fetch). Until one is
+    /// registered, `/raft/fetch_log_entries` answers 5.01 Not Implemented.
+    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
+                                                const kythira::fetch_log_entries_request<>&)>
+                                                handler) -> void {
+        if (!handler) {
+            throw std::invalid_argument("fetch_log_entries handler must not be empty");
+        }
+        const std::lock_guard lock(_mutex);
+        _fetch_log_entries_handler = std::move(handler);
+    }
+
     auto start() -> void {
         if (_running.load()) {
             return;
@@ -1773,6 +1798,16 @@ private:
                     _timeout_now_handler(
                         _registry.template decode_with<kythira::timeout_now_request<>>(
                             request_media_type, body)));
+            } else if (path == cantcoap_fetch_log_entries_path) {
+                if (!_fetch_log_entries_handler) {
+                    send_error(pdu, from, binding, CoapPDU::COAP_NOT_IMPLEMENTED);
+                    return;
+                }
+                encoded = _registry.encode_with(
+                    response_media_type,
+                    _fetch_log_entries_handler(
+                        _registry.template decode_with<kythira::fetch_log_entries_request<>>(
+                            request_media_type, body)));
             } else {
                 send_error(pdu, from, binding, CoapPDU::COAP_NOT_FOUND);
                 return;
@@ -2087,6 +2122,9 @@ private:
         _install_snapshot_handler;
     std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
         _timeout_now_handler;
+    std::function<kythira::fetch_log_entries_response<>(
+        const kythira::fetch_log_entries_request<>&)>
+        _fetch_log_entries_handler;
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};
@@ -2129,12 +2167,6 @@ static_assert(
     !kythira::network_server_with_pre_vote<coap_cantcoap_server<coap_detail::conformance_types>>,
     "coap_cantcoap_server does not implement pre-vote; see design §2's capability table");
 static_assert(
-    !kythira::network_client_with_log_fetch<coap_cantcoap_client<coap_detail::conformance_types>>,
-    "coap_cantcoap_client does not implement log fetch; see design §2's capability table");
-static_assert(
-    !kythira::network_server_with_log_fetch<coap_cantcoap_server<coap_detail::conformance_types>>,
-    "coap_cantcoap_server does not implement log fetch; see design §2's capability table");
-static_assert(
     !kythira::network_client_with_cluster_join<
         coap_cantcoap_client<coap_detail::conformance_types>>,
     "coap_cantcoap_client does not implement cluster join; see design §2's capability table");
@@ -2156,5 +2188,11 @@ static_assert(
 static_assert(
     kythira::network_server_with_timeout_now<coap_cantcoap_server<coap_detail::conformance_types>>,
     "coap_cantcoap_server must implement TimeoutNow; see design §2's capability table");
+static_assert(
+    kythira::network_client_with_log_fetch<coap_cantcoap_client<coap_detail::conformance_types>>,
+    "coap_cantcoap_client must implement log fetch; see design §2's capability table");
+static_assert(
+    kythira::network_server_with_log_fetch<coap_cantcoap_server<coap_detail::conformance_types>>,
+    "coap_cantcoap_server must implement log fetch; see design §2's capability table");
 
 }  // namespace kythira

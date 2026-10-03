@@ -2005,6 +2005,31 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     else()
         message(STATUS "coap_timeout_now_test: skipped (requires Folly)")
     endif()
+    # FetchLogEntries on the libcoap backend's wire: a block-wise round trip
+    # through every serializer this build has, and 5.01 without a handler --
+    # peer2peer-log-replication Req 4.1/4.2. TIMEOUT as coap_timeout_now_test.
+    if(TARGET Folly::folly)
+        add_executable(coap_fetch_log_entries_test coap_fetch_log_entries_test.cpp)
+        target_link_libraries(coap_fetch_log_entries_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        if(PROTOBUF_SERIALIZER_FOUND)
+            target_compile_definitions(coap_fetch_log_entries_test PRIVATE
+                KYTHIRA_COAP_TEST_HAS_PROTOBUF)
+            target_link_libraries(coap_fetch_log_entries_test PRIVATE raft_protobuf_serializer)
+        endif()
+        if(TARGET raft_ion_serializer)
+            target_link_libraries(coap_fetch_log_entries_test PRIVATE raft_ion_serializer)
+        endif()
+        target_compile_features(coap_fetch_log_entries_test PRIVATE cxx_std_23)
+        add_test(NAME coap_fetch_log_entries_test COMMAND coap_fetch_log_entries_test)
+        set_tests_properties(coap_fetch_log_entries_test PROPERTIES TIMEOUT 190
+            LABELS "coap;integration")
+    else()
+        message(STATUS "coap_fetch_log_entries_test: skipped (requires Folly)")
+    endif()
     # The opt-in Raft-rate timer profile: RFC 7252 defaults pinned field by
     # field, the profile's shorter timers, and InstallSnapshot read off the
     # wire as CON under it -- coap-transport-multi-raft task 12.

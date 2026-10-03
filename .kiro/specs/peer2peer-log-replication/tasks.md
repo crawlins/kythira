@@ -21,8 +21,9 @@ past that index. Requirement 5.2's transports were also narrower than the
 carried `fetch_log_entries`, so on TCP and HTTP catch-up compiled down to a
 no-op. `tcp_rpc`, `tls_tcp_rpc` (with the same sender binding as its other
 RPCs) and all three HTTP transports (`/v1/raft/fetch_log_entries`) now carry
-it. CoAP still does not; it follows once the CoAP multi-Raft work, which
-rewrites the same backend files, has landed.
+it. CoAP followed on October 3, 2026: all three CoAP backends (libcoap,
+cantcoap, libnyoci) serve and send `/raft/fetch_log_entries`, so every wire
+transport now carries the fetch.
 
 Verified directly against the real implementation for tasks 1–17 and 20:
 `include/raft/peer2peer_replication.hpp` (concept, `no_op_`/`static_`

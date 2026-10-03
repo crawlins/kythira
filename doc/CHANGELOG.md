@@ -45,8 +45,9 @@ current list of outstanding work, see [TODO.md](TODO.md).
   follower now fetches from a peer only when the highest `last_log_index` its
   replicator has heard of exceeds its own by more than
   `catch_up_gap_threshold` (default 50), a value it had never read.
-  `fetch_log_entries` now rides `tcp_rpc`, `tls_tcp_rpc` and all three HTTP
-  transports, where catch-up had compiled down to a no-op; CoAP follows.
+  `fetch_log_entries` now rides `tcp_rpc`, `tls_tcp_rpc`, all three HTTP
+  transports and all three CoAP backends (`/raft/fetch_log_entries`), where
+  catch-up had compiled down to a no-op.
 - **cantcoap serves responses larger than one block.** Its Block2
   continuations carry no request body, and the stateless server ran the
   handler again on the empty body and answered 5.00, so no RPC response over

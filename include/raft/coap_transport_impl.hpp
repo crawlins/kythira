@@ -589,6 +589,19 @@ auto coap_client<Types>::send_timeout_now(std::uint64_t target,
         coap_message_reliability::always_confirmable);
 }
 
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::send_fetch_log_entries(std::uint64_t target,
+                                                const kythira::fetch_log_entries_request<>& request,
+                                                std::chrono::milliseconds timeout)
+    -> future_template<kythira::fetch_log_entries_response<>> {
+    // Follows use_confirmable_messages like AppendEntries: a lost fetch only
+    // delays catch-up until the next tick retries it. A response too large
+    // for one PDU comes back block-wise (Block2) inside send_rpc().
+    return send_rpc<fetch_log_entries_request<>, fetch_log_entries_response<>>(
+        target, "/raft/fetch_log_entries", request, timeout);
+}
+
 // CoAP server implementation
 template<typename Types>
 requires kythira::transport_types<Types>
@@ -827,6 +840,24 @@ auto coap_server<Types>::register_timeout_now_handler(
     // The /raft/timeout_now resource is registered by setup_resources() with
     // the other three and dispatches through this member, so a handler
     // registered after start() is picked up without re-registering anything.
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::register_fetch_log_entries_handler(
+    std::function<
+        kythira::fetch_log_entries_response<>(const kythira::fetch_log_entries_request<>&)>
+        handler) -> void {
+    std::lock_guard lock(_mutex);
+
+    if (!handler) {
+        throw coap_transport_error("FetchLogEntries handler cannot be null");
+    }
+
+    _fetch_log_entries_handler = std::move(handler);
+
+    // Like /raft/timeout_now, the resource is always registered and reads
+    // this member per request, so registering after start() needs nothing.
 }
 
 template<typename Types>
@@ -3110,6 +3141,43 @@ auto coap_server<Types>::setup_resources() -> void {
         throw coap_transport_error("Failed to create TimeoutNow resource");
     }
 
+    // Register /raft/fetch_log_entries for peer-to-peer catch-up. The request
+    // is small; the response can carry many entries, and handle_rpc_resource()
+    // already sends it block-wise when enable_block_transfer is set. Answers
+    // 5.01 until a handler is registered, as /raft/timeout_now does.
+    coap_resource_t* fl_resource =
+        coap_resource_init(coap_make_str_const("raft/fetch_log_entries"), raft_resource_flags);
+    if (fl_resource) {
+        coap_register_handler(
+            fl_resource, COAP_REQUEST_POST,
+            [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
+               const coap_string_t* query, coap_pdu_t* response) -> void {
+                auto* server =
+                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                if (server && server->_fetch_log_entries_handler) {
+                    server->template handle_rpc_resource<fetch_log_entries_request<>,
+                                                         fetch_log_entries_response<>>(
+                        resource, session, request, query, response,
+                        server->_fetch_log_entries_handler);
+                } else {
+                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_NOT_IMPLEMENTED);
+                    if (server) {
+                        server->_logger.warning("FetchLogEntries handler not registered");
+                    }
+                }
+            });
+
+        coap_resource_set_userdata(fl_resource, this);
+        coap_add_resource(_coap_context, fl_resource);
+
+        _logger.info("Registered FetchLogEntries resource with libcoap",
+                     {{"resource_path", "/raft/fetch_log_entries"},
+                      {"handler_registered", _fetch_log_entries_handler ? "true" : "false"}});
+    } else {
+        _logger.error("Failed to create FetchLogEntries resource");
+        throw coap_transport_error("Failed to create FetchLogEntries resource");
+    }
+
     // No explicit catch-all handler is registered for unknown resources:
     // libcoap already responds 4.04 Not Found by default when a request's
     // URI-Path doesn't match any registered resource. An earlier version of
@@ -3125,7 +3193,9 @@ auto coap_server<Types>::setup_resources() -> void {
         {{"request_vote_handler", _request_vote_handler ? "registered" : "not_registered"},
          {"append_entries_handler", _append_entries_handler ? "registered" : "not_registered"},
          {"install_snapshot_handler", _install_snapshot_handler ? "registered" : "not_registered"},
-         {"timeout_now_handler", _timeout_now_handler ? "registered" : "not_registered"}});
+         {"timeout_now_handler", _timeout_now_handler ? "registered" : "not_registered"},
+         {"fetch_log_entries_handler",
+          _fetch_log_entries_handler ? "registered" : "not_registered"}});
 #endif
 
     // Log block transfer configuration
@@ -8088,12 +8158,19 @@ auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::ve
     if (!_config.enable_serialization_caching) {
         return _serializer.serialize(request);
     }
+    // The key below is built from term(); a request without one (a
+    // FetchLogEntries, which is keyed by its index range) is never cached.
+    if constexpr (!requires { request.term(); }) {
+        return _serializer.serialize(request);
+    }
 
     // Calculate hash of request for cache key
     std::size_t request_hash = std::hash<std::string>{}(typeid(request).name());
     // Add request content to hash (simplified - in production would use proper hash)
-    request_hash ^= std::hash<std::uint64_t>{}(request.term()) + 0x9e3779b9 + (request_hash << 6) +
-                    (request_hash >> 2);
+    if constexpr (requires { request.term(); }) {
+        request_hash ^= std::hash<std::uint64_t>{}(request.term()) + 0x9e3779b9 +
+                        (request_hash << 6) + (request_hash >> 2);
+    }
 
     std::lock_guard lock(_mutex);
 
@@ -8496,10 +8573,6 @@ static_assert(!kythira::network_client_with_pre_vote<coap_client<coap_detail::co
               "coap_client does not implement pre-vote; see design §2's capability table");
 static_assert(!kythira::network_server_with_pre_vote<coap_server<coap_detail::conformance_types>>,
               "coap_server does not implement pre-vote; see design §2's capability table");
-static_assert(!kythira::network_client_with_log_fetch<coap_client<coap_detail::conformance_types>>,
-              "coap_client does not implement log fetch; see design §2's capability table");
-static_assert(!kythira::network_server_with_log_fetch<coap_server<coap_detail::conformance_types>>,
-              "coap_server does not implement log fetch; see design §2's capability table");
 static_assert(
     !kythira::network_client_with_cluster_join<coap_client<coap_detail::conformance_types>>,
     "coap_client does not implement cluster join; see design §2's capability table");
@@ -8516,6 +8589,10 @@ static_assert(kythira::network_client_with_timeout_now<coap_client<coap_detail::
               "coap_client must satisfy network_client_with_timeout_now");
 static_assert(kythira::network_server_with_timeout_now<coap_server<coap_detail::conformance_types>>,
               "coap_server must satisfy network_server_with_timeout_now");
+static_assert(kythira::network_client_with_log_fetch<coap_client<coap_detail::conformance_types>>,
+              "coap_client must satisfy network_client_with_log_fetch");
+static_assert(kythira::network_server_with_log_fetch<coap_server<coap_detail::conformance_types>>,
+              "coap_server must satisfy network_server_with_log_fetch");
 
 }  // namespace kythira
 

@@ -138,6 +138,7 @@ inline constexpr const char* libnyoci_request_vote_path = "/raft/request_vote";
 inline constexpr const char* libnyoci_append_entries_path = "/raft/append_entries";
 inline constexpr const char* libnyoci_install_snapshot_path = "/raft/install_snapshot";
 inline constexpr const char* libnyoci_timeout_now_path = "/raft/timeout_now";
+inline constexpr const char* libnyoci_fetch_log_entries_path = "/raft/fetch_log_entries";
 
 // How long the process-loop thread blocks in nyoci_plat_wait() before looking
 // at its own queues again. libnyoci has no way to interrupt its poll() from
@@ -1010,6 +1011,18 @@ public:
             coap_message_reliability::always_confirmable);
     }
 
+    /// Peer-to-peer catch-up (network_client_with_log_fetch). Follows
+    /// `use_confirmable_messages` like AppendEntries; a large response comes
+    /// back block-wise.
+    auto send_fetch_log_entries(std::uint64_t target,
+                                const kythira::fetch_log_entries_request<>& request,
+                                std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::fetch_log_entries_response<>> {
+        return send_rpc<kythira::fetch_log_entries_request<>,
+                        kythira::fetch_log_entries_response<>>(
+            target, libnyoci_fetch_log_entries_path, request, timeout);
+    }
+
     /// The ephemeral UDP source port libnyoci bound. Exposed for tests; 0 when
     /// the backend is compiled out.
     [[nodiscard]] auto bound_port() const -> std::uint16_t { return _bound_port; }
@@ -1803,6 +1816,18 @@ public:
         _timeout_now_handler = std::move(handler);
     }
 
+    /// Optional extension (network_server_with_log_fetch). Until one is
+    /// registered, `/raft/fetch_log_entries` answers 5.01 Not Implemented.
+    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
+                                                const kythira::fetch_log_entries_request<>&)>
+                                                handler) -> void {
+        if (!handler) {
+            throw std::invalid_argument("fetch_log_entries handler must not be empty");
+        }
+        const std::lock_guard lock(_mutex);
+        _fetch_log_entries_handler = std::move(handler);
+    }
+
     auto start() -> void {
         if (_running.load()) {
             return;
@@ -2018,6 +2043,12 @@ private:
                     copy_handler(_timeout_now_handler), body, request_media_type,
                     response_media_type, options);
             }
+            if (resource_path == libnyoci_fetch_log_entries_path) {
+                return dispatch<kythira::fetch_log_entries_request<>,
+                                kythira::fetch_log_entries_response<>>(
+                    copy_handler(_fetch_log_entries_handler), body, request_media_type,
+                    response_media_type, options);
+            }
         } catch (const std::exception&) {
             // A handler that threw, or a body this registry could not decode.
             // Dropping the response instead would leave the peer retransmitting
@@ -2220,6 +2251,15 @@ private:
                 body = _registry.encode_with(
                     response_media_type,
                     handler(_registry.template decode_with<kythira::timeout_now_request<>>(
+                        request_media_type, request_body)));
+            } else if (resource_path == libnyoci_fetch_log_entries_path) {
+                auto handler = copy_handler(_fetch_log_entries_handler);
+                if (!handler) {
+                    return respond_oscore(binding, 0xA1, 0, {});
+                }
+                body = _registry.encode_with(
+                    response_media_type,
+                    handler(_registry.template decode_with<kythira::fetch_log_entries_request<>>(
                         request_media_type, request_body)));
             } else {
                 return respond_oscore(binding, 0x84, 0, {});  // 4.04
@@ -2456,6 +2496,9 @@ private:
         _install_snapshot_handler;
     std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
         _timeout_now_handler;
+    std::function<kythira::fetch_log_entries_response<>(
+        const kythira::fetch_log_entries_request<>&)>
+        _fetch_log_entries_handler;
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};
@@ -2487,12 +2530,6 @@ static_assert(
     !kythira::network_server_with_pre_vote<coap_libnyoci_server<coap_detail::conformance_types>>,
     "coap_libnyoci_server does not implement pre-vote; see design §2's capability table");
 static_assert(
-    !kythira::network_client_with_log_fetch<coap_libnyoci_client<coap_detail::conformance_types>>,
-    "coap_libnyoci_client does not implement log fetch; see design §2's capability table");
-static_assert(
-    !kythira::network_server_with_log_fetch<coap_libnyoci_server<coap_detail::conformance_types>>,
-    "coap_libnyoci_server does not implement log fetch; see design §2's capability table");
-static_assert(
     !kythira::network_client_with_cluster_join<
         coap_libnyoci_client<coap_detail::conformance_types>>,
     "coap_libnyoci_client does not implement cluster join; see design §2's capability table");
@@ -2514,5 +2551,11 @@ static_assert(
 static_assert(
     kythira::network_server_with_timeout_now<coap_libnyoci_server<coap_detail::conformance_types>>,
     "coap_libnyoci_server must implement TimeoutNow; see design §2's capability table");
+static_assert(
+    kythira::network_client_with_log_fetch<coap_libnyoci_client<coap_detail::conformance_types>>,
+    "coap_libnyoci_client must implement log fetch; see design §2's capability table");
+static_assert(
+    kythira::network_server_with_log_fetch<coap_libnyoci_server<coap_detail::conformance_types>>,
+    "coap_libnyoci_server must implement log fetch; see design §2's capability table");
 
 }  // namespace kythira
