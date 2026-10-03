@@ -691,6 +691,13 @@ public:
                                std::chrono::milliseconds timeout)
         -> future_template<kythira::install_snapshot_response<>>;
 
+    /// Satisfies `network_client_with_log_fetch`: a peer-to-peer catch-up
+    /// fetch, sent to `/v1/raft/fetch_log_entries`.
+    auto send_fetch_log_entries(std::uint64_t target,
+                                const kythira::fetch_log_entries_request<>& request,
+                                std::chrono::milliseconds timeout)
+        -> future_template<kythira::fetch_log_entries_response<>>;
+
     /// @brief Validates the configured TLS material, then drops every pooled
     ///     connection so subsequent RPCs build fresh ones using the reloaded
     ///     material.
@@ -948,6 +955,11 @@ public:
                                                const kythira::install_snapshot_request<>&)>
                                                handler) -> void;
 
+    /// Satisfies `network_server_with_log_fetch` (peer-to-peer catch-up).
+    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
+                                                const kythira::fetch_log_entries_request<>&)>
+                                                handler) -> void;
+
     auto start() -> void;
     auto stop() -> void;
     [[nodiscard]] auto is_running() const -> bool;
@@ -1044,6 +1056,9 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    std::function<kythira::fetch_log_entries_response<>(
+        const kythira::fetch_log_entries_request<>&)>
+        _fetch_log_entries_handler;
     std::atomic<bool> _running{false};
     std::mutex _sessions_mutex;
     std::unordered_map<std::size_t, std::function<void()>> _session_closers;

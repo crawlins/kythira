@@ -211,6 +211,13 @@ current list of outstanding work, see [TODO.md](TODO.md).
   up before the reply no longer kills the process with SIGPIPE, and frame
   readers grow their buffer as bytes arrive instead of allocating the
   announced length (up to 64 MiB) up front.
+- **Peer-to-peer catch-up works on TCP and HTTP, and only for real gaps**
+  (`.kiro/specs/peer2peer-log-replication/` Requirements 4.1/4.2, 5.2). A
+  follower now fetches from a peer only when the highest `last_log_index` its
+  replicator has heard of exceeds its own by more than
+  `catch_up_gap_threshold` (default 50), a value it had never read.
+  `fetch_log_entries` now rides `tcp_rpc`, `tls_tcp_rpc` and all three HTTP
+  transports, where catch-up had compiled down to a no-op; CoAP follows.
 - **The Alibaba Cloud spec is closed** (`.kiro/specs/alibaba-cloud-services/`,
   every task ticked, task 4 by descope). The checklist had read 3 of 12 since
   August while the tree held nearly all of it; each task is now ticked against
