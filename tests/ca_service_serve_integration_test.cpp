@@ -168,7 +168,8 @@ struct tls_ca_service_process {
             httplib::SSLClient probe("127.0.0.1", port);
             probe.enable_server_certificate_verification(false);
             probe.set_connection_timeout(1, 0);
-            auto res = probe.Get("/healthz", {{"Authorization", "Bearer " + token}});
+            auto res =
+                probe.Get("/healthz", httplib::Headers{{"Authorization", "Bearer " + token}});
             if (res && res->status == 200) {
                 healthy = true;
                 break;
@@ -495,7 +496,8 @@ BOOST_AUTO_TEST_CASE(plaintext_serve_allowed_with_flag_and_env_token,
     bool healthy = false;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     while (!healthy && std::chrono::steady_clock::now() < deadline) {
-        auto res = client.Get("/healthz", {{"Authorization", "Bearer env-token-12345"}});
+        auto res =
+            client.Get("/healthz", httplib::Headers{{"Authorization", "Bearer env-token-12345"}});
         healthy = res && res->status == 200;
         if (!healthy) std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }

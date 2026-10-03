@@ -1,0 +1,16 @@
+diff --git a/src/coap_openssl.c b/src/coap_openssl.c
+index dc397071..1056bfc9 100644
+--- a/src/coap_openssl.c
++++ b/src/coap_openssl.c
+@@ -2510,10 +2510,8 @@ tls_verify_call_back(int preverify_ok, X509_STORE_CTX *ctx) {
+     uint8_t *base_buf2 = base_buf = length > 0 ? OPENSSL_malloc(length) : NULL;
+     int ret;
+ 
+-    if (base_buf) {
++    if (base_buf && i2d_X509(x509, &base_buf2) == length) {
+       /* base_buf2 gets moved to the end */
+-      assert(i2d_X509(x509, &base_buf2) > 0);
+-      (void)base_buf2;
+       coap_lock_callback_ret(ret, c_session->context,
+                              setup_data->validate_cn_call_back(cn, base_buf, length, session,
+                                                                depth, preverify_ok,

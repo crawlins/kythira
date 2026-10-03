@@ -305,7 +305,8 @@ auto find_leader(const std::vector<std::unique_ptr<cluster_node_process>>& nodes
             httplib::Client c("127.0.0.1", nodes[i]->http_port);
             c.set_connection_timeout(1, 0);
             c.set_read_timeout(10, 0);
-            auto res = c.Get("/v1/root-ca", {{"Authorization", "Bearer " + auth_token}});
+            auto res =
+                c.Get("/v1/root-ca", httplib::Headers{{"Authorization", "Bearer " + auth_token}});
             if (res && res->status == 200 && !res->body.empty()) {
                 return leader_probe_result{i, res->body};
             }
@@ -528,7 +529,8 @@ BOOST_AUTO_TEST_CASE(no_known_leader_returns_503, *boost::unit_test::timeout(30)
     httplib::Client c("127.0.0.1", self_http);
     c.set_connection_timeout(2, 0);
     c.set_read_timeout(20, 0);
-    auto res = c.Get("/v1/root-ca", {{"Authorization", "Bearer " + std::string(k_auth_token)}});
+    auto res = c.Get("/v1/root-ca",
+                     httplib::Headers{{"Authorization", "Bearer " + std::string(k_auth_token)}});
     BOOST_REQUIRE(res);
     BOOST_TEST(res->status == 503);
 

@@ -37,7 +37,7 @@
     },
     {
       "name": "cpp-httplib",
-      "version>=": "0.18.3"
+      "version>=": "0.58.0"
     },
     {
       "name": "folly",
@@ -50,12 +50,11 @@
       "name": "libcoap",
       "features": [
         "dtls"
-      ],
-      "version>=": "4.3.5"
+      ]
     },
     {
       "name": "openssl",
-      "version>=": "3.0.8"
+      "version>=": "3.6.5"
     },
     {
       "name": "protobuf",
