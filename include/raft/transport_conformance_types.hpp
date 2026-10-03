@@ -3,16 +3,17 @@
 
 #pragma once
 
-// The Types bundle each CoAP backend's header instantiates its own client and
-// server with, so that header can `static_assert` which transport concepts the
-// backend satisfies (.kiro/specs/coap-transport-multi-raft/ Requirement 2).
+// The Types bundle each CoAP and HTTP transport header instantiates its own
+// client and server with, so that header can `static_assert` which transport
+// concepts it satisfies (.kiro/specs/coap-transport-multi-raft/ Requirement 2,
+// .kiro/specs/http-coap-pre-vote-timeout-now/ Requirement 2).
 //
 // It exists because a header cannot assert a concept against a class
-// template, only against an instantiation, and none of the three backends
+// template, only against an instantiation, and none of these transports
 // ships a concrete Types bundle of its own the way grpc_transport.hpp ships
-// grpc_kythira_transport_types. Every backend asserts against this one, so a
-// difference between their answers is a difference between the backends and
-// never between the bundles they were asked about.
+// grpc_kythira_transport_types. Every transport asserts against this one, so
+// a difference between their answers is a difference between the transports
+// and never between the bundles they were asked about.
 //
 // Deliberately free of any C library header: libcoap's and libnyoci's cannot
 // share a translation unit, and this file is included by both.
@@ -29,7 +30,7 @@
 #include <string>
 #include <vector>
 
-namespace kythira::coap_detail {
+namespace kythira::transport_detail {
 
 struct conformance_types {
     using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
@@ -49,6 +50,13 @@ struct conformance_types {
 };
 
 static_assert(kythira::transport_types<conformance_types>,
-              "the CoAP conformance bundle must itself model transport_types");
+              "the conformance bundle must itself model transport_types");
+
+}  // namespace kythira::transport_detail
+
+namespace kythira::coap_detail {
+
+// The name the CoAP backends have always asserted against.
+using conformance_types = kythira::transport_detail::conformance_types;
 
 }  // namespace kythira::coap_detail

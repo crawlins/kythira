@@ -65,7 +65,7 @@
 // received_message_info / translate_legacy_fields(). NOT
 // raft/coap_transport.hpp -- see above.
 #include <raft/coap_transport_config.hpp>
-#include <raft/coap_conformance_types.hpp>
+#include <raft/transport_conformance_types.hpp>
 #include <raft/coap_exchange_table.hpp>
 #include <raft/coap_block_option.hpp>
 #include <raft/coap_cantcoap_dtls.hpp>
