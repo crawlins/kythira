@@ -104,6 +104,21 @@ BOOST_AUTO_TEST_CASE(revoke_with_unknown_reason_rejects_with_invalid_argument) {
                       std::invalid_argument);
 }
 
+// ACM Private CA returns PEMs without a trailing newline (measured against a
+// real CA on 2026-10-03); a direct join made the whole chain unparseable.
+BOOST_AUTO_TEST_CASE(pem_with_newline_makes_joined_pems_separable) {
+    const std::string cert = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----";
+    const std::string chain = "-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----";
+    auto joined = detail::pem_with_newline(cert) + detail::pem_with_newline(chain);
+    BOOST_TEST(joined.find("-----END CERTIFICATE----------BEGIN") == std::string::npos);
+    BOOST_TEST(joined.find("-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----") !=
+               std::string::npos);
+    BOOST_TEST(joined.back() == '\n');
+    // Already newline-terminated input is left alone; empty stays empty.
+    BOOST_TEST(detail::pem_with_newline(cert + "\n") == cert + "\n");
+    BOOST_TEST(detail::pem_with_newline("").empty());
+}
+
 BOOST_AUTO_TEST_CASE(satisfies_certificate_provider_concept) {
     static_assert(certificate_provider<aws_acm_pca_provider>);
     BOOST_TEST(true);

@@ -5160,6 +5160,10 @@ target_compile_features(aws_acm_pca_provider_unit_test PRIVATE cxx_std_23)
 add_test(NAME aws_acm_pca_provider_unit_test COMMAND aws_acm_pca_provider_unit_test)
 set_tests_properties(aws_acm_pca_provider_unit_test PROPERTIES
     TIMEOUT 60
+    # Without a region the SDK probes EC2 instance metadata for one, about
+    # 10 s per client, so a developer profile with no region set blew the
+    # timeout. The unit test never talks to AWS.
+    ENVIRONMENT "AWS_EC2_METADATA_DISABLED=true"
     LABELS "unit;certificate_authority;ca;aws;acm-pca"
 )
 

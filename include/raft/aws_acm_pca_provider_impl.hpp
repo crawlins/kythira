@@ -56,6 +56,17 @@ inline auto make_acm_pca_client(const kythira::aws_client_config& aws)
     return Aws::ACMPCA::ACMPCAClient(client_cfg);
 }
 
+/// ACM Private CA returns each PEM without a trailing newline, so joining two
+/// of them directly yields "-----END CERTIFICATE----------BEGIN CERTIFICATE-----",
+/// which OpenSSL cannot parse at all. Every PEM this provider hands out ends
+/// in a newline.
+inline auto pem_with_newline(std::string pem) -> std::string {
+    if (!pem.empty() && pem.back() != '\n') {
+        pem += '\n';
+    }
+    return pem;
+}
+
 inline auto signing_algorithm_from_string(const std::string& name)
     -> Aws::ACMPCA::Model::SigningAlgorithm {
     return Aws::ACMPCA::Model::SigningAlgorithmMapper::GetSigningAlgorithmForName(name);
@@ -121,7 +132,7 @@ inline auto aws_acm_pca_provider::root_certificate_pem() -> kythira::future_defa
                                      std::string(outcome.GetError().GetMessage()));
         }
 
-        std::string root_pem = outcome.GetResult().GetCertificate();
+        std::string root_pem = detail::pem_with_newline(outcome.GetResult().GetCertificate());
         {
             std::lock_guard<std::mutex> lock(_mutex);
             _cached_root_pem = root_pem;
@@ -181,8 +192,11 @@ inline auto aws_acm_pca_provider::sign_csr(std::string csr_pem, csr_signing_opti
             auto get_outcome = _client.GetCertificate(get_req);
             if (get_outcome.IsSuccess()) {
                 pem_material out;
-                out.certificate_pem = get_outcome.GetResult().GetCertificate();
-                out.chain_pem = out.certificate_pem + get_outcome.GetResult().GetCertificateChain();
+                out.certificate_pem =
+                    detail::pem_with_newline(get_outcome.GetResult().GetCertificate());
+                out.chain_pem =
+                    out.certificate_pem +
+                    detail::pem_with_newline(get_outcome.GetResult().GetCertificateChain());
                 // serial is left 0 — ACM Private CA identifies certificates by ARN,
                 // not the local monotonic-counter scheme certificate_authority uses.
                 return kythira::future_factory_default::makeReadyFuture(std::move(out));
