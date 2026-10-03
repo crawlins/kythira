@@ -835,7 +835,7 @@ BOOST_FIXTURE_TEST_CASE(three_az_cluster_survives_instance_loss_and_replacement,
         cluster.push_back({.node_id = peer.node_id, .group_id = az});
         track_instance("node " + std::to_string(cluster.size()) + " (" + az + ")",
                        cfg.instance_type);
-        auto ip = public_ip_of(manager_t::node_id_to_ec2_id(peer.node_id));
+        auto ip = public_ip_of(mgr.instance_id_of(peer.node_id).value());
         BOOST_REQUIRE_MESSAGE(!ip.empty(), "no public IP for " << az);
         public_ips.push_back(ip);
     }
@@ -897,7 +897,7 @@ BOOST_FIXTURE_TEST_CASE(three_az_cluster_survives_instance_loss_and_replacement,
     // certificate must survive on nodes that only ever followed.
     const std::size_t lost = leader->index;
     const auto lost_placement = cluster[lost];
-    const std::string lost_ec2_id = manager_t::node_id_to_ec2_id(lost_placement.node_id);
+    const std::string lost_ec2_id = mgr.instance_id_of(lost_placement.node_id).value();
     {
         Aws::EC2::Model::TerminateInstancesRequest term;
         term.AddInstanceIds(lost_ec2_id);
@@ -945,7 +945,7 @@ BOOST_FIXTURE_TEST_CASE(three_az_cluster_survives_instance_loss_and_replacement,
 
     std::set<std::string> known;
     for (const auto& p : cluster) {
-        known.insert(manager_t::node_id_to_ec2_id(p.node_id));
+        known.insert(mgr.instance_id_of(p.node_id).value());
     }
     std::vector<std::string> fresh;
     std::string fresh_subnet, fresh_az, fresh_group;
@@ -988,8 +988,9 @@ BOOST_FIXTURE_TEST_CASE(three_az_cluster_survives_instance_loss_and_replacement,
     BOOST_TEST(fresh_subnet == subnet_by_az.at(lost_placement.group_id));
     BOOST_TEST(fresh_group == lost_placement.group_id);
 
-    cluster[lost] = {.node_id = manager_t::ec2_id_to_node_id(fresh[0]),
-                     .group_id = lost_placement.group_id};
+    auto fresh_id = mgr.node_id_of_instance(fresh[0]);
+    BOOST_REQUIRE_MESSAGE(fresh_id.has_value(), fresh[0] << " carries no node id");
+    cluster[lost] = {.node_id = *fresh_id, .group_id = lost_placement.group_id};
     auto after = mgr.assess_quorum(cluster).get();
     BOOST_TEST(after.live_node_count == 3u);
 

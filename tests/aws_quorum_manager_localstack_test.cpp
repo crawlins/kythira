@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // LocalStack tier of aws-quorum-manager Requirement 16.12-16.14. Start the
-// emulator with docker/aws-localstack-compose.yml first; its ready hook gives
-// EC2 instances AWS-shaped IDs, without which no EC2 case can provision (see
-// docker/aws-localstack/init/ready.d/aws-shaped-instance-ids.py). The ASG
-// suite skips on the community edition, which has no autoscaling service.
+// emulator with docker/aws-localstack-compose.yml first. The managers no longer
+// derive node ids from instance ids (cloud-composite-node-ids), so LocalStack's
+// random 17-hex-digit ids need no patching. The ASG suite skips on the
+// community edition, which has no autoscaling service.
 
 #define BOOST_TEST_MODULE aws_quorum_manager_localstack_test
 #include <boost/test/unit_test.hpp>
@@ -381,6 +381,35 @@ struct Ec2LocalstackFixture {
         return cluster;
     }
 
+    // The instance carrying numeric node id `nid` in this fixture's cluster,
+    // read from its kythira:node-id tag rather than asked of the manager. A
+    // live instance wins over a terminated one that still lists.
+    auto instance_id_for(std::uint64_t nid) -> std::string {
+        Aws::EC2::Model::DescribeInstancesRequest req;
+        Aws::EC2::Model::Filter cluster_f;
+        cluster_f.SetName("tag:kythira:cluster");
+        cluster_f.AddValues(uuid);
+        Aws::EC2::Model::Filter id_f;
+        id_f.SetName("tag:kythira:node-id");
+        id_f.AddValues(std::to_string(nid));
+        req.AddFilters(cluster_f);
+        req.AddFilters(id_f);
+        auto out = ec2->DescribeInstances(req);
+        std::string found;
+        if (!out.IsSuccess()) {
+            return found;
+        }
+        for (const auto& r : out.GetResult().GetReservations()) {
+            for (const auto& i : r.GetInstances()) {
+                if (found.empty() ||
+                    i.GetState().GetName() != Aws::EC2::Model::InstanceStateName::terminated) {
+                    found = std::string(i.GetInstanceId());
+                }
+            }
+        }
+        return found;
+    }
+
     auto describe(const std::string& ec2_id) -> std::optional<Aws::EC2::Model::Instance> {
         Aws::EC2::Model::DescribeInstancesRequest req;
         req.AddInstanceIds(ec2_id);
@@ -397,7 +426,7 @@ struct Ec2LocalstackFixture {
     }
 
     auto state_of(std::uint64_t nid) -> std::optional<Aws::EC2::Model::InstanceStateName> {
-        auto inst = describe(ec2_manager::node_id_to_ec2_id(nid));
+        auto inst = describe(instance_id_for(nid));
         if (!inst) {
             return std::nullopt;
         }
@@ -418,7 +447,7 @@ struct Ec2LocalstackFixture {
 
     void stop(std::uint64_t nid) {
         Aws::EC2::Model::StopInstancesRequest req;
-        req.AddInstanceIds(ec2_manager::node_id_to_ec2_id(nid));
+        req.AddInstanceIds(instance_id_for(nid));
         auto out = ec2->StopInstances(req);
         BOOST_REQUIRE_MESSAGE(out.IsSuccess(),
                               "StopInstances: " + std::string(out.GetError().GetMessage()));
@@ -447,9 +476,12 @@ struct Ec2LocalstackFixture {
                     st != Aws::EC2::Model::InstanceStateName::running) {
                     continue;
                 }
-                live.push_back(
-                    {.node_id = ec2_manager::ec2_id_to_node_id(std::string(i.GetInstanceId())),
-                     .group_id = tag_value(i.GetTags(), "kythira:group").value_or("")});
+                auto nid = kythira::node_id_traits<std::uint64_t>::from_text(
+                    tag_value(i.GetTags(), "kythira:node-id").value_or(""));
+                BOOST_REQUIRE_MESSAGE(nid.has_value(), std::string(i.GetInstanceId())
+                                                           << " has no numeric kythira:node-id");
+                live.push_back({.node_id = *nid,
+                                .group_id = tag_value(i.GetTags(), "kythira:group").value_or("")});
             }
         }
         return live;
@@ -577,7 +609,7 @@ BOOST_AUTO_TEST_CASE(ec2_provision_three_nodes) {
     BOOST_REQUIRE_EQUAL(cluster.size(), 3u);
 
     for (const auto& np : cluster) {
-        auto inst = describe(ec2_manager::node_id_to_ec2_id(np.node_id));
+        auto inst = describe(instance_id_for(np.node_id));
         BOOST_REQUIRE(inst.has_value());
         BOOST_CHECK_EQUAL(tag_value(inst->GetTags(), "kythira:cluster").value_or(""), uuid);
         BOOST_CHECK_EQUAL(tag_value(inst->GetTags(), "kythira:group").value_or(""), "AZ1");
@@ -618,8 +650,7 @@ BOOST_AUTO_TEST_CASE(ec2_decommission_all_nodes) {
     }
     for (const auto& np : cluster) {
         BOOST_CHECK_MESSAGE(wait_state(np.node_id, Aws::EC2::Model::InstanceStateName::terminated),
-                            ec2_manager::node_id_to_ec2_id(np.node_id)
-                                << " never reached `terminated`");
+                            instance_id_for(np.node_id) << " never reached `terminated`");
     }
     auto health = std::move(mgr.assess_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 0u);

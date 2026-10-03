@@ -7,6 +7,7 @@
 /// @brief Core types, concepts, and default implementations for the Kythira Raft library.
 
 #include <concepts/future.hpp>
+#include <raft/composite_node_id.hpp>
 #include <raft/metrics.hpp>
 #include <raft/peer_discovery.hpp>
 #include <raft/peer2peer_replication.hpp>
@@ -28,10 +29,6 @@ template<typename T> class Try;
 }
 
 namespace kythira {
-
-/// @brief Concept for a node identifier: any unsigned integer or `std::string`.
-template<typename T>
-concept node_id = std::unsigned_integral<T> || std::same_as<T, std::string>;
 
 /// @brief Concept for a term number: a monotonically increasing unsigned integer.
 template<typename T>

@@ -998,6 +998,17 @@ target_link_libraries(shard_group_id_wire_property_test PRIVATE
 )
 target_compile_features(shard_group_id_wire_property_test PRIVATE cxx_std_23)
 add_test(NAME shard_group_id_wire_property_test COMMAND shard_group_id_wire_property_test)
+
+# Composite cloud node ids and node_id_traits (cloud-composite-node-ids spec,
+# Requirement 14.1/14.2). Header-only, no cloud SDK, so outside every gate.
+foreach(_node_id_test composite_node_id_test node_id_traits_test)
+    add_executable(${_node_id_test} ${_node_id_test}.cpp)
+    target_link_libraries(${_node_id_test} PRIVATE Boost::unit_test_framework)
+    target_include_directories(${_node_id_test} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(${_node_id_test} PRIVATE cxx_std_23)
+    add_test(NAME ${_node_id_test} COMMAND ${_node_id_test})
+    set_tests_properties(${_node_id_test} PROPERTIES TIMEOUT 60 LABELS "unit;raft;node_id")
+endforeach()
 add_raft_completion_test(group_transport_unit_test group_transport_unit_test.cpp)
 add_raft_completion_test(group_storage_unit_test group_storage_unit_test.cpp)
 add_raft_completion_test(striped_executor_unit_test striped_executor_unit_test.cpp)
@@ -5002,6 +5013,29 @@ set_tests_properties(aws_quorum_manager_unit_test PROPERTIES
     TIMEOUT 60
     LABELS "unit;raft;quorum;aws"
 )
+
+# Both AWS managers in composite, string and numeric id mode against a local
+# fake of the EC2 and Auto Scaling query APIs (cloud-composite-node-ids
+# Requirement 13.1): the ids that crashed the old stoull derivation, offline.
+if(TARGET httplib::httplib)
+    add_executable(aws_ec2_node_id_mock_test aws_ec2_node_id_mock_test.cpp)
+    target_link_libraries(aws_ec2_node_id_mock_test PRIVATE
+        network_simulator
+        httplib::httplib
+        Boost::unit_test_framework
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(aws_ec2_node_id_mock_test PRIVATE Folly::folly)
+    endif()
+    target_compile_features(aws_ec2_node_id_mock_test PRIVATE cxx_std_23)
+    add_test(NAME aws_ec2_node_id_mock_test COMMAND aws_ec2_node_id_mock_test)
+    set_tests_properties(aws_ec2_node_id_mock_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;raft;quorum;aws;node_id"
+    )
+else()
+    message(STATUS "aws_ec2_node_id_mock_test: skipped (requires httplib for the local fake)")
+endif()
 
 # LocalStack integration tests — requires LocalStack running on localhost:4566.
 add_executable(aws_quorum_manager_localstack_test aws_quorum_manager_localstack_test.cpp)

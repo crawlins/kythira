@@ -9,14 +9,14 @@ the audit and `design.md` for the types and per-component changes.
 
 ## Tasks
 
-- [ ] 1. Composite id types and helpers
-  - [ ] 1.1 Add `include/raft/composite_node_id.hpp`: the
+- [x] 1. Composite id types and helpers
+  - [x] 1.1 Add `include/raft/composite_node_id.hpp`: the
     `composite_node_id`, `textual_node_id` and `node_id` concepts, and
     `basic_composite_node_id` with percent-encoding and case folding
-  - [ ] 1.2 Add the six provider rule sets and type aliases
-  - [ ] 1.3 Add `node_id_traits` and `next_numeric_node_id`, moving the
+  - [x] 1.2 Add the six provider rule sets and type aliases
+  - [x] 1.3 Add `node_id_traits` and `next_numeric_node_id`, moving the
     Alibaba strict parser into it
-  - [ ] 1.4 Add `tests/composite_node_id_test.cpp` and
+  - [x] 1.4 Add `tests/composite_node_id_test.cpp` and
     `tests/node_id_traits_test.cpp`; register outside the cloud gates
   - _Requirements: 1.1-1.7, 2.1-2.5, 3.1-3.3, 14.1, 14.2_
 
@@ -34,15 +34,18 @@ the audit and `design.md` for the types and per-component changes.
   - _Requirements: 3.4, 7.1-7.7_
 
 - [ ] 3. AWS managers
-  - [ ] 3.1 Replace `ec2_id_to_node_id`/`node_id_to_ec2_id` with
+  - [x] 3.1 Replace `ec2_id_to_node_id`/`node_id_to_ec2_id` with
     `to_instance_id`/`from_instance`; composite and string mode use
-    `aws_ec2_node_id`
-  - [ ] 3.2 Numeric mode: tag-based allocation and lookup, identity tags
+    `aws_ec2_node_id` (landed as `instance_id_of`/`node_id_of_instance`
+    on both managers, over the static `instance_id_for_node`/
+    `node_id_for_instance` and numeric tag-lookup helpers)
+  - [x] 3.2 Numeric mode: tag-based allocation and lookup, identity tags
     and `{NODE_ID}` in the launch request, and the R11.4 fallback
-  - [ ] 3.3 ASG manager: route through the new helpers in both modes
+  - [x] 3.3 ASG manager: route through the new helpers in both modes
   - [ ] 3.4 Change both defaults to `aws_ec2_node_id` (breaking)
-  - [ ] 3.5 Unit tests with `i-f0123456789abcdef`, `i-1234abcd` and
+  - [x] 3.5 Unit tests with `i-f0123456789abcdef`, `i-1234abcd` and
     `i-0123456789abcdef0` in all three modes
+    (`tests/aws_ec2_node_id_mock_test.cpp`, a local EC2/Auto Scaling fake)
   - _Requirements: 4.1-4.6, 11.1-11.5, 13.1_
 
 - [ ] 4. Other managers in composite mode
@@ -96,10 +99,10 @@ the audit and `design.md` for the types and per-component changes.
   - [ ] 8.4 Build every binary in both Kconfig modes in CI
   - _Requirements: 6.1-6.3, 10.1-10.5_
 
-- [ ] 9. LocalStack without the hook
-  - [ ] 9.1 Run `ca_cluster_node_localstack_test` and the EC2 cases of
+- [x] 9. LocalStack without the hook
+  - [x] 9.1 Run `ca_cluster_node_localstack_test` and the EC2 cases of
     `aws_quorum_manager_localstack_test` against stock LocalStack 4.x
-  - [ ] 9.2 Delete `aws-shaped-instance-ids.py` and its compose mount
+  - [x] 9.2 Delete `aws-shaped-instance-ids.py` and its compose mount
     from whichever of PRs #433/#442 or main carries them; update the
     project memory note
   - _Requirements: 13.2, 13.3_

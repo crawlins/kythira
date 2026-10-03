@@ -4,6 +4,7 @@
 #pragma once
 
 #include <raft/aws_client_config.hpp>
+#include <raft/composite_node_id.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/quorum_management.hpp>
@@ -31,15 +32,19 @@
 #include <aws/core/utils/base64/Base64.h>
 
 #include <algorithm>
+#include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -130,16 +135,38 @@ struct aws_ec2_quorum_manager_config {
 
 /// quorum_manager implementation that provisions and monitors Raft nodes as EC2 instances.
 ///
-/// Node identity is the numeric value of the EC2 instance ID hex suffix, making the
-/// node-to-EC2 mapping a pure computation (no tag scans). Liveness is determined via
-/// DescribeInstanceStatus (instance state == running), not DescribeInstances or heartbeats.
+/// Node identity depends on `NodeId` (spec cloud-composite-node-ids, R4 and R11):
+///
+/// - `aws_ec2_node_id`, or `std::string` holding its canonical text: the node id IS
+///   the instance, `{configured region, instance id}`. Mapping a node to its
+///   instance is a field read; nothing is parsed as a number, so every EC2 id
+///   (17 hex digits with any first digit, or a legacy 8-digit id) fits.
+/// - an unsigned integer (numeric mode, today's default): the manager allocates
+///   `max(kythira:node-id over the cluster) + 1` before launch, puts it in the
+///   launch request's tags and `{NODE_ID}`, and maps an id back to its instance
+///   with DescribeInstances filtered on `kythira:cluster` and `kythira:node-id`.
+///   An instance launched by the old derivation (id = the instance id's hex value)
+///   is found by the same tag; one whose best-effort tag is missing falls back to
+///   that derivation (R11.4). Two managers provisioning into one cluster at the same
+///   moment can allocate the same id, as with every max-plus-one allocator (R11.5).
+///
+/// A node is live iff its instance state is `running`, read from DescribeInstances
+/// (not heartbeats).
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires node_id<NodeId>
 class aws_ec2_quorum_manager {
+    static_assert(std::unsigned_integral<NodeId> || std::same_as<NodeId, std::string> ||
+                      std::same_as<NodeId, aws_ec2_node_id>,
+                  "aws_ec2_quorum_manager: NodeId must be an unsigned integer, std::string or "
+                  "aws_ec2_node_id");
+
 public:
     using node_id_type = NodeId;
     using address_type = Address;
     using placement_group_id_type = std::string;
+
+    /// True when the node id is the instance itself (composite or string mode).
+    static constexpr bool instance_is_node_id = node_id_traits<NodeId>::is_textual;
 
     /// Constructs the manager and validates the configuration.
     /// Throws std::invalid_argument if cluster_name, image_id, or node_port are empty/zero,
@@ -160,6 +187,14 @@ public:
                     "aws_ec2_quorum_manager: no subnet configured for group: " + gt.group_id);
             }
         }
+        if constexpr (instance_is_node_id) {
+            if (!aws_ec2_rules::valid_region(_cfg.aws.region)) {
+                throw std::invalid_argument(
+                    "aws_ec2_quorum_manager: aws.region must name a region when the node id is "
+                    "the instance (got '" +
+                    _cfg.aws.region + "')");
+            }
+        }
         _ec2 = make_ec2_client(_cfg.aws);
     }
 
@@ -176,27 +211,14 @@ public:
                 return build_health(cluster, {});
             }
 
-            Aws::EC2::Model::DescribeInstanceStatusRequest req;
+            std::vector<NodeId> ids;
+            ids.reserve(cluster.size());
             for (const auto& np : cluster) {
-                req.AddInstanceIds(node_id_to_ec2_id(np.node_id));
+                ids.push_back(np.node_id);
+                raise_id_floor(np.node_id);
             }
-            req.SetIncludeAllInstances(true);
-
-            auto outcome = _ec2->DescribeInstanceStatus(req);
-            if (!outcome.IsSuccess()) {
-                throw std::runtime_error("ec2 DescribeInstanceStatus: " +
-                                         std::string(outcome.GetError().GetMessage()));
-            }
-
-            std::map<std::string, bool> live_map;
-            for (const auto& status : outcome.GetResult().GetInstanceStatuses()) {
-                bool running = (status.GetInstanceState().GetName() ==
-                                Aws::EC2::Model::InstanceStateName::running);
-                auto nid = ec2_id_to_node_id(std::string(status.GetInstanceId()));
-                live_map[node_id_str(nid)] = running;
-            }
-
-            return build_health(cluster, live_map);
+            return build_health(cluster,
+                                live_by_node(*_ec2, _cfg.aws.region, _cfg.cluster_name, ids));
         } catch (const std::exception& ex) {
             return future_factory_default::makeExceptionalFuture<
                 quorum_health<NodeId, std::string>>(std::make_exception_ptr(std::runtime_error(
@@ -271,8 +293,9 @@ public:
     }
 
     /// Launches a new EC2 instance in the subnet mapped to target_group.
-    /// The NodeId is derived from the instance ID returned by RunInstances; replacing is accepted
-    /// by the interface but not used (the new instance gets a new ID regardless).
+    /// In composite and string mode the NodeId is the instance RunInstances returns; in numeric
+    /// mode it is allocated before launch. replacing is accepted by the interface but not used
+    /// (the new instance gets a new id regardless).
     /// Returns an exceptional Future if RunInstances fails or the provision_timeout is exceeded.
     auto provision_node(std::string target_group, std::optional<NodeId> /*replacing*/)
         -> kythira::future_default<peer_info<NodeId, Address>> {
@@ -305,28 +328,19 @@ public:
             if (!_cfg.key_name.empty()) {
                 run_req.SetKeyName(_cfg.key_name);
             }
+            // Numeric mode knows the id before launch, so it goes into the
+            // launch tags and {NODE_ID}. When the id is the instance it does
+            // not exist until RunInstances answers: {NODE_ID} is left as is
+            // and Name/kythira:node-id are applied afterwards.
+            std::optional<NodeId> pre_launch_id;
+            if constexpr (!instance_is_node_id) {
+                pre_launch_id =
+                    allocate_numeric_node_id(*_ec2, _cfg.cluster_name, _id_floor->load());
+                raise_id_floor(*pre_launch_id);
+            }
+
             if (!_cfg.user_data_template.empty()) {
-                // render_user_data() needs the post-launch instance-derived
-                // NodeId for {NODE_ID}, which doesn't exist yet at this
-                // point - substitute only what's already known
-                // ({NODE_PORT}, {CLUSTER}, {AZ}) and set it directly.
-                // Templates using {NODE_ID} are a known limitation; none of
-                // this project's current callers use it. Previously this
-                // was entirely unset (the two no-op comment blocks further
-                // down are what's left of that), so user_data_template
-                // silently never reached any instance regardless of
-                // whether it needed substitution at all.
-                std::string rendered = _cfg.user_data_template;
-                auto replace_all = [&](const std::string& from, const std::string& to) {
-                    std::size_t pos = 0;
-                    while ((pos = rendered.find(from, pos)) != std::string::npos) {
-                        rendered.replace(pos, from.size(), to);
-                        pos += to.size();
-                    }
-                };
-                replace_all("{NODE_PORT}", std::to_string(_cfg.node_port));
-                replace_all("{CLUSTER}", _cfg.cluster_name);
-                replace_all("{AZ}", target_group);
+                std::string rendered = render_user_data(pre_launch_id, target_group);
                 Aws::Utils::ByteBuffer user_data_bytes(
                     reinterpret_cast<const unsigned char*>(rendered.data()), rendered.size());
                 run_req.SetUserData(Aws::Utils::Base64::Base64().Encode(user_data_bytes));
@@ -363,14 +377,15 @@ public:
             // t4g.micro bastion (the same shape of gap, in the real-EC2 fixture)
             // billed ~44h on 2026-09-27 while the audit reported clean.
             //
-            // Name and kythira:node-id cannot come along: this manager's node
-            // identity IS the instance ID, so neither value exists until
-            // RunInstances has answered. They are applied afterwards by
-            // apply_identity_tags and are cosmetic for leak detection -- the
-            // tags the audit actually reads are all in here. Same constraint the
-            // user_data block above documents for {NODE_ID}.
+            // In numeric mode Name and kythira:node-id come along too, so the
+            // tag the reverse lookup reads can never be missing. When the node
+            // id is the instance neither value exists until RunInstances has
+            // answered; apply_identity_tags writes them afterwards, and they are
+            // cosmetic for leak detection -- the tags the audit actually reads
+            // are all in here.
             const std::string market_tag = _cfg.spot_options ? "spot" : "on-demand";
-            run_req.AddTagSpecifications(launch_tag_specification(target_group, market_tag));
+            run_req.AddTagSpecifications(
+                launch_tag_specification(target_group, market_tag, pre_launch_id));
 
             auto outcome = _ec2->RunInstances(run_req);
             if (!outcome.IsSuccess()) {
@@ -383,10 +398,23 @@ public:
             }
             std::string ec2_id(instances[0].GetInstanceId());
 
-            // Node identity is the numeric value of the EC2 instance ID.
-            NodeId new_id = ec2_id_to_node_id(ec2_id);
-
-            apply_identity_tags(ec2_id, new_id);
+            NodeId new_id{};
+            if constexpr (instance_is_node_id) {
+                auto from_instance = node_id_for_instance(_cfg.aws.region, ec2_id);
+                if (!from_instance) {
+                    Aws::EC2::Model::TerminateInstancesRequest term;
+                    term.AddInstanceIds(ec2_id);
+                    _ec2->TerminateInstances(term);
+                    throw std::runtime_error(
+                        "ec2 RunInstances returned an instance id that is "
+                        "not a valid EC2 id in " +
+                        _cfg.aws.region + ": '" + ec2_id + "'");
+                }
+                new_id = std::move(*from_instance);
+                apply_identity_tags(ec2_id, new_id);
+            } else {
+                new_id = *pre_launch_id;
+            }
 
             // Poll until running or timeout — DescribeInstances is used here for
             // provisioning state (not liveness determination).
@@ -442,7 +470,17 @@ public:
             fiu_do_on("raft/aws/ec2/terminate_instances",
                       throw std::runtime_error("fault: raft/aws/ec2/terminate_instances"););
 
-            std::string ec2_id = node_id_to_ec2_id(node_id);
+            auto found = instance_id_of(node_id);
+            if (!found) {
+                if constexpr (instance_is_node_id) {
+                    throw std::invalid_argument("node " + node_id_str(node_id) +
+                                                " is not an EC2 instance in " + _cfg.aws.region);
+                } else {
+                    // No instance carries this id any more: already gone.
+                    return future_factory_default::makeFuture();
+                }
+            }
+            const std::string ec2_id = *found;
             Aws::EC2::Model::TerminateInstancesRequest req;
             req.AddInstanceIds(ec2_id);
             auto outcome = _ec2->TerminateInstances(req);
@@ -491,33 +529,370 @@ public:
     /// Returns the desired topology from the configuration.
     [[nodiscard]] auto topology() const -> desired_topology<std::string> { return _cfg.topology; }
 
-    /// Converts an EC2 instance ID ("i-0{16 hex digits}") to a NodeId.
-    /// The numeric value of the 17-char hex suffix is used; fits in uint64_t for all modern IDs.
-    static auto ec2_id_to_node_id(const std::string& ec2_id) -> NodeId {
-        std::uint64_t v = std::stoull(ec2_id.substr(2), nullptr, 16);
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return std::to_string(v);
+    /// The instance a node runs on, or nullopt when there is none. In composite and
+    /// string mode this is a field read, and nullopt means the id is not an EC2
+    /// instance in the configured region. In numeric mode it is a tag lookup
+    /// (DescribeInstances), preferring an instance that is not terminated.
+    [[nodiscard]] auto instance_id_of(const NodeId& nid) const -> std::optional<std::string> {
+        if constexpr (instance_is_node_id) {
+            return instance_id_for_node(_cfg.aws.region, nid);
         } else {
-            return static_cast<NodeId>(v);
+            auto found = find_numeric_instances(*_ec2, _cfg.cluster_name, {nid});
+            auto it = found.find(node_id_traits<NodeId>::to_text(nid));
+            if (it == found.end() || it->second.empty()) {
+                return std::nullopt;
+            }
+            return preferred_instance(it->second).instance_id;
         }
     }
 
-    /// Converts a NodeId back to its EC2 instance ID string ("i-0{16 hex digits}").
-    static auto node_id_to_ec2_id(const NodeId& nid) -> std::string {
-        std::uint64_t v{};
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            v = std::stoull(nid);
+    /// The node id of an instance, or nullopt when it is not one of this
+    /// cluster's nodes (numeric mode) or not a valid EC2 id (composite and string mode).
+    [[nodiscard]] auto node_id_of_instance(const std::string& ec2_id) const
+        -> std::optional<NodeId> {
+        if constexpr (instance_is_node_id) {
+            return node_id_for_instance(_cfg.aws.region, ec2_id);
         } else {
-            v = static_cast<std::uint64_t>(nid);
+            return numeric_node_id_of_instance(*_ec2, _cfg.cluster_name, ec2_id);
         }
-        char buf[20];
+    }
+
+    // ── id mapping shared with aws_asg_quorum_manager ────────────────────────
+
+    /// One instance as the id mapping sees it.
+    struct cluster_instance {
+        std::string instance_id;
+        Aws::EC2::Model::InstanceStateName state{Aws::EC2::Model::InstanceStateName::NOT_SET};
+        std::optional<std::string> node_id_tag;
+        std::optional<std::string> cluster_tag;
+    };
+
+    /// Composite and string mode: `{region, ec2_id}` as a NodeId, or nullopt when
+    /// `ec2_id` is not a valid EC2 instance id. Never parses it as a number.
+    static auto node_id_for_instance(std::string_view region, const std::string& ec2_id)
+        -> std::optional<NodeId>
+    requires instance_is_node_id
+    {
+        try {
+            aws_ec2_node_id id{std::string(region), ec2_id};
+            if constexpr (std::same_as<NodeId, std::string>) {
+                return id.to_string();
+            } else {
+                return id;
+            }
+        } catch (const std::invalid_argument&) {
+            return std::nullopt;
+        }
+    }
+
+    /// Composite and string mode: the instance id, or nullopt when `nid` is not
+    /// canonical aws-ec2 text or names another region (R4.4).
+    static auto instance_id_for_node(std::string_view region, const NodeId& nid)
+        -> std::optional<std::string>
+    requires instance_is_node_id
+    {
+        std::optional<aws_ec2_node_id> id;
+        if constexpr (std::same_as<NodeId, std::string>) {
+            id = aws_ec2_node_id::parse(nid);
+        } else {
+            id = nid;
+        }
+        if (!id || id->scope() != region) {
+            return std::nullopt;
+        }
+        return std::string(id->native());
+    }
+
+    /// Every instance matching `filters`, across pages. Throws on API error.
+    static auto describe_instances(Aws::EC2::EC2Client& ec2,
+                                   const Aws::Vector<Aws::EC2::Model::Filter>& filters)
+        -> std::vector<cluster_instance> {
+        std::vector<cluster_instance> out;
+        Aws::String token;
+        do {
+            Aws::EC2::Model::DescribeInstancesRequest req;
+            req.SetFilters(filters);
+            if (!token.empty()) {
+                req.SetNextToken(token);
+            }
+            auto outcome = ec2.DescribeInstances(req);
+            if (!outcome.IsSuccess()) {
+                throw std::runtime_error("ec2 DescribeInstances: " +
+                                         std::string(outcome.GetError().GetMessage()));
+            }
+            for (const auto& r : outcome.GetResult().GetReservations()) {
+                for (const auto& inst : r.GetInstances()) {
+                    out.push_back({.instance_id = std::string(inst.GetInstanceId()),
+                                   .state = inst.GetState().GetName(),
+                                   .node_id_tag = find_tag(inst.GetTags(), "kythira:node-id"),
+                                   .cluster_tag = find_tag(inst.GetTags(), "kythira:cluster")});
+                }
+            }
+            token = outcome.GetResult().GetNextToken();
+        } while (!token.empty());
+        return out;
+    }
+
+    /// Live/dead per node, keyed by node_id_traits::to_text. A node with no
+    /// instance, or whose id is foreign, is absent (reported unreachable).
+    static auto live_by_node(Aws::EC2::EC2Client& ec2, std::string_view region,
+                             const std::string& cluster, const std::vector<NodeId>& ids)
+        -> std::map<std::string, bool> {
+        std::map<std::string, bool> live;
+        auto running = [](const cluster_instance& ci) {
+            return ci.state == Aws::EC2::Model::InstanceStateName::running;
+        };
+        if constexpr (instance_is_node_id) {
+            std::map<std::string, std::string> node_by_instance;
+            for (const auto& nid : ids) {
+                if (auto iid = instance_id_for_node(region, nid)) {
+                    node_by_instance.emplace(*iid, node_id_traits<NodeId>::to_text(nid));
+                }
+            }
+            std::vector<std::string> iids;
+            for (const auto& [iid, _] : node_by_instance) {
+                iids.push_back(iid);
+            }
+            for (const auto& chunk : chunked(iids)) {
+                for (const auto& ci :
+                     describe_instances(ec2, {make_filter("instance-id", chunk)})) {
+                    if (auto it = node_by_instance.find(ci.instance_id);
+                        it != node_by_instance.end()) {
+                        live[it->second] = live[it->second] || running(ci);
+                    }
+                }
+            }
+        } else {
+            for (const auto& [text, instances] : find_numeric_instances(ec2, cluster, ids)) {
+                live[text] = std::ranges::any_of(instances, running);
+            }
+        }
+        return live;
+    }
+
+    /// Numeric mode: the next id, one above both `floor` and the highest
+    /// kythira:node-id tag on any of the cluster's instances in any state, so a
+    /// terminated node's id is not reused while EC2 still lists it. Unparseable
+    /// tags are skipped with a log line. Throws std::overflow_error rather than
+    /// wrapping.
+    ///
+    /// EC2 stops listing a terminated instance after about an hour, so the tags
+    /// alone could hand out an id a still-configured member had. The managers
+    /// pass, as `floor`, the highest id they have allocated or been asked to
+    /// assess, which covers every id the caller's membership still holds.
+    ///
+    /// Untagged instances are not counted: the old derivation spread their ids
+    /// (an instance id's hex value) across the whole 64-bit range, far above
+    /// anything this allocator reaches by counting up, and a not-yet-adopted ASG
+    /// instance would otherwise push the next id there.
+    static auto allocate_numeric_node_id(Aws::EC2::EC2Client& ec2, const std::string& cluster,
+                                         std::uint64_t floor = 0) -> NodeId
+    requires(!instance_is_node_id)
+    {
+        std::uint64_t max_seen = floor;
+        for (const auto& ci :
+             describe_instances(ec2, {make_filter("tag:kythira:cluster", {cluster})})) {
+            if (!ci.node_id_tag) {
+                continue;
+            }
+            auto v = node_id_traits<std::uint64_t>::from_text(*ci.node_id_tag);
+            if (!v) {
+                std::cerr << "[aws_ec2_quorum_manager] ignoring unparseable kythira:node-id '"
+                          << *ci.node_id_tag << "' on " << ci.instance_id << "\n";
+                continue;
+            }
+            max_seen = std::max(max_seen, *v);
+        }
+        if (max_seen >= static_cast<std::uint64_t>(std::numeric_limits<NodeId>::max())) {
+            throw std::overflow_error("aws_ec2_quorum_manager: node id space of cluster " +
+                                      cluster + " exhausted (highest kythira:node-id " +
+                                      std::to_string(max_seen) + ")");
+        }
+        return next_numeric_node_id(static_cast<NodeId>(max_seen));
+    }
+
+    /// Numeric mode: the instances carrying each id, keyed by its decimal text.
+    /// Found by `tag:kythira:cluster` + `tag:kythira:node-id`; an id with no
+    /// tagged instance falls back to the old derivation (R11.4): the instance
+    /// whose id is `i-` and the id as 17 hex digits, accepted only when it has no
+    /// kythira:node-id tag and no other cluster's tag, and logged.
+    static auto find_numeric_instances(Aws::EC2::EC2Client& ec2, const std::string& cluster,
+                                       const std::vector<NodeId>& ids)
+        -> std::map<std::string, std::vector<cluster_instance>>
+    requires(!instance_is_node_id)
+    {
+        std::map<std::string, std::vector<cluster_instance>> found;
+        std::vector<std::string> texts;
+        for (const auto& nid : ids) {
+            texts.push_back(node_id_traits<NodeId>::to_text(nid));
+        }
+        std::ranges::sort(texts);
+        texts.erase(std::unique(texts.begin(), texts.end()), texts.end());
+        for (const auto& chunk : chunked(texts)) {
+            for (auto& ci : describe_instances(ec2, {make_filter("tag:kythira:cluster", {cluster}),
+                                                     make_filter("tag:kythira:node-id", chunk)})) {
+                if (ci.node_id_tag) {
+                    found[*ci.node_id_tag].push_back(std::move(ci));
+                }
+            }
+        }
+
+        std::map<std::string, std::string> legacy;  // instance id -> node id text
+        for (const auto& text : texts) {
+            if (!found.contains(text)) {
+                auto v = node_id_traits<std::uint64_t>::from_text(text);
+                if (v) {
+                    legacy.emplace(legacy_instance_id(*v), text);
+                }
+            }
+        }
+        std::vector<std::string> legacy_ids;
+        for (const auto& [iid, _] : legacy) {
+            legacy_ids.push_back(iid);
+        }
+        for (const auto& chunk : chunked(legacy_ids)) {
+            for (auto& ci : describe_instances(ec2, {make_filter("instance-id", chunk)})) {
+                if (ci.node_id_tag || (ci.cluster_tag && *ci.cluster_tag != cluster)) {
+                    continue;
+                }
+                const auto& text = legacy.at(ci.instance_id);
+                std::cerr << "[aws_ec2_quorum_manager] " << ci.instance_id
+                          << " has no kythira:node-id tag; identified as node " << text
+                          << " by the pre-tag derivation from its instance id\n";
+                found[text].push_back(std::move(ci));
+            }
+        }
+        return found;
+    }
+
+    /// Numeric mode: the node id an instance carries, by tag or by the R11.4
+    /// fallback, or nullopt when it is not one of `cluster`'s nodes.
+    static auto numeric_node_id_of_instance(Aws::EC2::EC2Client& ec2, const std::string& cluster,
+                                            const std::string& ec2_id) -> std::optional<NodeId>
+    requires(!instance_is_node_id)
+    {
+        auto instances = describe_instances(ec2, {make_filter("instance-id", {ec2_id})});
+        if (instances.empty()) {
+            return std::nullopt;
+        }
+        const auto& ci = instances.front();
+        if (ci.cluster_tag && *ci.cluster_tag != cluster) {
+            return std::nullopt;
+        }
+        if (ci.node_id_tag) {
+            if (!ci.cluster_tag) {
+                return std::nullopt;
+            }
+            return node_id_traits<NodeId>::from_text(*ci.node_id_tag);
+        }
+        auto legacy = legacy_node_id(ec2_id);
+        if (!legacy || *legacy > static_cast<std::uint64_t>(std::numeric_limits<NodeId>::max())) {
+            return std::nullopt;
+        }
+        return static_cast<NodeId>(*legacy);
+    }
+
+    /// The instance a decommission or lookup acts on when several carry one id
+    /// (a duplicate from the R11.5 race): a running one, else any not terminated,
+    /// else the first.
+    static auto preferred_instance(const std::vector<cluster_instance>& instances)
+        -> const cluster_instance& {
+        using enum Aws::EC2::Model::InstanceStateName;
+        for (const auto& ci : instances) {
+            if (ci.state == running) {
+                return ci;
+            }
+        }
+        for (const auto& ci : instances) {
+            if (ci.state != terminated && ci.state != shutting_down) {
+                return ci;
+            }
+        }
+        return instances.front();
+    }
+
+    /// The pre-tag derivation's instance id for a numeric id: `i-` and the value
+    /// as 17 lower-case hex digits.
+    static auto legacy_instance_id(std::uint64_t v) -> std::string {
+        char buf[24];
         std::snprintf(buf, sizeof(buf), "i-%017llx", static_cast<unsigned long long>(v));
         return buf;
     }
 
+    /// The pre-tag derivation's numeric id for an instance id: its 17 hex digits
+    /// as a number, or nullopt when they do not fit 64 bits (first digit not 0)
+    /// or the id is not that shape. The old code threw on those, so it never
+    /// launched one.
+    static auto legacy_node_id(std::string_view ec2_id) -> std::optional<std::uint64_t> {
+        if (!ec2_id.starts_with("i-") || ec2_id.size() != 19 || ec2_id[2] != '0') {
+            return std::nullopt;
+        }
+        std::uint64_t v = 0;
+        auto digits = ec2_id.substr(2);
+        auto [end, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), v, 16);
+        if (ec != std::errc{} || end != digits.data() + digits.size() ||
+            !std::ranges::all_of(
+                digits, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); })) {
+            return std::nullopt;
+        }
+        return v;
+    }
+
+    /// Returns the value of the first tag with the given key, or nullopt if absent.
+    static auto find_tag(const Aws::Vector<Aws::EC2::Model::Tag>& tags, const std::string& key)
+        -> std::optional<std::string> {
+        for (const auto& tag : tags) {
+            if (std::string(tag.GetKey()) == key) {
+                return std::string(tag.GetValue());
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// Returns NodeId as a string suitable for use as an EC2 tag value or map key.
+    static auto node_id_str(const NodeId& id) -> std::string {
+        return node_id_traits<NodeId>::to_text(id);
+    }
+
 private:
+    /// EC2 caps the values of one filter; lookups are split into chunks this size.
+    static constexpr std::size_t filter_chunk = 100;
+
+    static auto chunked(const std::vector<std::string>& values)
+        -> std::vector<std::vector<std::string>> {
+        std::vector<std::vector<std::string>> out;
+        for (std::size_t i = 0; i < values.size(); i += filter_chunk) {
+            out.emplace_back(values.begin() + static_cast<std::ptrdiff_t>(i),
+                             values.begin() + static_cast<std::ptrdiff_t>(
+                                                  std::min(values.size(), i + filter_chunk)));
+        }
+        return out;
+    }
+
+    static auto make_filter(const std::string& name, const std::vector<std::string>& values)
+        -> Aws::EC2::Model::Filter {
+        Aws::EC2::Model::Filter f;
+        f.SetName(name);
+        for (const auto& v : values) {
+            f.AddValues(v);
+        }
+        return f;
+    }
+
     aws_ec2_quorum_manager_config _cfg;
     std::shared_ptr<Aws::EC2::EC2Client> _ec2;
+    /// Numeric mode: the highest id allocated or assessed; see allocate_numeric_node_id.
+    std::shared_ptr<std::atomic<std::uint64_t>> _id_floor =
+        std::make_shared<std::atomic<std::uint64_t>>(0);
+
+    void raise_id_floor(const NodeId& nid) {
+        if constexpr (!instance_is_node_id) {
+            auto v = static_cast<std::uint64_t>(nid);
+            auto cur = _id_floor->load();
+            while (cur < v && !_id_floor->compare_exchange_weak(cur, v)) {
+            }
+        }
+    }
 
     /// Builds an EC2Client from aws_client_config, using credentials_provider when set.
     static auto make_ec2_client(const aws_client_config& aws)
@@ -536,26 +911,6 @@ private:
             return std::make_shared<Aws::EC2::EC2Client>(aws.credentials_provider, client_cfg);
         }
         return std::make_shared<Aws::EC2::EC2Client>(client_cfg);
-    }
-
-    /// Returns NodeId as a string suitable for use as an EC2 tag value or map key.
-    static auto node_id_str(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
-    }
-
-    /// Returns the value of the first tag with the given key, or nullopt if absent.
-    static auto find_tag(const Aws::Vector<Aws::EC2::Model::Tag>& tags, const std::string& key)
-        -> std::optional<std::string> {
-        for (const auto& tag : tags) {
-            if (std::string(tag.GetKey()) == key) {
-                return std::string(tag.GetValue());
-            }
-        }
-        return std::nullopt;
     }
 
     /// Builds a quorum_health from cluster membership and a live/dead map keyed by node_id_str.
@@ -641,8 +996,8 @@ private:
     /// kythira:managed-by is the one that matters most for being here: the
     /// post-run leak audit filters instances on that key alone, so an instance
     /// orphaned before a follow-up CreateTags could run would be invisible to it.
-    [[nodiscard]] auto launch_tag_specification(const std::string& group,
-                                                const std::string& market) const
+    [[nodiscard]] auto launch_tag_specification(const std::string& group, const std::string& market,
+                                                const std::optional<NodeId>& nid) const
         -> Aws::EC2::Model::TagSpecification {
         std::string placement_strategy_val = "none";
         if (auto pit = _cfg.placement_by_group.find(group); pit != _cfg.placement_by_group.end()) {
@@ -668,14 +1023,30 @@ private:
         spec.AddTags(make_ec2_tag("kythira:managed-by", "ec2_quorum_manager"));
         spec.AddTags(make_ec2_tag("kythira:placement-strategy", placement_strategy_val));
         spec.AddTags(make_ec2_tag("kythira:market", market));
+        if (nid) {
+            spec.AddTags(make_ec2_tag("Name", name_tag(*nid)));
+            spec.AddTags(make_ec2_tag("kythira:node-id", node_id_str(*nid)));
+        }
         for (const auto& [k, v] : _cfg.extra_tags) {
             spec.AddTags(make_ec2_tag(k, v));
         }
         return spec;
     }
 
-    /// Applies the two tags that cannot be set at launch, because both derive
-    /// from the instance ID this manager uses as the node identity.
+    /// The Name tag: the cluster and the node id, or the instance id alone when the
+    /// node id is the instance (its canonical text holds `:`, and repeats the
+    /// instance id the console already shows).
+    [[nodiscard]] auto name_tag(const NodeId& nid) const -> std::string {
+        if constexpr (instance_is_node_id) {
+            return "kythira-" + _cfg.cluster_name + "-" +
+                   instance_id_for_node(_cfg.aws.region, nid).value_or(node_id_str(nid));
+        } else {
+            return "kythira-" + _cfg.cluster_name + "-" + node_id_str(nid);
+        }
+    }
+
+    /// Applies the two tags that cannot be set at launch when the node id is the
+    /// instance id (composite and string mode).
     ///
     /// Best-effort, but no longer silently so: losing these leaves an instance
     /// the audit can still find by kythira:managed-by, so a failure here is a
@@ -683,7 +1054,7 @@ private:
     void apply_identity_tags(const std::string& ec2_id, const NodeId& nid) {
         Aws::EC2::Model::CreateTagsRequest req;
         req.AddResources(ec2_id);
-        req.AddTags(make_ec2_tag("Name", "kythira-" + _cfg.cluster_name + "-" + node_id_str(nid)));
+        req.AddTags(make_ec2_tag("Name", name_tag(nid)));
         req.AddTags(make_ec2_tag("kythira:node-id", node_id_str(nid)));
         auto outcome = _ec2->CreateTags(req);
         if (!outcome.IsSuccess()) {
@@ -694,9 +1065,10 @@ private:
         }
     }
 
-    /// Substitutes {NODE_ID}, {NODE_PORT}, {CLUSTER}, {AZ} placeholders in user_data_template.
-    [[nodiscard]] auto render_user_data(const NodeId& nid, const std::string& az) const
-        -> std::string {
+    /// Substitutes {NODE_ID} (when the id is known before launch), {NODE_PORT}, {CLUSTER}
+    /// and {AZ} placeholders in user_data_template.
+    [[nodiscard]] auto render_user_data(const std::optional<NodeId>& nid,
+                                        const std::string& az) const -> std::string {
         std::string result = _cfg.user_data_template;
         auto replace_all = [&](const std::string& from, const std::string& to) {
             std::size_t pos = 0;
@@ -705,7 +1077,9 @@ private:
                 pos += to.size();
             }
         };
-        replace_all("{NODE_ID}", node_id_str(nid));
+        if (nid) {
+            replace_all("{NODE_ID}", node_id_str(*nid));
+        }
         replace_all("{NODE_PORT}", std::to_string(_cfg.node_port));
         replace_all("{CLUSTER}", _cfg.cluster_name);
         replace_all("{AZ}", az);
@@ -729,6 +1103,9 @@ private:
 static_assert(quorum_manager<aws_ec2_quorum_manager<std::uint64_t, std::string>, std::uint64_t,
                              std::string, std::string>,
               "aws_ec2_quorum_manager must satisfy quorum_manager");
+static_assert(quorum_manager<aws_ec2_quorum_manager<aws_ec2_node_id, std::string>, aws_ec2_node_id,
+                             std::string, std::string>,
+              "aws_ec2_quorum_manager<aws_ec2_node_id> must satisfy quorum_manager");
 
 }  // namespace kythira
 
