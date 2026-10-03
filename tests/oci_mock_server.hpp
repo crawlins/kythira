@@ -217,6 +217,12 @@ public:
         _auto_launch = enabled;
     }
 
+    /// How many members a size decrease has terminated without being named.
+    [[nodiscard]] auto blind_scale_in_count() -> int {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        return _blind_scale_in_count;
+    }
+
     [[nodiscard]] auto pool_size() -> std::int64_t {
         const std::lock_guard<std::mutex> lock(_mutex);
         return _pool_size;
@@ -536,8 +542,28 @@ private:
         return count;
     }
 
-    /// Caller holds `_mutex`. Grows membership to match `_pool_size`.
+    /// Caller holds `_mutex`. Grows membership to match `_pool_size`, and
+    /// shrinks it by terminating the **oldest** members first.
+    ///
+    /// A size decrease names no instance, so OCI picks one. Oldest-first is
+    /// the worst case for a Raft cluster, whose oldest members are its
+    /// longest-serving voters, which is why the mock models it: a manager
+    /// that undoes a timed-out scale-up by lowering the size instead of
+    /// detaching its own launch loses a voter here
+    /// (`.kiro/specs/group-scale-up-rollback/`, Requirement 8.1).
     auto reconcile_size_locked() -> void {
+        for (const auto& id : _pool_membership) {
+            if (static_cast<std::int64_t>(live_membership_locked()) <= _pool_size) {
+                break;
+            }
+            auto& inst = _instances.at(id);
+            if (!inst.in_pool) {
+                continue;
+            }
+            inst.in_pool = false;
+            inst.lifecycle_state = "TERMINATED";
+            ++_blind_scale_in_count;
+        }
         if (!_auto_launch) {
             return;
         }
@@ -1290,6 +1316,7 @@ private:
         "-----BEGIN CERTIFICATE-----\nmock-oci-root\n-----END CERTIFICATE-----\n"};
     std::int64_t _pool_size{0};
     bool _auto_launch{true};
+    int _blind_scale_in_count{0};
     int _provisioning_reads{0};
     int _scaling_reads{0};
     int _scaling_reads_remaining{0};
