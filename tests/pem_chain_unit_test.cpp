@@ -154,7 +154,8 @@ BOOST_AUTO_TEST_CASE(malformed_input_throws_invalid_argument) {
     BOOST_CHECK_THROW(split_certificates(garbage_block), std::invalid_argument);
     BOOST_CHECK_THROW(split_certificates("-----BEGIN CERTIFICATE-----\nMIIB\n"),
                       std::invalid_argument);
-    BOOST_CHECK_THROW(same_certificate(garbage_block, f.root()), std::invalid_argument);
+    BOOST_CHECK_THROW(static_cast<void>(same_certificate(garbage_block, f.root())),
+                      std::invalid_argument);
     BOOST_CHECK_THROW(leaf_first(f.leaf.certificate_pem, "not a certificate chain"),
                       std::invalid_argument);
     BOOST_CHECK_THROW(leaf_first("", f.root()), std::invalid_argument);

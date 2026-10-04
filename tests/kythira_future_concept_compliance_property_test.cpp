@@ -123,7 +123,7 @@ BOOST_AUTO_TEST_CASE(property_kythira_future_concept_compliance, *boost::unit_te
             BOOST_CHECK(try_exception.hasException());
 
             // Test exception access
-            BOOST_CHECK_THROW(try_exception.value(), std::runtime_error);
+            BOOST_CHECK_THROW(static_cast<void>(try_exception.value()), std::runtime_error);
         }
     }
 

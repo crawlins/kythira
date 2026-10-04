@@ -168,7 +168,7 @@ BOOST_AUTO_TEST_CASE(single_registry_rejects_a_foreign_type_on_both_paths) {
     const single_alpha reg;
     BOOST_CHECK_THROW(reg.encode_with(kBetaMedia, 42), kythira::unsupported_media_type_error);
     const auto encoded = reg.encode_with(kAlphaMedia, 42);
-    BOOST_CHECK_THROW(reg.decode_with<int>(kBetaMedia, encoded),
+    BOOST_CHECK_THROW(static_cast<void>(reg.decode_with<int>(kBetaMedia, encoded)),
                       kythira::unsupported_media_type_error);
 }
 
@@ -241,14 +241,15 @@ BOOST_AUTO_TEST_CASE(multi_registry_dispatches_to_the_named_serializer) {
 BOOST_AUTO_TEST_CASE(decoding_under_the_wrong_registered_type_fails_loudly) {
     const multi_ab reg;
     const auto as_alpha = reg.encode_with(kAlphaMedia, 7);
-    BOOST_CHECK_THROW(reg.decode_with<int>(kBetaMedia, as_alpha), kythira::serialization_error);
+    BOOST_CHECK_THROW(static_cast<void>(reg.decode_with<int>(kBetaMedia, as_alpha)),
+                      kythira::serialization_error);
 }
 
 BOOST_AUTO_TEST_CASE(multi_registry_rejects_an_unregistered_type_on_both_paths) {
     const multi_ab reg;
     BOOST_CHECK_THROW(reg.encode_with(kGammaMedia, 7), kythira::unsupported_media_type_error);
     const auto encoded = reg.encode_with(kAlphaMedia, 7);
-    BOOST_CHECK_THROW(reg.decode_with<int>(kGammaMedia, encoded),
+    BOOST_CHECK_THROW(static_cast<void>(reg.decode_with<int>(kGammaMedia, encoded)),
                       kythira::unsupported_media_type_error);
 }
 

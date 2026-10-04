@@ -50,7 +50,7 @@ BOOST_AUTO_TEST_CASE(try_concept_requirements_property_test, *boost::unit_test::
         Try<int> try_with_exception{ex};
         BOOST_CHECK(!try_with_exception.hasValue());
         BOOST_CHECK(try_with_exception.hasException());
-        BOOST_CHECK_THROW(try_with_exception.value(), std::exception);
+        BOOST_CHECK_THROW(static_cast<void>(try_with_exception.value()), std::exception);
 
         // Test exception access
         auto exception_ptr = try_with_exception.exception();

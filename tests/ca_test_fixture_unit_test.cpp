@@ -152,8 +152,11 @@ BOOST_AUTO_TEST_CASE(property_renew_preserves_identity_and_advances_material,
 
 BOOST_AUTO_TEST_CASE(renew_unknown_client_id_throws, *boost::unit_test::timeout(30)) {
     ca_test_fixture fixture;
-    fixture.bootstrap_client("known", {"known.example.com"});
-    BOOST_CHECK_THROW(fixture.renew("never-bootstrapped"), std::invalid_argument);
+    // Only the enrolment matters here: renew() must reject an unknown id
+    // even when the CA already has other clients.
+    static_cast<void>(fixture.bootstrap_client("known", {"known.example.com"}));
+    BOOST_CHECK_THROW(static_cast<void>(fixture.renew("never-bootstrapped")),
+                      std::invalid_argument);
 }
 
 // ── Network-service mode: same case set, run against a real ca_service --serve

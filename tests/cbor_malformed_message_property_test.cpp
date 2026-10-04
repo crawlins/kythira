@@ -227,6 +227,6 @@ BOOST_AUTO_TEST_CASE(property_missing_required_key_rejected) {
         std::byte{0x01},  // term = 1
     };
 
-    BOOST_CHECK_THROW(serializer.deserialize_request_vote_request(data),
+    BOOST_CHECK_THROW(static_cast<void>(serializer.deserialize_request_vote_request(data)),
                       kythira::serialization_exception);
 }

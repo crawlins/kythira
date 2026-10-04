@@ -113,7 +113,7 @@ BOOST_AUTO_TEST_CASE(test_kythira_future_runtime_behavior, *boost::unit_test::ti
         BOOST_CHECK(try_exception.hasException());
 
         // Test exception access
-        BOOST_CHECK_THROW(try_exception.value(), std::runtime_error);
+        BOOST_CHECK_THROW(static_cast<void>(try_exception.value()), std::runtime_error);
     }
 
     BOOST_TEST_MESSAGE(
