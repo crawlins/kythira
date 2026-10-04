@@ -34,6 +34,19 @@ permissions:
   checks: write         # required by dorny/test-reporter to post inline results
   pull-requests: write  # required to post coverage comment on PRs
 
+# One CI run per PR (or per branch for pushes). The Actions concurrency cap is
+# account-wide, so superseded runs used to sit in the queue for hours and
+# starve every other repository: 74 runs were queued on October 3, 2026, most
+# of them for commits that already had a newer run.
+#
+# A new push to a PR cancels the PR's older run, queued or running. On `main`
+# only the queue is collapsed (GitHub keeps one pending run per group and
+# cancels older pending ones regardless of this flag); a run already in
+# progress is left to finish, so every main build that starts also reports.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # ── Build and test ──────────────────────────────────────────────────────────
   # Runs under both GCC and Clang, on both x86_64 and native arm64 runners, to
