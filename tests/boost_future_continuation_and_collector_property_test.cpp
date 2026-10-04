@@ -131,6 +131,57 @@ BOOST_AUTO_TEST_CASE(then_value_flattens_exceptional_inner_future, *boost::unit_
     BOOST_CHECK_THROW(std::move(f).get(), std::runtime_error);
 }
 
+// A Future-returning callback that throws before it returns its Future.
+// Every flattening overload must deliver that exception, the way the Folly
+// and stdexec backends do. It used to unwind out of the boost continuation
+// and drop the bridge promise, so get() threw boost::broken_promise instead:
+// every simulator RPC to an unreachable peer surfaced that way, since
+// simulator_network_client throws from its first thenValue when a send
+// fails.
+namespace {
+auto is_callback_failure(const std::runtime_error& e) -> bool {
+    return std::string(e.what()) == "callback failure";
+}
+template<typename T> auto throw_before_returning() -> Future<T> {
+    throw std::runtime_error("callback failure");
+}
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(then_value_flattening_delivers_callback_exception,
+                     *boost::unit_test::timeout(10)) {
+    auto f =
+        FutureFactory::makeFuture(1).thenValue([](int) { return throw_before_returning<int>(); });
+    BOOST_CHECK_EXCEPTION(std::move(f).get(), std::runtime_error, is_callback_failure);
+}
+
+BOOST_AUTO_TEST_CASE(then_try_flattening_delivers_callback_exception,
+                     *boost::unit_test::timeout(10)) {
+    auto f = FutureFactory::makeFuture(1).thenTry(
+        [](Try<int>) { return throw_before_returning<int>(); });
+    BOOST_CHECK_EXCEPTION(std::move(f).get(), std::runtime_error, is_callback_failure);
+}
+
+BOOST_AUTO_TEST_CASE(then_error_flattening_delivers_callback_exception,
+                     *boost::unit_test::timeout(10)) {
+    auto f = FutureFactory::makeExceptionalFuture<int>(
+                 std::make_exception_ptr(std::logic_error("original")))
+                 .thenError([](std::exception_ptr) { return throw_before_returning<int>(); });
+    BOOST_CHECK_EXCEPTION(std::move(f).get(), std::runtime_error, is_callback_failure);
+}
+
+BOOST_AUTO_TEST_CASE(void_then_value_flattening_delivers_callback_exception,
+                     *boost::unit_test::timeout(10)) {
+    auto f = FutureFactory::makeFuture().thenValue([]() { return throw_before_returning<int>(); });
+    BOOST_CHECK_EXCEPTION(std::move(f).get(), std::runtime_error, is_callback_failure);
+}
+
+BOOST_AUTO_TEST_CASE(void_then_try_flattening_delivers_callback_exception,
+                     *boost::unit_test::timeout(10)) {
+    auto f = FutureFactory::makeFuture().thenTry(
+        [](Try<void>) { return throw_before_returning<int>(); });
+    BOOST_CHECK_EXCEPTION(std::move(f).get(), std::runtime_error, is_callback_failure);
+}
+
 // -- delay / within timing ---------------------------------------------
 
 BOOST_AUTO_TEST_CASE(delay_defers_readiness, *boost::unit_test::timeout(10)) {

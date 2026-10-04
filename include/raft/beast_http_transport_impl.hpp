@@ -1144,14 +1144,15 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                     // to the propagation below rather than swallowing it.
                 }
                 // **Returned, not thrown.** This is the Future-returning
-                // (flattening) `thenError` overload, and throwing out of it
-                // destroys the promise without ever fulfilling it -- the caller
-                // then sees "The associated promise has been destructed prior
-                // to the associated state becoming ready" instead of the 415.
-                // That path is every single-serializer deployment, since a
-                // registry with one type has nothing to retry with, so getting
-                // it wrong would have broken the common case while the
-                // multi-serializer case looked fine.
+                // (flattening) `thenError` overload. On the boost backend,
+                // throwing out of it used to destroy the promise without ever
+                // fulfilling it -- the caller then saw "The associated promise
+                // has been destructed prior to the associated state becoming
+                // ready" instead of the 415. future_boost.hpp's flatten_into()
+                // now delivers a thrown exception, but returning it is still
+                // the clearer shape. That path is every single-serializer
+                // deployment, since a registry with one type has nothing to
+                // retry with.
                 return beast_exceptional_future<Response>(e);
             });
     } catch (const std::exception& e) {
