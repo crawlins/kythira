@@ -161,13 +161,6 @@ kythira::raft_configuration make_fast_config() {
     return cfg;
 }
 
-kythira::raft_configuration make_dormant_config() {
-    kythira::raft_configuration cfg = make_fast_config();
-    cfg._election_timeout_min = std::chrono::minutes{10};
-    cfg._election_timeout_max = std::chrono::minutes{10} + std::chrono::milliseconds{1};
-    return cfg;
-}
-
 test_types::quorum_manager_type generous_quorum_manager() {
     return test_types::quorum_manager_type{
         kythira::desired_topology<std::string>{.groups = {{.group_id = "", .target_count = 10}}}};
@@ -403,8 +396,9 @@ BOOST_AUTO_TEST_CASE(learner_never_offered_as_catch_up_source, *boost::unit_test
     sim.add_edge("2", "4", edge);
     sim.add_edge("4", "2", edge);
 
+    // node2 and node4 must never campaign, so they are only ever ticked
+    // through check_peer_catch_up().
     auto cfg = make_fast_config();
-    auto cfg_dormant = make_dormant_config();
     auto make_node = [&](std::uint64_t id, auto net, const kythira::raft_configuration& c) {
         return kythira::node_config<test_types>{
             .node_id = id,
@@ -423,8 +417,8 @@ BOOST_AUTO_TEST_CASE(learner_never_offered_as_catch_up_source, *boost::unit_test
     };
 
     test_node node1{make_node(1, net1, cfg)};
-    test_node node2{make_node(2, net2, cfg_dormant)};
-    test_node node4{make_node(4, net4, cfg_dormant)};
+    test_node node2{make_node(2, net2, cfg)};
+    test_node node4{make_node(4, net4, cfg)};
 
     node1.set_cluster_configuration({1, 2});
     node2.set_cluster_configuration({1, 2});
@@ -508,8 +502,8 @@ BOOST_AUTO_TEST_CASE(learner_never_offered_as_catch_up_source, *boost::unit_test
     sim.add_edge("4", "2", edge);
     bool converged_via_learner = wait_until(
         [&] {
-            node4.check_election_timeout();
-            node2.check_election_timeout();
+            node4.check_peer_catch_up();
+            node2.check_peer_catch_up();
             return static_cast<std::size_t>(node2.debug_state().log.size()) >=
                    static_cast<std::size_t>(final_index);
         },
@@ -523,7 +517,7 @@ BOOST_AUTO_TEST_CASE(learner_never_offered_as_catch_up_source, *boost::unit_test
     BOOST_REQUIRE(wait_until(
         [&] {
             node1.check_heartbeat_timeout();
-            node2.check_election_timeout();
+            node2.check_peer_catch_up();
             return node2.debug_state().last_applied >= final_index;
         },
         std::chrono::milliseconds{4000}));

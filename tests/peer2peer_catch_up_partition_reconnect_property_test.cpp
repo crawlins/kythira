@@ -141,16 +141,6 @@ kythira::raft_configuration make_fast_config() {
     return cfg;
 }
 
-// Long enough that the isolated node never spontaneously campaigns during
-// its time cut off from everyone, so post-heal convergence is unambiguously
-// attributable to the peer-to-peer fetch rather than a self-won election.
-kythira::raft_configuration make_dormant_config() {
-    kythira::raft_configuration cfg = make_fast_config();
-    cfg._election_timeout_min = std::chrono::minutes{10};
-    cfg._election_timeout_max = std::chrono::minutes{10} + std::chrono::milliseconds{1};
-    return cfg;
-}
-
 }  // namespace
 
 /**
@@ -177,7 +167,6 @@ BOOST_AUTO_TEST_CASE(reconnected_follower_catches_up_via_peer, *boost::unit_test
     }
 
     auto cfg = make_fast_config();
-    auto cfg3 = make_dormant_config();
 
     auto make_node = [&](std::uint64_t id, auto net, const kythira::raft_configuration& c) {
         return test_node{id,
@@ -195,7 +184,7 @@ BOOST_AUTO_TEST_CASE(reconnected_follower_catches_up_via_peer, *boost::unit_test
 
     auto node1 = make_node(1, net1, cfg);
     auto node2 = make_node(2, net2, cfg);
-    auto node3 = make_node(3, net3, cfg3);
+    auto node3 = make_node(3, net3, cfg);
 
     node1.set_cluster_configuration({1, 2, 3});
     node2.set_cluster_configuration({1, 2, 3});
@@ -262,11 +251,20 @@ BOOST_AUTO_TEST_CASE(reconnected_follower_catches_up_via_peer, *boost::unit_test
     sim.add_edge("2", "3", edge);
     sim.add_edge("3", "2", edge);
 
+    // Every node is ticked through check_peer_catch_up(), so gossip and
+    // catch-up run but nobody campaigns, and post-heal convergence is
+    // unambiguously the peer-to-peer fetch rather than a self-won election.
+    // node1 sends no heartbeats here (the simulator routes multi-hop, so they
+    // would reach node3 through node2), which would otherwise let node2 time
+    // out and win node3's vote once node3's leader stickiness lapsed. node3
+    // used to be kept quiet by a 10-minute election timeout instead, which
+    // also stretched its stickiness window to ten minutes and was the only
+    // thing refusing node2's pre-vote.
     BOOST_REQUIRE(wait_until(
         [&] {
-            node1.check_election_timeout();
-            node2.check_election_timeout();
-            node3.check_election_timeout();
+            node1.check_peer_catch_up();
+            node2.check_peer_catch_up();
+            node3.check_peer_catch_up();
             return static_cast<std::size_t>(node3.debug_state().log.size()) >=
                    static_cast<std::size_t>(leader_last_index);
         },
