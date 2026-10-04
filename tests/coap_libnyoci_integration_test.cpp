@@ -17,7 +17,6 @@
 // libnyoci backend can never also name the libcoap one. See the header comment
 // in coap_transport_libnyoci_impl.hpp.
 #include <raft/coap_transport_libnyoci_impl.hpp>
-#include <folly/executors/CPUThreadPoolExecutor.h>
 
 #include "coap_wire_probe.hpp"
 
@@ -40,7 +39,7 @@ struct test_types {
     using logger_type = kythira::console_logger;
     using address_type = std::string;
     using port_type = std::uint16_t;
-    using executor_type = folly::Executor;
+    using executor_type = int;  // named, never invoked; see coap_conformance_types.hpp
 
     template<typename T> using future_template = kythira::future_default<T>;
     template<typename T> using promise_template = kythira::promise_default<T>;

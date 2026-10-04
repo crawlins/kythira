@@ -37,8 +37,6 @@
 #include <raft/json_serializer.hpp>
 #include <raft/serializer_registry.hpp>
 
-#include <folly/executors/CPUThreadPoolExecutor.h>
-
 #include <arpa/inet.h>
 #include <coap3/coap.h>
 
@@ -93,7 +91,7 @@ template<typename Default_Serializer, typename Registry> struct coap_test_types 
     using logger_type = kythira::console_logger;
     using address_type = std::string;
     using port_type = std::uint16_t;
-    using executor_type = folly::Executor;
+    using executor_type = int;  // named, never invoked; see coap_conformance_types.hpp
 
     template<typename T> using future_template = kythira::future_default<T>;
     template<typename T> using promise_template = kythira::promise_default<T>;

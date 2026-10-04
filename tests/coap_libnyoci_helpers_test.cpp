@@ -25,7 +25,6 @@
 // macros rewrite libnyoci's option enum, so they cannot share a translation
 // unit.
 #include <raft/coap_transport_libnyoci_impl.hpp>
-#include <folly/executors/CPUThreadPoolExecutor.h>
 
 #include <cstddef>
 #include <cstdint>
