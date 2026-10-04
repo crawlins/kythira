@@ -122,6 +122,23 @@ static std::size_t wait_peer_count(const DnsNode& n, std::size_t expected,
     return ids.size();
 }
 
+// Container state and recent logs for bind9 and every node, printed when the
+// stack never comes up healthy so the CI log says why (a node that exited on
+// a failed registration, an unhealthy bind9) instead of only "60 s".
+static void dump_diagnostics() {
+    const auto& rt = docker_chaos::os::container_runtime();
+    std::vector<std::string> names{"dns-test-bind9"};
+    for (const auto& n : k_nodes) {
+        names.push_back(n.container);
+    }
+    for (const auto& name : names) {
+        auto state = docker_chaos::os::real_exec(
+            {rt, "inspect", "--format", "{{.State.Status}} {{json .State.Health}}", name});
+        auto logs = docker_chaos::os::real_exec({rt, "logs", "--tail", "60", name});
+        BOOST_TEST_MESSAGE("── " << name << ": " << state.out << logs.out);
+    }
+}
+
 // ── Fixture ───────────────────────────────────────────────────────────────────
 
 struct DnsFixture {
@@ -133,6 +150,7 @@ struct DnsFixture {
         docker_chaos::os::checked_exec(docker_chaos::os::real_exec,
                                        docker_chaos::os::compose_up_cmd(file));
         if (!wait_all_healthy(60s)) {
+            dump_diagnostics();
             docker_chaos::os::try_exec(docker_chaos::os::real_exec,
                                        docker_chaos::os::compose_down_cmd(file));
             BOOST_FAIL("DNS discovery nodes did not become healthy within 60 s");
