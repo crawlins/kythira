@@ -1416,7 +1416,12 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    # 60 minutes only fit a warm vcpkg cache. Run 37125140982 missed the
+    # binary cache for folly, protobuf, aws-sdk-cpp and grpc (34 of 131
+    # ports on arm64, 27 on x64): x64 was cancelled at 60 minutes while
+    # still compiling grpc, and arm64 reached port 127/131 at 54 minutes,
+    # before Packer and the Docker build of ca_cluster_node had started.
+    timeout-minutes: 180
     environment: real-cloud-tests
     permissions:
       id-token: write
@@ -1450,17 +1455,23 @@ jobs:
       # ubuntu-24.04-arm runner image has been observed losing outbound
       # HTTP(S) route to ports.ubuntu.com for a minute or more at a time,
       # well past what apt's own per-package retry window covers.
-      - name: Install Packer
+      - name: Install Packer and autotools
         run: |
           # Drop runner-image apt sources this project never installs from; a
           # 403 from one of them fails `apt-get update` and short-circuits the
           # install. See the script header.
           ./scripts/drop-unused-apt-repos.sh
+          # autoconf/autoconf-archive/automake/libtool: see ci.yml's own
+          # comment. vcpkg's gperf port runs autoreconf, so the vcpkg step
+          # below fails without them whenever gperf misses the binary cache
+          # (run 37125140982, arm64: "gperf currently requires the following
+          # programs from the system package manager").
           for attempt in 1 2 3; do
             if timeout 120 curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add - \
                  && timeout 300 sudo apt-add-repository "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
                  && timeout 300 sudo apt-get update -q \
-                 && timeout 600 sudo apt-get install -y --no-install-recommends packer; then
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                   packer autoconf autoconf-archive automake libtool; then
               exit 0
             fi
             echo "::warning::Packer install failed (attempt ${attempt}/3), retrying in 30s..."
