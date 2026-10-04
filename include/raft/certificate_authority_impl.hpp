@@ -350,13 +350,15 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
 /// keyUsage/EKU per server_auth/client_auth, subjectAltName, public key) whose
 /// issuer is `issuer_cert`. Shared by `issue_with_window()` (fresh key, subject
 /// built from `leaf_certificate_options::subject`) and `sign_csr()` (key and
-/// subject both extracted from a caller-supplied CSR) so the two entry points
-/// never duplicate extension-setting logic. `subject_name` is copied into the
-/// new certificate by `X509_set_subject_name`, so it may be a borrowed pointer
-/// (e.g. `X509_REQ_get_subject_name()`) or a standalone one built via
+/// subject both extracted from a caller-supplied CSR) via `build_leaf_cert()`,
+/// and by external signers (`azure_key_vault_ca_provider`) that sign the
+/// TBSCertificate themselves, so no entry point duplicates extension-setting
+/// logic. `subject_name` is copied into the new certificate by
+/// `X509_set_subject_name`, so it may be a borrowed pointer (e.g.
+/// `X509_REQ_get_subject_name()`) or a standalone one built via
 /// `build_name()` — ownership after the call is unaffected either way.
-[[nodiscard]] inline auto build_leaf_cert(
-    X509* issuer_cert, EVP_PKEY* issuer_key, X509_NAME* subject_name, EVP_PKEY* pubkey,
+[[nodiscard]] inline auto build_unsigned_leaf_cert(
+    X509* issuer_cert, X509_NAME* subject_name, EVP_PKEY* pubkey,
     const std::vector<std::string>& dns_names, const std::vector<std::string>& ip_addresses,
     bool server_auth, bool client_auth, std::chrono::system_clock::time_point not_before,
     std::chrono::system_clock::time_point not_after, std::uint64_t serial) -> x509_ptr {
@@ -425,7 +427,17 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
     if (X509_add_ext(cert.get(), san.get(), -1) != 1) {
         throw_openssl_error("X509_add_ext(subjectAltName) failed");
     }
+    return cert;
+}
 
+/// `build_unsigned_leaf_cert()` signed locally by `issuer_key` with SHA-256.
+[[nodiscard]] inline auto build_leaf_cert(
+    X509* issuer_cert, EVP_PKEY* issuer_key, X509_NAME* subject_name, EVP_PKEY* pubkey,
+    const std::vector<std::string>& dns_names, const std::vector<std::string>& ip_addresses,
+    bool server_auth, bool client_auth, std::chrono::system_clock::time_point not_before,
+    std::chrono::system_clock::time_point not_after, std::uint64_t serial) -> x509_ptr {
+    auto cert = build_unsigned_leaf_cert(issuer_cert, subject_name, pubkey, dns_names, ip_addresses,
+                                         server_auth, client_auth, not_before, not_after, serial);
     if (X509_sign(cert.get(), issuer_key, EVP_sha256()) == 0) {
         throw_openssl_error("X509_sign(leaf) failed");
     }

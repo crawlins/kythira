@@ -1181,12 +1181,17 @@ the full design and requirements.
   — a `certificate_provider` backed by Azure Key Vault Keys: CSR parsing and
   TBSCertificate assembly happen locally (reusing
   `certificate_authority`'s own OpenSSL helpers), but the final signature
-  comes from Key Vault's `Sign` operation via a custom OpenSSL `RSA_METHOD`
-  that redirects just the private-key operation to Key Vault — the CA's
-  private key itself never leaves Key Vault. `ca_service --provider
-  azure-key-vault --key-vault-url <url> --key-vault-key-name <name>
-  --ca-cert-file <path>` wires it into the same HTTP API the `local` and
-  `aws-acm-pca` providers serve.
+  comes from Key Vault's `Sign` operation over the TBSCertificate digest —
+  the CA's private key itself never leaves Key Vault. Every Key Vault
+  signing algorithm works: RS256/RS384/RS512 and PS256 with an RSA key,
+  ES256 with a P-256 key and ES384 with a P-384 key. Each issued
+  certificate is verified against the CA certificate before it is returned,
+  so a vault key that doesn't match `--ca-cert-file` fails the request.
+  `ca_service --provider azure-key-vault --key-vault-url <url>
+  --key-vault-key-name <name> --ca-cert-file <path>
+  [--key-vault-signing-algorithm rs256|rs384|rs512|ps256|es256|es384]`
+  wires it into the same HTTP API the `local` and `aws-acm-pca` providers
+  serve.
 
 Unlike AWS, there is no generated ARM management-plane client for
 Compute/Network in the Azure SDK for C++, so the quorum managers build and

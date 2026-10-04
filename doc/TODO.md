@@ -3200,15 +3200,16 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   `upgradePolicy.mode=Automatic` scale sets) and `azure_key_vault_ca_provider`
   (`certificate_provider` backed by Azure Key Vault Keys — CSR
   parsing/TBSCertificate assembly happen locally, only the final signature
-  comes from Key Vault's `Sign` operation via a custom OpenSSL `RSA_METHOD`);
+  comes from Key Vault's `Sign` operation over the TBSCertificate digest);
   `azure-core-cpp`/`azure-identity-cpp`/`azure-security-keyvault-keys-cpp`.
   Like AWS, does not yet have the example-config-file
   documented above — tracked as the same kind of outstanding documentation
-  gap, not a missing capability. The CA provider's local signing-assembly
-  path currently only covers `rs256` (RSA PKCS#1v1.5/SHA-256); `rs384`/
-  `rs512`/`ps256`/`es256`/`es384` are forwarded to Key Vault correctly but
-  not yet supported end-to-end (see `azure_key_vault_ca_provider.hpp`'s
-  `azure_key_vault_signing_algorithm` doc comment). This spec's own
+  gap, not a missing capability. The CA provider issues certificates with
+  every Key Vault signing algorithm (`rs256`/`rs384`/`rs512`/`ps256` on RSA
+  keys, `es256` on P-256, `es384` on P-384), selectable with `ca_service
+  --key-vault-signing-algorithm`; until 2026-10-04 only `rs256` worked
+  end-to-end. Covered offline by `azure_key_vault_ca_provider_unit_test`;
+  the non-RS256 algorithms have not run against a live vault. This spec's own
   real-Azure integration test file
   (`tests/azure_quorum_manager_real_test.cpp`) now implements its design
   doc's full test list (10 VM + 5 VMSS cases) and compiles/skip-paths
