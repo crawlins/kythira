@@ -613,7 +613,7 @@ int run_serve(const serve_options& opts) {
             // routes keep working for callers presenting none; POST
             // /v1/certificates/renew is the only route that actually needs one
             // (Requirement 15.3).
-            SSL_CTX_set_verify(ssl_server->ssl_context(), SSL_VERIFY_PEER,
+            SSL_CTX_set_verify(static_cast<SSL_CTX*>(ssl_server->tls_context()), SSL_VERIFY_PEER,
                                raft::testing::accept_any_peer_certificate);
             return ssl_server;
         };
@@ -710,7 +710,7 @@ int run_serve(const serve_options& opts) {
                                 "application/json");
                 return;
             }
-            X509* peer_cert = SSL_get1_peer_certificate(req.ssl);
+            X509* peer_cert = SSL_get1_peer_certificate(static_cast<const SSL*>(req.ssl));
             if (peer_cert == nullptr) {
                 res.status = 401;
                 res.set_content(R"({"error":"no client certificate presented"})",

@@ -371,11 +371,11 @@ auto rpc_trust_state_of(const raft::testing::ca_state_machine& state,
     client->set_connection_timeout(5, 0);
     client->set_read_timeout(10, 0);
     auto nonce = raft::testing::random_nonce_hex();
-    auto res =
-        client->Get(raft::testing::k_peer_rpc_trust_path,
-                    {{raft::testing::k_peer_nonce_header, nonce},
-                     {raft::testing::k_peer_request_mac_header,
-                      raft::testing::peer_trust_request_mac(cfg.peer_enrollment_key, nonce)}});
+    auto res = client->Get(
+        raft::testing::k_peer_rpc_trust_path,
+        httplib::Headers{{raft::testing::k_peer_nonce_header, nonce},
+                         {raft::testing::k_peer_request_mac_header,
+                          raft::testing::peer_trust_request_mac(cfg.peer_enrollment_key, nonce)}});
     if (!res || res->status != 200 || res->body.empty()) return std::nullopt;
     auto mac = res->get_header_value(raft::testing::k_peer_trust_mac_header);
     if (!raft::testing::constant_time_equals(
@@ -1183,7 +1183,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 throw std::runtime_error("failed to initialize TLS with cert " + cfg.tls_cert_path +
                                          " / key " + cfg.tls_key_path);
             }
-            SSL_CTX_set_verify(ssl_server->ssl_context(), SSL_VERIFY_PEER,
+            SSL_CTX_set_verify(static_cast<SSL_CTX*>(ssl_server->tls_context()), SSL_VERIFY_PEER,
                                raft::testing::accept_any_peer_certificate);
             return ssl_server;
         };
@@ -1455,7 +1455,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                                 "application/json");
                 return;
             }
-            X509* peer_cert = SSL_get1_peer_certificate(req.ssl);
+            X509* peer_cert = SSL_get1_peer_certificate(static_cast<const SSL*>(req.ssl));
             if (peer_cert == nullptr) {
                 res.status = 401;
                 res.set_content(json_error("no client certificate presented"), "application/json");

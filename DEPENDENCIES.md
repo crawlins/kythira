@@ -61,6 +61,14 @@ This document lists the dependencies required to build and use the network simul
 - **Notes**: Unconditional, header-only, and supplied by vcpkg. Listed here because it was
   previously undocumented despite being required; the OCI components add no dependency of
   their own, they only add consumers of this one.
+- **Minimum Version**: 0.58.0. Older releases have unauthenticated remote crash bugs
+  (negative chunk sizes, decompression bombs past `set_payload_max_length`, multipart
+  `filename*` regex stack overflow). The builtin baseline predates the fixes, so
+  `vcpkg-configuration.json` takes `cpp-httplib` (with `openssl` and `c-ares`, for
+  DTLS/DNS crash fixes) from a `microsoft/vcpkg` git registry at a newer commit, leaving
+  every other port on the baseline. libcoap 4.3.5b comes from
+  `vcpkg-overlays/libcoap`, a copy of that registry's port plus a patch for an upstream
+  release-build regression in its certificate callback (see that directory's README).
 
 ## Optional Dependencies
 
