@@ -153,7 +153,7 @@ struct counting_server {
         : server{loopback, 0, kythira::coap_server_config{}, kythira::noop_metrics{}} {
         server.register_request_vote_handler([this](const kythira::request_vote_request<>& req) {
             handled.fetch_add(1);
-            kythira::request_vote_response<> response;
+            kythira::request_vote_response<> response{};
             response._term = req._term;
             response._vote_granted = false;
             return response;
@@ -169,7 +169,11 @@ struct counting_server {
 };
 
 auto vote_body(std::uint64_t candidate) -> std::vector<std::byte> {
-    kythira::request_vote_request<> request;
+    // Value-initialise: the struct's default member initialiser on _group_id
+    // means a plain declaration leaves _last_log_index and _last_log_term
+    // indeterminate, and a garbage value above INT64_MAX serialises as a JSON
+    // number the server's as_int64() decode rejects with 4.00.
+    kythira::request_vote_request<> request{};
     request._term = 1;
     request._candidate_id = candidate;
     return serializer{}.serialize(request);
