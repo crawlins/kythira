@@ -24,7 +24,6 @@
 #include <raft/future_default.hpp>
 
 #include <raft/coap_transport.hpp>
-#include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
 #include <raft/coap_transport_impl.hpp>
 #include <raft/cbor_serializer.hpp>
 #include <raft/console_logger.hpp>
@@ -61,7 +60,7 @@ struct test_transport_types {
     using logger_type = kythira::console_logger;
     using address_type = std::string;
     using port_type = std::uint16_t;
-    using executor_type = folly::Executor;
+    using executor_type = int;  // named, never invoked; see coap_conformance_types.hpp
 
     template<typename T> using future_template = kythira::future_default<T>;
     template<typename T> using promise_template = kythira::promise_default<T>;

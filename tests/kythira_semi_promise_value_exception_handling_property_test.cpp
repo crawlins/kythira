@@ -13,8 +13,10 @@
 #include <utility>
 #include <vector>
 #include <memory>
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/Unit.h>
 #include <folly/ExceptionWrapper.h>
+#endif
 
 using namespace kythira;
 
