@@ -1001,8 +1001,13 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                 // so this connection is in a known-good state and may go back
                 // to the pool. Marked before any throw below, since a 4xx/5xx
                 // is a valid HTTP exchange -- the connection is fine even when
-                // the RPC is not.
-                lease->mark_reusable();
+                // the RPC is not. Unless the server said it is closing it:
+                // cpp-httplib 0.58 sends `Connection: close` on every status
+                // >= 400, and pooling that socket failed the next RPC to the
+                // peer with "end of stream".
+                if (resp.keep_alive()) {
+                    lease->mark_reusable();
+                }
                 auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - start_time);
                 auto status = static_cast<unsigned>(resp.result_int());
