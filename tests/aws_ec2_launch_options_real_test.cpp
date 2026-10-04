@@ -833,8 +833,15 @@ BOOST_AUTO_TEST_CASE(provision_timeout_cleanup, *boost::unit_test::timeout(1500)
 
     // The launched instance is found by this run's tag, not by anything the
     // failed call returned, so a manager that forgot to terminate it cannot
-    // hide it.
-    auto instances = run_instances();
+    // hide it. Polled, because a tag-filtered DescribeInstances is eventually
+    // consistent: issued the moment RunInstances returns, as it is here with
+    // a zero timeout, it can list nothing (CI run 37093848659 saw 0).
+    std::vector<Aws::EC2::Model::Instance> instances;
+    wait_until("the timed-out instance to be listed by tag", std::chrono::seconds{120},
+               std::chrono::seconds{5}, [&] {
+                   instances = run_instances();
+                   return !instances.empty();
+               });
     BOOST_REQUIRE_EQUAL(instances.size(), 1u);
     const std::string id(instances.front().GetInstanceId());
     BilledResource line;
