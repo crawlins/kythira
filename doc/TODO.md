@@ -1176,7 +1176,25 @@ unverified completion claim.
     runs.
 
 - **`raft_commit_implies_replication_property_test` is unstable on its own
-  terms, independent of any simulator change (found August 7, 2026 — open).**
+  terms, independent of any simulator change (found August 7, 2026 — FIXED
+  October 4, 2026).** The test now campaigns exactly one chosen node instead of
+  ticking every node's election timer at once, and asserts the property itself:
+  every entry any node has committed is held by a majority, an isolated leader
+  commits nothing, and a new leader's commit index moves only to an entry of
+  its own term. A cut-off minority in the first case and the isolated leader
+  in the second keep the check from being vacuous; with the leader's quorum
+  rule weakened to one acknowledgement the suite fails.
+
+  Checking the real property exposed a bug in the simulator transport itself:
+  `simulator_network_client` sent every RPC from port 0 and took whatever
+  message reached its node next as the reply, so with several RPCs in flight
+  the reply from one follower could complete the call made to another. The
+  leader then recorded a `match_index` for a follower holding nothing and
+  committed on a majority that did not exist (seen 1 run in 25: a 5-node
+  cluster committing an entry two nodes held). Each call now sends from a
+  port of its own and the server replies to the request's source port. Every
+  Raft test over the simulator was exposed to this. The history below is
+  kept for the measurement lesson it records.
 
   Measured on an unmodified `main` binary under boost: **13/25 to 19/25 clean**
   depending only on machine load. Every observed failure is the same assertion,
