@@ -26,6 +26,7 @@
 #include <raft/metrics.hpp>
 
 #include "recording_metrics.hpp"
+#include "test_timeout_scale.hpp"
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
@@ -167,9 +168,14 @@ auto run_exchange(std::uint16_t port) -> exchange_observation {
     };
 
     {
+        // Scaled like the CTest TIMEOUT that wraps every binary including
+        // this harness: an instrumented CI build gets a wider outer budget,
+        // and these deadlines need the same headroom or they expire first.
+        // The request timeout stays above the per-RPC deadline at any scale.
+        constexpr auto rpc_deadline = kythira::testing::scaled_deadline(3000);
         kythira::cpp_httplib_client_config client_config;
-        client_config.connection_timeout = std::chrono::milliseconds{2000};
-        client_config.request_timeout = std::chrono::milliseconds{4000};
+        client_config.connection_timeout = kythira::testing::scaled_deadline(2000);
+        client_config.request_timeout = kythira::testing::scaled_deadline(4000);
 
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[peer_node_id] =
@@ -184,8 +190,7 @@ auto run_exchange(std::uint16_t port) -> exchange_observation {
             req._candidate_id = 42;
             req._last_log_index = 10;
             req._last_log_term = 4;
-            auto resp =
-                client.send_request_vote(peer_node_id, req, std::chrono::milliseconds{3000}).get();
+            auto resp = client.send_request_vote(peer_node_id, req, rpc_deadline).get();
             obs.round_trips_correct =
                 obs.round_trips_correct && resp.term() == 6 && resp.vote_granted();
         } catch (const std::exception& e) {
@@ -198,9 +203,7 @@ auto run_exchange(std::uint16_t port) -> exchange_observation {
             req._prev_log_index = 10;
             req._prev_log_term = 5;
             req._leader_commit = 9;
-            auto resp =
-                client.send_append_entries(peer_node_id, req, std::chrono::milliseconds{3000})
-                    .get();
+            auto resp = client.send_append_entries(peer_node_id, req, rpc_deadline).get();
             obs.round_trips_correct = obs.round_trips_correct && resp.term() == 6 && resp.success();
         } catch (const std::exception& e) {
             note_failure(e);
@@ -214,9 +217,7 @@ auto run_exchange(std::uint16_t port) -> exchange_observation {
             req._offset = 0;
             req._data = {std::byte{'s'}, std::byte{'n'}, std::byte{'a'}, std::byte{'p'}};
             req._done = true;
-            auto resp =
-                client.send_install_snapshot(peer_node_id, req, std::chrono::milliseconds{3000})
-                    .get();
+            auto resp = client.send_install_snapshot(peer_node_id, req, rpc_deadline).get();
             obs.round_trips_correct = obs.round_trips_correct && resp.term() == 7;
         } catch (const std::exception& e) {
             note_failure(e);
