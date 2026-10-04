@@ -755,6 +755,9 @@ unverified completion claim.
      unreachable today — but it is exactly the latent kind: the day a tier C
      row is added to the catalog, the report labels it `?` and nothing
      fails.
+     **Fixed October 4, 2026:** `tier_letter` now names all five tiers.
+     The `::write` in `tcp_rpc_unit_test` (item 4 above) and its two
+     unchecked `::send` siblings are checked the same day.
   6. **3 × `-Wmissing-requires`** in
      `tests/folly_concept_compilation_property_test.cpp:203/205/207` — a
      comment, not a code change. `requires { kythira::try_type<T, int>; }`
@@ -1837,6 +1840,8 @@ unverified completion claim.
       `3000`/`4000ms` under a CTest budget CI scales from 180s to 720s. Nothing
       has failed there yet, which is why this is recorded rather than changed;
       the point is that "the sweep is done" means one of the two populations.
+      **Changed October 4, 2026:** the harness now passes all three through
+      `scaled_deadline()`.
     - **`coap_concurrent_processing_property_test:57` is the one knowing
       exception.** It has the shape and it is left unscaled on purpose: the
       constant is handed to the `send_request_vote` whose synchronous portion
@@ -1845,6 +1850,10 @@ unverified completion claim.
       inert today — the test discards that future, and the futures it later
       waits on are fresh `makeFuture()`s. Revisit once the stall entry below
       closes.
+      **Revisited October 4, 2026:** the stall closed August 12, so the
+      deadline is now `scaled_deadline(5000)` and the test's `[stall-probe]`
+      lines and its `KYTHIRA_COAP_SEND_PROBE` switch are removed. The
+      transport's own opt-in send-path probe stays; benchmarks still use it.
 - **RESOLVED, and confirmed by re-running its own checks (September 12,
   2026).** This entry was still marked open a month after it stopped being
   true. Every one of the three facts below is now false, re-checked the same
@@ -3976,6 +3985,14 @@ as the Cloud Provider Support requirement above.
   to grant a pre-vote to a new candidate, but they carry the same
   latent design tension and could need the same fix if a future change
   to any of those scenarios introduces that interaction.
+  **Resolved October 4, 2026:** all four now give the would-be dormant
+  node the normal fast config and tick it through the new
+  `node::check_peer_catch_up()`, which runs only the gossip and catch-up
+  half of `check_election_timeout()`. Nothing in them leans on a stretched
+  election timeout any more. The partition-reconnect test turned out to
+  depend on it: node3's ten-minute stickiness window was the only thing
+  refusing node2's pre-vote while node1 sent no heartbeats, so its heal
+  loop now ticks all three nodes through `check_peer_catch_up()`.
 
   Verified: full local `ctest` (CI's exact filter,
   `--repeat until-pass:3`) 380/380 passing; the newly-fixed test alone

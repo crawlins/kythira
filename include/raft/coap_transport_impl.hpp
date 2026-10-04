@@ -2764,10 +2764,10 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                 return std::to_string(
                     std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count());
             };
-            // The same "[stall-probe]" prefix and stream the concurrent-
-            // processing test's own probe lines use, so the two interleave
-            // in one log and a test-side send_ms line can be decomposed by
-            // matching on the token.
+            // The "[stall-probe]" prefix is kept from the concurrent-
+            // processing stall investigation that introduced this line (the
+            // stall is fixed and that test's own probe lines are gone), so
+            // log greps written against it still match.
             // The trailing fields were added for the multi-Raft contention
             // row (.kiro/specs/coap-transport-multi-raft/ task 14), which
             // reads this same line rather than adding a second probe. On

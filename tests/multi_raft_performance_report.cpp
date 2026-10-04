@@ -145,6 +145,12 @@ auto tier_letter(deployment_tier tier) -> std::string_view {
             return "A";
         case deployment_tier::b_loopback:
             return "B";
+        case deployment_tier::c_process:
+            return "C";
+        case deployment_tier::d_durable:
+            return "D";
+        case deployment_tier::e_multi_machine:
+            return "E";
     }
     return "?";
 }

@@ -138,9 +138,11 @@ BOOST_AUTO_TEST_CASE(test_frame_send_recv_round_trip, *boost::unit_test::timeout
 
 BOOST_AUTO_TEST_CASE(test_frame_zero_length_rejected, *boost::unit_test::timeout(10)) {
     SockPair sp;
-    // frame_recv rejects len=0 (protocol invariant: all real frames are non-empty)
+    // frame_recv rejects len=0 (protocol invariant: all real frames are non-empty).
+    // A short write would leave a truncated header that frame_recv also
+    // rejects, passing the test for the wrong reason, so the write is checked.
     std::uint32_t zero = 0;
-    ::write(sp.w, &zero, 4);
+    BOOST_REQUIRE_EQUAL(::write(sp.w, &zero, 4), 4);
     ::shutdown(sp.w, SHUT_WR);
     auto received = kythira::tcp_detail::frame_recv(sp.r);
     BOOST_TEST(!received.has_value());
@@ -976,20 +978,31 @@ BOOST_AUTO_TEST_CASE(test_frame_recv_reads_large_frame_in_pieces, *boost::unit_t
     for (std::size_t i = 0; i < big.size(); ++i) {
         big[i] = static_cast<char>('a' + (i * 7) % 26);
     }
+    // Boost assertions are not thread-safe, so the writer records a failed
+    // send and the test thread checks it after the join.
+    std::atomic<bool> send_failed{false};
     std::thread writer([&] {
         auto len = htonl(static_cast<std::uint32_t>(big.size()));
-        ::send(sp.w, &len, 4, MSG_NOSIGNAL);
+        if (::send(sp.w, &len, 4, MSG_NOSIGNAL) != 4) {
+            send_failed = true;
+            return;
+        }
         std::size_t off = 0;
         std::size_t step = 1;
         while (off < big.size()) {
             auto n = std::min(step, big.size() - off);
-            ::send(sp.w, big.data() + off, n, MSG_NOSIGNAL);
-            off += n;
+            auto sent = ::send(sp.w, big.data() + off, n, MSG_NOSIGNAL);
+            if (sent <= 0) {
+                send_failed = true;
+                return;
+            }
+            off += static_cast<std::size_t>(sent);
             step = step * 3 + 17;  // uneven piece sizes
         }
     });
     auto received = kythira::tcp_detail::frame_recv(sp.r);
     writer.join();
+    BOOST_REQUIRE(!send_failed);
     BOOST_REQUIRE(received.has_value());
     BOOST_TEST(received->size() == big.size());
     BOOST_TEST((*received == big));
@@ -998,8 +1011,8 @@ BOOST_AUTO_TEST_CASE(test_frame_recv_reads_large_frame_in_pieces, *boost::unit_t
 BOOST_AUTO_TEST_CASE(test_frame_recv_announced_but_missing_body, *boost::unit_test::timeout(10)) {
     SockPair sp;
     auto len = htonl(64u * 1024u * 1024u);
-    ::send(sp.w, &len, 4, MSG_NOSIGNAL);
-    ::send(sp.w, "0123456789", 10, MSG_NOSIGNAL);
+    BOOST_REQUIRE_EQUAL(::send(sp.w, &len, 4, MSG_NOSIGNAL), 4);
+    BOOST_REQUIRE_EQUAL(::send(sp.w, "0123456789", 10, MSG_NOSIGNAL), 10);
     ::shutdown(sp.w, SHUT_WR);
     BOOST_TEST(!kythira::tcp_detail::frame_recv(sp.r).has_value());
 }
