@@ -12,6 +12,8 @@
 
 #include <network_simulator/network_simulator.hpp>
 
+#include <atomic>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <shared_mutex>
@@ -88,19 +90,19 @@ public:
         }
 
         // Create message
-        typename NetworkTypes::message_type msg(_node->address(),
-                                                0,  // Source port (connectionless)
-                                                target_addr, _rpc_port, std::move(payload));
+        const auto reply_port = next_reply_port();
+        typename NetworkTypes::message_type msg(_node->address(), reply_port, target_addr,
+                                                _rpc_port, std::move(payload));
 
         // Send message and wait for response - now with proper future flattening
         return _node->send(std::move(msg), timeout)
-            .thenValue([this, timeout](bool success) {
+            .thenValue([this, timeout, reply_port](bool success) {
                 if (!success) {
                     throw kythira::network_exception("Failed to send RequestVote RPC");
                 }
 
                 // Wait for response - return the future directly (will be flattened)
-                return _node->receive(timeout);
+                return _node->receive(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::request_vote_response<> {
@@ -141,19 +143,19 @@ public:
         }
 
         // Create message
-        typename NetworkTypes::message_type msg(_node->address(),
-                                                0,  // Source port (connectionless)
-                                                target_addr, _rpc_port, std::move(payload));
+        const auto reply_port = next_reply_port();
+        typename NetworkTypes::message_type msg(_node->address(), reply_port, target_addr,
+                                                _rpc_port, std::move(payload));
 
         // Send message and wait for response - now with proper future flattening
         return _node->send(std::move(msg), timeout)
-            .thenValue([this, timeout](bool success) {
+            .thenValue([this, timeout, reply_port](bool success) {
                 if (!success) {
                     throw kythira::network_exception("Failed to send RequestPreVote RPC");
                 }
 
                 // Wait for response - return the future directly (will be flattened)
-                return _node->receive(timeout);
+                return _node->receive(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::request_pre_vote_response<> {
@@ -189,16 +191,16 @@ public:
             target_addr = static_cast<address_type>(target);
         }
 
-        typename NetworkTypes::message_type msg(_node->address(),
-                                                0,  // Source port (connectionless)
-                                                target_addr, _rpc_port, std::move(payload));
+        const auto reply_port = next_reply_port();
+        typename NetworkTypes::message_type msg(_node->address(), reply_port, target_addr,
+                                                _rpc_port, std::move(payload));
 
         return _node->send(std::move(msg), timeout)
-            .thenValue([this, timeout](bool success) {
+            .thenValue([this, timeout, reply_port](bool success) {
                 if (!success) {
                     throw kythira::network_exception("Failed to send TimeoutNow RPC");
                 }
-                return _node->receive(timeout);
+                return _node->receive(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::timeout_now_response<> {
@@ -236,19 +238,19 @@ public:
         }
 
         // Create message
-        typename NetworkTypes::message_type msg(_node->address(),
-                                                0,  // Source port (connectionless)
-                                                target_addr, _rpc_port, std::move(payload));
+        const auto reply_port = next_reply_port();
+        typename NetworkTypes::message_type msg(_node->address(), reply_port, target_addr,
+                                                _rpc_port, std::move(payload));
 
         // Send message and wait for response
         return _node->send(std::move(msg), timeout)
-            .thenValue([this, timeout](bool success) {
+            .thenValue([this, timeout, reply_port](bool success) {
                 if (!success) {
                     throw kythira::network_exception("Failed to send AppendEntries RPC");
                 }
 
                 // Wait for response - return the future directly
-                return _node->receive(timeout);
+                return _node->receive(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::append_entries_response<> {
@@ -287,19 +289,19 @@ public:
         }
 
         // Create message
-        typename NetworkTypes::message_type msg(_node->address(),
-                                                0,  // Source port (connectionless)
-                                                target_addr, _rpc_port, std::move(payload));
+        const auto reply_port = next_reply_port();
+        typename NetworkTypes::message_type msg(_node->address(), reply_port, target_addr,
+                                                _rpc_port, std::move(payload));
 
         // Send message and wait for response
         return _node->send(std::move(msg), timeout)
-            .thenValue([this, timeout](bool success) {
+            .thenValue([this, timeout, reply_port](bool success) {
                 if (!success) {
                     throw kythira::network_exception("Failed to send InstallSnapshot RPC");
                 }
 
                 // Wait for response - return the future directly
-                return _node->receive(timeout);
+                return _node->receive(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::install_snapshot_response<> {
@@ -323,15 +325,16 @@ public:
         auto data = _serializer.serialize(req);
         std::vector<std::byte> payload(data.begin(), data.end());
 
-        typename NetworkTypes::message_type msg(_node->address(), 0, target, _rpc_port,
+        const auto reply_port = next_reply_port();
+        typename NetworkTypes::message_type msg(_node->address(), reply_port, target, _rpc_port,
                                                 std::move(payload));
 
         return _node->send(std::move(msg), timeout)
-            .thenValue([this, timeout](bool success) {
+            .thenValue([this, timeout, reply_port](bool success) {
                 if (!success) {
                     throw kythira::network_exception("Failed to send ClusterJoin RPC");
                 }
-                return _node->receive(timeout);
+                return _node->receive(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::cluster_join_response<> {
@@ -353,15 +356,16 @@ public:
         auto data = _serializer.serialize(req);
         std::vector<std::byte> payload(data.begin(), data.end());
 
-        typename NetworkTypes::message_type msg(_node->address(), 0, target, _rpc_port,
+        const auto reply_port = next_reply_port();
+        typename NetworkTypes::message_type msg(_node->address(), reply_port, target, _rpc_port,
                                                 std::move(payload));
 
         return _node->send(std::move(msg), timeout)
-            .thenValue([this, timeout](bool success) {
+            .thenValue([this, timeout, reply_port](bool success) {
                 if (!success) {
                     throw kythira::network_exception("Failed to send ClusterLeave RPC");
                 }
-                return _node->receive(timeout);
+                return _node->receive(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::cluster_leave_response<> {
@@ -392,15 +396,16 @@ public:
             target_addr = static_cast<address_type>(target);
         }
 
-        typename NetworkTypes::message_type msg(_node->address(), 0, target_addr, _rpc_port,
-                                                std::move(payload));
+        const auto reply_port = next_reply_port();
+        typename NetworkTypes::message_type msg(_node->address(), reply_port, target_addr,
+                                                _rpc_port, std::move(payload));
 
         return _node->send(std::move(msg), timeout)
-            .thenValue([this, timeout](bool success) {
+            .thenValue([this, timeout, reply_port](bool success) {
                 if (!success) {
                     throw kythira::network_exception("Failed to send FetchLogEntries RPC");
                 }
-                return _node->receive(timeout);
+                return _node->receive(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::fetch_log_entries_response<> {
@@ -418,6 +423,37 @@ private:
     node_type _node;
     Serializer _serializer;
     unsigned short _rpc_port;
+
+    /// @brief A source port no other call in flight is using, for one RPC.
+    ///
+    /// Every call used to send from port 0 and then take whatever message
+    /// reached its node next. A leader replicating to four followers has four
+    /// such calls parked at once, so the reply from follower 3 could complete
+    /// the call made to follower 1 — and the leader then recorded a
+    /// match_index for a follower that held none of those entries, and
+    /// committed on a "majority" that did not exist.
+    /// raft_commit_implies_replication_property_test caught it (a 5-node
+    /// cluster committing an entry two nodes held). A call could equally
+    /// swallow an inbound request meant for the server and fail to parse it
+    /// as a reply. Sending from a port of its own, which the server echoes
+    /// back, makes each call receive only its own reply.
+    ///
+    /// Ports are drawn from one process-wide counter, so they are unique per
+    /// node as well. The counter wraps after ~64k calls; a reply that arrived
+    /// after its call timed out stays queued on its port, and could only be
+    /// mistaken for a later call's reply if that exact port came round again
+    /// while the stale reply was still there.
+    auto next_reply_port() const -> unsigned short {
+        static std::atomic<std::uint32_t> counter{0};
+        constexpr std::uint32_t first = 1024;
+        constexpr std::uint32_t span = 65536 - first;
+        for (;;) {
+            const auto port = static_cast<unsigned short>(first + counter.fetch_add(1) % span);
+            if (port != _rpc_port) {
+                return port;
+            }
+        }
+    }
 };
 
 // Simulator network server implementation
@@ -658,7 +694,7 @@ private:
                 std::shared_lock lock(_mutex);
                 if (_request_vote_handler) {
                     auto response = _request_vote_handler(request);
-                    send_response(msg.source_address(), response);
+                    send_response(msg.source_address(), msg.source_port(), response);
                 }
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -673,7 +709,7 @@ private:
                 std::shared_lock lock(_mutex);
                 if (_pre_vote_handler) {
                     auto response = _pre_vote_handler(request);
-                    send_response(msg.source_address(), response);
+                    send_response(msg.source_address(), msg.source_port(), response);
                 }
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -690,7 +726,7 @@ private:
                 std::shared_lock lock(_mutex);
                 if (_timeout_now_handler) {
                     auto response = _timeout_now_handler(request);
-                    send_response(msg.source_address(), response);
+                    send_response(msg.source_address(), msg.source_port(), response);
                 }
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -705,7 +741,7 @@ private:
                 std::shared_lock lock(_mutex);
                 if (_append_entries_handler) {
                     auto response = _append_entries_handler(request);
-                    send_response(msg.source_address(), response);
+                    send_response(msg.source_address(), msg.source_port(), response);
                 }
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -720,7 +756,7 @@ private:
                 std::shared_lock lock(_mutex);
                 if (_install_snapshot_handler) {
                     auto response = _install_snapshot_handler(request);
-                    send_response(msg.source_address(), response);
+                    send_response(msg.source_address(), msg.source_port(), response);
                 }
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -735,7 +771,7 @@ private:
                 std::shared_lock lock(_mutex);
                 if (_cluster_join_handler) {
                     auto response = _cluster_join_handler(request);
-                    send_response(msg.source_address(), response);
+                    send_response(msg.source_address(), msg.source_port(), response);
                 }
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -750,7 +786,7 @@ private:
                 std::shared_lock lock(_mutex);
                 if (_cluster_leave_handler) {
                     auto response = _cluster_leave_handler(request);
-                    send_response(msg.source_address(), response);
+                    send_response(msg.source_address(), msg.source_port(), response);
                 }
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -765,7 +801,7 @@ private:
                 std::shared_lock lock(_mutex);
                 if (_fetch_log_entries_handler) {
                     auto response = _fetch_log_entries_handler(request);
-                    send_response(msg.source_address(), response);
+                    send_response(msg.source_address(), msg.source_port(), response);
                 }
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -782,7 +818,8 @@ private:
 
     // Send response back to client
     template<typename Response>
-    auto send_response(const address_type& target, const Response& response) -> void {
+    auto send_response(const address_type& target, unsigned short target_port,
+                       const Response& response) -> void {
         try {
             // Serialize response
             auto data = _serializer.serialize(response);
@@ -791,9 +828,10 @@ private:
             std::vector<std::byte> payload(data.begin(), data.end());
 
             // Create response message
+            // Back to the port the request came from: that is the port the
+            // one client call waiting for this reply listens on.
             typename NetworkTypes::message_type msg(_node->address(), _rpc_port, target,
-                                                    0,  // Destination port (connectionless)
-                                                    std::move(payload));
+                                                    target_port, std::move(payload));
 
             // Send response (fire and forget)
             _node->send(std::move(msg));
