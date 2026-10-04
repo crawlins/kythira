@@ -3219,20 +3219,23 @@ provider's support SHALL ship with at least one example configuration file
 (e.g. a `.env.example`, sample YAML/JSON config, or documented CLI-flag
 set) and accompanying documentation showing how to configure and run it —
 mirroring the existing `docker/ca_cluster_node/ca_cluster_node.env.example`/
-`docker/ca_service/ca_service.env.example` convention. **All three shipped
-providers — AWS, Azure and GCP — are currently missing it**; those two files
-are still the only `.env.example`s in the tree. Tracked here as an
-outstanding documentation gap rather than three separate checklist entries,
-since the underlying features are implemented and this is
-example/documentation work, not a missing capability. It is the single
-largest unmet *stated requirement* in this document, and grows by one every
-time a provider lands, so it is worth clearing before OCI or Alibaba start.
+`docker/ca_service/ca_service.env.example` convention. **Met for every
+provider as of October 4, 2026**: AWS, Azure and GCP now ship
+`docker/{aws,azure,gcp}_quorum_manager/` (an `.env.example` documenting
+every config-struct field, plus a README covering the prerequisite
+resources, IAM and verification), alongside OCI's and Alibaba's. The AWS,
+Azure, GCP and OCI files are checked by `scripts/check-cloud-env-examples.py`
+in the `docs` CI job, which fails when a config struct gains, loses or
+renames a field the example does not follow; that check found the OCI file
+already missing `security_token` and still calling Instance Principal
+unimplemented, both fixed in the same change.
 
 - [x] **AWS** — `aws_ec2/asg_quorum_manager` (node ID = EC2 instance ID hex,
   `DescribeInstanceStatus` liveness, consistency poll) and
   `aws_acm_pca_provider` (`certificate_provider` backed by AWS Certificate
   Manager Private CA); `aws-sdk-cpp` features: `acm-pca`, `autoscaling`,
-  `ec2`, `iam`, `s3`, `sts`
+  `ec2`, `iam`, `s3`, `sts`. Example config and operator guide:
+  `docker/aws_quorum_manager/` (added October 4, 2026).
 - [x] **Microsoft Azure** — `azure_vm_quorum_manager` (direct ARM
   `Microsoft.Compute/virtualMachines` PUT/DELETE, tag-scan `next_node_id()`
   since ARM requires the caller to choose the VM name up front,
@@ -3243,9 +3246,8 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   parsing/TBSCertificate assembly happen locally, only the final signature
   comes from Key Vault's `Sign` operation over the TBSCertificate digest);
   `azure-core-cpp`/`azure-identity-cpp`/`azure-security-keyvault-keys-cpp`.
-  Like AWS, does not yet have the example-config-file
-  documented above — tracked as the same kind of outstanding documentation
-  gap, not a missing capability. The CA provider issues certificates with
+  Example config and operator guide: `docker/azure_quorum_manager/`
+  (added October 4, 2026). The CA provider issues certificates with
   every Key Vault signing algorithm (`rs256`/`rs384`/`rs512`/`ps256` on RSA
   keys, `es256` on P-256, `es384` on P-384), selectable with `ca_service
   --key-vault-signing-algorithm`; until 2026-10-04 only `rs256` worked
@@ -3351,8 +3353,8 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   That first live run is what surfaced three real defects (a bare network
   short name rejected by `instances.insert`, the CAS suite silently skipping
   while CTest reported the skip as a pass, and `provision_timeout_cleanup`
-  never timing out while leaking its instance). Like AWS and Azure, still
-  missing the example config file documented at the top of this section.
+  never timing out while leaking its instance). Example config and operator
+  guide: `docker/gcp_quorum_manager/` (added October 4, 2026).
 - [x] **Oracle Cloud Infrastructure (OCI)** — `oci_instance_pool_quorum_manager`
   (Instance Pool `size` for provisioning, `DetachInstancePoolInstance` for
   decommission, tag-scan `next_node_id()` since an OCID's trailing segment is
@@ -3369,8 +3371,8 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   independent `CONFIG_OCI_QUORUM_MANAGER`/`CONFIG_OCI_CERTIFICATES_PROVIDER`
   kconfig flags rather than SDK detection — `vcpkg.json` is unchanged.
   **This is the first provider to ship the example config file this section
-  requires** (`docker/oci_quorum_manager/`), which AWS, Azure and GCP still
-  lack.
+  requires** (`docker/oci_quorum_manager/`); AWS, Azure and GCP followed on
+  October 4, 2026.
   **Ticked August 12, 2026 — every task (0–7) complete, including Task 6's
   real-OCI tier and CI wiring.** The mock tier's 31 cases were later joined
   by live verification of both providers against a real tenancy, and

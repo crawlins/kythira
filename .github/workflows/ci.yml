@@ -2307,6 +2307,13 @@ jobs:
       - name: Check the external comparison register renders current
         run: ./scripts/render-external-register.py --check
 
+      # The cloud quorum managers' docker/*_quorum_manager/*.env.example files document every
+      # field of their config structs, but nothing compiles them, so a field
+      # added or renamed in a header would leave the example silently stale.
+      # This fails the job instead. Pure text parsing; well under a second.
+      - name: Check the cloud .env.example files cover their config structs
+        run: ./scripts/check-cloud-env-examples.py
+
       - name: Setup GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v4
