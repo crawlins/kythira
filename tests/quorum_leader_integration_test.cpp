@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <map>
@@ -87,6 +88,10 @@ struct qm_state {
     // Called (without the mock's lock) from inside decommission_node, on the
     // leader's tick thread, before the call returns.
     std::function<void(std::uint64_t)> on_decommission;
+    // Called (without the mock's lock) from inside a successful
+    // provision_node, before the call returns: lets a test hold the leader
+    // mid-provision, as a slow cloud API would.
+    std::function<void(std::uint64_t)> on_provision;
 
     [[nodiscard]] auto assess_count(std::uint64_t caller) const -> std::size_t {
         std::lock_guard lock(mu);
@@ -180,15 +185,23 @@ struct mock_quorum_manager {
 
     auto provision_node(placement_group_id_type group, std::optional<node_id_type> replacing)
         -> kythira::future_default<kythira::peer_info<node_id_type, address_type>> {
-        std::lock_guard lock(state->mu);
-        state->provisions.emplace_back(group, replacing);
-        if (state->provision_ids.empty()) {
-            return kythira::future_factory_default::makeExceptionalFuture<
-                kythira::peer_info<node_id_type, address_type>>(
-                std::make_exception_ptr(std::runtime_error("mock: provisioning not configured")));
+        std::uint64_t id = 0;
+        std::function<void(std::uint64_t)> hook;
+        {
+            std::lock_guard lock(state->mu);
+            state->provisions.emplace_back(group, replacing);
+            if (state->provision_ids.empty()) {
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    kythira::peer_info<node_id_type, address_type>>(std::make_exception_ptr(
+                    std::runtime_error("mock: provisioning not configured")));
+            }
+            id = state->provision_ids.front();
+            state->provision_ids.pop_front();
+            hook = state->on_provision;
         }
-        auto id = state->provision_ids.front();
-        state->provision_ids.pop_front();
+        if (hook) {
+            hook(id);
+        }
         return kythira::future_factory_default::makeFuture(
             kythira::peer_info<node_id_type, address_type>{id, std::to_string(id)});
     }
@@ -418,6 +431,30 @@ public:
         _nodes.at(id)->stop();
     }
 
+    // Sends a ClusterJoin for `id` (reachable at its own simulator address)
+    // to `target`, as a provisioned node's bootstrap does, from a dedicated
+    // client endpoint so it never consumes a node's own responses.
+    auto send_join(std::uint64_t id, std::uint64_t target) -> bool {
+        if (!_join_client) {
+            auto net = _sim.create_node("join-client");
+            for (const auto& [other, _] : _nodes) {
+                if (_killed.contains(other)) {
+                    continue;
+                }
+                _sim.add_edge("join-client", std::to_string(other), {});
+                _sim.add_edge(std::to_string(other), "join-client", {});
+            }
+            _join_client.emplace(net, test_raft_types_with_qm::serializer_type{});
+        }
+        kythira::cluster_join_request<> req;
+        req.node_id = id;
+        req.contact_address = std::to_string(id);
+        return _join_client
+            ->send_cluster_join_request(std::to_string(target), req, _cfg._rpc_timeout * 5)
+            .get()
+            .is_accepted();
+    }
+
     std::shared_ptr<qm_state> state = std::make_shared<qm_state>();
 
 private:
@@ -437,6 +474,7 @@ private:
     std::map<std::uint64_t, std::shared_ptr<std::atomic<bool>>> _ticker_stops;
     std::set<std::uint64_t> _killed;
     std::vector<std::thread> _tickers;
+    std::optional<test_raft_types_with_qm::network_client_type> _join_client;
 };
 
 auto group_of(const placement_vector& cluster, std::uint64_t id) -> std::optional<std::string> {
@@ -666,6 +704,71 @@ BOOST_AUTO_TEST_CASE(self_heals_failed_nodes_repeatedly,
     // Healthy again: no further provisioning.
     std::this_thread::sleep_for(std::chrono::milliseconds{300});
     BOOST_CHECK_EQUAL(c.state->provision_count(), 2u);
+}
+
+// A provisioned node can start and send its ClusterJoin before the leader's
+// provision_node() call returns, i.e. before the leader has recorded its
+// placement and the voter it replaces. Under rootless Podman the container
+// starts that fast every time. The leader must not answer "accepted" and then
+// have add_learner() refuse the node for capacity, which left it waiting
+// forever and the failed node never decommissioned; it defers the join, and
+// the node's retry is admitted once the provision is recorded.
+BOOST_AUTO_TEST_CASE(join_racing_its_own_provision_is_admitted_on_retry,
+                     *boost::unit_test::timeout(scaled_timeout(45))) {
+    // The gate below holds the leader's quorum loop mid-provision; long
+    // election timeouts keep a follower from campaigning meanwhile.
+    auto cfg = fast_config();
+    cfg._election_timeout_min = std::chrono::milliseconds{1000};
+    cfg._election_timeout_max = std::chrono::milliseconds{2000};
+    test_cluster c{cfg};
+    std::mutex gate_mu;
+    std::condition_variable gate_cv;
+    bool in_provision = false;
+    bool released = false;
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 3}}};
+        c.state->provision_ids = {4};
+        c.state->on_provision = [&](std::uint64_t) {
+            std::unique_lock lk(gate_mu);
+            in_provision = true;
+            gate_cv.notify_all();
+            gate_cv.wait(lk, [&] { return released; });
+        };
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "g"}, {2, "g"}, {3, "g"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    c.kill(3);
+    {
+        std::unique_lock lk(gate_mu);
+        BOOST_REQUIRE(gate_cv.wait_for(lk, scaled_deadline(5000), [&] { return in_provision; }));
+    }
+
+    // The replacement is up and joins while the leader is still inside
+    // provision_node().
+    c.add_node(4, {4});
+    c.start_ticker(4);
+    BOOST_CHECK(!c.send_join(4, 1));
+
+    {
+        std::lock_guard lk(gate_mu);
+        released = true;
+    }
+    gate_cv.notify_all();
+
+    // The joiner's bootstrap retries; once the provision is recorded the
+    // leader admits it.
+    BOOST_CHECK(wait_until([&] { return c.send_join(4, 1); }, scaled_deadline(5000)));
+
+    // And the heal completes: 4 is promoted, 3 removed and decommissioned.
+    BOOST_REQUIRE(
+        wait_until([&] { return !c.state->decommissioned().empty(); }, scaled_deadline(10000)));
+    BOOST_CHECK_EQUAL(c.state->decommissioned().front(), 3u);
+    BOOST_CHECK_EQUAL(c.node(1).get_cluster_size(), 3u);
 }
 
 // Req 16.7 / 15.4 — a decommission failure is logged only; the removal of
