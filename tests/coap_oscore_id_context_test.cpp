@@ -2,18 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// @file coap_oscore_id_context_test.cpp
-/// @brief oscore_credentials::id_context over the libcoap backend, whose OSCORE
-///        is libcoap's own rather than raft/oscore.hpp's
+/// @brief oscore_credentials::id_context over the libcoap backend
 ///        (.kiro/specs/coap-transport-multi-raft/ task 8).
 ///
 /// oscore_rfc8613_vectors_test pins kythira's own security_context against
-/// RFC 8613 C.6. libcoap derives and frames OSCORE itself from the conf text
-/// oscore_provider builds, so the field has to reach that text too, or a
-/// libcoap deployment would silently derive with an empty ID Context while a
-/// libnyoci or cantcoap one did not. The matched pair talks, a mismatched ID
-/// Context does not, no ID Context still talks (Requirement 4.11: nothing
-/// changes for a deployment that never sets it), and a plaintext client is
-/// refused, without which none of the others would mean anything.
+/// RFC 8613 C.6. This checks the field survives the libcoap transport end to
+/// end, which protects and verifies with that same security_context
+/// (oscore_provider). The matched pair talks, a mismatched ID Context does
+/// not, no ID Context still talks (Requirement 4.11: nothing changes for a
+/// deployment that never sets it), and a plaintext client is refused, without
+/// which none of the others would mean anything.
 
 #include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_oscore_id_context_test
@@ -126,8 +124,10 @@ BOOST_AUTO_TEST_SUITE(coap_oscore_id_context_tests)
 
 BOOST_AUTO_TEST_CASE(no_id_context_still_talks,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    if (coap_oscore_is_supported() == 0) {
-        BOOST_TEST_MESSAGE("linked libcoap has no OSCORE; skipping");
+    if (coap_oscore_is_supported() != 0) {
+        BOOST_TEST_MESSAGE(
+            "linked libcoap has its own OSCORE, which the backend refuses; "
+            "see the_backend_refuses_a_libcoap_with_its_own_oscore");
         return;
     }
     BOOST_TEST(vote_round_trip({}, {}));
@@ -135,8 +135,10 @@ BOOST_AUTO_TEST_CASE(no_id_context_still_talks,
 
 BOOST_AUTO_TEST_CASE(a_matched_id_context_talks,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    if (coap_oscore_is_supported() == 0) {
-        BOOST_TEST_MESSAGE("linked libcoap has no OSCORE; skipping");
+    if (coap_oscore_is_supported() != 0) {
+        BOOST_TEST_MESSAGE(
+            "linked libcoap has its own OSCORE, which the backend refuses; "
+            "see the_backend_refuses_a_libcoap_with_its_own_oscore");
         return;
     }
     BOOST_TEST(vote_round_trip(group_7, group_7));
@@ -146,8 +148,10 @@ BOOST_AUTO_TEST_CASE(a_matched_id_context_talks,
 // cannot be understood, and must not be answered as if it were.
 BOOST_AUTO_TEST_CASE(a_mismatched_id_context_does_not,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    if (coap_oscore_is_supported() == 0) {
-        BOOST_TEST_MESSAGE("linked libcoap has no OSCORE; skipping");
+    if (coap_oscore_is_supported() != 0) {
+        BOOST_TEST_MESSAGE(
+            "linked libcoap has its own OSCORE, which the backend refuses; "
+            "see the_backend_refuses_a_libcoap_with_its_own_oscore");
         return;
     }
     BOOST_TEST(!vote_round_trip(group_8, group_7));
@@ -158,8 +162,10 @@ BOOST_AUTO_TEST_CASE(a_mismatched_id_context_does_not,
 // with OSCORE configured, so a mismatched context was never really refused.
 BOOST_AUTO_TEST_CASE(an_oscore_server_refuses_plaintext,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    if (coap_oscore_is_supported() == 0) {
-        BOOST_TEST_MESSAGE("linked libcoap has no OSCORE; skipping");
+    if (coap_oscore_is_supported() != 0) {
+        BOOST_TEST_MESSAGE(
+            "linked libcoap has its own OSCORE, which the backend refuses; "
+            "see the_backend_refuses_a_libcoap_with_its_own_oscore");
         return;
     }
     BOOST_TEST(!vote_round_trip({}, group_7, true));
