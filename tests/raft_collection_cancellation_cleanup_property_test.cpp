@@ -30,8 +30,9 @@ struct GlobalFixture {
         int argc = 1;
         char* argv[] = {const_cast<char*>("test"), nullptr};
         char** argv_ptr = argv;
-        folly::init(&argc, &argv_ptr);
+        _init = std::make_unique<folly::Init>(&argc, &argv_ptr);
     }
+    std::unique_ptr<folly::Init> _init;
 };
 #endif
 

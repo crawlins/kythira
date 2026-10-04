@@ -98,8 +98,9 @@ struct FollyInitFixture {
     FollyInitFixture() {
         int argc = boost::unit_test::framework::master_test_suite().argc;
         char** argv = boost::unit_test::framework::master_test_suite().argv;
-        folly::init(&argc, &argv, false);
+        _init = std::make_unique<folly::Init>(&argc, &argv, false);
     }
+    std::unique_ptr<folly::Init> _init;
 };
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 #endif
