@@ -5,6 +5,7 @@ This guide helps diagnose and resolve common issues with the HTTP transport impl
 ## Table of Contents
 
 - [Connection Problems](#connection-problems)
+- [Server Request and Connection Limits](#server-request-and-connection-limits)
 - [TLS/Certificate Issues](#tlscertificate-issues)
 - [Performance Issues](#performance-issues)
 - [Serialization Problems](#serialization-problems)
@@ -113,6 +114,53 @@ This guide helps diagnose and resolve common issues with the HTTP transport impl
    ping -c 100 target_host
    mtr target_host
    ```
+
+4. **The server is at `max_concurrent_connections`.** New connections are
+   closed before any request is read. See
+   [Server Request and Connection Limits](#server-request-and-connection-limits).
+
+## Server Request and Connection Limits
+
+The three HTTP servers share two limit fields. What each one does:
+
+| Field | cpp-httplib | Boost.Beast | Proxygen |
+|---|---|---|---|
+| `max_request_body_size` (default 10 MiB, inclusive) | `set_payload_max_length`: 413 | parser `body_limit`: 413, `Connection: close` | `Content-Length` checked from the headers, chunked bodies counted as they arrive: 413, `Connection: close` |
+| `max_concurrent_connections` (default 100) | enforced: new connections past the limit are closed | enforced: new connections past the limit are reset | enforced: new sessions past the limit are reset |
+
+**Body limit.** A request whose body is larger than the limit is answered
+`413 Payload Too Large` with a `text/plain` body, and the handler never runs.
+Beast and Proxygen close the connection after the 413, because unread body
+bytes would otherwise be read as the next request. Proxygen refuses a declared
+`Content-Length` before buffering a single body byte. `0` refuses every
+non-empty body; no value means "unlimited". The client sees the RPC fail with
+its usual HTTP error for a non-200 status. Size the limit above your largest
+`install_snapshot` chunk.
+
+**Connection limit.** The count is per server object, across every listener
+it owns: a `"*"` bind's 0.0.0.0 and :: share one limit. Past the limit, the
+server closes the new connection before reading from it: Beast and Proxygen
+with an RST, cpp-httplib with an ordinary close. On Beast and cpp-httplib that
+happens before any TLS handshake. On Proxygen it happens after the
+session is built, so a refused TLS connection has still cost one handshake.
+The client sees `Connection reset by peer` or EOF, which every client treats
+as a transient network error, and Raft retries on its next heartbeat or
+election timeout. A slot is released when the connection closes for any
+reason, so later connections are admitted again. `0` is rejected with
+`std::invalid_argument` when the server is constructed.
+
+One node receives at most *peers × connections per peer* inbound connections.
+The Proxygen and Beast clients keep up to `connection_pool_size` (default 10)
+per target, so a five-node cluster reaches at most 4 × 10 = 40, under the
+default 100. Several Raft groups sharing one transport share these
+connections; raise the limit if many groups share one server.
+
+**Metrics.** Beast emits `beast_http.server.request_too_large` and
+`beast_http.server.connection_refused`; Proxygen emits the same names under
+`proxygen_http.server.`. Neither HTTP server has a logger, so these counters
+are the only record of a refusal. A steady stream of `connection_refused`
+means the limit is too small for the cluster, or someone is opening
+connections they do not use.
 
 ## TLS/Certificate Issues
 
@@ -513,8 +561,8 @@ valgrind --tool=massif ./your_raft_application
 | "Failed to load certificate" | Certificate file issues | Verify certificate file path and format |
 | "Handler not registered" | Missing RPC handler | Register handler before starting server |
 | "Deserialization failed" | Invalid request format | Check client serializer compatibility |
-| "Request body too large" | Oversized request | Increase max_request_body_size or reduce request size |
-| "Too many connections" | Connection limit exceeded | Increase max_concurrent_connections |
+| `413 Payload Too Large` | Request body over `max_request_body_size` | Increase `max_request_body_size` or send smaller snapshot chunks |
+| `Connection reset by peer` on connect (Beast, Proxygen) | Server at `max_concurrent_connections` | Increase `max_concurrent_connections`; check `*.server.connection_refused` |
 
 ### Compilation Errors
 

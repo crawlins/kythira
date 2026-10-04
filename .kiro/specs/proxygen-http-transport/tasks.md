@@ -24,6 +24,11 @@ caught six genuine, pre-existing bugs no amount of hand review had — see
 states "all 17 tasks across 12 phases complete" — that claim is now
 literally accurate, and CI-verified, not merely asserted.
 
+> **Requirement 11.3 enforcement (2026-10-03):** the "accept-time counter"
+> this spec's task 4 documented for `max_concurrent_connections` was never
+> written, and `max_request_body_size` was never read. Both are now enforced
+> by `.kiro/specs/http-server-request-limits/`, which owns that work.
+
 **Last Updated**: July 30, 2026 (closed and CI-verified Task 11's
 mutual-TLS/timeout gaps, Task 12's Property 12 escape hatch,
 forced-generic-bridge test, and `stdexec`/`boost` future-backend

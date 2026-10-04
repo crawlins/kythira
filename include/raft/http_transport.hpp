@@ -9,6 +9,7 @@
 #include <raft/metrics.hpp>
 #include <raft/serializer_registry.hpp>
 #include <raft/http_content_negotiation.hpp>
+#include <raft/http_connection_gate.hpp>
 #include <raft/peer_capability_cache.hpp>
 #include <concepts/future.hpp>
 #include <network_simulator/types.hpp>
@@ -128,14 +129,22 @@ struct cpp_httplib_client_config {
 
 // Server configuration structure
 struct cpp_httplib_server_config {
-    /// @brief Most connections served at once, per listening address
-    ///     (Requirement 14.6). Must be greater than zero.
+    /// @brief Most connections the server holds open at once, across every
+    ///     listener (a "*" bind's 0.0.0.0 and :: share one count;
+    ///     Requirement 14.6). 0 is refused by the constructor with
+    ///     `std::invalid_argument`.
     ///
     /// cpp-httplib holds one worker thread per connection for its whole
-    /// keep-alive life. Workers start as connections arrive, up to this many;
-    /// a connection past the limit waits for a worker rather than being
-    /// refused.
+    /// keep-alive life; workers start as connections arrive. Past the limit,
+    /// `net_bind::gated_task_queue` refuses the accepted socket and httplib
+    /// closes it before reading from it or starting a TLS handshake; the
+    /// client sees EOF or a reset. The slot is released when the connection
+    /// closes. (.kiro/specs/http-server-request-limits/.)
     std::size_t max_concurrent_connections{100};
+    /// Largest request body, in bytes, the server reads (inclusive), via
+    /// `set_payload_max_length`. A larger one is answered
+    /// `413 Payload Too Large` with a `text/plain` body and never reaches a
+    /// handler.
     std::size_t max_request_body_size{10 * 1024 * 1024};  // 10 MB
     std::chrono::seconds request_timeout{30};
     bool enable_ssl{false};
@@ -333,6 +342,9 @@ public:
     /// Mirrors `coap_server::bound_port()` and `grpc_server::bound_port()`.
     auto bound_port() const -> std::uint16_t;
 
+    /// @brief Connections held open right now. For tests and diagnostics.
+    [[nodiscard]] auto live_connections() const -> std::size_t { return _gate->live(); }
+
     /// Re-reads `ssl_cert_path`/`ssl_key_path`/`ca_cert_path` from disk and applies
     /// them to the live SSL context, without closing the listening socket or
     /// dropping any established connection. Validates the new material first
@@ -357,6 +369,10 @@ private:
     /// One httplib server (plain or SSLServer) per address `_bind_address`
     /// resolves to; see net_bind::httplib_listeners. Built by start().
     std::unique_ptr<kythira::net_bind::httplib_listeners<httplib::Server>> _listeners;
+    /// `max_concurrent_connections`, shared by every listener's task queue.
+    /// Built by the constructor; a `shared_ptr` because each connection's
+    /// slot keeps it alive.
+    std::shared_ptr<http_detail::connection_gate> _gate;
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
     std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
