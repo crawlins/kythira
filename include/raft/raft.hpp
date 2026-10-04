@@ -8779,6 +8779,7 @@ template<raft_types Types>
 auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
     -> cluster_join_response_type {
     bool is_leader_now = false;
+    bool defer = false;
     std::optional<peer_info<node_id_type, address_type>> redirect;
 
     {
@@ -8788,6 +8789,35 @@ auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
             redirect = peer_info<node_id_type, address_type>{
                 *_known_leader, address_type{node_id_to_string(*_known_leader)}};
         }
+        // A node this leader is provisioning can start and send its join
+        // before provision_node() returns, i.e. before its placement and the
+        // voter it replaces are recorded (run_quorum_assessment records both
+        // only once the call completes). add_learner() would then refuse it
+        // for capacity, and since that refusal happens after this handler has
+        // already answered "accepted", the joiner would wait forever as a
+        // node nobody replicates to. Under rootless Podman a container starts
+        // fast enough to hit this every time. While any provision is in
+        // flight, answer a join that add_learner() would refuse with "not
+        // accepted" instead: the joiner retries after its bootstrap interval,
+        // by which time the record exists.
+        if (is_leader_now) {
+            const auto id = req.joining_node_id();
+            bool present =
+                _membership.is_node_in_configuration(id, _configuration) ||
+                std::find(_configuration.learners().begin(), _configuration.learners().end(), id) !=
+                    _configuration.learners().end();
+            bool provisioning = std::any_of(_pending_provisions.begin(), _pending_provisions.end(),
+                                            [](const auto& kv) { return kv.second > 0; });
+            defer = !present && provisioning && !group_has_admission_capacity(placement_of(id)) &&
+                    !voter_replaced_by(id);
+        }
+    }
+
+    if (defer) {
+        _logger.info("Deferring ClusterJoin until the in-flight provision is recorded",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"joining_node", node_id_to_string(req.joining_node_id())}});
+        return cluster_join_response_type{false, std::nullopt};
     }
 
     if (is_leader_now) {
