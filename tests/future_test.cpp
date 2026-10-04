@@ -43,7 +43,7 @@ BOOST_AUTO_TEST_CASE(test_try_with_exception, *boost::unit_test::timeout(30)) {
     BOOST_TEST(t.hasException());
 
     // Accessing value should throw
-    BOOST_CHECK_THROW(t.value(), std::exception);
+    BOOST_CHECK_THROW(static_cast<void>(t.value()), std::exception);
 }
 
 // Test Try wrapper with folly::Try

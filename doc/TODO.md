@@ -868,14 +868,17 @@ unverified completion claim.
      **DONE:** the call is now `set_path_encode(false)`. Original entry:
      renamed upstream to `set_path_encode` with identical semantics. One
      line, reported once per translation unit that reaches it, 14 in all.
-     The cheapest 14 warnings in the tree.
+     The cheapest 14 warnings in the tree. **DONE, October 4, 2026**: renamed
+     with the cpp-httplib 0.58 bump (24c0377).
 
   Worth fixing, in tests:
   3. **48 × deprecated `folly::init(int*, char***, bool)`**, one per test main
      across 48 files. Upstream's replacement is the RAII `folly::Init`, so
      this is a mechanical sweep — but it is 48 files and it is the single
      largest class, so it is also the one most likely to be done badly in a
-     hurry.
+     hurry. **DONE, October 4, 2026**: all 57 fixture call sites now hold a
+     `std::unique_ptr<folly::Init>` member, the pattern the rest of the tests
+     already used, keeping each call's `removeFlags` argument.
   4. **66 × `-Wunused-result`**, all in `tests/`, and **63 of them are one
      idiom**: `BOOST_CHECK_THROW(f(...), some_error)` where `f` is
      `[[nodiscard]]`. The macro evaluates the expression expecting it to
@@ -890,6 +893,12 @@ unverified completion claim.
      `bootstrap_client` result used only as setup, and
      `tests/aws_ec2_peer_discovery_localstack_test.cpp:387` discards
      `await_peers`' result inside a `try` that only cares whether it threw.
+     **DONE, October 4, 2026**, apart from the `tcp_rpc_unit_test` `::write`
+     (open-tasks item 22, handled separately): each warning site found by
+     compiling the tests against both the Boost and Folly backends now wraps
+     its expression in `static_cast<void>(...)`. A redefined macro was
+     rejected because `BOOST_CHECK_THROW` also takes statements, which a
+     cast cannot wrap, and it would have needed an include in every file.
   5. **One clang-only `-Wswitch`**, at
      `tests/multi_raft_performance_report.cpp:150`: `tier_letter` switches
      on `deployment_tier` and handles `a_fabric` and `b_loopback`, falling

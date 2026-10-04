@@ -386,7 +386,7 @@ BOOST_AUTO_TEST_CASE(await_peers_names_the_host_that_never_appeared) {
     BOOST_CHECK_THROW(
         [&] {
             try {
-                node1.await_peers(3, std::chrono::milliseconds{1500}, {1, 2, 3});
+                static_cast<void>(node1.await_peers(3, std::chrono::milliseconds{1500}, {1, 2, 3}));
             } catch (const std::runtime_error& ex) {
                 message = ex.what();
                 throw;

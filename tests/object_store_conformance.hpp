@@ -230,11 +230,12 @@ template<typename Harness> struct cases {
 
     static auto empty_bucket_or_prefix_is_rejected() -> void {
         Harness h;
-        BOOST_CHECK_THROW(h.make_engine("", h.prefix()), std::invalid_argument);
-        BOOST_CHECK_THROW(h.make_engine(h.bucket(), ""), std::invalid_argument);
+        BOOST_CHECK_THROW(static_cast<void>(h.make_engine("", h.prefix())), std::invalid_argument);
+        BOOST_CHECK_THROW(static_cast<void>(h.make_engine(h.bucket(), "")), std::invalid_argument);
         // A prefix of nothing but slashes normalises to empty, and is rejected
         // the same way rather than silently writing to the bucket root.
-        BOOST_CHECK_THROW(h.make_engine(h.bucket(), "//"), std::invalid_argument);
+        BOOST_CHECK_THROW(static_cast<void>(h.make_engine(h.bucket(), "//")),
+                          std::invalid_argument);
     }
 
     /// A cold start reads the (empty) listing and writes nothing — except, when
@@ -685,7 +686,8 @@ template<typename Harness> struct cases {
     /// just written — so it is rejected where every other bad option is.
     static auto a_retention_of_zero_is_rejected() -> void {
         Harness h;
-        BOOST_CHECK_THROW(h.make_engine(options_with_retention(0)), std::invalid_argument);
+        BOOST_CHECK_THROW(static_cast<void>(h.make_engine(options_with_retention(0))),
+                          std::invalid_argument);
     }
 
     /// Retention counts generations including the live slot, so at 2 the store
@@ -986,7 +988,7 @@ template<typename Harness> struct cases {
     static auto a_partially_numeric_term_is_corruption_not_a_prefix() -> void {
         Harness h;
         h.seed(h.prefix() + "/term", "12garbage");
-        BOOST_CHECK_THROW(h.make_engine(), std::runtime_error);
+        BOOST_CHECK_THROW(static_cast<void>(h.make_engine()), std::runtime_error);
     }
 
     static auto a_corrupt_voted_for_object_fails_construction_by_name() -> void {
@@ -1035,7 +1037,7 @@ template<typename Harness> struct cases {
     static auto an_unpadded_log_key_fails_construction() -> void {
         Harness h;
         h.seed(h.prefix() + "/log/7", "{\"term\":1,\"index\":7,\"command\":\"\",\"type\":0}");
-        BOOST_CHECK_THROW(h.make_engine(), std::runtime_error);
+        BOOST_CHECK_THROW(static_cast<void>(h.make_engine()), std::runtime_error);
     }
 
     static auto a_corrupt_snapshot_fails_construction_by_name() -> void {
@@ -1055,7 +1057,7 @@ template<typename Harness> struct cases {
     static auto a_non_base64_command_fails_construction() -> void {
         Harness h;
         h.seed(padded(h, 1), "{\"term\":1,\"index\":1,\"command\":\"!!not base64!!\",\"type\":0}");
-        BOOST_CHECK_THROW(h.make_engine(), std::runtime_error);
+        BOOST_CHECK_THROW(static_cast<void>(h.make_engine()), std::runtime_error);
     }
 
     /// Objects that are not part of this format are none of the engine's
@@ -1086,7 +1088,8 @@ template<typename Harness> struct cases {
     /// where every other unusable option is.
     static auto a_size_cap_of_zero_is_rejected() -> void {
         Harness h;
-        BOOST_CHECK_THROW(h.make_engine(options_with_max_bytes(0)), std::invalid_argument);
+        BOOST_CHECK_THROW(static_cast<void>(h.make_engine(options_with_max_bytes(0))),
+                          std::invalid_argument);
     }
 
     /// The deliverable of Requirement 7.3: an oversized snapshot throws naming
