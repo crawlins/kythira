@@ -7,13 +7,22 @@
 #include <raft/tcp_rpc.hpp>
 #include <raft/types.hpp>
 
+#include "tcp_server_hardening_cases.hpp"
+
 #include <arpa/inet.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
+#include <csignal>
+#include <future>
+#include <mutex>
 #include <cstdlib>
 #include <fstream>
 #include <optional>
@@ -634,11 +643,16 @@ BOOST_AUTO_TEST_CASE(test_parse_host_port, *boost::unit_test::timeout(5)) {
 BOOST_AUTO_TEST_CASE(test_cluster_join_round_trip_by_address, *boost::unit_test::timeout(15)) {
     std::uint16_t port = find_free_port();
     kythira::tcp_rpc_server server(port);
+    // The handler runs on a server thread; TSan cannot see the ordering the
+    // reply over the socket gives, so the capture is mutex-guarded.
+    std::mutex seen_mu;
     std::optional<kythira::cluster_join_request<>> seen;
-    server.register_cluster_join_handler([&seen](const kythira::cluster_join_request<>& req) {
-        seen = req;
-        return kythira::cluster_join_response<>{true, std::nullopt};
-    });
+    server.register_cluster_join_handler(
+        [&seen, &seen_mu](const kythira::cluster_join_request<>& req) {
+            std::lock_guard lock(seen_mu);
+            seen = req;
+            return kythira::cluster_join_response<>{true, std::nullopt};
+        });
     server.start();
 
     // No add_peer: a joining node knows its seed only by address.
@@ -650,6 +664,7 @@ BOOST_AUTO_TEST_CASE(test_cluster_join_round_trip_by_address, *boost::unit_test:
                     .get();
 
     BOOST_TEST(resp.is_accepted());
+    std::lock_guard lock(seen_mu);
     BOOST_REQUIRE(seen.has_value());
     BOOST_TEST(seen->node_id == 4u);
     BOOST_TEST(seen->contact_address == "node-4:7000");
@@ -689,11 +704,14 @@ BOOST_AUTO_TEST_CASE(test_cluster_join_rejects_malformed_address, *boost::unit_t
 BOOST_AUTO_TEST_CASE(test_cluster_leave_round_trip, *boost::unit_test::timeout(15)) {
     std::uint16_t port = find_free_port();
     kythira::tcp_rpc_server server(port);
+    std::mutex leaving_mu;  // see test_cluster_join_round_trip_by_address
     std::optional<std::uint64_t> leaving;
-    server.register_cluster_leave_handler([&leaving](const kythira::cluster_leave_request<>& req) {
-        leaving = req.node_id;
-        return kythira::cluster_leave_response<>{true, std::nullopt};
-    });
+    server.register_cluster_leave_handler(
+        [&leaving, &leaving_mu](const kythira::cluster_leave_request<>& req) {
+            std::lock_guard lock(leaving_mu);
+            leaving = req.node_id;
+            return kythira::cluster_leave_response<>{true, std::nullopt};
+        });
     server.start();
 
     kythira::tcp_rpc_client client;
@@ -703,6 +721,7 @@ BOOST_AUTO_TEST_CASE(test_cluster_leave_round_trip, *boost::unit_test::timeout(1
                                                 std::chrono::milliseconds{5000})
                     .get();
     BOOST_TEST(resp.is_accepted());
+    std::lock_guard lock(leaving_mu);
     BOOST_REQUIRE(leaving.has_value());
     BOOST_TEST(*leaving == 3u);
     server.stop();
@@ -812,4 +831,339 @@ BOOST_AUTO_TEST_CASE(test_inflight_cap_per_endpoint, *boost::unit_test::timeout(
         BOOST_TEST(std::string{e.what()}.find("too many RPCs in flight") == std::string::npos);
     }
     ::close(listener);
+}
+
+// ── Server hardening (.kiro/specs/tcp-rpc-server-hardening/) ─────────────────
+
+namespace {
+
+using namespace std::chrono_literals;
+namespace hardening = tcp_server_hardening;
+
+// Restores SIGPIPE's previous disposition on scope exit; the cases below set
+// it to SIG_DFL so that a SIGPIPE would kill the test process.
+struct sigpipe_default {
+    using handler_t = void (*)(int);
+    handler_t previous;
+    sigpipe_default() : previous(std::signal(SIGPIPE, SIG_DFL)) {}
+    ~sigpipe_default() { std::signal(SIGPIPE, previous); }
+    sigpipe_default(const sigpipe_default&) = delete;
+    auto operator=(const sigpipe_default&) -> sigpipe_default& = delete;
+};
+
+// A complete, valid request_vote_request frame, as tcp_rpc_client sends it.
+auto request_vote_frame() -> std::string {
+    kythira::json_rpc_serializer<std::vector<std::byte>> ser;
+    kythira::request_vote_request<> req{};
+    req._term = 3;
+    req._candidate_id = 1;
+    auto payload = kythira::tcp_detail::bytes_to_str(ser.serialize(req));
+    auto len = htonl(static_cast<std::uint32_t>(payload.size()));
+    return std::string(reinterpret_cast<const char*>(&len), 4) + payload;
+}
+
+auto request_vote_server(std::uint16_t port, kythira::tcp_server_limits limits)
+    -> std::unique_ptr<kythira::tcp_rpc_server> {
+    auto server = std::make_unique<kythira::tcp_rpc_server>(port, limits);
+    server->register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+        kythira::request_vote_response<> r{};
+        r._term = req._term;
+        r._vote_granted = true;
+        return r;
+    });
+    server->start();
+    return server;
+}
+
+auto request_vote_succeeds(std::uint16_t port) -> bool {
+    kythira::tcp_rpc_client client;
+    client.add_peer(1, "127.0.0.1", port);
+    kythira::request_vote_request<> req{};
+    req._term = 3;
+    req._candidate_id = 1;
+    try {
+        auto resp = client.send_request_vote(1, req, 5000ms).get();
+        return resp._vote_granted && resp._term == 3u;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(test_write_all_to_closed_peer_raises_no_sigpipe,
+                     *boost::unit_test::timeout(10)) {
+    sigpipe_default guard;
+    int fds[2];
+    BOOST_REQUIRE_EQUAL(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+    ::close(fds[1]);
+    // With write() this raised SIGPIPE and the default action ended the
+    // test process here.
+    BOOST_TEST(!kythira::tcp_detail::frame_send(fds[0], "payload"));
+    ::close(fds[0]);
+}
+
+BOOST_AUTO_TEST_CASE(test_server_reply_to_departed_client_raises_no_sigpipe,
+                     *boost::unit_test::timeout(15)) {
+    sigpipe_default guard;
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    std::atomic<bool> handled{false};
+    server.register_request_vote_handler([&handled](const kythira::request_vote_request<>& req) {
+        // Reply only once the client has gone, so the write hits a socket
+        // the peer has closed (and then reset).
+        std::this_thread::sleep_for(100ms);
+        handled = true;
+        kythira::request_vote_response<> r{};
+        r._term = req._term;
+        return r;
+    });
+    server.start();
+
+    int fd = hardening::dial(port);
+    BOOST_REQUIRE(fd >= 0);
+    auto frame = request_vote_frame();
+    BOOST_REQUIRE(::send(fd, frame.data(), frame.size(), MSG_NOSIGNAL) ==
+                  static_cast<ssize_t>(frame.size()));
+    ::close(fd);
+
+    BOOST_TEST(hardening::wait_until([&] { return handled.load(); }));
+    BOOST_TEST(
+        hardening::wait_until([&] { return server.connection_stats().active_connections == 0; }));
+    // Still alive, and still serving.
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+        kythira::request_vote_response<> r{};
+        r._term = req._term;
+        r._vote_granted = true;
+        return r;
+    });
+    BOOST_TEST(request_vote_succeeds(port));
+    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_client_request_to_departed_server_raises_no_sigpipe,
+                     *boost::unit_test::timeout(15)) {
+    sigpipe_default guard;
+    // A raw listener that accepts and immediately closes every connection.
+    int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    BOOST_REQUIRE(lfd >= 0);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    BOOST_REQUIRE(::bind(lfd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
+    BOOST_REQUIRE(::listen(lfd, 8) == 0);
+    socklen_t len = sizeof(a);
+    ::getsockname(lfd, reinterpret_cast<sockaddr*>(&a), &len);
+    std::thread closer([lfd] {
+        int c = ::accept(lfd, nullptr, nullptr);
+        if (c >= 0) ::close(c);
+    });
+
+    kythira::tcp_rpc_client client;
+    client.add_peer(1, "127.0.0.1", ntohs(a.sin_port));
+    // A large request keeps the client writing after the server has gone.
+    kythira::install_snapshot_request<> big{};
+    big._term = 1;
+    big._data.assign(4 * 1024 * 1024, std::byte{0x5a});
+    BOOST_CHECK_THROW(client.send_install_snapshot(1, big, 5000ms).get(), std::exception);
+    closer.join();
+    ::close(lfd);
+}
+
+BOOST_AUTO_TEST_CASE(test_frame_recv_reads_large_frame_in_pieces, *boost::unit_test::timeout(20)) {
+    SockPair sp;
+    std::string big(8 * 1024 * 1024, '\0');
+    for (std::size_t i = 0; i < big.size(); ++i) {
+        big[i] = static_cast<char>('a' + (i * 7) % 26);
+    }
+    std::thread writer([&] {
+        auto len = htonl(static_cast<std::uint32_t>(big.size()));
+        ::send(sp.w, &len, 4, MSG_NOSIGNAL);
+        std::size_t off = 0;
+        std::size_t step = 1;
+        while (off < big.size()) {
+            auto n = std::min(step, big.size() - off);
+            ::send(sp.w, big.data() + off, n, MSG_NOSIGNAL);
+            off += n;
+            step = step * 3 + 17;  // uneven piece sizes
+        }
+    });
+    auto received = kythira::tcp_detail::frame_recv(sp.r);
+    writer.join();
+    BOOST_REQUIRE(received.has_value());
+    BOOST_TEST(received->size() == big.size());
+    BOOST_TEST((*received == big));
+}
+
+BOOST_AUTO_TEST_CASE(test_frame_recv_announced_but_missing_body, *boost::unit_test::timeout(10)) {
+    SockPair sp;
+    auto len = htonl(64u * 1024u * 1024u);
+    ::send(sp.w, &len, 4, MSG_NOSIGNAL);
+    ::send(sp.w, "0123456789", 10, MSG_NOSIGNAL);
+    ::shutdown(sp.w, SHUT_WR);
+    BOOST_TEST(!kythira::tcp_detail::frame_recv(sp.r).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(test_server_rejects_zero_limits, *boost::unit_test::timeout(5)) {
+    auto with = [](auto mutate) {
+        kythira::tcp_server_limits l;
+        mutate(l);
+        return l;
+    };
+    BOOST_CHECK_THROW(kythira::tcp_rpc_server(0, with([](auto& l) { l.request_timeout = 0ms; })),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(kythira::tcp_rpc_server(0, with([](auto& l) { l.reply_timeout = 0ms; })),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(kythira::tcp_rpc_server(0, with([](auto& l) { l.max_connections = 0; })),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(
+        kythira::tcp_rpc_server(0, with([](auto& l) { l.max_connections_per_source = 0; })),
+        std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(test_server_closes_silent_peer, *boost::unit_test::timeout(20)) {
+    std::uint16_t port = find_free_port();
+    auto limits = hardening::small_limits();
+    auto server = request_vote_server(port, limits);
+    hardening::silent_peer_is_closed(*server, port, limits);
+    BOOST_TEST(request_vote_succeeds(port));
+    server->stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_server_closes_trickling_peer, *boost::unit_test::timeout(20)) {
+    std::uint16_t port = find_free_port();
+    auto limits = hardening::small_limits();
+    auto server = request_vote_server(port, limits);
+    auto header = htonl(1000u);
+    hardening::trickling_peer_is_closed(*server, port, limits,
+                                        std::string(reinterpret_cast<const char*>(&header), 4));
+    server->stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_server_connection_limits, *boost::unit_test::timeout(30)) {
+    std::uint16_t port = find_free_port();
+    auto limits = hardening::small_limits();
+    limits.request_timeout = 2000ms;  // the held connections outlive the checks
+    auto server = request_vote_server(port, limits);
+    hardening::connection_limits_hold(*server, port,
+                                      [port] { return request_vote_succeeds(port); });
+    server->stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_server_keeps_accepting_after_emfile, *boost::unit_test::timeout(30)) {
+    std::uint16_t port = find_free_port();
+    auto server = request_vote_server(port, kythira::tcp_server_limits{});
+
+    rlimit saved{};
+    BOOST_REQUIRE(::getrlimit(RLIMIT_NOFILE, &saved) == 0);
+    std::vector<int> fillers;
+    int client = -1;
+    {
+        // Lower the soft limit a little above what is open now, fill every
+        // remaining descriptor, then free exactly one: the client's socket
+        // takes it, so the server's accept() of that connection hits EMFILE.
+        int highest = 0;
+        if (DIR* d = ::opendir("/proc/self/fd")) {
+            while (dirent* e = ::readdir(d)) {
+                highest = std::max(highest, std::atoi(e->d_name));
+            }
+            ::closedir(d);
+        }
+        rlimit lowered = saved;
+        lowered.rlim_cur = static_cast<rlim_t>(highest + 32);
+        BOOST_REQUIRE(::setrlimit(RLIMIT_NOFILE, &lowered) == 0);
+        struct restore {
+            rlimit r;
+            std::vector<int>& fds;
+            ~restore() {
+                for (int fd : fds) ::close(fd);
+                ::setrlimit(RLIMIT_NOFILE, &r);
+            }
+        } restore_on_exit{saved, fillers};
+
+        for (int fd; (fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC)) >= 0;) {
+            fillers.push_back(fd);
+        }
+        BOOST_REQUIRE(errno == EMFILE);
+        ::close(fillers.back());
+        fillers.pop_back();
+
+        sockaddr_in dst{};
+        dst.sin_family = AF_INET;
+        dst.sin_port = htons(port);
+        dst.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        client = ::socket(AF_INET, SOCK_STREAM, 0);
+        BOOST_REQUIRE(client >= 0);
+        BOOST_REQUIRE(::connect(client, reinterpret_cast<sockaddr*>(&dst), sizeof(dst)) == 0);
+        BOOST_TEST(
+            hardening::wait_until([&] { return server->connection_stats().accept_errors > 0; }));
+
+        // Descriptors come back: the listener, still running, accepts the
+        // waiting connection on its next try.
+        for (int i = 0; i < 4 && !fillers.empty(); ++i) {
+            ::close(fillers.back());
+            fillers.pop_back();
+        }
+        BOOST_TEST(hardening::wait_until(
+            [&] { return server->connection_stats().active_connections == 1; }));
+    }
+    ::close(client);
+    BOOST_TEST(request_vote_succeeds(port));
+    server->stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_server_stop_waits_for_running_handler, *boost::unit_test::timeout(20)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port, hardening::small_limits());
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    std::atomic<bool> handler_done{false};
+    server.register_request_vote_handler([&](const kythira::request_vote_request<>& req) {
+        entered.set_value();
+        released.wait();
+        // Long enough that an un-waited thread would still be here when the
+        // test checks the flag below.
+        std::this_thread::sleep_for(50ms);
+        handler_done = true;
+        kythira::request_vote_response<> r{};
+        r._term = req._term;
+        return r;
+    });
+    server.start();
+
+    int fd = hardening::dial(port);
+    BOOST_REQUIRE(fd >= 0);
+    auto frame = request_vote_frame();
+    BOOST_REQUIRE(::send(fd, frame.data(), frame.size(), MSG_NOSIGNAL) ==
+                  static_cast<ssize_t>(frame.size()));
+    entered.get_future().wait();
+
+    auto stopped = std::async(std::launch::async, [&] { server.stop(); });
+    BOOST_TEST((stopped.wait_for(200ms) == std::future_status::timeout));
+    release.set_value();
+    stopped.get();
+    BOOST_TEST(handler_done.load());
+    BOOST_TEST(server.connection_stats().active_connections == 0u);
+    ::close(fd);
+}
+
+BOOST_AUTO_TEST_CASE(test_server_stop_is_prompt_with_idle_connection,
+                     *boost::unit_test::timeout(20)) {
+    std::uint16_t port = find_free_port();
+    auto limits = hardening::small_limits();
+    limits.request_timeout = 30s;
+    auto server = request_vote_server(port, limits);
+    hardening::stop_is_prompt_with_idle_connection(*server, port);
+}
+
+BOOST_AUTO_TEST_CASE(test_server_restarts_after_stop, *boost::unit_test::timeout(20)) {
+    std::uint16_t port = find_free_port();
+    auto server = request_vote_server(port, hardening::small_limits());
+    BOOST_TEST(request_vote_succeeds(port));
+    server->stop();
+    server->start();
+    BOOST_TEST(request_vote_succeeds(port));
+    hardening::silent_peer_is_closed(*server, port, hardening::small_limits());
+    server->stop();
 }

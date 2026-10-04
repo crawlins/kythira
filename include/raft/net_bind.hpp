@@ -60,6 +60,11 @@ inline auto connect_one(const addrinfo& ai, std::chrono::milliseconds timeout) -
     if (fd < 0) {
         return -1;
     }
+#if defined(SO_NOSIGPIPE) && !defined(MSG_NOSIGNAL)
+    // tcp_detail::write_all() sends with MSG_NOSIGNAL where it exists.
+    int one = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
 
     int flags = ::fcntl(fd, F_GETFL, 0);
     ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);

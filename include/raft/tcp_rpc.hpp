@@ -5,6 +5,7 @@
 
 #include <raft/exceptions.hpp>
 #include <raft/net_bind.hpp>
+#include <raft/tcp_connection_tracker.hpp>
 #include <raft/executor_default.hpp>
 #include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
@@ -48,10 +49,25 @@ namespace kythira {
 
 namespace tcp_detail {
 
+// send() rather than write(): writing to a socket whose peer has closed it
+// raises SIGPIPE, whose default action kills the process, and a client
+// whose RPC timed out closes its end before the server replies. The flag
+// fixes just these writes instead of changing the process's SIGPIPE
+// disposition. Where MSG_NOSIGNAL does not exist, SO_NOSIGPIPE is set on
+// the socket instead (net_bind::connect_one(), run_accept_loop()).
+#ifdef MSG_NOSIGNAL
+inline constexpr int k_send_flags = MSG_NOSIGNAL;
+#else
+inline constexpr int k_send_flags = 0;
+#endif
+
 inline auto write_all(int fd, const void* buf, std::size_t n) -> bool {
     const auto* p = static_cast<const char*>(buf);
     while (n > 0) {
-        ssize_t w = ::write(fd, p, n);
+        ssize_t w = ::send(fd, p, n, k_send_flags);
+        if (w < 0 && errno == EINTR) {
+            continue;
+        }
         if (w <= 0) {
             return false;
         }
@@ -65,6 +81,9 @@ inline auto read_all(int fd, void* buf, std::size_t n) -> bool {
     auto* p = static_cast<char*>(buf);
     while (n > 0) {
         ssize_t r = ::read(fd, p, n);
+        if (r < 0 && errno == EINTR) {
+            continue;
+        }
         if (r <= 0) {
             return false;
         }
@@ -72,6 +91,27 @@ inline auto read_all(int fd, void* buf, std::size_t n) -> bool {
         n -= static_cast<std::size_t>(r);
     }
     return true;
+}
+
+inline constexpr std::uint32_t k_max_frame_bytes = 64u * 1024u * 1024u;
+inline constexpr std::size_t k_frame_read_chunk = 1024u * 1024u;
+
+// Reads a `len`-byte frame body through `read_chunk(dst, n)` (a read_all
+// over an fd or an SSL*), growing the buffer only as bytes arrive: a peer
+// that announces 64 MiB and then stops costs at most one chunk, instead of
+// a 64 MiB zero-filled allocation made as soon as the 4-byte header lands.
+template<typename ReadChunk>
+auto read_frame_body(std::uint32_t len, ReadChunk&& read_chunk) -> std::optional<std::string> {
+    std::string buf;
+    while (buf.size() < len) {
+        auto n = std::min<std::size_t>(len - buf.size(), k_frame_read_chunk);
+        auto at = buf.size();
+        buf.resize(at + n);
+        if (!read_chunk(buf.data() + at, n)) {
+            return std::nullopt;
+        }
+    }
+    return buf;
 }
 
 inline auto frame_send(int fd, std::string_view payload) -> bool {
@@ -85,14 +125,10 @@ inline auto frame_recv(int fd) -> std::optional<std::string> {
         return std::nullopt;
     }
     std::uint32_t len = ntohl(net_len);
-    if (len == 0 || len > 64u * 1024u * 1024u) {
+    if (len == 0 || len > k_max_frame_bytes) {
         return std::nullopt;
     }
-    std::string buf(len, '\0');
-    if (!read_all(fd, buf.data(), len)) {
-        return std::nullopt;
-    }
-    return buf;
+    return read_frame_body(len, [fd](char* dst, std::size_t n) { return read_all(fd, dst, n); });
 }
 
 // The bind and dial helpers live in net_bind.hpp, shared with the other
@@ -500,7 +536,9 @@ private:
 // ── tcp_rpc_server ────────────────────────────────────────────────────────────
 //
 // Satisfies kythira::network_server.
-// Accepts connections in a background thread; dispatches to registered handlers.
+// Accepts connections in a background thread per listener and serves each on
+// its own thread, bounded and deadlined by a tcp_detail::connection_tracker
+// (tcp_server_limits; .kiro/specs/tcp-rpc-server-hardening/).
 
 class tcp_rpc_server {
 public:
@@ -513,14 +551,18 @@ public:
     using cl_fn = std::function<cluster_leave_response<>(const cluster_leave_request<>&)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
-    explicit tcp_rpc_server(std::uint16_t port) : _port(port) {}
+    explicit tcp_rpc_server(std::uint16_t port, tcp_server_limits limits = {})
+        : _port(port), _conns(tcp_detail::connection_tracker::create(limits, "tcp_rpc_server")) {}
 
     // Listens on `bind_address` only instead of every IPv4 interface: an IPv4
     // or IPv6 literal, or a host name whose addresses all belong to this host
     // (see tcp_detail::resolve_bind_addresses). Throws std::invalid_argument
     // otherwise.
-    tcp_rpc_server(std::uint16_t port, const std::string& bind_address)
-        : _port(port), _binds(tcp_detail::resolve_bind_addresses(bind_address, "tcp_rpc_server")) {}
+    tcp_rpc_server(std::uint16_t port, const std::string& bind_address,
+                   tcp_server_limits limits = {})
+        : _port(port),
+          _binds(tcp_detail::resolve_bind_addresses(bind_address, "tcp_rpc_server")),
+          _conns(tcp_detail::connection_tracker::create(limits, "tcp_rpc_server")) {}
 
     ~tcp_rpc_server() { stop(); }
 
@@ -535,6 +577,7 @@ public:
           _listen_fds(std::move(other._listen_fds)),
           _running(other._running.load()),
           _accept_threads(std::move(other._accept_threads)),
+          _conns(std::move(other._conns)),
           _rv(std::move(other._rv)),
           _pv(std::move(other._pv)),
           _tn(std::move(other._tn)),
@@ -568,48 +611,67 @@ public:
             _running = false;
             throw;
         }
+        _conns->start_reaper();
         for (int fd : _listen_fds) {
-            _accept_threads.emplace_back([this, fd] { accept_loop(fd); });
+            _accept_threads.emplace_back([this, fd] {
+                tcp_detail::run_accept_loop(
+                    fd, _running, *_conns, _backoff,
+                    [this](tcp_detail::connection_tracker::ticket t) {
+                        std::thread(
+                            [this](tcp_detail::connection_tracker::ticket t) {
+                                handle(std::move(t));
+                            },
+                            std::move(t))
+                            .detach();
+                    });
+            });
         }
     }
 
+    // Stops accepting, then waits until no connection thread can touch this
+    // server again: connections still reading or writing are shut down at
+    // once, and one inside a handler is waited for.
     void stop() {
         if (!_running.exchange(false)) {
             return;
         }
+        _backoff.wake();
         std::lock_guard lock(_listen_mu);
+        // shutdown() wakes a thread blocked in accept(); the descriptors are
+        // closed only after the threads are joined so none can be reused
+        // under a running accept().
         for (int fd : _listen_fds) {
             ::shutdown(fd, SHUT_RDWR);
-            ::close(fd);
         }
-        _listen_fds.clear();
         for (auto& t : _accept_threads) {
             if (t.joinable()) t.join();
         }
         _accept_threads.clear();
+        for (int fd : _listen_fds) {
+            ::close(fd);
+        }
+        _listen_fds.clear();
+        _conns->shutdown_and_drain();
     }
 
     [[nodiscard]] bool is_running() const noexcept { return _running.load(); }
 
-private:
-    void accept_loop(int listen_fd) {
-        while (_running) {
-            int client = ::accept(listen_fd, nullptr, nullptr);
-            if (client < 0) {
-                break;
-            }
-            std::thread([this, client] {
-                handle(client);
-                ::close(client);
-            }).detach();
-        }
+    [[nodiscard]] auto connection_stats() const -> tcp_server_connection_stats {
+        return _conns->stats();
     }
 
-    void handle(int fd) {
+private:
+    using phase = tcp_detail::connection_tracker::phase;
+
+    // Runs on the connection's own thread; `t` closes the socket and frees
+    // its slot when this returns.
+    void handle(tcp_detail::connection_tracker::ticket t) {
+        const int fd = t.fd();
         auto data = tcp_detail::frame_recv(fd);
         if (!data) {
             return;
         }
+        t.enter(phase::handler);
 
         std::string type = tcp_detail::extract_type_field(*data);
         auto bytes = tcp_detail::str_to_bytes(*data);
@@ -633,6 +695,7 @@ private:
             } else {
                 return;
             }
+            t.enter(phase::reply);
             tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(resp));
         } catch (...) {
         }
@@ -644,6 +707,8 @@ private:
     std::vector<int> _listen_fds;
     std::atomic<bool> _running{false};
     std::vector<std::thread> _accept_threads;
+    tcp_detail::accept_backoff _backoff;
+    std::shared_ptr<tcp_detail::connection_tracker> _conns;
 
     rv_fn _rv;
     pv_fn _pv;

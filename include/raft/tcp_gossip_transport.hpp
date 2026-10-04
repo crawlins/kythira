@@ -152,6 +152,9 @@ template<typename NodeId, typename Address> struct tcp_gossip_config {
     /// net_bind::resolve_bind_addresses()). Every address it names gets its
     /// own listener on `listen_port`.
     std::string listen_address{"0.0.0.0"};
+    /// Connection caps and deadlines for the listener (see
+    /// .kiro/specs/tcp-rpc-server-hardening/).
+    tcp_server_limits listener_limits{};
 };
 
 namespace gossip_detail {
@@ -221,7 +224,9 @@ public:
     using log_index_type = LogIndex;
 
     explicit tcp_gossip_peer2peer_replicator(tcp_gossip_config<NodeId, Address> cfg)
-        : _cfg(std::move(cfg)) {}
+        : _cfg(std::move(cfg)) {
+        validate(_cfg.listener_limits, "tcp_gossip_peer2peer_replicator");
+    }
 
     ~tcp_gossip_peer2peer_replicator() { stop(); }
 
@@ -277,6 +282,13 @@ public:
         }
         stop_gossip_thread();
         stop_listener();
+    }
+
+    // The listener's connection counters since the last start(); all zero
+    // before the first one.
+    [[nodiscard]] auto connection_stats() const -> tcp_server_connection_stats {
+        std::lock_guard lock(_conns_mu);
+        return _conns ? _conns->stats() : tcp_server_connection_stats{};
     }
 
     // Requirement 1.2 — updates the local table only; resolves immediately.
@@ -509,9 +521,25 @@ private:
         const char* who = "tcp_gossip_peer2peer_replicator";
         _listen_fds = net_bind::open_listeners(
             net_bind::resolve_bind_addresses(_cfg.listen_address, who), _cfg.listen_port, who);
+        {
+            std::lock_guard lock(_conns_mu);
+            _conns = tcp_detail::connection_tracker::create(_cfg.listener_limits, who);
+        }
+        _conns->start_reaper();
         _listener_running = true;
         for (int fd : _listen_fds) {
-            _listener_threads.emplace_back([this, fd] { accept_loop(fd); });
+            _listener_threads.emplace_back([this, fd] {
+                tcp_detail::run_accept_loop(
+                    fd, _listener_running, *_conns, _backoff,
+                    [this](tcp_detail::connection_tracker::ticket t) {
+                        std::thread(
+                            [this](tcp_detail::connection_tracker::ticket t) {
+                                handle_incoming_exchange(std::move(t));
+                            },
+                            std::move(t))
+                            .detach();
+                    });
+            });
         }
     }
 
@@ -519,6 +547,7 @@ private:
         if (!_listener_running.exchange(false)) {
             return;
         }
+        _backoff.wake();
         // shutdown() wakes a thread blocked in accept(); the descriptors are
         // closed only after the threads are joined so none can be reused
         // under a running accept().
@@ -535,31 +564,21 @@ private:
             ::close(fd);
         }
         _listen_fds.clear();
-    }
-
-    auto accept_loop(int listen_fd) -> void {
-        while (_listener_running) {
-            int client = ::accept(listen_fd, nullptr, nullptr);
-            if (client < 0) {
-                if (errno == EINTR && _listener_running) {
-                    continue;
-                }
-                break;
-            }
-            std::thread([this, client] {
-                handle_incoming_exchange(client);
-                ::close(client);
-            }).detach();
-        }
+        // No connection thread touches this object once this returns.
+        _conns->shutdown_and_drain();
     }
 
     // Requirement 3.2/5.3/5.4: reuses tcp_detail framing; a malformed request
-    // closes the connection without a response rather than crashing.
-    auto handle_incoming_exchange(int fd) -> void {
+    // closes the connection without a response rather than crashing. Runs on
+    // the connection's own thread; `t` closes the socket when this returns.
+    auto handle_incoming_exchange(tcp_detail::connection_tracker::ticket t) -> void {
+        using phase = tcp_detail::connection_tracker::phase;
+        const int fd = t.fd();
         auto raw = tcp_detail::frame_recv(fd);
         if (!raw.has_value()) {
             return;
         }
+        t.enter(phase::handler);
 
         gossip_exchange_message<NodeId, Address, LogIndex> request;
         try {
@@ -575,6 +594,7 @@ private:
             responder_id = self->value();
         }
         gossip_exchange_message<NodeId, Address, LogIndex> response{responder_id, snapshot_table()};
+        t.enter(phase::reply);
         tcp_detail::frame_send(fd, encode_gossip_message(response));
     }
 
@@ -598,6 +618,9 @@ private:
     std::atomic<bool> _listener_running{false};
     std::vector<int> _listen_fds;  // one per bind address; set before the threads start.
     std::vector<std::thread> _listener_threads;
+    tcp_detail::accept_backoff _backoff;
+    mutable std::mutex _conns_mu;  // guards replacing _conns against connection_stats()
+    std::shared_ptr<tcp_detail::connection_tracker> _conns;
 
     std::atomic<bool> _started{false};
 };
