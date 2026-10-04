@@ -1,12 +1,20 @@
 # Implementation Plan — cantcoap duplicate-request replay
 
-## Status: Not started
+## Status: Complete
 
-**Last Updated**: October 2, 2026
+**Last Updated**: October 4, 2026
 
 This plan implements `.kiro/specs/coap-cantcoap-duplicate-replay/design.md`.
-Six tasks. Task 1 is a prerequisite check: the design builds on
-`coap_exchange_table`, which PR #385 adds and which is not on `main` yet.
+Six tasks. Task 1 was a prerequisite check: the design builds on
+`coap_exchange_table`, which PR #385 added and which is now on `main`.
+
+One departure from the design: rather than a `_current` exchange that
+`finish_reply` attaches to under `_mutex`, `finish_reply` records the bytes it
+sent in a loop-thread member and `handle_datagram` attaches them once
+`serve()` (the old body) returns. `finish_reply` runs both with and without
+`_mutex` held, so attaching from inside it would have needed a recursive lock.
+The observable behaviour is the same: the server loop is single-threaded and
+handlers run inline.
 
 ## Task Dependency Graph
 
@@ -26,14 +34,14 @@ Six tasks. Task 1 is a prerequisite check: the design builds on
 
 ## Tasks
 
-- [ ] 1. Put `coap_exchange_table` under the branch
+- [x] 1. Put `coap_exchange_table` under the branch
   - If PR #385 has merged, branch from `main`. If not, stack on its branch and
     say so in the PR; do not copy the table into this change.
   - Confirm the cantcoap server's `_seen` is a `coap_exchange_table` keyed on
     (peer, Message ID, token) before starting task 4.
   - _Requirements: 4.1_
 
-- [ ] 2. Add optional reply storage to `coap_exchange_table`
+- [x] 2. Add optional reply storage to `coap_exchange_table`
   - `coap_reply_cache_limits`, `classify`, `attach_reply` and `replies()` as
     in the design. The default limits store nothing.
   - Eviction deque with the `replied` stamp guard, so evicting an old entry
@@ -48,12 +56,12 @@ Six tasks. Task 1 is a prerequisite check: the design builds on
     default limits).
   - _Requirements: 3.1, 3.2, 3.3, 3.6, 4.1, 4.2, 4.3, 5.7_
 
-- [ ] 3. Add `coap_server_config::duplicate_reply_cache_bytes`
+- [x] 3. Add `coap_server_config::duplicate_reply_cache_bytes`
   - Default 16 MiB, with the comment from the design naming which backends
     honour it.
   - _Requirements: 3.5, 4.4_
 
-- [ ] 4. Move the cantcoap server's duplicate check to the outer message
+- [x] 4. Move the cantcoap server's duplicate check to the outer message
   - In `handle_datagram`, parse the outer PDU first, ignore ACK/RST, and
     `classify` under `_mutex` before EDHOC routing or OSCORE verification.
   - `replay`: send the cached bytes through DTLS or the socket, outside the
@@ -68,7 +76,7 @@ Six tasks. Task 1 is a prerequisite check: the design builds on
     reused scaffolding, to say replies are replayed.
   - _Requirements: 1.1-1.6, 2.1-2.5, 3.4, 5.2_
 
-- [ ] 5. Tests that lose a reply
+- [x] 5. Tests that lose a reply
   - A test-only lossy UDP relay (drop the Nth datagram in one direction), free
     of CoAP library headers so libnyoci can reuse it.
   - Cases in `tests/coap_cantcoap_integration_test.cpp`, per the design's
@@ -79,9 +87,20 @@ Six tasks. Task 1 is a prerequisite check: the design builds on
     describes a response duplicated on the wire that the test never produces.
   - CI builds only the stub (audit C1). Run the suite locally with
     `CONFIG_COAP_TRANSPORT_CANTCOAP=y` and the `coap-cantcoap` vcpkg feature and record where it ran in this task.
+  - Ran 2026-10-04 in a Linux cloud sandbox without vcpkg: cantcoap @99e9ed5
+    built with the overlay's CMakeLists, lakers FFI built with cargo, boost
+    future backend, `-DCANTCOAP_AVAILABLE -DLAKERS_AVAILABLE`.
+    `coap_cantcoap_integration_test` 34/34, `coap_cantcoap_dtls_test` (with a
+    new lost-reply case over DTLS-PSK for Requirement 2.5),
+    `coap_exchange_table_test` 17/17, three runs each. With the server's reply
+    budget forced to 0, the six lost-reply cases (raw CON, client RPC, OSCORE,
+    Block1, EDHOC, DTLS) all fail with `coap_timeout_error` or an unanswered
+    retransmission, so they do exercise the replay.
+  - `test_duplicate_requests_are_suppressed` was replaced by
+    `test_retransmitted_confirmable_request_is_answered_again`.
   - _Requirements: 5.1-5.6_
 
-- [ ] 6. Record it
+- [x] 6. Record it
   - `.kiro/specs/coap-transport-cantcoap/requirements.md` 4.4 and the tasks
     table: duplicates are now answered, not only discarded; link here.
   - `doc/coap_library_alternatives.md`, if it describes cantcoap's

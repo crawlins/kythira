@@ -16,7 +16,7 @@ predictions survived contact with the code, because several did not.
 | License | MIT | BSD-2-Clause |
 | Scope | Full RFC 7252 client/server stack | PDU codec only (build/parse one message) |
 | Sockets / event loop | Provided | **Written here** (~150 lines) |
-| Retransmission / dedup | Provided | **Written here**, over `pending_message` |
+| Retransmission / dedup | Provided | **Written here**, over `pending_message`; the server replays its stored reply to a retransmitted request |
 | Block-wise transfer | **Block2 only** — no Block1 at all | **Written here**: Block1 *and* Block2 |
 | DTLS | **PSK + PKI + RPK, via its OpenSSL plugin** (`--enable-tls`; RPK needs OpenSSL >= 3.2) | **Written here**: PSK, PKI and RPK (OpenSSL >= 3.2), OpenSSL over our own socket |
 | OSCORE / EDHOC | Not built in — supplied by kythira's own `raft/oscore.hpp` | Not built in — supplied by `raft/oscore.hpp` and `coap_edhoc_bootstrap.hpp` |
@@ -211,7 +211,7 @@ but it was *smaller than the libnyoci adapter*, and the reason is instructive:
 |---|---|---|
 | PDU encode/parse | `CoapPDU` | cantcoap |
 | UDP socket + loop | nothing | new, ~150 lines |
-| Retransmit / dedup | nothing | `pending_message`, `received_message_info` |
+| Retransmit / dedup | nothing | `pending_message`, `coap_exchange_table` (which also keeps each sent reply for replay) |
 | Block-wise | nothing | `block_option` + our own sequencing |
 | OSCORE | nothing | `oscore::security_context` — **inherited free** |
 

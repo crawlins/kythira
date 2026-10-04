@@ -77,7 +77,7 @@ though cantcoap provides none, so consensus messages are delivered.
 1. WHEN a confirmable RPC is sent THEN the Cantcoap_Backend SHALL track it in a `pending_message` and retransmit on timeout using CoAP's exponential backoff (ACK_TIMEOUT × ACK_RANDOM_FACTOR, doubling), reusing the existing `pending_message` type.
 2. WHEN `MAX_RETRANSMIT` is exceeded THEN the backend SHALL reject the correlated future with a descriptive `coap_*` exception.
 3. WHEN a response arrives THEN the backend SHALL correlate it by token to exactly one pending future and resolve it.
-4. WHEN a duplicate message arrives THEN the backend SHALL detect it via `Message_ID` (using `received_message_info`) and discard it.
+4. WHEN a duplicate message arrives THEN the backend SHALL detect it via `Message_ID` (using `received_message_info`) and discard it. *Superseded on the server by `.kiro/specs/coap-cantcoap-duplicate-replay/`:* a duplicate confirmable request is now answered by resending the stored reply, as RFC 7252 Section 4.5 asks, and is detected on the outer message before OSCORE; only a duplicate with no stored reply is discarded.
 5. WHEN a non-confirmable message is sent THEN the backend SHALL transmit without tracking an acknowledgment.
 
 ### Requirement 5 — Block-wise transfer (built here)

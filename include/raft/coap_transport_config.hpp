@@ -172,6 +172,11 @@ struct coap_server_config {
     std::size_t max_concurrent_sessions{100};
     std::chrono::milliseconds session_timeout{30000};
     std::size_t max_request_size{65536};
+    // Bytes of sent replies the cantcoap server keeps so it can answer a
+    // retransmitted request whose reply was lost (RFC 7252 Section 4.5). 0
+    // disables replay. libcoap and libnyoci ignore this: they replay inside the
+    // library. See .kiro/specs/coap-cantcoap-duplicate-replay/ for the sizing.
+    std::size_t duplicate_reply_cache_bytes{16 * 1024 * 1024};
 
     // DTLS configuration
     std::string cert_file;
