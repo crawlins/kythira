@@ -286,14 +286,14 @@ set(CMAKE_MAP_IMPORTED_CONFIG_MINSIZEREL Release "")
 # it coexists alongside (stdexec, boost) is gated the same way, and
 # CONFIG_FOLLY/CONFIG_STDEXEC_BACKEND/CONFIG_BOOST_FUTURE_BACKEND together
 # enforce that at least one backend stays selected (see the Kconfig
-# "comment" beneath them, and the hard configure-time check below). Note
-# that deselecting CONFIG_FOLLY only stops CMake from probing for it --
-# include/raft/future.hpp is still included unconditionally by
-# include/raft/future_default.hpp regardless of KYTHIRA_DEFAULT_FUTURE_
-# BACKEND, so most of the codebase (certificate_authority, both
-# transports, most of the test suite) still requires Folly transitively
-# today even with a non-folly default backend selected; see doc/TODO.md's
-# "Known Follow-ups" for the header-level decoupling this would still need.
+# "comment" beneath them, and the hard configure-time check below).
+# Deselecting CONFIG_FOLLY with another default backend selected builds the
+# Raft core, certificate_authority, most cmd/ binaries and most of tests/
+# without Folly: ci.yml's no-folly job builds and tests exactly that against
+# a vcpkg prefix with Folly deleted from it, and
+# configs/no-folly-test-allowlist.txt names every test the configuration
+# drops and why (examples/, the Folly concept-wrapper tests, the proxygen
+# transport, and a list of over-wide gates tracked in doc/TODO.md).
 kythira_find_optional(FOLLY folly)
 find_package(Boost QUIET COMPONENTS system thread unit_test_framework json context beast)
 kythira_find_optional(HTTP_TRANSPORT httplib)
@@ -678,27 +678,6 @@ else()
 endif()
 kythira_kconfig_require(REDIS_GATEWAY KYTHIRA_BUILD_REDIS_GATEWAY "OpenSSL")
 
-if(NOT folly_FOUND)
-    # include/raft/future.hpp (kythira::Future/Promise/Try, the default
-    # backend every other backend coexists alongside — see
-    # .kiro/specs/stdexec-future-backend/ and
-    # .kiro/specs/boost-future-backend/) includes Folly headers
-    # unconditionally, with no #ifdef of its own. Nearly everything in this
-    # project transitively depends on it: the Raft core, both HTTP/CoAP
-    # transports, certificate_authority/ca_service/ca_cluster_node (all
-    # gated on folly_FOUND accordingly), and most of the test suite. This
-    # is not a partial-implementation warning — it means most targets will
-    # not be defined at all, cleanly skipped via each one's own folly_FOUND
-    # guard, rather than a hard configure failure.
-    message(WARNING
-        "folly not found — most targets will be unavailable (Raft core, "
-        "HTTP/CoAP transports, certificate_authority/ca_service/"
-        "ca_cluster_node, and most of the test suite all require it "
-        "transitively via include/raft/future.hpp). Only Folly-independent "
-        "targets will be configured. See vcpkg.json / DEPENDENCIES.md."
-    )
-endif()
-
 if(NOT stdexec_FOUND)
     message(WARNING "stdexec not found. The stdexec-backed Future/Promise implementation will not be available.")
 endif()
@@ -984,6 +963,27 @@ if(folly_FOUND OR NOT KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "folly")
     set(KYTHIRA_FUTURE_BACKEND_AVAILABLE TRUE)
 else()
     set(KYTHIRA_FUTURE_BACKEND_AVAILABLE FALSE)
+endif()
+
+# Folly missing is only worth a warning when it is the selected default
+# backend: then the Raft core, tests/, certificate_authority and every cmd/
+# binary drop out. With another backend selected (CONFIG_FOLLY=n, or Folly
+# simply not installed) only the Folly-specific targets go, which
+# configs/no-folly-test-allowlist.txt lists test by test.
+if(NOT folly_FOUND)
+    if(KYTHIRA_FUTURE_BACKEND_AVAILABLE)
+        message(STATUS "folly not used — Folly-specific targets (examples/, "
+            "the Folly concept-wrapper tests, the proxygen transport) are "
+            "skipped; see configs/no-folly-test-allowlist.txt")
+    else()
+        message(WARNING
+            "folly not found, and it is the selected default future backend "
+            "— the Raft core, tests/, certificate_authority and every cmd/ "
+            "binary will be unavailable. Install folly, or select another "
+            "backend (CONFIG_DEFAULT_FUTURE_BACKEND_BOOST or _STDEXEC). See "
+            "vcpkg.json / DEPENDENCIES.md."
+        )
+    endif()
 endif()
 
 # Property 5: Optional Dependency Isolation (Task 1.1, Requirements 4.2,

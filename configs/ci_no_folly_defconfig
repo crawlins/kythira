@@ -1,0 +1,44 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# ci_no_folly_defconfig — the feature set ci.yml's no-folly job resolves
+# (.kiro/specs/ci-build-matrix-coverage/, Requirement 2). It is
+# ci_full_defconfig with Folly taken away: the job configures it under
+# -DKYTHIRA_KCONFIG_STRICT=ON against a copy of the edhoc vcpkg tree that
+# scripts/make-folly-free-prefix.sh has stripped of Folly and of every port
+# that depends on it, so a stray `#include <folly/...>` or Folly link in code
+# this configuration builds fails the job instead of a user's build.
+#
+# Differences from ci_full_defconfig, and nothing else:
+#
+#   FOLLY                    — off; the point of the file.
+#   PROXYGEN_TRANSPORT       — off. It `depends on FOLLY`, so Kconfig would
+#                              drop it anyway; stated so the difference is
+#                              visible here rather than inferred.
+#   DEFAULT_FUTURE_BACKEND_BOOST
+#                            — Boost, not stdexec: Boost is a hard
+#                              dependency that is always present, and the
+#                              future-backend-compat job records the stdexec
+#                              leg as materially heavier to build. Which
+#                              backend is the default is not what this job
+#                              tests; the absence of Folly is. stdexec stays
+#                              selected (as in ci_full_defconfig) so its
+#                              targets are still built and tested here.
+#
+# Every other line must match ci_full_defconfig, including the GCP, DNS and
+# Poco symbols that file turns off for the edhoc image (see its header).
+# CONFIG_FOLLY is not set
+# CONFIG_PROXYGEN_TRANSPORT is not set
+CONFIG_DEFAULT_FUTURE_BACKEND_BOOST=y
+CONFIG_EDHOC=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
+CONFIG_BOOST_BEAST_TRANSPORT=y
+CONFIG_REDIS_GATEWAY=y
+CONFIG_PROTOBUF_SERIALIZER=y
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set

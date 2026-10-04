@@ -102,7 +102,7 @@ the Folly-free target set) depend on numbers nobody has yet.
 
 ## Phase 3: Folly-free build (Tasks 6–7)
 
-- [ ] 6. Add `scripts/make-folly-free-prefix.sh` and
+- [x] 6. Add `scripts/make-folly-free-prefix.sh` and
   `configs/ci_no_folly_defconfig`
   - Script per design §3: `depend-info`-derived port set, `cp -al`, delete
     from `info/*.list`, assert no Folly file survives.
@@ -110,7 +110,7 @@ the Folly-free target set) depend on numbers nobody has yet.
   - Run it against Task 1's tree and confirm a strict configure succeeds.
   - _Requirements: 2.1, 2.2_
 
-- [ ] 7. Add the `no-folly` job
+- [x] 7. Add the `no-folly` job
   - Build everything the configuration enables; full ctest with the
     standard label exclusion; `check-test-run.sh --floor`.
   - `folly_FOUND` and `build.ninja` assertions.
@@ -178,6 +178,17 @@ the Folly-free target set) depend on numbers nobody has yet.
   - _Requirements: 8.3_
 
 ## Notes
+
+- **Tasks 6-7 (PR #479).** Measured locally rather than via Task 1: a
+  Folly-free configure plus `clang -M -MG` over every translation unit
+  found 17 registered tests including Folly headers unguarded (3 wrapper
+  property tests, 14 CoAP tests naming `folly::Executor`); all fixed. The
+  Folly-free tree then built and its suite ran with no Folly-related
+  failure. First green CI run (2026-10-05): the pruned prefix and strict
+  configure worked first time, CI named 29 more dropped tests than the
+  local configure (stdexec, gRPC, proxygen), and the suite ran 388/388
+  tests in about 8 minutes; the floor is 380. See design section 3, "As built", for where the
+  implementation departs from the design.
 
 - **Overlap with open PRs.** #389 adds a step to
   `arm64-docker-smoke-test.yml` and #392 changes CoAP client code that the

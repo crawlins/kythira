@@ -184,6 +184,24 @@ job. The diff is also written to the job summary.
 **Tests.** Full `ctest` with `build-and-test`'s label exclusion, then
 `check-test-run.sh --floor`.
 
+**As built (Tasks 6-7).** Three details changed on contact with the real
+tree:
+
+- The script reads `vcpkg_installed/vcpkg/status` (vcpkg's own record of
+  each installed port's and feature's dependencies) instead of running
+  `vcpkg depend-info`, because on a warm `actions/cache` hit the job never
+  bootstraps vcpkg. Its usage is
+  `make-folly-free-prefix.sh <vcpkg-installed-dir> <triplet> <out-dir>`.
+- `folly_FOUND` is a plain variable, never a cache entry, so it cannot be
+  grepped out of `CMakeCache.txt`. The job asserts instead that `folly_DIR`
+  is absent or `-NOTFOUND`, which is what a successful `find_package(folly)`
+  would leave behind.
+- The test-list diff is `scripts/check-disabled-tests.py`, reading
+  `ctest --show-only=json-v1` from both trees. It also rejects allowlist
+  entries without a reason and stale entries (a test that is registered
+  after all, or that the reference tree no longer has), so a fixed gate
+  cannot leave a line behind that hides the next regression.
+
 ### 4. `config-variants` job (Requirements 5 and 6)
 
 One vcpkg install (`edhoc`), then three independent steps, each with its own
