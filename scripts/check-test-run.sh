@@ -62,10 +62,30 @@
 #                     See "Why a floor as well as a derived count" below.
 #   --allow-skip RE   extended regex of test names allowed to report "Skipped".
 #                     Repeatable. Any skip outside the allowlist fails.
-#   --strict-retries  also fail when --repeat absorbed a first-attempt failure.
-#                     Off by default: those runs have a legitimate final
-#                     verdict, and the point here is that they stop being
-#                     invisible, not that they stop being tolerated.
+#   --strict-retries  also fail when --repeat absorbed a first-attempt failure
+#                     of a test that is not on the retry allowlist. Off by
+#                     default; ci.yml passes it when the repository variable
+#                     CTEST_STRICT_RETRIES is "true" (see "Retry enforcement"
+#                     below).
+#   --allow-retry RE  extended regex of test names allowed to pass only on a
+#                     retry under --strict-retries. Repeatable. The match is
+#                     anchored: RE must match the whole test name.
+#   --allow-retry-file FILE
+#                     read --allow-retry patterns from FILE, one per line.
+#                     Blank lines and lines starting with '#' are ignored, as
+#                     is anything after whitespace following the pattern, so
+#                     each entry can carry its own reason on the same line.
+#
+# ── Retry enforcement ────────────────────────────────────────────────────────
+#
+# Check 3 started as report-only, on the theory that a visible warning was
+# enough. It was not: the warning and the job-summary table sat on green jobs
+# where nobody opens them. The allowlist (.github/ctest-retry-allowlist.txt)
+# splits the report into known flakes, each tied to the TODO.md entry tracking
+# it, and new ones, so a new flake stands out instead of hiding among the
+# familiar ones. --strict-retries turns a new one into a failure; adding a test
+# to the allowlist is then a reviewed edit with a reason, like lowering
+# --floor. Retries still run either way, so a known flake costs no CI cycle.
 #
 # Everything after `--` is passed verbatim to `ctest -N` to derive the expected
 # count, and must be the same filter arguments the real run used.
@@ -80,6 +100,7 @@ EXPECTED=""
 FLOOR=""
 STRICT_RETRIES=0
 ALLOW_SKIP=()
+ALLOW_RETRY=()
 CTEST_FILTER_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -90,6 +111,19 @@ while [[ $# -gt 0 ]]; do
         --floor)          FLOOR="$2"; shift 2 ;;
         --allow-skip)     ALLOW_SKIP+=("$2"); shift 2 ;;
         --strict-retries) STRICT_RETRIES=1; shift ;;
+        --allow-retry)    ALLOW_RETRY+=("$2"); shift 2 ;;
+        --allow-retry-file)
+            if [[ ! -f "$2" ]]; then
+                echo "[check-test-run] --allow-retry-file not found: $2" >&2
+                exit 2
+            fi
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                line="${line#"${line%%[![:space:]]*}"}"
+                line="${line%%[[:space:]]*}"
+                [[ -z "$line" || "$line" == \#* ]] && continue
+                ALLOW_RETRY+=("$line")
+            done < "$2"
+            shift 2 ;;
         --)               shift; CTEST_FILTER_ARGS=("$@"); break ;;
         *) echo "[check-test-run] unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -164,9 +198,10 @@ fi
 # ctest result lines look like:
 #     12/404 Test  #12: foo_test ...............   Passed    0.15 sec
 #     13/404 Test  #13: bar_test ...............***Failed    1.23 sec
-# Under --repeat, a retried test emits one line per attempt, so the set of
-# distinct test numbers is what "how many tests ran" means -- counting lines
-# would over-count exactly the runs this script is meant to scrutinise.
+# Under --repeat, a retried test emits another line per attempt, without the
+# "N/M" prefix (see Check 3), so these lines are first attempts. The set of
+# distinct test numbers is still what "how many tests ran" means, in case a
+# ctest version ever prefixes retries too.
 RESULT_LINES="$(grep -E '^ *[0-9]+/[0-9]+ +Test +#[0-9]+: ' "$LOG_FILE" || true)"
 
 if [[ -z "$RESULT_LINES" ]]; then
@@ -223,43 +258,100 @@ if [[ -n "$SKIPPED" ]]; then
     fi
 fi
 
-# ── Check 3: report first-attempt failures --repeat absorbed ─────────────────
-# For each test number, the first result line is its first attempt. If that
-# attempt failed but the run as a whole passed, --repeat until-pass hid it.
-FIRST_ATTEMPT_FAILURES="$(printf '%s\n' "$RESULT_LINES" | awk '
+# ── Check 3: first-attempt failures --repeat absorbed ───────────────────────
+# ctest prints a retry's result line without the "N/M" progress prefix:
+#      4/404 Test  #4: bar_test ...............***Failed    1.23 sec
+#            Test  #4: bar_test ...............   Passed    0.98 sec
+# so RESULT_LINES above holds first attempts only, and the verdict has to come
+# from every result line. For each test number, the first such line is its
+# first attempt and the last is its verdict. A test whose first attempt failed but whose verdict is Passed
+# was rescued by --repeat until-pass, and nothing in the job status says so. A
+# test that failed every attempt is not listed here: ctest already fails the
+# run for it, and calling it a retry would understate it.
+ALL_RESULT_LINES="$(grep -E '^ *([0-9]+/[0-9]+ +)?Test +#[0-9]+: ' "$LOG_FILE" || true)"
+RETRY_RESCUED="$(printf '%s\n' "$ALL_RESULT_LINES" | awk '
     match($0, /Test +#[0-9]+:/) {
         num = substr($0, RSTART, RLENGTH)
-        if (num in seen) next
-        seen[num] = 1
-        if ($0 ~ /\*\*\*(Failed|Timeout|Exception|Not Run)/) print
+        if (!(num in first)) { first[num] = $0; order[++n] = num }
+        last[num] = $0
+    }
+    END {
+        for (i = 1; i <= n; i++) {
+            num = order[i]
+            if (first[num] ~ /\*\*\*(Failed|Timeout|Exception|Not Run)/ &&
+                last[num] ~ / Passed /)
+                print first[num]
+        }
     }')"
 
-if [[ -n "$FIRST_ATTEMPT_FAILURES" ]]; then
-    N_FIRST="$(printf '%s\n' "$FIRST_ATTEMPT_FAILURES" | wc -l)"
-    warn "$N_FIRST test(s) failed on their first attempt"
-    printf '%s\n' "$FIRST_ATTEMPT_FAILURES"
-    echo ""
-    echo "[check-test-run] These are invisible in the job status when"
-    echo "                 --repeat until-pass lets them pass on a later"
-    echo "                 attempt. Each one is either a flake worth fixing or"
-    echo "                 a real failure worth seeing."
+if [[ -n "$RETRY_RESCUED" ]]; then
+    ALLOWED_LINES=()
+    UNALLOWED_LINES=()
+    while IFS= read -r l; do
+        [[ -z "$l" ]] && continue
+        t="$(printf '%s\n' "$l" | sed -E 's/^ *[0-9]+\/[0-9]+ +Test +#[0-9]+: +([^ .]+).*/\1/')"
+        allowed=0
+        for re in ${ALLOW_RETRY[@]+"${ALLOW_RETRY[@]}"}; do
+            if [[ "$t" =~ ^($re)$ ]]; then allowed=1; break; fi
+        done
+        if [[ "$allowed" -eq 1 ]]; then
+            ALLOWED_LINES+=("$l")
+        else
+            UNALLOWED_LINES+=("$l")
+        fi
+    done <<< "$RETRY_RESCUED"
+    N_ALLOWED=${#ALLOWED_LINES[@]}
+    N_UNALLOWED=${#UNALLOWED_LINES[@]}
+    N_FIRST=$((N_ALLOWED + N_UNALLOWED))
+
+    if [[ "$N_UNALLOWED" -gt 0 && "$STRICT_RETRIES" -eq 1 ]]; then
+        fail "$N_UNALLOWED test(s) failed on their first attempt and passed only on retry"
+    elif [[ "$N_UNALLOWED" -gt 0 ]]; then
+        warn "$N_UNALLOWED test(s) failed on their first attempt and passed only on retry"
+    fi
+    if [[ "$N_UNALLOWED" -gt 0 ]]; then
+        printf '%s\n' "${UNALLOWED_LINES[@]}"
+        echo ""
+        echo "[check-test-run] These are invisible in the job status when"
+        echo "                 --repeat until-pass lets them pass on a later"
+        echo "                 attempt. Each one is either a flake worth fixing or"
+        echo "                 a real failure worth seeing. Fix the test, or, if"
+        echo "                 the flake is understood and tracked, add it to"
+        echo "                 .github/ctest-retry-allowlist.txt with the TODO.md"
+        echo "                 entry that tracks it."
+    fi
+    if [[ "$N_ALLOWED" -gt 0 ]]; then
+        note "$N_ALLOWED allowlisted test(s) passed only on retry:"
+        printf '%s\n' "${ALLOWED_LINES[@]}"
+    fi
 
     # Surface in the job summary too, so it survives log rotation and is
     # visible without opening the raw log -- which is how these went unnoticed.
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
         {
-            echo "### First-attempt test failures (${N_FIRST})"
+            echo "### Tests that passed only on retry (${N_FIRST})"
             echo ""
-            echo 'Absorbed by `--repeat until-pass`; not visible in the job status.'
-            echo ""
-            echo '```'
-            printf '%s\n' "$FIRST_ATTEMPT_FAILURES"
-            echo '```'
+            echo 'Rescued by `--repeat until-pass`; the first attempt failed.'
+            if [[ "$N_UNALLOWED" -gt 0 ]]; then
+                echo ""
+                echo "Not allowlisted (${N_UNALLOWED}):"
+                echo ""
+                echo '```'
+                printf '%s\n' "${UNALLOWED_LINES[@]}"
+                echo '```'
+            fi
+            if [[ "$N_ALLOWED" -gt 0 ]]; then
+                echo ""
+                echo "Allowlisted in \`.github/ctest-retry-allowlist.txt\` (${N_ALLOWED}):"
+                echo ""
+                echo '```'
+                printf '%s\n' "${ALLOWED_LINES[@]}"
+                echo '```'
+            fi
         } >> "$GITHUB_STEP_SUMMARY"
     fi
 
-    if [[ "$STRICT_RETRIES" -eq 1 ]]; then
-        fail "--strict-retries is set and $N_FIRST test(s) failed on first attempt"
+    if [[ "$N_UNALLOWED" -gt 0 && "$STRICT_RETRIES" -eq 1 ]]; then
         exit 1
     fi
 else

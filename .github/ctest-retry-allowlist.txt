@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Tests known to fail a first attempt and pass on a `--repeat until-pass:3`
+# retry. Read by scripts/check-test-run.sh --allow-retry-file.
+#
+# Format: one extended regex per line, matched against the whole test name.
+# Anything after whitespace is a comment, and so is a line starting with '#'.
+#
+# Every entry is a bug, not an exemption. Each one points at the doc/TODO.md
+# entry that tracks it; fixing a flake means deleting its line here. With the
+# repository variable CTEST_STRICT_RETRIES=true, a retry-rescued test that is
+# NOT listed fails the "did the work" check step of its CI job.
+#
+# Strict mode is off by default. Seeded from 54 test jobs across six green
+# ci.yml runs on 2026-10-03: 20 of the 54 jobs had at least one retry-rescued
+# test, and 9 of the 12 tests below appeared only once. A tail that long means
+# unseen flakes would still turn most runs red, so turn strict mode on once
+# the first two entries are fixed and a week of runs shows nothing new.
+#
+# Observed counts are first-attempt failures out of 54 jobs. See the TODO.md
+# entry "Retry-rescued flakes on the allowlist".
+
+ca_cluster_node_rpc_tls_test                      10/54, fails at ~87s or ~292s
+ca_cluster_node_rpc_tls_restart_test               4/54, always fails at 40.6s
+coap_dtls_connection_establishment_property_test   2/54, once a 900s timeout
+chaos_state_machine_safety_test                    1/54
+certificate_authority_property_test                1/54
+simulator_property_test                            1/54
+raft_commit_implies_replication_property_test      1/54, see its own TODO entry
+multi_raft_scale_test                              1/54
+ca_test_fixture_unit_test                          1/54
+leader_transfer_test                               1/54
+integration_test                                   1/54
+multi_raft_driver_agreement_test                   1/54
