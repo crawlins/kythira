@@ -398,6 +398,16 @@ public:
     /// @brief Drive the election-timeout state machine; call from an external timer loop.
     auto check_election_timeout() -> void;
 
+    /// @brief Run only the peer-to-peer gossip and catch-up step of
+    /// `check_election_timeout()`, never the election check.
+    ///
+    /// For a node that must keep advertising its progress and pulling missing
+    /// entries from peers while never campaigning. Stretching such a node's
+    /// election timeout instead also stretches its pre-vote leader-stickiness
+    /// window, which is keyed off the same value, so the node would refuse
+    /// every legitimate pre-vote for as long as the timeout.
+    auto check_peer_catch_up() -> void;
+
     /// @brief Drive the heartbeat loop; call from an external timer loop (leaders only).
     auto check_heartbeat_timeout() -> void;
 
@@ -4425,6 +4435,11 @@ auto node<Types>::begin_voter_promotion(node_id_type learner) -> future_type {
     });
 }
 
+template<raft_types Types> auto node<Types>::check_peer_catch_up() -> void {
+    maybe_gossip_progress();
+    maybe_catch_up_from_peer();
+}
+
 template<raft_types Types>
 
 auto node<Types>::check_election_timeout() -> void {
@@ -4436,8 +4451,7 @@ auto node<Types>::check_election_timeout() -> void {
     // which returns early for non-leaders before doing any other per-tick work.
     // Both manage their own locking internally and never hold _mutex across
     // network I/O.
-    maybe_gossip_progress();
-    maybe_catch_up_from_peer();
+    check_peer_catch_up();
 
     std::unique_lock<std::mutex> lock(_mutex);
 

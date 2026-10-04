@@ -190,15 +190,6 @@ kythira::raft_configuration make_fast_config() {
     return cfg;
 }
 
-// Never elects within the test window — used for the "joining" node, which
-// should catch up purely via peer-to-peer fetch, not by winning an election.
-kythira::raft_configuration make_dormant_config() {
-    kythira::raft_configuration cfg = make_fast_config();
-    cfg._election_timeout_min = std::chrono::minutes{10};
-    cfg._election_timeout_max = std::chrono::minutes{10} + std::chrono::milliseconds{1};
-    return cfg;
-}
-
 }  // namespace
 
 /**
@@ -227,8 +218,10 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_peer_not_leader, *boost::unit_t
     sim.add_edge("2", "3", edge);
     sim.add_edge("3", "2", edge);
 
+    // node3 is the joining node, which must catch up purely via peer-to-peer
+    // fetch rather than by winning an election, so it is only ever ticked
+    // through check_peer_catch_up() below and never campaigns.
     auto cfg = make_fast_config();
-    auto cfg3 = make_dormant_config();
 
     auto make_node = [&](std::uint64_t id, auto net, const kythira::raft_configuration& c) {
         return test_node{id,
@@ -246,7 +239,7 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_peer_not_leader, *boost::unit_t
 
     auto node1 = make_node(1, net1, cfg);
     auto node2 = make_node(2, net2, cfg);
-    auto node3 = make_node(3, net3, cfg3);
+    auto node3 = make_node(3, net3, cfg);
 
     node1.set_cluster_configuration({1, 2});
     node2.set_cluster_configuration({1, 2});
@@ -295,7 +288,7 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_peer_not_leader, *boost::unit_t
         [&] {
             node1.check_election_timeout();
             node2.check_election_timeout();
-            node3.check_election_timeout();
+            node3.check_peer_catch_up();
             return node3.debug_state().last_applied >= leader_last_index ||
                    static_cast<std::size_t>(node3.debug_state().log.size()) >=
                        static_cast<std::size_t>(leader_last_index);
@@ -362,13 +355,14 @@ BOOST_AUTO_TEST_CASE(remove_server_revokes_catch_up_eligibility_immediately,
     auto node1 = make_node(1, net1, cfg);
     auto node2 = make_node(2, net2, cfg);
     // node3 is ticked below only to advertise its progress into the shared
-    // table, never to campaign, so it gets the dormant election timeout.
-    // With the fast one, that tick also started an election whenever node1's
-    // heartbeats had not reached node3 within 80-160ms. node3 then won (its
-    // log was as long as anyone's), node1 stepped down, and remove_server(3)
-    // failed with node3 as leader. That needed only a slow round trip: with
-    // 30ms of simulated link latency per hop this test failed 4-6 times in 20.
-    auto node3 = make_node(3, net3, make_dormant_config());
+    // table, never to campaign, so it is ticked through check_peer_catch_up().
+    // Ticking it through check_election_timeout() started an election
+    // whenever node1's heartbeats had not reached node3 within 80-160ms.
+    // node3 then won (its log was as long as anyone's), node1 stepped down,
+    // and remove_server(3) failed with node3 as leader. That needed only a
+    // slow round trip: with 30ms of simulated link latency per hop this test
+    // failed 4-6 times in 20.
+    auto node3 = make_node(3, net3, cfg);
 
     node1.set_cluster_configuration({1, 2, 3});
     node2.set_cluster_configuration({1, 2, 3});
@@ -397,7 +391,7 @@ BOOST_AUTO_TEST_CASE(remove_server_revokes_catch_up_eligibility_immediately,
 
     // node3 advertises progress into the shared table so it is a valid
     // candidate for anyone querying while it's still a member.
-    node3.check_election_timeout();
+    node3.check_peer_catch_up();
     pump_heartbeats(3);
 
     // Sanity: while node3 is a current member, a probe sharing the table sees it.

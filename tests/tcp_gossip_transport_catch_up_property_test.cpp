@@ -137,13 +137,6 @@ kythira::raft_configuration make_fast_config() {
     return cfg;
 }
 
-kythira::raft_configuration make_dormant_config() {
-    kythira::raft_configuration cfg = make_fast_config();
-    cfg._election_timeout_min = std::chrono::minutes{10};
-    cfg._election_timeout_max = std::chrono::minutes{10} + std::chrono::milliseconds{1};
-    return cfg;
-}
-
 auto make_gossip_config(std::uint64_t self_id, std::uint16_t self_port,
                         const std::vector<std::pair<std::uint64_t, std::uint16_t>>& all)
     -> kythira::tcp_gossip_config<std::uint64_t, std::string> {
@@ -190,7 +183,6 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_real_gossip_transport,
     sim.add_edge("3", "2", edge);
 
     auto cfg = make_fast_config();
-    auto cfg3 = make_dormant_config();
 
     auto make_node = [&](std::uint64_t id, auto net, const kythira::raft_configuration& c,
                          std::uint16_t port) {
@@ -210,7 +202,7 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_real_gossip_transport,
 
     auto node1 = make_node(1, net1, cfg, port1);
     auto node2 = make_node(2, net2, cfg, port2);
-    auto node3 = make_node(3, net3, cfg3, port3);
+    auto node3 = make_node(3, net3, cfg, port3);
 
     node1.set_cluster_configuration({1, 2});
     node2.set_cluster_configuration({1, 2});
@@ -254,7 +246,7 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_real_gossip_transport,
 
     // node1 keeps heartbeating while node3 catches up. node2's election timer
     // is ticked here too, and only node1's AppendEntries reset it; without
-    // them node2 campaigns, wins node3's vote (a dormant node3 has never
+    // them node2 campaigns, wins node3's vote (node3 has never
     // heard from a leader, so leader stickiness does not hold it back),
     // and appends a no-op that node3 receives before node1 does -- the
     // 14 != 13 log mismatch below. With an instant simulated network node3
@@ -264,7 +256,8 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_real_gossip_transport,
         [&] {
             node1.check_heartbeat_timeout();
             node2.check_election_timeout();
-            node3.check_election_timeout();
+            // node3 catches up by peer fetch and must never campaign.
+            node3.check_peer_catch_up();
             return static_cast<std::size_t>(node3.debug_state().log.size()) >=
                    static_cast<std::size_t>(leader_last_index);
         },
