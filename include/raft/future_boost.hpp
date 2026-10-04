@@ -423,6 +423,50 @@ private:
     std::thread _thread;
 };
 
+// The tail shared by every flattening overload below (thenValue, thenTry
+// and thenError with a Future-returning callback): call `make_inner` and
+// forward the Future it returns into `bridge`.
+//
+// An exception thrown by `make_inner` itself -- the user's callback
+// throwing before it returns a Future -- goes into `bridge` too. Without
+// that, the throw unwound out of the boost continuation, which swallowed it
+// into the continuation's own future that nobody holds, and the last
+// reference to `bridge` went with it: the caller's Future then completed
+// with boost::broken_promise instead of the callback's exception. The Folly
+// and stdexec backends both deliver the callback's exception here, and so
+// does the plain-value overload of thenValue on this backend.
+//
+// That is how every simulator RPC to an unreachable peer showed up as
+// "The associated promise has been destructed prior to the associated state
+// becoming ready": simulator_network_client throws network_exception from
+// its first thenValue when the send fails, and the boost backend replaced
+// it with a broken promise.
+template<typename U, typename MakeInner>
+auto flatten_into(const std::shared_ptr<Promise<U>>& bridge, MakeInner&& make_inner) -> void {
+    using FutureU = std::invoke_result_t<MakeInner>;
+    std::optional<FutureU> inner;
+    try {
+        inner.emplace(std::forward<MakeInner>(make_inner)());
+    } catch (...) {
+        bridge->setException(std::current_exception());
+        return;
+    }
+    // extract_boost_future() + then(), not inner.thenValue()/thenError():
+    // those would need a U-typed lambda parameter, which is ill-formed C++
+    // when U is void. if constexpr below handles both cases in one place.
+    std::move(*inner).extract_boost_future().then([bridge](
+                                                      boost::future<U> inner_completed) mutable {
+        if (inner_completed.has_exception()) {
+            bridge->setException(detail::to_std_exception_ptr(inner_completed.get_exception_ptr()));
+        } else if constexpr (std::is_void_v<U>) {
+            inner_completed.get();
+            bridge->setValue(kythira::unit{});
+        } else {
+            bridge->setValue(inner_completed.get());
+        }
+    });
+}
+
 }  // namespace detail
 
 // ── Future<T> (Requirement 4) ────────────────────────────────────────────
@@ -530,24 +574,7 @@ public:
                 bridge->setException(std::current_exception());
                 return;
             }
-            FutureU inner = func(std::move(value));
-            // extract_boost_future() + then(), not inner.thenValue()/
-            // thenError(): those two calls would need a U-typed lambda
-            // parameter, which is ill-formed C++ when U is void (a
-            // Future<void>-returning func). if constexpr below handles
-            // both cases in one place instead.
-            std::move(inner).extract_boost_future().then(
-                [bridge](boost::future<U> inner_completed) mutable {
-                    if (inner_completed.has_exception()) {
-                        bridge->setException(
-                            detail::to_std_exception_ptr(inner_completed.get_exception_ptr()));
-                    } else if constexpr (std::is_void_v<U>) {
-                        inner_completed.get();
-                        bridge->setValue(kythira::unit{});
-                    } else {
-                        bridge->setValue(inner_completed.get());
-                    }
-                });
+            detail::flatten_into(bridge, [&] { return func(std::move(value)); });
         });
         return result;
     }
@@ -587,19 +614,7 @@ public:
         Future<U> result = bridge->getFuture();
         result._executor = _executor;  // inherit the sticky via() executor
         then_on([func = std::forward<F>(func), bridge](boost::future<T> completed) mutable {
-            FutureU inner = func(Try<T>(std::move(completed)));
-            std::move(inner).extract_boost_future().then(
-                [bridge](boost::future<U> inner_completed) mutable {
-                    if (inner_completed.has_exception()) {
-                        bridge->setException(
-                            detail::to_std_exception_ptr(inner_completed.get_exception_ptr()));
-                    } else if constexpr (std::is_void_v<U>) {
-                        inner_completed.get();
-                        bridge->setValue(kythira::unit{});
-                    } else {
-                        bridge->setValue(inner_completed.get());
-                    }
-                });
+            detail::flatten_into(bridge, [&] { return func(Try<T>(std::move(completed))); });
         });
         return result;
     }
@@ -648,19 +663,9 @@ public:
                 bridge->setValue(completed.get());
                 return;
             }
-            auto inner = func(detail::to_std_exception_ptr(completed.get_exception_ptr()));
-            std::move(inner).extract_boost_future().then(
-                [bridge](boost::future<T> inner_completed) mutable {
-                    if (inner_completed.has_exception()) {
-                        bridge->setException(
-                            detail::to_std_exception_ptr(inner_completed.get_exception_ptr()));
-                    } else if constexpr (std::is_void_v<T>) {
-                        inner_completed.get();
-                        bridge->setValue(kythira::unit{});
-                    } else {
-                        bridge->setValue(inner_completed.get());
-                    }
-                });
+            detail::flatten_into(bridge, [&] {
+                return func(detail::to_std_exception_ptr(completed.get_exception_ptr()));
+            });
         });
         return result;
     }
@@ -837,19 +842,7 @@ public:
                 bridge->setException(std::current_exception());
                 return;
             }
-            FutureU inner = func();
-            std::move(inner).extract_boost_future().then(
-                [bridge](boost::future<U> inner_completed) mutable {
-                    if (inner_completed.has_exception()) {
-                        bridge->setException(
-                            detail::to_std_exception_ptr(inner_completed.get_exception_ptr()));
-                    } else if constexpr (std::is_void_v<U>) {
-                        inner_completed.get();
-                        bridge->setValue(kythira::unit{});
-                    } else {
-                        bridge->setValue(inner_completed.get());
-                    }
-                });
+            detail::flatten_into(bridge, [&] { return func(); });
         });
         return result;
     }
@@ -879,19 +872,7 @@ public:
         Future<U> result = bridge->getFuture();
         result._executor = _executor;  // inherit the sticky via() executor
         then_on([func = std::forward<F>(func), bridge](boost::future<void> completed) mutable {
-            FutureU inner = func(Try<void>(std::move(completed)));
-            std::move(inner).extract_boost_future().then(
-                [bridge](boost::future<U> inner_completed) mutable {
-                    if (inner_completed.has_exception()) {
-                        bridge->setException(
-                            detail::to_std_exception_ptr(inner_completed.get_exception_ptr()));
-                    } else if constexpr (std::is_void_v<U>) {
-                        inner_completed.get();
-                        bridge->setValue(kythira::unit{});
-                    } else {
-                        bridge->setValue(inner_completed.get());
-                    }
-                });
+            detail::flatten_into(bridge, [&] { return func(Try<void>(std::move(completed))); });
         });
         return result;
     }

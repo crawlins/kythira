@@ -549,6 +549,20 @@ unverified completion claim.
     `append_entries` is its own finding. Related: the `_stop_flag` pattern
     narrows the async-callback use-after-free window without closing it.
 
+    **RESOLVED October 4, 2026: the backend was mislabelling, not
+    manufacturing, failures.** The boost backend's Future-returning
+    (flattening) `thenValue`/`thenTry`/`thenError` let an exception thrown
+    by the callback unwind out of the boost continuation, dropping the
+    bridge promise, so the caller got `broken_promise` instead of the
+    callback's exception. `simulator_network_client` throws
+    `network_exception("Failed to send ... RPC")` from exactly such a
+    callback when the simulator has no route to the target. After the fix
+    (`detail::flatten_into` in `future_boost.hpp`) the same run logs 0
+    `broken_promise` and ~360 `Failed to send AppendEntries/RequestVote/
+    RequestPreVote RPC` -- the survivors retrying the crashed node1, which
+    the test removes from the topology. Those retries are expected; the
+    Folly backend already reported them under their real message.
+
   - **Beware log-derived statistics from this test.** Its threads write to
     stderr unsynchronised, so lines splice: the raw logs appear to contain
     `Retry attempt 13` and `Retry attempt 2026`. Both are corruption — the
