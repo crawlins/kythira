@@ -114,6 +114,12 @@ BOOST_FIXTURE_TEST_CASE(no_log_divergence_under_combined_faults, ChaosFixture,
     n1.unpartition();
     n3.unpartition();
     n2.restart(/*wait=*/true, 20s);
+    // n2's own DROP rules for ip3 must go too. The entrypoint only creates
+    // the CHAOS chain if it is missing, so wherever the runtime keeps the
+    // container's network namespace across kill + start (as rootless
+    // Podman can), the phase-1 rules survive the restart and n2 stays cut
+    // off from n3 for the rest of the test.
+    n2.unpartition();
     log_all_nodes("after-phase-4-heal-restart");
 
     // Phase 5: wait for the full cluster to stabilise.
@@ -122,6 +128,31 @@ BOOST_FIXTURE_TEST_CASE(no_log_divergence_under_combined_faults, ChaosFixture,
     log_all_nodes("phase-5-leader-found");
     std::this_thread::sleep_for(k_election_max);
     log_all_nodes("after-phase-5-settle");
+
+    // Every node must catch up to the phase-2 commit index. Raft bounds
+    // this by elections and retries, not by one election timeout: a single
+    // k_election_max sleep failed under Podman when n2 won a term-2
+    // election inside that window and n3 had not yet been sent the
+    // missing entries. Poll with a deadline, as az_partition_test does.
+    auto catchup_deadline = std::chrono::steady_clock::now() + 10s;
+    int catchup_attempt = 0;
+    while (std::chrono::steady_clock::now() < catchup_deadline) {
+        bool all_caught_up = true;
+        for (auto* n : cluster.all_nodes()) {
+            try {
+                if (n->status()["commit_index"].as_int64() < committed_idx) {
+                    all_caught_up = false;
+                }
+            } catch (...) {
+                all_caught_up = false;
+            }
+        }
+        if (all_caught_up) {
+            break;
+        }
+        log_all_nodes("catchup attempt " + std::to_string(catchup_attempt++));
+        std::this_thread::sleep_for(300ms);
+    }
 
     cluster.assert_no_split_brain();
 
