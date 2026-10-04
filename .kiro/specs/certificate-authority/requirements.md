@@ -830,7 +830,11 @@ forgets the CA key/cert and every certificate it ever issued).
     and submit the resulting `bootstrap_ca` command exactly once. Nodes
     started without this flag SHALL wait to receive the root material via
     normal log replication or snapshot installation, and SHALL refuse
-    client-facing requests until it arrives.
+    client-facing requests until it arrives. They SHALL NOT start an
+    election while their Raft log is empty, so the flagged node leads the
+    cluster's first term whatever order the nodes start in; otherwise a
+    non-flagged first leader would leave the cluster without root material
+    for good.
 11. The default `ca_cluster_node` cluster size SHALL be 3 nodes — the smallest
     odd cluster size that tolerates one node failure while keeping quorum
     overhead minimal. Documentation, example configuration, and the test

@@ -667,6 +667,15 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
 
     raft_node_t raft_node(std::move(ncfg));
     raft_node.set_cluster_configuration(cfg.all_node_ids());
+    // Only the --bootstrap-ca node can create the CA root, and only while it
+    // leads (maybe_bootstrap below). If another member won the first
+    // election, it would lead a cluster with no root that nothing ever
+    // creates: no node can sign, and the bootstrap node never takes over a
+    // healthy leader. Starting it a few seconds earlier did not prevent
+    // that: its lone pre-vote fails, its timer restarts at a random point,
+    // and a later peer's timer can still fire first. So at genesis, when
+    // every log is empty, the other members only vote.
+    if (!cfg.bootstrap_ca) raft_node.set_campaign_requires_log_entries(true);
 
     std::cerr << "[info] ca_cluster_node starting: id=" << cfg.node_id << " rpc=" << cfg.rpc_port
               << " http=" << cfg.http_port << " peers=" << cfg.peers.size()
