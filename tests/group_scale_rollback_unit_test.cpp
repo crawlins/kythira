@@ -15,6 +15,8 @@
 #include <raft/group_scale_rollback.hpp>
 
 #include <chrono>
+#include <cstdint>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -24,6 +26,7 @@ namespace {
 
 using kythira::group_rollback::audit_after_shrink;
 using kythira::group_rollback::describe;
+using kythira::group_rollback::execute_rollback;
 using kythira::group_rollback::listed_member;
 using kythira::group_rollback::member_state;
 using kythira::group_rollback::plan_scale_up_rollback;
@@ -229,4 +232,86 @@ BOOST_AUTO_TEST_CASE(describe_reports_a_failed_restore_and_an_unavailable_audit)
     BOOST_TEST(text.find("restoring the desired size failed: Throttling; desired size left at 4") !=
                std::string::npos);
     BOOST_TEST(text.find("is unknown") != std::string::npos);
+}
+
+// ── execute_rollback: the sequence every manager's timeout path runs ─────────
+
+BOOST_AUTO_TEST_CASE(execute_removes_fresh_instances_and_never_restores) {
+    using namespace std::chrono_literals;
+    std::vector<std::string> removed;
+    bool restored = false;
+    const auto outcome = execute_rollback(
+        voters, {live("i-1"), live("i-2"), live("i-3"), pending("i-4")}, 3,
+        [&](const std::string& id) {
+            removed.push_back(id);
+            return std::string{};
+        },
+        [&](std::int64_t) { restored = true; }, []() -> std::vector<listed_member> { return {}; },
+        0ms, 0ms);
+    BOOST_TEST(removed == std::vector<std::string>{"i-4"});
+    BOOST_TEST(outcome.removed == std::vector<std::string>{"i-4"});
+    BOOST_TEST(!restored);
+    BOOST_TEST(!outcome.audit.has_value());
+    BOOST_TEST(describe(outcome, 4) == "rollback: removed i-4 (fresh, Pending)");
+}
+
+BOOST_AUTO_TEST_CASE(execute_records_a_removal_error_or_throw_and_keeps_going) {
+    using namespace std::chrono_literals;
+    const auto outcome = execute_rollback(
+        voters, {live("i-1"), pending("i-4"), pending("i-5")}, 3,
+        [](const std::string& id) -> std::string {
+            if (id == "i-4") {
+                return "ScalingActivityInProgress";
+            }
+            throw std::runtime_error("socket closed");
+        },
+        [](std::int64_t) {}, []() -> std::vector<listed_member> { return {}; }, 0ms, 0ms);
+    BOOST_TEST(outcome.removed.empty());
+    BOOST_REQUIRE(outcome.removal_failures.size() == 2U);
+    BOOST_TEST(outcome.removal_failures[0].second == "ScalingActivityInProgress");
+    BOOST_TEST(outcome.removal_failures[1].second == "socket closed");
+    BOOST_TEST(!outcome.plan.restore_desired_size);
+}
+
+BOOST_AUTO_TEST_CASE(execute_restores_then_audits_when_nothing_is_fresh) {
+    using namespace std::chrono_literals;
+    std::int64_t written = -1;
+    const auto outcome = execute_rollback(
+        voters, {live("i-1", "7"), live("i-2"), live("i-3")}, 3,
+        [](const std::string&) -> std::string {
+            BOOST_FAIL("nothing is fresh, so nothing may be removed");
+            return {};
+        },
+        [&](std::int64_t size) { written = size; },
+        []() -> std::vector<listed_member> { return {live("i-2"), live("i-3")}; }, 1s, 0ms);
+    BOOST_TEST(written == 3);
+    BOOST_TEST(outcome.restored_size.value_or(-1) == 3);
+    BOOST_REQUIRE(outcome.audit.has_value());
+    BOOST_REQUIRE(outcome.audit->lost_members.size() == 1U);
+    BOOST_TEST(outcome.audit->lost_members[0].node == "7");
+}
+
+BOOST_AUTO_TEST_CASE(execute_reports_a_failed_restore_without_auditing) {
+    using namespace std::chrono_literals;
+    int listings = 0;
+    const auto outcome = execute_rollback(
+        voters, {}, 3, [](const std::string&) { return std::string{}; },
+        [](std::int64_t) { throw std::runtime_error("Throttling"); },
+        [&]() -> std::vector<listed_member> {
+            ++listings;
+            return {};
+        },
+        1s, 0ms);
+    BOOST_TEST(outcome.restore_error == "Throttling");
+    BOOST_TEST(listings == 0);
+    BOOST_TEST(!outcome.audit_unavailable);
+}
+
+BOOST_AUTO_TEST_CASE(execute_marks_the_audit_unavailable_when_every_listing_fails) {
+    using namespace std::chrono_literals;
+    const auto outcome = execute_rollback(
+        voters, {}, 3, [](const std::string&) { return std::string{}; }, [](std::int64_t) {},
+        []() -> std::vector<listed_member> { throw std::runtime_error("down"); }, 5ms, 1ms);
+    BOOST_TEST(outcome.restored_size.value_or(-1) == 3);
+    BOOST_TEST(outcome.audit_unavailable);
 }

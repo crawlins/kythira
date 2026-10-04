@@ -1068,44 +1068,21 @@ private:
                                      const std::vector<oci_detail::instance_view>& listing,
                                      std::int64_t orig_size) const noexcept
         -> group_rollback::rollback_outcome {
-        group_rollback::rollback_outcome outcome;
         try {
-            outcome.final_listing = rollback_listing(listing);
-            outcome.plan =
-                group_rollback::plan_scale_up_rollback(pre_growth, outcome.final_listing);
-            for (const auto& id : outcome.plan.remove) {
+            return group_rollback::execute_rollback(
+                pre_growth, rollback_listing(listing), orig_size,
                 // `try_detach` waits out SCALING first: OCI refuses a detach
                 // with 409 IncorrectState until the pool settles (2.4).
-                if (auto error = try_detach(id); error.empty()) {
-                    outcome.removed.push_back(id);
-                } else {
-                    outcome.removal_failures.emplace_back(id, std::move(error));
-                }
-            }
-            if (!outcome.plan.restore_desired_size) {
-                return outcome;
-            }
-            try {
-                set_pool_size(orig_size);
-                outcome.restored_size = orig_size;
-            } catch (const std::exception& ex) {
-                outcome.restore_error = ex.what();
-                return outcome;
-            }
-            const auto after = group_rollback::settle_listing(
+                [this](const std::string& id) { return try_detach(id); },
+                [this](std::int64_t size) { set_pool_size(size); },
                 [this] { return rollback_listing(describe_pool_instances()); },
                 group_rollback::settle_window(_cfg.provision_timeout, _cfg.poll_interval),
                 _cfg.poll_interval);
-            if (after.has_value()) {
-                outcome.audit =
-                    group_rollback::audit_after_shrink(pre_growth, outcome.final_listing, *after);
-            } else {
-                outcome.audit_unavailable = true;
-            }
         } catch (const std::exception& ex) {
+            group_rollback::rollback_outcome outcome;
             outcome.restore_error = std::string("rollback aborted: ") + ex.what();
+            return outcome;
         }
-        return outcome;
     }
 
     /// Wait for the pool to be `RUNNING` before acting on it.
