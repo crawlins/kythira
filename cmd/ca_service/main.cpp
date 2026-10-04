@@ -19,6 +19,7 @@
 //   ca_service --serve <bind-address>:<port> [--provider local|aws-acm-pca|azure-key-vault]
 //              [--acm-pca-arn <arn>] [--aws-region <region>] [--aws-endpoint-override <url>]
 //              [--key-vault-url <url>] [--key-vault-key-name <name>] [--ca-cert-file <path>]
+//              [--key-vault-signing-algorithm rs256|rs384|rs512|ps256|es256|es384]
 //              [--tls-cert <path> --tls-key <path>] [--allow-plaintext-http]
 //              [--allow-unchecked-renew] [--auth-token <token>]
 //
@@ -90,6 +91,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -128,6 +130,7 @@ struct serve_options {
     std::string gcp_endpoint_override;
     std::string key_vault_url;
     std::string key_vault_key_name;
+    std::string key_vault_signing_algorithm{"rs256"};
     std::string ca_cert_file;
     std::string auth_token;
     std::string tls_cert_path;
@@ -151,6 +154,8 @@ struct serve_options {
         << "                  [--gcp-project <id>] [--gcp-location <region>] [--gcp-ca-pool <id>]\n"
         << "                  [--gcp-endpoint-override <url>]\n"
         << "                  [--key-vault-url <url>] [--key-vault-key-name <name>]\n"
+        << "                  [--key-vault-signing-algorithm "
+           "rs256|rs384|rs512|ps256|es256|es384]\n"
         << "                  [--ca-cert-file <path>]\n"
         << "                  [--tls-cert <path> --tls-key <path>] [--print-root-fingerprint]\n"
         << "                  [--allow-plaintext-http] [--allow-unchecked-renew]\n"
@@ -376,6 +381,8 @@ serve_options parse_serve_args(int argc, char** argv, int start) {
             opts.key_vault_url = next();
         } else if (arg == "--key-vault-key-name") {
             opts.key_vault_key_name = next();
+        } else if (arg == "--key-vault-signing-algorithm") {
+            opts.key_vault_signing_algorithm = next();
         } else if (arg == "--ca-cert-file") {
             opts.ca_cert_file = next();
         } else if (arg == "--auth-token") {
@@ -566,6 +573,22 @@ int run_serve(const serve_options& opts) {
         cfg.vault_url = opts.key_vault_url;
         cfg.key_name = opts.key_vault_key_name;
         cfg.ca_certificate_pem = ca_cert_buf.str();
+        using raft::testing::azure_key_vault_signing_algorithm;
+        const std::map<std::string, azure_key_vault_signing_algorithm> algorithms{
+            {"rs256", azure_key_vault_signing_algorithm::rs256},
+            {"rs384", azure_key_vault_signing_algorithm::rs384},
+            {"rs512", azure_key_vault_signing_algorithm::rs512},
+            {"ps256", azure_key_vault_signing_algorithm::ps256},
+            {"es256", azure_key_vault_signing_algorithm::es256},
+            {"es384", azure_key_vault_signing_algorithm::es384},
+        };
+        auto algorithm = algorithms.find(opts.key_vault_signing_algorithm);
+        if (algorithm == algorithms.end()) {
+            std::cerr << "ca_service: --key-vault-signing-algorithm must be one of rs256, rs384, "
+                         "rs512, ps256, es256, es384\n";
+            return 1;
+        }
+        cfg.signing_algorithm = algorithm->second;
         azure_kv_provider =
             std::make_unique<raft::testing::azure_key_vault_ca_provider>(std::move(cfg));
         provider = std::make_unique<any_certificate_provider>(*azure_kv_provider);

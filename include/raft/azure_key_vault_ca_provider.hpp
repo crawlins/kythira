@@ -32,22 +32,13 @@
 
 namespace raft::testing {
 
-/// Signing algorithm requested from Key Vault's `Sign` operation. The digest
+/// Signing algorithm requested from Key Vault's `Sign` operation, and written
+/// into the issued certificate's signature AlgorithmIdentifier. The digest
 /// hash algorithm is implied: SHA-256 for rs256/ps256/es256, SHA-384 for
-/// rs384/es384, SHA-512 for rs512.
-///
-/// Local assembly of the final DER certificate (parsing the CSR, building the
-/// TBSCertificate, and splicing in the externally-computed signature without
-/// ever holding the CA private key) is fully implemented for the RSA
-/// PKCS#1v1.5 family (rs256/rs384/rs512) via a custom `RSA_METHOD` whose
-/// `sign` callback delegates to Key Vault. `ps256` (RSA-PSS) and `es256`/
-/// `es384` (ECDSA) are accepted here and forwarded to Key Vault's `Sign` call
-/// correctly, but the local certificate-assembly path for those three algorithm
-/// families is not yet implemented (`sign_csr` throws `std::logic_error` for
-/// them) — a scoped, documented follow-up, not a silent gap. See
-/// design.md's "Sharing the X.509-building code path" section for why rs256
-/// was prioritized (it is `azure_key_vault_ca_provider_config::signing_algorithm`'s
-/// default).
+/// rs384/es384, SHA-512 for rs512. The rs* and ps256 algorithms need an RSA
+/// CA key; es256 needs a P-256 key and es384 a P-384 key (Key Vault ties each
+/// ES algorithm to one curve), and `sign_csr` refuses a mismatch. ps256 uses
+/// MGF1-SHA-256 and a 32-byte salt, as Key Vault does (RFC 7518 section 3.5).
 enum class azure_key_vault_signing_algorithm : std::uint8_t {
     rs256,
     rs384,

@@ -12,26 +12,27 @@
 /// ## How the externally-signed certificate is assembled
 ///
 /// `certificate_authority_impl.hpp` already implements CSR parsing and
-/// TBSCertificate assembly (`detail::build_leaf_cert`) — this file reuses those
-/// free functions directly rather than duplicating their body, since
-/// `certificate_authority_impl.hpp`'s own doc comment explicitly anticipates
-/// being included by "other translation units inside the certificate_authority
-/// library target that need direct access to X509/EVP_PKEY internals", which is
-/// exactly this file's situation (design.md's "duplicate the minimal subset"
-/// choice is honored in spirit — no new production class depends on this one
-/// — while avoiding a pointless copy-paste of a few hundred lines).
+/// TBSCertificate assembly (`detail::build_unsigned_leaf_cert`); this file
+/// reuses it directly rather than duplicating it. What it cannot provide is a
+/// signature from a key that never leaves Key Vault, so `sign_csr` signs the
+/// TBSCertificate itself, the same way `X509_sign()` does internally:
 ///
-/// The one piece `certificate_authority_impl.hpp` cannot provide is signing
-/// with a key that never leaves Key Vault. `X509_sign()` normally computes the
-/// TBSCertificate DER, hashes it, and calls straight into an `EVP_PKEY`'s
-/// private-key operation. To redirect just that last step to Key Vault's
-/// `Sign` RPC while keeping OpenSSL's own (correct) DER/AlgorithmIdentifier
-/// assembly, this file builds an `EVP_PKEY` wrapping a legacy `RSA*` object
-/// whose `RSA_METHOD.rsa_sign` callback is overridden to call Key Vault instead
-/// of doing local RSA math — the standard technique real HSM/KMS OpenSSL
-/// integrations (PKCS#11 engines, cloud KMS engines) use. `RSA_METHOD`/
-/// `RSA_set_method`/`EVP_PKEY_assign_RSA` are marked `OSSL_DEPRECATEDIN_3_0` in
-/// OpenSSL 3.x but fully functional — kept specifically for this use case.
+/// 1. write the signature AlgorithmIdentifier for `config.signing_algorithm`
+///    into both the TBSCertificate and the outer Certificate;
+/// 2. DER-encode the TBSCertificate and hash it with the algorithm's digest;
+/// 3. ask Key Vault's `Sign` operation to sign that digest;
+/// 4. convert the result to X.509's encoding (Key Vault returns ECDSA
+///    signatures as fixed-width `r || s`, X.509 wants a DER `ECDSA-Sig-Value`;
+///    RSA signatures are used as returned) and store it as the signature;
+/// 5. verify the finished certificate against `ca_certificate_pem`'s public
+///    key, so a vault key that doesn't belong to the configured CA certificate
+///    is an error instead of a certificate nobody can validate.
+///
+/// Doing the signing step by hand, instead of routing `X509_sign()` through a
+/// custom `RSA_METHOD` as this file used to, is what makes RSA-PSS and ECDSA
+/// work: OpenSSL computes PSS padding locally and only hands an RSA method the
+/// raw private-key operation, which Key Vault does not offer, and every digest
+/// but SHA-256 was unreachable through `build_leaf_cert`.
 
 #include <raft/azure_key_vault_ca_provider.hpp>
 #include <raft/certificate_authority_impl.hpp>
@@ -41,30 +42,21 @@
 
 #include <azure/keyvault/keys/cryptography/cryptography_client.hpp>
 
+#include <openssl/asn1.h>
 #include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
-#include <openssl/rsa.h>
+#include <openssl/objects.h>
 #include <openssl/x509.h>
 
-#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <exception>
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-// The RSA_METHOD-based external-signing technique below (RSA_new/RSA_set0_key/
-// RSA_set_method/RSA_meth_new/RSA_meth_set_sign/RSA_set_ex_data/RSA_get_ex_data/
-// RSA_free/EVP_PKEY_get1_RSA) is built entirely on APIs OpenSSL 3.x marks
-// OSSL_DEPRECATEDIN_3_0 — kept specifically for exactly this external-signer
-// use case (see this file's header comment) — not accidental legacy-API
-// usage. Suppressed locally rather than project-wide.
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
 
 namespace raft::testing {
 
@@ -74,103 +66,6 @@ using KeyVaultCryptographyClient =
     Azure::Security::KeyVault::Keys::Cryptography::CryptographyClient;
 using KeyVaultSignatureAlgorithm =
     Azure::Security::KeyVault::Keys::Cryptography::SignatureAlgorithm;
-
-/// State threaded through the custom `RSA_METHOD`'s `sign` callback via
-/// `RSA_set_ex_data`/`RSA_get_ex_data`. Lives on the stack of `sign_csr()` for
-/// the duration of one `X509_sign()` call; never shared across calls.
-struct external_sign_context {
-    KeyVaultCryptographyClient* client{nullptr};
-    KeyVaultSignatureAlgorithm algorithm;
-    std::exception_ptr error;
-};
-
-[[nodiscard]] inline auto external_rsa_ex_index() -> int {
-    static int index = RSA_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
-    return index;
-}
-
-extern "C" inline int external_rsa_sign_callback(int /*digest_nid*/, const unsigned char* digest,
-                                                 unsigned int digest_length, unsigned char* sigret,
-                                                 unsigned int* siglen, const RSA* rsa) {
-    auto* ctx = static_cast<external_sign_context*>(RSA_get_ex_data(rsa, external_rsa_ex_index()));
-    if (ctx == nullptr || ctx->client == nullptr) {
-        return 0;
-    }
-    try {
-        std::vector<std::uint8_t> digest_bytes(digest, digest + digest_length);
-        auto response = ctx->client->Sign(ctx->algorithm, digest_bytes);
-        const auto& signature = response.Value.Signature;
-        std::copy(signature.begin(), signature.end(), sigret);
-        *siglen = static_cast<unsigned int>(signature.size());
-        return 1;
-    } catch (...) {
-        ctx->error = std::current_exception();
-        return 0;
-    }
-}
-
-/// Builds (once per process) an `RSA_METHOD` whose only overridden operation
-/// is `sign` — every other operation falls back to whatever the default
-/// method would have done, but is never reached because this provider only
-/// ever uses this key for `X509_sign()`.
-[[nodiscard]] inline auto external_rsa_method() -> RSA_METHOD* {
-    static RSA_METHOD* method = [] {
-        RSA_METHOD* m = RSA_meth_new("kythira-azure-keyvault-external-signer", 0);
-        if (m == nullptr) {
-            detail::throw_openssl_error("RSA_meth_new failed");
-        }
-        RSA_meth_set_sign(m, external_rsa_sign_callback);
-        return m;
-    }();
-    return method;
-}
-
-/// Wraps `pubkey`'s modulus/exponent (copied — `RSA_set0_key` takes ownership
-/// of its `BIGNUM*` arguments) in a fresh `RSA*` whose private-key operation
-/// is redirected to `ctx` via the custom method above, then wraps that in an
-/// `EVP_PKEY` suitable for `X509_sign()`. The real private key never appears
-/// here — only the CA certificate's already-public modulus/exponent, needed
-/// so `RSA_size()` reports the correct signature buffer length.
-[[nodiscard]] inline auto make_external_signing_key(const RSA* pubkey, external_sign_context* ctx)
-    -> detail::evp_pkey_ptr {
-    const BIGNUM *n = nullptr, *e = nullptr;
-    RSA_get0_key(pubkey, &n, &e, nullptr);
-    if (n == nullptr || e == nullptr) {
-        throw std::invalid_argument(
-            "azure_key_vault_ca_provider: ca_certificate_pem's public key has no RSA "
-            "modulus/exponent"
-            " (only RSA CA keys are supported by the local signing-assembly path)");
-    }
-
-    RSA* rsa = RSA_new();
-    if (rsa == nullptr) {
-        detail::throw_openssl_error("RSA_new failed");
-    }
-    if (RSA_set0_key(rsa, BN_dup(n), BN_dup(e), nullptr) != 1) {
-        RSA_free(rsa);
-        detail::throw_openssl_error("RSA_set0_key failed");
-    }
-    if (RSA_set_method(rsa, external_rsa_method()) != 1) {
-        RSA_free(rsa);
-        detail::throw_openssl_error("RSA_set_method failed");
-    }
-    if (RSA_set_ex_data(rsa, external_rsa_ex_index(), ctx) != 1) {
-        RSA_free(rsa);
-        detail::throw_openssl_error("RSA_set_ex_data failed");
-    }
-
-    detail::evp_pkey_ptr pkey{EVP_PKEY_new()};
-    if (!pkey) {
-        RSA_free(rsa);
-        detail::throw_openssl_error("EVP_PKEY_new failed");
-    }
-    // EVP_PKEY_assign_RSA transfers ownership of `rsa` to `pkey` on success.
-    if (EVP_PKEY_assign_RSA(pkey.get(), rsa) != 1) {
-        RSA_free(rsa);
-        detail::throw_openssl_error("EVP_PKEY_assign_RSA failed");
-    }
-    return pkey;
-}
 
 [[nodiscard]] inline auto make_cryptography_client(const azure_key_vault_ca_provider_config& config)
     -> KeyVaultCryptographyClient {
@@ -217,22 +112,178 @@ extern "C" inline int external_rsa_sign_callback(int /*digest_nid*/, const unsig
     return EVP_sha256();
 }
 
-/// The local certificate-assembly path reuses `detail::build_leaf_cert`
-/// verbatim, which internally signs with `EVP_sha256()` unconditionally (it
-/// has no digest parameter — it was written for `certificate_authority`,
-/// which only ever signs with SHA-256). That hardcodes this provider's fully
-/// working path to `rs256`: `rs384`/`rs512` would ask Key Vault to sign a
-/// SHA-384/512-shaped request over a digest that `build_leaf_cert` actually
-/// computed with SHA-256, which Key Vault's `Sign` call correctly rejects
-/// (wrong digest length for the algorithm) rather than silently producing an
-/// invalid certificate — so those two fail loudly, not subtly. Unlocking them
-/// (and `ps256`/`es256`/`es384`, which need additional padding-mode/EC-method
-/// work regardless) requires adding a digest parameter to
-/// `detail::build_leaf_cert` itself, a small shared enhancement benefiting any
-/// future signer, not something specific to this provider — tracked as a
-/// follow-up rather than done here.
-[[nodiscard]] inline auto is_locally_assemblable(azure_key_vault_signing_algorithm alg) -> bool {
-    return alg == azure_key_vault_signing_algorithm::rs256;
+/// DER of the RSASSA-PSS-params (RFC 4055) that Key Vault's PS256 produces
+/// (RFC 7518 section 3.5): hashAlgorithm SHA-256, maskGenAlgorithm MGF1 with
+/// SHA-256, saltLength 32 (the digest length), trailerField default.
+inline constexpr std::array<unsigned char, 54> ps256_params_der{
+    0x30, 0x34,                                                        // SEQUENCE
+    0xa0, 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65,  // [0] sha256
+    0x03, 0x04, 0x02, 0x01, 0x05, 0x00,                                //
+    0xa1, 0x1c, 0x30, 0x1a, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7,  // [1] mgf1
+    0x0d, 0x01, 0x01, 0x08, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48,  //
+    0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00,                    //     (sha256)
+    0xa2, 0x03, 0x02, 0x01, 0x20,                                      // [2] salt 32
+};
+
+[[nodiscard]] inline auto is_ecdsa(azure_key_vault_signing_algorithm alg) -> bool {
+    return alg == azure_key_vault_signing_algorithm::es256 ||
+           alg == azure_key_vault_signing_algorithm::es384;
+}
+
+/// Writes the X.509 signature AlgorithmIdentifier for `alg` into `out`.
+inline void set_signature_algorithm(X509_ALGOR* out, azure_key_vault_signing_algorithm alg) {
+    int nid = NID_undef;
+    int param_type = V_ASN1_NULL;  // RFC 4055: RSA PKCS#1 v1.5 carries NULL
+    void* params = nullptr;
+    switch (alg) {
+        case azure_key_vault_signing_algorithm::rs256:
+            nid = NID_sha256WithRSAEncryption;
+            break;
+        case azure_key_vault_signing_algorithm::rs384:
+            nid = NID_sha384WithRSAEncryption;
+            break;
+        case azure_key_vault_signing_algorithm::rs512:
+            nid = NID_sha512WithRSAEncryption;
+            break;
+        case azure_key_vault_signing_algorithm::ps256: {
+            nid = NID_rsassaPss;
+            ASN1_STRING* seq = ASN1_STRING_new();
+            if (seq == nullptr || ASN1_STRING_set(seq, ps256_params_der.data(),
+                                                  static_cast<int>(ps256_params_der.size())) != 1) {
+                ASN1_STRING_free(seq);
+                detail::throw_openssl_error("ASN1_STRING_set(RSASSA-PSS-params) failed");
+            }
+            param_type = V_ASN1_SEQUENCE;
+            params = seq;
+            break;
+        }
+        case azure_key_vault_signing_algorithm::es256:
+            nid = NID_ecdsa_with_SHA256;
+            param_type = V_ASN1_UNDEF;  // RFC 5758: ECDSA omits parameters
+            break;
+        case azure_key_vault_signing_algorithm::es384:
+            nid = NID_ecdsa_with_SHA384;
+            param_type = V_ASN1_UNDEF;
+            break;
+    }
+    if (nid == NID_undef) {
+        throw std::invalid_argument("azure_key_vault_ca_provider: unknown signing_algorithm");
+    }
+    if (X509_ALGOR_set0(out, OBJ_nid2obj(nid), param_type, params) != 1) {
+        if (param_type == V_ASN1_SEQUENCE) {
+            ASN1_STRING_free(static_cast<ASN1_STRING*>(params));
+        }
+        detail::throw_openssl_error("X509_ALGOR_set0 failed");
+    }
+}
+
+/// Throws unless the CA certificate's key can produce `alg` signatures: an RSA
+/// key for rs*/ps256, a P-256 key for es256, a P-384 key for es384 (Key Vault
+/// pairs each ES algorithm with exactly one curve).
+inline void check_ca_key_matches(EVP_PKEY* ca_key, azure_key_vault_signing_algorithm alg) {
+    const int base_id = EVP_PKEY_get_base_id(ca_key);
+    if (!is_ecdsa(alg)) {
+        if (base_id != EVP_PKEY_RSA) {
+            throw std::invalid_argument(
+                "azure_key_vault_ca_provider: signing_algorithm is an RSA algorithm but "
+                "ca_certificate_pem's public key is not RSA");
+        }
+        return;
+    }
+    const char* want = alg == azure_key_vault_signing_algorithm::es256 ? "prime256v1" : "secp384r1";
+    std::array<char, 64> group{};
+    std::size_t group_len = 0;
+    if (base_id != EVP_PKEY_EC ||
+        EVP_PKEY_get_group_name(ca_key, group.data(), group.size(), &group_len) != 1 ||
+        std::string(group.data(), group_len) != want) {
+        throw std::invalid_argument(std::string("azure_key_vault_ca_provider: signing_algorithm "
+                                                "needs a CA certificate with an EC ") +
+                                    want + " public key");
+    }
+}
+
+/// Converts Key Vault's ECDSA signature (JWS encoding: `r || s`, each
+/// left-padded to the curve's field size) to X.509's DER `ECDSA-Sig-Value`.
+[[nodiscard]] inline auto ecdsa_jws_to_der(const std::vector<std::uint8_t>& raw,
+                                           std::size_t field_bytes) -> std::vector<unsigned char> {
+    if (raw.size() != 2 * field_bytes) {
+        throw std::runtime_error("azure_key_vault_ca_provider: Key Vault returned a " +
+                                 std::to_string(raw.size()) + "-byte ECDSA signature, expected " +
+                                 std::to_string(2 * field_bytes));
+    }
+    ECDSA_SIG* sig = ECDSA_SIG_new();
+    BIGNUM* r = BN_bin2bn(raw.data(), static_cast<int>(field_bytes), nullptr);
+    BIGNUM* s = BN_bin2bn(raw.data() + field_bytes, static_cast<int>(field_bytes), nullptr);
+    if (sig == nullptr || r == nullptr || s == nullptr || ECDSA_SIG_set0(sig, r, s) != 1) {
+        BN_free(r);
+        BN_free(s);
+        ECDSA_SIG_free(sig);
+        detail::throw_openssl_error("ECDSA_SIG construction failed");
+    }
+    // ECDSA_SIG_set0 now owns r and s.
+    const int len = i2d_ECDSA_SIG(sig, nullptr);
+    std::vector<unsigned char> der(len > 0 ? static_cast<std::size_t>(len) : 0);
+    unsigned char* p = der.data();
+    const bool ok = len > 0 && i2d_ECDSA_SIG(sig, &p) == len;
+    ECDSA_SIG_free(sig);
+    if (!ok) {
+        detail::throw_openssl_error("i2d_ECDSA_SIG failed");
+    }
+    return der;
+}
+
+/// Signs `cert` (fully built, unsigned) with the Key Vault key behind
+/// `client`, then checks the result against `ca_key`. See this file's header
+/// comment for the steps.
+inline void sign_with_key_vault(X509* cert, EVP_PKEY* ca_key, KeyVaultCryptographyClient& client,
+                                azure_key_vault_signing_algorithm alg) {
+    const ASN1_BIT_STRING* signature_const = nullptr;
+    const X509_ALGOR* outer_alg_const = nullptr;
+    X509_get0_signature(&signature_const, &outer_alg_const, cert);
+    // X509_sign() writes these same two fields of a certificate it owns; OpenSSL
+    // has no non-const accessor for them.
+    auto* tbs_alg = const_cast<X509_ALGOR*>(X509_get0_tbs_sigalg(cert));
+    auto* outer_alg = const_cast<X509_ALGOR*>(outer_alg_const);
+    auto* signature = const_cast<ASN1_BIT_STRING*>(signature_const);
+    set_signature_algorithm(tbs_alg, alg);
+    set_signature_algorithm(outer_alg, alg);
+
+    unsigned char* tbs_der = nullptr;
+    const int tbs_len = i2d_re_X509_tbs(cert, &tbs_der);
+    if (tbs_len <= 0) {
+        detail::throw_openssl_error("i2d_re_X509_tbs failed");
+    }
+    std::vector<std::uint8_t> digest(EVP_MAX_MD_SIZE);
+    unsigned int digest_len = 0;
+    const int digest_ok = EVP_Digest(tbs_der, static_cast<std::size_t>(tbs_len), digest.data(),
+                                     &digest_len, digest_md(alg), nullptr);
+    OPENSSL_free(tbs_der);
+    if (digest_ok != 1) {
+        detail::throw_openssl_error("EVP_Digest(TBSCertificate) failed");
+    }
+    digest.resize(digest_len);
+
+    auto raw = client.Sign(to_key_vault_algorithm(alg), digest).Value.Signature;
+    std::vector<unsigned char> sig_bytes =
+        is_ecdsa(alg)
+            ? ecdsa_jws_to_der(raw, static_cast<std::size_t>((EVP_PKEY_get_bits(ca_key) + 7) / 8))
+            : std::vector<unsigned char>(raw.begin(), raw.end());
+    if (ASN1_BIT_STRING_set(signature, sig_bytes.data(), static_cast<int>(sig_bytes.size())) != 1) {
+        detail::throw_openssl_error("ASN1_BIT_STRING_set(signature) failed");
+    }
+    // Mark the bit string as having zero unused bits. Without this flag OpenSSL
+    // derives the unused-bit count by stripping trailing zero octets, which
+    // corrupts any signature that happens to end in 0x00 (X509_sign does the
+    // same).
+    signature->flags &= ~(ASN1_STRING_FLAG_BITS_LEFT | 0x07);
+    signature->flags |= ASN1_STRING_FLAG_BITS_LEFT;
+
+    if (X509_verify(cert, ca_key) != 1) {
+        ERR_clear_error();
+        throw std::runtime_error(
+            "the Key Vault signature does not verify against ca_certificate_pem's public key "
+            "(is key_name/key_version the key that belongs to that certificate?)");
+    }
 }
 
 /// Combines a process-wide random-ish seed (captured once) with an atomic
@@ -285,13 +336,6 @@ inline auto azure_key_vault_ca_provider::sign_csr(std::string csr_pem, csr_signi
         fiu_do_on("raft/azure/keyvault/sign",
                   throw std::runtime_error("fault: raft/azure/keyvault/sign"););
 
-        if (!azure_detail::is_locally_assemblable(_config.signing_algorithm)) {
-            throw std::logic_error(
-                "azure_key_vault_ca_provider::sign_csr: local certificate assembly is only "
-                "implemented for the RSA PKCS#1v1.5 family (rs256/rs384/rs512); ps256/es256/es384 "
-                "are forwarded to Key Vault correctly but not yet supported end-to-end here");
-        }
-
         auto csr_bio = detail::make_bio();
         BIO_write(csr_bio.get(), csr_pem.data(), static_cast<int>(csr_pem.size()));
         detail::x509_req_ptr req{PEM_read_bio_X509_REQ(csr_bio.get(), nullptr, nullptr, nullptr)};
@@ -322,52 +366,16 @@ inline auto azure_key_vault_ca_provider::sign_csr(std::string csr_pem, csr_signi
             throw std::invalid_argument(
                 "azure_key_vault_ca_provider: CA certificate has no public key");
         }
-        RSA* issuer_rsa = EVP_PKEY_get1_RSA(issuer_pubkey_evp.get());
-        if (issuer_rsa == nullptr) {
-            throw std::invalid_argument(
-                "azure_key_vault_ca_provider: only RSA CA keys are supported by the local signing "
-                "path (config.signing_algorithm selects an RSA algorithm, but ca_certificate_pem's "
-                "public key is not RSA)");
-        }
-        struct rsa_ref_guard {
-            RSA* r;
-            ~rsa_ref_guard() { RSA_free(r); }
-        } issuer_rsa_guard{issuer_rsa};
-
-        azure_detail::external_sign_context sign_ctx;
-        sign_ctx.client = &_client;
-        sign_ctx.algorithm = azure_detail::to_key_vault_algorithm(_config.signing_algorithm);
-
-        auto external_key = azure_detail::make_external_signing_key(issuer_rsa, &sign_ctx);
+        azure_detail::check_ca_key_matches(issuer_pubkey_evp.get(), _config.signing_algorithm);
 
         auto serial = azure_detail::next_serial();
         auto now = std::chrono::system_clock::now();
-        // detail::build_leaf_cert builds the TBSCertificate AND signs it (its
-        // own internal X509_sign call, hardcoded to EVP_sha256() — see
-        // is_locally_assemblable's comment above for why that limits this
-        // provider to rs256 today). Passing `external_key` as the "issuer
-        // key" routes that internal signing call through
-        // external_rsa_sign_callback, which is what actually invokes Key
-        // Vault's Sign RPC — the real CA private key never leaves Key Vault.
-        detail::x509_ptr cert;
-        try {
-            cert = detail::build_leaf_cert(
-                issuer_cert.get(), external_key.get(), X509_REQ_get_subject_name(req.get()),
-                csr_pubkey.get(), options.dns_names, options.ip_addresses, options.server_auth,
-                options.client_auth, now, now + options.validity, serial);
-        } catch (const std::exception&) {
-            // build_leaf_cert's own throw_openssl_error (fired when
-            // external_rsa_sign_callback returns 0) only reports a generic
-            // OpenSSL error; when the callback actually captured a Key Vault
-            // exception, that's the more useful one to surface.
-            if (sign_ctx.error) {
-                std::rethrow_exception(sign_ctx.error);
-            }
-            throw;
-        }
-        if (sign_ctx.error) {
-            std::rethrow_exception(sign_ctx.error);
-        }
+        auto cert = detail::build_unsigned_leaf_cert(
+            issuer_cert.get(), X509_REQ_get_subject_name(req.get()), csr_pubkey.get(),
+            options.dns_names, options.ip_addresses, options.server_auth, options.client_auth, now,
+            now + options.validity, serial);
+        azure_detail::sign_with_key_vault(cert.get(), issuer_pubkey_evp.get(), _client,
+                                          _config.signing_algorithm);
 
         pem_material out;
         out.certificate_pem = detail::serialize_cert(cert.get());
@@ -383,9 +391,5 @@ inline auto azure_key_vault_ca_provider::sign_csr(std::string csr_pem, csr_signi
 }
 
 }  // namespace raft::testing
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 #endif  // KYTHIRA_HAS_AZURE_KEY_VAULT
