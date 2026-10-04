@@ -152,6 +152,9 @@ public:
     std::vector<std::pair<cap_operation, skipped_operator_reason>> _skipped;
     /// When set, every operator on these groups is skipped with this reason.
     std::map<cap_group, skipped_operator_reason> _force_skip;
+    /// Refuse every leader transfer as `unsupported`, as a host on a
+    /// transport without TimeoutNow (cpp-httplib, Beast, Proxygen) does.
+    bool _transfer_unsupported{false};
     /// Operators that arrived for a shard mid-split or mid-merge. The host
     /// refuses them as busy; a controller should never have sent one.
     std::vector<cap_operation> _sent_while_busy;
@@ -350,6 +353,9 @@ private:
                     note();
                     return accept(op);
                 } else if constexpr (std::same_as<Op, transfer_leader_operator<cap_node>>) {
+                    if (_transfer_unsupported) {
+                        return skip(op, skipped_operator_reason::unsupported);
+                    }
                     if (!d.has_voter(o._to) || o._to == s._leader) {
                         return skip(op, skipped_operator_reason::precondition);
                     }

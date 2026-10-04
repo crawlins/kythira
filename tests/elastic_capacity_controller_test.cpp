@@ -553,6 +553,30 @@ BOOST_AUTO_TEST_CASE(an_unsupported_operator_abandons_the_move_and_rolls_back_th
     BOOST_CHECK(h.sim.shard_of(1)._d._learners.empty());
 }
 
+BOOST_AUTO_TEST_CASE(admission_displaces_another_voter_when_the_leader_cannot_transfer) {
+    // The docker scenario on cpp-httplib: one host leads every shard and the
+    // transport has no TimeoutNow, so no transfer is ever accepted. Each move
+    // used to be abandoned with the new machine already voting, leaving every
+    // shard one voter over and no shard moved.
+    harness h(base_config(), three_zones(), 6);
+    for (cap_group g = 1; g <= 6; ++g) {
+        h.sim.set_leader(g, 1);
+    }
+    h.sim._transfer_unsupported = true;
+    h.start();
+    h.settle_in();
+    h.policy.push(scale_out());
+    h.rounds(80);
+    BOOST_REQUIRE_EQUAL(h.count_state(capacity_intent_state::completed), 1U);
+    BOOST_CHECK_GE(h.counter("shards_moved"), 1U);
+    BOOST_CHECK_GE(h.counter("move{outcome=retargeted}"), 1U);
+    for (const auto& [g, s] : h.sim.shards()) {
+        BOOST_CHECK_EQUAL(s._d._voters.size(), 3U);
+        BOOST_CHECK_EQUAL(s._leader, 1U);
+    }
+    BOOST_CHECK(!h.sim.quorum_ever_reduced());
+}
+
 BOOST_AUTO_TEST_CASE(an_admission_past_its_deadline_is_abandoned_and_the_machine_kept) {
     harness h(base_config(), three_zones(), 1);
     h.cfg.admit_deadline = 3min;
