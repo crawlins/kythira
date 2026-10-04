@@ -1227,6 +1227,216 @@ jobs:
           path: build/tests/dns-test-server/named.log
           if-no-files-found: ignore
 
+  # ── No Folly (CONFIG_FOLLY=n) ────────────────────────────────────────────────
+  # .kiro/specs/ci-build-matrix-coverage/ Requirement 2. Kconfig documents
+  # CONFIG_FOLLY=n as supported, and no other job builds it: every other job
+  # has Folly in its prefix, so a stray `#include <folly/...>` or Folly link in
+  # backend-independent code compiles everywhere and only breaks a user's
+  # Folly-free build.
+  #
+  # Hiding Folly from find_package() is not enough, because vcpkg puts every
+  # port's headers in one include/ directory. scripts/make-folly-free-prefix.sh
+  # makes a hard-linked copy of the vcpkg tree with Folly and every port that
+  # depends on it deleted, and this job configures against that copy only.
+  # The restored vcpkg_installed/ itself is never modified.
+  #
+  # The vcpkg tree is the edhoc tree under the same actions/cache key the x64
+  # g++-13/clang++-18 build-and-test legs use, so it restores warm and vcpkg
+  # never runs here. clang++-18 is the fastest compiler this workflow builds
+  # with (see the Configure (Release) comment in build-and-test).
+  no-folly:
+    name: No Folly (clang++-18, x64)
+    runs-on: ubuntu-24.04
+    # One full build and test run, the same work as a build-and-test leg.
+    timeout-minutes: 180
+    # The read-write build-cache key is an environment secret of
+    # build-cache-write, whose deployment branches are main only, so a
+    # job on any other ref never receives it and cannot poison the cache
+    # main builds from. Other refs run with no environment and fall back
+    # to the read-only key. See doc/ci_build_cache.md.
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
+          # autoconf & co. are for vcpkg's gperf port, needed only on a cold
+          # vcpkg cache; see the build-and-test job.
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      # Only reached on a cold vcpkg cache: the edhoc feature builds the
+      # lakers overlay port from Rust source.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. See
+      # .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # Byte-identical to the x64 build-and-test legs' key (they set no
+      # vcpkg_cxx), so this job shares their tree rather than keeping another
+      # copy of it.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action; see
+          # the build-and-test job for why it is not re-exported here, and
+          # why vcpkg is pinned to vcpkg.json's builtin-baseline.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      # Requirement 2.2. Reads vcpkg_installed/vcpkg/status rather than
+      # running vcpkg, which a warm cache hit never bootstraps.
+      - name: Make the Folly-free prefix
+        run: |
+          scripts/make-folly-free-prefix.sh vcpkg_installed \
+            ${{ steps.triplet.outputs.value }} "$RUNNER_TEMP/no-folly-prefix"
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # Strict (Requirement 2.1): every symbol ci_no_folly_defconfig leaves on
+      # must find its dependency in the pruned prefix, so a dependency that
+      # turns out to need Folly fails here by name.
+      - name: Configure (ci_no_folly_defconfig, strict)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_no_folly_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/no-folly-prefix"
+
+      # Requirement 2.4: the job must not be able to regress quietly into a
+      # Folly build. folly_FOUND is a plain variable, not a cache entry, so
+      # the cache-visible trace of a successful find_package(folly) is
+      # folly_DIR; with CONFIG_FOLLY=n nothing should even look for it.
+      - name: Assert Folly is absent from the build
+        run: |
+          if grep -E '^folly_DIR:' build/CMakeCache.txt | grep -v -- '-NOTFOUND$'; then
+            echo "::error::find_package(folly) succeeded in a CONFIG_FOLLY=n build"
+            exit 1
+          fi
+          if grep -nE 'libfolly|/folly/' build/build.ninja | head -5 | grep .; then
+            echo "::error::build.ninja references Folly"
+            exit 1
+          fi
+
+      # Requirement 2.5, before the build so a missing allowlist entry fails
+      # in minutes. The reference tree is configured, never built: ctest only
+      # needs its CTestTestfile.cmake files.
+      - name: Check the tests CONFIG_FOLLY=n disables
+        run: |
+          cmake -B build-reference -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            > configure-reference.log
+          scripts/check-disabled-tests.py build-reference build \
+            configs/no-folly-test-allowlist.txt
+          rm -rf build-reference
+
+      # Every target the configuration enables (Requirement 2.3).
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — no-folly"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
+
+      # Same selection, retries and ceiling as build-and-test's Test step; see
+      # its comments for why each flag is there.
+      - name: Test
+        id: test
+        run: |
+          set -o pipefail
+          ctest --test-dir build \
+            -j$(nproc) \
+            --output-on-failure \
+            --repeat until-pass:3 \
+            --no-tests=error \
+            --timeout 900 \
+            -LE '^(slow|performance|verbose|benchmark|docker)$' \
+            2>&1 | tee ctest-out.txt
+        continue-on-error: true
+
+      # Same retry policy as build-and-test's check (known flakes in
+      # .github/ctest-retry-allowlist.txt, strict under CTEST_STRICT_RETRIES).
+      # The floor is the 388 tests the first green run registered, less a
+      # small margin; 174 more are on configs/no-folly-test-allowlist.txt.
+      - name: Check the test run did the work
+        if: always()
+        run: |
+          scripts/check-test-run.sh \
+            --build-dir build \
+            --log ctest-out.txt \
+            --floor 380 \
+            ${{ vars.CTEST_STRICT_RETRIES == 'true' && '--strict-retries' || '' }} \
+            --allow-retry-file .github/ctest-retry-allowlist.txt \
+            -- -LE '^(slow|performance|verbose|benchmark|docker)$'
+
   # ── Coverage (clang only) ────────────────────────────────────────────────────
   # ENABLE_COVERAGE uses LLVM source-based instrumentation and requires clang.
   # gcovr-based coverage with GCC is not supported by this project's CMakeLists.
