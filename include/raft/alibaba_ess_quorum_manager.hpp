@@ -910,42 +910,19 @@ private:
                                      const std::vector<alibaba_ess_detail::instance_view>& members,
                                      std::int64_t original_capacity) const noexcept
         -> group_rollback::rollback_outcome {
-        group_rollback::rollback_outcome outcome;
         try {
-            outcome.final_listing = rollback_listing(members);
-            outcome.plan =
-                group_rollback::plan_scale_up_rollback(pre_growth, outcome.final_listing);
-            for (const auto& id : outcome.plan.remove) {
-                if (auto error = try_remove(id); error.empty()) {
-                    outcome.removed.push_back(id);
-                } else {
-                    outcome.removal_failures.emplace_back(id, std::move(error));
-                }
-            }
-            if (!outcome.plan.restore_desired_size) {
-                return outcome;
-            }
-            try {
-                set_desired_capacity(original_capacity);
-                outcome.restored_size = original_capacity;
-            } catch (const std::exception& ex) {
-                outcome.restore_error = ex.what();
-                return outcome;
-            }
-            const auto after = group_rollback::settle_listing(
+            return group_rollback::execute_rollback(
+                pre_growth, rollback_listing(members), original_capacity,
+                [this](const std::string& id) { return try_remove(id); },
+                [this](std::int64_t size) { set_desired_capacity(size); },
                 [this] { return rollback_listing(describe_members()); },
                 group_rollback::settle_window(_cfg.provision_timeout, _cfg.poll_interval),
                 _cfg.poll_interval);
-            if (after.has_value()) {
-                outcome.audit =
-                    group_rollback::audit_after_shrink(pre_growth, outcome.final_listing, *after);
-            } else {
-                outcome.audit_unavailable = true;
-            }
         } catch (const std::exception& ex) {
+            group_rollback::rollback_outcome outcome;
             outcome.restore_error = std::string("rollback aborted: ") + ex.what();
+            return outcome;
         }
-        return outcome;
     }
 
     /// `SetInstancesProtection`, batched to the API's per-call limit.

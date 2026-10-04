@@ -219,6 +219,75 @@ struct rollback_outcome {
     std::vector<listed_member> final_listing;
 };
 
+/// @brief Carry out the whole timeout path: plan, remove by id or restore the
+///        size, and audit after a restore (Requirements 2-3).
+///
+/// Every manager's timeout path is this sequence with its own cloud calls
+/// plugged in, so the sequence lives here once and is unit tested without a
+/// cloud.
+///
+/// @param pre_growth_ids Every instance id listed immediately before the grow.
+/// @param final_listing  The listing after the timeout; empty if it failed.
+/// @param original_size  The desired size before the grow, which a restore writes.
+/// @param remove `(const std::string& id) -> std::string`: removes one instance
+///        by id and decrements the desired size; returns the cloud's error
+///        text, or empty on success or when the instance is already gone.
+/// @param restore `(std::int64_t size) -> void`: writes the desired size;
+///        throws on failure.
+/// @param list `() -> std::vector<listed_member>`: the listing the audit
+///        polls; may throw.
+/// @param window, poll_interval The audit's settle bounds; see
+///        `settle_window`.
+///
+/// Never throws: a timeout path that throws from its rollback would replace
+/// the timeout with a less useful error. Anything unexpected is recorded as
+/// `restore_error` so `describe` still says what happened.
+template<typename Remove, typename Restore, typename Lister>
+[[nodiscard]] auto execute_rollback(const std::vector<std::string>& pre_growth_ids,
+                                    std::vector<listed_member> final_listing,
+                                    std::int64_t original_size, Remove&& remove, Restore&& restore,
+                                    Lister&& list, std::chrono::milliseconds window,
+                                    std::chrono::milliseconds poll_interval) noexcept
+    -> rollback_outcome {
+    rollback_outcome outcome;
+    try {
+        outcome.final_listing = std::move(final_listing);
+        outcome.plan = plan_scale_up_rollback(pre_growth_ids, outcome.final_listing);
+        for (const auto& id : outcome.plan.remove) {
+            std::string error;
+            try {
+                error = remove(id);
+            } catch (const std::exception& ex) {
+                error = ex.what();
+            }
+            if (error.empty()) {
+                outcome.removed.push_back(id);
+            } else {
+                outcome.removal_failures.emplace_back(id, std::move(error));
+            }
+        }
+        if (!outcome.plan.restore_desired_size) {
+            return outcome;
+        }
+        try {
+            restore(original_size);
+            outcome.restored_size = original_size;
+        } catch (const std::exception& ex) {
+            outcome.restore_error = ex.what();
+            return outcome;
+        }
+        const auto after = settle_listing(list, window, poll_interval);
+        if (after.has_value()) {
+            outcome.audit = audit_after_shrink(pre_growth_ids, outcome.final_listing, *after);
+        } else {
+            outcome.audit_unavailable = true;
+        }
+    } catch (const std::exception& ex) {
+        outcome.restore_error = std::string("rollback aborted: ") + ex.what();
+    }
+    return outcome;
+}
+
 namespace detail {
 
 [[nodiscard]] inline auto label(const listed_member& m) -> std::string {
