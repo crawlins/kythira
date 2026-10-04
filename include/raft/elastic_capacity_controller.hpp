@@ -541,6 +541,11 @@ public:
                     m->second._await_report_after = now;
                     break;
                 case skipped_operator_reason::unsupported:
+                    if (displace_another_voter(m->second, now)) {
+                        break;
+                    }
+                    abandon_move(m->second, "host refused: " + std::string(to_string(o._reason)));
+                    break;
                 case skipped_operator_reason::driver_disabled:
                 default:
                     abandon_move(m->second, "host refused: " + std::string(to_string(o._reason)));
@@ -2435,6 +2440,64 @@ private:
                 abandon_move(m, why);
             }
         }
+    }
+
+    /// An admission move whose target already votes, refused the leader
+    /// transfer that would let it remove its source (a transport without
+    /// TimeoutNow answers `unsupported`). Abandoning it there would leave the
+    /// shard one voter over and count no move, and where one host leads every
+    /// shard every admission move ends that way: the new machine joins every
+    /// group and displaces nothing. Instead, displace another voter the
+    /// leader can remove directly, preferring the source's placement group so
+    /// failure-domain spread is what the plan intended, then the most loaded.
+    /// Only for admissions: a drain or an overload move must empty its own
+    /// source. Returns false when no such voter exists.
+    auto displace_another_voter(move& m, time_point now) -> bool {
+        if (m._drain || m._remove_only || m._rollback || m._done || !is_admission(m._intent)) {
+            return false;
+        }
+        const auto* d = descriptor_of(m._group);
+        const auto* r = fresh_shard(m._group, now);
+        if (d == nullptr || r == nullptr || !d->has_voter(m._to) || !d->has_replica(m._from) ||
+            r->leader() != m._from) {
+            return false;
+        }
+        const auto draining = draining_nodes();
+        const auto home = placement_of(m._from);
+        std::optional<node_id_type> alt;
+        std::pair<int, double> alt_key{};
+        for (const auto& v : d->voters()) {
+            if (v == m._from || v == m._to || draining.contains(v) || !sending_capacity(v)) {
+                continue;
+            }
+            // Lower is better: same placement group first, then most loaded.
+            const std::pair<int, double> key{home && placement_of(v) == home ? 0 : 1,
+                                             -load_of(v, m._reason)};
+            if (!alt || key < alt_key) {
+                alt = v;
+                alt_key = key;
+            }
+        }
+        if (!alt) {
+            return false;
+        }
+        log(log_level::info, "capacity_move_retargeted",
+            {{"group", detail::capacity::to_text(m._group)},
+             {"from", detail::capacity::to_text(m._from)},
+             {"instead", detail::capacity::to_text(*alt)},
+             {"to", detail::capacity::to_text(m._to)},
+             {"why", "leader transfer unsupported"}});
+        count("move", {{"outcome", "retargeted"}});
+        m._from = *alt;
+        m._last_emit = time_point{};
+        m._retry_after = time_point{};
+        return true;
+    }
+
+    [[nodiscard]] auto is_admission(const std::string& key) const -> bool {
+        return !key.empty() && std::any_of(_intents.begin(), _intents.end(), [&](const auto& i) {
+            return i._key == key && i._kind == capacity_intent_kind::scale_out;
+        });
     }
 
     /// Stop a move. A learner it already added is removed again, so an

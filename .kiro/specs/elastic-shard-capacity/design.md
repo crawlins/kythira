@@ -654,9 +654,16 @@ documented in `doc/elastic_shard_capacity.md`.
 10. **Moves prefer shards the source does not lead.** Among equally weighted
     candidates, `pick_shard_for` takes a shard whose leader is not the source.
     Moving a replica off its leader costs a leadership transfer, which is an
-    election at best. On a transport without TimeoutNow (cpp-httplib) the host
-    refuses the transfer as `unsupported`, and the move is abandoned with the
-    target already voting. That shard is then left one voter over.
+    election at best. On a transport without TimeoutNow (cpp-httplib, Beast,
+    Proxygen) the host refuses the transfer as `unsupported`. An admission
+    move whose target already votes then displaces a different voter instead,
+    one the leader can remove directly: the source's placement group first,
+    then the most loaded. Only when no such voter exists is the move
+    abandoned, leaving that shard one voter over. Before this, every refused
+    transfer was abandoned there, and in the docker scenario, where one host
+    leads every shard, the new machine joined every group and displaced
+    nothing. Drain and overload moves still abandon, because they must empty
+    their own source.
 11. **Task 16 found three pre-existing host bugs, all fixed here because the
     scenario cannot pass with any of them:**
     - **Docker over a unix socket answered 400 to every call.** cpp-httplib
