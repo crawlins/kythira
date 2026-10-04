@@ -983,7 +983,9 @@ unverified completion claim.
   miss cost 69-163 minutes of rebuilding and now costs a 4-7 minute download.
   Two of this entry's three "levers" are moot as a result; the
   `coverage-report` artifact-quota note at the end is a separate quota and has
-  not been re-measured.
+  not been re-measured. **That note is addressed as of October 4, 2026:** the
+  upload now sets `retention-days: 7`, so the store holds about a week of
+  reports instead of 90 days of them.
 
   **The original measurement, August 6, 2026**, kept because the accounting
   method is reusable and because the numbers are what task 8 was checked
@@ -1308,7 +1310,22 @@ unverified completion claim.
     exclude, so a skip appearing in these runs is a real regression rather than
     an expected one to be listed. Revisit only if a test legitimately needs to
     skip inside a filtered run.
-  - **Surface first-attempt failures.** `ctest --repeat until-pass:3` hides
+  - **Surface first-attempt failures. PARTLY DONE, October 4, 2026.** Every
+    `check-test-run.sh` call in `ci.yml` now reads
+    `.github/ctest-retry-allowlist.txt` and splits retry-rescued tests into
+    known flakes (each tied to a TODO entry) and new ones, in the log and the
+    job summary. `--strict-retries` makes a new one fail the check step; CI
+    passes it only when the repository variable `CTEST_STRICT_RETRIES` is
+    `true`, which is not set yet. The reason is the data in the next entry:
+    one in three test jobs had a retry-rescued test, and most of those tests
+    appeared once in 54 jobs, so strict mode today would turn most runs red on
+    flakes nobody has seen before. Set the variable once the two
+    `ca_cluster_node_rpc_tls*` flakes are fixed and a week of runs adds nothing
+    new to the allowlist. The verdict is now read from the retry lines too
+    (ctest prints those without the `N/M` prefix), so a test that failed every
+    attempt is left to ctest's own failure and no longer also listed as a
+    retry. Original entry:
+    `ctest --repeat until-pass:3` hides
     flakes completely: the summary says passed and only the raw log shows the
     first attempt failed. **Two live examples found August 6, 2026 in PR #167's
     run** — `httplib_server_validation_test` failed 4 assertions on attempt 1
@@ -1316,6 +1333,29 @@ unverified completion claim.
     attempts on a hardcoded-port collision (`51702`, `Address already in use`).
     Emit a "passed only on retry" report as a job summary, and fail (or open an
     issue) when it is non-empty. A flake nobody sees is a bug nobody fixes.
+  - **Retry-rescued flakes on the allowlist (measured October 4, 2026).**
+    54 test jobs across six green `ci.yml` PR runs on 2026-10-03 (Build &
+    Test x5, Coverage, ThreadSanitizer, both full-suite backend legs). 20
+    jobs had at least one test that failed its first attempt and passed on a
+    retry, 25 such failures in all, and every run had at least three affected
+    jobs. Coverage and ThreadSanitizer had none.
+    - `ca_cluster_node_rpc_tls_test`: 10 of 54 jobs, 5 of 6 runs, every
+      compiler, arch and backend. First attempts fail at either ~86-89 s or
+      ~290-294 s, two fixed points that look like an internal deadline, not
+      slowness. The biggest single source of retries.
+    - `ca_cluster_node_rpc_tls_restart_test`: 4 of 54, always at 40.57-40.58 s,
+      which again looks like a fixed timeout being hit.
+    - `coap_dtls_connection_establishment_property_test`: 2 of 54, one of them
+      a full 900 s ctest timeout, so each occurrence costs 15 minutes.
+    - Once each: `chaos_state_machine_safety_test`,
+      `certificate_authority_property_test` (0.04 s),
+      `simulator_property_test`, `raft_commit_implies_replication_property_test`
+      (see its own entry), `multi_raft_scale_test`, `ca_test_fixture_unit_test`
+      (0.19 s), `leader_transfer_test` (0.81 s), `integration_test`,
+      `multi_raft_driver_agreement_test`. The sub-second ones fail fast, so
+      they are logic races, not timeouts.
+    All twelve are in `.github/ctest-retry-allowlist.txt`; delete a line when
+    its flake is fixed.
   - **Assert each job's configuration actually took effect.** A previous
     session verified *by hand* that the `Proxygen transport (boost future
     backend)` leg really configured
