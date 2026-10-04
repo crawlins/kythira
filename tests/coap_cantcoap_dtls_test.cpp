@@ -15,6 +15,8 @@
 #include <raft/coap_transport_cantcoap_impl.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
+#include "coap_lossy_udp_relay.hpp"
+
 #include <openssl/evp.h>
 #include <openssl/opensslv.h>
 #include <openssl/pem.h>
@@ -302,6 +304,43 @@ BOOST_AUTO_TEST_CASE(test_dtls_psk_round_trip,
         BOOST_TEST(response.term() == term);
         BOOST_TEST(response.vote_granted());
     }
+    peer.server.stop();
+}
+
+// .kiro/specs/coap-cantcoap-duplicate-replay/ Requirement 2.5: the first
+// reply is lost after the handshake. The retransmitted request arrives as a
+// new DTLS record, and the stored CoAP reply goes back out as a new record of
+// its own, so the RPC still succeeds.
+BOOST_AUTO_TEST_CASE(test_dtls_rpc_survives_a_lost_reply,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    kythira::coap_server_config server_config;
+    server_config.security = psk_security("kythira-node");
+    recording_server peer{server_config};
+
+    // DTLS record content type 23 is application_data: the first one the
+    // server sends is the CoAP reply, everything before it is handshake.
+    constexpr std::uint8_t dtls_application_data = 23;
+    bool lost_one = false;
+    kythira::testing::lossy_udp_relay relay{
+        peer.server.bound_port(),
+        [&lost_one](kythira::testing::relay_direction direction, std::size_t,
+                    const std::vector<std::uint8_t>& datagram) {
+            if (direction != kythira::testing::relay_direction::to_client || lost_one ||
+                datagram.empty() || datagram[0] != dtls_application_data) {
+                return false;
+            }
+            lost_one = true;
+            return true;
+        }};
+
+    auto client_config = fast_client_config();
+    client_config.security = psk_security("kythira-node");
+    test_client client{{{peer_node_id, endpoint_for(relay.port())}}, client_config, test_metrics{}};
+
+    const auto response = vote(client, 5);
+    BOOST_TEST(response.term() == 5U);
+    BOOST_TEST(relay.dropped() == 1U, "the relay never lost the reply");
+    BOOST_TEST(peer.server.duplicate_stats().replayed == 1U);
     peer.server.stop();
 }
 

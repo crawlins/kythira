@@ -15,10 +15,12 @@
 #include <raft/coap_transport_cantcoap_impl.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
+#include "coap_lossy_udp_relay.hpp"
 #include "coap_wire_probe.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -162,11 +164,118 @@ auto send_raw(std::uint16_t port, const std::vector<std::uint8_t>& bytes) -> voi
     config.credentials = creds;
     return config;
 }
+
+/// Pre-shared OSCORE credentials, mirrored between client and server.
+[[nodiscard, maybe_unused]] auto oscore_security(bool is_client) -> kythira::coap_security_config {
+    kythira::oscore_credentials creds;
+    creds.master_secret = std::vector<std::byte>(16, std::byte{0x2a});
+    creds.master_salt = std::vector<std::byte>(8, std::byte{0x77});
+    creds.sender_id = is_client ? std::vector<std::byte>{std::byte{0x00}}
+                                : std::vector<std::byte>{std::byte{0x01}};
+    creds.recipient_id = is_client ? std::vector<std::byte>{std::byte{0x01}}
+                                   : std::vector<std::byte>{std::byte{0x00}};
+    kythira::coap_security_config config;
+    config.mode = kythira::coap_auth_mode::oscore;
+    config.credentials = creds;
+    return config;
+}
+
+/// One UDP socket standing in for a CoAP client that writes its own messages,
+/// so a test can send the very same message twice from the same endpoint.
+class raw_coap_peer {
+public:
+    explicit raw_coap_peer(std::uint16_t server_port) : _fd{::socket(AF_INET, SOCK_DGRAM, 0)} {
+        BOOST_REQUIRE(_fd >= 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(server_port);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        BOOST_REQUIRE(::connect(_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+    }
+    raw_coap_peer(const raw_coap_peer&) = delete;
+    auto operator=(const raw_coap_peer&) -> raw_coap_peer& = delete;
+    ~raw_coap_peer() { ::close(_fd); }
+
+    auto send(const std::vector<std::uint8_t>& datagram) -> void {
+        BOOST_REQUIRE(::send(_fd, datagram.data(), datagram.size(), 0) ==
+                      static_cast<ssize_t>(datagram.size()));
+    }
+
+    /// The next datagram, or nullopt when none arrives within `wait`.
+    auto receive(std::chrono::milliseconds wait) -> std::optional<std::vector<std::uint8_t>> {
+        std::vector<std::uint8_t> buffer(cantcoap_max_datagram_for_tests);
+        pollfd fds{_fd, POLLIN, 0};
+        if (::poll(&fds, 1, static_cast<int>(wait.count())) <= 0) {
+            return std::nullopt;
+        }
+        const auto n = ::recv(_fd, buffer.data(), buffer.size(), 0);
+        if (n <= 0) {
+            return std::nullopt;
+        }
+        buffer.resize(static_cast<std::size_t>(n));
+        return buffer;
+    }
+
+private:
+    static constexpr std::size_t cantcoap_max_datagram_for_tests = 1500;
+    int _fd;
+};
+
+/// How long a raw-socket test waits for a reply it expects.
+[[nodiscard]] auto reply_wait() -> std::chrono::milliseconds {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        kythira::testing::scaled_deadline(3000));
+}
+
+/// How long a raw-socket test waits to be sure no reply is coming. Generous
+/// against a 20 ms server poll loop; a slower reply than this is a bug of its
+/// own.
+[[nodiscard]] auto silence_wait() -> std::chrono::milliseconds {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        kythira::testing::scaled_deadline(500));
+}
 }
 
 BOOST_AUTO_TEST_SUITE(coap_cantcoap_integration_tests)
 
 #ifdef CANTCOAP_AVAILABLE
+
+namespace {
+
+/// A RequestVote POST, encoded the way the client would, as raw bytes.
+[[nodiscard]] auto request_vote_datagram(CoapPDU::Type type, std::uint16_t message_id,
+                                         std::uint64_t term) -> std::vector<std::uint8_t> {
+    CoapPDU pdu;
+    pdu.setVersion(1);
+    pdu.setType(type);
+    pdu.setCode(CoapPDU::COAP_POST);
+    pdu.setMessageID(message_id);
+    std::array<std::uint8_t, 4> token{0xC0, 0xFF, 0xEE, static_cast<std::uint8_t>(message_id)};
+    pdu.setToken(token.data(), static_cast<std::uint8_t>(token.size()));
+    std::string path = kythira::cantcoap_request_vote_path;
+    pdu.setURI(path.data(), static_cast<int>(path.size()));
+    auto body = test_serializer{}.serialize(kythira::request_vote_request<>{term, 1, 0, 0});
+    pdu.setPayload(reinterpret_cast<std::uint8_t*>(body.data()), static_cast<int>(body.size()));
+    return {pdu.getPDUPointer(), pdu.getPDUPointer() + pdu.getPDULength()};
+}
+
+/// A server whose RequestVote handler counts its calls.
+struct counting_server {
+    explicit counting_server(kythira::coap_server_config config = {})
+        : server{loopback, ephemeral_port, std::move(config), test_metrics{}} {
+        server.register_request_vote_handler([this](const kythira::request_vote_request<>& r) {
+            ++invocations;
+            return kythira::request_vote_response<>{r.term(), true};
+        });
+        server.start();
+    }
+    ~counting_server() { server.stop(); }
+
+    std::atomic<int> invocations{0};
+    test_server server;
+};
+
+}  // namespace
 
 // ── Requirement 8.2: end-to-end round trip for all three RPCs ──────────────
 
@@ -331,30 +440,228 @@ BOOST_AUTO_TEST_CASE(test_retransmission_exhaustion_rejects,
     BOOST_TEST(elapsed < std::chrono::seconds{25}, "the schedule did not terminate promptly");
 }
 
-// A response duplicated on the wire must resolve the future exactly once. The
-// second copy carries the same Message ID and has to be dropped by
-// received_message_info, not delivered again.
-BOOST_AUTO_TEST_CASE(test_duplicate_requests_are_suppressed,
+// ── Duplicate requests (.kiro/specs/coap-cantcoap-duplicate-replay/) ────────
+//
+// cantcoap has no message layer of its own, so answering a retransmission is
+// this backend's job. Each test below loses a reply for real -- or sends the
+// same message twice, which is what the server sees when a reply is lost --
+// rather than trusting a single clean round trip to prove it.
+
+// Requirement 5.1: the same confirmable request twice, from the same endpoint.
+// Both copies are answered, identically, and the handler runs once.
+BOOST_AUTO_TEST_CASE(test_retransmitted_confirmable_request_is_answered_again,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
-    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    counting_server fixture;
+    raw_coap_peer peer{fixture.server.bound_port()};
+    const auto request = request_vote_datagram(CoapPDU::COAP_CONFIRMABLE, 0x1234, 8);
+
+    peer.send(request);
+    const auto first = peer.receive(reply_wait());
+    BOOST_REQUIRE(first.has_value());
+    peer.send(request);
+    const auto second = peer.receive(reply_wait());
+    BOOST_REQUIRE_MESSAGE(second.has_value(), "the retransmission went unanswered");
+
+    BOOST_TEST(*first == *second, "the replayed reply differs from the original");
+    CoapPDU reply(const_cast<std::uint8_t*>(second->data()), static_cast<int>(second->size()));
+    BOOST_REQUIRE(reply.validate() == 1);
+    BOOST_TEST(reply.getType() == CoapPDU::COAP_ACKNOWLEDGEMENT);
+    BOOST_TEST(reply.getMessageID() == 0x1234);
+    BOOST_TEST(reply.getCode() == CoapPDU::COAP_CONTENT);
+
+    BOOST_TEST(fixture.invocations.load() == 1,
+               "handler ran " << fixture.invocations.load() << " times");
+    const auto stats = fixture.server.duplicate_stats();
+    BOOST_TEST(stats.replayed == 1U);
+    BOOST_TEST(stats.dropped_without_reply == 0U);
+}
+
+// Requirement 1.5: a duplicate non-confirmable request is dropped silently.
+BOOST_AUTO_TEST_CASE(test_retransmitted_non_confirmable_request_is_dropped,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    counting_server fixture;
+    raw_coap_peer peer{fixture.server.bound_port()};
+    const auto request = request_vote_datagram(CoapPDU::COAP_NON_CONFIRMABLE, 0x2001, 3);
+
+    peer.send(request);
+    BOOST_REQUIRE(peer.receive(reply_wait()).has_value());
+    peer.send(request);
+    BOOST_TEST(!peer.receive(silence_wait()).has_value(), "a duplicate NON was answered");
+
+    BOOST_TEST(fixture.invocations.load() == 1);
+    const auto stats = fixture.server.duplicate_stats();
+    BOOST_TEST(stats.replayed == 0U);
+    BOOST_TEST(stats.dropped_without_reply == 1U);
+}
+
+// Requirement 3.6: with no reply budget, a duplicate is dropped as before.
+BOOST_AUTO_TEST_CASE(test_zero_reply_budget_drops_duplicates,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    kythira::coap_server_config config;
+    config.duplicate_reply_cache_bytes = 0;
+    counting_server fixture{config};
+    raw_coap_peer peer{fixture.server.bound_port()};
+    const auto request = request_vote_datagram(CoapPDU::COAP_CONFIRMABLE, 0x3001, 5);
+
+    peer.send(request);
+    BOOST_REQUIRE(peer.receive(reply_wait()).has_value());
+    peer.send(request);
+    BOOST_TEST(!peer.receive(silence_wait()).has_value());
+
+    BOOST_TEST(fixture.invocations.load() == 1);
+    const auto stats = fixture.server.duplicate_stats();
+    BOOST_TEST(stats.replayed == 0U);
+    BOOST_TEST(stats.dropped_without_reply == 1U);
+}
+
+// Requirements 3.3, 3.4 and 5.2: a budget that holds one reply evicts the
+// older one for the newer, and a duplicate of the evicted exchange is dropped,
+// not handled again.
+BOOST_AUTO_TEST_CASE(test_evicted_reply_is_dropped_and_counted,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    // Learn how large one reply is, then size a budget to exactly that.
+    std::size_t reply_size = 0;
+    {
+        counting_server probe;
+        raw_coap_peer peer{probe.server.bound_port()};
+        peer.send(request_vote_datagram(CoapPDU::COAP_CONFIRMABLE, 0x4000, 7));
+        const auto reply = peer.receive(reply_wait());
+        BOOST_REQUIRE(reply.has_value());
+        reply_size = reply->size();
+    }
+
+    kythira::coap_server_config config;
+    config.duplicate_reply_cache_bytes = reply_size;
+    counting_server fixture{config};
+    raw_coap_peer peer{fixture.server.bound_port()};
+    const auto older = request_vote_datagram(CoapPDU::COAP_CONFIRMABLE, 0x4001, 7);
+    const auto newer = request_vote_datagram(CoapPDU::COAP_CONFIRMABLE, 0x4002, 7);
+
+    peer.send(older);
+    BOOST_REQUIRE(peer.receive(reply_wait()).has_value());
+    peer.send(newer);
+    BOOST_REQUIRE(peer.receive(reply_wait()).has_value());
+
+    peer.send(older);
+    BOOST_TEST(!peer.receive(silence_wait()).has_value(), "an evicted reply was replayed");
+    peer.send(newer);
+    BOOST_TEST(peer.receive(reply_wait()).has_value(), "the newest reply was not kept");
+
+    BOOST_TEST(fixture.invocations.load() == 2);
+    const auto stats = fixture.server.duplicate_stats();
+    BOOST_TEST(stats.evicted == 1U);
+    BOOST_TEST(stats.dropped_without_reply == 1U);
+    BOOST_TEST(stats.replayed == 1U);
+}
+
+// Requirement 5.3: the client's first reply is lost on the way back. The
+// retransmission is answered from the cache, the RPC succeeds, and the
+// handler ran once.
+BOOST_AUTO_TEST_CASE(test_rpc_survives_a_lost_reply,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    counting_server fixture;
+    kythira::testing::lossy_udp_relay relay{fixture.server.bound_port(),
+                                            kythira::testing::lossy_udp_relay::drop_nth(
+                                                kythira::testing::relay_direction::to_client, 0)};
+
+    test_client client{
+        {{peer_node_id, endpoint_for(relay.port())}}, fast_client_config(), test_metrics{}};
+    const kythira::request_vote_request<> request{21, 1, 0, 0};
+    const auto response =
+        client.send_request_vote(peer_node_id, request, std::chrono::seconds{15}).get();
+    BOOST_TEST(response.term() == 21U);
+    BOOST_TEST(response.vote_granted());
+
+    BOOST_TEST(relay.dropped() == 1U, "the relay never lost the reply");
+    BOOST_TEST(fixture.invocations.load() == 1);
+    BOOST_TEST(fixture.server.duplicate_stats().replayed == 1U);
+}
+
+// Requirements 2.1, 2.2 and 5.4: the same under OSCORE. The retransmission
+// repeats its Partial IV, so it only gets an answer because the check runs
+// before verification -- and the answer is the protected reply already sent,
+// byte for byte, not a second encryption.
+BOOST_AUTO_TEST_CASE(test_oscore_rpc_survives_a_lost_reply_with_an_identical_replay,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    kythira::coap_server_config server_config;
+    server_config.security = oscore_security(false);
+    counting_server fixture{server_config};
+    kythira::testing::lossy_udp_relay relay{fixture.server.bound_port(),
+                                            kythira::testing::lossy_udp_relay::drop_nth(
+                                                kythira::testing::relay_direction::to_client, 0)};
+
+    auto client_config = fast_client_config();
+    client_config.security = oscore_security(true);
+    test_client client{{{peer_node_id, endpoint_for(relay.port())}}, client_config, test_metrics{}};
+    const kythira::request_vote_request<> request{31, 1, 0, 0};
+    const auto response =
+        client.send_request_vote(peer_node_id, request, std::chrono::seconds{20}).get();
+    BOOST_TEST(response.term() == 31U);
+
+    const auto replies = relay.sent(kythira::testing::relay_direction::to_client);
+    BOOST_REQUIRE(replies.size() >= 2U);
+    BOOST_TEST(replies[0].dropped);
+    BOOST_TEST(replies[0].datagram == replies[1].datagram,
+               "the replayed OSCORE reply was not the one originally sent");
+    BOOST_TEST(fixture.invocations.load() == 1);
+    BOOST_TEST(fixture.server.duplicate_stats().replayed == 1U);
+}
+
+// Requirements 1.3, 1.4 and 5.5: a 2.31 Continue is lost mid-transfer. The
+// retransmitted block is answered from the cache without touching the
+// reassembly buffer, so the body arrives intact rather than with a block
+// appended twice or the transfer reset.
+BOOST_AUTO_TEST_CASE(test_block1_transfer_survives_a_lost_continue,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    kythira::coap_server_config server_config;
+    server_config.enable_block_transfer = true;
+    server_config.max_block_size = 256;
+    test_server server{loopback, ephemeral_port, server_config, test_metrics{}};
     std::atomic<int> invocations{0};
-    server.register_request_vote_handler(
-        [&invocations](const kythira::request_vote_request<>& request) {
+    std::vector<std::byte> received;
+    server.register_install_snapshot_handler(
+        [&](const kythira::install_snapshot_request<>& request) {
             ++invocations;
-            return kythira::request_vote_response<>{request.term(), true};
+            received = request.data();
+            return kythira::install_snapshot_response<>{request.last_included_index()};
         });
     server.start();
 
-    test_client client{
-        {{peer_node_id, endpoint_for(server.bound_port())}}, fast_client_config(), test_metrics{}};
-    const kythira::request_vote_request<> request{1, 1, 0, 0};
-    const auto response =
-        client.send_request_vote(peer_node_id, request, std::chrono::seconds{15}).get();
-    BOOST_TEST(response.vote_granted());
+    // Lose the third 2.31 Continue (0x5F) on its way back.
+    constexpr std::uint8_t coap_code_continue = 0x5F;
+    std::size_t continues_seen = 0;
+    kythira::testing::lossy_udp_relay relay{
+        server.bound_port(),
+        [&continues_seen](kythira::testing::relay_direction direction, std::size_t,
+                          const std::vector<std::uint8_t>& datagram) {
+            return direction == kythira::testing::relay_direction::to_client &&
+                   datagram.size() > 1 && datagram[1] == coap_code_continue &&
+                   continues_seen++ == 2;
+        }};
 
-    // The handler must have run exactly once: no spurious retransmission
-    // reached it, and no duplicate was processed twice.
-    BOOST_TEST(invocations.load() == 1, "handler ran " << invocations.load() << " times");
+    auto config = fast_client_config();
+    config.enable_block_transfer = true;
+    config.max_block_size = 256;
+    test_client client{{{peer_node_id, endpoint_for(relay.port())}}, config, test_metrics{}};
+
+    std::vector<std::byte> snapshot(4 * 1024);
+    for (std::size_t i = 0; i < snapshot.size(); ++i) {
+        snapshot[i] = static_cast<std::byte>((i * 7) & 0xFF);
+    }
+    kythira::install_snapshot_request<> request{};
+    request._term = 1;
+    request._leader_id = 1;
+    request._last_included_index = 515;
+    request._data = snapshot;
+    request._done = true;
+
+    const auto response =
+        client.send_install_snapshot(peer_node_id, request, std::chrono::seconds{60}).get();
+    BOOST_TEST(response.term() == 515U);
+    BOOST_TEST(relay.dropped() == 1U, "the relay never lost a 2.31");
+    BOOST_TEST(invocations.load() == 1);
+    BOOST_TEST((received == snapshot), "reassembled " << received.size() << " bytes, wrong body");
+    BOOST_TEST(server.duplicate_stats().replayed == 1U);
 
     server.stop();
 }
@@ -739,6 +1046,33 @@ BOOST_AUTO_TEST_CASE(test_edhoc_bootstrap_happens_once,
     BOOST_TEST(received.load() == 4U * 1024U);
 
     server.stop();
+}
+
+// Requirement 2.3: message_2 is lost on its way to the initiator. The
+// retransmitted message_1 must not reach the responder again -- it would
+// start a second handshake -- and is answered by resending message_2, so the
+// bootstrap completes instead of stalling until it times out.
+BOOST_AUTO_TEST_CASE(test_edhoc_bootstrap_survives_a_lost_message_2,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    kythira::coap_server_config server_config;
+    server_config.security = edhoc_security(false);
+    counting_server fixture{server_config};
+    kythira::testing::lossy_udp_relay relay{fixture.server.bound_port(),
+                                            kythira::testing::lossy_udp_relay::drop_nth(
+                                                kythira::testing::relay_direction::to_client, 0)};
+
+    auto client_config = fast_client_config();
+    client_config.security = edhoc_security(true);
+    test_client client{{{peer_node_id, endpoint_for(relay.port())}}, client_config, test_metrics{}};
+
+    const kythira::request_vote_request<> request{12, 7, 1, 11};
+    const auto response =
+        client.send_request_vote(peer_node_id, request, std::chrono::seconds{60}).get();
+    BOOST_TEST(response.term() == 12U);
+
+    BOOST_TEST(relay.dropped() == 1U, "the relay never lost message_2");
+    BOOST_TEST(fixture.invocations.load() == 1);
+    BOOST_TEST(fixture.server.duplicate_stats().replayed >= 1U);
 }
 
 // A peer presenting the wrong credential must fail the handshake, the failure

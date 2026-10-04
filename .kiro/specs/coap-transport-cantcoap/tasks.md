@@ -84,7 +84,11 @@ the socket. That principle paid for itself the first time it was tested.
   - [x] 4.2 `MAX_RETRANSMIT` exhaustion rejects with `coap_timeout_error`
   - [x] 4.3 Token correlation to exactly one pending future
   - [x] 4.4 Duplicate suppression by Message ID via `received_message_info`, on
-        both client and server, with a 60-second window
+        both client and server, with a 60-second window. Since replaced by
+        `coap_exchange_table` (247 s, keyed on peer, Message ID and token), and
+        on the server a duplicate confirmable request is now answered with the
+        stored reply rather than discarded: see
+        `.kiro/specs/coap-cantcoap-duplicate-replay/`.
   - [x] 4.5 Non-confirmable messages are sent without retransmission tracking
 
 - [x] 5. Block-wise transfer

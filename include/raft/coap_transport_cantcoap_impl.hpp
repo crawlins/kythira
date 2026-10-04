@@ -26,7 +26,9 @@
 //
 //   PDU encode/parse   cantcoap's CoapPDU
 //   UDP socket + loop  new here (socket/recvfrom/sendto + a timer tick)
-//   retransmit/dedup   pending_message, received_message_info
+//   retransmit/dedup   pending_message, coap_exchange_table (which also keeps
+//                      each sent reply, so the server answers a retransmitted
+//                      request by replaying it, as RFC 7252 Section 4.5 asks)
 //   block-wise         block_option (coap_block_option.hpp) + our own sequencing
 //   OSCORE             oscore::security_context (raft/oscore.hpp)
 //   EDHOC bootstrap    coap_edhoc_bootstrap.hpp over /.well-known/edhoc
@@ -1387,7 +1389,9 @@ public:
           _bind_port{bind_port},
           _actual_bound_port{bind_port},
           _config{std::move(config)},
-          _metrics{std::move(metrics)} {
+          _metrics{std::move(metrics)},
+          _seen{coap_exchange_lifetime,
+                coap_reply_cache_limits{_config.duplicate_reply_cache_bytes}} {
         kythira::coap_utils::validate_registry_content_formats(_registry);
         auto [selected, security] = cantcoap_detail::plan_security(_config, "server");
         _secure = selected == cantcoap_detail::channel::oscore;
@@ -1519,6 +1523,24 @@ public:
     /// requested port unchanged, matching the other backends.
     [[nodiscard]] auto bound_port() const -> port_type { return _actual_bound_port; }
 
+    /// What the server did with duplicate requests
+    /// (.kiro/specs/coap-cantcoap-duplicate-replay/ Requirement 5.2).
+    struct duplicate_reply_stats {
+        /// Duplicates answered by resending the stored reply.
+        std::uint64_t replayed;
+        /// Duplicates dropped because no reply was stored for them: still being
+        /// handled, non-confirmable, answered with nothing, or the reply had
+        /// expired or been evicted.
+        std::uint64_t dropped_without_reply;
+        /// Stored replies evicted to stay within duplicate_reply_cache_bytes.
+        std::uint64_t evicted;
+    };
+
+    [[nodiscard]] auto duplicate_stats() const -> duplicate_reply_stats {
+        const std::lock_guard lock(_mutex);
+        return {_duplicates_replayed.load(), _duplicates_dropped.load(), _seen.replies().evicted};
+    }
+
     [[nodiscard]] static constexpr auto backend_available() -> bool {
 #ifdef CANTCOAP_AVAILABLE
         return true;
@@ -1569,8 +1591,75 @@ private:
         }
     }
 
+    /// The message layer: duplicate detection on the outer message, then
+    /// serve() for anything new.
+    ///
+    /// The check runs before OSCORE and EDHOC on purpose. A retransmitted
+    /// OSCORE request repeats its Partial IV, so a check after verification is
+    /// never reached: the replay window rejects the copy first. And the reply
+    /// stored is the one finish_reply() sent, already OSCORE-protected, so a
+    /// replay sends the same ciphertext again instead of encrypting a second
+    /// time under one nonce. An EDHOC message is never handed to the responder
+    /// twice; a lost message_2 is answered by resending it.
     auto handle_datagram(std::uint8_t* data, int length, const cantcoap_detail::peer_address& from)
         -> void {
+        CoapPDU outer(data, length);
+        if (outer.validate() != 1) {
+            return;  // Malformed: no Message ID to key on, nothing to answer.
+        }
+        if (outer.getType() == CoapPDU::COAP_ACKNOWLEDGEMENT ||
+            outer.getType() == CoapPDU::COAP_RESET) {
+            return;  // This server sends no confirmable messages to be acknowledged.
+        }
+        const auto peer = from.key();
+        const auto message_id = outer.getMessageID();
+        const auto token = cantcoap_detail::token_of(outer);
+        const bool confirmable = outer.getType() == CoapPDU::COAP_CONFIRMABLE;
+
+        coap_duplicate_lookup lookup;
+        {
+            const std::lock_guard lock(_mutex);
+            lookup = _seen.classify(peer, message_id, token);
+        }
+        switch (lookup.kind) {
+            case coap_duplicate_kind::replay:
+                // Outside _mutex: a DTLS send takes the layer's own locks. The
+                // shared pointer keeps the bytes alive past a concurrent eviction.
+                transmit(from, *lookup.reply);
+                ++_duplicates_replayed;
+                return;
+            case coap_duplicate_kind::drop:
+                ++_duplicates_dropped;
+                return;
+            case coap_duplicate_kind::fresh:
+                break;
+        }
+
+        // serve() runs inline on this thread, so the one reply it sends, if
+        // any, lands here. Only a confirmable request's reply is kept: the
+        // answer to a non-confirmable one is not repeated (RFC 7252 Section
+        // 4.5), and a request answered with nothing stays recorded so its
+        // copies are dropped rather than handled again.
+        _sent_reply.reset();
+        const auto keep_reply = [&] {
+            if (confirmable && _sent_reply) {
+                const std::lock_guard lock(_mutex);
+                _seen.attach_reply(peer, message_id, token, std::move(*_sent_reply));
+            }
+            _sent_reply.reset();
+        };
+        try {
+            serve(data, length, from);
+        } catch (...) {
+            keep_reply();
+            throw;
+        }
+        keep_reply();
+    }
+
+    /// Everything above the message layer, for a request seen for the first
+    /// time: EDHOC routing, OSCORE verification, Block1 and the handlers.
+    auto serve(std::uint8_t* data, int length, const cantcoap_detail::peer_address& from) -> void {
         std::vector<std::byte> plain(reinterpret_cast<std::byte*>(data),
                                      reinterpret_cast<std::byte*>(data) + length);
         oscore::request_binding binding;
@@ -1635,10 +1724,6 @@ private:
         }
 
         const std::lock_guard lock(_mutex);
-        if (is_duplicate(from.key(), pdu.getMessageID(), cantcoap_detail::token_of(pdu))) {
-            return;  // Requirement 4.4.
-        }
-
         const auto path = cantcoap_detail::read_uri_path(pdu);
         const auto options = cantcoap_detail::scan_options(pdu);
 
@@ -1652,7 +1737,9 @@ private:
 
         // Block1 reassembly (Requirement 5.1). Keyed by path: this backend
         // holds one exchange per peer at a time, which is what the Raft
-        // transport actually does.
+        // transport actually does. A retransmitted block never gets here --
+        // handle_datagram() replays its 2.31 -- so a lost reply cannot reset
+        // or extend the buffer.
         if (options.block1) {
             const auto expected =
                 static_cast<std::size_t>(options.block1->block_number) * options.block1->block_size;
@@ -1786,6 +1873,14 @@ private:
             const auto inner = oscore::parse_message(bytes);
             bytes = oscore::serialize_message(_reply_context->protect_response(inner, binding));
         }
+        // Kept before DTLS: a replay must go out as a fresh DTLS record, but
+        // as these exact CoAP (and OSCORE) bytes.
+        _sent_reply = bytes;
+        transmit(to, bytes);
+    }
+
+    auto transmit(const cantcoap_detail::peer_address& to, const std::vector<std::byte>& bytes)
+        -> void {
         if (_dtls) {
             _dtls->send(to, bytes);
         } else {
@@ -1802,16 +1897,10 @@ private:
     /// milliseconds; the alternative, a reply sent later from another thread,
     /// would put a second writer on the socket.
     auto handle_edhoc_request(CoapPDU& request, const cantcoap_detail::peer_address& from) -> void {
+        // A retransmitted EDHOC message never gets here: it would read a
+        // repeated message_1 as message_3. handle_datagram() resends the reply
+        // to it instead, which is what lets a lost message_2 recover.
         const oscore::request_binding no_binding;
-        {
-            // A retransmitted EDHOC message must not reach the responder twice:
-            // it would read a repeated message_1 as message_3.
-            const std::lock_guard lock(_mutex);
-            if (is_duplicate(from.key(), request.getMessageID(),
-                             cantcoap_detail::token_of(request))) {
-                return;
-            }
-        }
         if (request.getCode() != CoapPDU::COAP_POST) {
             send_error(request, from, no_binding, CoapPDU::COAP_METHOD_NOT_ALLOWED);
             return;
@@ -1998,11 +2087,6 @@ private:
         }
         finish_reply(*reply, to, binding);
     }
-
-    [[nodiscard]] auto is_duplicate(const std::string& peer, std::uint16_t message_id,
-                                    std::string_view token) -> bool {
-        return _seen.check_and_record(peer, message_id, token);
-    }
 #endif  // CANTCOAP_AVAILABLE
 
     serializer_type _serializer;
@@ -2031,6 +2115,11 @@ private:
     /// Set in DTLS mode between start() and stop(). Loop thread only, except
     /// in stop() once the loop has been joined.
     std::unique_ptr<cantcoap_detail::dtls_layer> _dtls;
+    /// The bytes finish_reply() last sent, for handle_datagram() to keep
+    /// against the exchange it is serving. Loop thread only.
+    std::optional<std::vector<std::byte>> _sent_reply;
+    std::atomic<std::uint64_t> _duplicates_replayed{0};
+    std::atomic<std::uint64_t> _duplicates_dropped{0};
 
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
@@ -2043,6 +2132,8 @@ private:
 
     mutable std::mutex _mutex;
     std::atomic<bool> _running{false};
+    /// Duplicate records and, within duplicate_reply_cache_bytes, the reply
+    /// sent for each. Guarded by `_mutex`.
     coap_exchange_table _seen;
     std::vector<std::byte> _block1_assembly;
 
