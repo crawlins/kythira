@@ -2017,7 +2017,7 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
 #else
         // Stub implementation when libcoap is not available
         std::vector<std::byte> response_data;
-        it->second->resolve_callback(std::move(response_data), response_media_type);
+        it->second->resolve_callback(std::move(response_data), _registry.default_media_type());
         _pending_requests.erase(it);
 #endif
 
