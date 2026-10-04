@@ -8,6 +8,7 @@
 #include <raft/error_handler.hpp>
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
+#include <memory>
 #endif
 #include <vector>
 #include <chrono>
@@ -36,8 +37,9 @@ struct GlobalFixture {
         int argc = 1;
         char* argv[] = {const_cast<char*>("test"), nullptr};
         char** argv_ptr = argv;
-        folly::init(&argc, &argv_ptr);
+        _init = std::make_unique<folly::Init>(&argc, &argv_ptr);
     }
+    std::unique_ptr<folly::Init> _init;
 };
 #endif
 

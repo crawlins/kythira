@@ -67,7 +67,7 @@ struct SdkFixture {
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
         int argc = boost::unit_test::framework::master_test_suite().argc;
         char** argv = boost::unit_test::framework::master_test_suite().argv;
-        folly::init(&argc, &argv, false);
+        _init = std::make_unique<folly::Init>(&argc, &argv, false);
 #endif
         Aws::InitAPI(_opts);
     }
@@ -79,6 +79,9 @@ struct SdkFixture {
 
 private:
     Aws::SDKOptions _opts;
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+    std::unique_ptr<folly::Init> _init;
+#endif
 };
 
 BOOST_TEST_GLOBAL_FIXTURE(SdkFixture);

@@ -5,6 +5,7 @@
 #include <boost/test/unit_test.hpp>
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
+#include <memory>
 #endif
 #include <raft/error_handler.hpp>
 #include <raft/future_default.hpp>
@@ -21,10 +22,11 @@ struct FollyInitFixture {
             int argc = 1;
             char* argv_data[] = {const_cast<char*>("test"), nullptr};
             char** argv = argv_data;
-            folly::init(&argc, &argv);
+            _init = std::make_unique<folly::Init>(&argc, &argv);
             initialized = true;
         }
     }
+    std::unique_ptr<folly::Init> _init;
 };
 #endif
 

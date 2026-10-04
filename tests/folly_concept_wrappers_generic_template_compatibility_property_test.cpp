@@ -5,6 +5,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <folly/init/Init.h>
+#include <memory>
 #include <raft/future.hpp>
 #include <concepts/future.hpp>
 #include <exception>
@@ -29,10 +30,11 @@ struct FollyInitFixture {
             int argc = 1;
             char* argv_data[] = {const_cast<char*>("test"), nullptr};
             char** argv = argv_data;
-            folly::init(&argc, &argv);
+            _init = std::make_unique<folly::Init>(&argc, &argv);
             initialized = true;
         }
     }
+    std::unique_ptr<folly::Init> _init;
 };
 
 BOOST_TEST_GLOBAL_FIXTURE(FollyInitFixture);
