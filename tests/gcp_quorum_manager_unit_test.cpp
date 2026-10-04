@@ -816,6 +816,167 @@ BOOST_AUTO_TEST_CASE(decommission_zone_operation_poll_fault_returns_exceptional_
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// ── MIG timeout rollback (group-scale-up-rollback task 8) ───────────────────
+
+namespace {
+
+/// A MIG of three labelled voters whose `resize` behaves like the real one:
+/// growing creates members in `launch_action`, and shrinking deletes members
+/// the MIG chooses itself, modelled as oldest first. That choice is what made
+/// the old blind restore cost a voter.
+struct mig_cloud {
+    fakes::fake_compute f;
+    const std::string zone = "us-central1-a";
+    const std::string mig = "kythira-mig-a";
+    std::vector<std::string> voters{"kythira-mig-a-v1", "kythira-mig-a-v2", "kythira-mig-a-v3"};
+    std::string launch_action = "CREATING";  ///< Empty: create nothing.
+    bool finish_creating_on_grow = false;
+    std::string last_launch;
+    int blind_deletes = 0;
+    int launches = 0;
+
+    mig_cloud() {
+        f.migs->add(mig, 0);
+        for (std::size_t i = 0; i < voters.size(); ++i) {
+            seed(voters[i], "NONE",
+                 {{"kythira-cluster", "test-cluster"}, {"kythira-node-id", std::to_string(i + 1)}});
+        }
+        f.migs->on_resize = [this](const std::string& name, std::int32_t from, std::int32_t to) {
+            auto& members = f.migs->managed[name];
+            if (to > from && finish_creating_on_grow) {
+                for (auto& mi : members) {
+                    if (mi.current_action() == "CREATING") {
+                        mi.set_current_action("NONE");
+                    }
+                }
+            }
+            for (auto n = from; n < to && !launch_action.empty(); ++n) {
+                last_launch = mig + "-n" + std::to_string(++launches);
+                f.instances->add(zone, last_launch, "RUNNING");
+                members.push_back(managed(last_launch, launch_action));
+            }
+            while (static_cast<std::int32_t>(members.size()) > to) {
+                members.erase(members.begin());
+                ++blind_deletes;
+            }
+        };
+    }
+
+    [[nodiscard]] static auto url(const std::string& name) -> std::string {
+        return "https://www.googleapis.com/compute/v1/projects/test-project/zones/"
+               "us-central1-a/instances/" +
+               name;
+    }
+    [[nodiscard]] static auto managed(const std::string& name, const std::string& action)
+        -> fakes::cv1::ManagedInstance {
+        fakes::cv1::ManagedInstance mi;
+        mi.set_instance(url(name));
+        mi.set_current_action(action);
+        return mi;
+    }
+
+    void seed(const std::string& name, const std::string& action,
+              std::map<std::string, std::string> labels = {}) {
+        f.instances->add(zone, name, "RUNNING", std::move(labels));
+        f.migs->managed[mig].push_back(managed(name, action));
+        f.migs->migs[mig].set_target_size(f.migs->migs[mig].target_size() + 1);
+    }
+
+    [[nodiscard]] auto members() const -> std::vector<std::string> {
+        std::vector<std::string> out;
+        for (const auto& mi : f.migs->managed.at(mig)) {
+            out.push_back(kythira::gcp_mig_detail::last_path_segment(mi.instance()));
+        }
+        return out;
+    }
+    [[nodiscard]] auto target_size() const -> std::int32_t {
+        return f.migs->migs.at(mig).target_size();
+    }
+};
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(gcp_mig_timeout_rollback)
+
+// The new instance never finishes CREATING. The old path resized back and
+// the MIG deleted a member of its choosing; here, the oldest: a voter.
+BOOST_AUTO_TEST_CASE(a_creating_instance_is_deleted_by_url_and_every_voter_kept) {
+    mig_cloud cloud;
+    auto mgr = make_mig(cloud.f);
+
+    const auto msg = what_of(mgr.provision_node("us-central1-a", std::nullopt));
+    BOOST_CHECK_NE(msg.find("rollback: removed " + cloud.last_launch + " (fresh, CREATING)"),
+                   std::string::npos);
+    BOOST_CHECK(cloud.members() == cloud.voters);
+    BOOST_CHECK_EQUAL(cloud.target_size(), 3);
+    BOOST_CHECK_EQUAL(cloud.blind_deletes, 0);
+    BOOST_CHECK_EQUAL(cloud.f.migs->resize_calls, 1);  // The grow; no blind restore.
+    BOOST_CHECK(cloud.f.migs->deleted ==
+                std::vector<std::string>{mig_cloud::url(cloud.last_launch)});
+    BOOST_CHECK(cloud.f.migs->every_delete_skipped_validation_errors);
+}
+
+// An unlabelled member the MIG was still creating before the resize, which
+// finishes during the wait, is not this provision's: the old unlabelled-only
+// test adopted it.
+BOOST_AUTO_TEST_CASE(a_pre_existing_creating_instance_is_neither_adopted_nor_deleted) {
+    mig_cloud cloud;
+    cloud.seed("kythira-mig-a-early", "CREATING");
+    cloud.finish_creating_on_grow = true;
+    auto mgr = make_mig(cloud.f);
+
+    const auto msg = what_of(mgr.provision_node("us-central1-a", std::nullopt));
+    BOOST_CHECK_NE(msg.find("rollback: removed " + cloud.last_launch), std::string::npos);
+    const auto members = cloud.members();
+    BOOST_CHECK(std::ranges::find(members, "kythira-mig-a-early") != members.end());
+    const auto* early = cloud.f.instances->find("us-central1-a", "kythira-mig-a-early");
+    BOOST_REQUIRE(early != nullptr);
+    BOOST_CHECK(early->labels().find("kythira-node-id") == early->labels().end());
+}
+
+BOOST_AUTO_TEST_CASE(nothing_created_resizes_back_and_audits) {
+    mig_cloud cloud;
+    cloud.launch_action.clear();
+    auto mgr = make_mig(cloud.f);
+
+    const auto msg = what_of(mgr.provision_node("us-central1-a", std::nullopt));
+    BOOST_CHECK_NE(msg.find("rollback: desired size restored to 3"), std::string::npos);
+    BOOST_CHECK_EQUAL(msg.find("lost member"), std::string::npos);
+    BOOST_CHECK_EQUAL(cloud.f.migs->resize_calls, 2);
+    BOOST_CHECK(cloud.members() == cloud.voters);
+}
+
+// Task 8.3: the restoring resize's result used to be discarded.
+BOOST_AUTO_TEST_CASE(a_failed_restore_is_reported) {
+    mig_cloud cloud;
+    cloud.launch_action.clear();
+    cloud.f.zone_ops->on_get =
+        [&](const auto& req) -> google::cloud::StatusOr<fakes::cv1::Operation> {
+        if (cloud.f.migs->resize_calls >= 2) {
+            return fakes::make_failed_operation(req.operation(), "QUOTA_EXCEEDED", "no room");
+        }
+        return fakes::make_operation(req.operation());
+    };
+    auto mgr = make_mig(cloud.f);
+
+    const auto msg = what_of(mgr.provision_node("us-central1-a", std::nullopt));
+    BOOST_CHECK_NE(msg.find("restoring the desired size failed"), std::string::npos);
+    BOOST_CHECK_NE(msg.find("no room"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(current_actions_map_onto_the_planners_classes) {
+    using kythira::gcp_mig_detail::rollback_state;
+    using kythira::group_rollback::member_state;
+    BOOST_CHECK(rollback_state("NONE") == member_state::live);
+    BOOST_CHECK(rollback_state("CREATING") == member_state::pending);
+    BOOST_CHECK(rollback_state("VERIFYING") == member_state::pending);
+    BOOST_CHECK(rollback_state("RECREATING") == member_state::pending);
+    BOOST_CHECK(rollback_state("DELETING") == member_state::terminal);
+    BOOST_CHECK(rollback_state("ABANDONING") == member_state::terminal);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 #else  // !KYTHIRA_HAS_GCP_SDK
 
 BOOST_AUTO_TEST_CASE(skipped_no_gcp_sdk) {

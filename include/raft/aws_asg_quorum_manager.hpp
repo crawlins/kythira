@@ -10,6 +10,7 @@
 #include <raft/aws_ec2_quorum_manager.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
+#include <raft/group_scale_rollback.hpp>
 #include <raft/quorum_management.hpp>
 
 #ifdef KYTHIRA_HAS_AWS_SDK
@@ -17,6 +18,8 @@
 #include <aws/autoscaling/AutoScalingClient.h>
 #include <aws/autoscaling/model/DescribeAutoScalingGroupsRequest.h>
 #include <aws/autoscaling/model/DescribeAutoScalingInstancesRequest.h>
+#include <aws/autoscaling/model/LifecycleState.h>
+#include <aws/autoscaling/model/SetInstanceProtectionRequest.h>
 #include <aws/autoscaling/model/TerminateInstanceInAutoScalingGroupRequest.h>
 #include <aws/autoscaling/model/UpdateAutoScalingGroupRequest.h>
 #include <aws/core/client/ClientConfiguration.h>
@@ -43,6 +46,45 @@
 #include <vector>
 
 namespace kythira {
+
+namespace aws_asg_detail {
+
+/// `SetInstanceProtection` accepts at most 50 instance ids per call.
+inline constexpr std::size_t protection_batch = 50;
+
+/// @brief Map an Auto Scaling lifecycle name onto the rollback planner's
+///        three classes (group-scale-up-rollback design, lifecycle table).
+///
+/// `InService` and `Standby` serve; every `Terminating*`, `Terminated` and
+/// `Detach*` state is leaving; everything else, including `Pending*`,
+/// `Quarantined`, `ReplacingRootVolume*` and `Warmed:*`, is on its way in.
+[[nodiscard]] inline auto rollback_state(std::string_view lifecycle)
+    -> group_rollback::member_state {
+    if (lifecycle == "InService" || lifecycle == "Standby") {
+        return group_rollback::member_state::live;
+    }
+    if (lifecycle.starts_with("Terminat") || lifecycle.starts_with("Detach") ||
+        lifecycle.starts_with("Warmed:Terminat")) {
+        return group_rollback::member_state::terminal;
+    }
+    return group_rollback::member_state::pending;
+}
+
+/// True for the exception names AWS uses when the caller's policy lacks an
+/// action, as opposed to a transient or input error.
+[[nodiscard]] inline auto is_permission_error(std::string_view exception_name) -> bool {
+    return exception_name == "AccessDenied" || exception_name == "AccessDeniedException" ||
+           exception_name == "UnauthorizedOperation" || exception_name == "UnauthorizedAccess";
+}
+
+/// True when Auto Scaling refused a call only because the group is busy, so
+/// the same call can succeed once the current scaling activity ends.
+[[nodiscard]] inline auto is_group_busy(std::string_view exception_name) -> bool {
+    return exception_name.starts_with("ScalingActivityInProgress") ||
+           exception_name.starts_with("ResourceContention");
+}
+
+}  // namespace aws_asg_detail
 
 // ============================================================================
 // aws_asg_quorum_manager_config
@@ -99,33 +141,13 @@ public:
     ///
     /// Verifies that `cluster_name` is non-empty, every topology group has a
     /// corresponding ASG entry, and every configured ASG uses EC2 health checks.
+    /// Then protects from scale-in every adopted member of this cluster that
+    /// is not protected yet (group-scale-up-rollback Requirement 4.3).
     ///
-    /// @throws std::invalid_argument if any validation fails.
-    /// @throws std::runtime_error if `DescribeAutoScalingGroups` fails.
+    /// @throws std::invalid_argument if any validation fails, including when
+    ///         the caller lacks `autoscaling:SetInstanceProtection`.
     explicit aws_asg_quorum_manager(aws_asg_quorum_manager_config cfg) : _cfg(std::move(cfg)) {
-        if (_cfg.cluster_name.empty()) {
-            throw std::invalid_argument("aws_asg_quorum_manager: cluster_name must be non-empty");
-        }
-        if (_cfg.asg_by_group.empty()) {
-            throw std::invalid_argument("aws_asg_quorum_manager: asg_by_group must be non-empty");
-        }
-        if (_cfg.node_port == 0) {
-            throw std::invalid_argument("aws_asg_quorum_manager: node_port must be non-zero");
-        }
-        for (const auto& gt : _cfg.topology.groups) {
-            if (_cfg.asg_by_group.find(gt.group_id) == _cfg.asg_by_group.end()) {
-                throw std::invalid_argument(
-                    "aws_asg_quorum_manager: no ASG configured for group: " + gt.group_id);
-            }
-        }
-        if constexpr (instance_is_node_id) {
-            if (!aws_ec2_rules::valid_region(_cfg.aws.region)) {
-                throw std::invalid_argument(
-                    "aws_asg_quorum_manager: aws.region must name a region when the node id is "
-                    "the instance (got '" +
-                    _cfg.aws.region + "')");
-            }
-        }
+        validate_config();
         Aws::Client::ClientConfiguration client_cfg;
         if (!_cfg.aws.region.empty()) {
             client_cfg.region = _cfg.aws.region;
@@ -144,33 +166,24 @@ public:
             _asg = std::make_shared<Aws::AutoScaling::AutoScalingClient>(client_cfg);
             _ec2 = std::make_shared<Aws::EC2::EC2Client>(client_cfg);
         }
-        // kythira determines liveness via DescribeInstanceStatus (instance state ==
-        // running). The ASG must use the same signal — EC2 health checks — so that
-        // the ASG and kythira agree on which instances are healthy and the ASG does
-        // not replace instances that kythira still considers live.
-        bool validate_hc = true;
-        fiu_do_on("raft/aws/asg/skip_health_check_validation", validate_hc = false;);
-        if (validate_hc) {
-            Aws::AutoScaling::Model::DescribeAutoScalingGroupsRequest chk;
-            for (const auto& kv : _cfg.asg_by_group) {
-                chk.AddAutoScalingGroupNames(kv.second);
-            }
-            auto out = _asg->DescribeAutoScalingGroups(chk);
-            if (!out.IsSuccess()) {
-                throw std::invalid_argument(
-                    "aws_asg_quorum_manager: DescribeAutoScalingGroups failed: " +
-                    std::string(out.GetError().GetMessage()));
-            }
-            for (const auto& asg : out.GetResult().GetAutoScalingGroups()) {
-                if (std::string(asg.GetHealthCheckType()) != "EC2") {
-                    throw std::invalid_argument("aws_asg_quorum_manager: ASG '" +
-                                                std::string(asg.GetAutoScalingGroupName()) +
-                                                "' uses health check type '" +
-                                                std::string(asg.GetHealthCheckType()) +
-                                                "'; kythira requires EC2 health checks");
-                }
-            }
+        validate_groups();
+    }
+
+    /// @brief Constructs the manager over caller-supplied clients instead of
+    ///        ones built from `cfg.aws`.
+    ///
+    /// The seam the mock tests use: client subclasses that override the
+    /// virtual operations stand in for Auto Scaling and EC2. Validates exactly
+    /// as the other constructor does.
+    aws_asg_quorum_manager(aws_asg_quorum_manager_config cfg,
+                           std::shared_ptr<Aws::AutoScaling::AutoScalingClient> asg,
+                           std::shared_ptr<Aws::EC2::EC2Client> ec2)
+        : _cfg(std::move(cfg)), _asg(std::move(asg)), _ec2(std::move(ec2)) {
+        validate_config();
+        if (!_asg || !_ec2) {
+            throw std::invalid_argument("aws_asg_quorum_manager: clients must be non-null");
         }
+        validate_groups();
     }
 
     /// @brief Assesses cluster health from EC2 instance state.
@@ -278,9 +291,18 @@ public:
 
     /// @brief Provisions a new Raft node by incrementing the ASG desired capacity.
     ///
-    /// Waits up to `provision_timeout` for the new instance to reach `InService`
-    /// state and obtain a private IP address.  On timeout, the ASG capacity is
-    /// restored to its original value before returning an exceptional Future.
+    /// Waits up to `provision_timeout` for an instance that was not in the
+    /// group before the increment, in any lifecycle state, to reach `InService`
+    /// and obtain a private IP address. The adopted instance is tagged and
+    /// protected from scale-in, so the group's own scale-in never picks a
+    /// voter.
+    ///
+    /// On timeout the increment is undone without letting Auto Scaling choose
+    /// a victim (group-scale-up-rollback Requirements 2-3): every instance the
+    /// increment launched is terminated by id with
+    /// `ShouldDecrementDesiredCapacity`, and the desired capacity is restored
+    /// by a write only when none was launched. The error ends with what the
+    /// rollback did, e.g. `rollback: removed i-0abc (fresh, Pending)`.
     ///
     /// The `replacing` hint is accepted but unused; the new instance always gets a
     /// fresh EC2 ID and therefore a new `NodeId` (in numeric mode, one allocated
@@ -315,12 +337,13 @@ public:
             }
             int orig_cap = asg_groups[0].GetDesiredCapacity();
 
-            std::vector<std::string> existing_ids;
+            // Every member, whatever its lifecycle: a pre-existing `Pending`
+            // instance that reaches `InService` during the wait is not the
+            // one this increment launched, and must be neither adopted nor
+            // terminated by the rollback.
+            std::vector<std::string> pre_growth;
             for (const auto& inst : asg_groups[0].GetInstances()) {
-                if (inst.GetLifecycleState() ==
-                    Aws::AutoScaling::Model::LifecycleState::InService) {
-                    existing_ids.emplace_back(inst.GetInstanceId());
-                }
+                pre_growth.emplace_back(inst.GetInstanceId());
             }
 
             Aws::AutoScaling::Model::UpdateAutoScalingGroupRequest upd_req;
@@ -354,7 +377,7 @@ public:
                         continue;
                     }
                     std::string iid(inst.GetInstanceId());
-                    if (std::ranges::find(existing_ids, iid) != existing_ids.end()) {
+                    if (std::ranges::find(pre_growth, iid) != pre_growth.end()) {
                         continue;
                     }
                     // Use DescribeInstances to get the private IP for provisioning
@@ -384,11 +407,17 @@ public:
             }
 
             if (new_ec2_id.empty()) {
-                Aws::AutoScaling::Model::UpdateAutoScalingGroupRequest restore;
-                restore.SetAutoScalingGroupName(asg_name);
-                restore.SetDesiredCapacity(orig_cap);
-                _asg->UpdateAutoScalingGroup(restore);
-                throw std::runtime_error("asg provision timeout for group: " + target_group);
+                std::vector<group_rollback::listed_member> final_listing;
+                try {
+                    final_listing = rollback_listing(describe_group(asg_name));
+                } catch (const std::exception&) {
+                    // An empty listing plans a restore: with nothing known to
+                    // be fresh there is nothing to terminate by id.
+                }
+                const auto rollback =
+                    undo_scale_up(asg_name, pre_growth, std::move(final_listing), orig_cap);
+                throw std::runtime_error("asg provision timeout for group: " + target_group + "; " +
+                                         group_rollback::describe(rollback, orig_cap + 1));
             }
 
             NodeId new_id{};
@@ -407,6 +436,14 @@ public:
                 raise_id_floor(new_id);
             }
             apply_tags(new_ec2_id, new_id, target_group);
+            // Not fatal: the node is up and tagged, and the constructor's
+            // reconcile protects it on the next start. Failing the provision
+            // here would orphan a running, tagged instance.
+            if (const auto [name, message] = set_scale_in_protection(asg_name, {new_ec2_id});
+                !name.empty()) {
+                std::cerr << "[aws_asg_quorum_manager::provision_node] SetInstanceProtection for "
+                          << new_ec2_id << " failed: " << name << ": " << message << "\n";
+            }
             Address addr = static_cast<Address>(private_ip + ":" + std::to_string(_cfg.node_port));
             return future_factory_default::makeFuture(peer_info<NodeId, Address>{new_id, addr});
         } catch (const std::exception& ex) {
@@ -441,6 +478,9 @@ public:
     /// `Terminating`/`Terminated`; any other failure is returned.  Polls until the EC2 state leaves
     /// `running` (up to 30 s); success means that was observed, or EC2 no longer knows the
     /// instance.
+    ///
+    /// Scale-in protection does not block this call, so a protected node is
+    /// terminated without clearing its protection first.
     ///
     /// @param node_id Identifier of the node to terminate.
     /// @return void Future on success, exceptional Future on API error or when the
@@ -578,6 +618,255 @@ private:
 
     static auto node_id_str(const NodeId& id) -> std::string {
         return node_id_traits<NodeId>::to_text(id);
+    }
+
+    /// The checks that need no AWS call.
+    void validate_config() const {
+        if (_cfg.cluster_name.empty()) {
+            throw std::invalid_argument("aws_asg_quorum_manager: cluster_name must be non-empty");
+        }
+        if (_cfg.asg_by_group.empty()) {
+            throw std::invalid_argument("aws_asg_quorum_manager: asg_by_group must be non-empty");
+        }
+        if (_cfg.node_port == 0) {
+            throw std::invalid_argument("aws_asg_quorum_manager: node_port must be non-zero");
+        }
+        for (const auto& gt : _cfg.topology.groups) {
+            if (_cfg.asg_by_group.find(gt.group_id) == _cfg.asg_by_group.end()) {
+                throw std::invalid_argument(
+                    "aws_asg_quorum_manager: no ASG configured for group: " + gt.group_id);
+            }
+        }
+        if constexpr (instance_is_node_id) {
+            if (!aws_ec2_rules::valid_region(_cfg.aws.region)) {
+                throw std::invalid_argument(
+                    "aws_asg_quorum_manager: aws.region must name a region when the node id is "
+                    "the instance (got '" +
+                    _cfg.aws.region + "')");
+            }
+        }
+    }
+
+    /// One `DescribeAutoScalingGroups` read of every configured group: the
+    /// health-check type check, then the scale-in protection reconcile.
+    void validate_groups() const {
+        // kythira determines liveness via DescribeInstanceStatus (instance state ==
+        // running). The ASG must use the same signal — EC2 health checks — so that
+        // the ASG and kythira agree on which instances are healthy and the ASG does
+        // not replace instances that kythira still considers live.
+        bool validate_hc = true;
+        fiu_do_on("raft/aws/asg/skip_health_check_validation", validate_hc = false;);
+        if (!validate_hc) {
+            return;
+        }
+        Aws::AutoScaling::Model::DescribeAutoScalingGroupsRequest chk;
+        for (const auto& kv : _cfg.asg_by_group) {
+            chk.AddAutoScalingGroupNames(kv.second);
+        }
+        auto out = _asg->DescribeAutoScalingGroups(chk);
+        if (!out.IsSuccess()) {
+            throw std::invalid_argument(
+                "aws_asg_quorum_manager: DescribeAutoScalingGroups failed: " +
+                std::string(out.GetError().GetMessage()));
+        }
+        for (const auto& asg : out.GetResult().GetAutoScalingGroups()) {
+            if (std::string(asg.GetHealthCheckType()) != "EC2") {
+                throw std::invalid_argument(
+                    "aws_asg_quorum_manager: ASG '" + std::string(asg.GetAutoScalingGroupName()) +
+                    "' uses health check type '" + std::string(asg.GetHealthCheckType()) +
+                    "'; kythira requires EC2 health checks");
+            }
+        }
+        for (const auto& asg : out.GetResult().GetAutoScalingGroups()) {
+            reconcile_scale_in_protection(asg);
+        }
+    }
+
+    /// @brief Protect every adopted member of this cluster in @p asg that is
+    ///        not yet protected (group-scale-up-rollback Requirement 4.3).
+    ///
+    /// Covers clusters adopted before protection existed, and repairs an
+    /// adoption whose protection call failed. Adopted means the EC2 instance
+    /// carries this cluster's `kythira:cluster` and a `kythira:node-id` tag;
+    /// Auto Scaling's own listing carries no EC2 tags, hence the extra read,
+    /// made only when some member is unprotected. A permission error throws
+    /// `std::invalid_argument`, like the other configuration checks; anything
+    /// else is logged, because a transient read failure at startup is not a
+    /// reason to refuse to run.
+    void reconcile_scale_in_protection(const Aws::AutoScaling::Model::AutoScalingGroup& asg) const {
+        const std::string asg_name(asg.GetAutoScalingGroupName());
+        std::vector<std::string> unprotected;
+        for (const auto& inst : asg.GetInstances()) {
+            if (!inst.GetProtectedFromScaleIn() &&
+                inst.GetLifecycleState() == Aws::AutoScaling::Model::LifecycleState::InService) {
+                unprotected.emplace_back(inst.GetInstanceId());
+            }
+        }
+        if (unprotected.empty()) {
+            return;
+        }
+        Aws::EC2::Model::DescribeInstancesRequest req;
+        for (const auto& id : unprotected) {
+            req.AddInstanceIds(id);
+        }
+        auto ec2 = _ec2->DescribeInstances(req);
+        if (!ec2.IsSuccess()) {
+            std::cerr << "[aws_asg_quorum_manager] scale-in protection reconcile for " << asg_name
+                      << " skipped: DescribeInstances: " << ec2.GetError().GetMessage() << "\n";
+            return;
+        }
+        std::vector<std::string> adopted;
+        for (const auto& reservation : ec2.GetResult().GetReservations()) {
+            for (const auto& inst : reservation.GetInstances()) {
+                if (find_tag(inst.GetTags(), "kythira:cluster") == _cfg.cluster_name &&
+                    find_tag(inst.GetTags(), "kythira:node-id").has_value()) {
+                    adopted.emplace_back(inst.GetInstanceId());
+                }
+            }
+        }
+        const auto [name, message] = set_scale_in_protection(asg_name, adopted);
+        if (name.empty()) {
+            return;
+        }
+        if (aws_asg_detail::is_permission_error(name)) {
+            throw std::invalid_argument("aws_asg_quorum_manager: SetInstanceProtection on ASG '" +
+                                        asg_name + "' was refused (" + name + ": " + message +
+                                        "); the role needs autoscaling:SetInstanceProtection");
+        }
+        std::cerr << "[aws_asg_quorum_manager] scale-in protection reconcile for " << asg_name
+                  << " failed: " << name << ": " << message << "\n";
+    }
+
+    /// @brief `SetInstanceProtection(ProtectedFromScaleIn=true)`, in batches
+    ///        of the API's 50-id limit.
+    ///
+    /// @return The first failure's `(exception name, message)`, or two empty
+    ///         strings when every batch succeeded.
+    [[nodiscard]] auto set_scale_in_protection(const std::string& asg_name,
+                                               const std::vector<std::string>& ids) const
+        -> std::pair<std::string, std::string> {
+        for (std::size_t start = 0; start < ids.size(); start += aws_asg_detail::protection_batch) {
+            Aws::AutoScaling::Model::SetInstanceProtectionRequest req;
+            req.SetAutoScalingGroupName(asg_name);
+            req.SetProtectedFromScaleIn(true);
+            const auto stop = std::min(start + aws_asg_detail::protection_batch, ids.size());
+            for (std::size_t i = start; i < stop; ++i) {
+                req.AddInstanceIds(ids[i]);
+            }
+            auto out = _asg->SetInstanceProtection(req);
+            if (!out.IsSuccess()) {
+                return {std::string(out.GetError().GetExceptionName()),
+                        std::string(out.GetError().GetMessage())};
+            }
+        }
+        return {};
+    }
+
+    /// The members of @p asg_name. Throws when the read fails or the group
+    /// is missing, so a caller never mistakes a failed read for an empty group.
+    [[nodiscard]] auto describe_group(const std::string& asg_name) const
+        -> Aws::Vector<Aws::AutoScaling::Model::Instance> {
+        Aws::AutoScaling::Model::DescribeAutoScalingGroupsRequest req;
+        req.AddAutoScalingGroupNames(asg_name);
+        auto out = _asg->DescribeAutoScalingGroups(req);
+        if (!out.IsSuccess()) {
+            throw std::runtime_error("DescribeAutoScalingGroups: " +
+                                     std::string(out.GetError().GetMessage()));
+        }
+        const auto& groups = out.GetResult().GetAutoScalingGroups();
+        if (groups.empty()) {
+            throw std::runtime_error("ASG not found: " + asg_name);
+        }
+        return groups[0].GetInstances();
+    }
+
+    [[nodiscard]] static auto rollback_listing(
+        const Aws::Vector<Aws::AutoScaling::Model::Instance>& instances)
+        -> std::vector<group_rollback::listed_member> {
+        std::vector<group_rollback::listed_member> out;
+        out.reserve(instances.size());
+        for (const auto& inst : instances) {
+            std::string lifecycle(
+                Aws::AutoScaling::Model::LifecycleStateMapper::GetNameForLifecycleState(
+                    inst.GetLifecycleState()));
+            auto state = aws_asg_detail::rollback_state(lifecycle);
+            out.push_back({.id = std::string(inst.GetInstanceId()),
+                           .state = state,
+                           .lifecycle = std::move(lifecycle),
+                           .node = {}});
+        }
+        return out;
+    }
+
+    /// @brief Terminate one instance by id and decrement the desired capacity.
+    ///
+    /// Retries while Auto Scaling refuses the call because a scaling activity
+    /// is in progress, which a timed-out launch usually still is, for up to
+    /// `provision_timeout`. An instance no longer in any group counts as
+    /// removed.
+    ///
+    /// @return The error text, or empty on success.
+    [[nodiscard]] auto try_terminate(const std::string& ec2_id) const -> std::string {
+        const auto deadline = std::chrono::steady_clock::now() + _cfg.provision_timeout;
+        for (;;) {
+            Aws::AutoScaling::Model::TerminateInstanceInAutoScalingGroupRequest req;
+            req.SetInstanceId(ec2_id);
+            req.SetShouldDecrementDesiredCapacity(true);
+            auto out = _asg->TerminateInstanceInAutoScalingGroup(req);
+            if (out.IsSuccess()) {
+                return {};
+            }
+            const std::string name(out.GetError().GetExceptionName());
+            if (aws_asg_detail::is_group_busy(name) &&
+                std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(_cfg.poll_interval);
+                continue;
+            }
+            if (already_out_of_group(ec2_id)) {
+                return {};
+            }
+            return name + ": " + std::string(out.GetError().GetMessage());
+        }
+    }
+
+    /// Undo a timed-out increment of @p asg_name; see `provision_node`.
+    [[nodiscard]] auto undo_scale_up(const std::string& asg_name,
+                                     const std::vector<std::string>& pre_growth,
+                                     std::vector<group_rollback::listed_member> final_listing,
+                                     int orig_cap) const noexcept
+        -> group_rollback::rollback_outcome {
+        try {
+            const std::chrono::milliseconds poll = _cfg.poll_interval;
+            return group_rollback::execute_rollback(
+                pre_growth, std::move(final_listing), orig_cap,
+                [this](const std::string& id) { return try_terminate(id); },
+                [this, &asg_name](std::int64_t size) {
+                    Aws::AutoScaling::Model::UpdateAutoScalingGroupRequest req;
+                    req.SetAutoScalingGroupName(asg_name);
+                    req.SetDesiredCapacity(static_cast<int>(size));
+                    auto out = _asg->UpdateAutoScalingGroup(req);
+                    if (!out.IsSuccess()) {
+                        throw std::runtime_error(std::string(out.GetError().GetExceptionName()) +
+                                                 ": " + std::string(out.GetError().GetMessage()));
+                    }
+                },
+                [this, &asg_name] { return rollback_listing(describe_group(asg_name)); },
+                group_rollback::settle_window(_cfg.provision_timeout, poll), poll);
+        } catch (const std::exception& ex) {
+            group_rollback::rollback_outcome outcome;
+            outcome.restore_error = std::string("rollback aborted: ") + ex.what();
+            return outcome;
+        }
+    }
+
+    static auto find_tag(const Aws::Vector<Aws::EC2::Model::Tag>& tags, const std::string& key)
+        -> std::optional<std::string> {
+        for (const auto& tag : tags) {
+            if (std::string(tag.GetKey()) == key) {
+                return std::string(tag.GetValue());
+            }
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] auto build_health(const std::vector<node_placement<NodeId, std::string>>& cluster,

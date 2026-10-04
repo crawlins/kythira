@@ -614,7 +614,10 @@ kythira node ID and address.
    `peer_info{new_node_id, "{private_ip}:{node_port}"}`.
 6. WHEN `provision_timeout` elapses THEN `provision_node` SHALL `PATCH`
    `sku.capacity` back to its original value (best-effort rollback) and
-   return an exceptional Future.
+   return an exceptional Future. *Superseded in part by
+   `.kiro/specs/group-scale-up-rollback/`: the fresh member is deleted by
+   name through the scale set's `delete` action, and `sku.capacity` is
+   restored only when none is listed.*
 7. `provision_node` SHALL check the fault injection point
    `"raft/azure/vmss/update_capacity"` before issuing the capacity `PATCH`.
 

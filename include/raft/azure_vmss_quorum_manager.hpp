@@ -17,6 +17,7 @@
 #include <raft/azure_client_config.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
+#include <raft/group_scale_rollback.hpp>
 #include <raft/quorum_management.hpp>
 
 #ifdef KYTHIRA_HAS_AZURE_SDK
@@ -42,11 +43,42 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
 namespace kythira {
+
+namespace azure_vmss_detail {
+
+/// Per-VM scale-in protection on a Flexible scale set needs this API version
+/// or later (group-scale-up-rollback design, task 1.4).
+inline constexpr const char* protection_api_version = "2023-09-01";
+
+/// @brief Map a member's `provisioningState` onto the rollback planner's
+///        three classes: `Succeeded` serves, `Deleting` is leaving, and
+///        anything else (`Creating`, `Updating`, `Failed`, ...) is treated as
+///        on its way in.
+[[nodiscard]] inline auto rollback_state(std::string_view provisioning_state)
+    -> group_rollback::member_state {
+    if (provisioning_state == "Succeeded") {
+        return group_rollback::member_state::live;
+    }
+    if (provisioning_state == "Deleting") {
+        return group_rollback::member_state::terminal;
+    }
+    return group_rollback::member_state::pending;
+}
+
+/// True when an ARM error text is a refusal for lack of permission, which
+/// `parse_response` renders as `ARM request failed (403): AuthorizationFailed: ...`.
+[[nodiscard]] inline auto is_permission_error(std::string_view message) -> bool {
+    return message.find("(403)") != std::string_view::npos ||
+           message.find("AuthorizationFailed") != std::string_view::npos;
+}
+
+}  // namespace azure_vmss_detail
 
 // ============================================================================
 // azure_vmss_quorum_manager_config
@@ -130,6 +162,11 @@ public:
     /// autonomous replacement outside the quorum manager's control"). Uniform
     /// orchestration cannot store the per-instance tag this manager identifies
     /// nodes by, and fails to store it *silently*; see `tag_instance`.
+    ///
+    /// Then protects from scale-in every adopted member of this cluster that
+    /// is not protected yet (group-scale-up-rollback Requirement 4.3), and
+    /// throws `std::invalid_argument` if ARM refuses that for lack of
+    /// permission.
     explicit azure_vmss_quorum_manager(azure_vmss_quorum_manager_config cfg)
         : _cfg(std::move(cfg)) {
         if (_cfg.cluster_name.empty()) {
@@ -226,6 +263,7 @@ public:
                                                 "requires Manual or Rolling so "
                                                 "only this manager replaces instances");
                 }
+                reconcile_scale_in_protection(scale_set);
             }
         }
     }
@@ -338,10 +376,17 @@ public:
         return future_factory_default::makeFuture(std::move(pre_health));
     }
 
-    /// Increments `target_group`'s scale set capacity by one, waits for a new
-    /// `PowerState/running` instance lacking a `kythira:node-id` tag to appear,
-    /// then tags it with a freshly-assigned NodeId. On timeout, restores the
-    /// original capacity (best-effort) before returning an exceptional Future.
+    /// Increments `target_group`'s scale set capacity by one, waits for a
+    /// `PowerState/running` instance that was not a member before the
+    /// increment and lacks a `kythira:node-id` tag, then tags it with a
+    /// freshly-assigned NodeId and protects it from scale-in.
+    ///
+    /// On timeout the increment is undone without letting the scale set choose
+    /// a victim (group-scale-up-rollback Requirements 2-3): every member the
+    /// increment created is deleted by name through the scale set's `delete`
+    /// action, which also lowers `sku.capacity`, and the capacity is restored
+    /// by a `PATCH` only when none was created. The error ends with what the
+    /// rollback did, e.g. `rollback: removed kythira_abc123 (fresh, Creating)`.
     auto provision_node(std::string target_group, std::optional<NodeId> /*replacing*/)
         -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
@@ -358,6 +403,16 @@ public:
             auto vmss_body = arm_get("/providers/Microsoft.Compute/virtualMachineScaleSets/" +
                                      scale_set + "?api-version=" + compute_api_version);
             std::int64_t orig_capacity = vmss_body.at("sku").at("capacity").as_int64();
+
+            // Every member before the increment, in any state, so neither the
+            // adoption below nor the rollback can mistake one for the new
+            // instance: an untagged member that predates this call (another
+            // provision's leftover, or one still being created) is not ours.
+            std::vector<std::string> pre_growth;
+            for (const auto& [vm_name, vm] : scale_set_vms(scale_set)) {
+                (void)vm;
+                pre_growth.push_back(vm_name);
+            }
 
             boost::json::object patch_body;
             patch_body["sku"] = boost::json::object{{"capacity", orig_capacity + 1}};
@@ -376,7 +431,8 @@ public:
                         // Flexible this is a real VM resource, so its absence
                         // of a tag is durable state rather than an artifact of
                         // a list that never returns tags.
-                        if (node_id_tag(vm)) {
+                        if (node_id_tag(vm) ||
+                            std::ranges::find(pre_growth, vm_name) != pre_growth.end()) {
                             continue;
                         }
                         if (vm_is_ready(vm_name)) {
@@ -391,22 +447,29 @@ public:
             }
 
             if (found_instance_id.empty()) {
-                boost::json::object rollback;
-                rollback["sku"] = boost::json::object{{"capacity", orig_capacity}};
+                std::vector<group_rollback::listed_member> final_listing;
                 try {
-                    (void)arm_patch("/providers/Microsoft.Compute/virtualMachineScaleSets/" +
-                                        scale_set + "?api-version=" + compute_api_version,
-                                    rollback);
-                } catch (const std::exception& ex) {
-                    std::cerr
-                        << "[azure_vmss_quorum_manager::provision_node] capacity rollback for "
-                        << scale_set << " failed: " << ex.what() << "\n";
+                    final_listing = rollback_listing(scale_set_vms(scale_set));
+                } catch (const std::exception&) {
+                    // An empty listing plans a capacity restore: with nothing
+                    // known to be fresh there is nothing to delete by name.
                 }
-                throw std::runtime_error("provision timeout for scale set: " + scale_set);
+                const auto rollback =
+                    undo_scale_up(scale_set, pre_growth, std::move(final_listing), orig_capacity);
+                throw std::runtime_error("provision timeout for scale set: " + scale_set + "; " +
+                                         group_rollback::describe(rollback, orig_capacity + 1));
             }
 
             NodeId new_id = next_node_id();
             tag_instance(found_instance_id, found_vm, new_id, target_group);
+            // Not fatal: the node is up and tagged, and the constructor's
+            // reconcile protects it on the next start. Failing the provision
+            // here would orphan a running, tagged instance.
+            if (const auto error = set_scale_in_protection(scale_set, found_instance_id);
+                !error.empty()) {
+                std::cerr << "[azure_vmss_quorum_manager::provision_node] scale-in protection for "
+                          << found_instance_id << " failed: " << error << "\n";
+            }
 
             std::string private_ip;
             try {
@@ -471,29 +534,10 @@ public:
                 return future_factory_default::makeFuture();
             }
             const auto& [scale_set, instance_id] = *found;
-
-            boost::json::object body;
-            body["instanceIds"] = boost::json::array{instance_id};
-            try {
-                (void)arm_post("/providers/Microsoft.Compute/virtualMachineScaleSets/" + scale_set +
-                                   "/delete?api-version=" + compute_api_version,
-                               body);
-            } catch (const arm_not_found&) {
+            // A protected member is deleted as it is: ARM documents that
+            // user-initiated instance deletes are not blocked by protection.
+            if (!delete_member(scale_set, instance_id)) {
                 return future_factory_default::makeFuture();
-            } catch (const std::exception& ex) {
-                // ARM's VMSS per-instance delete reports an already-gone instance ID
-                // as a 400 with a "not found"-shaped message, not a 404 — unlike the
-                // plain resource GET/DELETE calls elsewhere in this class. Treat that
-                // shape as idempotent success too, matching the AWS design's identical
-                // ValidationError/"not found" carve-out for TerminateInstanceInAutoScalingGroup.
-                std::string msg = ex.what();
-                std::string lower_msg = msg;
-                std::transform(lower_msg.begin(), lower_msg.end(), lower_msg.begin(),
-                               [](unsigned char c) { return std::tolower(c); });
-                if (lower_msg.find("not found") != std::string::npos) {
-                    return future_factory_default::makeFuture();
-                }
-                throw;
             }
 
             // Throws on expiry rather than returning. The previous version
@@ -813,6 +857,172 @@ private:
         -> boost::json::value {
         auto response = do_send(Azure::Core::Http::HttpMethod::Post, _arm_base + path, &body);
         return parse_response(*response);
+    }
+
+    [[nodiscard]] auto arm_put(const std::string& path, const boost::json::value& body) const
+        -> boost::json::value {
+        auto response = do_send(Azure::Core::Http::HttpMethod::Put, _arm_base + path, &body);
+        return parse_response(*response);
+    }
+
+    /// @brief The scale set's `delete` action for one member, which also lowers
+    ///        `sku.capacity` under Flexible orchestration.
+    ///
+    /// @return False when ARM reports the member already gone, true when the
+    ///         delete was accepted. Any other refusal throws.
+    auto delete_member(const std::string& scale_set, const std::string& vm_name) const -> bool {
+        boost::json::object body;
+        body["instanceIds"] = boost::json::array{vm_name};
+        try {
+            (void)arm_post("/providers/Microsoft.Compute/virtualMachineScaleSets/" + scale_set +
+                               "/delete?api-version=" + compute_api_version,
+                           body);
+            return true;
+        } catch (const arm_not_found&) {
+            return false;
+        } catch (const std::exception& ex) {
+            // ARM's VMSS per-instance delete reports an already-gone instance ID
+            // as a 400 with a "not found"-shaped message, not a 404 — unlike the
+            // plain resource GET/DELETE calls elsewhere in this class. Treat that
+            // shape as idempotent success too, matching the AWS design's identical
+            // ValidationError/"not found" carve-out for TerminateInstanceInAutoScalingGroup.
+            std::string lower_msg = ex.what();
+            std::transform(lower_msg.begin(), lower_msg.end(), lower_msg.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (lower_msg.find("not found") != std::string::npos) {
+                return false;
+            }
+            throw;
+        }
+    }
+
+    /// @brief Protect one member from the scale set's own scale-in.
+    ///
+    /// The member's entry under the scale set, not its VM resource:
+    /// `protectionPolicy` is a scale-set-member property, set with the
+    /// scale set's VM `PUT` at api-version 2023-09-01 or later.
+    ///
+    /// @return The error text, or empty on success.
+    [[nodiscard]] auto set_scale_in_protection(const std::string& scale_set,
+                                               const std::string& vm_name) const -> std::string {
+        try {
+            boost::json::object body;
+            body["properties"] = boost::json::object{
+                {"protectionPolicy", boost::json::object{{"protectFromScaleIn", true}}}};
+            (void)arm_put("/providers/Microsoft.Compute/virtualMachineScaleSets/" + scale_set +
+                              "/virtualMachines/" + vm_name +
+                              "?api-version=" + azure_vmss_detail::protection_api_version,
+                          body);
+            return {};
+        } catch (const std::exception& ex) {
+            return ex.what();
+        }
+    }
+
+    /// True when the VM list reports @p vm already protected from scale-in.
+    [[nodiscard]] static auto is_protected(const boost::json::object& vm) -> bool {
+        try {
+            return vm.at("properties").at("protectionPolicy").at("protectFromScaleIn").as_bool();
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+
+    /// @brief Protect every adopted member of this cluster in @p scale_set
+    ///        that is not yet protected (group-scale-up-rollback
+    ///        Requirement 4.3).
+    ///
+    /// Covers clusters adopted before protection existed, and repairs an
+    /// adoption whose protection call failed. A permission error throws
+    /// `std::invalid_argument`, like the constructor's other checks; anything
+    /// else is logged, because a transient failure at startup is not a reason
+    /// to refuse to run.
+    void reconcile_scale_in_protection(const std::string& scale_set) const {
+        std::vector<std::pair<std::string, boost::json::object>> vms;
+        try {
+            vms = scale_set_vms(scale_set);
+        } catch (const std::exception& ex) {
+            std::cerr << "[azure_vmss_quorum_manager] scale-in protection reconcile for "
+                      << scale_set << " skipped: " << ex.what() << "\n";
+            return;
+        }
+        for (const auto& [vm_name, vm] : vms) {
+            if (!node_id_tag(vm) || cluster_tag(vm) != _cfg.cluster_name || is_protected(vm)) {
+                continue;
+            }
+            const auto error = set_scale_in_protection(scale_set, vm_name);
+            if (error.empty()) {
+                continue;
+            }
+            if (azure_vmss_detail::is_permission_error(error)) {
+                throw std::invalid_argument(
+                    "azure_vmss_quorum_manager: scale-in protection on scale set '" + scale_set +
+                    "' was refused (" + error +
+                    "); the identity needs Microsoft.Compute/virtualMachineScaleSets/"
+                    "virtualMachines/write");
+            }
+            std::cerr << "[azure_vmss_quorum_manager] scale-in protection for " << vm_name
+                      << " failed: " << error << "\n";
+        }
+    }
+
+    /// The `kythira:cluster` tag on `vm`, or empty.
+    [[nodiscard]] static auto cluster_tag(const boost::json::object& vm) -> std::string {
+        try {
+            return std::string(vm.at("tags").at("kythira:cluster").as_string());
+        } catch (const std::exception&) {
+            return {};
+        }
+    }
+
+    [[nodiscard]] static auto rollback_listing(
+        const std::vector<std::pair<std::string, boost::json::object>>& vms)
+        -> std::vector<group_rollback::listed_member> {
+        std::vector<group_rollback::listed_member> out;
+        out.reserve(vms.size());
+        for (const auto& [vm_name, vm] : vms) {
+            std::string state;
+            try {
+                state = std::string(vm.at("properties").at("provisioningState").as_string());
+            } catch (const std::exception&) {
+                state.clear();
+            }
+            out.push_back({.id = vm_name,
+                           .state = azure_vmss_detail::rollback_state(state),
+                           .lifecycle = state,
+                           .node = node_id_tag(vm).value_or("")});
+        }
+        return out;
+    }
+
+    /// Undo a timed-out capacity increment of @p scale_set; see `provision_node`.
+    [[nodiscard]] auto undo_scale_up(const std::string& scale_set,
+                                     const std::vector<std::string>& pre_growth,
+                                     std::vector<group_rollback::listed_member> final_listing,
+                                     std::int64_t orig_capacity) const noexcept
+        -> group_rollback::rollback_outcome {
+        try {
+            return group_rollback::execute_rollback(
+                pre_growth, std::move(final_listing), orig_capacity,
+                [this, &scale_set](const std::string& name) -> std::string {
+                    (void)delete_member(scale_set, name);
+                    return {};
+                },
+                [this, &scale_set](std::int64_t capacity) {
+                    boost::json::object body;
+                    body["sku"] = boost::json::object{{"capacity", capacity}};
+                    (void)arm_patch("/providers/Microsoft.Compute/virtualMachineScaleSets/" +
+                                        scale_set + "?api-version=" + compute_api_version,
+                                    body);
+                },
+                [this, &scale_set] { return rollback_listing(scale_set_vms(scale_set)); },
+                group_rollback::settle_window(_cfg.provision_timeout, _cfg.poll_interval),
+                _cfg.poll_interval);
+        } catch (const std::exception& ex) {
+            group_rollback::rollback_outcome outcome;
+            outcome.restore_error = std::string("rollback aborted: ") + ex.what();
+            return outcome;
+        }
     }
 
     static auto node_id_str(const NodeId& id) -> std::string {

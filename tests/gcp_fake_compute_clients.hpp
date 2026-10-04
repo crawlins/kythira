@@ -30,6 +30,7 @@
 #include <google/cloud/stream_range.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -239,7 +240,12 @@ private:
 
 /// An in-memory set of zonal MIGs keyed by name. Resizing changes only the
 /// recorded target size; tests that need the resulting instance add it to a
-/// `fake_instances_connection` themselves.
+/// `fake_instances_connection` themselves, or model the MIG's reaction with
+/// `on_resize`.
+///
+/// `managed` is what `listManagedInstances` reports per MIG (empty unless a
+/// test fills it). `deleteInstances` removes a listed member and lowers the
+/// target size, as the real call does.
 class fake_instance_group_managers_connection
     : public google::cloud::compute_instance_group_managers_v1::InstanceGroupManagersConnection {
 public:
@@ -247,6 +253,13 @@ public:
     using InstanceGroupManagersConnection::Resize;
 
     std::map<std::string, cv1::InstanceGroupManager> migs;
+    std::map<std::string, std::vector<cv1::ManagedInstance>> managed;
+    /// Called after `resize` records the new size, with (MIG, old, new).
+    std::function<void(const std::string&, std::int32_t, std::int32_t)> on_resize;
+    /// Every instance URL `deleteInstances` was asked for, in order.
+    std::vector<std::string> deleted;
+    /// Whether every `deleteInstances` call set `skipInstancesOnValidationError`.
+    bool every_delete_skipped_validation_errors = true;
     int get_calls = 0;
     int resize_calls = 0;
     int list_managed_calls = 0;
@@ -283,7 +296,11 @@ public:
         if (it == migs.end()) {
             return ready(not_found("instance group manager " + request.instance_group_manager()));
         }
+        const auto old_size = it->second.target_size();
         it->second.set_target_size(request.size());
+        if (on_resize) {
+            on_resize(request.instance_group_manager(), old_size, request.size());
+        }
         return ready(make_operation("op-resize-" + request.instance_group_manager(), "RUNNING"));
     }
 
@@ -294,14 +311,34 @@ public:
         if (migs.find(request.instance_group_manager()) == migs.end()) {
             return not_found("instance group manager " + request.instance_group_manager());
         }
-        return cv1::InstanceGroupManagersListManagedInstancesResponse{};
+        cv1::InstanceGroupManagersListManagedInstancesResponse response;
+        if (auto m = managed.find(request.instance_group_manager()); m != managed.end()) {
+            for (const auto& mi : m->second) {
+                *response.add_managed_instances() = mi;
+            }
+        }
+        return response;
     }
 
     auto DeleteInstances(const igm_v1::DeleteInstancesRequest& request)
         -> google::cloud::future<google::cloud::StatusOr<cv1::Operation>> override {
         ++delete_instances_calls;
-        if (migs.find(request.instance_group_manager()) == migs.end()) {
+        auto it = migs.find(request.instance_group_manager());
+        if (it == migs.end()) {
             return ready(not_found("instance group manager " + request.instance_group_manager()));
+        }
+        const auto& body = request.instance_group_managers_delete_instances_request_resource();
+        every_delete_skipped_validation_errors =
+            every_delete_skipped_validation_errors && body.skip_instances_on_validation_error();
+        auto& members = managed[request.instance_group_manager()];
+        for (const auto& url : body.instances()) {
+            deleted.push_back(url);
+            auto m = std::find_if(members.begin(), members.end(),
+                                  [&](const auto& mi) { return mi.instance() == url; });
+            if (m != members.end()) {
+                members.erase(m);
+                it->second.set_target_size(it->second.target_size() - 1);
+            }
         }
         return ready(
             make_operation("op-delete-instances-" + request.instance_group_manager(), "RUNNING"));
