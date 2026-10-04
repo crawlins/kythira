@@ -6,7 +6,13 @@
 # libcoap 4.3.5a/b moved the i2d_X509() call that serialises the peer
 # certificate for validate_cn_call_back inside an assert(). Release builds
 # define NDEBUG, so the call is compiled out and the callback receives an
-# uninitialised buffer. Drop this overlay once upstream ships the fix.
+# uninitialised buffer.
+#
+# It also turns libcoap's own OSCORE off (-DENABLE_OSCORE=OFF): Kythira does
+# OSCORE itself, per Raft group, and libcoap's would swallow every protected
+# request before Kythira saw it. Drop this overlay only once upstream ships the
+# assert fix AND a release offers an external OSCORE context lookup the backend
+# has moved onto; until then keep both changes when re-copying the port.
 
 # dllexport is not supported.
 if(VCPKG_TARGET_IS_WINDOWS)
@@ -37,6 +43,7 @@ vcpkg_cmake_configure(
   OPTIONS
       ${FEATURE_OPTIONS}
       -DENABLE_DOCS=OFF
+      -DENABLE_OSCORE=OFF
       -DDTLS_BACKEND=openssl)
 
 vcpkg_cmake_install()
