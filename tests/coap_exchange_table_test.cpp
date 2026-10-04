@@ -11,6 +11,10 @@
 /// checked in milliseconds rather than by waiting four minutes. The same table
 /// backs the libcoap client and server and the cantcoap backend; the wire-level
 /// regression is coap_duplicate_detection_peer_test.cpp.
+///
+/// The reply_* cases cover the optional reply storage the cantcoap server uses
+/// to answer a retransmitted request (.kiro/specs/coap-cantcoap-duplicate-
+/// replay/ Requirements 3, 4.2 and 5.7).
 
 #include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_exchange_table_test
@@ -197,6 +201,232 @@ BOOST_AUTO_TEST_CASE(memory_held_at_multi_raft_rates_is_bounded_per_peer,
     }
     // The point of the bound: 64 groups cost what 8 do, not eight times more.
     BOOST_TEST(rows[2].entries == rows[1].entries);
+}
+
+// ── Reply storage (.kiro/specs/coap-cantcoap-duplicate-replay/) ─────────────
+
+namespace {
+
+auto bytes_of(std::size_t size, std::uint8_t fill) -> std::vector<std::byte> {
+    return std::vector<std::byte>(size, std::byte{fill});
+}
+
+auto caching_table(std::size_t budget,
+                   clock_type::duration retention = kythira::coap_max_transmit_wait)
+    -> kythira::coap_exchange_table {
+    return kythira::coap_exchange_table{kythira::coap_exchange_lifetime,
+                                        kythira::coap_reply_cache_limits{budget, retention}};
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(reply_retention_defaults_to_max_transmit_wait,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    // ACK_TIMEOUT 2 * (2^(MAX_RETRANSMIT 4 + 1) - 1) * ACK_RANDOM_FACTOR 1.5.
+    static_assert(kythira::coap_max_transmit_wait == std::chrono::seconds{93});
+    const kythira::coap_exchange_table table;
+    BOOST_TEST(table.reply_limits().budget_bytes == 0U);
+    BOOST_TEST(table.reply_limits().retention ==
+               clock_type::duration{kythira::coap_max_transmit_wait});
+}
+
+BOOST_AUTO_TEST_CASE(reply_is_stored_and_replayed_for_the_same_exchange,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    auto table = caching_table(1024);
+    const auto t0 = clock_type::now();
+
+    const auto first = table.classify(peer_a, 7, "tok", t0);
+    BOOST_TEST((first.kind == kythira::coap_duplicate_kind::fresh));
+    BOOST_TEST(!first.reply);
+
+    // A copy before the reply exists (the request is still being handled) is
+    // dropped: the reply the original produces answers both.
+    BOOST_TEST(
+        (table.classify(peer_a, 7, "tok", t0 + 1ms).kind == kythira::coap_duplicate_kind::drop));
+
+    table.attach_reply(peer_a, 7, "tok", bytes_of(40, 0xAB), t0 + 2ms);
+    BOOST_TEST(table.replies().count == 1U);
+    BOOST_TEST(table.replies().bytes == 40U);
+
+    const auto again = table.classify(peer_a, 7, "tok", t0 + 2s);
+    BOOST_TEST((again.kind == kythira::coap_duplicate_kind::replay));
+    BOOST_REQUIRE(again.reply);
+    BOOST_TEST((*again.reply == bytes_of(40, 0xAB)));
+
+    // Same Message ID from another peer, or another token: a new exchange.
+    BOOST_TEST(
+        (table.classify(peer_b, 7, "tok", t0 + 2s).kind == kythira::coap_duplicate_kind::fresh));
+    BOOST_TEST(
+        (table.classify(peer_a, 8, "tok", t0 + 2s).kind == kythira::coap_duplicate_kind::fresh));
+}
+
+BOOST_AUTO_TEST_CASE(reply_expires_at_retention_while_the_record_stays,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    auto table = caching_table(1024);
+    const auto t0 = clock_type::now();
+    (void)table.classify(peer_a, 1, "tok", t0);
+    table.attach_reply(peer_a, 1, "tok", bytes_of(10, 1), t0);
+
+    BOOST_TEST(
+        (table.classify(peer_a, 1, "tok", t0 + 92s).kind == kythira::coap_duplicate_kind::replay));
+
+    // Past MAX_TRANSMIT_WAIT the reply is gone, but the record still makes a
+    // late copy a duplicate: dropped, never handled a second time.
+    const auto late = table.classify(peer_a, 1, "tok", t0 + 93s);
+    BOOST_TEST((late.kind == kythira::coap_duplicate_kind::drop));
+    BOOST_TEST(table.replies().count == 0U);
+    BOOST_TEST(table.replies().bytes == 0U);
+    BOOST_TEST(table.is_duplicate(peer_a, 1, "tok", t0 + 246s));
+
+    // At EXCHANGE_LIFETIME the record goes too, and the Message ID is new again.
+    BOOST_TEST(
+        (table.classify(peer_a, 1, "tok", t0 + 247s).kind == kythira::coap_duplicate_kind::fresh));
+}
+
+BOOST_AUTO_TEST_CASE(reply_budget_evicts_the_oldest_first,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    auto table = caching_table(100);
+    const auto t0 = clock_type::now();
+    for (std::uint16_t mid = 0; mid < 3; ++mid) {
+        (void)table.classify(peer_a, mid, "tok", t0);
+        table.attach_reply(peer_a, mid, "tok", bytes_of(40, static_cast<std::uint8_t>(mid)),
+                           t0 + std::chrono::milliseconds{mid});
+    }
+    // 40 + 40 fit; the third needed the first's room.
+    BOOST_TEST(table.replies().count == 2U);
+    BOOST_TEST(table.replies().bytes == 80U);
+    BOOST_TEST(table.replies().evicted == 1U);
+
+    const auto now = t0 + 1s;
+    BOOST_TEST((table.classify(peer_a, 0, "tok", now).kind == kythira::coap_duplicate_kind::drop));
+    BOOST_TEST(
+        (table.classify(peer_a, 1, "tok", now).kind == kythira::coap_duplicate_kind::replay));
+    BOOST_TEST(
+        (table.classify(peer_a, 2, "tok", now).kind == kythira::coap_duplicate_kind::replay));
+}
+
+BOOST_AUTO_TEST_CASE(reply_larger_than_the_whole_budget_is_not_stored,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    auto table = caching_table(64);
+    const auto t0 = clock_type::now();
+    (void)table.classify(peer_a, 1, "small", t0);
+    table.attach_reply(peer_a, 1, "small", bytes_of(32, 1), t0);
+    (void)table.classify(peer_a, 2, "big", t0);
+    table.attach_reply(peer_a, 2, "big", bytes_of(65, 2), t0);
+
+    // The oversized reply evicted nothing on its way to being refused.
+    BOOST_TEST(table.replies().count == 1U);
+    BOOST_TEST(table.replies().evicted == 0U);
+    BOOST_TEST(
+        (table.classify(peer_a, 2, "big", t0 + 1s).kind == kythira::coap_duplicate_kind::drop));
+    BOOST_TEST(
+        (table.classify(peer_a, 1, "small", t0 + 1s).kind == kythira::coap_duplicate_kind::replay));
+}
+
+BOOST_AUTO_TEST_CASE(reply_for_an_unrecorded_exchange_is_ignored,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    auto table = caching_table(1024);
+    const auto t0 = clock_type::now();
+    table.attach_reply(peer_a, 1, "tok", bytes_of(10, 1), t0);
+    (void)table.classify(peer_a, 2, "tok", t0);
+    table.attach_reply(peer_a, 2, "other-token", bytes_of(10, 1), t0);
+    BOOST_TEST(table.replies().count == 0U);
+}
+
+// A Message ID that wraps inside the retention puts a newer exchange's reply
+// in the slot an older one's reply occupied. Evicting the older entry from the
+// queue must not take the newer reply with it.
+BOOST_AUTO_TEST_CASE(reply_eviction_spares_a_newer_exchange_on_a_wrapped_message_id,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    auto table = caching_table(100);
+    const auto t0 = clock_type::now();
+
+    (void)table.classify(peer_a, 5, "old", t0);
+    table.attach_reply(peer_a, 5, "old", bytes_of(40, 1), t0);
+    // The counter laps: Message ID 5 again, a new token, a new reply.
+    (void)table.classify(peer_a, 5, "new", t0 + 1ms);
+    table.attach_reply(peer_a, 5, "new", bytes_of(40, 2), t0 + 1ms);
+    BOOST_TEST(table.replies().count == 1U);
+    BOOST_TEST(table.replies().bytes == 40U);
+
+    // Room for this one needs no eviction (40 + 40 <= 100), but the queue's
+    // front is the stale "old" entry; a later squeeze pops it first.
+    (void)table.classify(peer_a, 6, "x", t0 + 2ms);
+    table.attach_reply(peer_a, 6, "x", bytes_of(40, 3), t0 + 2ms);
+    (void)table.classify(peer_a, 7, "y", t0 + 3ms);
+    table.attach_reply(peer_a, 7, "y", bytes_of(40, 4), t0 + 3ms);
+
+    // Popping the stale entry freed nothing, so "new" (the oldest live reply)
+    // was the one evicted -- once -- and the two later ones survive.
+    BOOST_TEST(table.replies().evicted == 1U);
+    BOOST_TEST(table.replies().count == 2U);
+    BOOST_TEST(
+        (table.classify(peer_a, 6, "x", t0 + 1s).kind == kythira::coap_duplicate_kind::replay));
+    BOOST_TEST(
+        (table.classify(peer_a, 7, "y", t0 + 1s).kind == kythira::coap_duplicate_kind::replay));
+}
+
+BOOST_AUTO_TEST_CASE(reply_from_an_old_queue_entry_never_clears_a_newer_reply,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    // Retention-driven variant of the wrap guard: the old entry expires while
+    // the newer reply in the same slot is still within retention.
+    auto table = caching_table(1024, 10s);
+    const auto t0 = clock_type::now();
+    (void)table.classify(peer_a, 5, "old", t0);
+    table.attach_reply(peer_a, 5, "old", bytes_of(8, 1), t0);
+    (void)table.classify(peer_a, 5, "new", t0 + 5s);
+    table.attach_reply(peer_a, 5, "new", bytes_of(8, 2), t0 + 5s);
+
+    const auto at = t0 + 11s;  // "old" entry past retention, "new" is not
+    const auto lookup = table.classify(peer_a, 5, "new", at);
+    BOOST_TEST((lookup.kind == kythira::coap_duplicate_kind::replay));
+    BOOST_REQUIRE(lookup.reply);
+    BOOST_TEST((*lookup.reply == bytes_of(8, 2)));
+}
+
+BOOST_AUTO_TEST_CASE(reply_budget_zero_stores_nothing,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    // The default limits: the libcoap backend's table, unchanged by this.
+    kythira::coap_exchange_table table;
+    const auto t0 = clock_type::now();
+    BOOST_TEST((table.classify(peer_a, 1, "tok", t0).kind == kythira::coap_duplicate_kind::fresh));
+    table.attach_reply(peer_a, 1, "tok", bytes_of(10, 1), t0);
+    BOOST_TEST(table.replies().count == 0U);
+    BOOST_TEST(table.replies().bytes == 0U);
+    BOOST_TEST(
+        (table.classify(peer_a, 1, "tok", t0 + 1s).kind == kythira::coap_duplicate_kind::drop));
+}
+
+BOOST_AUTO_TEST_CASE(reply_bytes_are_released_by_clear_sweep_and_overwrite,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    auto table = caching_table(1024);
+    const auto t0 = clock_type::now();
+    for (std::uint16_t mid = 0; mid < 4; ++mid) {
+        (void)table.classify(peer_a, mid, "tok", t0);
+        table.attach_reply(peer_a, mid, "tok", bytes_of(10, 1), t0);
+    }
+    BOOST_TEST(table.replies().bytes == 40U);
+
+    // Recording a new exchange over a slot frees the old exchange's reply.
+    table.record(peer_a, 0, "lapped", t0 + 1s);
+    BOOST_TEST(table.replies().bytes == 30U);
+
+    // Attaching twice to one exchange replaces, not adds.
+    table.attach_reply(peer_a, 1, "tok", bytes_of(25, 2), t0 + 1s);
+    BOOST_TEST(table.replies().bytes == 45U);
+    BOOST_TEST(table.replies().count == 3U);
+
+    // A sweep past the lifetime takes records and replies alike.
+    table.sweep(t0 + kythira::coap_exchange_lifetime + 1s);
+    BOOST_TEST(table.replies().bytes == 0U);
+    BOOST_TEST(table.size() == 0U);
+
+    (void)table.classify(peer_b, 9, "tok", t0);
+    table.attach_reply(peer_b, 9, "tok", bytes_of(10, 1), t0);
+    table.clear();
+    BOOST_TEST(table.replies().bytes == 0U);
+    BOOST_TEST(table.replies().count == 0U);
+    BOOST_TEST((table.classify(peer_b, 9, "tok", t0).kind == kythira::coap_duplicate_kind::fresh));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
