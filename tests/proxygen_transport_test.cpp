@@ -14,6 +14,7 @@
 #include <folly/executors/IOThreadPoolExecutor.h>
 
 #include "test_timeout_scale.hpp"
+#include "http_limit_test_helpers.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -1073,6 +1074,253 @@ BOOST_AUTO_TEST_CASE(unlisted_bind_name_is_refused,
         "kythira-test.invalid", 18252, {}, recording_metrics{},
         std::shared_ptr<folly::IOThreadPoolExecutorBase>(&io_executor, [](auto*) {}));
     BOOST_CHECK_THROW(server.start(), std::invalid_argument);
+}
+
+// ── Request and connection limits (.kiro/specs/http-server-request-limits/) ──
+// Own port range, clear of every other HTTP test binary's.
+namespace {
+constexpr std::uint16_t limits_port_base = 18340;
+namespace limits = kythira::testing::http_limits;
+
+auto limits_executor_handle(folly::IOThreadPoolExecutor& io_executor)
+    -> std::shared_ptr<folly::IOThreadPoolExecutorBase> {
+    return std::shared_ptr<folly::IOThreadPoolExecutorBase>(&io_executor, [](auto*) {});
+}
+}  // namespace
+
+// Requirements 1.1, 1.3, 1.4, 6.1: a declared length one over the limit is a
+// 413 on the wire, text/plain, and the connection closes after it.
+BOOST_AUTO_TEST_CASE(oversized_content_length_gets_413,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    folly::IOThreadPoolExecutor io_executor(2);
+    auto port = static_cast<std::uint16_t>(limits_port_base + 0);
+    kythira::proxygen_server_config config;
+    config.max_request_body_size = 64;
+    recording_metrics metrics;
+    kythira::proxygen_server<test_transport_types> server(test_bind_address, port, config, metrics,
+                                                          limits_executor_handle(io_executor));
+    std::atomic<int> handler_calls{0};
+    server.register_request_vote_handler([&](const kythira::request_vote_request<>&) {
+        ++handler_calls;
+        return kythira::request_vote_response<>{};
+    });
+    server.start();
+
+    limits::raw_connection conn(test_bind_address, port);
+    BOOST_REQUIRE(conn.connected());
+    conn.send_all(limits::sized_request(65));
+    std::string response;
+    auto outcome = conn.read_until_close(response, kythira::testing::scaled_deadline(10000));
+    BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
+    BOOST_TEST(limits::status_of(response) == 413);
+    BOOST_TEST(limits::header_of(response, "Content-Type") == "text/plain");
+    BOOST_TEST(handler_calls.load() == 0);
+    BOOST_TEST(metrics.entries_named("proxygen_http.server.request_too_large").size() == 1u);
+
+    // stop() drains on request_finished(); returning at all proves the 413
+    // path finished its transaction exactly once.
+    server.stop();
+}
+
+// Requirements 1.2, 1.6, 6.2: a chunked body has no length to check up
+// front, so the running total refuses it as it crosses the limit -- before
+// the request's last chunk ever arrives.
+BOOST_AUTO_TEST_CASE(chunked_body_crossing_the_limit_gets_413,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    folly::IOThreadPoolExecutor io_executor(2);
+    auto port = static_cast<std::uint16_t>(limits_port_base + 1);
+    kythira::proxygen_server_config config;
+    config.max_request_body_size = 64;
+    kythira::proxygen_server<test_transport_types> server(
+        test_bind_address, port, config, recording_metrics{}, limits_executor_handle(io_executor));
+    register_echo_handlers(server);
+    server.start();
+
+    limits::raw_connection conn(test_bind_address, port);
+    BOOST_REQUIRE(conn.connected());
+    conn.send_all(limits::chunked_request_head() + limits::chunk(40) + limits::chunk(40));
+    std::string response;
+    auto outcome = conn.read_until_close(response, kythira::testing::scaled_deadline(10000));
+    BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
+    BOOST_TEST(limits::status_of(response) == 413);
+    BOOST_TEST(limits::header_of(response, "Content-Type") == "text/plain");
+    // Exactly one response: a second status line would mean onEOM answered
+    // again after the 413.
+    BOOST_TEST(response.find("HTTP/1.1", 1) == std::string::npos);
+
+    server.stop();
+}
+
+// Requirement 1.6: a client that keeps streaming after the 413 neither
+// crashes the server nor wedges stop().
+BOOST_AUTO_TEST_CASE(body_still_streaming_after_413_is_discarded,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    folly::IOThreadPoolExecutor io_executor(2);
+    auto port = static_cast<std::uint16_t>(limits_port_base + 2);
+    kythira::proxygen_server_config config;
+    config.max_request_body_size = 1024;
+    kythira::proxygen_server<test_transport_types> server(
+        test_bind_address, port, config, recording_metrics{}, limits_executor_handle(io_executor));
+    register_echo_handlers(server);
+    server.start();
+
+    limits::raw_connection conn(test_bind_address, port);
+    BOOST_REQUIRE(conn.connected());
+    conn.send_all(limits::chunked_request_head());
+    // The writer stops on its own once the server closes the connection.
+    std::thread writer([&] {
+        for (int i = 0; i < 256; ++i) {
+            if (!conn.send_all(limits::chunk(4096))) {
+                return;
+            }
+        }
+    });
+    auto headers = conn.read_headers(kythira::testing::scaled_deadline(10000));
+    writer.join();
+    BOOST_TEST(limits::status_of(headers) == 413);
+
+    // The server is still serving.
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {test_node_id, "http://127.0.0.1:" + std::to_string(port)}};
+    kythira::proxygen_client<test_transport_types> client(io_executor, node_map, {},
+                                                          recording_metrics{});
+    kythira::request_vote_request<> req{};
+    req._term = 9;
+    BOOST_TEST(std::move(client.send_request_vote(test_node_id, req,
+                                                  kythira::testing::scaled_deadline(5000)))
+                   .get()
+                   .vote_granted());
+
+    server.stop();
+}
+
+// Requirements 1.5, 6.2: the limit is inclusive.
+BOOST_AUTO_TEST_CASE(body_exactly_at_the_limit_is_served,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::request_vote_request<> req{};
+    req._term = 17;
+    req._candidate_id = 2;
+    auto encoded = kythira::json_serializer{}.serialize(req);
+    std::string body(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+
+    folly::IOThreadPoolExecutor io_executor(2);
+    auto port = static_cast<std::uint16_t>(limits_port_base + 3);
+    kythira::proxygen_server_config config;
+    config.max_request_body_size = body.size();
+    kythira::proxygen_server<test_transport_types> server(
+        test_bind_address, port, config, recording_metrics{}, limits_executor_handle(io_executor));
+    register_echo_handlers(server);
+    server.start();
+
+    limits::raw_connection conn(test_bind_address, port);
+    BOOST_REQUIRE(conn.connected());
+    conn.send_all(limits::request_with_body(body));
+    auto headers = conn.read_headers(kythira::testing::scaled_deadline(10000));
+    BOOST_TEST(limits::status_of(headers) == 200);
+
+    server.stop();
+}
+
+// Requirement 2.5.
+BOOST_AUTO_TEST_CASE(zero_connection_limit_is_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    folly::IOThreadPoolExecutor io_executor(1);
+    kythira::proxygen_server_config config;
+    config.max_concurrent_connections = 0;
+    using server_type = kythira::proxygen_server<test_transport_types>;
+    BOOST_CHECK_THROW(server_type(test_bind_address, limits_port_base + 4, config,
+                                  recording_metrics{}, limits_executor_handle(io_executor)),
+                      std::invalid_argument);
+}
+
+// Requirements 2.1, 2.2, 6.3: hold two idle connections, see a third closed
+// without a response, close one of the two, then complete an RPC on a new
+// connection.
+BOOST_AUTO_TEST_CASE(connections_past_the_limit_are_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    folly::IOThreadPoolExecutor io_executor(2);
+    auto port = static_cast<std::uint16_t>(limits_port_base + 5);
+    kythira::proxygen_server_config config;
+    config.max_concurrent_connections = 2;
+    // Far beyond the test's own length, so the idle pair is not reaped by
+    // the idle timeout while the test still needs it.
+    config.request_timeout = std::chrono::seconds(300);
+    recording_metrics metrics;
+    kythira::proxygen_server<test_transport_types> server(test_bind_address, port, config, metrics,
+                                                          limits_executor_handle(io_executor));
+    register_echo_handlers(server);
+    server.start();
+
+    limits::raw_connection first(test_bind_address, port);
+    limits::raw_connection second(test_bind_address, port);
+    BOOST_REQUIRE(first.connected());
+    BOOST_REQUIRE(second.connected());
+    BOOST_REQUIRE(limits::wait_for([&] { return server.live_connections() == 2; },
+                                   kythira::testing::scaled_deadline(10000)));
+
+    limits::raw_connection third(test_bind_address, port);
+    BOOST_REQUIRE(third.connected());  // the kernel completes it; the server drops it
+    std::string unexpected;
+    auto outcome = third.read_until_close(unexpected, kythira::testing::scaled_deadline(10000));
+    BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
+    BOOST_TEST(unexpected.empty());
+    BOOST_TEST(server.live_connections() == 2u);
+    BOOST_TEST(metrics.entries_named("proxygen_http.server.connection_refused").size() == 1u);
+
+    first.close();
+    BOOST_REQUIRE(limits::wait_for([&] { return server.live_connections() == 1; },
+                                   kythira::testing::scaled_deadline(10000)));
+
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {test_node_id, "http://127.0.0.1:" + std::to_string(port)}};
+    kythira::proxygen_client<test_transport_types> client(io_executor, node_map, {},
+                                                          recording_metrics{});
+    kythira::request_vote_request<> req{};
+    req._term = 5;
+    BOOST_TEST(std::move(client.send_request_vote(test_node_id, req,
+                                                  kythira::testing::scaled_deadline(5000)))
+                   .get()
+                   .vote_granted());
+
+    server.stop();
+}
+
+// Requirements 2.3, 6.4: the 0.0.0.0 and :: listeners of a "*" bind draw on
+// one limit.
+BOOST_AUTO_TEST_CASE(connection_limit_is_shared_across_listeners,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    if (!limits::ipv6_loopback_available()) {
+        BOOST_TEST_MESSAGE("no IPv6 loopback on this host; shared-limit test skipped");
+        return;
+    }
+    folly::IOThreadPoolExecutor io_executor(2);
+    auto port = static_cast<std::uint16_t>(limits_port_base + 6);
+    kythira::proxygen_server_config config;
+    config.max_concurrent_connections = 2;
+    config.request_timeout = std::chrono::seconds(300);
+    kythira::proxygen_server<test_transport_types> server("*", port, config, recording_metrics{},
+                                                          limits_executor_handle(io_executor));
+    register_echo_handlers(server);
+    server.start();
+
+    limits::raw_connection v4("127.0.0.1", port);
+    limits::raw_connection v6("::1", port);
+    BOOST_REQUIRE(v4.connected());
+    BOOST_REQUIRE(v6.connected());
+    BOOST_REQUIRE(limits::wait_for([&] { return server.live_connections() == 2; },
+                                   kythira::testing::scaled_deadline(10000)));
+
+    for (const char* address : {"127.0.0.1", "::1"}) {
+        BOOST_TEST_INFO("third connection on " << address);
+        limits::raw_connection extra(address, port);
+        BOOST_REQUIRE(extra.connected());
+        std::string unexpected;
+        auto outcome = extra.read_until_close(unexpected, kythira::testing::scaled_deadline(10000));
+        BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
+        BOOST_TEST(unexpected.empty());
+    }
+
+    server.stop();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

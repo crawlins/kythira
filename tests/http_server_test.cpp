@@ -9,6 +9,11 @@
 #include <raft/json_serializer.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
+#include "http_limit_test_helpers.hpp"
+
+#include <chrono>
+#include <string>
+
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
 constexpr std::uint16_t test_bind_port = 8082;
@@ -133,6 +138,130 @@ BOOST_AUTO_TEST_CASE(test_configuration_acceptance, *boost::unit_test::timeout(3
                                                              config, metrics);
 
     BOOST_TEST(true);  // Test passes if construction with custom config succeeds
+}
+
+// ── Request and connection limits (.kiro/specs/http-server-request-limits/) ──
+namespace {
+constexpr std::uint16_t limits_port_base = 18350;
+namespace limits = kythira::testing::http_limits;
+
+auto register_vote_handler(kythira::cpp_httplib_server<test_transport_types>& server) -> void {
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+        kythira::request_vote_response<> resp{};
+        resp._term = req.term();
+        resp._vote_granted = true;
+        return resp;
+    });
+}
+
+// A well-formed RequestVote, so a connection that is admitted gets a 200.
+auto valid_vote_body() -> std::string {
+    kythira::request_vote_request<> req{};
+    req._term = 4;
+    req._candidate_id = 2;
+    auto encoded = kythira::json_rpc_serializer<std::vector<std::byte>>{}.serialize(req);
+    return {reinterpret_cast<const char*>(encoded.data()), encoded.size()};
+}
+}  // namespace
+
+// Requirement 6.1: the 413 on the wire, text/plain, and the handler never
+// runs.
+BOOST_AUTO_TEST_CASE(oversized_body_gets_413_on_the_wire, *boost::unit_test::timeout(30)) {
+    kythira::cpp_httplib_server_config config;
+    config.max_request_body_size = 64;
+    kythira::cpp_httplib_server<test_transport_types> server(test_bind_address, limits_port_base,
+                                                             config, {});
+    register_vote_handler(server);
+    server.start();
+
+    limits::raw_connection conn(test_bind_address, limits_port_base);
+    BOOST_REQUIRE(conn.connected());
+    conn.send_all(limits::sized_request(65));
+    auto headers = conn.read_headers(std::chrono::seconds(10));
+    BOOST_TEST(limits::status_of(headers) == 413);
+    BOOST_TEST(limits::header_of(headers, "Content-Type") == "text/plain");
+
+    server.stop();
+}
+
+// Requirements 2.1, 2.2, 6.3: hold two idle connections, see a third closed
+// without a response, close one of the two, then complete an RPC on a new
+// connection.
+BOOST_AUTO_TEST_CASE(connections_past_the_limit_are_refused, *boost::unit_test::timeout(60)) {
+    auto port = static_cast<std::uint16_t>(limits_port_base + 1);
+    kythira::cpp_httplib_server_config config;
+    config.max_concurrent_connections = 2;
+    // Far beyond the test's own length, so httplib's read timeout does not
+    // reap the idle pair while the test still needs it.
+    config.request_timeout = std::chrono::seconds(300);
+    kythira::cpp_httplib_server<test_transport_types> server(test_bind_address, port, config, {});
+    register_vote_handler(server);
+    server.start();
+
+    limits::raw_connection first(test_bind_address, port);
+    limits::raw_connection second(test_bind_address, port);
+    BOOST_REQUIRE(first.connected());
+    BOOST_REQUIRE(second.connected());
+    BOOST_REQUIRE(
+        limits::wait_for([&] { return server.live_connections() == 2; }, std::chrono::seconds(10)));
+
+    limits::raw_connection third(test_bind_address, port);
+    BOOST_REQUIRE(third.connected());  // the kernel completes it; the server drops it
+    std::string unexpected;
+    auto outcome = third.read_until_close(unexpected, std::chrono::seconds(10));
+    BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
+    BOOST_TEST(unexpected.empty());
+    BOOST_TEST(server.live_connections() == 2u);
+
+    first.close();
+    BOOST_REQUIRE(
+        limits::wait_for([&] { return server.live_connections() == 1; }, std::chrono::seconds(10)));
+
+    limits::raw_connection fresh(test_bind_address, port);
+    BOOST_REQUIRE(fresh.connected());
+    fresh.send_all(limits::request_with_body(valid_vote_body()));
+    BOOST_TEST(limits::status_of(fresh.read_headers(std::chrono::seconds(10))) == 200);
+
+    second.close();
+    fresh.close();
+    server.stop();
+}
+
+// Requirements 2.3, 6.4: the 0.0.0.0 and :: listeners of a "*" bind draw on
+// one limit.
+BOOST_AUTO_TEST_CASE(connection_limit_is_shared_across_listeners, *boost::unit_test::timeout(60)) {
+    if (!limits::ipv6_loopback_available()) {
+        BOOST_TEST_MESSAGE("no IPv6 loopback on this host; shared-limit test skipped");
+        return;
+    }
+    auto port = static_cast<std::uint16_t>(limits_port_base + 2);
+    kythira::cpp_httplib_server_config config;
+    config.max_concurrent_connections = 2;
+    config.request_timeout = std::chrono::seconds(300);
+    kythira::cpp_httplib_server<test_transport_types> server("*", port, config, {});
+    register_vote_handler(server);
+    server.start();
+
+    limits::raw_connection v4("127.0.0.1", port);
+    limits::raw_connection v6("::1", port);
+    BOOST_REQUIRE(v4.connected());
+    BOOST_REQUIRE(v6.connected());
+    BOOST_REQUIRE(
+        limits::wait_for([&] { return server.live_connections() == 2; }, std::chrono::seconds(10)));
+
+    for (const char* address : {"127.0.0.1", "::1"}) {
+        BOOST_TEST_INFO("third connection on " << address);
+        limits::raw_connection extra(address, port);
+        BOOST_REQUIRE(extra.connected());
+        std::string unexpected;
+        auto outcome = extra.read_until_close(unexpected, std::chrono::seconds(10));
+        BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
+        BOOST_TEST(unexpected.empty());
+    }
+
+    v4.close();
+    v6.close();
+    server.stop();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

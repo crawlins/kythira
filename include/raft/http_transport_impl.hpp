@@ -1634,6 +1634,7 @@ cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uin
     if (_config.max_concurrent_connections == 0) {
         throw std::invalid_argument("cpp_httplib_server: max_concurrent_connections must be > 0");
     }
+    _gate = std::make_shared<http_detail::connection_gate>(_config.max_concurrent_connections);
 
     // The listeners themselves (plain or httplib::SSLServer, one per bind
     // address) are built by start(), via make_listener().
@@ -1745,6 +1746,26 @@ auto cpp_httplib_server<Types>::load_server_certificates() -> void {
 #endif
 }
 
+namespace http_detail {
+
+// max_request_body_size on one listener. httplib answers an oversized body
+// 413 by itself but with no body or Content-Type; the error handler fills in
+// the same text/plain body Beast and Proxygen send, so a peer sees one answer
+// whichever transport it reached (.kiro/specs/http-server-request-limits/
+// Requirement 6.5). Every other error status is left as the route set it.
+inline auto apply_request_body_limit(httplib::Server& server, std::size_t limit) -> void {
+    server.set_payload_max_length(limit);
+    server.set_error_handler([](const httplib::Request&, httplib::Response& res) {
+        if (res.status == 413 && res.body.empty()) {
+            res.set_content("Request body exceeds maximum allowed size", "text/plain");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
+}
+
+}  // namespace http_detail
+
 // Configure SSL for server: constructs the real httplib::SSLServer listener
 // (Requirement 14) and applies cipher-suite/TLS-version/client-cert-auth
 // configuration to its live SSL_CTX* — the same context handshakes actually
@@ -1784,7 +1805,7 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> std::unique_ptr<httpli
         SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
     }
 
-    ssl_server->set_payload_max_length(_config.max_request_body_size);
+    http_detail::apply_request_body_limit(*ssl_server, _config.max_request_body_size);
     ssl_server->set_read_timeout(_config.request_timeout.count());
     ssl_server->set_write_timeout(_config.request_timeout.count());
     // **The site that is easy to miss.** The SSL server is built in a
@@ -1794,8 +1815,8 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> std::unique_ptr<httpli
     ssl_server->set_tcp_nodelay(_config.tcp_nodelay);
     // As make_listener(): missing it here would leave TLS listeners on
     // httplib's fixed pool.
-    ssl_server->new_task_queue = [limit = _config.max_concurrent_connections] {
-        return new kythira::net_bind::growing_task_queue(limit);
+    ssl_server->new_task_queue = [gate = _gate, limit = _config.max_concurrent_connections] {
+        return new kythira::net_bind::gated_task_queue(gate, limit);
     };
     return ssl_server;
 #else
@@ -1819,7 +1840,7 @@ auto cpp_httplib_server<Types>::make_listener() -> std::unique_ptr<httplib::Serv
         }
     }
     auto server = std::make_unique<httplib::Server>();
-    server->set_payload_max_length(_config.max_request_body_size);
+    http_detail::apply_request_body_limit(*server, _config.max_request_body_size);
     server->set_read_timeout(_config.request_timeout.count());
     server->set_write_timeout(_config.request_timeout.count());
     // See the client's equivalent. A response is as small and as
@@ -1827,10 +1848,12 @@ auto cpp_httplib_server<Types>::make_listener() -> std::unique_ptr<httplib::Serv
     // one side only would leave half the round trip stalled.
     server->set_tcp_nodelay(_config.tcp_nodelay);
     // Requirement 14.6: at most max_concurrent_connections connections are
-    // served at once, each on its own worker; workers start on demand. See
-    // httplib_task_queue.hpp for why httplib's fixed pool is not enough.
-    server->new_task_queue = [limit = _config.max_concurrent_connections] {
-        return new kythira::net_bind::growing_task_queue(limit);
+    // open at once, across every listener, each served on its own worker;
+    // workers start on demand and a connection past the limit is closed
+    // unread. See httplib_task_queue.hpp for why httplib's fixed pool is not
+    // enough.
+    server->new_task_queue = [gate = _gate, limit = _config.max_concurrent_connections] {
+        return new kythira::net_bind::gated_task_queue(gate, limit);
     };
     return server;
 }
