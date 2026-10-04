@@ -376,14 +376,6 @@ BOOST_AUTO_TEST_CASE(bootstrap_cutover_and_survives_bootstrap_credential_deletio
             infos[i].id, infos[i].rpc_port, infos[i].http_port,
             tmp_root + "/node" + std::to_string(infos[i].id), unseal_key_file, k_auth_token,
             peers_arg, bootstrap_cert_path, bootstrap_key_path, /*bootstrap=*/i == 0));
-        if (i == 0) {
-            // Proportional to this file's much-larger-than-default
-            // election timeout (3000-5000ms) — must comfortably exceed
-            // it so the --bootstrap-ca node's own election timer always
-            // fires first (Requirement 17.10's documented operational
-            // practice), not a race against the other node's timer.
-            std::this_thread::sleep_for(std::chrono::milliseconds(6000));
-        }
     }
     BOOST_REQUIRE_MESSAGE(wait_healthy(nodes[0]->http_port, std::chrono::seconds(60)) &&
                               wait_healthy(nodes[1]->http_port, std::chrono::seconds(60)),
@@ -529,12 +521,10 @@ BOOST_AUTO_TEST_CASE(peers_enroll_and_cut_over_over_verified_https,
             /*with_bootstrap_cred=*/true,
             std::vector<std::string>{"--tls-cert", dir + "/cert.pem", "--tls-key",
                                      dir + "/key.pem"}));
-        if (i == 0) {
-            // Let the --bootstrap-ca node win the first election (see the
-            // test above).
-            std::this_thread::sleep_for(std::chrono::milliseconds(6000));
-        }
     }
+    // All three start at once. Nodes without --bootstrap-ca never campaign
+    // while their log is empty, so node 1 still leads the first term and
+    // creates the CA.
 
     auto all_have = [&](const std::string& file) {
         for (const auto& info : infos) {

@@ -375,23 +375,16 @@ struct three_node_cluster {
         }
         std::string peers_arg = peers.str();
 
-        // Requirement 17.10 is explicit: nodes started WITHOUT --bootstrap-ca
-        // wait for root material via replication and never self-bootstrap —
-        // so if a non-flagged node wins the very first election, the cluster
-        // is correctly, permanently stuck (by design; an operator's job is to
-        // ensure the flagged node is favored to win). Spawning all 3 nodes
-        // simultaneously gives every node an equal chance at that first
-        // election — mirror the realistic operational practice of starting
-        // the --bootstrap-ca node first, with enough of a head start that its
-        // election timer (150-300ms range) fires well before the others'.
+        // All three start at once: nodes without --bootstrap-ca never
+        // campaign while their log is empty (Requirement 17.10), so node 1
+        // leads the first term and creates the CA whatever the start order.
+        // bootstrap_node_started_last_still_creates_the_ca covers that order
+        // directly.
         for (std::size_t i = 0; i < infos.size(); ++i) {
             nodes.push_back(std::make_unique<cluster_node_process>(
                 infos[i].id, infos[i].rpc_port, infos[i].http_port,
                 tmp_root + "/node" + std::to_string(infos[i].id), unseal_key_file, k_auth_token,
                 peers_arg, /*bootstrap=*/i == 0));
-            if (i == 0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
         }
 
         BOOST_REQUIRE_MESSAGE(wait_all_healthy(nodes, std::chrono::seconds(60)),
@@ -535,6 +528,79 @@ BOOST_AUTO_TEST_CASE(no_known_leader_returns_503, *boost::unit_test::timeout(30)
     BOOST_TEST(res->status == 503);
 
     isolated.stop();
+    std::error_code ec;
+    std::filesystem::remove_all(tmp_root, ec);
+}
+
+// Requirement 17.10: only the --bootstrap-ca node creates the CA root, and
+// only while it leads, so a fresh cluster must never elect anyone else
+// first. Here the other two nodes start first and have every chance to
+// elect each other; they must not, and once the bootstrap node starts the
+// CA must form. A full restart without --bootstrap-ca anywhere must then
+// still elect a leader serving the same root: the rule holds only while a
+// node's log is empty.
+BOOST_AUTO_TEST_CASE(bootstrap_node_started_last_still_creates_the_ca,
+                     *boost::unit_test::timeout(180)) {
+    std::string tmp_root = (std::filesystem::temp_directory_path() /
+                            ("ca_cluster_node_late_bootstrap_test_" + std::to_string(::getpid())))
+                               .string();
+    std::filesystem::create_directories(tmp_root);
+    std::string unseal_key_file = tmp_root + "/unseal.key";
+    std::ofstream(unseal_key_file) << "late-bootstrap-test-passphrase\n";
+
+    std::vector<int> rpc_ports{find_free_port(), find_free_port(), find_free_port()};
+    std::vector<int> http_ports{find_free_port(), find_free_port(), find_free_port()};
+    std::ostringstream peers;
+    for (std::size_t i = 0; i < 3; ++i) {
+        peers << (i > 0 ? "," : "") << (i + 1) << ":127.0.0.1:" << rpc_ports[i]
+              << "@http://127.0.0.1:" << http_ports[i];
+    }
+
+    std::vector<std::unique_ptr<cluster_node_process>> nodes(3);
+    auto spawn = [&](std::size_t i) {
+        nodes[i] = std::make_unique<cluster_node_process>(
+            i + 1, rpc_ports[i], http_ports[i], tmp_root + "/node" + std::to_string(i + 1),
+            unseal_key_file, k_auth_token, peers.str(), /*bootstrap=*/i == 0);
+    };
+    spawn(1);
+    spawn(2);
+    BOOST_REQUIRE(wait_healthy(http_ports[1], std::chrono::seconds(30)));
+    BOOST_REQUIRE(wait_healthy(http_ports[2], std::chrono::seconds(30)));
+
+    // Ten or more 150-300ms election timeouts: before the fix, nodes 2 and 3
+    // elected one of themselves well inside this window.
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    for (std::size_t i = 1; i < 3; ++i) {
+        httplib::Client c("127.0.0.1", http_ports[i]);
+        c.set_connection_timeout(2, 0);
+        c.set_read_timeout(20, 0);
+        auto res =
+            c.Get("/v1/root-ca",
+                  httplib::Headers{{"Authorization", "Bearer " + std::string(k_auth_token)}});
+        BOOST_REQUIRE(res);
+        BOOST_TEST(res->status == 503, "node " << (i + 1) << " answered " << res->status
+                                               << " before the bootstrap node started");
+    }
+
+    spawn(0);
+    auto leader = find_leader(nodes, k_auth_token, std::chrono::seconds(60));
+    BOOST_REQUIRE_MESSAGE(leader.has_value(),
+                          "the CA never formed after the bootstrap node started");
+
+    for (auto& n : nodes) {
+        n->stop();
+    }
+    for (auto& n : nodes) {
+        n->restart(/*bootstrap_again=*/false);
+    }
+    auto after_restart = find_leader(nodes, k_auth_token, std::chrono::seconds(60));
+    BOOST_REQUIRE_MESSAGE(after_restart.has_value(),
+                          "no leader after restarting every node without --bootstrap-ca");
+    BOOST_TEST(after_restart->root_pem == leader->root_pem);
+
+    for (auto& n : nodes) {
+        n->stop();
+    }
     std::error_code ec;
     std::filesystem::remove_all(tmp_root, ec);
 }
