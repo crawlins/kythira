@@ -60,32 +60,32 @@ gap and `design.md` for the planner and per-cloud calls.
     `a_provision_timeout_rolls_the_pool_size_back` green
   - _Requirements: 1.1, 1.3, 2.1-2.5, 3.1-3.4, 4.7, 5.1-5.2, 8.2, 8.3_
 
-- [ ] 6. AWS ASG manager
-  - [ ] 6.1 Snapshot every lifecycle state, not only `InService`
-  - [ ] 6.2 Add `best_effort_remove`; route the timeout path through the
+- [x] 6. AWS ASG manager
+  - [x] 6.1 Snapshot every lifecycle state, not only `InService`
+  - [x] 6.2 Add `best_effort_remove`; route the timeout path through the
     planner; audit after a shrink
-  - [ ] 6.3 `SetInstanceProtection` on adoption; reconcile in the
+  - [x] 6.3 `SetInstanceProtection` on adoption; reconcile in the
     constructor's startup check; clear before terminate if task 1.2
     requires it
-  - [ ] 6.4 Add `autoscaling:SetInstanceProtection` to
+  - [x] 6.4 Add `autoscaling:SetInstanceProtection` to
     `scripts/ci-cloud-credentials/aws/policies/asg-quorum-manager.json`
     (lands with or after PR #381) and to the documented IAM policy
   - _Requirements: 1.1, 1.2, 2.1-2.5, 3.1-3.4, 4.1-4.5, 5.1-5.2, 7.1_
 
-- [ ] 7. Azure VMSS manager
-  - [ ] 7.1 Snapshot member names before the capacity `PATCH`; require
+- [x] 7. Azure VMSS manager
+  - [x] 7.1 Snapshot member names before the capacity `PATCH`; require
     absence from it for adoption
-  - [ ] 7.2 Add `best_effort_remove`; route the timeout path through the
+  - [x] 7.2 Add `best_effort_remove`; route the timeout path through the
     planner; audit after a shrink
-  - [ ] 7.3 Protection on adoption and reconcile, as task 1.4 allows
+  - [x] 7.3 Protection on adoption and reconcile, as task 1.4 allows
   - _Requirements: 1.1, 1.3, 2.1-2.5, 3.1-3.4, 4.1-4.5, 5.1-5.2, 7.3_
 
-- [ ] 8. GCP MIG manager
-  - [ ] 8.1 Snapshot managed instances before `resize`; require absence
+- [x] 8. GCP MIG manager
+  - [x] 8.1 Snapshot managed instances before `resize`; require absence
     from it for adoption
-  - [ ] 8.2 Add `best_effort_remove` via `deleteInstances`; route the
+  - [x] 8.2 Add `best_effort_remove` via `deleteInstances`; route the
     timeout path through the planner; audit after a shrink
-  - [ ] 8.3 Report the rollback `resize` result instead of discarding it
+  - [x] 8.3 Report the rollback `resize` result instead of discarding it
   - _Requirements: 1.1, 1.3, 2.1-2.5, 3.1-3.4, 4.7, 5.1-5.4, 7.4_
 
 - [ ] 9. Real-cloud timeout cases
@@ -111,5 +111,13 @@ gap and `design.md` for the planner and per-cloud calls.
   `rollback_outcome`, which carries the removals, the restore and the
   audit together, rather than the three separate arguments sketched in
   the design.
-- The ASG policy change in 6.4 edits a file PR #381 adds; rebase on main
-  after #381 merges.
+- Tasks 6-8 landed together. The timeout sequence (plan, remove or
+  restore, audit) moved into `group_rollback::execute_rollback`, so the
+  five managers supply only their cloud calls. ASG and VMSS gained mock
+  tests over SDK client doubles (`aws_asg_quorum_manager_mock_test`,
+  `azure_vmss_quorum_manager_mock_test`); the MIG cases extend
+  `gcp_quorum_manager_unit_test` and its fakes. Each double removes the
+  oldest unprotected member on a blind shrink, so the old path visibly
+  costs a voter. No documented IAM policy lists the ASG actions beyond the
+  CI bundle, which 6.4 updated; Azure's `Virtual Machine Contributor`
+  already covers the protection `PUT`.

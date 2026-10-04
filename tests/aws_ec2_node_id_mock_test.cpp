@@ -90,6 +90,7 @@ struct fake_instance {
     std::map<std::string, std::string> tags{};
     std::string user_data{};  // decoded
     std::string asg{};        // owning group, if launched by one
+    bool protected_from_scale_in{false};
 };
 
 /// Query-protocol params: `Name=value&...` from the form body.
@@ -295,7 +296,9 @@ private:
                 x += "<member><InstanceId>" + id +
                      "</InstanceId><AvailabilityZone>us-east-1a</AvailabilityZone>"
                      "<LifecycleState>InService</LifecycleState><HealthStatus>Healthy"
-                     "</HealthStatus><ProtectedFromScaleIn>false</ProtectedFromScaleIn></member>";
+                     "</HealthStatus><ProtectedFromScaleIn>" +
+                     std::string(inst.protected_from_scale_in ? "true" : "false") +
+                     "</ProtectedFromScaleIn></member>";
             }
         }
         return x + "</Instances></member>";
@@ -397,6 +400,13 @@ private:
                 ++asg_desired[name];
             }
             asg_desired[name] = want;
+            asg_reply(res, action, "");
+        } else if (action == "SetInstanceProtection") {
+            // The ASG manager protects every instance it adopts, so a voter is
+            // never the group's own scale-in victim.
+            for (const auto& id : list_param(p, "InstanceIds.member")) {
+                instances.at(id).protected_from_scale_in = p["ProtectedFromScaleIn"] == "true";
+            }
             asg_reply(res, action, "");
         } else if (action == "TerminateInstanceInAutoScalingGroup") {
             auto& inst = instances.at(p["InstanceId"]);

@@ -5157,6 +5157,24 @@ else()
     message(STATUS "aws_ec2_node_id_mock_test: skipped (requires httplib for the local fake)")
 endif()
 
+# ASG timeout rollback and scale-in protection against in-process Auto
+# Scaling/EC2 client doubles (.kiro/specs/group-scale-up-rollback/ task 6).
+# No FIU: the constructor's group checks must run against the doubles.
+add_executable(aws_asg_quorum_manager_mock_test aws_asg_quorum_manager_mock_test.cpp)
+target_link_libraries(aws_asg_quorum_manager_mock_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(aws_asg_quorum_manager_mock_test PRIVATE Folly::folly)
+endif()
+target_compile_features(aws_asg_quorum_manager_mock_test PRIVATE cxx_std_23)
+add_test(NAME aws_asg_quorum_manager_mock_test COMMAND aws_asg_quorum_manager_mock_test)
+set_tests_properties(aws_asg_quorum_manager_mock_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;raft;quorum;aws"
+)
+
 # LocalStack integration tests — requires LocalStack running on localhost:4566.
 add_executable(aws_quorum_manager_localstack_test aws_quorum_manager_localstack_test.cpp)
 target_compile_definitions(aws_quorum_manager_localstack_test PRIVATE
@@ -5640,6 +5658,26 @@ target_compile_features(azure_quorum_manager_unit_test PRIVATE cxx_std_23)
 add_test(NAME azure_quorum_manager_unit_test COMMAND azure_quorum_manager_unit_test)
 set_tests_properties(azure_quorum_manager_unit_test PROPERTIES
     TIMEOUT 60
+    LABELS "unit;raft;quorum;azure"
+)
+
+# VMSS timeout rollback and scale-in protection against an in-process ARM
+# transport double (.kiro/specs/group-scale-up-rollback/ task 7). No FIU: the
+# constructor's scale-set checks must run against the double.
+add_executable(azure_vmss_quorum_manager_mock_test azure_vmss_quorum_manager_mock_test.cpp)
+target_link_libraries(azure_vmss_quorum_manager_mock_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    Azure::azure-core
+    Azure::azure-identity
+)
+if(TARGET Folly::folly)
+    target_link_libraries(azure_vmss_quorum_manager_mock_test PRIVATE Folly::folly)
+endif()
+target_compile_features(azure_vmss_quorum_manager_mock_test PRIVATE cxx_std_23)
+add_test(NAME azure_vmss_quorum_manager_mock_test COMMAND azure_vmss_quorum_manager_mock_test)
+set_tests_properties(azure_vmss_quorum_manager_mock_test PROPERTIES
+    TIMEOUT 120
     LABELS "unit;raft;quorum;azure"
 )
 

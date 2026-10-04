@@ -466,7 +466,10 @@ to appear, then return that instance's kythira node ID and address.
    `peer_info{new_node_id, "{private_ip}:{node_port}"}`.
 6. WHEN `provision_timeout` elapses THEN `provision_node` SHALL call
    `UpdateAutoScalingGroup` to restore `DesiredCapacity` to its original value
-   (best-effort rollback) and return an exceptional Future.
+   (best-effort rollback) and return an exceptional Future. *Superseded in
+   part by `.kiro/specs/group-scale-up-rollback/`: the fresh instance is
+   terminated by id with `ShouldDecrementDesiredCapacity`, and
+   `DesiredCapacity` is restored only when none is listed.*
 
 ---
 

@@ -22,6 +22,7 @@
 #include <raft/gcp_client_config.hpp>
 #include <raft/gcp_client_options.hpp>
 #include <raft/gcp_operation_wait.hpp>
+#include <raft/group_scale_rollback.hpp>
 #include <raft/quorum_management.hpp>
 
 #ifdef KYTHIRA_HAS_GCP_SDK
@@ -46,8 +47,10 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace kythira {
@@ -100,6 +103,21 @@ inline auto make_zone_operations_client(const gcp_client_config& gcp)
 inline auto last_path_segment(const std::string& url) -> std::string {
     auto pos = url.find_last_of('/');
     return pos == std::string::npos ? url : url.substr(pos + 1);
+}
+
+/// @brief Map a managed instance's `currentAction` onto the rollback
+///        planner's three classes: `NONE` serves, `DELETING` and `ABANDONING`
+///        are leaving, and every other action (`CREATING`, `VERIFYING`,
+///        `RECREATING`, ...) is treated as on its way in.
+[[nodiscard]] inline auto rollback_state(std::string_view current_action)
+    -> group_rollback::member_state {
+    if (current_action == "NONE") {
+        return group_rollback::member_state::live;
+    }
+    if (current_action == "DELETING" || current_action == "ABANDONING") {
+        return group_rollback::member_state::terminal;
+    }
+    return group_rollback::member_state::pending;
 }
 
 }  // namespace gcp_mig_detail
@@ -346,6 +364,14 @@ public:
     /// @brief Grows the target MIG by one, waits for the new instance to appear,
     ///        mints a `NodeId`, and durably records it as a `kythira-node-id`
     ///        label so `assess_quorum`/`decommission_node` can find it later.
+    ///
+    /// Only an instance the MIG did not list before the resize can be adopted.
+    /// On timeout the resize is undone without letting the MIG choose a victim
+    /// (group-scale-up-rollback Requirements 2-3): every instance it created is
+    /// removed with `deleteInstances`, which also lowers `targetSize`, and the
+    /// target size is written back only when none was created. The error ends
+    /// with what the rollback did, e.g.
+    /// `rollback: removed kythira-mig-abcd (fresh, CREATING)`.
     auto provision_node(std::string target_group, std::optional<NodeId> replacing)
         -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
@@ -372,6 +398,20 @@ public:
                                          mig.status().message());
             }
             const std::int32_t original_size = mig->target_size();
+
+            // Every managed instance before the resize, whatever its current
+            // action: one the MIG was still creating for an earlier call is
+            // not this call's, and must be neither adopted nor deleted by the
+            // rollback. Growing without this snapshot would make both unsafe.
+            auto before = _migs.ListManagedInstances(_config.gcp.project_id, zone, mig_name);
+            if (!before) {
+                throw std::runtime_error("gcp instanceGroupManagers.listManagedInstances: " +
+                                         before.status().message());
+            }
+            std::vector<std::string> pre_growth;
+            for (const auto& mi : before->managed_instances()) {
+                pre_growth.push_back(gcp_mig_detail::last_path_segment(mi.instance()));
+            }
 
             auto resize =
                 _migs.Resize(_config.gcp.project_id, zone, mig_name, original_size + 1).get();
@@ -402,7 +442,7 @@ public:
                         continue;
                     }
                     const std::string cand = gcp_mig_detail::last_path_segment(mi.instance());
-                    if (cand.empty()) {
+                    if (cand.empty() || std::ranges::find(pre_growth, cand) != pre_growth.end()) {
                         continue;
                     }
                     auto inst = _instances.GetInstance(_config.gcp.project_id, zone, cand);
@@ -417,13 +457,20 @@ public:
             }
 
             if (new_instance_name.empty()) {
-                // Best-effort rollback: restore the original target size.
-                auto rollback =
-                    _migs.Resize(_config.gcp.project_id, zone, mig_name, original_size).get();
-                (void)rollback;
+                std::vector<google::cloud::cpp::compute::v1::ManagedInstance> final_managed;
+                if (auto after =
+                        _migs.ListManagedInstances(_config.gcp.project_id, zone, mig_name)) {
+                    final_managed.assign(after->managed_instances().begin(),
+                                         after->managed_instances().end());
+                }
+                // An empty listing (the read failed) plans a target-size
+                // restore: with nothing known to be fresh there is nothing to
+                // delete by name.
+                const auto rollback =
+                    undo_scale_up(zone, mig_name, pre_growth, final_managed, original_size);
                 throw gcp_operation_timeout(
                     "gcp mig provision timeout: no unlabelled instance appeared in " +
-                    target_group);
+                    target_group + "; " + group_rollback::describe(rollback, original_size + 1));
             }
 
             // Mint a NodeId and label the instance, retrying on collisions and
@@ -551,6 +598,103 @@ private:
     google::cloud::compute_instance_group_managers_v1::InstanceGroupManagersClient _migs;
     google::cloud::compute_instances_v1::InstancesClient _instances;
     google::cloud::compute_zone_operations_v1::ZoneOperationsClient _zone_ops;
+
+    [[nodiscard]] static auto rollback_listing(
+        const std::vector<google::cloud::cpp::compute::v1::ManagedInstance>& managed)
+        -> std::vector<group_rollback::listed_member> {
+        std::vector<group_rollback::listed_member> out;
+        out.reserve(managed.size());
+        for (const auto& mi : managed) {
+            out.push_back({.id = gcp_mig_detail::last_path_segment(mi.instance()),
+                           .state = gcp_mig_detail::rollback_state(mi.current_action()),
+                           .lifecycle = mi.current_action(),
+                           .node = {}});
+        }
+        return out;
+    }
+
+    /// @brief `deleteInstances` for one instance, which also lowers the MIG's
+    ///        target size, then wait for its operation.
+    ///
+    /// `skipInstancesOnValidationError` makes an instance that is already gone
+    /// or being deleted a no-op rather than a refusal, so a repeat is safe.
+    ///
+    /// @return The error text, or empty on success.
+    [[nodiscard]] auto try_delete(const std::string& zone, const std::string& mig_name,
+                                  const std::string& instance_url) noexcept -> std::string {
+        try {
+            google::cloud::cpp::compute::v1::InstanceGroupManagersDeleteInstancesRequest req;
+            req.add_instances(instance_url);
+            req.set_skip_instances_on_validation_error(true);
+            auto del = _migs.DeleteInstances(_config.gcp.project_id, zone, mig_name, req).get();
+            if (!del) {
+                if (del.status().code() == google::cloud::StatusCode::kNotFound) {
+                    return {};
+                }
+                return "instanceGroupManagers.deleteInstances: " + del.status().message();
+            }
+            std::move(wait_for_zone_operation(_zone_ops, _config.gcp.project_id, zone, del->name(),
+                                              _config.gcp.api_timeout,
+                                              _config.gcp.operation_poll_interval))
+                .get();
+            return {};
+        } catch (const std::exception& ex) {
+            return ex.what();
+        }
+    }
+
+    /// Undo a timed-out resize of @p mig_name; see `provision_node`.
+    [[nodiscard]] auto undo_scale_up(
+        const std::string& zone, const std::string& mig_name,
+        const std::vector<std::string>& pre_growth,
+        const std::vector<google::cloud::cpp::compute::v1::ManagedInstance>& final_managed,
+        std::int32_t original_size) noexcept -> group_rollback::rollback_outcome {
+        try {
+            // `deleteInstances` takes the instance URL the MIG listed.
+            std::map<std::string, std::string> url_by_name;
+            for (const auto& mi : final_managed) {
+                url_by_name[gcp_mig_detail::last_path_segment(mi.instance())] = mi.instance();
+            }
+            return group_rollback::execute_rollback(
+                pre_growth, rollback_listing(final_managed), original_size,
+                [&](const std::string& name) {
+                    return try_delete(zone, mig_name, url_by_name.at(name));
+                },
+                [&](std::int64_t size) {
+                    // Reported, not discarded (task 8.3): a failed restore
+                    // leaves the MIG one larger than the cluster expects.
+                    auto resize = _migs
+                                      .Resize(_config.gcp.project_id, zone, mig_name,
+                                              static_cast<std::int32_t>(size))
+                                      .get();
+                    if (!resize) {
+                        throw std::runtime_error("instanceGroupManagers.resize: " +
+                                                 resize.status().message());
+                    }
+                    std::move(wait_for_zone_operation(_zone_ops, _config.gcp.project_id, zone,
+                                                      resize->name(), _config.gcp.api_timeout,
+                                                      _config.gcp.operation_poll_interval))
+                        .get();
+                },
+                [&] {
+                    auto managed =
+                        _migs.ListManagedInstances(_config.gcp.project_id, zone, mig_name);
+                    if (!managed) {
+                        throw std::runtime_error(managed.status().message());
+                    }
+                    return rollback_listing(
+                        std::vector<google::cloud::cpp::compute::v1::ManagedInstance>(
+                            managed->managed_instances().begin(),
+                            managed->managed_instances().end()));
+                },
+                group_rollback::settle_window(_config.provision_timeout, _config.poll_interval),
+                _config.poll_interval);
+        } catch (const std::exception& ex) {
+            group_rollback::rollback_outcome outcome;
+            outcome.restore_error = std::string("rollback aborted: ") + ex.what();
+            return outcome;
+        }
+    }
 
     /// Resolves NodeId → instance self-link in @p zone via a labelled
     /// `instances.list` lookup. Unlike `gcp_compute_quorum_manager`, this is a

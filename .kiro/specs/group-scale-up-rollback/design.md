@@ -191,9 +191,9 @@ match. It only reports; it never mutates.
 
 | Manager | Set | Clear before decommission | Startup reconcile |
 |---|---|---|---|
-| ASG | `SetInstanceProtection(ids, ProtectedFromScaleIn=true)` | only if task 1 shows `TerminateInstanceInAutoScalingGroup` refuses a protected instance | in the constructor block that checks `HealthCheckType` |
+| ASG | `SetInstanceProtection(ids, ProtectedFromScaleIn=true)` | not needed: task 1 found protection does not block `TerminateInstanceInAutoScalingGroup` | in the constructor block that checks `HealthCheckType`; adopted means the EC2 instance carries this cluster's `kythira:cluster` and a `kythira:node-id` tag |
 | ESS | `SetInstancesProtection(ProtectedFromScaleIn=true)` | not needed: task 1 found `RemoveInstances` is the documented way to remove a `Protected` member, and clearing first would expose it to scale-in | in the constructor |
-| VMSS | `PATCH` the member VM `properties.protectionPolicy.protectFromScaleIn=true` | only if task 1 shows the scale set `delete` refuses it | in the constructor's Flexible-mode check |
+| VMSS | `PUT .../virtualMachineScaleSets/{vmss}/virtualMachines/{name}` at api-version 2023-09-01 with `properties.protectionPolicy.protectFromScaleIn=true` (task 1.4) | not needed: task 1 found user-initiated deletes are not blocked | in the constructor's Flexible-mode check; a member the VM list already shows protected is skipped |
 
 Startup reconcile reads the group once, filters to members tagged for
 `cluster_name`, and protects those that are not protected. It runs the

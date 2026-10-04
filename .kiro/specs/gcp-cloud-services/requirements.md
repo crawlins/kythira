@@ -761,7 +761,10 @@ with a fresh kythira node ID so that the resulting node can be identified by
 7. WHEN `config.provision_timeout` elapses before step 3 finds a candidate
    instance THEN `provision_node` SHALL call `instanceGroupManagers.resize`
    to restore `targetSize` to its original value (best-effort rollback) and
-   return an exceptional Future.
+   return an exceptional Future. *Superseded in part by
+   `.kiro/specs/group-scale-up-rollback/`: the fresh instance is removed with
+   `deleteInstances`, and `targetSize` is restored only when none is listed;
+   a failed restore is reported.*
 
 ---
 
