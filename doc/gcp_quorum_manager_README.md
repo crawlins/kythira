@@ -127,6 +127,13 @@ unset and rely on kythira's `maintain_quorum` loop exclusively.
 
 ## Configuration examples
 
+Designated initializers must follow the struct's declaration order, so these
+examples do too. For deployment, every field is also documented, one
+environment variable each, in
+[`docker/gcp_quorum_manager/gcp_quorum_manager.env.example`](../docker/gcp_quorum_manager/gcp_quorum_manager.env.example),
+with the prerequisite resources in
+[`docker/gcp_quorum_manager/README.md`](../docker/gcp_quorum_manager/README.md).
+
 ### `gcp_compute_quorum_manager`
 
 ```cpp
@@ -137,7 +144,6 @@ kythira::gcp_compute_quorum_manager_config<std::string> cfg{
     .cluster_name = "raft-prod",                    // must be a valid GCP label
     .machine_type = "e2-standard-4",
     .boot_disk_image = "projects/my-project/global/images/kythira-node-v3",
-    .node_port = 7000,
     .subnetwork_by_group = {
         {"us-central1-a", "projects/my-project/regions/us-central1/subnetworks/kythira"},
         {"us-central1-b", "projects/my-project/regions/us-central1/subnetworks/kythira"},
@@ -145,6 +151,7 @@ kythira::gcp_compute_quorum_manager_config<std::string> cfg{
     },
     .service_account_email = "kythira-node@my-project.iam.gserviceaccount.com",
     .service_account_scopes = {"https://www.googleapis.com/auth/cloud-platform"},
+    .node_port = 7000,
     .startup_script_template =
         "#!/bin/bash\n/opt/kythira/node --id {NODE_ID} --port {NODE_PORT} "
         "--cluster {CLUSTER} --zone {ZONE}\n",

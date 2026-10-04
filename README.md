@@ -1608,12 +1608,16 @@ The implementation has been tested with multiple transport layers:
   cluster's own CA root once it exists — no operator action beyond
   initial provisioning
 ✅ **AWS Quorum Managers & Certificate Provider**: `aws_ec2_quorum_manager`,
-  `aws_asg_quorum_manager`, and `aws_acm_pca_provider` (ACM Private CA)
+  `aws_asg_quorum_manager`, and `aws_acm_pca_provider` (ACM Private CA).
+  Quorum manager setup and example config:
+  [`docker/aws_quorum_manager/README.md`](https://github.com/crawlins/kythira/blob/main/docker/aws_quorum_manager/README.md).
 ✅ **GCP Quorum Managers & Certificate Provider**: `gcp_compute_quorum_manager`
   (direct Compute Engine instances), `gcp_mig_quorum_manager` (Managed
   Instance Groups), and `gcp_privateca_certificate_provider` (Certificate
   Authority Service). See
-  [`doc/gcp_quorum_manager_README.md`](https://github.com/crawlins/kythira/blob/main/doc/gcp_quorum_manager_README.md).
+  [`doc/gcp_quorum_manager_README.md`](https://github.com/crawlins/kythira/blob/main/doc/gcp_quorum_manager_README.md),
+  and for setup and an example config,
+  [`docker/gcp_quorum_manager/README.md`](https://github.com/crawlins/kythira/blob/main/docker/gcp_quorum_manager/README.md).
 ✅ **Peer-to-Peer Log Replication**: opt-in gossip-based catch-up
   (`tcp_gossip_peer2peer_replicator`) so lagging followers can pull missing
   entries from any peer, not just the leader; leader remains sole commit
@@ -1634,7 +1638,9 @@ The implementation has been tested with multiple transport layers:
   Follow-ups, unrelated to any transport)
 ✅ **Azure Quorum Managers & Certificate Provider**: `azure_vm_quorum_manager`,
   `azure_vmss_quorum_manager`, and `azure_key_vault_ca_provider` — see the
-  dedicated section below. AWS, Azure, and GCP are all implemented today.
+  dedicated section below, and for quorum manager setup and an example config,
+  [`docker/azure_quorum_manager/README.md`](https://github.com/crawlins/kythira/blob/main/docker/azure_quorum_manager/README.md).
+  AWS, Azure, and GCP are all implemented today.
 ✅ **Alibaba Cloud Quorum Manager & Persistence**: `alibaba_ess_quorum_manager`
   (Auto Scaling / ESS scaling groups) and `alibaba_oss_persistence_engine`
   (OSS), both over hand-rolled request signing with no vendor SDK, and both

@@ -257,7 +257,8 @@ issuance.
 
 ## Known limitations
 
-- **Instance Principal auth is not implemented** (§4).
+- **Instance Principal auth has not run on a real instance** (§4): it is
+  verified against the go-sdk's contract and a cryptographic mock tier only.
 - **NodeIds are reused after a decommission.** The next id is
   max-of-`kythira-node-id`-tags plus one, scanned across the pool — and a
   decommissioned instance is detached, so its tag is no longer visible.
@@ -266,21 +267,8 @@ issuance.
   `ListInstancePoolInstances`, and no OCI call exposes a detached instance's
   tags, so a deployment that cannot tolerate a recycled identity has to keep
   the assignment outside the pool.
-- **No real-OCI integration test tier yet.** `tasks.md` Task 6 is open, and
-  two of its inputs are still unresolved spike questions: OCI's exact
-  out-of-capacity error shape and whether OCI federates GitHub Actions' OIDC
-  tokens to a Dynamic Group.
-
-  What *has* been validated against a live tenancy (2026-08-11,
-  `spike-notes.md` Findings 5-7): request signing end to end, the per-service
-  host derivation, and the error unwrapping, via authenticated `ListRegions`
-  and `ListInstances` calls. That pass found two defects invisible to the whole
-  mock suite — the `oci` label missing from the endpoint domain, which meant
-  the certificates hostnames did not resolve at all, and a `Host` header that
-  disagreed with the signed one. Both are fixed.
-
-  What remains unvalidated against real OCI is everything that needs a
-  *resource*: `GetInstancePool`, the provisioning and decommission sequences,
-  and certificate issuance. Those are still mock-only, which is the position
-  AWS, Azure and GCP were each in before their first live run — and each of
-  those runs surfaced three or four real defects.
+- **Live coverage is the CI job's, not a deployment's.** `tasks.md` Task 6
+  closed on 2026-08-12 with a green `oci` CI job (run 31564877239) under
+  keyless Workload Identity Federation: provision, assess and decommission
+  of a live instance, then root fetch, CSR issuance and revoke, then a leak
+  audit. It exercises one instance in one pool at a time.
