@@ -540,6 +540,19 @@ public:
     /// really has before spending a term on an election it would lose.
     [[nodiscard]] auto last_log_index() const -> log_index_type;
 
+    /// @brief Keep this node from campaigning while its log is empty.
+    ///
+    /// For clusters where exactly one founding member must lead first, such
+    /// as ca_cluster_node, whose --bootstrap-ca node is the only one that can
+    /// create the CA root and does so only as leader. Every other member is
+    /// started with this set: at cluster genesis every log is empty, so only
+    /// the founder can win the first election, however the election timers
+    /// happen to line up. Voting is unaffected. The node campaigns normally
+    /// once any entry has reached its log (replicated, restored from
+    /// persistence, or covered by a snapshot), so a restarted cluster still
+    /// elects without the founder.
+    auto set_campaign_requires_log_entries(bool required) -> void;
+
     /// @brief The voting members and learners of this replica's latest
     ///        configuration, and whether it is a joint one.
     struct membership_view {
@@ -980,6 +993,9 @@ private:
     // constructed with, so an election would make it the leader of a
     // one-node cluster of its own.
     bool _awaiting_admission{false};
+
+    // See set_campaign_requires_log_entries().
+    bool _campaign_requires_log_entries{false};
 
     // Whether stop() was requested before start() completed (cancels bootstrap loop)
     std::atomic<bool> _stop_requested{false};
@@ -2504,6 +2520,12 @@ auto node<Types>::match_index_of(const node_id_type& node) const -> std::optiona
 template<raft_types Types> auto node<Types>::last_log_index() const -> log_index_type {
     std::lock_guard<std::mutex> lock(_mutex);
     return get_last_log_index();
+}
+
+template<raft_types Types>
+auto node<Types>::set_campaign_requires_log_entries(bool required) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _campaign_requires_log_entries = required;
 }
 
 template<raft_types Types> auto node<Types>::current_membership() const -> membership_view {
@@ -4433,6 +4455,12 @@ auto node<Types>::check_election_timeout() -> void {
     // Nor does a node that joined through ClusterJoin and has not yet applied
     // a configuration replicated from the cluster.
     if (_awaiting_admission) {
+        return;
+    }
+
+    // Nor does a node told to wait for its first log entry, while it has none
+    // (set_campaign_requires_log_entries()).
+    if (_campaign_requires_log_entries && get_last_log_index() == 0) {
         return;
     }
 

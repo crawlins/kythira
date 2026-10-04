@@ -3,6 +3,22 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 4, 2026)
+
+- **A fresh `ca_cluster_node` cluster always creates its CA.** Only the
+  `--bootstrap-ca` node creates the CA root, and only while it leads. If
+  another node won the first election, the cluster ran normally but could
+  never sign anything, and the bootstrap node never took over. Starting the
+  bootstrap node first did not prevent this: alone, its pre-vote fails and
+  its timer restarts, so a peer started seconds later could still time out
+  first. This was the whole of `ca_cluster_node_rpc_tls_test`'s and
+  `ca_cluster_node_rpc_tls_restart_test`'s flakiness (retried in 10 and 4 of
+  54 CI jobs). Nodes started without `--bootstrap-ca` now never campaign
+  while their Raft log is empty, through the new
+  `node::set_campaign_requires_log_entries()`, so the bootstrap node leads
+  the first term whatever the start order. A restarted cluster still elects
+  without it. The tests drop their 6 s startup staggers.
+
 ### What Changed (October 3, 2026)
 
 - **CI checks every defconfig against Kconfig.** A new `kconfig-check` job

@@ -251,10 +251,10 @@ curl -H "Authorization: Bearer $TOKEN" https://<any-node>:8443/v1/root-ca
 A follower answers `308` with a `Location` pointing at the current leader; the
 leader answers `200` with the root CA certificate PEM. If every node answers
 `503 {"error":"no_known_leader"}`, no leader has been elected yet (check RPC
-connectivity between the three nodes' `rpc_port`s) or, if only the
-`--bootstrap-ca`-flagged node's own answer matters, that node may not have won
-the cluster's first election yet (Requirement 17.10 — non-flagged nodes never
-self-bootstrap, by design).
+connectivity between the three nodes' `rpc_port`s) or the
+`--bootstrap-ca`-flagged node is not running yet. On a fresh cluster the other
+two nodes never campaign while their logs are empty (Requirement 17.10), so
+the first leader is always the flagged node, whatever order the three start in.
 
 ## Bootstrapping a new client's trust (fingerprint pinning, Requirement 19)
 
