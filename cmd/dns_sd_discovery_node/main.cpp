@@ -29,10 +29,12 @@
 #include <folly/init/Init.h>
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <unistd.h>
 
 #include <arpa/inet.h>
@@ -72,6 +74,41 @@ const char* env_or(const char* key, const char* fallback) {
     return (v && *v) ? v : fallback;
 }
 
+// The node runs in a compose stack where the DNS server's service name is
+// not guaranteed to resolve at the instant the process starts: under
+// rootless Podman, aardvark-dns can answer a moment after the container is
+// running. A failed lookup used to fall through to ldns as a bare name, the
+// registration failed, the node exited with no restart policy, and the
+// scenario test only saw /health time out 60 s later. Startup now retries
+// both the lookup and the registration for STARTUP_RETRY_MS (default
+// 30 s), logging each failure.
+bool is_ipv4_literal(const std::string& s) {
+    in_addr a{};
+    return inet_pton(AF_INET, s.c_str(), &a) == 1;
+}
+
+std::chrono::steady_clock::time_point startup_deadline() {
+    return std::chrono::steady_clock::now() +
+           std::chrono::milliseconds{std::stoi(env_or("STARTUP_RETRY_MS", "30000"))};
+}
+
+// Resolves `host` to an IPv4 literal, retrying until `deadline`. Returns an
+// empty string if it never resolves.
+std::string resolve_with_retry(const std::string& host,
+                               std::chrono::steady_clock::time_point deadline, const char* tag) {
+    while (true) {
+        const std::string ip = resolve_to_ip(host);
+        if (is_ipv4_literal(ip)) {
+            return ip;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return {};
+        }
+        std::cerr << tag << " cannot resolve " << host << " yet; retrying\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -99,8 +136,15 @@ int main(int argc, char** argv) {
               << " domain=" << svc_domain << " type=" << svc_type << " freshness=" << freshness
               << "s\n";
 
+    const auto deadline = startup_deadline();
+    const std::string server_ip = resolve_with_retry(dns_server, deadline, "[dns_sd_node]");
+    if (server_ip.empty()) {
+        std::cerr << "[dns_sd_node] cannot resolve DNS_SERVER " << dns_server << "\n";
+        return 1;
+    }
+
     kythira::rfc2136_dns_sd_discovery::config cfg;
-    cfg.server = resolve_to_ip(dns_server);
+    cfg.server = server_ip;
     cfg.port = 53;
     cfg.zone = dns_zone;
     cfg.service_domain = svc_domain;
@@ -110,12 +154,18 @@ int main(int argc, char** argv) {
 
     kythira::rfc2136_dns_sd_discovery discovery{std::move(cfg)};
 
-    try {
-        discovery.register_node(node_id, self_addr).get();
-        std::cout << "[dns_sd_node] registered\n";
-    } catch (const std::exception& ex) {
-        std::cerr << "[dns_sd_node] registration failed: " << ex.what() << "\n";
-        return 1;
+    while (true) {
+        try {
+            discovery.register_node(node_id, self_addr).get();
+            std::cout << "[dns_sd_node] registered\n";
+            break;
+        } catch (const std::exception& ex) {
+            std::cerr << "[dns_sd_node] registration failed: " << ex.what() << "\n";
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return 1;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{500});
+        }
     }
 
     httplib::Server srv;

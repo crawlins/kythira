@@ -26,11 +26,13 @@
 #include <folly/init/Init.h>
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <unistd.h>
 
 #include <arpa/inet.h>
@@ -70,12 +72,47 @@ std::string resolve_to_ip(const std::string& host) {
     return buf;
 }
 
+// The node runs in a compose stack where neither its own hostname nor the
+// DNS server's service name is guaranteed to resolve at the instant the
+// process starts: under rootless Podman, aardvark-dns can answer a moment
+// after the container is running. A failed lookup used to fall through to
+// ldns as a bare name (or throw), the registration failed, the node exited
+// with no restart policy, and the scenario test only saw /health time out
+// 60 s later. Startup now retries both the lookup and the registration for
+// STARTUP_RETRY_MS (default 30 s), logging each failure.
+bool is_ipv4_literal(const std::string& s) {
+    in_addr a{};
+    return inet_pton(AF_INET, s.c_str(), &a) == 1;
+}
+
+std::chrono::steady_clock::time_point startup_deadline() {
+    return std::chrono::steady_clock::now() +
+           std::chrono::milliseconds{std::stoi(env_or("STARTUP_RETRY_MS", "30000"))};
+}
+
+// Resolves `host` to an IPv4 literal, retrying until `deadline`. Returns an
+// empty string if it never resolves.
+std::string resolve_with_retry(const std::string& host,
+                               std::chrono::steady_clock::time_point deadline, const char* tag) {
+    while (true) {
+        const std::string ip = resolve_to_ip(host);
+        if (is_ipv4_literal(ip)) {
+            return ip;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return {};
+        }
+        std::cerr << tag << " cannot resolve " << host << " yet; retrying\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    }
+}
+
 // Resolve our own hostname to an IPv4 address string.
-std::string self_ipv4() {
+std::string self_ipv4(std::chrono::steady_clock::time_point deadline) {
     char host_buf[256] = {};
     gethostname(host_buf, sizeof(host_buf) - 1);
-    std::string ip = resolve_to_ip(host_buf);
-    if (ip == host_buf) {
+    std::string ip = resolve_with_retry(host_buf, deadline, "[dns_node]");
+    if (ip.empty()) {
         throw std::runtime_error(std::string("dns_discovery_node: cannot resolve own hostname: ") +
                                  host_buf);
     }
@@ -98,12 +135,19 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const std::string self_ip = self_ipv4();
+    const auto deadline = startup_deadline();
+    const std::string self_ip = self_ipv4(deadline);
     std::cout << "[dns_node] id=" << node_id << " ip=" << self_ip << " server=" << dns_server
               << " shared=" << shared_name << "\n";
 
+    const std::string server_ip = resolve_with_retry(dns_server, deadline, "[dns_node]");
+    if (server_ip.empty()) {
+        std::cerr << "[dns_node] cannot resolve DNS_SERVER " << dns_server << "\n";
+        return 1;
+    }
+
     kythira::rfc2136_ldns_discovery::config cfg;
-    cfg.query.server = resolve_to_ip(dns_server);
+    cfg.query.server = server_ip;
     cfg.query.port = 53;
     cfg.query.shared_name = shared_name;
     cfg.zone = dns_zone;
@@ -111,12 +155,18 @@ int main(int argc, char** argv) {
 
     kythira::rfc2136_ldns_discovery discovery{cfg};
 
-    try {
-        discovery.register_node(node_id, self_ip).get();
-        std::cout << "[dns_node] registered " << self_ip << " at " << shared_name << "\n";
-    } catch (const std::exception& ex) {
-        std::cerr << "[dns_node] registration failed: " << ex.what() << "\n";
-        return 1;
+    while (true) {
+        try {
+            discovery.register_node(node_id, self_ip).get();
+            std::cout << "[dns_node] registered " << self_ip << " at " << shared_name << "\n";
+            break;
+        } catch (const std::exception& ex) {
+            std::cerr << "[dns_node] registration failed: " << ex.what() << "\n";
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return 1;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{500});
+        }
     }
 
     httplib::Server srv;
