@@ -24,6 +24,7 @@
 
 #include "gcp_real_gce_test_support.hpp"
 
+#include <google/cloud/compute/instance_group_managers/v1/instance_group_managers_client.h>
 #include <google/cloud/compute/instances/v1/instances_client.h>
 #if defined(KYTHIRA_HAS_GCP_MACHINE_TYPES)
 #include <google/cloud/compute/machine_types/v1/machine_types_client.h>
@@ -1001,6 +1002,35 @@ auto base_mig_config() -> gcp_mig_quorum_manager_config<std::string> {
     }
     return cfg;
 }
+
+/// The MIG's target size and the names of its managed instances, read
+/// directly so an assertion does not rely on the manager's own view.
+struct mig_state {
+    std::int32_t target_size{-1};
+    std::vector<std::string> members;
+};
+
+auto read_mig(const std::string& project, const std::string& zone, const std::string& mig)
+    -> std::optional<mig_state> {
+    google::cloud::Options opts;
+    opts.set<google::cloud::UnifiedCredentialsOption>(
+        google::cloud::MakeGoogleDefaultCredentials());
+    google::cloud::compute_instance_group_managers_v1::InstanceGroupManagersClient client(
+        google::cloud::compute_instance_group_managers_v1::MakeInstanceGroupManagersConnectionRest(
+            opts));
+    auto got = client.GetInstanceGroupManager(project, zone, mig);
+    auto listed = client.ListManagedInstances(project, zone, mig);
+    if (!got || !listed) {
+        return std::nullopt;
+    }
+    mig_state state;
+    state.target_size = got->target_size();
+    for (const auto& mi : listed->managed_instances()) {
+        const auto& url = mi.instance();
+        state.members.push_back(url.substr(url.find_last_of('/') + 1));
+    }
+    return state;
+}
 }  // namespace
 
 BOOST_AUTO_TEST_CASE(mig_provision_increments_target_size) {
@@ -1060,6 +1090,73 @@ BOOST_AUTO_TEST_CASE(mig_decommission_idempotent) {
     }
     gcp_mig_quorum_manager<> mgr{base_mig_config()};
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(std::uint64_t{888888888})).get());
+}
+
+/// group-scale-up-rollback Requirement 8.2 / spec task 9.1. A voter is
+/// provisioned and adopted first. A second manager whose provision_timeout
+/// is shorter than a managed instance takes to finish CREATING then grows
+/// the MIG. The resize operation completes once the target size is
+/// written, so the fresh instance is listed while it is still CREATING when
+/// the timeout expires. The rollback must delete it by name with
+/// deleteInstances, which also lowers the target size, and leave the voter.
+BOOST_AUTO_TEST_CASE(mig_provision_timeout_removes_only_the_fresh_instance) {
+    const std::string mig = env_or("GCP_TEST_MIG_A", "");
+    if (mig.empty()) {
+        BOOST_TEST_MESSAGE("GCP_TEST_MIG_A unset — skipping");
+        return;
+    }
+    const auto cfg = base_mig_config();
+    const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
+    case_cost_recorder cost;  // see mig_provision_increments_target_size on pricing
+    gcp_mig_quorum_manager<> voter_mgr{cfg};
+    auto voter = std::move(voter_mgr.provision_node(zone, std::nullopt)).get();
+    const auto voter_billed = cost.add_instance("mig-template-default", zone, false);
+    const auto pre = read_mig(cfg.gcp.project_id, zone, mig);
+    BOOST_REQUIRE(pre.has_value());
+
+    auto short_cfg = cfg;
+    short_cfg.provision_timeout = std::chrono::seconds(5);
+    short_cfg.poll_interval = std::chrono::milliseconds(1000);
+    gcp_mig_quorum_manager<> mgr{short_cfg};
+    const auto fresh_billed = cost.add_instance("mig-template-default", zone, false);
+    std::string error;
+    try {
+        (void)std::move(mgr.provision_node(zone, std::nullopt)).get();
+    } catch (const std::exception& ex) {
+        error = ex.what();
+    }
+    std::cerr << "[gcp-real] timed-out MIG provision: " << error << "\n";
+    BOOST_REQUIRE_MESSAGE(!error.empty(),
+                          "provision_node adopted an instance within a 5s provision_timeout");
+    BOOST_CHECK_MESSAGE(error.find("gcp mig provision timeout") != std::string::npos, error);
+    BOOST_CHECK_MESSAGE(error.find("rollback: removed ") != std::string::npos,
+                        "the rollback did not delete the fresh instance by name: " + error);
+    for (const auto& name : pre->members) {
+        BOOST_CHECK_MESSAGE(error.find(name) == std::string::npos,
+                            "the rollback names pre-existing member " + name + ": " + error);
+    }
+
+    // deleteInstances is waited on, but the listing can lag it.
+    std::optional<mig_state> post;
+    for (int i = 0; i < 60; ++i) {
+        post = read_mig(cfg.gcp.project_id, zone, mig);
+        if (post && post->target_size == pre->target_size &&
+            post->members.size() == pre->members.size()) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+    }
+    cost.stop(fresh_billed);
+    BOOST_REQUIRE(post.has_value());
+    BOOST_CHECK_EQUAL(post->target_size, pre->target_size);
+    BOOST_CHECK_EQUAL(post->members.size(), pre->members.size());
+    for (const auto& name : pre->members) {
+        BOOST_CHECK_MESSAGE(std::ranges::find(post->members, name) != post->members.end(),
+                            "the rollback removed pre-existing member " + name);
+    }
+
+    std::move(voter_mgr.decommission_node(voter.node_id)).get();
+    cost.stop(voter_billed);
 }
 
 BOOST_AUTO_TEST_CASE(mig_construction_rejects_autohealing_policy) {
