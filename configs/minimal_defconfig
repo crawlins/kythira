@@ -18,5 +18,13 @@
 # CONFIG_DNS_DISCOVERY is not set
 # CONFIG_POCO_DISCOVERY is not set
 # CONFIG_AWS_SDK is not set
+# GCP and Azure are optional cloud SDKs exactly as AWS is, and were missing
+# from this list. Left at their `default y`, a strict configure on an image
+# without google-cloud-cpp (every CI image but the GCP SDK Build job's)
+# fails on CONFIG_GCP_SDK before anything is built. GCP_STORAGE does not
+# depend on GCP_SDK, so it is named separately.
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_AZURE_SDK is not set
 # CONFIG_LIBSSH2_TESTS is not set
 # CONFIG_CHAOS_TESTS is not set

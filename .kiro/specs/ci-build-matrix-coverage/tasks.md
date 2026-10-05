@@ -1,6 +1,6 @@
 # Implementation Plan — CI Build-Matrix Coverage
 
-## Status: In progress — 1/12 tasks
+## Status: In progress — 2/12 tasks
 
 **Last Updated**: October 3, 2026 (Task 2 done: `kconfig-check` job).
 
@@ -127,12 +127,19 @@ the Folly-free target set) depend on numbers nobody has yet.
 
 ## Phase 4: Remaining defconfigs and isolation (Task 8)
 
-- [ ] 8. Add the `config-variants` job
+- [x] 8. Add the `config-variants` job
   - Three steps per design §4, separate build directories.
   - Add the optional `KYTHIRA_PREFIX_PATH` override to
     `verify-optional-dependency-isolation.sh`.
   - Remove `minimal_defconfig` and `no_cloud_defconfig` from the usage
     allowlist.
+  - Done. What the job found, fixed under Requirement 8.1:
+    `minimal_defconfig` left GCP and Azure on (strict configure failed on
+    `CONFIG_GCP_SDK`); `CONFIG_AZURE_SDK=n` did not stop
+    `azure-identity-cpp` pulling the SDK back in; and
+    `CONFIG_HTTP_TRANSPORT_TLS=n` broke `ca_cluster_node`, ten TLS tests
+    and the ACME client, which now skip or compile without TLS
+    (`KYTHIRA_HTTP_TLS` in the root `CMakeLists.txt`).
   - _Requirements: 5.1, 5.2, 5.3, 6.1, 6.2, 7.4, 7.5_
 
 ## Phase 5: clang-tidy gate (Tasks 9–10)

@@ -8,5 +8,3 @@
 #
 # Format: <name>_defconfig  # <reason>
 
-minimal_defconfig   # applied by config-variants once ci-build-matrix-coverage Task 8 lands
-no_cloud_defconfig  # applied by config-variants once ci-build-matrix-coverage Task 8 lands

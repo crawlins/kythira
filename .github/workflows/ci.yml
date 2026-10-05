@@ -847,6 +847,206 @@ jobs:
           ctest --test-dir build --output-on-failure --no-tests=error \
             -R '^(ion_binary_decimal_regression_test|ion_serializer_concept_test|ion_serialization_property_test|ion_malformed_message_property_test|ion_json_serializer_equivalence_property_test|shard_group_id_ion_wire_property_test|ion_http_coap_end_to_end_test)$'
 
+  # ── Config variants (minimal, no-cloud, dependency isolation) ───────────────
+  # .kiro/specs/ci-build-matrix-coverage/ Requirements 5 and 6. Three checks no
+  # other job makes, sharing one vcpkg install (Requirement 7.4):
+  #
+  #   * configs/minimal_defconfig, strict, built in full. Its tests are a
+  #     subset of ci_full_defconfig's, which the build-and-test legs already
+  #     run; what nothing checked is that "the smallest buildable
+  #     configuration" compiles and links.
+  #   * configs/no_cloud_defconfig, NOT strict (its header says why), building
+  #     and running the one test its header's usage block names.
+  #   * scripts/verify-optional-dependency-isolation.sh (stdexec-future-backend
+  #     Property 5): a configure with stdexec hidden still builds.
+  #
+  # Each gets its own build directory so CMake cache state from one cannot
+  # leak into the next (Requirement 5.3).
+  #
+  # The vcpkg tree is the edhoc tree under the same actions/cache key the x64
+  # g++-13/clang++-18 build-and-test legs use, so it restores warm and vcpkg
+  # never runs here. clang++-18 is the fastest compiler this workflow builds
+  # with (see the Configure (Release) comment in build-and-test).
+  config-variants:
+    name: Config Variants (clang++-18, x64)
+    runs-on: ubuntu-24.04
+    # Sized from build-and-test's 180-minute budget for one full cold build,
+    # plus headroom for the two smaller builds; not yet measured on a run.
+    timeout-minutes: 240
+    # The read-write build-cache key is an environment secret of
+    # build-cache-write, whose deployment branches are main only, so a
+    # job on any other ref never receives it and cannot poison the cache
+    # main builds from. Other refs run with no environment and fall back
+    # to the read-only key. See doc/ci_build_cache.md.
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
+          # autoconf & co. are for vcpkg's gperf port, needed only on a cold
+          # vcpkg cache; see the build-and-test job.
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      # Only reached on a cold vcpkg cache: the edhoc feature builds the
+      # lakers overlay port from Rust source.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. See
+      # .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # Byte-identical to the x64 build-and-test legs' key (they set no
+      # vcpkg_cxx), so this job shares their tree rather than keeping a third
+      # copy of it.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action; see
+          # the build-and-test job for why it is not re-exported here, and
+          # why vcpkg is pinned to vcpkg.json's builtin-baseline.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      # sccache objects live in the OCI bucket, so the minimal build shares
+      # most of its objects with the build-and-test legs; see that job.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # Strict: every symbol minimal_defconfig leaves on must have its
+      # dependency found, so this configure is also the check that the file
+      # turns off everything the edhoc image cannot satisfy.
+      - name: Configure (minimal_defconfig, strict)
+        run: |
+          cmake -B build-minimal -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/minimal_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+
+      # Every target the configuration enables (Requirement 5.1), not a
+      # sample: "smallest buildable configuration" is a claim about all of
+      # them. Nothing is run; ci_full_defconfig's legs already run a superset.
+      - name: Build (minimal_defconfig)
+        run: cmake --build build-minimal -j$(nproc)
+
+      # The build directory is several GB of objects nothing below reads.
+      - name: Remove the minimal build tree
+        run: rm -rf build-minimal
+
+      # Not strict, as no_cloud_defconfig's own header requires: every symbol
+      # it names is being turned off on purpose, and strict mode asserts the
+      # opposite (that what is left on was found).
+      - name: Configure (no_cloud_defconfig)
+        run: |
+          cmake -B build-nocloud -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/no_cloud_defconfig \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+
+      - name: Build (no_cloud_defconfig)
+        run: cmake --build build-nocloud -j$(nproc) --target object_store_persistence_unit_test
+
+      # --no-tests=error: an empty selection is exactly the failure this step
+      # exists to catch, and ctest exits 0 on one by default.
+      - name: Test (no_cloud_defconfig)
+        run: |
+          set -o pipefail
+          ctest --test-dir build-nocloud --output-on-failure --no-tests=error \
+            -R '^object_store_persistence_unit_test$' \
+            2>&1 | tee ctest-nocloud-out.txt
+
+      - name: Check the no-cloud test run did the work
+        if: always()
+        run: |
+          scripts/check-test-run.sh \
+            --build-dir build-nocloud \
+            --log ctest-nocloud-out.txt \
+            --floor 1 \
+            -- -R '^object_store_persistence_unit_test$'
+
+      # The script configures its own throwaway build directory against the
+      # prefix below (Requirement 6). CXX, the generator and the launcher come
+      # from the environment so its one target builds like the rest of this
+      # job instead of with the runner's default g++ and make; the launcher
+      # is passed explicitly because the script's default (auto) would pick
+      # sccache off PATH even when start-sccache.sh found it unusable.
+      - name: Verify optional-dependency isolation
+        env:
+          KYTHIRA_PREFIX_PATH: ${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+          KYTHIRA_COMPILER_LAUNCHER: ${{ steps.sccache.outputs.launcher || 'none' }}
+          CXX: clang++-18
+          CMAKE_GENERATOR: Ninja
+        run: scripts/verify-optional-dependency-isolation.sh
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — config-variants"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
+
   # ── DNS discovery build (libldns + BIND) ─────────────────────────────────────
   # The only job that builds with CONFIG_DNS_DISCOVERY=y. libldns is in no other
   # CI image, so before this job the RFC 1035/2136/6763 peer-discovery classes,

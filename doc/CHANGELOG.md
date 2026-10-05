@@ -3,6 +3,23 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 5, 2026)
+
+- **CI now builds `minimal_defconfig` and `no_cloud_defconfig`, and runs the
+  stdexec isolation check** (spec `ci-build-matrix-coverage` task 8). The new
+  `config-variants` job builds the minimal configuration in full under
+  strict mode, builds and runs `object_store_persistence_unit_test` with
+  every cloud provider off, and runs
+  `scripts/verify-optional-dependency-isolation.sh`. Getting it green fixed
+  what the minimal build had silently stopped supporting:
+  `CONFIG_HTTP_TRANSPORT_TLS=n` no longer builds `ca_cluster_node` or the
+  ten tests that use httplib's TLS API (they are skipped with a configure
+  message), the ACME client compiles without TLS and refuses an https
+  directory with a message naming the symbol, `CONFIG_AZURE_SDK=n` really
+  turns the Azure SDK off (finding `azure-identity-cpp` used to pull it back
+  in), and `minimal_defconfig` turns off GCP and Azure as its header always
+  said it did.
+
 ### What Changed (October 4, 2026)
 
 - **A fresh `ca_cluster_node` cluster always creates its CA.** Only the
