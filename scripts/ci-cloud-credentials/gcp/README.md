@@ -103,8 +103,10 @@ entry; nothing needs teardown.
 
 ## What the tests create (and clean up)
 
-The real-GCE fixture creates its own VPC subnetworks and test instances/MIGs
-(with no service account attached unless `GCP_TEST_SERVICE_ACCOUNT` names one);
+The real-GCE fixture creates its own VPC subnetworks and test instances
+(with no service account attached unless `GCP_TEST_SERVICE_ACCOUNT` names one).
+The MIG cases are the exception: they grow and shrink two long-lived groups
+that `provision-quorum-manager-migs.sh` creates (see below);
 the real-CAS fixture creates a
 CA pool + self-signed root CA (if `GCP_TEST_CA_POOL` is unset). Every fixture
 labels the resources it creates with `kythira-test-run=<run-id>` and tears them
@@ -190,6 +192,31 @@ shortest suite goes first while the WIF credentials are freshest.
 the identical pattern unthrottled. The suite's latency case already spaces its
 samples for this; it is recorded here because it is a GCS fact, not a
 Kythira one, and the next person to write a GCS test will meet it again.
+
+## Managed instance groups (`gcp_mig_real_gce` cases)
+
+The six MIG cases in `tests/gcp_quorum_manager_real_gce_test.cpp` drive
+existing groups rather than creating their own, and skip when
+`GCP_TEST_MIG_A` or `GCP_TEST_MIG_AUTOHEAL` is unset. The quorum-manager
+step fails on a skipped case, so the GCP job stays red until both are set.
+Create the groups once:
+
+```sh
+scripts/ci-cloud-credentials/gcp/provision-quorum-manager-migs.sh --project <project-id>
+gh variable set GCP_TEST_MIG_A        --body kythira-it-mig-a
+gh variable set GCP_TEST_MIG_AUTOHEAL --body kythira-it-mig-autoheal
+```
+
+The script creates an `e2-micro` instance template with no external address
+and no service account, a TCP health check, and two zonal MIGs at size 0 in
+`<GCP_REAL_CLOUD_TESTS_REGION>-a`. None of these bill while idle.
+`kythira-it-mig-autoheal` carries an autohealing policy only so the
+construction case has a group to reject, and is never resized. Instances
+are named `kythira-kythira-it-mig-*`, so the job's leak audit lists any
+that a failed case leaves behind. The job then returns `kythira-it-mig-a`
+to size 0 and still fails. The gcp-quorum-manager bundle's
+`roles/compute.instanceAdmin.v1` already covers resizing the groups and
+labelling their instances.
 
 ## Diagnosing the `privateca` 403 (`probe-id-token.sh`)
 

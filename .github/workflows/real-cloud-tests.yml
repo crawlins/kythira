@@ -2592,9 +2592,14 @@ jobs:
           KYTHIRA_GCP_REAL_TESTS: "1"
           GCP_PROJECT_ID: ${{ vars.GCP_REAL_CLOUD_TESTS_PROJECT }}
           GCP_REGION: ${{ vars.GCP_REAL_CLOUD_TESTS_REGION || 'us-central1' }}
+          # The gcp_mig_real_gce cases skip without these, which fails the
+          # step below. scripts/ci-cloud-credentials/gcp/
+          # provision-quorum-manager-migs.sh creates both groups.
+          GCP_TEST_MIG_A: ${{ vars.GCP_TEST_MIG_A }}
+          GCP_TEST_MIG_AUTOHEAL: ${{ vars.GCP_TEST_MIG_AUTOHEAL }}
         run: |
           scripts/run-real-cloud-suite.sh 'real-gce' '^gcp_quorum_manager_real_gce_test$' \
-            "Check the workload-identity credentials, the service account's compute roles, and that GCP_REAL_CLOUD_TESTS_PROJECT names a project with the Compute Engine API enabled."
+            "Check the workload-identity credentials, the service account's compute roles, and that GCP_REAL_CLOUD_TESTS_PROJECT names a project with the Compute Engine API enabled. A skipped gcp_mig_real_gce case means GCP_TEST_MIG_A or GCP_TEST_MIG_AUTOHEAL is unset: run scripts/ci-cloud-credentials/gcp/provision-quorum-manager-migs.sh."
 
       # Deliberately unconditional, and deliberately not inside the privateca
       # step: this probe must run at this minute of the job whether or not the
@@ -2647,18 +2652,64 @@ jobs:
           # gcp_quorum_manager_real_gce_test uses, and the manager names
           # instances kythira-{cluster}-{node}, so this prefix is exactly the
           # set those tests create and nothing else.
-          leaked=$(gcloud compute instances list --project "${PROJECT}" \
-            --filter='name ~ ^kythira-kythira-it-' \
-            --format=json) || audit_failed "the instances list call failed"
-          count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
-            || audit_failed "gcloud returned a response this step could not parse"
-          [ -n "${count}" ] || audit_failed "the parsed instance count was empty"
+          #
+          # A MIG member the last case removed with deleteInstances is still
+          # listed as STOPPING for a short while after the case returns (run
+          # 37392638469 audited two of them 8s after a passing suite). So
+          # while everything listed is STOPPING, wait up to 300s for those
+          # deletions to land; anything in another state fails at once.
+          deadline=$(( $(date +%s) + 300 ))
+          while :; do
+            leaked=$(gcloud compute instances list --project "${PROJECT}" \
+              --filter='name ~ ^kythira-kythira-it-' \
+              --format=json) || audit_failed "the instances list call failed"
+            count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
+              || audit_failed "gcloud returned a response this step could not parse"
+            [ -n "${count}" ] || audit_failed "the parsed instance count was empty"
+            stopping=$(printf '%s' "${leaked}" | jq '[.[]? | select(.status == "STOPPING")] | length') \
+              || audit_failed "gcloud returned a response this step could not parse"
+            if [ "${count}" -eq 0 ] || [ "${stopping}" -ne "${count}" ] \
+              || [ "$(date +%s)" -ge "${deadline}" ]; then
+              break
+            fi
+            echo "Waiting for ${count} STOPPING instance(s) to finish deleting..."
+            sleep 15
+          done
           if [ "${count}" -ne 0 ]; then
             echo "::error::Post-run audit found ${count} instance(s) named kythira-kythira-it-* in ${PROJECT} — teardown did not complete. They are being billed." >&2
             printf '%s' "${leaked}" | jq '[.[] | {name, status, zone, machineType}]' >&2
             exit 1
           fi
           echo "Post-run audit clean: no kythira-kythira-it-* instances in ${PROJECT}."
+
+      # The MIG cases grow a long-lived group rather than creating instances
+      # of their own, so the instance sweep above cannot end their billing: a
+      # deleted member is recreated while the target size stays up. A case
+      # that fails between its resize and its decommission leaves the group
+      # grown, and the audit above has already reported its instances. This
+      # returns it to 0, like the Azure job's scale-set sweep, and still
+      # fails the job so the leak is not mistaken for a clean run.
+      - name: Return the test MIGs to size 0
+        if: ${{ always() && env.BUNDLE_QUORUM_MANAGER == 'true' && vars.GCP_TEST_MIG_A != '' }}
+        run: |
+          PROJECT='${{ vars.GCP_REAL_CLOUD_TESTS_PROJECT }}'
+          ZONE='${{ vars.GCP_REAL_CLOUD_TESTS_REGION || 'us-central1' }}-a'
+          MIG='${{ vars.GCP_TEST_MIG_A }}'
+          if ! size=$(gcloud compute instance-groups managed describe "${MIG}" \
+              --project "${PROJECT}" --zone "${ZONE}" --format='value(targetSize)'); then
+            echo "::error::Could not read ${MIG}'s target size, so this step cannot tell whether it is still billing. Check it in ${PROJECT}." >&2
+            exit 1
+          fi
+          if [ "${size}" = "0" ]; then
+            echo "${MIG} is at target size 0."
+            exit 0
+          fi
+          echo "::warning::${MIG} was left at target size ${size} — returning it to 0. This stops the billing; it does not make the run green." >&2
+          if ! gcloud compute instance-groups managed resize "${MIG}" \
+              --project "${PROJECT}" --zone "${ZONE}" --size 0; then
+            echo "::error::${MIG} could not be returned to size 0; its instances are STILL BILLING. Resize it by hand in ${PROJECT}." >&2
+          fi
+          exit 1
 
   # ── OCI ──────────────────────────────────────────────────────────────────
   # Single x64 leg, unlike the AWS job's x64+arm64 matrix: nothing in
