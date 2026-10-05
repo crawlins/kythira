@@ -38,6 +38,7 @@
 #include <iterator>
 #include <optional>
 #include <ostream>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -203,6 +204,25 @@ public:
     requires batched_persistence_engine<Engine>
     {
         _engine.abort_batch();
+    }
+
+    // ── bulk_append / hard_state, conditionally ──────────────────────────────
+    //
+    // Forwarded so a group-scoped store keeps the batched calls its engine has:
+    // without them every group would fall back to one durable write per entry
+    // and to the term-then-vote pair of calls.
+
+    auto append_log_entries(std::span<const log_entry_t> entries) -> void
+    requires bulk_append_persistence_engine<Engine>
+    {
+        _engine.append_log_entries(entries);
+    }
+
+    template<typename TermId, typename NodeId>
+    auto save_hard_state(TermId term, std::optional<NodeId> vote) -> void
+    requires hard_state_persistence_engine<Engine>
+    {
+        _engine.save_hard_state(term, std::move(vote));
     }
 
     // ── barriered_persistence_engine, conditionally ──────────────────────────

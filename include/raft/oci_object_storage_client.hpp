@@ -234,6 +234,11 @@ inline constexpr const char* k_bucket_not_found = "BucketNotFound";
 ///        Storage.
 class oci_object_storage_client {
 public:
+    /// @brief `oci_http_client` is shared across threads by design — a fresh
+    ///        connection per call, the Instance Principal token behind its own
+    ///        mutex (`kythira::concurrent_key_object_store`).
+    static constexpr bool supports_concurrent_requests = true;
+
     explicit oci_object_storage_client(oci_object_storage_config cfg)
         : _http(std::make_shared<oci_http_client>(cfg.oci)),
           _namespace(std::move(cfg.namespace_name)) {

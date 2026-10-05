@@ -27,6 +27,7 @@
 #include <raft/object_store_persistence.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <map>
@@ -37,6 +38,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -76,6 +78,13 @@ struct mock_object_store_state {
     int fail_next_lists{0};
     /// Fail every PUT whose key is exactly this, however many times it is sent.
     std::string fail_puts_for_key;
+    /// Hold every PUT (conditional or not) this long before it is applied,
+    /// with the mutex released, so concurrent PUTs overlap and can be counted.
+    std::chrono::milliseconds put_delay{0};
+    /// PUTs currently inside their delay, and the most there have ever been at
+    /// once. Read by the batched-append cases to show what was in flight.
+    std::size_t puts_in_flight{0};
+    std::size_t max_puts_in_flight{0};
     /// Keys the listing pretends not to see yet — a **lagging index**, the one
     /// consistency failure the engine cannot detect at runtime (it recovers a
     /// silently short log). Nothing else about them changes: a GET still
@@ -120,6 +129,10 @@ public:
     /// explicitly.
     static constexpr bool version_is_content_md5 = VersionIsContentMd5;
 
+    /// Read by `kythira::concurrent_key_object_store`: every operation takes
+    /// the shared state's mutex, so concurrent calls are safe.
+    static constexpr bool supports_concurrent_requests = true;
+
     basic_mock_object_store() : _state(std::make_shared<mock_object_store_state>()) {}
 
     /// Share an existing bucket — this is how a test keeps its own handle after
@@ -135,6 +148,7 @@ public:
 
     auto put_object(const std::string& bucket, const std::string& key, std::string_view bytes) const
         -> put_result {
+        hold_put();
         const std::lock_guard lock(_state->mu);
         _state->requests.push_back("PUT " + key);
         require_bucket(bucket);
@@ -211,6 +225,7 @@ public:
 
     auto put_object_if(const std::string& bucket, const std::string& key, std::string_view bytes,
                        const precondition& pre) const -> put_result {
+        hold_put();
         const std::lock_guard lock(_state->mu);
         _state->requests.push_back("PUT " + key);
         require_bucket(bucket);
@@ -343,6 +358,24 @@ public:
     }
 
 private:
+    /// `put_delay`, with the mutex released, counted in `puts_in_flight`.
+    auto hold_put() const -> void {
+        std::chrono::milliseconds delay{0};
+        {
+            const std::lock_guard lock(_state->mu);
+            delay = _state->put_delay;
+            if (delay.count() == 0) {
+                return;
+            }
+            ++_state->puts_in_flight;
+            _state->max_puts_in_flight =
+                std::max(_state->max_puts_in_flight, _state->puts_in_flight);
+        }
+        std::this_thread::sleep_for(delay);
+        const std::lock_guard lock(_state->mu);
+        --_state->puts_in_flight;
+    }
+
     /// Callers hold `_state->mu`.
     auto store_locked(const std::string& key, std::string body) const -> object_version {
         ++_state->version_counter;

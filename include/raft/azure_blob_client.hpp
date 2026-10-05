@@ -292,6 +292,11 @@ struct azure_blob_config {
 /// @brief The object operations the persistence engine needs, over Blob REST.
 class azure_blob_client {
 public:
+    /// @brief Every call builds its own `httplib::Client`, and the one piece
+    ///        of shared state, the cached bearer token, is behind its own mutex
+    ///        (`kythira::concurrent_key_object_store`).
+    static constexpr bool supports_concurrent_requests = true;
+
     explicit azure_blob_client(azure_blob_config cfg)
         : _cfg(std::move(cfg)), _token(std::make_shared<cached_token>()) {
         if (_cfg.account.empty() && _cfg.endpoint_override.empty()) {

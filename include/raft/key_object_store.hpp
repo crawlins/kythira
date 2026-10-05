@@ -185,6 +185,22 @@ concept conditional_key_object_store =
         { store.delete_object_if(bucket, key, pre) } -> std::same_as<void>;
     };
 
+/// @brief A store whose operations may be called from several threads at once
+///        on the same object.
+///
+/// `object_store_persistence_engine::append_log_entries` keeps several log
+/// PUTs in flight when, and only when, its store declares this. The engine
+/// cannot tell a client that builds a fresh connection per call from one that
+/// shares a socket, so — like `content_md5_versioned_store` — this is a
+/// **declaration by the client**, made by adding
+/// `static constexpr bool supports_concurrent_requests = true;`. A store that
+/// says nothing gets one request at a time, which is what every store got
+/// before the declaration existed.
+template<typename S>
+concept concurrent_key_object_store = key_object_store<S> && requires {
+    S::supports_concurrent_requests;
+} && S::supports_concurrent_requests;
+
 /// @brief A store whose `put_result::version` **is** the MD5 of the content it
 ///        just stored, for a single-part upload.
 ///

@@ -271,6 +271,11 @@ inline constexpr const char* k_no_such_bucket = "NoSuchBucket";
 /// signature change that breaks the concept is a compile error in this header.
 class aws_s3_client {
 public:
+    /// @brief `Aws::S3::S3Client` is documented safe to call from several
+    ///        threads at once, and this class holds nothing else that changes
+    ///        after construction (`kythira::concurrent_key_object_store`).
+    static constexpr bool supports_concurrent_requests = true;
+
     /// @brief S3's ETag is the lowercase MD5 hex of single-part content, so the
     ///        engine may verify every PUT locally (Requirement 7.2). See the
     ///        file comment for the SSE-KMS/SSE-C caveat.
