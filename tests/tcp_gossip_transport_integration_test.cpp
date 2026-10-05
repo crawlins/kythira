@@ -249,7 +249,16 @@ BOOST_AUTO_TEST_CASE(listener_reply_to_departed_peer_raises_no_sigpipe,
                      *boost::unit_test::timeout(30)) {
     auto previous = std::signal(SIGPIPE, SIG_DFL);
     {
-        auto node = hardened_listener(tcp_server_hardening::small_limits());
+        // Room for every peer at once. All 20 dial from 127.0.0.1 faster than
+        // the listener drains them, so under small_limits()'s two per source
+        // some were refused on arrival: the send below then failed, or the
+        // final exchange was the refused one (seen under ThreadSanitizer in
+        // CI, and in roughly one local run in four). This case is about the
+        // reply to a departed peer, not about limits.
+        auto limits = tcp_server_hardening::small_limits();
+        limits.max_connections = 64;
+        limits.max_connections_per_source = 64;
+        auto node = hardened_listener(limits);
         for (int i = 0; i < 20; ++i) {
             int fd = tcp_server_hardening::dial(k_port_hardening);
             BOOST_REQUIRE(fd >= 0);
