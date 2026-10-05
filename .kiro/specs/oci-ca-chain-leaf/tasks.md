@@ -2,9 +2,11 @@
 
 ## Implementation Status
 
-Tasks 1-6, 7.1 and 8 done. Task 7.2 (one real-OCI run) is open: it needs
-a dispatch of the real-cloud workflow, which follows the project's
-real-cloud rules.
+Complete. Tasks 1-6, 7.1 and 8 landed in PR #456. Task 7.2 passed against
+real OCI in Real Cloud Tests run 37208260750 (2026-10-05, main at
+deaac7b, certificates bundle only): all three cases of
+`oci_certificates_provider_real_test` passed, including the leaf-first
+and issuer-chain checks.
 
 Deviation from the design: the design kept the mock's placeholder PEM as the
 path for the existing request-shape case. With the fix, the provider
@@ -76,13 +78,15 @@ pinned the wrong shape.
     `tls_material_source.renewal.failed`
   - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-- [ ] 7. Real-OCI assertion
+- [x] 7. Real-OCI assertion
   - [x] 7.1 Extend
     `sign_csr_issues_from_the_callers_csr_and_returns_no_private_key` in
     `tests/oci_certificates_provider_real_test.cpp` with the leaf-first
     and issuer-chain checks
-  - [ ] 7.2 Run it through the real-cloud workflow (per project rules on
-    real-cloud dispatch) and record the run ID here
+  - [x] 7.2 Run it through the real-cloud workflow (per project rules on
+    real-cloud dispatch) and record the run ID here: run 37208260750
+    (https://github.com/crawlins/kythira/actions/runs/37208260750),
+    passed
   - _Requirements: 4.6_
 
 - [x] 8. Cross-references
