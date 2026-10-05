@@ -19,6 +19,13 @@
 #
 # Usage: scripts/verify-optional-dependency-isolation.sh
 # Exit code 0 on success, non-zero otherwise.
+#
+# KYTHIRA_PREFIX_PATH overrides the dependency prefix handed to CMake
+# (default: $REPO_ROOT/vcpkg_installed/<triplet>, where a manifest-mode
+# vcpkg install puts it), so a tree installed elsewhere can be checked
+# without editing this script (ci-build-matrix-coverage Requirement 6.2).
+# KYTHIRA_COMPILER_LAUNCHER (default: auto) is forwarded to the CMake option
+# of the same name, so CI can say `none` when its compiler cache is down.
 
 set -euo pipefail
 
@@ -32,11 +39,13 @@ case "$(uname -m)" in
     aarch64|arm64) VCPKG_TRIPLET="arm64-linux" ;;
     *)             VCPKG_TRIPLET="x64-linux" ;;
 esac
+PREFIX_PATH="${KYTHIRA_PREFIX_PATH:-$REPO_ROOT/vcpkg_installed/$VCPKG_TRIPLET}"
 
 echo "[verify-optional-dependency-isolation] Configuring with stdexec hidden from find_package() ..."
 CONFIGURE_LOG="$(mktemp)"
 if ! cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
-      -DCMAKE_PREFIX_PATH="$REPO_ROOT/vcpkg_installed/$VCPKG_TRIPLET" \
+      -DCMAKE_PREFIX_PATH="$PREFIX_PATH" \
+      -DKYTHIRA_COMPILER_LAUNCHER="${KYTHIRA_COMPILER_LAUNCHER:-auto}" \
       -DCMAKE_DISABLE_FIND_PACKAGE_stdexec=ON \
       > "$CONFIGURE_LOG" 2>&1; then
     echo "[verify-optional-dependency-isolation] FAILED — configure step itself failed:"
