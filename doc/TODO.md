@@ -718,8 +718,11 @@ unverified completion claim.
   line claiming zero warnings made all 144–202 of them invisible.
 
   Worth fixing, in production code:
-  1. **`include/raft/acme_jws.hpp` — 8 sites on OpenSSL 3.0's deprecated
-     low-level EC API** (`EVP_PKEY_get1_EC_KEY`, `EC_KEY_new_by_curve_name`,
+  1. ~~**`include/raft/acme_jws.hpp` — 8 sites on OpenSSL 3.0's deprecated
+     low-level EC API**~~ **DONE (2026-10-04):** ported to
+     `EVP_PKEY_get_bn_param` and `OSSL_PARAM_BLD` + `EVP_PKEY_fromdata`;
+     golden JWK/thumbprint vectors from the old encoder pin the output.
+     Original entry: (`EVP_PKEY_get1_EC_KEY`, `EC_KEY_new_by_curve_name`,
      `EC_KEY_get0_group`/`get0_public_key`,
      `EC_KEY_set_public_key_affine_coordinates`, `EVP_PKEY_set1_EC_KEY`,
      `EC_KEY_free`), reported 32 times because a warning in a header is
