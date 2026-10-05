@@ -1004,9 +1004,17 @@ add_custom_target(verify-optional-dependency-isolation
 # left cpp_httplib_server's SSL support unimplemented (see certificate-authority
 # spec Requirement 14) and would otherwise block ca_service --serve's own
 # optional --tls-cert/--tls-key mode (Requirement 11.5).
+#
+# KYTHIRA_HTTP_TLS records the outcome for the targets that cannot work
+# without it: ca_bootstrap_client.hpp, tls_tcp_rpc.hpp and ca_cluster_node
+# call httplib's TLS API and ca_http_helpers.hpp's TLS-only helpers
+# unconditionally, so under CONFIG_HTTP_TRANSPORT_TLS=n (minimal_defconfig)
+# they are not built rather than failing to compile.
 kythira_kconfig_gate(HTTP_TRANSPORT_TLS)
+set(KYTHIRA_HTTP_TLS OFF)
 if(httplib_FOUND AND OpenSSL_FOUND AND _KYTHIRA_GATE_HTTP_TRANSPORT_TLS)
     target_compile_definitions(network_simulator INTERFACE CPPHTTPLIB_OPENSSL_SUPPORT)
+    set(KYTHIRA_HTTP_TLS ON)
 endif()
 
 if(LIBCOAP_FOUND)
@@ -1359,9 +1367,16 @@ elseif(NOT _KYTHIRA_GATE_GCP_STORAGE_PERSISTENCE)
 endif()
 
 # ── Azure SDK (azure_vm_quorum_manager, azure_vmss_quorum_manager) ───────────
+# AZURE_IDENTITY is not a Kconfig symbol, so kythira_find_optional() would
+# always search for it, and azure-identity-cpp's own config find_dependency()s
+# azure-core-cpp, setting azure-core-cpp_FOUND behind CONFIG_AZURE_SDK=n's
+# back. The gate below is what makes =n actually turn the SDK off.
+kythira_kconfig_gate(AZURE_SDK)
 kythira_find_optional(AZURE_SDK azure-core-cpp CONFIG)
-kythira_find_optional(AZURE_IDENTITY azure-identity-cpp CONFIG)
-if(azure-core-cpp_FOUND AND azure-identity-cpp_FOUND)
+if(_KYTHIRA_GATE_AZURE_SDK)
+    kythira_find_optional(AZURE_IDENTITY azure-identity-cpp CONFIG)
+endif()
+if(_KYTHIRA_GATE_AZURE_SDK AND azure-core-cpp_FOUND AND azure-identity-cpp_FOUND)
     message(STATUS "Azure SDK found: azure-core-cpp ${azure-core-cpp_VERSION}, "
                     "azure-identity-cpp ${azure-identity-cpp_VERSION}")
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_AZURE_SDK)
@@ -1820,8 +1835,11 @@ enable_testing()
 if(NOT ENABLE_COVERAGE)
     if(TARGET certificate_authority)
         add_subdirectory(cmd/ca_service)
-        if(KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND)
+        if(KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND
+           AND KYTHIRA_HTTP_TLS)
             add_subdirectory(cmd/ca_cluster_node)
+        elseif(NOT KYTHIRA_HTTP_TLS)
+            message(STATUS "ca_cluster_node: skipped (requires CONFIG_HTTP_TRANSPORT_TLS)")
         endif()
     endif()
 endif()

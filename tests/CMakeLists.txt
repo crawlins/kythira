@@ -3658,7 +3658,7 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
 
     # HTTP SSL Configuration Property Tests
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
-if(TARGET Folly::folly)
+if(TARGET Folly::folly AND KYTHIRA_HTTP_TLS)
     add_executable(http_ssl_configuration_property_test http_ssl_configuration_property_test.cpp)
     target_link_libraries(http_ssl_configuration_property_test PRIVATE
         network_simulator
@@ -3687,7 +3687,7 @@ if(TARGET Folly::folly)
     )
 
 else()
-    message(STATUS "http_ssl_configuration_property_test: skipped (requires Folly)")
+    message(STATUS "http_ssl_configuration_property_test: skipped (requires Folly and CONFIG_HTTP_TRANSPORT_TLS)")
 endif()
 # HTTP SSL Certificate Loading Unit Tests
 if(TARGET Folly::folly)
@@ -4218,7 +4218,7 @@ else()
     message(STATUS "http_ssl_context_configuration_unit_test: skipped (requires Folly)")
 endif()
 # HTTP SSL Mutual TLS Integration Tests
-if(TARGET Folly::folly)
+if(TARGET Folly::folly AND KYTHIRA_HTTP_TLS)
     add_executable(http_ssl_mutual_tls_integration_test http_ssl_mutual_tls_integration_test.cpp)
     target_link_libraries(http_ssl_mutual_tls_integration_test PRIVATE
         network_simulator
@@ -4247,12 +4247,12 @@ if(TARGET Folly::folly)
     )
 
 else()
-    message(STATUS "http_ssl_mutual_tls_integration_test: skipped (requires Folly)")
+    message(STATUS "http_ssl_mutual_tls_integration_test: skipped (requires Folly and CONFIG_HTTP_TRANSPORT_TLS)")
 endif()
 # cpp_httplib_client applies cipher_suites and the TLS version bounds to its
 # live SSL_CTX (vulnerability audit 2026-10-02, M18). Real handshakes against
 # a cpp_httplib_server pinned to each setting.
-if(TARGET Folly::folly)
+if(TARGET Folly::folly AND KYTHIRA_HTTP_TLS)
     add_executable(http_client_tls_settings_integration_test http_client_tls_settings_integration_test.cpp)
     target_link_libraries(http_client_tls_settings_integration_test PRIVATE
         network_simulator
@@ -4278,7 +4278,7 @@ if(TARGET Folly::folly)
         LABELS "integration;ssl;http;transport"
     )
 else()
-    message(STATUS "http_client_tls_settings_integration_test: skipped (requires Folly)")
+    message(STATUS "http_client_tls_settings_integration_test: skipped (requires Folly and CONFIG_HTTP_TRANSPORT_TLS)")
 endif()
 # Additional CoAP tests that were missing
 # CONFIG_COAP_TRANSPORT=n means no CoAP target exists, so these are gated on the
@@ -4851,6 +4851,10 @@ endif()
 # nesting these two here would silently drop them — and all coverage of
 # tls_tcp_rpc.hpp — from every coverage build.
 
+# tls_tcp_rpc.hpp and ca_bootstrap_client.hpp use httplib's TLS API and
+# ca_http_helpers.hpp's TLS-only helpers, so these three need
+# CONFIG_HTTP_TRANSPORT_TLS (absent under minimal_defconfig).
+if(KYTHIRA_HTTP_TLS)
 add_executable(tls_tcp_rpc_unit_test tls_tcp_rpc_unit_test.cpp)
 target_link_libraries(tls_tcp_rpc_unit_test PRIVATE
     certificate_authority
@@ -4894,9 +4898,12 @@ set_tests_properties(ca_issuance_hardening_unit_test PROPERTIES
     TIMEOUT 60
     LABELS "unit;certificate_authority;ca;ca_cluster_node;rpc_tls"
 )
+endif()  # KYTHIRA_HTTP_TLS
 
 if(TARGET ca_service)
 
+# Needs CONFIG_HTTP_TRANSPORT_TLS: it talks to ca_service over HTTPS.
+if(KYTHIRA_HTTP_TLS)
 add_executable(ca_test_fixture_unit_test ca_test_fixture_unit_test.cpp)
 target_link_libraries(ca_test_fixture_unit_test PRIVATE
     certificate_authority
@@ -4916,8 +4923,9 @@ set_tests_properties(ca_test_fixture_unit_test PROPERTIES
     TIMEOUT 60
     LABELS "unit;certificate_authority;ca;fixture"
 )
+endif()  # KYTHIRA_HTTP_TLS
 
-if(TARGET Folly::folly)
+if(TARGET Folly::folly AND KYTHIRA_HTTP_TLS)
     add_executable(http_transport_reload_property_test http_transport_reload_property_test.cpp)
     target_link_libraries(http_transport_reload_property_test PRIVATE
         network_simulator
@@ -4936,9 +4944,11 @@ if(TARGET Folly::folly)
         LABELS "property;ssl;http;transport;reload;ca"
     )
 else()
-    message(STATUS "http_transport_reload_property_test: skipped (requires Folly)")
+    message(STATUS "http_transport_reload_property_test: skipped (requires Folly and CONFIG_HTTP_TRANSPORT_TLS)")
 endif()
 
+# Needs CONFIG_HTTP_TRANSPORT_TLS: it talks to ca_service over HTTPS.
+if(KYTHIRA_HTTP_TLS)
 add_executable(ca_service_serve_integration_test ca_service_serve_integration_test.cpp)
 target_link_libraries(ca_service_serve_integration_test PRIVATE
     certificate_authority
@@ -4958,7 +4968,10 @@ set_tests_properties(ca_service_serve_integration_test PROPERTIES
     TIMEOUT 90
     LABELS "integration;certificate_authority;ca;ca_service;serve"
 )
+endif()  # KYTHIRA_HTTP_TLS
 
+# Needs CONFIG_HTTP_TRANSPORT_TLS: it talks to ca_service over HTTPS.
+if(KYTHIRA_HTTP_TLS)
 add_executable(ca_bootstrap_client_test ca_bootstrap_client_test.cpp)
 target_link_libraries(ca_bootstrap_client_test PRIVATE
     certificate_authority
@@ -4978,6 +4991,7 @@ set_tests_properties(ca_bootstrap_client_test PROPERTIES
     TIMEOUT 90
     LABELS "integration;certificate_authority;ca;ca_service;bootstrap"
 )
+endif()  # KYTHIRA_HTTP_TLS
 
 if(TARGET ca_cluster_node)
 

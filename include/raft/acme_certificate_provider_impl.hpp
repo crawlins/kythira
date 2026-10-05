@@ -118,14 +118,27 @@ inline void require_secure_origin(const std::string& origin) {
                                       const acme_certificate_provider_config& config)
     -> std::unique_ptr<httplib::Client> {
     require_secure_origin(origin);
+#ifndef CPPHTTPLIB_OPENSSL_SUPPORT
+    // Without TLS support only plain http to loopback can work; httplib would
+    // otherwise fail an https origin with an unhelpful "invalid client".
+    if (origin.starts_with("https://")) {
+        throw std::invalid_argument("acme_certificate_provider: " + origin +
+                                    " needs cpp-httplib compiled with CPPHTTPLIB_OPENSSL_SUPPORT "
+                                    "(CONFIG_HTTP_TRANSPORT_TLS=y)");
+    }
+#endif
     auto client = std::make_unique<httplib::Client>(origin);
     client->set_connection_timeout(10, 0);
     client->set_read_timeout(30, 0);
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     client->enable_server_certificate_verification(true);
     if (config.server_ca_bundle_pem.has_value()) {
         client->load_ca_cert_store(config.server_ca_bundle_pem->data(),
                                    config.server_ca_bundle_pem->size());
     }
+#else
+    static_cast<void>(config);
+#endif
     return client;
 }
 

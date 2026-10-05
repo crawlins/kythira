@@ -356,6 +356,7 @@ BOOST_AUTO_TEST_CASE(plain_http_is_refused_off_loopback) {
     }
 }
 
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT  // needs httplib::SSLServer
 // An https ACME endpoint whose certificate the client cannot verify is not
 // contacted further: the self-signed listener below would be accepted by the
 // old verification-disabled client.
@@ -417,6 +418,7 @@ BOOST_AUTO_TEST_CASE(unverifiable_https_server_is_refused, *boost::unit_test::ti
 
     tls_server.stop();
 }
+#endif  // CPPHTTPLIB_OPENSSL_SUPPORT
 
 // The http-01 responder defaults to "*:80": a CA validates over whichever
 // of the identifier's A/AAAA records it picks, so it must answer on IPv4 and
