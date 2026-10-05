@@ -14,15 +14,20 @@
 /// (Requirement 18.10: no new external dependency for ACME support).
 
 #include <openssl/bio.h>
+#include <openssl/core_names.h>
 #include <openssl/ec.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/objects.h>
+#include <openssl/param_build.h>
 #include <openssl/pem.h>
 #include <openssl/sha.h>
 
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -45,6 +50,9 @@ using evp_pkey_ctx_ptr =
 using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
 using ecdsa_sig_ptr = std::unique_ptr<ECDSA_SIG, openssl_deleter<ECDSA_SIG, ECDSA_SIG_free>>;
 using bn_ptr = std::unique_ptr<BIGNUM, openssl_deleter<BIGNUM, BN_free>>;
+using ossl_param_bld_ptr =
+    std::unique_ptr<OSSL_PARAM_BLD, openssl_deleter<OSSL_PARAM_BLD, OSSL_PARAM_BLD_free>>;
+using ossl_param_ptr = std::unique_ptr<OSSL_PARAM, openssl_deleter<OSSL_PARAM, OSSL_PARAM_free>>;
 
 [[noreturn]] inline void throw_openssl_error(const std::string& context) {
     std::ostringstream out;
@@ -171,25 +179,29 @@ using bn_ptr = std::unique_ptr<BIGNUM, openssl_deleter<BIGNUM, BN_free>>;
 
 // Extracts the P-256 public key's x/y coordinates, each left-padded to 32
 // bytes, base64url-encoded — the "x"/"y" members of an EC JWK (RFC 7518 §6.2).
+// Read through the OpenSSL 3 provider parameter API; the EC_KEY accessors
+// this used before are deprecated since 3.0.
 inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_out) -> void {
-    EC_KEY* ec_key = EVP_PKEY_get1_EC_KEY(key);
-    if (ec_key == nullptr) {
+    if (EVP_PKEY_is_a(key, "EC") != 1) {
         throw std::invalid_argument("acme_jws: key is not an EC key");
     }
-    struct ec_key_guard {
-        EC_KEY* k;
-        ~ec_key_guard() { EC_KEY_free(k); }
-    } guard{ec_key};
-
-    const EC_GROUP* group = EC_KEY_get0_group(ec_key);
-    const EC_POINT* point = EC_KEY_get0_public_key(ec_key);
-    bn_ptr x{BN_new()};
-    bn_ptr y{BN_new()};
-    if (!x || !y) {
-        throw_openssl_error("acme_jws: BN_new failed");
+    std::array<char, 64> group{};
+    if (EVP_PKEY_get_utf8_string_param(key, OSSL_PKEY_PARAM_GROUP_NAME, group.data(), group.size(),
+                                       nullptr) != 1) {
+        throw_openssl_error("acme_jws: EVP_PKEY_get_utf8_string_param(group) failed");
     }
-    if (EC_POINT_get_affine_coordinates(group, point, x.get(), y.get(), nullptr) != 1) {
-        throw_openssl_error("acme_jws: EC_POINT_get_affine_coordinates failed");
+    if (OBJ_txt2nid(group.data()) != NID_X9_62_prime256v1) {
+        throw std::invalid_argument("acme_jws: key is not on curve P-256");
+    }
+
+    BIGNUM* raw_x = nullptr;
+    BIGNUM* raw_y = nullptr;
+    const int got_x = EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_EC_PUB_X, &raw_x);
+    const int got_y = EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_EC_PUB_Y, &raw_y);
+    bn_ptr x{raw_x};
+    bn_ptr y{raw_y};
+    if (got_x != 1 || got_y != 1) {
+        throw_openssl_error("acme_jws: EVP_PKEY_get_bn_param(EC public x/y) failed");
     }
 
     constexpr int k_coord_len = 32;  // P-256
@@ -217,6 +229,10 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
     return jwk;
 }
 
+// Builds a public-only EVP_PKEY from an EC P-256 JWK, as the uncompressed
+// SEC1 point 0x04 || x || y handed to EVP_PKEY_fromdata. Decoding that point
+// rejects one that is not on the curve, as
+// EC_KEY_set_public_key_affine_coordinates did before the OpenSSL 3 port.
 [[nodiscard]] inline auto public_key_from_jwk(const boost::json::object& jwk) -> evp_pkey_ptr {
     if (jwk.at("kty").as_string() != "EC" || jwk.at("crv").as_string() != "P-256") {
         throw std::invalid_argument("acme_jws: only EC P-256 JWKs are supported");
@@ -224,32 +240,44 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
     auto x = base64url_decode(jwk.at("x").as_string());
     auto y = base64url_decode(jwk.at("y").as_string());
 
-    EC_KEY* ec_key = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
-    if (ec_key == nullptr) {
-        throw_openssl_error("acme_jws: EC_KEY_new_by_curve_name failed");
+    // RFC 7518 §6.2.1.2 requires the full 32 bytes; a shorter value is
+    // still accepted, left-padded, as BN_bin2bn accepted it before.
+    constexpr std::size_t k_coord_len = 32;  // P-256
+    if (x.size() > k_coord_len || y.size() > k_coord_len) {
+        throw std::invalid_argument("acme_jws: EC JWK coordinate longer than 32 bytes");
     }
-    struct ec_key_guard {
-        EC_KEY* k;
-        ~ec_key_guard() { EC_KEY_free(k); }
-    } guard{ec_key};
+    std::vector<unsigned char> point(1 + 2 * k_coord_len, 0);
+    point[0] = 0x04;  // POINT_CONVERSION_UNCOMPRESSED
+    std::copy(x.begin(), x.end(), point.begin() + 1 + (k_coord_len - x.size()));
+    std::copy(y.begin(), y.end(), point.begin() + 1 + 2 * k_coord_len - y.size());
 
-    bn_ptr bx{BN_bin2bn(x.data(), static_cast<int>(x.size()), nullptr)};
-    bn_ptr by{BN_bin2bn(y.data(), static_cast<int>(y.size()), nullptr)};
-    if (!bx || !by) {
-        throw_openssl_error("acme_jws: BN_bin2bn failed");
+    ossl_param_bld_ptr bld{OSSL_PARAM_BLD_new()};
+    if (!bld) {
+        throw_openssl_error("acme_jws: OSSL_PARAM_BLD_new failed");
     }
-    if (EC_KEY_set_public_key_affine_coordinates(ec_key, bx.get(), by.get()) != 1) {
-        throw_openssl_error("acme_jws: EC_KEY_set_public_key_affine_coordinates failed");
+    if (OSSL_PARAM_BLD_push_utf8_string(bld.get(), OSSL_PKEY_PARAM_GROUP_NAME, SN_X9_62_prime256v1,
+                                        0) != 1 ||
+        OSSL_PARAM_BLD_push_octet_string(bld.get(), OSSL_PKEY_PARAM_PUB_KEY, point.data(),
+                                         point.size()) != 1) {
+        throw_openssl_error("acme_jws: OSSL_PARAM_BLD_push failed");
+    }
+    ossl_param_ptr params{OSSL_PARAM_BLD_to_param(bld.get())};
+    if (!params) {
+        throw_openssl_error("acme_jws: OSSL_PARAM_BLD_to_param failed");
     }
 
-    evp_pkey_ptr pkey{EVP_PKEY_new()};
-    if (!pkey) {
-        throw_openssl_error("acme_jws: EVP_PKEY_new failed");
+    evp_pkey_ctx_ptr ctx{EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr)};
+    if (!ctx) {
+        throw_openssl_error("acme_jws: EVP_PKEY_CTX_new_from_name failed");
     }
-    if (EVP_PKEY_set1_EC_KEY(pkey.get(), ec_key) != 1) {
-        throw_openssl_error("acme_jws: EVP_PKEY_set1_EC_KEY failed");
+    if (EVP_PKEY_fromdata_init(ctx.get()) != 1) {
+        throw_openssl_error("acme_jws: EVP_PKEY_fromdata_init failed");
     }
-    return pkey;
+    EVP_PKEY* raw = nullptr;
+    if (EVP_PKEY_fromdata(ctx.get(), &raw, EVP_PKEY_PUBLIC_KEY, params.get()) != 1) {
+        throw_openssl_error("acme_jws: EVP_PKEY_fromdata failed (point not on P-256?)");
+    }
+    return evp_pkey_ptr{raw};
 }
 
 // RFC 7638: SHA-256 over the UTF-8 bytes of the canonical (no whitespace,
