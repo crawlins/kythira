@@ -121,3 +121,12 @@ gap and `design.md` for the planner and per-cloud calls.
   costs a voter. No documented IAM policy lists the ASG actions beyond the
   CI bundle, which 6.4 updated; Azure's `Virtual Machine Contributor`
   already covers the protection `PUT`.
+- Task 9's three cases are written; 9 stays open until each has passed a
+  real-cloud run. ASG holds the fresh launch in `Pending:Wait` with a
+  launch lifecycle hook, so its case is deterministic and the CI bundle
+  gained `autoscaling:PutLifecycleHook`. VMSS (12s) and MIG (5s) rely on a
+  `provision_timeout` shorter than the member's boot, with the fresh member
+  already listed when it expires. Run 37257996571 measured a Flexible
+  member listed about 6s after the capacity PATCH and adoptable 24-29s
+  after it. The MIG cases have not run in CI yet: the workflow sets no
+  `GCP_TEST_MIG_A`, and no script provisions the MIG.

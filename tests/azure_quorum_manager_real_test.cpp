@@ -1030,6 +1030,70 @@ void external_vmss_deallocate(const kythira::azure_client_config& azure,
                                                          << ")");
 }
 
+/// The scale set's `sku.capacity`, or `std::nullopt` when it cannot be read.
+[[nodiscard]] auto vmss_capacity(const kythira::azure_client_config& azure,
+                                 const std::string& scale_set_name) -> std::optional<std::int64_t> {
+    try {
+        auto pipeline = make_test_arm_pipeline(azure);
+        Azure::Core::Url url(arm_base_url(azure) +
+                             "/providers/Microsoft.Compute/virtualMachineScaleSets/" +
+                             scale_set_name + "?api-version=2024-07-01");
+        Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get, url);
+        Azure::Core::Context context;
+        auto response = pipeline.Send(request, context);
+        if (static_cast<int>(response->GetStatusCode()) != 200) {
+            return std::nullopt;
+        }
+        const auto& body = response->GetBody();
+        auto parsed = boost::json::parse(std::string(body.begin(), body.end()));
+        return parsed.at("sku").at("capacity").to_number<std::int64_t>();
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+/// The `provisioningState` of the VM resource @p vm_name: `std::nullopt` once
+/// ARM reports it gone (404), `"unknown"` when it cannot be read.
+[[nodiscard]] auto vm_provisioning_state(const kythira::azure_client_config& azure,
+                                         const std::string& vm_name) -> std::optional<std::string> {
+    try {
+        auto pipeline = make_test_arm_pipeline(azure);
+        Azure::Core::Url url(arm_base_url(azure) + "/providers/Microsoft.Compute/virtualMachines/" +
+                             vm_name + "?api-version=2024-07-01");
+        Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get, url);
+        Azure::Core::Context context;
+        auto response = pipeline.Send(request, context);
+        const auto code = static_cast<int>(response->GetStatusCode());
+        if (code == 404) {
+            return std::nullopt;
+        }
+        if (code != 200) {
+            return std::string{"unknown"};
+        }
+        const auto& body = response->GetBody();
+        auto parsed = boost::json::parse(std::string(body.begin(), body.end()));
+        return std::string(parsed.at("properties").at("provisioningState").as_string());
+    } catch (const std::exception&) {
+        return std::string{"unknown"};
+    }
+}
+
+/// The member a rollback error names as removed: the text between
+/// `removed ` and ` (` in e.g. `rollback: removed kythira_abc (fresh, Creating)`.
+[[nodiscard]] auto removed_member(const std::string& error) -> std::optional<std::string> {
+    const std::string marker = "rollback: removed ";
+    const auto start = error.find(marker);
+    if (start == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto from = start + marker.size();
+    const auto end = error.find(" (", from);
+    if (end == std::string::npos) {
+        return std::nullopt;
+    }
+    return error.substr(from, end - from);
+}
+
 }  // namespace
 
 BOOST_GLOBAL_FIXTURE(AzureSdkLogFixture);
@@ -1546,6 +1610,116 @@ BOOST_FIXTURE_TEST_CASE(vmss_decommission_idempotent, AzureIntegrationFixture,
     kythira::azure_vmss_quorum_manager<> mgr{vmss_config()};
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(999999999)).get());
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(999999999)).get());
+}
+
+/// group-scale-up-rollback Requirement 8.2 / spec task 9.1. A voter is
+/// provisioned and adopted first. A second manager whose provision_timeout
+/// is shorter than a Flexible member takes to reach `Succeeded` and
+/// `PowerState/running` then grows the scale set. The rollback must delete
+/// the member that grow created, by name, leave the voter in place, and
+/// bring the capacity back to one; a blind capacity write would leave the
+/// choice of member to the scale set.
+///
+/// The timeout has to land after the new member is listed and before it is
+/// adoptable, and that window moves. Run 37257996571 listed the member about
+/// 6s after the capacity PATCH and adopted it 24-29s after; the rerun of run
+/// 37393457974 adopted one inside 12s. So the case tries 9s and then 7s, with
+/// a 2s poll, and decommissions any member an attempt adopts before trying
+/// the next.
+BOOST_FIXTURE_TEST_CASE(vmss_provision_timeout_removes_only_the_fresh_member,
+                        AzureIntegrationFixture, *boost::unit_test::timeout(2700)) {
+    auto scale_set = env_opt("AZURE_TEST_VMSS_NAME");
+    if (!preflight_ok || !scale_set) {
+        BOOST_TEST_MESSAGE("Skipping: preflight failed or AZURE_TEST_VMSS_NAME unset (see stderr)");
+        return;
+    }
+    TestCostReport cost{.test_name = "vmss_provision_timeout_removes_only_the_fresh_member"};
+    kythira::azure_vmss_quorum_manager<> voter_mgr{vmss_config()};
+    auto voter = std::move(voter_mgr.provision_node("1", std::nullopt)).get();
+    cost.resources.push_back(
+        {.label = "VMSS instance (voter)", .hourly_rate = vmss_instance_hourly_rate()});
+    auto voter_name = find_vmss_instance_id(azure, *scale_set, voter.node_id);
+    BOOST_REQUIRE(voter_name.has_value());
+    BOOST_REQUIRE_EQUAL(vmss_capacity(azure, *scale_set).value_or(-1), 1);
+
+    cost.resources.push_back(
+        {.label = "VMSS instance (rolled back)", .hourly_rate = vmss_instance_hourly_rate()});
+    std::string error;
+    for (const auto timeout : {std::chrono::seconds{9}, std::chrono::seconds{7}}) {
+        auto cfg = vmss_config();
+        cfg.provision_timeout = timeout;
+        cfg.poll_interval = std::chrono::milliseconds{2000};
+        kythira::azure_vmss_quorum_manager<> mgr{cfg};
+        try {
+            auto adopted = std::move(mgr.provision_node("1", std::nullopt)).get();
+            std::cerr << "[azure_quorum_manager_real_test] a " << timeout.count()
+                      << "s provision_timeout adopted node " << adopted.node_id
+                      << "; decommissioning it and trying a shorter timeout\n";
+            std::move(mgr.decommission_node(adopted.node_id)).get();
+            continue;
+        } catch (const std::exception& ex) {
+            error = ex.what();
+        }
+        std::cerr << "[azure_quorum_manager_real_test] timed-out VMSS provision ("
+                  << timeout.count() << "s): " << error << "\n";
+        break;
+    }
+    BOOST_REQUIRE_MESSAGE(!error.empty(),
+                          "provision_node adopted a member within a 7s provision_timeout; the "
+                          "case needs a shorter timeout to exercise the rollback");
+    BOOST_CHECK_MESSAGE(error.find("provision timeout for scale set") != std::string::npos, error);
+    BOOST_CHECK_MESSAGE(error.find("rollback: removed ") != std::string::npos,
+                        "the rollback did not delete the fresh member by name: " << error);
+    BOOST_CHECK_MESSAGE(error.find(*voter_name) == std::string::npos,
+                        "the rollback names the voter " << *voter_name << ": " << error);
+
+    const auto removed = removed_member(error);
+    BOOST_REQUIRE_MESSAGE(removed.has_value(), "no removed member named in: " << error);
+    BOOST_CHECK_NE(*removed, *voter_name);
+
+    // The rollback deletes a member whose create is still in flight, and ARM
+    // unwinds such a create instead of deleting it normally: run 37307452305
+    // still listed it 600s later, with capacity already back at 1 (see
+    // `azure_vmss_quorum_manager::vm_is_ready`, which measured over nine
+    // minutes in `Deleting`). So the rollback is judged by what it controls:
+    // capacity restored and the removed member gone or `Deleting`.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{300};
+    std::optional<std::int64_t> capacity;
+    std::optional<std::string> removed_state;
+    for (;;) {
+        capacity = vmss_capacity(azure, *scale_set);
+        removed_state = vm_provisioning_state(azure, *removed);
+        if ((capacity == 1 && (!removed_state || *removed_state == "Deleting")) ||
+            std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds{10});
+    }
+    BOOST_CHECK_EQUAL(capacity.value_or(-1), 1);
+    BOOST_CHECK_MESSAGE(!removed_state || *removed_state == "Deleting",
+                        "removed member " << *removed << " is " << removed_state.value_or("gone")
+                                          << ", neither gone nor Deleting");
+    BOOST_CHECK_MESSAGE(find_vmss_instance_id(azure, *scale_set, voter.node_id) == voter_name,
+                        "the rollback removed voter " << *voter_name);
+
+    // Then wait out the unwind, so the next case starts from the voter alone.
+    // Not asserted: how long ARM takes is not the manager's to control, and
+    // the job's VMSS audit still fails the run if the member never goes.
+    const auto unwind_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{900};
+    while (removed_state.has_value() && std::chrono::steady_clock::now() < unwind_deadline) {
+        std::this_thread::sleep_for(std::chrono::seconds{15});
+        removed_state = vm_provisioning_state(azure, *removed);
+    }
+    BOOST_WARN_MESSAGE(!removed_state.has_value(),
+                       "removed member " << *removed << " still listed as "
+                                         << removed_state.value_or("gone") << " after 900s more");
+    cost.resources.back().finalize();
+
+    std::move(voter_mgr.decommission_node(voter.node_id)).get();
+    for (auto& r : cost.resources) {
+        r.finalize();
+    }
+    g_cost_accumulator.add(std::move(cost));
 }
 
 BOOST_FIXTURE_TEST_CASE(vmss_rejects_automatic_upgrade_mode, AzureIntegrationFixture,

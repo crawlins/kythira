@@ -43,6 +43,7 @@
 #include <aws/autoscaling/model/Instance.h>
 #include <aws/autoscaling/model/LifecycleState.h>
 #include <aws/autoscaling/model/LaunchTemplateSpecification.h>
+#include <aws/autoscaling/model/PutLifecycleHookRequest.h>
 #include <aws/autoscaling/model/Tag.h>
 #include <aws/autoscaling/model/UpdateAutoScalingGroupRequest.h>
 #include <aws/core/Aws.h>
@@ -1313,6 +1314,96 @@ BOOST_AUTO_TEST_CASE(multi_az_topology, *boost::unit_test::timeout(2400)) {
         BOOST_CHECK_MESSAGE(group_member(asg_names[i], id).has_value(),
                             id + " is not a member of " + asg_names[i]);
     }
+}
+
+// group-scale-up-rollback Requirement 8.2 / spec task 9.1. A voter is
+// provisioned and adopted first, so it is InService and protected. A launch
+// lifecycle hook then holds every new instance in `Pending:Wait`, which never
+// meets the adoption bar, and a manager with a short provision_timeout grows
+// the group. The rollback must terminate that fresh instance by id, leave
+// the voter alone, and bring the desired capacity back to one.
+//
+// The hook's DefaultResult is ABANDON, so a rollback that fails outright
+// still has the launch terminated when the heartbeat expires, and teardown's
+// ForceDelete removes the group and its hook either way.
+BOOST_AUTO_TEST_CASE(provision_timeout_removes_only_the_fresh_instance,
+                     *boost::unit_test::timeout(2700)) {
+    const auto& group = azs.front();
+    const auto& group_name = asg_names.front();
+    asg_manager voter_mgr{single_group_cfg()};
+    auto voter = provision(voter_mgr, group);
+    const auto voter_id = ec2_id_of(voter_mgr, voter.node_id);
+    {
+        auto member = group_member(group_name, voter_id);
+        BOOST_REQUIRE(member.has_value());
+        BOOST_REQUIRE_MESSAGE(member->GetProtectedFromScaleIn(),
+                              "adoption did not protect " + voter_id + " from scale-in");
+    }
+
+    Aws::AutoScaling::Model::PutLifecycleHookRequest hook;
+    hook.SetAutoScalingGroupName(group_name);
+    hook.SetLifecycleHookName(run_id + "-hold-launch");
+    hook.SetLifecycleTransition("autoscaling:EC2_INSTANCE_LAUNCHING");
+    hook.SetHeartbeatTimeout(900);
+    hook.SetDefaultResult("ABANDON");
+    {
+        auto out = asg->PutLifecycleHook(hook);
+        BOOST_REQUIRE_MESSAGE(
+            out.IsSuccess(), "PutLifecycleHook: " + std::string(out.GetError().GetExceptionName()) +
+                                 ": " + std::string(out.GetError().GetMessage()));
+    }
+
+    auto cfg = single_group_cfg();
+    cfg.provision_timeout = std::chrono::seconds{90};
+    asg_manager mgr{cfg};
+    const auto requested = std::chrono::steady_clock::now();
+    std::string error;
+    try {
+        (void)std::move(mgr.provision_node(group, std::nullopt)).get();
+    } catch (const std::exception& ex) {
+        error = ex.what();
+    }
+    std::cerr << "[asg-real] timed-out provision: " << error << "\n";
+    BOOST_REQUIRE_MESSAGE(!error.empty(),
+                          "provision_node adopted an instance held in Pending:Wait");
+    BOOST_CHECK_MESSAGE(error.find("asg provision timeout") != std::string::npos, error);
+    BOOST_CHECK_MESSAGE(error.find("rollback: removed i-") != std::string::npos,
+                        "the rollback did not remove the fresh instance by id: " + error);
+    BOOST_CHECK_MESSAGE(error.find(voter_id) == std::string::npos,
+                        "the rollback names the voter " + voter_id + ": " + error);
+
+    // Anything in the group other than the voter is the fresh launch, still
+    // leaving; bill it from the request until it is gone.
+    std::vector<std::string> fresh;
+    if (auto g = describe_group(group_name)) {
+        for (const auto& i : g->GetInstances()) {
+            if (std::string_view{i.GetInstanceId()} != voter_id) {
+                fresh.emplace_back(i.GetInstanceId().data(), i.GetInstanceId().size());
+            }
+        }
+    }
+    for (const auto& id : fresh) {
+        BilledResource line;
+        line.start = requested;
+        line.label = "ec2 " + instance_type + " " + id + " (rolled back)";
+        line.hourly_rate = ec2_hourly_rate(instance_type);
+        cost_report.resources.push_back(std::move(line));
+        billed_line[id] = cost_report.resources.size() - 1;
+        BOOST_CHECK_MESSAGE(error.find(id) != std::string::npos,
+                            "fresh instance " + id + " is not named in: " + error);
+        BOOST_CHECK_MESSAGE(
+            wait_left_group(group_name, id, std::chrono::seconds{300}),
+            id + " was still a member of " + group_name + " 300s after the rollback");
+        stop_billing(id);
+    }
+
+    auto after = describe_group(group_name);
+    BOOST_REQUIRE(after.has_value());
+    BOOST_CHECK_EQUAL(after->GetDesiredCapacity(), 1);
+    auto member = group_member(group_name, voter_id);
+    BOOST_REQUIRE_MESSAGE(member.has_value(), "the rollback removed voter " + voter_id);
+    BOOST_CHECK(member->GetLifecycleState() == Aws::AutoScaling::Model::LifecycleState::InService);
+    BOOST_CHECK(member->GetProtectedFromScaleIn());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

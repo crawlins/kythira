@@ -25,6 +25,7 @@
       "autoscaling:CreateAutoScalingGroup",
       "autoscaling:CreateOrUpdateTags",
       "autoscaling:DeleteAutoScalingGroup",
+      "autoscaling:PutLifecycleHook",
       "autoscaling:SetDesiredCapacity",
       "autoscaling:SetInstanceProtection",
       "autoscaling:TerminateInstanceInAutoScalingGroup",
