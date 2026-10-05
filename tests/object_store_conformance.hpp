@@ -287,13 +287,17 @@ template<typename Harness> struct cases {
         BOOST_TEST(eng.log_key(0).size() == eng.log_prefix().size() + 20);
     }
 
-    /// The digit-boundary case: without the padding `log/10` sorts before
-    /// `log/9`, and recovery reads the log out of order without any error.
+    /// The digit-boundary case: without the padding `log/100` sorts before
+    /// `log/98`, and recovery reads the log out of order without any error.
+    ///
+    /// A contiguous run, because recovery keeps only the contiguous run of log
+    /// objects (`.kiro/specs/batched-durable-writes/`): a sparse log is what a
+    /// crash part-way through a batched append leaves, not a log.
     static auto zero_padding_keeps_lexicographic_order_equal_to_numeric_order() -> void {
         Harness h;
         {
             engine_t eng = h.make_engine();
-            for (std::uint64_t i : {1U, 2U, 9U, 10U, 11U, 100U}) {
+            for (std::uint64_t i = 97; i <= 101; ++i) {
                 eng.append_log_entry(make_entry(1, i));
             }
         }
@@ -304,18 +308,18 @@ template<typename Harness> struct cases {
                 log_keys.push_back(key);
             }
         }
-        BOOST_TEST(log_keys.size() == 6U);
+        BOOST_TEST(log_keys.size() == 5U);
         BOOST_TEST(std::is_sorted(log_keys.begin(), log_keys.end()));
-        const std::vector<std::string> expected{padded(h, 1),  padded(h, 2),  padded(h, 9),
-                                                padded(h, 10), padded(h, 11), padded(h, 100)};
+        const std::vector<std::string> expected{padded(h, 97), padded(h, 98), padded(h, 99),
+                                                padded(h, 100), padded(h, 101)};
         BOOST_TEST(log_keys == expected, boost::test_tools::per_element());
 
         // …and a reloaded engine sees them in index order.
         engine_t eng2 = h.make_engine();
         auto entries = eng2.get_log_entries(0, 1000);
-        BOOST_TEST(entries.size() == 6U);
-        BOOST_TEST(entries.front().index() == 1U);
-        BOOST_TEST(entries.back().index() == 100U);
+        BOOST_TEST(entries.size() == 5U);
+        BOOST_TEST(entries.front().index() == 97U);
+        BOOST_TEST(entries.back().index() == 101U);
     }
 
     /// Property 8: a default-configured engine's bucket holds exactly the keys

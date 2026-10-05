@@ -1290,6 +1290,43 @@ private:
     ///         each site already handles.
     auto persist_and_barrier_locked(const log_entry_type& entry) -> void;
 
+    /// @brief Persist `_current_term` and `_voted_for`, where the vote may
+    ///        have changed. `_mutex` must be held.
+    ///
+    /// With `hard_state_persistence_engine` this is one `save_hard_state`, so
+    /// "no vote" reaches storage too. Without it, `save_current_term` and then
+    /// `save_voted_for` when there is a vote — **term first**. The vote-granting
+    /// path used to write the vote first, and a crash between the two writes
+    /// then left the new vote on storage beside the previous term: after a
+    /// restart the node believed it had voted for the candidate in a term in
+    /// which it had already voted for someone else, and would grant that
+    /// candidate a second vote in that term. Term first can only leave the new
+    /// term beside the old vote, which makes the node refuse votes, never
+    /// grant an extra one.
+    auto persist_term_and_vote_locked() -> void;
+
+    /// @brief Persist `_current_term` at a site that did not change the vote.
+    ///        `_mutex` must be held.
+    ///
+    /// The same `save_hard_state` call on an engine that has it, which is what
+    /// clears a vote `become_follower()` dropped in memory: before this, a node
+    /// that moved to a newer term without voting kept its previous term's vote
+    /// on storage beside the new term. Without the extension it is
+    /// `save_current_term` alone, exactly as before.
+    auto persist_term_locked() -> void;
+
+    /// @brief Write `entries`, which all lie past the last log index, as one
+    ///        run, and record what they owe a barrier in `pending`.
+    ///
+    /// One `append_log_entries` call on a `bulk_append_persistence_engine`
+    /// that is not barriered, `persist_append` per entry otherwise. The bulk
+    /// call is made **before** the entries join `_log`, and it leaves none of
+    /// them in the engine if it throws, so a failure leaves this node's log
+    /// and its engine agreeing and the leader's retry sends the same run
+    /// again. The per-entry path keeps its existing order.
+    auto persist_and_append_run(std::span<const log_entry_type> entries, pending_barrier& pending)
+        -> void;
+
     // Log operations
     auto append_log_entry(const log_entry_type& entry) -> void;
     [[nodiscard]] auto get_last_log_index() const -> log_index_type;
@@ -5229,9 +5266,9 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
     // All checks passed - grant vote
     _voted_for = request.candidate_id();
 
-    // Persist voted_for before responding (§5.2)
-    _persistence.save_voted_for(_voted_for.value());
-    _persistence.save_current_term(_current_term);
+    // Persist voted_for before responding (§5.2) — together with the term, and
+    // the term first (see persist_term_and_vote_locked()).
+    persist_term_and_vote_locked();
 
     // Reset election timer when granting vote (§5.2)
     reset_election_timer();
@@ -5638,26 +5675,26 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
         }
     }
 
-    // Rule 5: Append any new entries not already in the log
+    // Rule 5: Append any new entries not already in the log. They are a
+    // suffix of `entries`: everything from the first index past the last one
+    // this log holds.
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        const auto& new_entry = entries[i];
-        auto entry_index = prev_log_index + i + 1;
-
-        if (entry_index > get_last_log_index()) {
-            // This is a new entry - append it
-            append_log_entry(new_entry);
+        if (prev_log_index + i + 1 > get_last_log_index()) {
+            // One barrier covers every entry this RPC brought — the caller
+            // takes it before returning success, which is the follower's
+            // response boundary (Requirement 1.2). An AppendEntries carrying
+            // four entries therefore costs one fsync, not four; on an engine
+            // without a barrier but with bulk appends it costs one
+            // append_log_entries call.
+            const std::span<const log_entry_type> run(entries.data() + i, entries.size() - i);
+            persist_and_append_run(run, pending);
             log_modified = true;
 
-            // Persist the new entry. One barrier covers every entry this RPC
-            // brought — the caller takes it before returning success, which is
-            // the follower's response boundary (Requirement 1.2). An
-            // AppendEntries carrying four entries therefore costs one fsync,
-            // not four.
-            persist_append(new_entry, pending);
-
-            _logger.debug("Appended new log entry", {{"node_id", node_id_to_string(_node_id)},
-                                                     {"index", std::to_string(entry_index)},
-                                                     {"term", std::to_string(new_entry.term())}});
+            _logger.debug("Appended new log entries",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"first_index", std::to_string(prev_log_index + i + 1)},
+                           {"count", std::to_string(run.size())}});
+            break;
         }
     }
 
@@ -5683,7 +5720,7 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
         // pre-extraction combined condition; the other original disjunct,
         // "request.term() > _current_term" evaluated after Rule 2 already
         // synced _current_term up to request.term(), was always false there).
-        _persistence.save_current_term(_current_term);
+        persist_term_locked();
     }
 
     return append_entries_response_type{_current_term, true, std::nullopt, std::nullopt};
@@ -5907,7 +5944,7 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
 
     // Persist snapshot
     _persistence.save_snapshot(snap);
-    _persistence.save_current_term(_current_term);
+    persist_term_locked();
 
     // The snapshot covers everything through its last included index, and the
     // truncation above may have removed entries the watermark named. Clamp to
@@ -6201,8 +6238,7 @@ auto node<Types>::become_candidate() -> void {
     _voted_for = _node_id;
 
     // Persist state before sending RequestVote RPCs
-    _persistence.save_current_term(_current_term);
-    _persistence.save_voted_for(_node_id);
+    persist_term_and_vote_locked();
 
     // Stop quorum assessment loop if we were leader (Req 13.2)
     if (old_state == kythira::server_state::leader) {
@@ -6916,6 +6952,51 @@ auto node<Types>::persist_and_barrier_locked(const log_entry_type& entry) -> voi
     }
     if (entry.index() > _durable_log_index) {
         _durable_log_index = entry.index();
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::persist_and_append_run(std::span<const log_entry_type> entries,
+                                         pending_barrier& pending) -> void {
+    if (entries.empty()) {
+        return;
+    }
+    if constexpr (!kythira::barriered_persistence_engine<persistence_engine_type> &&
+                  kythira::bulk_append_persistence_engine<persistence_engine_type>) {
+        _persistence.append_log_entries(entries);
+        for (const auto& entry : entries) {
+            append_log_entry(entry);
+        }
+        // No barrier to wait for, as in persist_append()'s non-barriered arm:
+        // the run is as durable as it will ever be once the call returns.
+        if (!pending._any || entries.back().index() > pending._index) {
+            pending._index = entries.back().index();
+        }
+        pending._any = true;
+    } else {
+        for (const auto& entry : entries) {
+            append_log_entry(entry);
+            persist_append(entry, pending);
+        }
+    }
+}
+
+template<raft_types Types> auto node<Types>::persist_term_and_vote_locked() -> void {
+    if constexpr (kythira::hard_state_persistence_engine<persistence_engine_type>) {
+        _persistence.save_hard_state(_current_term, _voted_for);
+    } else {
+        _persistence.save_current_term(_current_term);
+        if (_voted_for.has_value()) {
+            _persistence.save_voted_for(_voted_for.value());
+        }
+    }
+}
+
+template<raft_types Types> auto node<Types>::persist_term_locked() -> void {
+    if constexpr (kythira::hard_state_persistence_engine<persistence_engine_type>) {
+        _persistence.save_hard_state(_current_term, _voted_for);
+    } else {
+        _persistence.save_current_term(_current_term);
     }
 }
 

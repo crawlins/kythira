@@ -45,6 +45,8 @@
 /// change. Keying one object per entry instead makes:
 ///
 ///   * `append_log_entry`            → exactly one PUT,
+///   * `append_log_entries`          → one PUT per entry, several in flight
+///                                     at once when the store allows it,
 ///   * `truncate_log` / `delete_log_entries_before`
 ///                                   → a bounded batch of DELETEs, one per
 ///                                     affected entry and no others,
@@ -106,14 +108,20 @@
 /// only figure this project has measured so far — ~2–3 s per round trip — is a
 /// cross-ocean upper bound and is not a production number.
 ///
-/// Sustained append throughput per node cannot exceed roughly one entry per
-/// store round trip, because `kythira::persistence_engine` has no batch
-/// operation and this engine deliberately adds no latency-hiding mechanism:
-/// no batching, no write coalescing, no write-behind, no asynchronous flush,
-/// no relaxed-durability mode. Recovering append throughput requires widening
-/// the concept every engine implements, which is a raft-layer change and a
-/// recorded follow-on rather than something to smuggle in under a
-/// configuration flag.
+/// `save_hard_state` (`.kiro/specs/batched-durable-writes/`) trims that: it
+/// writes only the slots that changed, so granting a vote at a term already on
+/// the store is one PUT rather than two. A candidate still pays two — the term
+/// and the vote are separate objects, and they are written term first.
+///
+/// Append throughput is the other cost. With only `append_log_entry`, a
+/// follower can take at most about one entry per store round trip.
+/// `append_log_entries` sends the entries of one AppendEntries concurrently
+/// (`object_persistence_options::append_concurrency`, on stores that declare
+/// `concurrent_key_object_store`), so a run of N entries costs about
+/// N / `append_concurrency` round trips of wall time. It is still one PUT per
+/// entry, synchronous before the call returns: no write coalescing into shared
+/// objects, no write-behind, no relaxed-durability mode. A leader's own
+/// appends are one per client command and are not batched.
 ///
 /// ## Read path: an in-memory mirror
 ///
@@ -338,6 +346,7 @@
 #include <boost/json.hpp>
 
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -348,9 +357,11 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -481,6 +492,16 @@ struct object_persistence_options {
     /// operator who has measured their own case; `0` is rejected at construction,
     /// since it would refuse every write including the empty one.
     std::size_t max_object_bytes{64U * 1024U * 1024U};
+
+    /// Log-entry PUTs `append_log_entries` keeps in flight at once
+    /// (`.kiro/specs/batched-durable-writes/`). Honoured only when the store
+    /// declares `concurrent_key_object_store`; any other store gets one request
+    /// at a time whatever this says, because the engine cannot know whether the
+    /// client is safe to call from several threads. The request count is the
+    /// same at every setting — one PUT per entry, the same keys and the same
+    /// bytes — only how many wait on the network together changes. `0` is
+    /// rejected at construction rather than read as "unlimited".
+    std::size_t append_concurrency{8};
 };
 
 namespace object_store_persistence_detail {
@@ -722,6 +743,10 @@ public:
             throw std::invalid_argument(
                 "object_store_persistence_engine: snapshot_retention must be at least 1");
         }
+        if (_opts.append_concurrency == 0) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: append_concurrency must be at least 1");
+        }
         if (_opts.max_object_bytes == 0) {
             throw std::invalid_argument(
                 "object_store_persistence_engine: max_object_bytes must be at least 1 — 0 would "
@@ -766,6 +791,7 @@ public:
           _snapshot(std::move(other._snapshot)),
           _retained(std::move(other._retained)),
           _last_prune_error(std::move(other._last_prune_error)),
+          _strays(std::move(other._strays)),
           _versions(std::move(other._versions)),
           _owner_seen(std::move(other._owner_seen)),
           _owner_epoch(other._owner_epoch),
@@ -859,17 +885,39 @@ public:
     auto save_voted_for(NodeId node) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            put_single_slot(voted_for_key(), node);
-        } else {
-            put_single_slot(voted_for_key(), std::to_string(static_cast<unsigned long long>(node)));
-        }
+        put_single_slot(voted_for_key(), render_vote(node));
         _voted_for = std::move(node);
     }
 
     auto load_voted_for() -> std::optional<NodeId> {
         std::lock_guard lock(_mu);
         return _voted_for;
+    }
+
+    /// @brief `hard_state_persistence_engine` (include/raft/persistence.hpp):
+    ///        `term` then `voted_for`, each only if it changed.
+    ///
+    /// The order is the concept's: a crash between the two PUTs leaves the new
+    /// term with the old vote, never the old term with the new vote, which would
+    /// be a second vote in a term this node already voted in. Skipping an
+    /// unchanged slot is the saving — a vote granted at a term this engine
+    /// already holds is one PUT, not the two that `save_voted_for` followed by
+    /// `save_current_term` cost — and "no vote" is the `none` sentinel the load
+    /// path has always read back as no vote.
+    ///
+    /// Under `compare_and_swap` both stay the CAS chokepoint they are in the
+    /// single-value methods: this is the same `put_single_slot`.
+    auto save_hard_state(TermId term, std::optional<NodeId> vote) -> void {
+        std::lock_guard lock(_mu);
+        throw_if_fenced();
+        if (term != _current_term) {
+            put_single_slot(term_key(), std::to_string(static_cast<unsigned long long>(term)));
+            _current_term = term;
+        }
+        if (vote != _voted_for) {
+            put_single_slot(voted_for_key(), vote ? render_vote(*vote) : std::string("none"));
+            _voted_for = std::move(vote);
+        }
     }
 
     // ── Log ──────────────────────────────────────────────────────────────────
@@ -879,6 +927,7 @@ public:
     auto append_log_entry(const log_entry_t& entry) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
+        clear_strays({});
         const std::string key = log_key(entry.index());
         const std::string body = entry_to_json(entry);
         if constexpr (Fencing == fencing_mode::compare_and_swap) {
@@ -894,6 +943,105 @@ public:
             put_object(key, body);
         }
         _log[entry.index()] = entry;
+    }
+
+    /// @brief `bulk_append_persistence_engine` (include/raft/persistence.hpp):
+    ///        one PUT per entry, up to `append_concurrency` of them in flight.
+    ///
+    /// The request count is unchanged — this engine still writes one object per
+    /// entry, for the reasons the header gives — but N entries cost about
+    /// N / `append_concurrency` round trips of wall time instead of N. Each PUT
+    /// is exactly the one `append_log_entry` would send: same key, same body,
+    /// the same single retry when unconditional, create-only under
+    /// `compare_and_swap`.
+    ///
+    /// **All or nothing, as seen through this engine's reads.** The mirror is
+    /// updated only after every PUT has succeeded. If any fails, every entry of
+    /// the run that was sent is recorded as a **stray** — an object that may be
+    /// on the store but is not in the log — and the call throws. Strays are
+    /// deleted before this engine next writes or truncates the log, which is
+    /// what keeps a later, shorter log from ending up adjacent to an old stray
+    /// that a restart would then read back as part of it; and it is what keeps
+    /// a create-only re-PUT of the same index from being refused as a second
+    /// writer. A crash before that cleanup is covered by the load path, which
+    /// keeps only the contiguous run of log objects (see `load_all`).
+    ///
+    /// A refused precondition latches, exactly as in `append_log_entry`, and
+    /// nothing is cleaned up after it: a latched engine does not write.
+    ///
+    /// A run that does not extend the log — not consecutive, or not entirely
+    /// above the last index — is written one entry at a time on this thread,
+    /// with the mirror again updated only after the last PUT. `node` never
+    /// sends one.
+    auto append_log_entries(std::span<const log_entry_t> entries) -> void {
+        if (entries.empty()) {
+            return;
+        }
+        std::lock_guard lock(_mu);
+        throw_if_fenced();
+
+        std::vector<std::string> keys;
+        std::vector<std::string> bodies;
+        keys.reserve(entries.size());
+        bodies.reserve(entries.size());
+        for (const auto& entry : entries) {
+            keys.push_back(log_key(entry.index()));
+            bodies.push_back(entry_to_json(entry));
+            // Before anything is sent, so an oversized entry fails the run
+            // without leaving the rest of it behind.
+            check_object_size(keys.back(), bodies.back());
+        }
+
+        std::set<LogIndex> covered;
+        for (const auto& entry : entries) {
+            covered.insert(entry.index());
+        }
+        clear_strays(covered);
+
+        const bool extends = extends_log(entries);
+        const std::size_t workers =
+            extends && concurrent_key_object_store<Store> ? _opts.append_concurrency : 1;
+        auto outcomes = put_log_objects(keys, bodies, workers);
+
+        const put_outcome* first_failure = nullptr;
+        for (const auto& outcome : outcomes) {
+            if (outcome.state == put_state::precondition_failed) {
+                latch(outcome.key, {}, outcome.detail);
+            }
+            if (outcome.state == put_state::failed && first_failure == nullptr) {
+                first_failure = &outcome;
+            }
+        }
+        if (first_failure != nullptr) {
+            std::size_t sent = 0;
+            for (std::size_t i = 0; i < outcomes.size(); ++i) {
+                // An index the log still holds is not a stray: deleting it
+                // would remove an entry the mirror says is there. Only a run
+                // that does not extend the log can reach one, and it is left
+                // as a failed `append_log_entry` would leave it.
+                if (outcomes[i].state != put_state::not_sent &&
+                    !_log.contains(entries[i].index())) {
+                    _strays.insert(entries[i].index());
+                    ++sent;
+                }
+            }
+            throw std::runtime_error(
+                "object_store_persistence_engine: append of " + std::to_string(entries.size()) +
+                " log entries failed (" + std::to_string(sent) +
+                " sent, none recorded in the log; they are deleted before the next log write): " +
+                first_failure->detail);
+        }
+        for (const auto& entry : entries) {
+            _log[entry.index()] = entry;
+        }
+    }
+
+    /// @brief Log indices that may have an object on the store but are not in
+    ///        the log: what a failed `append_log_entries` sent, and what the load
+    ///        path found past a gap. Empty again after the next log write.
+    [[nodiscard]] auto stray_log_indices() const -> std::vector<LogIndex> {
+        std::lock_guard lock(_mu);
+        return {_strays.begin(), _strays.end()};
     }
 
     auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
@@ -929,13 +1077,20 @@ public:
     /// Each object is erased from the mirror only after its DELETE is
     /// acknowledged, so a failure part-way through leaves the mirror equal to
     /// the store and the caller free to re-run the (idempotent) truncation.
+    ///
+    /// Highest index first, so that whatever a crash part-way through leaves is
+    /// still a contiguous log rather than one with a hole in it: the load path
+    /// keeps only the contiguous run, and deleting from the bottom up would hand
+    /// it a hole with the entries this call meant to remove sitting above it.
+    /// Strays go first of all, for the same reason.
     auto truncate_log(LogIndex index) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
-        auto it = _log.lower_bound(index);
-        while (it != _log.end()) {
-            delete_object(log_key(it->first));
-            it = _log.erase(it);
+        clear_strays({});
+        while (!_log.empty() && _log.rbegin()->first >= index) {
+            const LogIndex last = _log.rbegin()->first;
+            delete_object(log_key(last));
+            _log.erase(last);
         }
     }
 
@@ -1013,6 +1168,139 @@ public:
     }
 
 private:
+    // ── Batched log writes ───────────────────────────────────────────────────
+
+    enum class put_state : std::uint8_t {
+        not_sent,
+        ok,
+        failed,
+        precondition_failed
+    };
+
+    /// What happened to one PUT of a run. Written by exactly one worker and read
+    /// only after every worker has joined.
+    struct put_outcome {
+        put_state state{put_state::not_sent};
+        std::string key;
+        std::string detail;
+    };
+
+    [[nodiscard]] static auto render_vote(const NodeId& node) -> std::string {
+        if constexpr (std::is_same_v<NodeId, std::string>) {
+            return node;
+        } else {
+            return std::to_string(static_cast<unsigned long long>(node));
+        }
+    }
+
+    /// Whether `entries` is a consecutive ascending run lying entirely above the
+    /// last index in the mirror — the only shape whose objects are all new, and
+    /// so the only shape that may be sent concurrently and recorded as strays on
+    /// failure without touching an object the log still holds. Callers hold `_mu`.
+    [[nodiscard]] auto extends_log(std::span<const log_entry_t> entries) const -> bool {
+        for (std::size_t i = 1; i < entries.size(); ++i) {
+            if (entries[i].index() != entries[i - 1].index() + 1) {
+                return false;
+            }
+        }
+        return _log.empty() || entries.front().index() > _log.rbegin()->first;
+    }
+
+    /// One log-object PUT, reported rather than thrown, and touching no member
+    /// but the immutable ones — the workers in `put_log_objects` call it
+    /// without `_mu`'s protection being needed for anything it reads.
+    auto put_log_object(const std::string& key, const std::string& body) const -> put_outcome {
+        put_outcome out;
+        out.key = key;
+        try {
+            fiu_do_on("raft/objstore/put_object",
+                      throw std::runtime_error("chaos: raft/objstore/put_object " + key););
+            if constexpr (Fencing == fencing_mode::compare_and_swap) {
+                object_version version;
+                try {
+                    version =
+                        _store.put_object_if(_bucket, key, body, precondition{if_absent{}}).version;
+                } catch (const object_precondition_failed& e) {
+                    out.state = put_state::precondition_failed;
+                    out.detail = e.what();
+                    return out;
+                }
+                verify_returned_digest(key, body, version);
+            } else {
+                put_with_retry(key, body);
+            }
+            out.state = put_state::ok;
+        } catch (const std::exception& e) {
+            out.state = put_state::failed;
+            out.detail = e.what();
+        }
+        return out;
+    }
+
+    /// PUT every `(keys[i], bodies[i])` with up to `workers` in flight, and say
+    /// what happened to each. Once one fails no further PUT is started — the run
+    /// is going to throw, so sending the rest would only make more strays — but
+    /// the ones already in flight finish. One worker is the sequential path, on
+    /// the calling thread. Callers hold `_mu`; the workers never take it.
+    auto put_log_objects(const std::vector<std::string>& keys,
+                         const std::vector<std::string>& bodies, std::size_t workers) const
+        -> std::vector<put_outcome> {
+        std::vector<put_outcome> outcomes(keys.size());
+        std::atomic<std::size_t> next{0};
+        std::atomic<bool> failed{false};
+        auto work = [&] {
+            while (!failed.load()) {
+                const std::size_t i = next.fetch_add(1);
+                if (i >= keys.size()) {
+                    return;
+                }
+                outcomes[i] = put_log_object(keys[i], bodies[i]);
+                if (outcomes[i].state != put_state::ok) {
+                    failed.store(true);
+                }
+            }
+        };
+        workers = std::min(workers, keys.size());
+        if (workers <= 1) {
+            work();
+        } else {
+            std::vector<std::jthread> pool;
+            pool.reserve(workers - 1);
+            for (std::size_t w = 1; w < workers; ++w) {
+                pool.emplace_back(work);
+            }
+            work();
+        }
+        return outcomes;
+    }
+
+    /// DELETE every stray not in `keep`, highest first, forgetting each only once
+    /// its DELETE is acknowledged. Throws on the first failure, which fails the
+    /// log write that asked: writing on top of an undeleted stray is exactly what
+    /// strays are tracked to prevent. Callers hold `_mu`.
+    ///
+    /// `keep` is the run about to be written. Under `fencing_mode::none` those
+    /// indices are overwritten by the PUT anyway, so deleting them first would
+    /// be a wasted request; under `compare_and_swap` the PUT is create-only and
+    /// would be refused by its own stray, so nothing is kept.
+    auto clear_strays(const std::set<LogIndex>& keep) -> void {
+        std::vector<LogIndex> doomed;
+        for (auto it = _strays.rbegin(); it != _strays.rend(); ++it) {
+            if (Fencing == fencing_mode::compare_and_swap || !keep.contains(*it)) {
+                doomed.push_back(*it);
+            }
+        }
+        for (const LogIndex index : doomed) {
+            delete_object(log_key(index));
+            _strays.erase(index);
+        }
+        // Kept indices are about to be overwritten. If that write fails they are
+        // recorded again; if it succeeds they are in the log.
+        for (const LogIndex index : keep) {
+            _strays.erase(index);
+        }
+    }
+
     /// What `<prefix>/owner` says, plus the version it was read at — the version
     /// the takeover PUT is predicated on.
     struct owner_record {
@@ -1092,6 +1380,13 @@ private:
         check_object_size(key, bytes);
         fiu_do_on("raft/objstore/put_object",
                   throw std::runtime_error("chaos: raft/objstore/put_object " + key););
+        put_with_retry(key, bytes);
+    }
+
+    /// The store call and retry loop of `put_object`, without the size check or
+    /// the fault point, which `put_log_object` applies itself. Reads only
+    /// immutable members, so it is safe on a worker thread.
+    auto put_with_retry(const std::string& key, std::string_view bytes) const -> void {
         unsigned attempts_left = _opts.write_retries;
         std::string first_what;
         while (true) {
@@ -1355,6 +1650,35 @@ private:
             // operator's note, a future format's object). It is not this
             // engine's state, so it is neither read nor written — only keys
             // this format defines are parsed, and those must parse.
+        }
+        keep_contiguous_log();
+    }
+
+    /// Keep the contiguous run of log objects that starts at the lowest index,
+    /// and record everything above the first gap as a stray.
+    ///
+    /// A gap is what a crash leaves part-way through a concurrent
+    /// `append_log_entries` (any subset of the run may have landed) or part-way
+    /// through a truncation written before truncations went highest-first. In
+    /// both cases the objects above the gap are entries this node never
+    /// acknowledged or was in the middle of removing, so dropping them is safe,
+    /// and loading them is not: `node` keeps its log as a vector and indexes it
+    /// by position, so a hole silently shifts every entry above it. They are
+    /// not deleted here — construction writes nothing — but before the next
+    /// log write, like any other stray.
+    auto keep_contiguous_log() -> void {
+        if (_log.empty()) {
+            return;
+        }
+        auto it = _log.begin();
+        LogIndex expected = it->first;
+        while (it != _log.end() && it->first == expected) {
+            ++it;
+            ++expected;
+        }
+        while (it != _log.end()) {
+            _strays.insert(it->first);
+            it = _log.erase(it);
         }
     }
 
@@ -1683,6 +2007,11 @@ private:
     /// recognize, which is what keeps pruning from touching a foreign object.
     std::set<LogIndex> _retained;
     std::optional<std::string> _last_prune_error;
+
+    /// Log indices that may have an object on the store and are not in `_log`:
+    /// sent by a failed `append_log_entries`, or found past a gap at load.
+    /// Deleted before the next log write or truncation (`clear_strays`).
+    std::set<LogIndex> _strays;
 
     // ── Fencing (Requirement 9), all inert under `fencing_mode::none` ─────────
 

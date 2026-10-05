@@ -209,6 +209,12 @@ election_timeout_min  ≥  4 × p99(PUT) + rpc_rtt + margin
 and the randomized election-timeout **range width** must be at least that same
 quantity, or nodes re-time out inside each other's elections and livelock.
 
+`save_hard_state` (`.kiro/specs/batched-durable-writes/`) writes the term
+before the vote on both sides and skips a slot that has not changed, so a
+follower already at the candidate's term pays one PUT rather than two. The
+common case, a follower learning the term from the RequestVote itself, still
+changes both, so the rule above stands.
+
 | p99(PUT) | Floor on `election_timeout_min` | Verdict |
 |---|---|---|
 | ~3 s (the cross-ocean figure measured before the real tier existed) | **≥ 12 s** | Consistent with the 9.6 s the Alibaba real tier observed for the term+vote case alone. Usable only for clusters that tolerate a 12 s+ leaderless window |
@@ -235,8 +241,16 @@ number — larger than which of the five providers you pick.
 
 ### Throughput
 
-`kythira::persistence_engine` has no batch append, so sustained append
-throughput per node cannot exceed roughly `1 / p50(PUT)` entries per second:
+With one entry per AppendEntries, sustained append throughput per node cannot
+exceed roughly `1 / p50(PUT)` entries per second, because each entry is its own
+round trip. (Until `.kiro/specs/batched-durable-writes/` a follower also
+rewrote `<prefix>/term` after every AppendEntries that changed its log, so the
+real ceiling was about half this; that write is now skipped when the term has
+not changed.) An AppendEntries carrying N entries now costs about
+`N / append_concurrency` round trips rather than N, because
+`append_log_entries` keeps up to `append_concurrency` (default 8) PUTs in
+flight. A leader's own appends are still one per client command. The table is
+the one-entry ceiling:
 
 From the **developer-machine** p50s:
 
@@ -457,7 +471,7 @@ provider:
 |---|---|---|
 | `max_object_bytes` | **64 MiB** | Deliberately far below every provider's documented single-request limit (the smallest is 5 GB). The binding constraint is this engine's *shape*, not the service's: one retry, no multipart, no resumption, no progress reporting, and the mutex held for the whole round trip. The cap turns "this deployment has outgrown a single-PUT persistence engine" into a loud error at the first snapshot that reaches it. Configurable upward by an operator who has measured their own case; `0` is rejected |
 | `write_retries` | **1** | PUT-only, and **unconditional-PUT-only**. A conditional write is never retried: a retry cannot distinguish "my write landed and the response was lost" from "I lost the race" |
-| Batch append | **none** | `kythira::persistence_engine` has no batched append, which is what sets the throughput ceiling above. See [Future work](#future-work) |
+| `append_concurrency` | **8** | Log PUTs `append_log_entries` keeps in flight for one AppendEntries. Used only on a store that declares `supports_concurrent_requests` (all five shipped clients do); any other store gets one at a time. Still one PUT per entry: the request count and the keys are the same at every setting. `0` is rejected |
 
 ## Per-provider configuration
 
@@ -694,20 +708,18 @@ service, and **neither was catchable locally**:
 
 ## Future work
 
-Two changes would lift limits this design accepts. **Both are changes to
-`kythira::persistence_engine` itself, affecting every engine — the file
-engine, the memory engine and the five cloud engines alike — and neither is a
-cloud concern.** They are named here because this is where the cost of their
-absence shows up:
+`append_log_entries` and `save_hard_state` landed as optional extensions to
+`kythira::persistence_engine` (`.kiro/specs/batched-durable-writes/`). Two
+limits remain:
 
-- **A batched `append_log_entries`.** The throughput ceiling above is
-  `1 / p50(PUT)` precisely because each entry is its own round trip. A batched
-  append would let one request carry many entries and would move that ceiling
-  by an order of magnitude.
-- **A `save_hard_state(term, vote)`.** Raft's term and vote change together on
-  the election path, and the concept forces two sequential durable writes for
-  what is logically one state transition. Halving that halves the dominant term
-  in the election-timeout sizing rule.
+- **One request per entry.** `append_log_entries` overlaps the PUTs of one
+  AppendEntries but still sends one per entry. Carrying many entries in one
+  object would cut request charges as well as latency, and is a layout change.
+- **Term and vote are still two ordered PUTs.** They must be ordered because
+  `<prefix>/voted_for` does not record which term it belongs to. A vote record
+  that carries its term would let the load path reconcile the two and the
+  writes go out together, halving the dominant term in the election-timeout
+  sizing rule.
 
 ## Backup and restore
 

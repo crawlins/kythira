@@ -234,6 +234,11 @@ namespace alibaba_oss_detail {
 /// @brief The four object operations the persistence engine needs, V4-signed.
 class alibaba_oss_client {
 public:
+    /// @brief Every call builds its own `httplib::Client` and signs from the
+    ///        immutable config, so calls share nothing
+    ///        (`kythira::concurrent_key_object_store`).
+    static constexpr bool supports_concurrent_requests = true;
+
     /// @brief OSS's ETag is the MD5 hex of single-part content, so the engine
     ///        may verify every PUT locally (Requirement 7.2). Uppercase and
     ///        quoted — see the file comment.

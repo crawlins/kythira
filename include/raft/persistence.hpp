@@ -10,6 +10,7 @@
 #include "types.hpp"
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <vector>
 #include <unordered_map>
@@ -106,6 +107,60 @@ template<typename P> [[nodiscard]] auto describes_durable_storage(P& engine) -> 
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Batched durable writes (`.kiro/specs/batched-durable-writes/`)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Optional extension: an engine that can make several log entries
+///        durable in one call.
+///
+/// The base concept has only `append_log_entry`, so a follower handed N
+/// entries by one AppendEntries pays N durable writes back to back. On a local
+/// file that is cheap, and the barriered engines already coalesce the fsync
+/// (see `barriered_persistence_engine`); on an object store each write is a
+/// network round trip, which caps a follower at roughly one entry per round
+/// trip. This lets an engine take the whole run at once and decide how to pay
+/// for it.
+///
+/// Detected with `if constexpr`, never required. `node` uses it only for an
+/// engine that is **not** barriered — a barriered engine already pays one
+/// barrier per AppendEntries, and switching it would change nothing but the
+/// code path.
+///
+/// **Contract.** `entries` is a run of consecutive indices in ascending order.
+/// On return every entry is as durable as `append_log_entry` would have made
+/// it. On a throw **none** of them is visible through the engine's reads, so a
+/// caller that retries the same run is not refused for an entry it was never
+/// told had landed. A crash part-way through may leave any prefix of the run
+/// on storage; recovering such a prefix is recovering entries the node was
+/// sent and never acknowledged, which Raft already allows.
+template<typename P>
+concept bulk_append_persistence_engine =
+    requires(P& p, std::span<const typename P::log_entry_t> entries) {
+        { p.append_log_entries(entries) } -> std::same_as<void>;
+    };
+
+/// @brief Optional extension: an engine that persists `currentTerm` and
+///        `votedFor` as one operation, including the absence of a vote.
+///
+/// `save_voted_for` cannot record "no vote", so on the base concept a node that
+/// moves to a newer term without voting leaves its previous term's vote on
+/// storage, and after a restart believes it voted in a term it never voted in.
+/// That only ever makes it refuse a vote, so it is a liveness defect rather than
+/// a safety one, but it is a defect, and this is the call that removes it.
+///
+/// **Contract.** After a crash at any point during the call the stored pair is
+/// the old pair, the new pair, or the new term with the old vote. It is never
+/// the old term with the new vote: that pairing would record a vote in a term
+/// the node already voted in, which is a double vote. An engine that stores the
+/// two separately therefore writes the term first. An engine may skip writing a
+/// value that has not changed.
+template<typename P>
+concept hard_state_persistence_engine =
+    requires(P& p, decltype(p.load_current_term()) term, decltype(p.load_voted_for()) vote) {
+        { p.save_hard_state(term, vote) } -> std::same_as<void>;
+    };
+
 /// @brief Concept for a durable Raft-state store.
 ///
 /// The persistence engine is the only component allowed to survive a process
@@ -191,8 +246,37 @@ public:
 
     auto load_voted_for() -> std::optional<NodeId> { return _voted_for; }
 
+    /// @brief `hard_state_persistence_engine`. Both fault points stay
+    ///        reachable: the term's on every call, as `save_current_term`'s was
+    ///        at every site this replaces, and the vote's when the vote changes.
+    auto save_hard_state(TermId term, std::optional<NodeId> vote) -> void {
+        fiu_do_on("raft/persistence/save_current_term",
+                  throw std::runtime_error("chaos: save_current_term"););
+        if (vote != _voted_for) {
+            fiu_do_on("raft/persistence/save_voted_for",
+                      throw std::runtime_error("chaos: save_voted_for"););
+        }
+        _current_term = term;
+        _voted_for = std::move(vote);
+    }
+
     auto append_log_entry(const log_entry_t& entry) -> void {
         (void)append_log_entry_sequenced(entry);
+    }
+
+    /// @brief `bulk_append_persistence_engine`. The fault point fires once,
+    ///        before anything is written, so an injected failure leaves none of
+    ///        the run behind.
+    auto append_log_entries(std::span<const log_entry_t> entries) -> void {
+        if (entries.empty()) {
+            return;
+        }
+        fiu_do_on("raft/persistence/append_log_entry",
+                  throw std::runtime_error("chaos: append_log_entry"););
+        for (const auto& entry : entries) {
+            _log[entry.index()] = entry;
+            ++_write_seq;
+        }
     }
 
     // ── barriered_persistence_engine ─────────────────────────────────────────

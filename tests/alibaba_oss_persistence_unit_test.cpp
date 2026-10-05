@@ -445,8 +445,9 @@ BOOST_AUTO_TEST_CASE(zero_padding_keeps_lexicographic_order_equal_to_numeric_ord
         BOOST_TEST(eng.log_key(0).size() == eng.log_key(18446744073709551615ULL).size());
         BOOST_TEST(eng.log_key(18446744073709551615ULL) == "raft/log/18446744073709551615");
 
-        for (std::uint64_t i : {std::uint64_t{9}, std::uint64_t{10}, std::uint64_t{11},
-                                std::uint64_t{100}, std::uint64_t{1}}) {
+        // A contiguous run across the 9→10 boundary: recovery keeps only the
+        // contiguous run of log objects (.kiro/specs/batched-durable-writes/).
+        for (std::uint64_t i = 8; i <= 11; ++i) {
             eng.append_log_entry(make_entry(1, i));
         }
     }
@@ -458,13 +459,12 @@ BOOST_AUTO_TEST_CASE(zero_padding_keeps_lexicographic_order_equal_to_numeric_ord
             log_keys.push_back(key);
         }
     }
-    const std::vector<std::string> expected{padded(1), padded(9), padded(10), padded(11),
-                                            padded(100)};
+    const std::vector<std::string> expected{padded(8), padded(9), padded(10), padded(11)};
     BOOST_TEST(log_keys == expected, boost::test_tools::per_element());
 
     // And a reload over that listing sees every entry, in order.
     engine_t eng2 = make_engine(mock);
-    BOOST_TEST(eng2.get_last_log_index() == 100U);
+    BOOST_TEST(eng2.get_last_log_index() == 11U);
     const auto range = eng2.get_log_entries(9, 11);
     BOOST_REQUIRE(range.size() == 3U);
     BOOST_TEST(range[0].index() == 9U);

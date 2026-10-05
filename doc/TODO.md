@@ -3574,6 +3574,13 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
     accepts, and both are concept changes affecting every engine —
     `file_persistence_engine` and `memory_persistence_engine` included —
     rather than cloud concerns.
+    **Landed October 4, 2026** as optional extensions
+    (`.kiro/specs/batched-durable-writes/`): a follower's AppendEntries run is
+    one `append_log_entries` call, sent with up to `append_concurrency` PUTs in
+    flight on the object store, and `save_hard_state` writes term before vote
+    and skips unchanged slots. It also fixed a vote-before-term write order on
+    the grant path that could produce a double vote after a crash. Still open:
+    one request per entry, and term and vote as two ordered PUTs.
   **The Alibaba requirement was already discharged**: the mandate that
   whichever spec introduces Alibaba Cloud support SHALL include an Alibaba
   OSS key-object persistence engine in scope was met by

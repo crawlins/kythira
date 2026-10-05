@@ -21,6 +21,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -121,6 +122,37 @@ public:
         return _voted_for;
     }
 
+    /// @brief `hard_state_persistence_engine` (include/raft/persistence.hpp).
+    ///
+    /// Term first, then vote, and each file only when its value changes: the
+    /// order is the one the concept requires of an engine that keeps the two
+    /// apart, and skipping an unchanged file is what keeps the per-AppendEntries
+    /// term save from rewriting `term` on every call. "No vote" is written as
+    /// the `none` that `load_all` has always read back as no vote.
+    auto save_hard_state(TermId term, std::optional<NodeId> vote) -> void {
+        fiu_do_on("raft/persistence/save_current_term",
+                  throw std::runtime_error("chaos: save_current_term"););
+        std::lock_guard lock(_mu);
+        if (vote != _voted_for) {
+            fiu_do_on("raft/persistence/save_voted_for",
+                      throw std::runtime_error("chaos: save_voted_for"););
+        }
+        if (term != _current_term) {
+            atomic_write(_dir / "term", std::to_string(term));
+            _current_term = term;
+        }
+        if (vote != _voted_for) {
+            if (!vote) {
+                atomic_write(_dir / "voted_for", "none");
+            } else if constexpr (std::is_same_v<NodeId, std::string>) {
+                atomic_write(_dir / "voted_for", *vote);
+            } else {
+                atomic_write(_dir / "voted_for", std::to_string(*vote));
+            }
+            _voted_for = std::move(vote);
+        }
+    }
+
     // ── Log ──────────────────────────────────────────────────────────────────
 
     auto append_log_entry(const log_entry_t& entry) -> void {
@@ -138,34 +170,42 @@ public:
         fiu_do_on("raft/persistence/append_log_entry",
                   throw std::runtime_error("chaos: append_log_entry"););
         std::lock_guard lock(_mu);
+        return append_locked(entry);
+    }
 
-        if (_batching) {
-            // Remember what this index held so abort_batch() can put it back.
-            // Only the FIRST observation per index is recorded: a batch that
-            // appends twice at one index must roll back to the pre-batch value,
-            // not to the intermediate one.
-            if (!_batch_undo.contains(entry.index())) {
-                auto existing = _log.find(entry.index());
-                _batch_undo.emplace(entry.index(), existing == _log.end()
-                                                       ? std::nullopt
-                                                       : std::optional{existing->second});
-            }
-            _log[entry.index()] = entry;
-            _batch_lines += entry_to_json(entry) + "\n";
-            // Assigned, but NOT flushed: these bytes are in `_batch_lines` and
-            // not in the file, so `_flushed_seq` stays where it was. A barrier
-            // asked for this sequence flushes the batch first — "flush, then
-            // one barrier", which is what `commit_batch()` already is, taken
-            // apart so the two halves can happen on different threads.
-            return ++_write_seq;
+    /// @brief `bulk_append_persistence_engine` (include/raft/persistence.hpp):
+    ///        every line in one write.
+    ///
+    /// Takes no barrier, exactly as `append_log_entry` takes none; `node` never
+    /// routes this engine here, because the barriered path already costs one
+    /// fsync per AppendEntries. It exists so that the concept's other callers
+    /// get one `write` instead of N. The log mirror is updated only after the
+    /// write returns, so a failed write leaves none of the run visible.
+    auto append_log_entries(std::span<const log_entry_t> entries) -> void {
+        if (entries.empty()) {
+            return;
         }
-
-        _log[entry.index()] = entry;
-        // Append one JSON line to the log file
-        auto line = entry_to_json(entry) + "\n";
-        append_to_log_file(line);
-        _flushed_seq = ++_write_seq;
-        return _write_seq;
+        fiu_do_on("raft/persistence/append_log_entry",
+                  throw std::runtime_error("chaos: append_log_entry"););
+        std::lock_guard lock(_mu);
+        if (_batching) {
+            // An open batch already buffers, and keeps the undo record
+            // abort_batch() needs; one entry at a time is the batch's own path.
+            for (const auto& entry : entries) {
+                (void)append_locked(entry);
+            }
+            return;
+        }
+        std::string lines;
+        for (const auto& entry : entries) {
+            lines += entry_to_json(entry) + "\n";
+        }
+        append_to_log_file(lines);
+        for (const auto& entry : entries) {
+            _log[entry.index()] = entry;
+        }
+        _write_seq += entries.size();
+        _flushed_seq = _write_seq;
     }
 
     // ── barriered_persistence_engine (include/raft/persistence.hpp) ──────────
@@ -439,6 +479,37 @@ public:
     }
 
 private:
+    /// The body of `append_log_entry_sequenced`, for callers holding `_mu`.
+    auto append_locked(const log_entry_t& entry) -> write_sequence {
+        if (_batching) {
+            // Remember what this index held so abort_batch() can put it back.
+            // Only the FIRST observation per index is recorded: a batch that
+            // appends twice at one index must roll back to the pre-batch value,
+            // not to the intermediate one.
+            if (!_batch_undo.contains(entry.index())) {
+                auto existing = _log.find(entry.index());
+                _batch_undo.emplace(entry.index(), existing == _log.end()
+                                                       ? std::nullopt
+                                                       : std::optional{existing->second});
+            }
+            _log[entry.index()] = entry;
+            _batch_lines += entry_to_json(entry) + "\n";
+            // Assigned, but NOT flushed: these bytes are in `_batch_lines` and
+            // not in the file, so `_flushed_seq` stays where it was. A barrier
+            // asked for this sequence flushes the batch first — "flush, then
+            // one barrier", which is what `commit_batch()` already is, taken
+            // apart so the two halves can happen on different threads.
+            return ++_write_seq;
+        }
+
+        _log[entry.index()] = entry;
+        // Append one JSON line to the log file
+        auto line = entry_to_json(entry) + "\n";
+        append_to_log_file(line);
+        _flushed_seq = ++_write_seq;
+        return _write_seq;
+    }
+
     // ── Initialisation ───────────────────────────────────────────────────────
 
     void load_all() {

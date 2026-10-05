@@ -451,8 +451,9 @@ BOOST_AUTO_TEST_CASE(log_keys_sort_lexicographically_in_index_order,
     MockFixture fixture;
     {
         engine_t engine = fixture.engine();
-        for (const std::uint64_t index :
-             {std::uint64_t{9}, std::uint64_t{10}, std::uint64_t{1}, std::uint64_t{100}}) {
+        // A contiguous run across the 9→10 boundary: recovery keeps only the
+        // contiguous run of log objects (.kiro/specs/batched-durable-writes/).
+        for (std::uint64_t index = 8; index <= 11; ++index) {
             engine.append_log_entry(make_entry(1, index));
         }
     }
@@ -465,12 +466,12 @@ BOOST_AUTO_TEST_CASE(log_keys_sort_lexicographically_in_index_order,
     }
     // `oss_keys()` comes out of a std::map, i.e. already in the lexicographic
     // order OSS lists in.
-    const std::vector<std::string> expected{padded(1), padded(9), padded(10), padded(100)};
+    const std::vector<std::string> expected{padded(8), padded(9), padded(10), padded(11)};
     BOOST_CHECK_EQUAL_COLLECTIONS(log_keys.begin(), log_keys.end(), expected.begin(),
                                   expected.end());
 
     engine_t reloaded = fixture.engine();
-    BOOST_CHECK_EQUAL(reloaded.get_last_log_index(), 100U);
+    BOOST_CHECK_EQUAL(reloaded.get_last_log_index(), 11U);
 }
 
 /// Recovery is one List plus one GET per live object, and the List paginates.

@@ -295,6 +295,10 @@ inline constexpr std::string_view k_absent_object_message = "No such object:";
 /// signature change that breaks a concept is a compile error in this header.
 class gcp_gcs_client {
 public:
+    /// @brief `google::cloud::storage::Client` is documented safe to call
+    ///        from several threads at once (`kythira::concurrent_key_object_store`).
+    static constexpr bool supports_concurrent_requests = true;
+
     explicit gcp_gcs_client(gcp_client_config cfg) : _cfg(std::move(cfg)) {
         namespace gcs = ::google::cloud::storage;
 

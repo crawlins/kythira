@@ -727,6 +727,16 @@ if(FIU_FOUND)
     target_include_directories(object_store_persistence_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
 endif()
 
+# .kiro/specs/batched-durable-writes/: append_log_entries and save_hard_state on
+# the memory, file and object-store engines. Provider-independent, like the suite
+# above, so registered unconditionally.
+add_raft_completion_test(batched_durable_writes_unit_test batched_durable_writes_unit_test.cpp)
+target_include_directories(batched_durable_writes_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(batched_durable_writes_unit_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;persistence;object-store"
+)
+
 # object_store_backup unit test (cloud object persistence, task 12)
 #
 # Unconditional for the same reason the suite above is: `object_store_backup.hpp`
@@ -975,6 +985,10 @@ add_raft_completion_test(membership_change_leave_rpc_unit_test membership_change
 add_raft_completion_test(membership_change_leave_rpc_property_test membership_change_leave_rpc_property_test.cpp)
 add_raft_completion_test(node_recovery_unit_test node_recovery_unit_test.cpp)
 add_raft_completion_test(raft_snapshot_boundary_replication_test raft_snapshot_boundary_replication_test.cpp)
+# .kiro/specs/batched-durable-writes/: which persistence calls a running
+# cluster makes — a follower's run in one call, term before vote, "no vote"
+# stored after a term change.
+add_raft_completion_test(raft_batched_durable_writes_test raft_batched_durable_writes_test.cpp)
 
 # Multi-Raft sharding — .kiro/specs/multi-raft/
 # Phases 1-3 are strictly additive: these targets exercise the sharding value
