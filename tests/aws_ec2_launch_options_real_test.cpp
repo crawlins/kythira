@@ -887,7 +887,26 @@ BOOST_AUTO_TEST_CASE(spot_provision_reports_spot_lifecycle, *boost::unit_test::t
     cfg.spot_options = kythira::ec2_spot_options{};
     ec2_manager mgr{cfg};
 
-    auto inst = provision(mgr, "AZ1", "spot");
+    // Spot capacity for one type in one zone runs out for real: CI run
+    // 37093848659's arm64 leg got InsufficientInstanceCapacity for t4g.micro
+    // in us-east-1a. That says nothing about the manager, so the next zone is
+    // tried; any other failure still fails the case.
+    std::optional<Aws::EC2::Model::Instance> launched;
+    for (std::size_t i = 0; i < kAzCount && !launched; ++i) {
+        const std::string group = "AZ" + std::to_string(i + 1);
+        try {
+            launched = provision(mgr, group, "spot");
+        } catch (const std::exception& ex) {
+            if (std::string_view(ex.what()).find("InsufficientInstanceCapacity") ==
+                    std::string_view::npos ||
+                i + 1 == kAzCount) {
+                throw;
+            }
+            std::cerr << "[ec2-launch] no spot capacity in " << group
+                      << ", trying the next zone: " << ex.what() << "\n";
+        }
+    }
+    const auto& inst = *launched;
     const std::string id(inst.GetInstanceId());
     BOOST_CHECK(inst.GetInstanceLifecycle() == Aws::EC2::Model::InstanceLifecycleType::spot);
     BOOST_CHECK_EQUAL(tag_value(inst.GetTags(), "kythira:market"), "spot");
