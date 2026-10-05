@@ -249,7 +249,18 @@ BOOST_AUTO_TEST_CASE(listener_reply_to_departed_peer_raises_no_sigpipe,
                      *boost::unit_test::timeout(30)) {
     auto previous = std::signal(SIGPIPE, SIG_DFL);
     {
-        auto node = hardened_listener(tcp_server_hardening::small_limits());
+        // Every dial must be served, or no reply lands on a departed peer.
+        // With small_limits() (two connections per source, 300 ms timeouts)
+        // a slow host still holds earlier connections when later dials
+        // arrive, so the listener refuses and closes them and the client's
+        // own frame_send then fails; under ThreadSanitizer the final
+        // exchange could also outlast the 300 ms request timeout.
+        auto limits = tcp_server_hardening::small_limits();
+        limits.max_connections = 64;
+        limits.max_connections_per_source = 32;
+        limits.request_timeout = std::chrono::milliseconds{2000};
+        limits.reply_timeout = std::chrono::milliseconds{2000};
+        auto node = hardened_listener(limits);
         for (int i = 0; i < 20; ++i) {
             int fd = tcp_server_hardening::dial(k_port_hardening);
             BOOST_REQUIRE(fd >= 0);
@@ -259,6 +270,8 @@ BOOST_AUTO_TEST_CASE(listener_reply_to_departed_peer_raises_no_sigpipe,
         }
         BOOST_TEST(tcp_server_hardening::wait_until(
             [&] { return node->connection_stats().active_connections == 0; }));
+        BOOST_TEST(node->connection_stats().refused_per_source_limit == 0u);
+        BOOST_TEST(node->connection_stats().refused_global_limit == 0u);
         BOOST_TEST(exchange_succeeds());
         node->stop();
     }
