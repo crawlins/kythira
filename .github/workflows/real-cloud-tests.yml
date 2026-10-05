@@ -2950,7 +2950,9 @@ jobs:
           # object-persistence suite: aws/azure/gcp run `cmake --build build`
           # over everything, whereas this job builds a named list precisely
           # because none of its suites is CTest-registered.
-          [ "${BUNDLE_OBJECT_PERSISTENCE}" = "true" ] && targets="$targets oci_object_storage_persistence_real_test"
+          # raft_object_backup rides the same bundle: its live check below
+          # lists the same bucket with the same credentials.
+          [ "${BUNDLE_OBJECT_PERSISTENCE}" = "true" ] && targets="$targets oci_object_storage_persistence_real_test raft_object_backup"
           # shellcheck disable=SC2086
           cmake --build build --target $targets
 
@@ -3127,6 +3129,16 @@ jobs:
             exit 1
           fi
           exit $rc
+
+      # Read-only: lists a fresh prefix, writes nothing
+      # (object-backup-oci-oss-credentials task 9). Exercises the tool's own
+      # KYTHIRA_OCI_* mapping, in security_token mode, and its namespace lookup.
+      - name: raft_object_backup live check (OCI)
+        if: env.BUNDLE_OBJECT_PERSISTENCE == 'true'
+        run: >-
+          scripts/raft-object-backup-live-check.sh
+          ./build/cmd/raft_object_backup/raft_object_backup
+          oci-objectstorage "$KYTHIRA_OCI_OBJECT_BUCKET"
 
       # Requirement 4.4's artifact delivery: ship the on-instance heartbeat
       # binary to the kythira-ci-artifacts bucket and mint a short-lived
@@ -3420,7 +3432,7 @@ jobs:
         run: |
           targets=""
           [ "${BUNDLE_ESS_QUORUM}" = "true" ] && targets="$targets alibaba_quorum_manager_real_test"
-          [ "${BUNDLE_OSS_PERSISTENCE}" = "true" ] && targets="$targets alibaba_oss_persistence_real_test"
+          [ "${BUNDLE_OSS_PERSISTENCE}" = "true" ] && targets="$targets alibaba_oss_persistence_real_test raft_object_backup"
           # shellcheck disable=SC2086
           cmake --build build --target $targets
 
@@ -3467,6 +3479,21 @@ jobs:
             exit 1
           fi
           exit $rc
+
+      # Read-only: lists a fresh prefix, writes nothing
+      # (object-backup-oci-oss-credentials task 9). Exercises the tool's own
+      # KYTHIRA_ALIBABA_* mapping with the STS credentials.
+      - name: raft_object_backup live check (OSS)
+        if: ${{ env.BUNDLE_OSS_PERSISTENCE == 'true' }}
+        env:
+          KYTHIRA_ALIBABA_REGION: ${{ vars.ALIBABA_CI_REGION }}
+          KYTHIRA_ALIBABA_ACCESS_KEY_ID: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          KYTHIRA_ALIBABA_ACCESS_KEY_SECRET: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+          KYTHIRA_ALIBABA_SECURITY_TOKEN: ${{ env.ALIBABA_CLOUD_SECURITY_TOKEN }}
+        run: >-
+          scripts/raft-object-backup-live-check.sh
+          ./build/cmd/raft_object_backup/raft_object_backup
+          oss "${{ vars.ALIBABA_OSS_BUCKET }}"
 
       - name: Run ess-quorum-manager bundle
         if: ${{ env.BUNDLE_ESS_QUORUM == 'true' }}
