@@ -91,7 +91,10 @@ gap and `design.md` for the planner and per-cloud calls.
 - [ ] 9. Real-cloud timeout cases
   - [ ] 9.1 Add one timeout-rollback case each to the ASG, VMSS and MIG
     real-cloud suites; dispatch under the real-cloud cost rules
-  - _Requirements: 8.5_
+  - [x] 9.2 Abandon an ASG launch a lifecycle hook holds: the first real
+    ASG run (37475165001) showed the terminate refused for as long as the
+    hook holds the launch
+  - _Requirements: 7.1, 8.5_
 
 - [ ] 10. Documentation
   - [ ] 10.1 Provider READMEs: rollback behaviour, scale-in protection and

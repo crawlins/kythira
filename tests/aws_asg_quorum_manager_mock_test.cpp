@@ -22,9 +22,14 @@
 #include <aws/autoscaling/AutoScalingErrors.h>
 #include <aws/autoscaling/model/AutoScalingGroup.h>
 #include <aws/autoscaling/model/AutoScalingInstanceDetails.h>
+#include <aws/autoscaling/model/CompleteLifecycleActionRequest.h>
+#include <aws/autoscaling/model/CompleteLifecycleActionResult.h>
 #include <aws/autoscaling/model/DescribeAutoScalingGroupsResult.h>
 #include <aws/autoscaling/model/DescribeAutoScalingInstancesResult.h>
+#include <aws/autoscaling/model/DescribeLifecycleHooksRequest.h>
+#include <aws/autoscaling/model/DescribeLifecycleHooksResult.h>
 #include <aws/autoscaling/model/Instance.h>
+#include <aws/autoscaling/model/LifecycleHook.h>
 #include <aws/autoscaling/model/LifecycleState.h>
 #include <aws/autoscaling/model/SetInstanceProtectionResult.h>
 #include <aws/autoscaling/model/TerminateInstanceInAutoScalingGroupResult.h>
@@ -141,6 +146,18 @@ public:
         std::lock_guard lock(_mu);
         _busy_terminations = n;
     }
+    /// Add a launch lifecycle hook. While a member is `Pending:Wait` its
+    /// launch activity is open: terminating it is refused with
+    /// `ScalingActivityInProgress`, as AWS does, and only a
+    /// `CompleteLifecycleAction` on a hook releases it.
+    void add_launch_hook(std::string name) {
+        std::lock_guard lock(_mu);
+        _launch_hooks.push_back(std::move(name));
+    }
+    [[nodiscard]] auto abandon_calls() const -> int {
+        std::lock_guard lock(_mu);
+        return _abandon_calls;
+    }
     /// Fail every `SetInstanceProtection` with this exception name.
     void set_protection_error(std::string name) {
         std::lock_guard lock(_mu);
@@ -222,10 +239,12 @@ public:
             _last_launch = ec2_id(++_next);
             _members.push_back({_last_launch, _launch_lifecycle, false});
         }
-        // The group picks its own victims: oldest first, skipping protected.
+        // The group picks its own victims: oldest first, skipping protected
+        // members and launches a hook still holds.
         while (static_cast<int>(_members.size()) > target) {
-            const auto victim = std::ranges::find_if(
-                _members, [](const member& m) { return !m.protected_from_scale_in; });
+            const auto victim = std::ranges::find_if(_members, [](const member& m) {
+                return !m.protected_from_scale_in && m.lifecycle != "Pending:Wait";
+            });
             if (victim == _members.end()) {
                 break;
             }
@@ -243,11 +262,12 @@ public:
         ++_terminate_calls;
         if (_busy_terminations > 0) {
             --_busy_terminations;
-            return as::AutoScalingError(Aws::Client::AWSError<as::AutoScalingErrors>(
-                as::AutoScalingErrors::SCALING_ACTIVITY_IN_PROGRESS_FAULT,
-                "ScalingActivityInProgress", "Scaling activity is in progress", false));
+            return busy_error();
         }
         const auto it = std::ranges::find(_members, request.GetInstanceId(), &member::id);
+        if (it != _members.end() && it->lifecycle == "Pending:Wait") {
+            return busy_error();
+        }
         if (it == _members.end()) {
             return as::AutoScalingError(Aws::Client::AWSError<as::AutoScalingErrors>(
                 as::AutoScalingErrors::VALIDATION, "ValidationError",
@@ -280,6 +300,47 @@ public:
         return asm_::SetInstanceProtectionResult{};
     }
 
+    auto DescribeLifecycleHooks(const asm_::DescribeLifecycleHooksRequest& /*request*/) const
+        -> asm_::DescribeLifecycleHooksOutcome override {
+        std::lock_guard lock(_mu);
+        asm_::DescribeLifecycleHooksResult result;
+        for (const auto& name : _launch_hooks) {
+            asm_::LifecycleHook hook;
+            hook.SetLifecycleHookName(name);
+            hook.SetAutoScalingGroupName(group_name);
+            hook.SetLifecycleTransition("autoscaling:EC2_INSTANCE_LAUNCHING");
+            result.AddLifecycleHooks(std::move(hook));
+        }
+        return asm_::DescribeLifecycleHooksOutcome(std::move(result));
+    }
+
+    /// `ABANDON` terminates the held launch. The group then replaces it
+    /// whenever the desired capacity still counts it, as AWS does.
+    auto CompleteLifecycleAction(const asm_::CompleteLifecycleActionRequest& request) const
+        -> asm_::CompleteLifecycleActionOutcome override {
+        std::lock_guard lock(_mu);
+        const auto it = std::ranges::find(_members, request.GetInstanceId(), &member::id);
+        if (it == _members.end() || it->lifecycle != "Pending:Wait" ||
+            std::ranges::find(_launch_hooks, request.GetLifecycleHookName()) ==
+                _launch_hooks.end()) {
+            return as::AutoScalingError(Aws::Client::AWSError<as::AutoScalingErrors>(
+                as::AutoScalingErrors::VALIDATION, "ValidationError",
+                "No active Lifecycle Action found with instance ID " + request.GetInstanceId(),
+                false));
+        }
+        ++_abandon_calls;
+        if (request.GetLifecycleActionResult() == "ABANDON") {
+            _members.erase(it);
+            while (static_cast<int>(_members.size()) < _desired && !_launch_lifecycle.empty()) {
+                _last_launch = ec2_id(++_next);
+                _members.push_back({_last_launch, _launch_lifecycle, false});
+            }
+        } else {
+            it->lifecycle = "InService";
+        }
+        return asm_::CompleteLifecycleActionResult{};
+    }
+
     auto DescribeAutoScalingInstances(const asm_::DescribeAutoScalingInstancesRequest& request)
         const -> asm_::DescribeAutoScalingInstancesOutcome override {
         std::lock_guard lock(_mu);
@@ -298,6 +359,12 @@ public:
     }
 
 private:
+    [[nodiscard]] static auto busy_error() -> as::AutoScalingError {
+        return as::AutoScalingError(Aws::Client::AWSError<as::AutoScalingErrors>(
+            as::AutoScalingErrors::SCALING_ACTIVITY_IN_PROGRESS_FAULT, "ScalingActivityInProgress",
+            "Scaling activity is in progress", false));
+    }
+
     mutable std::mutex _mu;
     std::shared_ptr<tag_store> _tags;
     mutable std::vector<member> _members;
@@ -312,6 +379,8 @@ private:
     mutable int _terminate_calls = 0;
     mutable int _protection_calls = 0;
     mutable int _blind_scale_ins = 0;
+    std::vector<std::string> _launch_hooks;
+    mutable int _abandon_calls = 0;
 };
 
 /// EC2, as far as `aws_asg_quorum_manager` uses it: every instance the group
@@ -524,6 +593,27 @@ BOOST_AUTO_TEST_CASE(a_busy_group_is_waited_out_before_the_terminate) {
     BOOST_TEST(error.find("rollback: removed ") != std::string::npos);
     BOOST_TEST(cloud.asg->terminate_calls() == 3);
     BOOST_TEST(cloud.asg->ids() == cloud.voters);
+}
+
+// A launch lifecycle hook holds the launch in Pending:Wait, which keeps its
+// scaling activity open, so the group refuses the terminate for as long as
+// the hook's heartbeat. Real run 37475165001 retried that until the timeout
+// and left the desired size grown. The held launch is abandoned instead,
+// after the capacity is lowered so the group does not replace it.
+BOOST_AUTO_TEST_CASE(a_launch_held_by_a_lifecycle_hook_is_abandoned) {
+    Cloud cloud;
+    cloud.asg->add_launch_hook("hold-launch");
+    cloud.asg->set_launch_lifecycle("Pending:Wait");
+    auto mgr = cloud.make();
+
+    const auto error = provision_error(mgr);
+    const auto launched = cloud.asg->last_launch();
+    BOOST_TEST(error.find("rollback: removed " + launched + " (fresh, Pending:Wait)") !=
+               std::string::npos);
+    BOOST_TEST(cloud.asg->ids() == cloud.voters);
+    BOOST_TEST(cloud.asg->desired() == 3);
+    BOOST_TEST(cloud.asg->abandon_calls() == 1);
+    BOOST_TEST(cloud.asg->blind_scale_ins() == 0);
 }
 
 // Nothing launched at all: the capacity write is the only undo, and the

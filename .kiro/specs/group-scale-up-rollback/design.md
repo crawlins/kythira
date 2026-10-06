@@ -152,6 +152,7 @@ help pages the sandbox proxy blocks.
 |---|---|---|
 | ASG: does `TerminateInstanceInAutoScalingGroup` remove a protected instance? | Yes. The scale-in protection page lists it among what protection does not block. | No clear-before-terminate (task 6.3). |
 | ASG: is it accepted on `Pending`? | Not documented. It can fail with `ScalingActivityInProgress` and does not apply to warm-pool instances. | Task 6 retries on `ScalingActivityInProgress` within `provision_timeout`. |
+| ASG: terminate a launch a lifecycle hook holds in `Pending:Wait` | Refused with `ScalingActivityInProgress` until the hook completes or its heartbeat expires (default one hour). Observed in real run 37475165001 (2026-10-06), where retrying for `provision_timeout` left the desired size grown. | Lower the desired capacity by one, then `CompleteLifecycleAction(ABANDON)` on every launch hook. Lowering first keeps the group from replacing the abandoned launch. |
 | ASG: `SetInstanceProtection` batch | 50 ids. | Batches of 50. |
 | ASG lifecycle | `Pending*`, `Quarantined`, `InService`, `Terminating*`, `Terminated`, `Detaching`, `Detached`, `EnteringStandby`, `Standby`, `ReplacingRootVolume*`, `RootVolumeReplaced`, `Warmed:*` | Matches the table above; `Quarantined` and `ReplacingRootVolume*` fall to `pending`. |
 | ESS: `RemoveInstances` on `Protected` | Allowed. It is the documented way to remove a protected member by hand. | No clear before decommission; Requirement 4.4 needs nothing more. |

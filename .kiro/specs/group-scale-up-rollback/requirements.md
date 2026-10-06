@@ -225,7 +225,10 @@ calls listed, so that the rollback does not fail on a missing permission.
 #### Acceptance Criteria
 
 1. The AWS CI permission bundle and the ASG manager's documented IAM
-   policy SHALL add `autoscaling:SetInstanceProtection`.
+   policy SHALL add `autoscaling:SetInstanceProtection`, and
+   `autoscaling:DescribeLifecycleHooks` and
+   `autoscaling:CompleteLifecycleAction` for a launch a lifecycle hook
+   holds (design, ASG vendor behaviour).
 2. The Alibaba RAM policy documentation SHALL add `ess:SetInstancesProtection`
    (and `ess:RemoveInstances` if any doc omits it).
 3. The Azure role documentation SHALL cover writing

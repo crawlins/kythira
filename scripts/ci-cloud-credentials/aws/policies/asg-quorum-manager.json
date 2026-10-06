@@ -5,6 +5,7 @@
     "Action": [
       "autoscaling:DescribeAutoScalingGroups",
       "autoscaling:DescribeAutoScalingInstances",
+      "autoscaling:DescribeLifecycleHooks",
       "autoscaling:DescribeScalingActivities",
       "ec2:DescribeAvailabilityZones",
       "ec2:DescribeImages",
@@ -22,6 +23,7 @@
     "Sid": "AsgQuorumManagerMutateKythiraGroupsOnly",
     "Effect": "Allow",
     "Action": [
+      "autoscaling:CompleteLifecycleAction",
       "autoscaling:CreateAutoScalingGroup",
       "autoscaling:CreateOrUpdateTags",
       "autoscaling:DeleteAutoScalingGroup",
