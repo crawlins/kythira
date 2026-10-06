@@ -1483,6 +1483,15 @@ private:
     [[nodiscard]] auto voter_replaced_by(const node_id_type& id) const
         -> std::optional<node_id_type>;
 
+    // True if `id` votes in the current configuration: a voter, or a voter
+    // of the outgoing half of a joint configuration.  Must be called with
+    // _mutex held.
+    [[nodiscard]] auto is_voting_member(const node_id_type& id) const -> bool;
+
+    // True if `id` is in the current configuration in any role: a voting
+    // member as above, or a learner.  Must be called with _mutex held.
+    [[nodiscard]] auto is_configuration_member(const node_id_type& id) const -> bool;
+
     // ── Learner helpers (.kiro/specs/non-voting-nodes/) ──────────────────────
 
     // Returns true iff _node_id is currently a learner (non-voting member).
@@ -1811,6 +1820,25 @@ auto node<Types>::voter_replaced_by(const node_id_type& id) const -> std::option
         return std::nullopt;
     }
     return replaced;
+}
+
+template<raft_types Types>
+auto node<Types>::is_voting_member(const node_id_type& id) const -> bool {
+    auto contains = [&](const std::vector<node_id_type>& ids) {
+        return std::find(ids.begin(), ids.end(), id) != ids.end();
+    };
+    if (contains(_configuration.nodes())) {
+        return true;
+    }
+    const auto& old_nodes = _configuration.old_nodes();
+    return _configuration.is_joint_consensus() && old_nodes.has_value() && contains(*old_nodes);
+}
+
+template<raft_types Types>
+auto node<Types>::is_configuration_member(const node_id_type& id) const -> bool {
+    const auto& learners = _configuration.learners();
+    return is_voting_member(id) ||
+           std::find(learners.begin(), learners.end(), id) != learners.end();
 }
 
 template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
@@ -2171,6 +2199,7 @@ auto node<Types>::provision_replacement(const placement_group_id_type& group,
     }
 
     auto provision_fut = _quorum_manager.provision_node(group, replacing);
+    std::optional<node_id_type> duplicate;
     try {
         auto info = std::move(provision_fut).get();
         std::lock_guard<std::mutex> lock(_mutex);
@@ -2183,28 +2212,69 @@ auto node<Types>::provision_replacement(const placement_group_id_type& group,
                          {{"new_node_id", node_id_to_string(info.node_id)}, {"group", group}});
             return false;
         }
-        _logger.info(
-            "Provisioned replacement node",
-            {
-                {"new_node_id", node_id_to_string(info.node_id)},
-                {"group", group},
-                {"covers", covers},
-                {"replacing", replacing ? node_id_to_string(*replacing) : std::string{"none"}},
-            });
-        // Req 9.4 / 12.3 — record the placement now rather than
-        // when the node joins: ClusterJoin admits it through
-        // add_learner(), whose capacity check needs its group.
-        // Entries for nodes not yet in the configuration are
-        // ignored by build_quorum_cluster_vector() (Req 12.5).
-        _placement_map[info.node_id] = group;
-        _pending_replacements[info.node_id] = pending_replacement{
-            .group = group,
-            .covers = covers,
-            .replacing = replacing,
-        };
-        // Req 14.4 — nothing further to do here: the node joins via
-        // ClusterJoin → add_learner(), reconcile_pending_replacements()
-        // notices, and a later cycle promotes it.
+        if (is_configuration_member(info.node_id) || _pending_replacements.contains(info.node_id)) {
+            // The quorum manager handed out an id that already names a
+            // member, or a replacement still in flight: typically a manager
+            // that derives ids from the resources it can still list, after
+            // that member's resource vanished outside Kythira, or a new
+            // leader whose manager never saw the id.  Recording it would let
+            // reconcile_pending_replacements() treat the existing member as
+            // the replacement (removing, and decommissioning, the wrong
+            // node) and would overwrite that member's placement.  Refuse it:
+            // release the slot exactly as a failed provision does (Req
+            // 14.6), so the next assessment provisions again, and tear the
+            // new resource down below, outside the lock.
+            _logger.error(
+                "provision_node returned a node id that is already in use; "
+                "decommissioning the new resource",
+                {
+                    {"node_id", node_id_to_string(_node_id)},
+                    {"new_node_id", node_id_to_string(info.node_id)},
+                    {"group", group},
+                    {"replacing", replacing ? node_id_to_string(*replacing) : std::string{"none"}},
+                });
+            auto& cnt = _pending_provisions[covers];
+            if (cnt > 0) {
+                --cnt;
+            }
+            // A clash with an in-flight replacement that has not joined yet
+            // (one that has joined is a member, caught above): both now name
+            // the same node id, and the decommission below may well take the
+            // earlier one's resource too, so drop its record and slot as
+            // well and let the next assessment provision afresh.
+            if (auto earlier = _pending_replacements.find(info.node_id);
+                earlier != _pending_replacements.end() && !earlier->second.joined) {
+                auto& earlier_cnt = _pending_provisions[earlier->second.covers];
+                if (earlier_cnt > 0) {
+                    --earlier_cnt;
+                }
+                _pending_replacements.erase(earlier);
+            }
+            duplicate = info.node_id;
+        } else {
+            _logger.info(
+                "Provisioned replacement node",
+                {
+                    {"new_node_id", node_id_to_string(info.node_id)},
+                    {"group", group},
+                    {"covers", covers},
+                    {"replacing", replacing ? node_id_to_string(*replacing) : std::string{"none"}},
+                });
+            // Req 9.4 / 12.3 — record the placement now rather than
+            // when the node joins: ClusterJoin admits it through
+            // add_learner(), whose capacity check needs its group.
+            // Entries for nodes not yet in the configuration are
+            // ignored by build_quorum_cluster_vector() (Req 12.5).
+            _placement_map[info.node_id] = group;
+            _pending_replacements[info.node_id] = pending_replacement{
+                .group = group,
+                .covers = covers,
+                .replacing = replacing,
+            };
+            // Req 14.4 — nothing further to do here: the node joins via
+            // ClusterJoin → add_learner(), reconcile_pending_replacements()
+            // notices, and a later cycle promotes it.
+        }
     } catch (const std::exception& ex) {
         _logger.error("provision_node failed", {
                                                    {"group", group},
@@ -2218,6 +2288,25 @@ auto node<Types>::provision_replacement(const placement_group_id_type& group,
         auto& cnt = _pending_provisions[covers];
         if (cnt > 0) {
             --cnt;
+        }
+    }
+
+    if (duplicate) {
+        // Best effort, as for an abandoned replacement.  decommission_node()
+        // is keyed by node id, so this relies on the clashing member's own
+        // resource being gone, which is how a manager that allocates
+        // max(listed id) + 1 comes to reuse the id in the first place.  If
+        // the new node manages to send a ClusterJoin before it goes,
+        // handle_cluster_join() refuses to rebind a voter's address to it.
+        try {
+            _quorum_manager.decommission_node(*duplicate).get();
+        } catch (const std::exception& ex) {
+            _logger.error(
+                "decommission_node failed for a replacement with a duplicate node id; "
+                "its infrastructure may need manual cleanup",
+                {{"node_id", node_id_to_string(_node_id)},
+                 {"new_node_id", node_id_to_string(*duplicate)},
+                 {"error", ex.what()}});
         }
     }
     return true;
@@ -8804,6 +8893,11 @@ auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
     -> cluster_join_response_type {
     bool is_leader_now = false;
     bool defer = false;
+    // Whether the joining id is already in the configuration, and if so
+    // whether as a voter (of either half of a joint configuration) rather
+    // than only as a learner.  Only meaningful when is_leader_now.
+    bool present = false;
+    bool voting_member = false;
     std::optional<peer_info<node_id_type, address_type>> redirect;
 
     {
@@ -8826,10 +8920,18 @@ auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
         // by which time the record exists.
         if (is_leader_now) {
             const auto id = req.joining_node_id();
-            bool present =
-                _membership.is_node_in_configuration(id, _configuration) ||
-                std::find(_configuration.learners().begin(), _configuration.learners().end(), id) !=
-                    _configuration.learners().end();
+            voting_member =
+                _membership.is_node_in_configuration(id, _configuration) || is_voting_member(id);
+            present = voting_member || is_configuration_member(id);
+            if (present && !voting_member) {
+                // A learner re-joining from empty storage (see below): it is
+                // rebound to the address it now advertises, so forget the
+                // progress the previous incarnation made.  Replication then
+                // finds its real log from scratch, and promote_to_voter()'s
+                // catch-up check cannot pass on the old node's _match_index.
+                _next_index[id] = get_last_log_index() + 1;
+                _match_index[id] = 0;
+            }
             bool provisioning = std::any_of(_pending_provisions.begin(), _pending_provisions.end(),
                                             [](const auto& kv) { return kv.second > 0; });
             defer = !present && provisioning && !group_has_admission_capacity(placement_of(id)) &&
@@ -8851,7 +8953,35 @@ auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
         if constexpr (requires { req.joining_address().empty(); }) {
             has_address = !req.joining_address().empty();
         }
-        if (has_address) {
+        if (voting_member) {
+            // Never rebind a voter's address from a ClusterJoin.  Only a
+            // fresh node (empty storage) sends one, so a join under a
+            // voter's id is either a duplicate of a join this leader already
+            // admitted (same node, same address: rebinding would change
+            // nothing) or a different, empty node claiming that id: a quorum
+            // manager that reused a vanished node's id, or a voter that lost
+            // its disk.  Rebinding for the latter would make this leader
+            // replicate to the empty node while still counting the old
+            // node's _match_index towards commit, and would let the empty
+            // node vote under the voter's id: both break Raft safety.  A
+            // voter whose address legitimately changed while keeping its
+            // state is a restarting node: it never sends ClusterJoin and is
+            // re-routed by peer discovery (run_reconnect) instead; one that
+            // lost its state must be removed and re-added as a new node.
+            // The reply stays "accepted", as before, so a duplicate join
+            // completes; add_learner() below refuses the id either way.
+            //
+            // A learner is rebound (its progress was reset above): it
+            // neither votes nor counts towards commit, and a provisioned
+            // learner that restarts empty, possibly at a new address and
+            // possibly after the leader that admitted it stepped down, has
+            // no other way to tell the current leader where it is.
+            _logger.warning(
+                "ClusterJoin from a voter already in the configuration; "
+                "keeping its current address",
+                {{"node_id", node_id_to_string(_node_id)},
+                 {"joining_node", node_id_to_string(req.joining_node_id())}});
+        } else if (has_address) {
             update_peer_addresses({{req.joining_node_id(), req.joining_address()}});
         }
 

@@ -239,6 +239,47 @@ struct mock_quorum_manager {
 static_assert(kythira::quorum_manager<mock_quorum_manager, std::uint64_t, std::string, std::string>,
               "mock_quorum_manager must satisfy quorum_manager");
 
+// ── Recording network client ─────────────────────────────────────────────────
+
+// Every update_peer_address() a node makes, as (peer, address).  The
+// simulator routes by node id, so the binding itself changes nothing here;
+// recording it is how a test sees which address a leader would replicate to.
+struct rebind_log {
+    mutable std::mutex mu;
+    std::vector<std::pair<std::uint64_t, std::string>> calls;
+
+    [[nodiscard]] auto for_peer(std::uint64_t id) const -> std::vector<std::string> {
+        std::lock_guard lock(mu);
+        std::vector<std::string> out;
+        for (const auto& [peer, address] : calls) {
+            if (peer == id) {
+                out.push_back(address);
+            }
+        }
+        return out;
+    }
+};
+
+using sim_network_types = kythira::raft_simulator_network_types<std::string>;
+using sim_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+using sim_client_base =
+    kythira::simulator_network_client<sim_network_types, sim_serializer, std::vector<std::byte>>;
+
+struct recording_network_client : sim_client_base {
+    recording_network_client(sim_client_base::node_type node, sim_serializer serializer,
+                             std::shared_ptr<rebind_log> log = nullptr)
+        : sim_client_base(std::move(node), std::move(serializer)), _log(std::move(log)) {}
+
+    auto update_peer_address(std::uint64_t id, const std::string& address) -> void {
+        if (_log) {
+            std::lock_guard lock(_log->mu);
+            _log->calls.emplace_back(id, address);
+        }
+    }
+
+    std::shared_ptr<rebind_log> _log;
+};
+
 // ── Test types bundle ─────────────────────────────────────────────────────────
 
 struct test_raft_types_with_qm {
@@ -254,9 +295,7 @@ struct test_raft_types_with_qm {
     using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
     using raft_network_types = kythira::raft_simulator_network_types<std::string>;
-    using network_client_type =
-        kythira::simulator_network_client<raft_network_types, serializer_type,
-                                          serialized_data_type>;
+    using network_client_type = recording_network_client;
     using network_server_type =
         kythira::simulator_network_server<raft_network_types, serializer_type,
                                           serialized_data_type>;
@@ -359,7 +398,7 @@ public:
         }
         kythira::node_config<test_raft_types_with_qm> ncfg{
             .node_id = id,
-            .network_client = {net, test_raft_types_with_qm::serializer_type{}},
+            .network_client = {net, test_raft_types_with_qm::serializer_type{}, rebinds},
             .network_server = {net, test_raft_types_with_qm::serializer_type{}},
             .persistence = {},
             .logger = kythira::console_logger{kythira::log_level::info},
@@ -439,7 +478,9 @@ public:
     // Sends a ClusterJoin for `id` (reachable at its own simulator address)
     // to `target`, as a provisioned node's bootstrap does, from a dedicated
     // client endpoint so it never consumes a node's own responses.
-    auto send_join(std::uint64_t id, std::uint64_t target) -> bool {
+    // `address` overrides the advertised contact address.
+    auto send_join(std::uint64_t id, std::uint64_t target,
+                   std::optional<std::string> address = std::nullopt) -> bool {
         if (!_join_client) {
             auto net = _sim.create_node("join-client");
             for (const auto& [other, _] : _nodes) {
@@ -453,7 +494,7 @@ public:
         }
         kythira::cluster_join_request<> req;
         req.node_id = id;
-        req.contact_address = std::to_string(id);
+        req.contact_address = address.value_or(std::to_string(id));
         return _join_client
             ->send_cluster_join_request(std::to_string(target), req, _cfg._rpc_timeout * 5)
             .get()
@@ -461,6 +502,7 @@ public:
     }
 
     std::shared_ptr<qm_state> state = std::make_shared<qm_state>();
+    std::shared_ptr<rebind_log> rebinds = std::make_shared<rebind_log>();
 
 private:
     auto stop_tickers() -> void {
@@ -815,6 +857,112 @@ BOOST_AUTO_TEST_CASE(crashed_process_on_running_vm_is_replaced,
     BOOST_CHECK_EQUAL(c.state->decommissioned().front(), 3u);
     BOOST_CHECK(c.node(1).is_leader());
     BOOST_CHECK_EQUAL(c.node(1).get_cluster_size(), 3u);
+}
+
+// A quorum manager that derives ids from the resources it can still list
+// can hand out the id of an existing member once that member's resource has
+// vanished.  The leader must refuse such a replacement: recording it let
+// reconcile_pending_replacements() take the existing voter for the
+// replacement, remove the voter it was replacing and decommission it.  The
+// new resource is decommissioned instead, the slot is released so the next
+// assessment provisions again, and a ClusterJoin from the new node under the
+// voter's id does not rebind the voter's address.
+BOOST_AUTO_TEST_CASE(replacement_with_a_member_id_is_refused,
+                     *boost::unit_test::timeout(scaled_timeout(45))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 3}}};
+        // 2 is a live voter; 4 is a genuinely new id.
+        c.state->provision_ids = {2};
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "g"}, {2, "g"}, {3, "g"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    c.kill(3);
+    BOOST_REQUIRE(wait_until([&] { return !c.state->decommissioned().empty(); }));
+    BOOST_CHECK(c.state->decommissioned() == std::vector<std::uint64_t>{2});
+
+    // The empty node behind the reused id joins before it is torn down.
+    BOOST_CHECK(c.send_join(2, 1, std::string{"reused-2"}));
+    BOOST_CHECK(c.rebinds->for_peer(2).empty());
+
+    // The slot was released: the leader provisions again (and fails, with
+    // no ids left), and meanwhile neither 2 nor 3 is removed.
+    BOOST_REQUIRE(wait_until([&] { return c.state->provision_count() >= 3; }));
+    BOOST_CHECK(c.state->decommissioned() == std::vector<std::uint64_t>{2});
+    BOOST_CHECK_EQUAL(c.node(1).get_cluster_size(), 3u);
+    auto cluster = c.state->last_assess(1);
+    BOOST_REQUIRE(cluster.has_value());
+    BOOST_CHECK(group_of(*cluster, 2) == std::optional<std::string>{"g"});
+    BOOST_CHECK(group_of(*cluster, 3) == std::optional<std::string>{"g"});
+
+    // Voter 2 still counts: a command commits with 3 down.
+    auto commit = c.node(1).submit_command(
+        kythira::test_key_value_state_machine<std::uint64_t>::make_put_command("k", "v"),
+        std::chrono::milliseconds{2000});
+    BOOST_CHECK_NO_THROW(std::move(commit).get());
+
+    // A fresh id heals the group normally, replacing 3.
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->provision_ids = {4};
+    }
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            std::lock_guard lock(c.state->mu);
+            return c.state->provision_ids.empty();
+        },
+        scaled_deadline(5000)));
+    c.add_node(4, {4});
+    c.start_ticker(4);
+    BOOST_CHECK(wait_until([&] { return c.send_join(4, 1); }, scaled_deadline(5000)));
+    BOOST_REQUIRE(
+        wait_until([&] { return c.state->decommissioned().size() >= 2; }, scaled_deadline(10000)));
+    BOOST_CHECK(c.state->decommissioned() == (std::vector<std::uint64_t>{2, 3}));
+    BOOST_CHECK(c.rebinds->for_peer(4) == std::vector<std::string>{"4"});
+}
+
+// Only a fresh node sends ClusterJoin, so one under a voter's id and a new
+// address is a different, empty node: the leader must keep replicating to
+// (and counting) the voter at its existing address.  A learner, which
+// neither votes nor counts towards commit, is rebound: a provisioned learner
+// that restarts empty has no other way to reach the current leader.
+BOOST_AUTO_TEST_CASE(cluster_join_does_not_rebind_a_voter,
+                     *boost::unit_test::timeout(scaled_timeout(30))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {.groups = {{.group_id = "g", .target_count = 3, .learner_capacity = 1}}};
+    }
+    std::unordered_map<std::uint64_t, std::string> placement{{1, "g"}, {2, "g"}, {3, "g"}};
+    c.add_node(1, {1, 2, 3}, placement);
+    c.add_node(2, {1, 2, 3}, placement);
+    c.add_node(3, {1, 2, 3}, placement);
+    BOOST_REQUIRE(c.elect_node1_and_run());
+
+    // A duplicate join still answers "accepted", but leaves 3's address alone.
+    BOOST_CHECK(c.send_join(3, 1, std::string{"elsewhere"}));
+    BOOST_CHECK(c.rebinds->for_peer(3).empty());
+    BOOST_CHECK_EQUAL(c.node(1).get_cluster_size(), 3u);
+
+    // The leader itself is a voter too.
+    BOOST_CHECK(c.send_join(1, 1, std::string{"elsewhere"}));
+    BOOST_CHECK(c.rebinds->for_peer(1).empty());
+
+    // A learner is rebound to the address it now advertises.
+    c.node(1).set_placement(4, "g");
+    BOOST_CHECK_NO_THROW(c.node(1).add_learner(4).get());
+    BOOST_CHECK(c.send_join(4, 1, std::string{"4-restarted"}));
+    BOOST_CHECK(c.rebinds->for_peer(4) == std::vector<std::string>{"4-restarted"});
+
+    // And a new id is bound as before.
+    c.node(1).set_placement(5, "g");
+    BOOST_CHECK(c.send_join(5, 1));
+    BOOST_CHECK(c.rebinds->for_peer(5) == std::vector<std::string>{"5"});
 }
 
 // Req 13.7 — a voter silent for less than quorum_peer_dead_after is still
