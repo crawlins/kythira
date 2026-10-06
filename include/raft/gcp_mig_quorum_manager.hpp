@@ -37,6 +37,17 @@
 #include <google/cloud/options.h>
 #include <google/cloud/polling_policy.h>
 
+// Internal google-cloud-cpp headers, needed only to replace the generated
+// `resize` REST call; see `gcp_mig_detail::resize_fixed_rest_stub`.
+#include <google/cloud/compute/instance_group_managers/v1/internal/instance_group_managers_option_defaults.h>
+#include <google/cloud/compute/instance_group_managers/v1/internal/instance_group_managers_rest_connection_impl.h>
+#include <google/cloud/compute/instance_group_managers/v1/internal/instance_group_managers_rest_metadata_decorator.h>
+#include <google/cloud/compute/instance_group_managers/v1/internal/instance_group_managers_rest_stub.h>
+#include <google/cloud/internal/populate_rest_options.h>
+#include <google/cloud/internal/rest_background_threads_impl.h>
+#include <google/cloud/internal/rest_client.h>
+#include <google/cloud/internal/rest_stub_helpers.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -64,6 +75,102 @@ inline auto make_options(const gcp_client_config& gcp) -> google::cloud::Options
     return gcp_detail::make_base_options(gcp);
 }
 
+/// The REST stub google-cloud-cpp generates for `instanceGroupManagers`, with
+/// `resize` replaced.
+///
+/// `resize` takes the new size as the `size` query parameter, and the generated
+/// stub sends no query parameters for it at all (checked in 2.37.0, the vcpkg
+/// baseline, and 3.12). Every real resize therefore fails with "Required field
+/// 'size' not specified", which run 37309548732 hit the first time the MIG
+/// cases ran against a real group. The mocked client tests never reach the
+/// stub, so they could not see it. Only the two `resize` overrides differ from
+/// the generated code; every other call goes to the base class unchanged.
+class resize_fixed_rest_stub final
+    : public google::cloud::compute_instance_group_managers_v1_internal::
+          DefaultInstanceGroupManagersRestStub {
+public:
+    using resize_request = google::cloud::cpp::compute::instance_group_managers::v1::ResizeRequest;
+    using operation = google::cloud::cpp::compute::v1::Operation;
+
+    resize_fixed_rest_stub(std::shared_ptr<google::cloud::rest_internal::RestClient> service,
+                           std::shared_ptr<google::cloud::rest_internal::RestClient> operations,
+                           google::cloud::Options options)
+        : DefaultInstanceGroupManagersRestStub(service, std::move(operations), std::move(options)),
+          _service(std::move(service)) {}
+
+    auto Resize(google::cloud::rest_internal::RestContext& rest_context,
+                const google::cloud::Options& options, const resize_request& request)
+        -> google::cloud::StatusOr<operation> override {
+        return send_resize(*_service, rest_context, options, request);
+    }
+
+    auto AsyncResize(google::cloud::CompletionQueue& cq,
+                     std::unique_ptr<google::cloud::rest_internal::RestContext> rest_context,
+                     google::cloud::internal::ImmutableOptions options,
+                     const resize_request& request)
+        -> google::cloud::future<google::cloud::StatusOr<operation>> override {
+        // Same shape as the generated AsyncResize: the blocking call runs on its
+        // own thread, which the completion queue joins once it has finished.
+        google::cloud::promise<google::cloud::StatusOr<operation>> p;
+        auto f = p.get_future();
+        std::thread t{[](auto p, auto service, auto request, auto rest_context, auto options) {
+                          p.set_value(send_resize(*service, *rest_context, *options, request));
+                      },
+                      std::move(p),
+                      _service,
+                      request,
+                      std::move(rest_context),
+                      std::move(options)};
+        return f.then([t = std::move(t), cq](auto f) mutable {
+            cq.RunAsync([t = std::move(t)]() mutable { t.join(); });
+            return f.get();
+        });
+    }
+
+    /// The `resize` call with its query parameters. Public so the unit test can
+    /// check the request it builds without a network.
+    static auto send_resize(google::cloud::rest_internal::RestClient& service,
+                            google::cloud::rest_internal::RestContext& rest_context,
+                            const google::cloud::Options& options, const resize_request& request)
+        -> google::cloud::StatusOr<operation> {
+        std::vector<std::pair<std::string, std::string>> query_params;
+        query_params.emplace_back("size", std::to_string(request.size()));
+        if (!request.request_id().empty()) {
+            query_params.emplace_back("request_id", request.request_id());
+        }
+        return google::cloud::rest_internal::Post<operation>(
+            service, rest_context, request, false,
+            "/compute/" + google::cloud::rest_internal::DetermineApiVersion("v1", options) +
+                "/projects/" + request.project() + "/zones/" + request.zone() +
+                "/instanceGroupManagers/" + request.instance_group_manager() + "/resize",
+            std::move(query_params));
+    }
+
+private:
+    std::shared_ptr<google::cloud::rest_internal::RestClient> _service;
+};
+
+/// `MakeInstanceGroupManagersConnectionRest`, built on `resize_fixed_rest_stub`.
+/// It keeps the generated factory's option defaults and metadata decorator, and
+/// drops only the tracing and request-logging decorators, which kythira never
+/// enables.
+inline auto make_migs_connection(google::cloud::Options options) -> std::shared_ptr<
+    google::cloud::compute_instance_group_managers_v1::InstanceGroupManagersConnection> {
+    namespace igi = google::cloud::compute_instance_group_managers_v1_internal;
+    options = igi::InstanceGroupManagersDefaultOptions(std::move(options));
+    auto rest_options = google::cloud::internal::PopulateRestOptions(options);
+    auto endpoint = rest_options.get<google::cloud::EndpointOption>();
+    std::shared_ptr<igi::InstanceGroupManagersRestStub> stub =
+        std::make_shared<resize_fixed_rest_stub>(
+            google::cloud::rest_internal::MakePooledRestClient(endpoint, rest_options),
+            google::cloud::rest_internal::MakePooledRestClient(endpoint, rest_options),
+            rest_options);
+    stub = std::make_shared<igi::InstanceGroupManagersRestMetadata>(std::move(stub));
+    return std::make_shared<igi::InstanceGroupManagersRestConnectionImpl>(
+        std::make_unique<google::cloud::rest_internal::AutomaticallyCreatedRestBackgroundThreads>(),
+        std::move(stub), std::move(options));
+}
+
 inline auto make_migs_client(const gcp_client_config& gcp)
     -> google::cloud::compute_instance_group_managers_v1::InstanceGroupManagersClient {
     namespace ig = google::cloud::compute_instance_group_managers_v1;
@@ -73,8 +180,7 @@ inline auto make_migs_client(const gcp_client_config& gcp)
         ig::InstanceGroupManagersRetryPolicyOption, ig::InstanceGroupManagersLimitedTimeRetryPolicy,
         ig::InstanceGroupManagersBackoffPolicyOption, ig::InstanceGroupManagersPollingPolicyOption>(
         gcp_detail::make_base_options(gcp), gcp);
-    return ig::InstanceGroupManagersClient(
-        ig::MakeInstanceGroupManagersConnectionRest(std::move(opts)));
+    return ig::InstanceGroupManagersClient(make_migs_connection(std::move(opts)));
 }
 
 inline auto make_instances_client(const gcp_client_config& gcp)
