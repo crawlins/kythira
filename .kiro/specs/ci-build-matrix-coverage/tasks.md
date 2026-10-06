@@ -1,8 +1,8 @@
 # Implementation Plan — CI Build-Matrix Coverage
 
-## Status: In progress — 2/12 tasks
+## Status: In progress — 7/12 tasks
 
-**Last Updated**: October 3, 2026 (Task 2 done: `kconfig-check` job).
+**Last Updated**: October 6, 2026 (Tasks 9-10 done: `static-analysis` job).
 
 ## Overview
 
@@ -72,10 +72,12 @@ the Folly-free target set) depend on numbers nobody has yet.
     `warn_assign_redun`; every checked-in defconfig is clean under all three.
   - _Requirements: 4.1, 4.2, 4.3_
 
-- [ ] 3. Add `cmd/` to `TIDY_SOURCES` and `FORMAT_SOURCES`
+- [x] 3. Add `cmd/` to `TIDY_SOURCES` and `FORMAT_SOURCES`
   - Edit both globs in the root `CMakeLists.txt`.
   - Run `format` with the pinned clang-format 22.1.5 and commit the result
     in the same change.
+  - Done before tasks 9-10 picked it up: both globs on `main` already
+    include `cmd/`.
   - _Requirements: 3.3_
 
 ## Phase 2: Alternate CoAP backends (Tasks 4–5)
@@ -144,13 +146,16 @@ the Folly-free target set) depend on numbers nobody has yet.
 
 ## Phase 5: clang-tidy gate (Tasks 9–10)
 
-- [ ] 9. Bring the tree to zero findings
+- [x] 9. Bring the tree to zero findings
   - Using Task 1's run (with `cmd/` included), fix each finding or add a
     `NOLINT(<check>)` with a reason. Never disable a check globally to get
     to zero without recording why in `.clang-tidy`'s rationale block.
+  - Done. Measured in CI rather than via Task 1 (see Notes): 873 findings.
+    About 620 fixed by clang-tidy's fix-its, the rest by hand or a
+    justified `NOLINT`; four checks disabled with reasons in `.clang-tidy`.
   - _Requirements: 3.4, 8.1_
 
-- [ ] 10. Add the `static-analysis` job
+- [x] 10. Add the `static-analysis` job
   - Install `clang-tidy-18`; configure `ci_full_defconfig` with clang++-18;
     build the codegen targets from Task 1 (or the whole tree if that proves
     brittle); run `static-analysis`.
@@ -158,6 +163,12 @@ the Folly-free target set) depend on numbers nobody has yet.
     `static-analysis-files` path for pull requests per design §5, and keep
     the full run on pushes to `main`.
   - Negative check: an introduced `bugprone-*` finding fails the job.
+  - Done, sharded six ways instead of diff-scoped (see Notes). Codegen
+    targets: `scripts/build-tidy-prerequisites.sh` builds every
+    CUSTOM_COMMAND output (protoc) and every `.pch`; nothing else is needed.
+    Negative check passed: an `if`/`else` with identical branches appended to
+    a shard's first file made `clang-tidy-18` exit non-zero with
+    `bugprone-branch-clone`.
   - _Requirements: 3.1, 3.2, 3.4, 3.5, 7.1–7.3_
 
 ## Phase 6: Close-out (Tasks 11–12)
@@ -178,6 +189,18 @@ the Folly-free target set) depend on numbers nobody has yet.
   - _Requirements: 8.3_
 
 ## Notes
+
+- **Tasks 9-10 (clang-tidy gate).** Measured in CI on 2026-10-06 with a
+  temporary workflow, since no sandbox here has the vcpkg tree. One
+  4-core runner took 9111 s (about 2.5 hours) for the full `ci_full_defconfig`
+  tree; the generated-file prerequisites took seconds. Six round-robin
+  shards (`KYTHIRA_TIDY_SHARD_COUNT`/`_INDEX`) took 1625-2395 s each, so
+  every event analyses the full tree and Requirement 3.5's diff-scoped path
+  was not built: a change to a widely included header reaches most
+  translation units anyway. The target had never been runnable: its
+  `cmake/check_compdb.cmake` helper was matched by `.gitignore`'s `*.cmake`
+  and never committed. Findings: 873 unique, 340 braces, 146 implicit bool
+  conversions, 66 `[[nodiscard]]`, then a long tail.
 
 - **Tasks 6-7 (PR #479).** Measured locally rather than via Task 1: a
   Folly-free configure plus `clang -M -MG` over every translation unit
