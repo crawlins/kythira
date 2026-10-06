@@ -266,7 +266,9 @@ the manager stays stateless.
    current instances (the `aws_asg_quorum_manager` scheme — ESS names give
    nothing derivable), with the same known TOCTOU caveat deferred to the
    leader-side pending-provision tracking note in
-   `quorum_management.hpp`.
+   `quorum_management.hpp`, and SHALL never fall at or below an id the
+   manager instance has already assessed or allocated (an in-memory floor;
+   the scan cannot see a removed instance's tag).
 4. Instances in the group lacking a `kythira-node-id` tag SHALL be treated
    as not-yet-adopted (visible in health accounting per Requirement 6 but
    never returned as peers), matching the sibling managers' handling.

@@ -110,15 +110,20 @@ each was found by checking rather than by assuming.
    not a usable numeric seed — so the implementation does the max-of-parsed-
    tags-plus-one scan the spec describes. It is simply not a port of existing
    code, and a reader sent to that function to compare will not find one.
-3. **NodeIds are reused after a decommission**, and cannot not be. The scan
-   only sees instances the pool still lists, and `decommission_node` detaches
-   its target, so removing the highest-numbered node hands that number to the
-   next provision. Requirement 6.4 scopes the scan to
+3. **The tag scan alone would reuse NodeIds after a decommission.** It only
+   sees instances the pool still lists, and `decommission_node` detaches its
+   target, so removing the highest-numbered node would hand that number to
+   the next provision. Requirement 6.4 scopes the scan to
    `ListInstancePoolInstances` and no OCI call exposes a detached instance's
-   tags, so this is a property of the design rather than a defect in the
-   implementation of it. Documented on `next_node_id` and pinned by
-   `maintain_quorum_replaces_a_dead_node_and_reports_pre_remediation_health`
-   so it stays a known limitation instead of a future surprise.
+   tags. This was first accepted as a limitation; on 2026-10-06 it turned
+   out to be a Raft safety bug (a replacement under a still-configured
+   member's id), so the manager now also allocates above an in-memory floor
+   raised by every id it assesses or allocates, and the Raft leader refuses
+   a replacement id that is already a member. The floor is per process: a
+   new leader's manager starts again from the scan, and the Raft guard is
+   what covers that. Pinned by
+   `maintain_quorum_replaces_a_dead_node_and_reports_pre_remediation_health`,
+   which now expects a fresh id.
 4. **Requirement 13.5's mock route list is short by two.** `revoke` takes a
    serial, and OCI addresses a certificate version by `(certificate OCID,
    version number)` — a serial is neither. Resolving one to the other needs
