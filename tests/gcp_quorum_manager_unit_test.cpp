@@ -977,6 +977,133 @@ BOOST_AUTO_TEST_CASE(current_actions_map_onto_the_planners_classes) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// The real MIG client's `resize` request. The fakes above replace the whole
+// client, so only these cases reach the REST stub that builds the HTTP request.
+// The generated stub sends no `size` query parameter, and the real API rejects
+// every resize without it.
+
+namespace {
+
+/// Records the last request and fails it, so nothing is sent anywhere.
+class recording_rest_client final : public google::cloud::rest_internal::RestClient {
+public:
+    using response =
+        google::cloud::StatusOr<std::unique_ptr<google::cloud::rest_internal::RestResponse>>;
+    using payload = std::vector<absl::Span<const char>>;
+
+    std::optional<google::cloud::rest_internal::RestRequest> last;
+    std::string last_method;
+
+    auto Delete(google::cloud::rest_internal::RestContext&,
+                const google::cloud::rest_internal::RestRequest& r) -> response override {
+        return record("DELETE", r);
+    }
+    auto Get(google::cloud::rest_internal::RestContext&,
+             const google::cloud::rest_internal::RestRequest& r) -> response override {
+        return record("GET", r);
+    }
+    auto Patch(google::cloud::rest_internal::RestContext&,
+               const google::cloud::rest_internal::RestRequest& r, const payload&)
+        -> response override {
+        return record("PATCH", r);
+    }
+    auto Post(google::cloud::rest_internal::RestContext&,
+              const google::cloud::rest_internal::RestRequest& r, const payload&)
+        -> response override {
+        return record("POST", r);
+    }
+    auto Post(google::cloud::rest_internal::RestContext&,
+              const google::cloud::rest_internal::RestRequest& r,
+              const std::vector<std::pair<std::string, std::string>>&) -> response override {
+        return record("POST", r);
+    }
+    auto Put(google::cloud::rest_internal::RestContext&,
+             const google::cloud::rest_internal::RestRequest& r, const payload&)
+        -> response override {
+        return record("PUT", r);
+    }
+
+private:
+    auto record(std::string method, const google::cloud::rest_internal::RestRequest& r)
+        -> response {
+        last_method = std::move(method);
+        last = r;
+        return google::cloud::Status(google::cloud::StatusCode::kUnavailable, "recorded");
+    }
+};
+
+auto resize_request(std::int32_t size, std::string request_id = {})
+    -> kythira::gcp_mig_detail::resize_fixed_rest_stub::resize_request {
+    kythira::gcp_mig_detail::resize_fixed_rest_stub::resize_request req;
+    req.set_project("test-project");
+    req.set_zone("us-central1-a");
+    req.set_instance_group_manager("kythira-mig-a");
+    req.set_size(size);
+    req.set_request_id(std::move(request_id));
+    return req;
+}
+
+auto query_value(const google::cloud::rest_internal::RestRequest& r, const std::string& key)
+    -> std::optional<std::string> {
+    for (const auto& [k, v] : r.parameters()) {
+        if (k == key) return v;
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(gcp_mig_resize_request)
+
+BOOST_AUTO_TEST_CASE(resize_sends_the_size_query_parameter) {
+    recording_rest_client client;
+    google::cloud::rest_internal::RestContext context;
+    auto result = kythira::gcp_mig_detail::resize_fixed_rest_stub::send_resize(
+        client, context, google::cloud::Options{}, resize_request(4));
+    BOOST_CHECK(!result.ok());
+    BOOST_REQUIRE(client.last.has_value());
+    BOOST_CHECK_EQUAL(client.last_method, "POST");
+    BOOST_CHECK_EQUAL(client.last->path(),
+                      "/compute/v1/projects/test-project/zones/us-central1-a/"
+                      "instanceGroupManagers/kythira-mig-a/resize");
+    BOOST_CHECK(query_value(*client.last, "size") == std::optional<std::string>{"4"});
+    BOOST_CHECK(!query_value(*client.last, "request_id").has_value());
+}
+
+// Size 0 is how a group is emptied, and it is also proto3's default value. It
+// must still be sent, or the API reports the field as missing.
+BOOST_AUTO_TEST_CASE(resize_to_zero_still_sends_size) {
+    recording_rest_client client;
+    google::cloud::rest_internal::RestContext context;
+    (void)kythira::gcp_mig_detail::resize_fixed_rest_stub::send_resize(
+        client, context, google::cloud::Options{}, resize_request(0));
+    BOOST_REQUIRE(client.last.has_value());
+    BOOST_CHECK(query_value(*client.last, "size") == std::optional<std::string>{"0"});
+}
+
+BOOST_AUTO_TEST_CASE(resize_forwards_a_request_id) {
+    recording_rest_client client;
+    google::cloud::rest_internal::RestContext context;
+    (void)kythira::gcp_mig_detail::resize_fixed_rest_stub::send_resize(
+        client, context, google::cloud::Options{}, resize_request(2, "req-1"));
+    BOOST_REQUIRE(client.last.has_value());
+    BOOST_CHECK(query_value(*client.last, "request_id") == std::optional<std::string>{"req-1"});
+}
+
+// The stub's own `Resize` override, which the connection calls, goes through
+// `send_resize` rather than the generated call.
+BOOST_AUTO_TEST_CASE(stub_resize_override_sends_size) {
+    auto client = std::make_shared<recording_rest_client>();
+    kythira::gcp_mig_detail::resize_fixed_rest_stub stub(
+        client, std::make_shared<recording_rest_client>(), google::cloud::Options{});
+    google::cloud::rest_internal::RestContext context;
+    (void)stub.Resize(context, google::cloud::Options{}, resize_request(3));
+    BOOST_REQUIRE(client->last.has_value());
+    BOOST_CHECK(query_value(*client->last, "size") == std::optional<std::string>{"3"});
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 #else  // !KYTHIRA_HAS_GCP_SDK
 
 BOOST_AUTO_TEST_CASE(skipped_no_gcp_sdk) {
