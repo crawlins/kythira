@@ -860,7 +860,16 @@ cmake --build build --target static-analysis
 ```
 
 Uses `run-clang-tidy` for parallel execution (falls back to sequential `clang-tidy`
-if `run-clang-tidy` is not installed).
+if `run-clang-tidy` is not installed). The translation units include generated
+headers (protoc output, the test PCH), so build those first;
+`scripts/build-tidy-prerequisites.sh build` builds just them.
+
+CI runs this target on every pull request and every push to `main`, in the
+`static-analysis` job of `.github/workflows/ci.yml`, and fails on any finding.
+A full run takes about 2.5 hours on four cores, so the job splits it across
+six parallel shards with `-DKYTHIRA_TIDY_SHARD_COUNT=6
+-DKYTHIRA_TIDY_SHARD_INDEX=<n>`. The same options work locally;
+`build/tidy-sources.txt` lists the files a configured tree analyses.
 
 ### Apply auto-fixes
 

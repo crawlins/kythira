@@ -59,6 +59,24 @@ current list of outstanding work, see [TODO.md](TODO.md).
   `transport_conformance_types.hpp` (namespace `kythira::transport_detail`),
   since the HTTP headers now use it too; `kythira::coap_detail::conformance_types`
   remains as an alias.
+- **clang-tidy now gates CI** (spec `ci-build-matrix-coverage` tasks 9-10).
+  A new `static-analysis` job runs the `static-analysis` target over
+  `src/`, `tests/`, `examples/` and `cmd/` on every pull request and `main`
+  push, split across six shards (a full run is about 2.5 hours on four
+  cores). The "zero findings" the clang-tidy spec recorded had stopped being
+  true: the target could not run at all, because the
+  `cmake/check_compdb.cmake` helper it calls was matched by `.gitignore` and
+  never committed, and the first full run found 873 findings. They are
+  fixed: about 620 by clang-tidy's own fix-its (braces, explicit pointer
+  and integer tests, `[[nodiscard]]`), the rest by hand or with a `NOLINT`
+  that says why. Real bugs among them: a CoAP response log read the payload
+  size after moving the payload away, a TCP RPC byte round-trip test
+  silently tested `"hello"` plus zero padding (an embedded NUL ended the
+  literal), and a `concept_test` case called `then()` on a future it had
+  already consumed. Four checks are now off, each with the reason recorded
+  in `.clang-tidy`: `cppcoreguidelines-pro-type-union-access`,
+  `modernize-return-braced-init-list`, `performance-enum-size` and
+  `performance-inefficient-string-concatenation`.
 
 ### What Changed (October 5, 2026)
 

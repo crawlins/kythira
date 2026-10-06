@@ -1437,6 +1437,143 @@ jobs:
             --allow-retry-file .github/ctest-retry-allowlist.txt \
             -- -LE '^(slow|performance|verbose|benchmark|docker)$'
 
+  # ── Static analysis (clang-tidy) ────────────────────────────────────────────
+  # .kiro/specs/ci-build-matrix-coverage/ Requirement 3: the `static-analysis`
+  # target over the whole tree (src/, tests/, examples/, cmd/), against a
+  # ci_full_defconfig compilation database, failing on any finding
+  # (.clang-tidy sets WarningsAsErrors: "*"). The clang-tidy major version
+  # matches the one named at the top of .clang-tidy.
+  #
+  # Sharded, not diff-scoped: one full run is about 2.5 hours on a 4-core
+  # runner (9111 s measured 2026-10-06), and a change to a widely included
+  # header reaches most translation units anyway, so a diff-scoped pull
+  # request run would often be a full run. Six shards take 27-40 minutes
+  # each; every event, pull request or main push, analyses the full tree.
+  # KYTHIRA_TIDY_SHARD_COUNT/INDEX split the sorted file list round robin.
+  #
+  # No compile of project code is needed: clang-tidy only parses.
+  # scripts/build-tidy-prerequisites.sh builds what the compile commands
+  # include but configure does not write (protoc output and the test PCH),
+  # so no finding is an artefact of a missing header (Requirement 3.2).
+  static-analysis:
+    name: clang-tidy (shard ${{ matrix.shard }} of 6)
+    runs-on: ubuntu-24.04
+    # Slowest measured shard: 40 minutes, plus about 3 minutes of setup on a
+    # warm vcpkg cache.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    # Same build-cache environment rule as every other job; see build-and-test.
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
+          # autoconf & co. are for vcpkg's gperf port, needed only on a cold
+          # vcpkg cache; see the build-and-test job.
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 clang-tidy-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      # Only reached on a cold vcpkg cache: the edhoc feature builds the
+      # lakers overlay port from Rust source.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. See
+      # .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # Byte-identical to the x64 build-and-test legs' key (they set no
+      # vcpkg_cxx), so this job shares their tree rather than keeping another
+      # copy of it.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action; see
+          # the build-and-test job for why it is not re-exported here, and
+          # why vcpkg is pinned to vcpkg.json's builtin-baseline.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # Same flags as the clang++-18 build-and-test leg, so the PCH build hits
+      # that leg's sccache entries.
+      - name: Configure (ci_full_defconfig, strict)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DKYTHIRA_TIDY_SHARD_COUNT=6 \
+            -DKYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }}
+          echo "This shard analyses $(wc -l < build/tidy-sources.txt) files."
+
+      - name: Build generated sources and precompiled headers
+        run: scripts/build-tidy-prerequisites.sh build
+
+      - name: static-analysis
+        run: cmake --build build --target static-analysis
+
   # ── Coverage (clang only) ────────────────────────────────────────────────────
   # ENABLE_COVERAGE uses LLVM source-based instrumentation and requires clang.
   # gcovr-based coverage with GCC is not supported by this project's CMakeLists.
