@@ -635,7 +635,7 @@ BOOST_AUTO_TEST_CASE(binary_command_survives_reload, *boost::unit_test::timeout(
 BOOST_AUTO_TEST_CASE(embedded_nulls_and_high_bytes_survive, *boost::unit_test::timeout(30)) {
     const std::string payload(
         "\x00\x01\xff"
-        "binary\x00",
+        "binary\x00\x00",
         11);
     std::vector<std::byte> cmd;
     cmd.reserve(payload.size());

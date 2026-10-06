@@ -37,9 +37,11 @@ inline auto open_asio_acceptors(boost::asio::io_context& io, const std::string& 
         ::getsockname(fds[i], reinterpret_cast<sockaddr*>(&bound), &len);
         auto acceptor = std::make_shared<tcp::acceptor>(io);
         boost::system::error_code ec;
-        acceptor->assign(bound.ss_family == AF_INET6 ? tcp::v6() : tcp::v4(), fds[i], ec);
+        (void)acceptor->assign(bound.ss_family == AF_INET6 ? tcp::v6() : tcp::v4(), fds[i], ec);
         if (ec) {
-            for (std::size_t j = i; j < fds.size(); ++j) ::close(fds[j]);
+            for (std::size_t j = i; j < fds.size(); ++j) {
+                ::close(fds[j]);
+            }
             throw std::runtime_error(std::string(who) + ": " + ec.message());
         }
         out.push_back(std::move(acceptor));

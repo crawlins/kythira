@@ -114,7 +114,7 @@ struct DaemonFixture {
         cli->Delete("/networks/" + network);
     }
 
-    auto manager_config() const -> docker_quorum_manager_config {
+    [[nodiscard]] auto manager_config() const -> docker_quorum_manager_config {
         docker_quorum_manager_config cfg;
         cfg.daemon_url = daemon_url;
         cfg.image = image;
@@ -126,12 +126,12 @@ struct DaemonFixture {
         return cfg;
     }
 
-    auto container_name(std::uint64_t id) const -> std::string {
+    [[nodiscard]] auto container_name(std::uint64_t id) const -> std::string {
         return "kythira-" + cluster + "-" + std::to_string(id);
     }
 
     // State.Status, or "" when the container does not exist.
-    auto container_status(std::uint64_t id) const -> std::string {
+    [[nodiscard]] auto container_status(std::uint64_t id) const -> std::string {
         auto res = cli->Get("/containers/" + container_name(id) + "/json");
         if (!res || res->status != 200) {
             return "";
@@ -140,7 +140,7 @@ struct DaemonFixture {
             boost::json::parse(res->body).at("State").as_object().at("Status").as_string());
     }
 
-    auto container_labels(std::uint64_t id) const -> boost::json::object {
+    [[nodiscard]] auto container_labels(std::uint64_t id) const -> boost::json::object {
         auto res = cli->Get("/containers/" + container_name(id) + "/json");
         BOOST_REQUIRE(res && res->status == 200);
         return boost::json::parse(res->body).at("Config").as_object().at("Labels").as_object();

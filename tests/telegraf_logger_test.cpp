@@ -59,7 +59,9 @@ auto check_line(const std::string& line, const std::string& expected_prefix, con
 }
 
 auto take_payload(std::shared_ptr<recording_sender_state> state, std::size_t nth) -> std::string {
-    if (!wait_for_payloads(*state, nth, 2000ms)) return {};
+    if (!wait_for_payloads(*state, nth, 2000ms)) {
+        return {};
+    }
     std::lock_guard<std::mutex> lock(state->mu);
     return state->payloads.at(nth - 1);
 }
@@ -144,7 +146,9 @@ auto test_all_levels_and_overloads() -> bool {
     }
     std::lock_guard<std::mutex> lock(state->mu);
     std::string all;
-    for (const auto& payload : state->payloads) all += payload;
+    for (const auto& payload : state->payloads) {
+        all += payload;
+    }
     for (const char* level : {"trace", "debug", "info", "warning", "error", "critical"}) {
         if (all.find(",level=" + std::string(level) + ",") == std::string::npos) {
             std::cerr << "  x level " << level << " never appeared\n";
@@ -174,7 +178,9 @@ auto main() -> int {
 
     int failed = 0;
     auto run = [&](bool (*test)()) {
-        if (!test()) ++failed;
+        if (!test()) {
+            ++failed;
+        }
     };
 
     run(test_log_event_line);

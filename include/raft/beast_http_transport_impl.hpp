@@ -510,7 +510,7 @@ inline auto plain_beast_connection::send(beast_http::request<beast_http::string_
 
 inline auto plain_beast_connection::close() -> void {
     boost::system::error_code ec;
-    _stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, ec);
+    (void)_stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, ec);
     _stream.close();
 }
 
@@ -535,7 +535,7 @@ inline auto tls_beast_connection::connect(const std::vector<net::ip::tcp::endpoi
     -> kythira::future_default<kythira::unit> {
     if (auto error = beast_bind_peer_identity(_stream.native_handle(), host)) {
         return beast_exceptional_future<kythira::unit>(
-            std::make_exception_ptr(kythira::ssl_configuration_error(std::move(*error))));
+            std::make_exception_ptr(kythira::ssl_configuration_error(*error)));
     }
     // Keeps this connection alive across connect and handshake; see send().
     return async_connect_kf(beast::get_lowest_layer(_stream), eps, _executor.get())
@@ -572,7 +572,8 @@ inline auto tls_beast_connection::send(beast_http::request<beast_http::string_bo
 
 inline auto tls_beast_connection::close() -> void {
     boost::system::error_code ec;
-    beast::get_lowest_layer(_stream).socket().shutdown(net::ip::tcp::socket::shutdown_both, ec);
+    (void)beast::get_lowest_layer(_stream).socket().shutdown(net::ip::tcp::socket::shutdown_both,
+                                                             ec);
     beast::get_lowest_layer(_stream).close();
 }
 
@@ -1783,7 +1784,7 @@ auto boost_beast_server<Types>::stop() -> void {
     // caller's own, separate responsibility.
     boost::system::error_code ec;
     for (const auto& acceptor : _acceptors) {
-        acceptor->close(ec);
+        (void)acceptor->close(ec);
     }
     _acceptors.clear();
     _running.store(false);
@@ -2002,8 +2003,8 @@ auto boost_beast_server<Types>::do_accept(std::shared_ptr<net::ip::tcp::acceptor
                 // the socket at once instead of parking it in TIME_WAIT, the
                 // same thing wangle's Acceptor does when it sheds load.
                 boost::system::error_code ignored;
-                socket.set_option(net::socket_base::linger(true, 0), ignored);
-                socket.close(ignored);
+                (void)socket.set_option(net::socket_base::linger(true, 0), ignored);
+                (void)socket.close(ignored);
                 auto metric = _metrics;
                 metric.set_metric_name("beast_http.server.connection_refused");
                 metric.add_one();

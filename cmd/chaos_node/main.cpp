@@ -537,4 +537,6 @@ int main(int argc, char** argv) {
     };
 
     return run_node<tcp_raft_types_joinable>(cfg, std::move(ncfg));
-}
+    // False positive: the analyzer loses track of a unique_ptr inside one of
+    // the members moved into the node_config aggregate; run_node owns it.
+}  // NOLINT(clang-analyzer-cplusplus.NewDeleteLeaks)

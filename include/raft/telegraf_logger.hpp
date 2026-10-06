@@ -142,7 +142,9 @@ public:
         -> void {
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            if (level < _min_level) return;
+            if (level < _min_level) {
+                return;
+            }
         }
         // kythira_log,level=info[,const tags] msg="...",k="v"... <ts_ns>
         std::string line = _measurement +

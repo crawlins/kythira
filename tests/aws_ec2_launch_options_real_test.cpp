@@ -866,7 +866,7 @@ BOOST_AUTO_TEST_CASE(on_demand_provision_and_decommission, *boost::unit_test::ti
     ec2_manager mgr{cfg};
 
     auto inst = provision(mgr, "AZ1", "on-demand");
-    const std::string id(inst.GetInstanceId());
+    const std::string& id(inst.GetInstanceId());
     BOOST_CHECK(inst.GetInstanceLifecycle() != Aws::EC2::Model::InstanceLifecycleType::spot);
     BOOST_CHECK_EQUAL(tag_value(inst.GetTags(), "kythira:market"), "on-demand");
 

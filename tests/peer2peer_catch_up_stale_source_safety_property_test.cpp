@@ -267,11 +267,11 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
     // is exactly the leak this test's partition exists to prevent. Without
     // link latency the fetch normally beats node2's timer; with 30ms of
     // simulated latency per hop the race was lost in 7 of 12 runs.
-    for (auto other : {"2", "3", "4", "5"}) {
+    for (const auto* other : {"2", "3", "4", "5"}) {
         sim.remove_edge("1", other);
         sim.remove_edge(other, "1");
     }
-    for (auto clean : {"3", "4", "5"}) {
+    for (const auto* clean : {"3", "4", "5"}) {
         sim.remove_edge("2", clean);
         sim.remove_edge(clean, "2");
     }
@@ -339,8 +339,8 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
     BOOST_CHECK(node3.debug_state().log[poisoned_index].command() == corrected_command);
 
     // Heal: reconnect node1 and node2 to the (now higher-term) real cluster.
-    for (auto id : {"1", "2"}) {
-        for (auto other : {"3", "4", "5"}) {
+    for (const auto* id : {"1", "2"}) {
+        for (const auto* other : {"3", "4", "5"}) {
             sim.add_edge(id, other, edge);
             sim.add_edge(other, id, edge);
         }

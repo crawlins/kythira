@@ -247,7 +247,7 @@ BOOST_AUTO_TEST_CASE(a_batch_split_round_trips_through_repeated_absorbs) {
     sm_type rejoined;
     rejoined.restore_from_snapshot(parts[0], 1);
     for (std::size_t i = 1; i < parts.size(); ++i) {
-        const auto start = cuts[i - 1];
+        const auto& start = cuts[i - 1];
         const auto end = i < cuts.size() ? std::optional{cuts[i]} : std::nullopt;
         rejoined.absorb(parts[i], range_of(start, end));
     }

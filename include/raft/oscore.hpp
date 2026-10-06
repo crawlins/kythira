@@ -245,7 +245,8 @@ inline auto cbor_append_null(std::vector<std::byte>& out) -> void {
 
     std::vector<std::byte> nonce(nonce_length, std::byte{0});
     nonce[0] = static_cast<std::byte>(id_piv.size());
-    std::copy(id_piv.begin(), id_piv.end(), nonce.begin() + 1 + (id_field - id_piv.size()));
+    std::copy(id_piv.begin(), id_piv.end(),
+              nonce.begin() + static_cast<std::ptrdiff_t>(1 + (id_field - id_piv.size())));
     std::copy(partial_iv.begin(), partial_iv.end(),
               nonce.begin() + static_cast<std::ptrdiff_t>(nonce_length - partial_iv.size()));
     for (std::size_t i = 0; i < nonce_length; ++i) {
@@ -634,7 +635,7 @@ inline auto decode_options(std::span<const std::byte> bytes, std::vector<coap_op
                 }
                 const auto hi = static_cast<std::uint16_t>(bytes[offset]);
                 const auto lo = static_cast<std::uint16_t>(bytes[offset + 1]);
-                field = static_cast<field_type>(((hi << 8U) | lo) + 269);
+                field = ((static_cast<field_type>(hi) << 8U) | lo) + 269;
                 offset += 2;
             } else if (nibble == 15) {
                 throw verification_error("reserved nibble 15 in a CoAP option header");

@@ -141,7 +141,7 @@ BOOST_FIXTURE_TEST_CASE(binary_command_survives_the_real_service, RealOssFixture
                         *boost::unit_test::timeout(300)) {
     const std::string payload(
         "\x00\x01\xff"
-        "binary\x00",
+        "binary\x00\x00",
         11);
     {
         auto writer = engine();

@@ -248,8 +248,10 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
     }
     std::vector<unsigned char> point(1 + 2 * k_coord_len, 0);
     point[0] = 0x04;  // POINT_CONVERSION_UNCOMPRESSED
-    std::copy(x.begin(), x.end(), point.begin() + 1 + (k_coord_len - x.size()));
-    std::copy(y.begin(), y.end(), point.begin() + 1 + 2 * k_coord_len - y.size());
+    std::copy(x.begin(), x.end(),
+              point.begin() + static_cast<std::ptrdiff_t>(1 + (k_coord_len - x.size())));
+    std::copy(y.begin(), y.end(),
+              point.begin() + static_cast<std::ptrdiff_t>(1 + 2 * k_coord_len - y.size()));
 
     ossl_param_bld_ptr bld{OSSL_PARAM_BLD_new()};
     if (!bld) {
@@ -345,8 +347,8 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
     if (ECDSA_SIG_set0(sig.get(), r.get(), s.get()) != 1) {
         throw_openssl_error("acme_jws: ECDSA_SIG_set0 failed");
     }
-    r.release();
-    s.release();
+    (void)r.release();
+    (void)s.release();
 
     unsigned char* der = nullptr;
     int len = i2d_ECDSA_SIG(sig.get(), &der);

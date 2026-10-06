@@ -473,7 +473,7 @@ private:
                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 value = method + " " + (req.target.empty() ? req.path : req.target);
             } else {
-                value = req.get_header_value(name.c_str());
+                value = req.get_header_value(name);
             }
             if (!first) {
                 out += "\n";

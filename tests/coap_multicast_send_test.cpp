@@ -90,7 +90,7 @@ auto plain_client() -> coap_client<test_transport_types> {
     kythira::coap_client_config config;
     config.enable_dtls = false;
     kythira::noop_metrics metrics;
-    return coap_client<test_transport_types>({}, config, metrics);
+    return {{}, config, metrics};
 }
 }  // namespace
 

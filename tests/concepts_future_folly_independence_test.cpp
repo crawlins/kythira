@@ -24,6 +24,7 @@
 
 #include <exception>
 #include <type_traits>
+#include <utility>
 
 // A minimal type satisfying try_type, to exercise the regenericized
 // concept surface (std::exception_ptr, not folly::exception_wrapper)
@@ -31,7 +32,7 @@
 template<typename T> class minimal_try {
 public:
     explicit minimal_try(T value) : _value(std::move(value)) {}
-    explicit minimal_try(std::exception_ptr ex) : _ex(ex) {}
+    explicit minimal_try(std::exception_ptr ex) : _ex(std::move(ex)) {}
 
     [[nodiscard]] auto hasValue() const -> bool { return !_ex; }
     [[nodiscard]] auto hasException() const -> bool { return static_cast<bool>(_ex); }

@@ -82,10 +82,14 @@ struct victoriametrics_config {
         client.set_write_timeout(secs, usecs);
 
         httplib::Headers hdrs;
-        for (const auto& [key, value] : headers) hdrs.emplace(key, value);
+        for (const auto& [key, value] : headers) {
+            hdrs.emplace(key, value);
+        }
 
         auto res = client.Post(std::string(path), hdrs, std::string(body), "text/plain");
-        if (!res) return {.ok = false, .status = 0};
+        if (!res) {
+            return {.ok = false, .status = 0};
+        }
         return {.ok = (res->status >= 200 && res->status < 300), .status = res->status};
     };
 }
@@ -104,7 +108,9 @@ public:
 
     auto set_metric_name(std::string_view name) -> void {
         _inner.set_metric_name(name);
-        for (const auto& [label, value] : _constant_labels) _inner.add_dimension(label, value);
+        for (const auto& [label, value] : _constant_labels) {
+            _inner.add_dimension(label, value);
+        }
     }
 
     auto add_dimension(std::string_view dimension_name, std::string_view dimension_value) -> void {
@@ -150,7 +156,9 @@ private:
                 stop_flag = true;
             }
             cv.notify_all();
-            if (worker.joinable()) worker.join();
+            if (worker.joinable()) {
+                worker.join();
+            }
         }
 
         pusher(const pusher&) = delete;
@@ -160,10 +168,14 @@ private:
 
         auto push_once() -> void {
             auto body = registry->render_text();
-            if (body.empty()) return;
+            if (body.empty()) {
+                return;
+            }
             auto result = poster(config.endpoint_base_url, config.import_path, config.headers, body,
                                  config.http_timeout);
-            if (!result.ok) failed_pushes.fetch_add(1, std::memory_order_relaxed);
+            if (!result.ok) {
+                failed_pushes.fetch_add(1, std::memory_order_relaxed);
+            }
         }
 
         auto push_loop() -> void {

@@ -320,8 +320,8 @@ public:
 
     /// @brief PUT one blob, unconditionally. No retry — the engine owns write
     ///        retries.
-    auto put_object(const std::string& bucket, const std::string& key, std::string_view bytes) const
-        -> put_result {
+    [[nodiscard]] auto put_object(const std::string& bucket, const std::string& key,
+                                  std::string_view bytes) const -> put_result {
         fiu_do_on("raft/azure/blob/put_object",
                   throw std::runtime_error("chaos: raft/azure/blob/put_object " + key););
         return send_put(bucket, key, bytes, std::nullopt);
@@ -333,8 +333,9 @@ public:
     /// Issued exactly once. A conditional PUT's precondition is stale by
     /// construction if a previous attempt landed, so a retry would either be a
     /// no-op or a spurious latch.
-    auto put_object_if(const std::string& bucket, const std::string& key, std::string_view bytes,
-                       const precondition& pre) const -> put_result {
+    [[nodiscard]] auto put_object_if(const std::string& bucket, const std::string& key,
+                                     std::string_view bytes, const precondition& pre) const
+        -> put_result {
         fiu_do_on("raft/azure/blob/put_object_if",
                   throw std::runtime_error("chaos: raft/azure/blob/put_object_if " + key););
         return send_put(bucket, key, bytes, pre);
@@ -632,7 +633,7 @@ private:
         if (!result) {
             return {};
         }
-        const auto header = result->get_header_value("x-ms-error-code");
+        auto header = result->get_header_value("x-ms-error-code");
         if (!header.empty()) {
             return header;
         }

@@ -40,7 +40,7 @@ static std::uint16_t find_free_port() {
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = INADDR_ANY;
     a.sin_port = 0;
-    ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
+    (void)::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
     socklen_t len = sizeof(a);
     ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len);
     std::uint16_t port = ntohs(a.sin_port);
@@ -65,7 +65,9 @@ static bool can_connect(const std::string& address, std::uint16_t port) {
         len = sizeof(sockaddr_in6);
     }
     int fd = ::socket(ss.ss_family, SOCK_STREAM, 0);
-    if (fd < 0) return false;
+    if (fd < 0) {
+        return false;
+    }
     bool ok = ::connect(fd, reinterpret_cast<sockaddr*>(&ss), len) == 0;
     ::close(fd);
     return ok;
@@ -75,7 +77,9 @@ static bool can_connect(const std::string& address, std::uint16_t port) {
 // sandboxes often run with IPv6 disabled.
 static bool ipv6_loopback_available() {
     int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
-    if (fd < 0) return false;
+    if (fd < 0) {
+        return false;
+    }
     sockaddr_in6 a{};
     a.sin6_family = AF_INET6;
     a.sin6_addr = in6addr_loopback;
@@ -87,14 +91,22 @@ static bool ipv6_loopback_available() {
 // The first IPv4 address of an up, non-loopback interface, if the host has one.
 static std::optional<std::string> non_loopback_ipv4() {
     ifaddrs* ifs = nullptr;
-    if (::getifaddrs(&ifs) != 0) return std::nullopt;
+    if (::getifaddrs(&ifs) != 0) {
+        return std::nullopt;
+    }
     std::optional<std::string> found;
     for (ifaddrs* i = ifs; i != nullptr && !found; i = i->ifa_next) {
-        if (i->ifa_addr == nullptr || i->ifa_addr->sa_family != AF_INET) continue;
+        if (i->ifa_addr == nullptr || i->ifa_addr->sa_family != AF_INET) {
+            continue;
+        }
         auto* in = reinterpret_cast<sockaddr_in*>(i->ifa_addr);
-        if ((ntohl(in->sin_addr.s_addr) >> 24) == 127) continue;
+        if ((ntohl(in->sin_addr.s_addr) >> 24) == 127) {
+            continue;
+        }
         char buf[INET_ADDRSTRLEN];
-        if (::inet_ntop(AF_INET, &in->sin_addr, buf, sizeof(buf)) != nullptr) found = buf;
+        if (::inet_ntop(AF_INET, &in->sin_addr, buf, sizeof(buf)) != nullptr) {
+            found = buf;
+        }
     }
     ::freeifaddrs(ifs);
     return found;
@@ -172,8 +184,9 @@ BOOST_AUTO_TEST_CASE(test_frame_recv_eof_returns_nullopt, *boost::unit_test::tim
 // ── Byte conversion ───────────────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_CASE(test_str_bytes_round_trip, *boost::unit_test::timeout(5)) {
-    std::string s = "hello\x00\xFF\x01world";
-    s.resize(13);
+    // Explicit length: the literal's embedded NUL would otherwise end it at
+    // "hello", leaving the 0xFF/0x01/"world" bytes untested.
+    const std::string s("hello\x00\xFF\x01world", 13);
     auto bytes = kythira::tcp_detail::str_to_bytes(s);
     BOOST_TEST(bytes.size() == s.size());
     auto back = kythira::tcp_detail::bytes_to_str(bytes);
@@ -487,7 +500,9 @@ BOOST_AUTO_TEST_CASE(test_server_localhost_bind, *boost::unit_test::timeout(10))
     server.start();
     for (const auto& ep : kythira::tcp_detail::resolve_bind_addresses("localhost", "test")) {
         bool v6 = ep.addr.ss_family == AF_INET6;
-        if (v6 && !ipv6_loopback_available()) continue;
+        if (v6 && !ipv6_loopback_available()) {
+            continue;
+        }
         BOOST_TEST(can_connect(v6 ? "::1" : "127.0.0.1", port),
                    "localhost bind missed " << (v6 ? "::1" : "127.0.0.1"));
     }
@@ -508,7 +523,9 @@ BOOST_AUTO_TEST_CASE(test_connect_to_falls_back_across_resolved_addresses,
     server.start();
     int fd = kythira::tcp_detail::connect_to("localhost", port, std::chrono::milliseconds(2000));
     BOOST_TEST(fd >= 0);
-    if (fd >= 0) ::close(fd);
+    if (fd >= 0) {
+        ::close(fd);
+    }
     server.stop();
 }
 
@@ -962,7 +979,9 @@ BOOST_AUTO_TEST_CASE(test_client_request_to_departed_server_raises_no_sigpipe,
     ::getsockname(lfd, reinterpret_cast<sockaddr*>(&a), &len);
     std::thread closer([lfd] {
         int c = ::accept(lfd, nullptr, nullptr);
-        if (c >= 0) ::close(c);
+        if (c >= 0) {
+            ::close(c);
+        }
     });
 
     kythira::tcp_rpc_client client;
@@ -1087,18 +1106,20 @@ BOOST_AUTO_TEST_CASE(test_server_keeps_accepting_after_emfile, *boost::unit_test
             ::closedir(d);
         }
         rlimit lowered = saved;
-        lowered.rlim_cur = static_cast<rlim_t>(highest + 32);
+        lowered.rlim_cur = static_cast<rlim_t>(highest) + 32;
         BOOST_REQUIRE(::setrlimit(RLIMIT_NOFILE, &lowered) == 0);
         struct restore {
             rlimit r;
             std::vector<int>& fds;
             ~restore() {
-                for (int fd : fds) ::close(fd);
+                for (int fd : fds) {
+                    ::close(fd);
+                }
                 ::setrlimit(RLIMIT_NOFILE, &r);
             }
         } restore_on_exit{saved, fillers};
 
-        for (int fd; (fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC)) >= 0;) {
+        for (int fd = 0; (fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC)) >= 0;) {
             fillers.push_back(fd);
         }
         BOOST_REQUIRE(errno == EMFILE);

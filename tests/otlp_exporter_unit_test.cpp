@@ -33,7 +33,9 @@ struct test_record {
 [[nodiscard]] auto encode(const kythira::otlp_resource&, std::span<const test_record> records)
     -> boost::json::object {
     boost::json::array arr;
-    for (const auto& r : records) arr.push_back(boost::json::value(r.value));
+    for (const auto& r : records) {
+        arr.push_back(boost::json::value(r.value));
+    }
     return boost::json::object{{"records", arr}};
 }
 
@@ -55,7 +57,9 @@ auto test_drop_oldest_overflow() -> bool {
 
     test_exporter exporter(cfg, test_resource(), "/v1/test", &encode, make_recording_poster(state));
 
-    for (int i = 0; i < 15; ++i) exporter.push(test_record{i});
+    for (int i = 0; i < 15; ++i) {
+        exporter.push(test_record{i});
+    }
 
     if (exporter.dropped_record_count() != 5) {
         std::cerr << "  x expected 5 dropped records (15 pushed, capacity 10), got "
@@ -227,7 +231,9 @@ auto main() -> int {
 
     int failed = 0;
     auto run = [&](bool (*test)()) {
-        if (!test()) ++failed;
+        if (!test()) {
+            ++failed;
+        }
     };
 
     run(test_drop_oldest_overflow);

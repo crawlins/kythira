@@ -338,7 +338,7 @@ BOOST_AUTO_TEST_CASE(binary_bytes_survive_a_round_trip) {
     // with) rejects it outright. Concatenation terminates the escape.
     const std::string payload(
         "\x00\x01\xff"
-        "binary\x00",
+        "binary\x00\x00",
         11);
     const alibaba_oss_client client{config_for(mock)};
     client.put_object("b", "blob", payload);

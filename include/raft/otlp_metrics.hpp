@@ -63,7 +63,9 @@ namespace otlp_metrics_detail {
     metrics.reserve(records.size());
 
     for (const auto& record : records) {
-        if (record.shape == otlp_metric_shape::none) continue;
+        if (record.shape == otlp_metric_shape::none) {
+            continue;
+        }
 
         boost::json::object data_point{{"attributes", otlp_attributes_array(record.dimensions)},
                                        {"timeUnixNano", std::to_string(record.time_unix_nano)}};
@@ -94,14 +96,16 @@ namespace otlp_metrics_detail {
                 // explicitly.
                 boost::json::array bounds;
                 bounds.reserve(record.histogram_bounds_ms.size());
-                for (double bound : record.histogram_bounds_ms)
+                for (double bound : record.histogram_bounds_ms) {
                     bounds.push_back(boost::json::value(bound));
+                }
                 data_point["explicitBounds"] = bounds;
 
                 boost::json::array counts;
                 counts.reserve(record.histogram_bucket_counts.size());
-                for (auto count : record.histogram_bucket_counts)
+                for (auto count : record.histogram_bucket_counts) {
                     counts.push_back(boost::json::value(std::to_string(count)));
+                }
                 data_point["bucketCounts"] = counts;
 
                 metric["histogram"] =
@@ -226,7 +230,9 @@ public:
     // tracks each series' delta-temporality start time.
     auto emit() -> void {
         std::lock_guard<std::mutex> lock(_mutex);
-        if (_pending.shape == otlp_metric_shape::none) return;
+        if (_pending.shape == otlp_metric_shape::none) {
+            return;
+        }
 
         const auto now = otlp_now_unix_nanos();
         _pending.time_unix_nano = now;

@@ -176,14 +176,16 @@ service_spec parse_service_arg(const std::string& arg) {
     std::stringstream ss(alts);
     std::string alt;
     while (std::getline(ss, alt, ',')) {
-        if (!alt.empty()) spec.alt_names.push_back(alt);
+        if (!alt.empty()) {
+            spec.alt_names.push_back(alt);
+        }
     }
     return spec;
 }
 
 const char* env_or(const char* key, const char* fallback) {
     const char* v = std::getenv(key);
-    return (v && *v) ? v : fallback;
+    return ((v != nullptr) && (*v != 0)) ? v : fallback;
 }
 
 cli_options parse_oneshot_args(int argc, char** argv, int start) {
@@ -191,7 +193,9 @@ cli_options parse_oneshot_args(int argc, char** argv, int start) {
     for (int i = start; i < argc; ++i) {
         std::string arg = argv[i];
         auto next = [&]() -> std::string {
-            if (i + 1 >= argc) usage_error("missing value for " + arg);
+            if (i + 1 >= argc) {
+                usage_error("missing value for " + arg);
+            }
             return argv[++i];
         };
         if (arg == "--service") {
@@ -214,8 +218,12 @@ cli_options parse_oneshot_args(int argc, char** argv, int start) {
             usage_error("unrecognized argument: " + arg);
         }
     }
-    if (opts.out_dir.empty()) usage_error("--out-dir is required");
-    if (opts.services.empty()) usage_error("at least one --service is required");
+    if (opts.out_dir.empty()) {
+        usage_error("--out-dir is required");
+    }
+    if (opts.services.empty()) {
+        usage_error("at least one --service is required");
+    }
     return opts;
 }
 
@@ -253,7 +261,9 @@ std::vector<std::string> resolve_ips_for(const std::string& dns_name) {
 void write_file(const std::filesystem::path& path, const std::string& content,
                 bool restrict_perms) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) throw std::runtime_error("cannot open " + path.string() + " for writing");
+    if (!out) {
+        throw std::runtime_error("cannot open " + path.string() + " for writing");
+    }
     out.write(content.data(), static_cast<std::streamsize>(content.size()));
     out.close();
     if (restrict_perms) {
@@ -273,9 +283,13 @@ int run_oneshot(const cli_options& opts) {
     for (const auto& spec : opts.services) {
         std::vector<std::string> dns_names;
         std::string fqdn = spec.name;
-        if (!opts.domain.empty()) fqdn += "." + opts.domain;
+        if (!opts.domain.empty()) {
+            fqdn += "." + opts.domain;
+        }
         dns_names.push_back(fqdn);
-        for (const auto& alt : spec.alt_names) dns_names.push_back(alt);
+        for (const auto& alt : spec.alt_names) {
+            dns_names.push_back(alt);
+        }
 
         std::vector<std::string> ip_addresses;
         if (opts.resolve_ips) {
@@ -358,7 +372,9 @@ serve_options parse_serve_args(int argc, char** argv, int start) {
     for (int i = start; i < argc; ++i) {
         std::string arg = argv[i];
         auto next = [&]() -> std::string {
-            if (i + 1 >= argc) usage_error("missing value for " + arg);
+            if (i + 1 >= argc) {
+                usage_error("missing value for " + arg);
+            }
             return argv[++i];
         };
         if (arg == "--provider") {
@@ -449,7 +465,9 @@ std::pair<std::string, int> split_bind_address(const std::string& bind) {
     }
     try {
         auto [host, port] = kythira::net_bind::split_host_port(bind, -1);
-        if (port < 0 || port > 65535) usage_error("--serve: invalid port in " + bind);
+        if (port < 0 || port > 65535) {
+            usage_error("--serve: invalid port in " + bind);
+        }
         return {host, port};
     } catch (const std::invalid_argument&) {
         usage_error("--serve: invalid port in " + bind);
@@ -460,7 +478,9 @@ std::atomic<kythira::net_bind::httplib_listeners<>*> g_listeners{nullptr};
 
 void on_signal(int) {
     auto* listeners = g_listeners.load();
-    if (listeners != nullptr) listeners->request_stop();
+    if (listeners != nullptr) {
+        listeners->request_stop();
+    }
 }
 
 // Reads opts.tls_cert_path, finds its root certificate (self-signed member,

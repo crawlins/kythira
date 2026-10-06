@@ -241,7 +241,7 @@ auto async_write_kf(Stream& stream, const beast_http::message<IsRequest, Body, F
 /// @brief `beast_http::async_read`, bridged to a future.
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
-                   beast_http::message<IsRequest, Body, Fields>& message,
+                   beast_http::message<IsRequest, Body, Fields>& response,
                    asio_strand_executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief `beast_http::async_read`, bridged to a future -- overload taking a

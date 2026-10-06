@@ -76,7 +76,9 @@ struct pkey_deleter {
 inline auto read_certificate(const std::string& pem) -> std::unique_ptr<X509, x509_deleter> {
     std::unique_ptr<BIO, bio_deleter> bio(
         BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
-    if (!bio) return nullptr;
+    if (!bio) {
+        return nullptr;
+    }
     return std::unique_ptr<X509, x509_deleter>(
         PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
 }
@@ -84,7 +86,9 @@ inline auto read_certificate(const std::string& pem) -> std::unique_ptr<X509, x5
 inline auto read_private_key(const std::string& pem) -> std::unique_ptr<EVP_PKEY, pkey_deleter> {
     std::unique_ptr<BIO, bio_deleter> bio(
         BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
-    if (!bio) return nullptr;
+    if (!bio) {
+        return nullptr;
+    }
     return std::unique_ptr<EVP_PKEY, pkey_deleter>(
         PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
 }
@@ -244,7 +248,7 @@ public:
         std::lock_guard<std::recursive_mutex> lock(_registry->mutex);
         auto id = _registry->next_id++;
         _registry->callbacks.emplace(id, std::move(cb));
-        return subscription(_registry, id);
+        return {_registry, id};
     }
 
     auto set_failure_handler(failure_handler handler) -> void {
@@ -304,7 +308,9 @@ protected:
             std::lock_guard<std::mutex> lock(_state_mutex);
             handler = _on_failure;
         }
-        if (handler) handler(what);
+        if (handler) {
+            handler(what);
+        }
     }
 
 private:
@@ -404,7 +410,9 @@ private:
     };
 
     static auto read_file(const std::string& path) -> std::string {
-        if (path.empty()) return {};
+        if (path.empty()) {
+            return {};
+        }
         std::ifstream in(path, std::ios::binary);
         if (!in) {
             throw std::runtime_error("cannot read " + path);
@@ -416,10 +424,14 @@ private:
 
     static auto mtime_of(const std::string& path)
         -> std::optional<std::filesystem::file_time_type> {
-        if (path.empty()) return std::nullopt;
+        if (path.empty()) {
+            return std::nullopt;
+        }
         std::error_code ec;
         auto t = std::filesystem::last_write_time(path, ec);
-        if (ec) return std::nullopt;
+        if (ec) {
+            return std::nullopt;
+        }
         return t;
     }
 
@@ -448,13 +460,17 @@ private:
                 std::unique_lock<std::mutex> lock(wait_mutex);
                 wake.wait_for(lock, stop, interval, [] { return false; });
             }
-            if (stop.stop_requested()) return;
+            if (stop.stop_requested()) {
+                return;
+            }
             bool changed = false;
             {
                 std::lock_guard<std::mutex> lock(_load_mutex);
                 changed = current_mtimes() != _loaded_mtimes;
             }
-            if (!changed) continue;
+            if (!changed) {
+                continue;
+            }
             try {
                 refresh();
             } catch (const std::exception&) {

@@ -167,7 +167,7 @@ auto set_exception_from_std(boost::promise<T>& p, std::exception_ptr ep) -> void
 
 [[nodiscard]] inline auto to_std_exception_ptr(const boost::exception_ptr& bep)
     -> std::exception_ptr {
-    if (!bep) {
+    if (bep == nullptr) {
         return nullptr;
     }
     try {
@@ -404,6 +404,9 @@ public:
         return timer;
     }
 
+    timer_service(const timer_service&) = delete;
+    auto operator=(const timer_service&) -> timer_service& = delete;
+
 private:
     timer_service() : _work(boost::asio::make_work_guard(_ctx)) {
         _thread = std::thread([this] { _ctx.run(); });
@@ -415,8 +418,6 @@ private:
             _thread.join();
         }
     }
-    timer_service(const timer_service&) = delete;
-    auto operator=(const timer_service&) -> timer_service& = delete;
 
     boost::asio::io_context _ctx;
     boost::asio::executor_work_guard<boost::asio::io_context::executor_type> _work;
@@ -1238,7 +1239,9 @@ private:
                 pool_t<T> next;
                 next.reserve(inner.size() - 1);
                 for (std::size_t i = 0; i < inner.size(); ++i) {
-                    if (i == winner_pos) continue;
+                    if (i == winner_pos) {
+                        continue;
+                    }
                     next.emplace_back(orig_indices[i], Future<T>(std::move(inner[i])));
                 }
                 *pool = std::move(next);
@@ -1299,7 +1302,9 @@ private:
                 pool_t<T> next;
                 next.reserve(inner.size() - 1);
                 for (std::size_t i = 0; i < inner.size(); ++i) {
-                    if (i == winner_pos) continue;
+                    if (i == winner_pos) {
+                        continue;
+                    }
                     next.emplace_back(orig_indices[i], Future<T>(std::move(inner[i])));
                 }
                 *pool = std::move(next);

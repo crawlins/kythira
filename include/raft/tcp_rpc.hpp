@@ -659,7 +659,9 @@ public:
             ::shutdown(fd, SHUT_RDWR);
         }
         for (auto& t : _accept_threads) {
-            if (t.joinable()) t.join();
+            if (t.joinable()) {
+                t.join();
+            }
         }
         _accept_threads.clear();
         for (int fd : _listen_fds) {

@@ -2052,11 +2052,14 @@ namespace object_store_persistence_detail {
 /// assertion below can be made at file scope without naming a provider. It is
 /// never instantiated — only its signatures are read.
 struct concept_check_store {
-    auto put_object(const std::string&, const std::string&, std::string_view) const -> put_result;
-    auto get_object(const std::string&, const std::string&) const -> std::optional<get_result>;
+    [[nodiscard]] auto put_object(const std::string&, const std::string&, std::string_view) const
+        -> put_result;
+    [[nodiscard]] auto get_object(const std::string&, const std::string&) const
+        -> std::optional<get_result>;
     auto delete_object(const std::string&, const std::string&) const -> void;
-    auto list_keys(const std::string&, const std::string&) const -> std::vector<std::string>;
-    auto provider_name() const -> std::string_view;
+    [[nodiscard]] auto list_keys(const std::string&, const std::string&) const
+        -> std::vector<std::string>;
+    [[nodiscard]] auto provider_name() const -> std::string_view;
 };
 
 static_assert(key_object_store<concept_check_store>);
@@ -2067,8 +2070,8 @@ static_assert(!conditional_key_object_store<concept_check_store>,
 /// The same, refined: enough to check that the fenced engine compiles at file
 /// scope, again without naming a provider.
 struct conditional_concept_check_store : concept_check_store {
-    auto put_object_if(const std::string&, const std::string&, std::string_view,
-                       const precondition&) const -> put_result;
+    [[nodiscard]] auto put_object_if(const std::string&, const std::string&, std::string_view,
+                                     const precondition&) const -> put_result;
     auto delete_object_if(const std::string&, const std::string&, const precondition&) const
         -> void;
 };

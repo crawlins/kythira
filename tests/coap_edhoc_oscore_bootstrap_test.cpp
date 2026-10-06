@@ -53,9 +53,15 @@ public:
 // by the two tests below this #ifdef.
 auto hex_decode(const std::string& hex) -> std::vector<std::byte> {
     auto nibble = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
         throw std::runtime_error("bad hex");
     };
     std::vector<std::byte> out;
@@ -157,7 +163,9 @@ public:
     auto send(const std::vector<std::byte>& message) -> void override { _outbox.push(message); }
     auto receive() -> std::vector<std::byte> override {
         auto msg = _inbox.pop_or_timeout(_timeout);
-        if (!msg) throw peer_never_responded{};
+        if (!msg) {
+            throw peer_never_responded{};
+        }
         return *msg;
     }
 
@@ -209,7 +217,9 @@ BOOST_AUTO_TEST_CASE(matching_credentials_derive_mirrored_oscore_context,
 
     auto initiator_result = run_edhoc_handshake(initiator_params, initiator_transport);
     responder_thread.join();
-    if (responder_error) std::rethrow_exception(responder_error);
+    if (responder_error) {
+        std::rethrow_exception(responder_error);
+    }
 
     BOOST_CHECK(initiator_result.master_secret == responder_result.master_secret);
     BOOST_CHECK(initiator_result.master_salt == responder_result.master_salt);

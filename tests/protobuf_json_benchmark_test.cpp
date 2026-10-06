@@ -129,8 +129,9 @@ BOOST_AUTO_TEST_CASE(benchmark_protobuf_vs_json_append_entries, *boost::unit_tes
             proto.deserialize_append_entries_request(proto.serialize(req)).entries().size() ==
             sc.entries);
 
-        const double size_ratio =
-            jr.payload_size == 0 ? 1.0 : static_cast<double>(pr.payload_size) / jr.payload_size;
+        const double size_ratio = jr.payload_size == 0 ? 1.0
+                                                       : static_cast<double>(pr.payload_size) /
+                                                             static_cast<double>(jr.payload_size);
 
         table << std::setw(7) << sc.entries << "  " << std::setw(9) << sc.command_size << " | "
               << std::setw(9) << jr.payload_size << " " << std::setw(10) << pr.payload_size << " "

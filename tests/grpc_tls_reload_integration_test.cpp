@@ -105,7 +105,9 @@ template<typename Pred>
 auto eventually(Pred pred, std::chrono::milliseconds deadline = 8s) -> bool {
     auto end = std::chrono::steady_clock::now() + deadline;
     while (std::chrono::steady_clock::now() < end) {
-        if (pred()) return true;
+        if (pred()) {
+            return true;
+        }
         std::this_thread::sleep_for(50ms);
     }
     return pred();
@@ -184,7 +186,9 @@ BOOST_AUTO_TEST_CASE(server_explicit_reload_reaches_new_handshakes) {
     std::atomic<int> failed_calls{0};
     std::thread caller([&] {
         while (!stop.load()) {
-            if (!vote(client)) ++failed_calls;
+            if (!vote(client)) {
+                ++failed_calls;
+            }
         }
     });
 

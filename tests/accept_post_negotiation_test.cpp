@@ -202,7 +202,7 @@ private:
             body.push_back(static_cast<char>(b));
         }
         resp.status = 200;
-        resp.set_content(body, answer.c_str());
+        resp.set_content(body, answer);
     }
 
     httplib::Server _server;

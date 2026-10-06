@@ -34,7 +34,9 @@ constexpr const char* k_export_path = "/data/otlp-export.jsonl";
 
 std::string compose_file() {
     const char* env = std::getenv("KYTHIRA_OTLP_COLLECTOR_COMPOSE_FILE");
-    if (env && *env) return env;
+    if ((env != nullptr) && (*env != 0)) {
+        return env;
+    }
     return "docker/otlp-collector-compose.yml";
 }
 
@@ -49,7 +51,9 @@ bool is_healthy() {
 bool wait_all_healthy(std::chrono::milliseconds timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (is_healthy()) return true;
+        if (is_healthy()) {
+            return true;
+        }
         std::this_thread::sleep_for(500ms);
     }
     return false;
@@ -71,7 +75,9 @@ bool wait_for_leader_and_submit(const std::string& key, const std::string& value
                                 std::chrono::milliseconds timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (submit_command(key, value)) return true;
+        if (submit_command(key, value)) {
+            return true;
+        }
         std::this_thread::sleep_for(500ms);
     }
     return false;
@@ -88,7 +94,9 @@ std::string read_collector_export() {
     auto result = docker_chaos::os::real_exec(
         {docker_chaos::os::container_runtime(), "cp",
          std::string(k_collector_container) + ":" + k_export_path, host_copy});
-    if (result.code != 0) return result.out;  // Error text, printed by the caller's dump.
+    if (result.code != 0) {
+        return result.out;  // Error text, printed by the caller's dump.
+    }
     std::ifstream in(host_copy);
     std::stringstream content;
     content << in.rdbuf();

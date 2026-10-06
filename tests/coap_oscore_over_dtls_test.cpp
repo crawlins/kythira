@@ -120,6 +120,8 @@ struct combined_server {
     combined_server(oscore_credentials oscore, oscore_dtls_credentials dtls)
         : provider(std::move(oscore), coap_security_role::server, std::move(dtls)) {
         coap_startup();
+        // Not a member initializer: coap_startup() must run first.
+        // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
         ctx = coap_new_context(nullptr);
         BOOST_REQUIRE(ctx != nullptr);
         coap_set_app_data(ctx, this);

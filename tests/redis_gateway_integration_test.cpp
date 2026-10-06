@@ -653,11 +653,11 @@ public:
     ~silent_peer() {
         _stopping = true;
         boost::system::error_code ec;
-        _acceptor.cancel(ec);
+        (void)_acceptor.cancel(ec);
         // accept() may not wake on cancel; a connection does wake it.
         boost::asio::ip::tcp::socket wake(_io);
-        wake.connect(_acceptor.local_endpoint(), ec);
-        _acceptor.close(ec);
+        (void)wake.connect(_acceptor.local_endpoint(), ec);
+        (void)_acceptor.close(ec);
         _thread.join();
     }
     silent_peer(const silent_peer&) = delete;
@@ -734,7 +734,7 @@ BOOST_AUTO_TEST_CASE(hello_3_switches_the_reply_encoding, *boost::unit_test::tim
 
     BOOST_CHECK_EQUAL(client.call({"HELLO", "4"}), "-NOPROTO unsupported protocol version\r\n");
     auto hello = client.call({"HELLO", "3", "AUTH", "farm", "farm-secret", "SETNAME", "t"});
-    BOOST_CHECK(hello.rfind("%", 0) == 0);
+    BOOST_CHECK(hello.rfind('%', 0) == 0);
     BOOST_CHECK(hello.find("$6\r\nserver\r\n$7\r\nkythira\r\n") != std::string::npos);
     BOOST_CHECK(hello.find("$5\r\nproto\r\n:3\r\n") != std::string::npos);
     BOOST_CHECK_EQUAL(client.call({"GET", "sccache/none"}), "_\r\n");
@@ -743,7 +743,7 @@ BOOST_AUTO_TEST_CASE(hello_3_switches_the_reply_encoding, *boost::unit_test::tim
     BOOST_CHECK_EQUAL(client.call({"RESET"}), "+RESET\r\n");
     BOOST_CHECK_EQUAL(client.call({"GET", "sccache/none"}), "-NOAUTH Authentication required.\r\n");
     auto hello2 = client.call({"HELLO", "2", "AUTH", "farm", "farm-secret"});
-    BOOST_CHECK(hello2.rfind("*", 0) == 0);
+    BOOST_CHECK(hello2.rfind('*', 0) == 0);
     BOOST_CHECK_EQUAL(client.call({"GET", "sccache/none"}), "$-1\r\n");
 }
 
@@ -844,7 +844,7 @@ BOOST_AUTO_TEST_CASE(any_node_answers_any_key_by_forwarding, *boost::unit_test::
     // A RESP3 client forwarding through a RESP2 internal hop still gets `_`.
     resp_client v3(c.port(follower));
     auto hello = v3.call({"HELLO", "3", "AUTH", "farm", "farm-secret"});
-    BOOST_REQUIRE(hello.rfind("%", 0) == 0);
+    BOOST_REQUIRE(hello.rfind('%', 0) == 0);
     BOOST_CHECK_EQUAL(v3.call({"GET", "sccache/zzz"}), "_\r\n");
 }
 
@@ -1102,7 +1102,7 @@ BOOST_AUTO_TEST_CASE(slow_reader_stalls_instead_of_buffering, *boost::unit_test:
         batch += resp_client::encode({"GET", "sccache/slow"});
     }
     client.send_raw(batch);
-    auto& stats = c.gateway(leader).stats();
+    const auto& stats = c.gateway(leader).stats();
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
     while (stats._output_stalls.load() == 0 && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds{20});

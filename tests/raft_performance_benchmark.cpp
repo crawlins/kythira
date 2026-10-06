@@ -62,18 +62,18 @@ auto calculate_statistics(std::vector<double> values) -> statistics {
     std::sort(values.begin(), values.end());
 
     double sum = std::accumulate(values.begin(), values.end(), 0.0);
-    double mean = sum / values.size();
+    double mean = sum / static_cast<double>(values.size());
 
     double median = values[values.size() / 2];
-    double p95 = values[static_cast<std::size_t>(values.size() * 0.95)];
-    double p99 = values[static_cast<std::size_t>(values.size() * 0.99)];
+    double p95 = values[static_cast<std::size_t>(static_cast<double>(values.size()) * 0.95)];
+    double p99 = values[static_cast<std::size_t>(static_cast<double>(values.size()) * 0.99)];
     double min = values.front();
     double max = values.back();
 
     double sq_sum = std::accumulate(
         values.begin(), values.end(), 0.0,
         [mean](double acc, double val) { return acc + (val - mean) * (val - mean); });
-    double stddev = std::sqrt(sq_sum / values.size());
+    double stddev = std::sqrt(sq_sum / static_cast<double>(values.size()));
 
     return {mean, median, p95, p99, min, max, stddev};
 }
@@ -167,7 +167,8 @@ BOOST_AUTO_TEST_CASE(benchmark_state_machine_throughput, *boost::unit_test::time
     auto end = clock_type::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-    double ops_per_second = (operations * 1000.0) / duration.count();
+    double ops_per_second =
+        (static_cast<double>(operations) * 1000.0) / static_cast<double>(duration.count());
 
     BOOST_TEST_MESSAGE("Throughput Results:");
     BOOST_TEST_MESSAGE("  Operations: " << operations);

@@ -502,8 +502,8 @@ public:
             refresh_locked();
         }
         return oci_signing::sign_request_with_key("ST$" + _token.raw, _session_private_key_pem,
-                                                  /*passphrase=*/"", method, request_target, host,
-                                                  body, when, content_type);
+                                                  /*private_key_passphrase=*/"", method,
+                                                  request_target, host, body, when, content_type);
     }
 
     /// How many federation exchanges have run — lets a test assert "the

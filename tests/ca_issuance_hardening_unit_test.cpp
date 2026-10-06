@@ -50,7 +50,9 @@ auto san_types(X509* cert) -> std::vector<int> {
     std::vector<int> types;
     auto* sans =
         static_cast<GENERAL_NAMES*>(X509_get_ext_d2i(cert, NID_subject_alt_name, nullptr, nullptr));
-    if (sans == nullptr) return types;
+    if (sans == nullptr) {
+        return types;
+    }
     for (int i = 0; i < sk_GENERAL_NAME_num(sans); ++i) {
         types.push_back(sk_GENERAL_NAME_value(sans, i)->type);
     }

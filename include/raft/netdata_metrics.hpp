@@ -124,7 +124,9 @@ public:
             if (_include_tags && !_dimensions.empty()) {
                 tags = "|#";
                 for (std::size_t i = 0; i < _dimensions.size(); ++i) {
-                    if (i > 0) tags += ",";
+                    if (i > 0) {
+                        tags += ",";
+                    }
                     tags += _dimensions[i].first + ":" + _dimensions[i].second;
                 }
             }

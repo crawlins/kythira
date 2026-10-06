@@ -104,7 +104,9 @@ inline auto run_edhoc_handshake(const edhoc_params& params, edhoc_transport& tra
 
     if (params.is_initiator) {
         LakersInitiator* h = lakers_initiator_new();
-        if (!h) fail("failed to allocate initiator");
+        if (h == nullptr) {
+            fail("failed to allocate initiator");
+        }
         struct Guard {
             LakersInitiator* h;
             ~Guard() { lakers_initiator_free(h); }
@@ -171,7 +173,9 @@ inline auto run_edhoc_handshake(const edhoc_params& params, edhoc_transport& tra
         LakersResponder* h = lakers_responder_new(
             detail::to_lakers_bytes(params.identity_private_key),
             detail::to_lakers_bytes(params.identity_credential), params.identity_credential.size());
-        if (!h) fail("failed to construct responder (bad key length or credential)");
+        if (h == nullptr) {
+            fail("failed to construct responder (bad key length or credential)");
+        }
         struct Guard {
             LakersResponder* h;
             ~Guard() { lakers_responder_free(h); }

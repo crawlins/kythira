@@ -463,7 +463,7 @@ BOOST_AUTO_TEST_CASE(binary_bytes_survive_a_round_trip) {
     // for char, and clang++-18 (what CI builds with) rejects it outright.
     const std::string payload(
         "\x00\x01\xff"
-        "binary\x00",
+        "binary\x00\x00",
         11);
 
     const aws_s3_client client{config_for(mock)};
@@ -543,7 +543,7 @@ BOOST_AUTO_TEST_CASE(the_services_code_and_message_reach_the_exception) {
         BOOST_TEST(what.find("AccessDenied") != std::string::npos);
         BOOST_TEST(what.find("403") != std::string::npos);
         BOOST_TEST(what.find("PutObject") != std::string::npos);
-        BOOST_TEST(what.find("k") != std::string::npos);
+        BOOST_TEST(what.find('k') != std::string::npos);
     }
 }
 

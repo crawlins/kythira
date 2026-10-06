@@ -300,6 +300,8 @@ BOOST_AUTO_TEST_CASE(advances_on_real_capacity_and_quota_messages) {
     // failure actually produces, i.e. the ARM message flattened into
     // "VM creation failed: …".
     const std::vector<std::string> retryable{
+        // Each message is split across two literals on purpose.
+        // NOLINTNEXTLINE(bugprone-suspicious-missing-comma)
         "VM creation failed: ARM request failed (409) AllocationFailed: Allocation failed. We "
         "do not have sufficient capacity for the requested VM size in this region.",
         "VM creation failed: ARM request failed (409) ZonalAllocationFailed: Allocation failed. "
@@ -323,6 +325,8 @@ BOOST_AUTO_TEST_CASE(aborts_on_configuration_and_auth_errors) {
     // A misconfigured image, subnet, or credential must fail the test loudly
     // on the first rung rather than silently burning through 40 SKUs first.
     const std::vector<std::string> fatal{
+        // Each message is split across two literals on purpose.
+        // NOLINTNEXTLINE(bugprone-suspicious-missing-comma)
         "VM creation failed: ARM request failed (400) BadRequest: The selected VM size "
         "'Standard_F1als_v7' cannot boot Hypervisor Generation '1'.",
         "VM creation failed: ARM request failed (404) NotFound: subnet not found",

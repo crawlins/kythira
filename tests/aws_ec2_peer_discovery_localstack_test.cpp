@@ -396,7 +396,7 @@ BOOST_AUTO_TEST_CASE(await_peers_names_the_host_that_never_appeared) {
 
     BOOST_CHECK_MESSAGE(message.find("NEVER SEEN") != std::string::npos,
                         "message must name what was missing, got: " << message);
-    BOOST_CHECK_MESSAGE(message.find("3") != std::string::npos,
+    BOOST_CHECK_MESSAGE(message.find('3') != std::string::npos,
                         "message must name node 3, got: " << message);
     BOOST_CHECK_MESSAGE(message.find("Refusing to measure") != std::string::npos,
                         "message must say it is refusing rather than proceeding, got: " << message);

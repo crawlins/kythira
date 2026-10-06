@@ -31,8 +31,12 @@ namespace kythira::grpc_detail {
 /// IPV6_V6ONLY listener cannot accept it anyway.
 inline auto ip_literal_is_loopback(const std::string& text) -> std::optional<bool> {
     auto ep = net_bind::parse_hosts_address(text);
-    if (!ep) return std::nullopt;
-    if (net_bind::endpoint_is_loopback(*ep)) return true;
+    if (!ep) {
+        return std::nullopt;
+    }
+    if (net_bind::endpoint_is_loopback(*ep)) {
+        return true;
+    }
     if (ep->addr.ss_family == AF_INET6) {
         const auto& a = reinterpret_cast<const sockaddr_in6&>(ep->addr).sin6_addr;
         return IN6_IS_ADDR_V4MAPPED(&a) && a.s6_addr[12] == 127;
@@ -44,8 +48,12 @@ inline auto ip_literal_is_loopback(const std::string& text) -> std::optional<boo
 /// An IP literal must be loopback; a name must map only to loopback in the
 /// hosts file. DNS is never consulted.
 inline auto host_is_local(const std::string& host, const std::string& hosts_path) -> bool {
-    if (host.empty()) return false;
-    if (auto literal = ip_literal_is_loopback(host)) return *literal;
+    if (host.empty()) {
+        return false;
+    }
+    if (auto literal = ip_literal_is_loopback(host)) {
+        return *literal;
+    }
     return net_bind::is_loopback_bind_address(host, hosts_path);
 }
 
@@ -60,9 +68,11 @@ inline auto target_host(std::string_view host_port) -> std::optional<std::string
     };
     if (host_port.starts_with('[')) {
         auto close = host_port.find(']');
-        if (close == std::string_view::npos) return std::nullopt;
+        if (close == std::string_view::npos) {
+            return std::nullopt;
+        }
         auto rest = host_port.substr(close + 1);
-        if (!rest.empty() && !(rest.front() == ':' && digits(rest.substr(1)))) {
+        if (!rest.empty() && (rest.front() != ':' || !digits(rest.substr(1)))) {
             return std::nullopt;
         }
         return std::string(host_port.substr(1, close - 1));
@@ -71,8 +81,12 @@ inline auto target_host(std::string_view host_port) -> std::optional<std::string
         return std::string(host_port);
     }
     auto colon = host_port.find(':');
-    if (colon == std::string_view::npos) return std::string(host_port);
-    if (!digits(host_port.substr(colon + 1))) return std::nullopt;
+    if (colon == std::string_view::npos) {
+        return std::string(host_port);
+    }
+    if (!digits(host_port.substr(colon + 1))) {
+        return std::nullopt;
+    }
     return std::string(host_port.substr(0, colon));
 }
 
@@ -95,28 +109,38 @@ inline auto target_host(std::string_view host_port) -> std::optional<std::string
 /// `host:port`, which gRPC hands to its `dns` resolver.
 inline auto target_is_local(std::string_view target, const std::string& hosts_path = "/etc/hosts")
     -> bool {
-    if (target.empty()) return false;
+    if (target.empty()) {
+        return false;
+    }
 
     auto colon = target.find(':');
     auto scheme = colon == std::string_view::npos ? std::string_view{} : target.substr(0, colon);
     auto rest = colon == std::string_view::npos ? std::string_view{} : target.substr(colon + 1);
 
     constexpr std::array<std::string_view, 3> local_schemes{"unix", "unix-abstract", "vsock"};
-    if (std::ranges::find(local_schemes, scheme) != local_schemes.end()) return true;
+    if (std::ranges::find(local_schemes, scheme) != local_schemes.end()) {
+        return true;
+    }
 
     if (scheme == "ipv4" || scheme == "ipv6") {
-        if (rest.empty()) return false;
+        if (rest.empty()) {
+            return false;
+        }
         const int family = scheme == "ipv4" ? AF_INET : AF_INET6;
         while (true) {
             auto comma = rest.find(',');
             auto host = target_host(rest.substr(0, comma));
-            if (!host) return false;
+            if (!host) {
+                return false;
+            }
             auto ep = net_bind::parse_hosts_address(*host);
             if (!ep || ep->addr.ss_family != family ||
                 !ip_literal_is_loopback(*host).value_or(false)) {
                 return false;
             }
-            if (comma == std::string_view::npos) return true;
+            if (comma == std::string_view::npos) {
+                return true;
+            }
             rest = rest.substr(comma + 1);
         }
     }
@@ -124,7 +148,9 @@ inline auto target_is_local(std::string_view target, const std::string& hosts_pa
     if (scheme == "dns") {
         if (rest.starts_with("//")) {
             auto slash = rest.find('/', 2);
-            if (slash == std::string_view::npos) return false;
+            if (slash == std::string_view::npos) {
+                return false;
+            }
             rest = rest.substr(slash + 1);
         }
         auto host = target_host(rest);
@@ -133,7 +159,9 @@ inline auto target_is_local(std::string_view target, const std::string& hosts_pa
 
     // Not a URI gRPC understands without a plugin. A "scheme://..." shape
     // (xds:///svc, a custom resolver) leads somewhere this code cannot know.
-    if (rest.starts_with("//")) return false;
+    if (rest.starts_with("//")) {
+        return false;
+    }
 
     auto host = target_host(target);
     return host && host_is_local(*host, hosts_path);

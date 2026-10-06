@@ -398,8 +398,8 @@ template<typename T> struct capacity_ledger_codec {
 namespace detail::ledger {
 
 inline auto encode_time(std::chrono::system_clock::time_point t) -> boost::json::value {
-    return boost::json::value(static_cast<std::int64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(t.time_since_epoch()).count()));
+    return {static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(t.time_since_epoch()).count())};
 }
 
 inline auto decode_time(const boost::json::value& v) -> std::chrono::system_clock::time_point {

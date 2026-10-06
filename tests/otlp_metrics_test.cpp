@@ -124,7 +124,8 @@ auto test_add_count_and_add_duration_and_add_value() -> bool {
                       << "\n";
             return false;
         }
-        if (!dp.if_contains("explicitBounds") || !dp.if_contains("bucketCounts")) {
+        if ((dp.if_contains("explicitBounds") == nullptr) ||
+            (dp.if_contains("bucketCounts") == nullptr)) {
             std::cerr << "  x missing explicitBounds/bucketCounts\n";
             return false;
         }
@@ -145,7 +146,7 @@ auto test_add_count_and_add_duration_and_add_value() -> bool {
             std::cerr << "  x expected asDouble 42.5\n";
             return false;
         }
-        if (dp.if_contains("startTimeUnixNano")) {
+        if (dp.if_contains("startTimeUnixNano") != nullptr) {
             std::cerr << "  x Gauge data points must not carry startTimeUnixNano\n";
             return false;
         }
@@ -236,7 +237,9 @@ auto main() -> int {
 
     int failed = 0;
     auto run = [&](bool (*test)()) {
-        if (!test()) ++failed;
+        if (!test()) {
+            ++failed;
+        }
     };
 
     run(test_add_one_produces_delta_sum);

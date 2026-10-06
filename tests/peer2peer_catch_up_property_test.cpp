@@ -334,8 +334,8 @@ BOOST_AUTO_TEST_CASE(remove_server_revokes_catch_up_eligibility_immediately,
     auto net2 = sim.create_node("2");
     auto net3 = sim.create_node("3");
     network_simulator::NetworkEdge edge{};
-    for (auto from : {"1", "2", "3"}) {
-        for (auto to : {"1", "2", "3"}) {
+    for (const auto* from : {"1", "2", "3"}) {
+        for (const auto* to : {"1", "2", "3"}) {
             if (std::string(from) != std::string(to)) {
                 sim.add_edge(from, to, edge);
             }

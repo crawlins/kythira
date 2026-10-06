@@ -138,10 +138,10 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_multiple_nodes) {
     std::vector<std::thread> rpc_threads;
     for (int i = 0; i < node_count; ++i) {
         kythira::request_vote_request<> req{};
-        req._term = static_cast<std::uint64_t>(100 + i);
+        req._term = 100 + static_cast<std::uint64_t>(i);
         rpc_threads.emplace_back([&client, &responses, i, req] {
             responses[static_cast<std::size_t>(i)] =
-                std::move(client.send_request_vote(static_cast<std::uint64_t>(i + 1), req,
+                std::move(client.send_request_vote(static_cast<std::uint64_t>(i) + 1, req,
                                                    std::chrono::milliseconds(30000)))
                     .get();
         });

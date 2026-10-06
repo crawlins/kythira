@@ -148,7 +148,7 @@ BOOST_AUTO_TEST_CASE(server_stop_drains_idle_keep_alive_connection) {
         stop_cv.notify_one();
     });
 
-    bool stop_completed;
+    bool stop_completed = false;
     {
         std::unique_lock<std::mutex> lock(stop_mutex);
         stop_completed = stop_cv.wait_for(lock, std::chrono::seconds(5), [&] { return stop_done; });
@@ -230,8 +230,8 @@ BOOST_AUTO_TEST_CASE(server_survives_truncated_request) {
             "{\"incomplete";
         boost::asio::write(raw_socket, boost::asio::buffer(truncated_request));
         boost::system::error_code ec;
-        raw_socket.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
-        raw_socket.close(ec);
+        (void)raw_socket.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+        (void)raw_socket.close(ec);
     }
 
     std::unordered_map<std::uint64_t, std::string> node_map{

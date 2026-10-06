@@ -146,8 +146,8 @@ public:
 
     // ── key_object_store ─────────────────────────────────────────────────────
 
-    auto put_object(const std::string& bucket, const std::string& key, std::string_view bytes) const
-        -> put_result {
+    [[nodiscard]] auto put_object(const std::string& bucket, const std::string& key,
+                                  std::string_view bytes) const -> put_result {
         hold_put();
         const std::lock_guard lock(_state->mu);
         _state->requests.push_back("PUT " + key);
@@ -223,8 +223,9 @@ public:
 
     // ── conditional_key_object_store ─────────────────────────────────────────
 
-    auto put_object_if(const std::string& bucket, const std::string& key, std::string_view bytes,
-                       const precondition& pre) const -> put_result {
+    [[nodiscard]] auto put_object_if(const std::string& bucket, const std::string& key,
+                                     std::string_view bytes, const precondition& pre) const
+        -> put_result {
         hold_put();
         const std::lock_guard lock(_state->mu);
         _state->requests.push_back("PUT " + key);
@@ -377,7 +378,8 @@ private:
     }
 
     /// Callers hold `_state->mu`.
-    auto store_locked(const std::string& key, std::string body) const -> object_version {
+    [[nodiscard]] auto store_locked(const std::string& key, std::string body) const
+        -> object_version {
         ++_state->version_counter;
         object_version version;
         if constexpr (VersionIsContentMd5) {

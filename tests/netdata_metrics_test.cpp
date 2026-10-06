@@ -36,7 +36,9 @@ auto make_backend(std::shared_ptr<recording_sender_state> state, bool include_ta
 }
 
 auto take_payload(std::shared_ptr<recording_sender_state> state, std::size_t nth) -> std::string {
-    if (!wait_for_payloads(*state, nth, 2000ms)) return {};
+    if (!wait_for_payloads(*state, nth, 2000ms)) {
+        return {};
+    }
     std::lock_guard<std::mutex> lock(state->mu);
     return state->payloads.at(nth - 1);
 }
@@ -74,8 +76,10 @@ auto test_gauge_and_timer() -> bool {
     metrics.set_metric_name("http.client.request.size");
     metrics.add_value(1024.5);
     metrics.emit();
-    if (!expect_payload(take_payload(state, 1), "http.client.request.size:1024.5|g", "gauge line"))
+    if (!expect_payload(take_payload(state, 1), "http.client.request.size:1024.5|g",
+                        "gauge line")) {
         return false;
+    }
 
     metrics.set_metric_name("rpc.latency");
     metrics.add_duration(2500us);
@@ -142,7 +146,9 @@ auto main() -> int {
 
     int failed = 0;
     auto run = [&](bool (*test)()) {
-        if (!test()) ++failed;
+        if (!test()) {
+            ++failed;
+        }
     };
 
     run(test_counter_with_tags);

@@ -27,13 +27,15 @@ public:
         -> std::vector<std::byte> {
         std::unique_lock lock(_mutex);
 
-        if (command.empty()) return {};
+        if (command.empty()) {
+            return {};
+        }
 
         auto cmd_type = static_cast<std::uint8_t>(command[0]);
         std::size_t offset = 1;
 
         // Extract key
-        std::uint32_t key_len;
+        std::uint32_t key_len = 0;
         std::memcpy(&key_len, command.data() + offset, sizeof(key_len));
         offset += sizeof(key_len);
 
@@ -48,8 +50,9 @@ public:
                     reinterpret_cast<const std::byte*>(it->second.data() + it->second.size()));
             }
             return {};
-        } else if (cmd_type == 1) {  // SET
-            std::uint32_t val_len;
+        }
+        if (cmd_type == 1) {  // SET
+            std::uint32_t val_len = 0;
             std::memcpy(&val_len, command.data() + offset, sizeof(val_len));
             offset += sizeof(val_len);
 
@@ -57,7 +60,8 @@ public:
             _store[key] = value;
             _operations_applied++;
             return {};
-        } else if (cmd_type == 2) {  // DELETE
+        }
+        if (cmd_type == 2) {  // DELETE
             _store.erase(key);
             _operations_applied++;
             return {};
@@ -92,7 +96,9 @@ public:
             }
             offset++;
 
-            if (offset >= snapshot.size()) break;
+            if (offset >= snapshot.size()) {
+                break;
+            }
 
             while (offset < snapshot.size() && snapshot[offset] != std::byte{0}) {
                 value += static_cast<char>(snapshot[offset++]);

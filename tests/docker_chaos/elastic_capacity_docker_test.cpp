@@ -67,7 +67,8 @@ auto enabled() -> bool {
 }
 
 auto compose_file() -> std::string {
-    if (const char* e = std::getenv("KYTHIRA_ELASTIC_CAPACITY_COMPOSE_FILE"); e && *e) {
+    if (const char* e = std::getenv("KYTHIRA_ELASTIC_CAPACITY_COMPOSE_FILE");
+        (e != nullptr) && (*e != 0)) {
         return e;
     }
     return "docker/elastic-capacity-compose.yml";
@@ -150,7 +151,7 @@ struct cluster {
         return ids;
     }
 
-    auto logs(const std::string& container) const -> std::string {
+    [[nodiscard]] auto logs(const std::string& container) const -> std::string {
         return _exec({os::container_runtime(), "logs", "--tail", "40", container}).out;
     }
 };

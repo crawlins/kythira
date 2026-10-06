@@ -59,9 +59,9 @@ BOOST_AUTO_TEST_CASE(the_default_policy_satisfies_the_concept) {
     // policy is worse than none, because the host would call the missing half.
     struct missing_merge {
         auto evaluate_split(const stats_type&) -> kythira::split_decision<key_type> { return {}; }
-        auto cooldown() const -> std::chrono::milliseconds { return {}; }
-        auto validate() const -> bool { return true; }
-        auto get_validation_errors() const -> std::vector<std::string> { return {}; }
+        [[nodiscard]] auto cooldown() const -> std::chrono::milliseconds { return {}; }
+        [[nodiscard]] auto validate() const -> bool { return true; }
+        [[nodiscard]] auto get_validation_errors() const -> std::vector<std::string> { return {}; }
     };
     static_assert(!split_merge_policy<missing_merge, group_type, key_type>);
     BOOST_CHECK(true);

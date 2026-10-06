@@ -319,7 +319,7 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
         }
 
         const Aws::String random_uuid = Aws::Utils::UUID::RandomUUID();
-        uuid = "kyt-" + std::string(random_uuid.c_str());
+        uuid = "kyt-" + std::string(random_uuid);
 
         // Register as the signal-cleanup target before any AWS resource is
         // created so a signal arriving mid-setup still invokes teardown().

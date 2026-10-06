@@ -294,8 +294,7 @@ struct temp_mtls_material {
 // being correct as a precondition for testing Proxygen's.
 class blackhole_listener {
 public:
-    explicit blackhole_listener(std::uint16_t port) {
-        _fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    explicit blackhole_listener(std::uint16_t port) : _fd(::socket(AF_INET, SOCK_STREAM, 0)) {
         BOOST_REQUIRE(_fd >= 0);
         int reuse = 1;
         ::setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
@@ -475,10 +474,10 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_multiple_nodes,
     std::vector<std::thread> rpc_threads;
     for (int i = 0; i < node_count; ++i) {
         kythira::request_vote_request<> req{};
-        req._term = static_cast<std::uint64_t>(100 + i);
+        req._term = 100 + static_cast<std::uint64_t>(i);
         rpc_threads.emplace_back([&client, &responses, i, req] {
             responses[static_cast<std::size_t>(i)] =
-                std::move(client.send_request_vote(static_cast<std::uint64_t>(i + 1), req,
+                std::move(client.send_request_vote(static_cast<std::uint64_t>(i) + 1, req,
                                                    kythira::testing::scaled_deadline(3000)))
                     .get();
         });
@@ -649,7 +648,7 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_same_node,
     std::vector<std::thread> rpc_threads;
     for (int i = 0; i < rpc_count; ++i) {
         kythira::request_vote_request<> req{};
-        req._term = static_cast<std::uint64_t>(1000 + i);
+        req._term = 1000 + static_cast<std::uint64_t>(i);
         rpc_threads.emplace_back([&client, &responses, &failures, i, req] {
             // HTTPUpstreamSession (HTTP/1.1) carries only one in-flight
             // transaction at a time -- with 16 threads racing to reuse the
@@ -698,7 +697,7 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_same_node,
             continue;
         }
         BOOST_TEST(responses[static_cast<std::size_t>(i)].term() ==
-                   static_cast<std::uint64_t>(1000 + i));
+                   1000 + static_cast<std::uint64_t>(i));
         BOOST_TEST(responses[static_cast<std::size_t>(i)].vote_granted());
     }
 

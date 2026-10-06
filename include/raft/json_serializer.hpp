@@ -412,11 +412,7 @@ public:
     [[nodiscard]] auto serialize(const cluster_join_request<NodeId, Address>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "cluster_join_request";
-        if constexpr (std::same_as<NodeId, std::string>) {
-            obj["node_id"] = req.node_id;
-        } else {
-            obj["node_id"] = req.node_id;
-        }
+        obj["node_id"] = req.node_id;
         obj["contact_address"] = req.contact_address;
         return json_to_bytes(boost::json::serialize(obj));
     }
@@ -428,11 +424,7 @@ public:
         obj["type"] = "cluster_join_response";
         obj["accepted"] = resp.accepted;
         if (resp.redirect.has_value()) {
-            if constexpr (std::same_as<NodeId, std::string>) {
-                obj["redirect_node_id"] = resp.redirect->node_id;
-            } else {
-                obj["redirect_node_id"] = resp.redirect->node_id;
-            }
+            obj["redirect_node_id"] = resp.redirect->node_id;
             obj["redirect_address"] = resp.redirect->address;
         }
         return json_to_bytes(boost::json::serialize(obj));

@@ -60,7 +60,9 @@ namespace kythira {
     const std::vector<std::pair<std::string, std::string>>& attributes) -> boost::json::array {
     boost::json::array arr;
     arr.reserve(attributes.size());
-    for (const auto& [key, value] : attributes) arr.push_back(otlp_string_kv(key, value));
+    for (const auto& [key, value] : attributes) {
+        arr.push_back(otlp_string_kv(key, value));
+    }
     return arr;
 }
 
@@ -79,10 +81,12 @@ struct otlp_resource {
         boost::json::array attrs;
         attrs.push_back(otlp_string_kv("service.name", service_name));
         attrs.push_back(otlp_string_kv("service.instance.id", service_instance_id));
-        if (service_namespace)
+        if (service_namespace) {
             attrs.push_back(otlp_string_kv("service.namespace", *service_namespace));
-        for (const auto& [key, value] : extra_attributes)
+        }
+        for (const auto& [key, value] : extra_attributes) {
             attrs.push_back(otlp_string_kv(key, value));
+        }
         return boost::json::object{{"attributes", attrs}};
     }
 };
@@ -157,10 +161,14 @@ using http_poster_fn =
         client.set_write_timeout(secs, usecs);
 
         httplib::Headers hdrs;
-        for (const auto& [key, value] : headers) hdrs.emplace(key, value);
+        for (const auto& [key, value] : headers) {
+            hdrs.emplace(key, value);
+        }
 
         auto res = client.Post(std::string(path), hdrs, std::string(json_body), "application/json");
-        if (!res) return {.ok = false, .status = 0};
+        if (!res) {
+            return {.ok = false, .status = 0};
+        }
         return {.ok = (res->status >= 200 && res->status < 300), .status = res->status};
     };
 }
@@ -197,7 +205,9 @@ public:
 
     // Requirement 3.2: never blocks on I/O.
     auto push(Record record) -> void {
-        if (_impl) _impl->push(std::move(record));
+        if (_impl) {
+            _impl->push(std::move(record));
+        }
     }
 
     // Requirement 3.3: overflow/failed-export visibility for tests/operators.
@@ -224,7 +234,9 @@ private:
         ~impl() {
             stop_flag.store(true, std::memory_order_relaxed);
             cv.notify_all();
-            if (worker.joinable()) worker.join();
+            if (worker.joinable()) {
+                worker.join();
+            }
         }
 
         impl(const impl&) = delete;
@@ -241,7 +253,9 @@ private:
                 dropped.fetch_add(1, std::memory_order_relaxed);
             }
             queue.push_back(std::move(record));
-            if (queue.size() >= config.max_batch_size) cv.notify_one();
+            if (queue.size() >= config.max_batch_size) {
+                cv.notify_one();
+            }
         }
 
         [[nodiscard]] auto dropped_record_count() const -> std::uint64_t {
@@ -277,7 +291,9 @@ private:
         // Requirement 3.5: retryable transport failure / 429 / 502 / 503 /
         // 504 retried with doubling backoff up to max_retries, then dropped.
         auto send_with_retry(const std::vector<Record>& batch) -> void {
-            if (batch.empty()) return;
+            if (batch.empty()) {
+                return;
+            }
             auto body = encode(resource, std::span<const Record>(batch));
             auto json_body = boost::json::serialize(body);
 
@@ -285,7 +301,9 @@ private:
             for (unsigned attempt = 0; attempt <= config.max_retries; ++attempt) {
                 auto result = poster(config.endpoint_base_url, signal_path, config.headers,
                                      json_body, config.http_timeout);
-                if (result.ok) return;
+                if (result.ok) {
+                    return;
+                }
 
                 const bool retryable = result.status == 0 || result.status == 429 ||
                                        result.status == 502 || result.status == 503 ||

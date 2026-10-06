@@ -257,8 +257,8 @@ public:
 
     /// @brief PUT one object, unconditionally. No retry — the engine owns write
     ///        retries.
-    auto put_object(const std::string& bucket, const std::string& key, std::string_view bytes) const
-        -> put_result {
+    [[nodiscard]] auto put_object(const std::string& bucket, const std::string& key,
+                                  std::string_view bytes) const -> put_result {
         fiu_do_on("raft/oci/objectstorage/put_object",
                   throw std::runtime_error("chaos: raft/oci/objectstorage/put_object " + key););
         return send_put(bucket, key, bytes, std::nullopt);
@@ -269,8 +269,9 @@ public:
     ///
     /// Issued exactly once: a conditional PUT's precondition is stale by
     /// construction if a previous attempt landed.
-    auto put_object_if(const std::string& bucket, const std::string& key, std::string_view bytes,
-                       const precondition& pre) const -> put_result {
+    [[nodiscard]] auto put_object_if(const std::string& bucket, const std::string& key,
+                                     std::string_view bytes, const precondition& pre) const
+        -> put_result {
         fiu_do_on("raft/oci/objectstorage/put_object_if",
                   throw std::runtime_error("chaos: raft/oci/objectstorage/put_object_if " + key););
         return send_put(bucket, key, bytes, pre);

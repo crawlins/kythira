@@ -195,7 +195,9 @@ inline auto status_of(const std::string& response) -> int {
 /// ';' and surrounding blanks removed; empty when absent.
 inline auto header_of(const std::string& response, const std::string& name) -> std::string {
     auto lower = [](std::string s) {
-        for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        for (auto& c : s) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
         return s;
     };
     auto head = lower(response.substr(0, response.find("\r\n\r\n")));

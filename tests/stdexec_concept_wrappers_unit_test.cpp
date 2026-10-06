@@ -59,7 +59,8 @@ BOOST_AUTO_TEST_CASE(try_exception_constructor, *boost::unit_test::timeout(15)) 
 }
 
 BOOST_AUTO_TEST_CASE(try_null_exception_ptr_throws, *boost::unit_test::timeout(15)) {
-    BOOST_CHECK_THROW(Try<int>(std::exception_ptr{}), std::invalid_argument);
+    const std::exception_ptr null_exception{};
+    BOOST_CHECK_THROW(Try<int>{null_exception}, std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(try_const_value_access, *boost::unit_test::timeout(15)) {

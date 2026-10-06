@@ -114,7 +114,9 @@ inline auto connect_to(const std::string& host, std::uint16_t port,
     }
 
     long candidates = 0;
-    for (addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) ++candidates;
+    for (addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
+        ++candidates;
+    }
 
     auto deadline = std::chrono::steady_clock::now() + timeout;
     int fd = -1;
@@ -185,9 +187,13 @@ inline auto any_endpoints() -> std::vector<bind_endpoint> {
 inline auto local_interface_addresses() -> std::vector<bind_endpoint> {
     std::vector<bind_endpoint> out;
     ifaddrs* ifs = nullptr;
-    if (::getifaddrs(&ifs) != 0) return out;
+    if (::getifaddrs(&ifs) != 0) {
+        return out;
+    }
     for (ifaddrs* i = ifs; i != nullptr; i = i->ifa_next) {
-        if (i->ifa_addr == nullptr) continue;
+        if (i->ifa_addr == nullptr) {
+            continue;
+        }
         bind_endpoint ep;
         if (i->ifa_addr->sa_family == AF_INET) {
             ep.len = sizeof(sockaddr_in);
@@ -211,10 +217,14 @@ inline auto require_local_endpoints(std::vector<bind_endpoint>& eps,
                                     const std::vector<bind_endpoint>& locals,
                                     const std::string& address, const char* who) -> void {
     for (auto& ep : eps) {
-        if (endpoint_is_loopback(ep)) continue;
+        if (endpoint_is_loopback(ep)) {
+            continue;
+        }
         bool found = false;
         for (const auto& l : locals) {
-            if (l.addr.ss_family != ep.addr.ss_family) continue;
+            if (l.addr.ss_family != ep.addr.ss_family) {
+                continue;
+            }
             if (ep.addr.ss_family == AF_INET) {
                 found = reinterpret_cast<const sockaddr_in&>(l.addr).sin_addr.s_addr ==
                         reinterpret_cast<const sockaddr_in&>(ep.addr).sin_addr.s_addr;
@@ -222,9 +232,13 @@ inline auto require_local_endpoints(std::vector<bind_endpoint>& eps,
                 const auto& la = reinterpret_cast<const sockaddr_in6&>(l.addr);
                 auto& ea = reinterpret_cast<sockaddr_in6&>(ep.addr);
                 found = std::memcmp(&la.sin6_addr, &ea.sin6_addr, sizeof(in6_addr)) == 0;
-                if (found && ea.sin6_scope_id == 0) ea.sin6_scope_id = la.sin6_scope_id;
+                if (found && ea.sin6_scope_id == 0) {
+                    ea.sin6_scope_id = la.sin6_scope_id;
+                }
             }
-            if (found) break;
+            if (found) {
+                break;
+            }
         }
         if (!found) {
             char buf[INET6_ADDRSTRLEN] = {};
@@ -265,7 +279,9 @@ inline auto parse_hosts_address(const std::string& text) -> std::optional<bind_e
             })) {
             idx = static_cast<unsigned>(std::stoul(zone));
         }
-        if (idx == 0) return std::nullopt;
+        if (idx == 0) {
+            return std::nullopt;
+        }
         v6.sin6_scope_id = idx;
     }
     v6.sin6_family = AF_INET6;
@@ -282,7 +298,9 @@ inline auto hosts_file_addresses(std::string name, const std::string& path)
     auto lower = [](std::string v) {
         std::transform(v.begin(), v.end(), v.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (!v.empty() && v.back() == '.') v.pop_back();
+        if (!v.empty() && v.back() == '.') {
+            v.pop_back();
+        }
         return v;
     };
     name = lower(std::move(name));
@@ -293,20 +311,28 @@ inline auto hosts_file_addresses(std::string name, const std::string& path)
         line = line.substr(0, line.find('#'));
         std::istringstream fields(line);
         std::string addr;
-        if (!(fields >> addr)) continue;
+        if (!(fields >> addr)) {
+            continue;
+        }
         bool listed = false;
         for (std::string alias; fields >> alias;) {
             listed = listed || lower(alias) == name;
         }
-        if (!listed) continue;
+        if (!listed) {
+            continue;
+        }
         auto ep = parse_hosts_address(addr);
-        if (!ep) continue;
+        if (!ep) {
+            continue;
+        }
         bool duplicate = false;
         for (const auto& o : out) {
             duplicate =
                 duplicate || (o.len == ep->len && std::memcmp(&o.addr, &ep->addr, ep->len) == 0);
         }
-        if (!duplicate) out.push_back(*ep);
+        if (!duplicate) {
+            out.push_back(*ep);
+        }
     }
     return out;
 }
@@ -328,8 +354,12 @@ inline auto resolve_bind_addresses(const std::string& address, const char* who,
     if (address.empty()) {
         throw std::invalid_argument(std::string(who) + ": empty bind address");
     }
-    if (auto literal = parse_hosts_address(address)) return {*literal};
-    if (address == "*") return any_endpoints();
+    if (auto literal = parse_hosts_address(address)) {
+        return {*literal};
+    }
+    if (address == "*") {
+        return any_endpoints();
+    }
 
     auto out = hosts_file_addresses(address, hosts_path);
     if (out.empty()) {
@@ -358,7 +388,9 @@ inline auto is_loopback_bind_address(const std::string& address,
     try {
         auto eps = resolve_bind_addresses(address, "is_loopback_bind_address", hosts_path);
         for (const auto& e : eps) {
-            if (!endpoint_is_loopback(e)) return false;
+            if (!endpoint_is_loopback(e)) {
+                return false;
+            }
         }
         return true;
     } catch (const std::invalid_argument&) {
@@ -376,14 +408,20 @@ inline auto open_listeners(const std::vector<bind_endpoint>& endpoints, std::uin
                            const char* who) -> std::vector<int> {
     std::vector<int> fds;
     auto fail = [&](const std::string& what) {
-        for (int fd : fds) ::close(fd);
+        for (int fd : fds) {
+            ::close(fd);
+        }
         throw std::runtime_error(std::string(who) + ": " + what + " on port " +
                                  std::to_string(port));
     };
     for (const auto& ep : endpoints) {
         int fd = ::socket(ep.addr.ss_family, SOCK_STREAM, 0);
-        if (fd < 0 && errno == EAFNOSUPPORT && endpoints.size() > 1) continue;
-        if (fd < 0) fail("socket()");
+        if (fd < 0 && errno == EAFNOSUPPORT && endpoints.size() > 1) {
+            continue;
+        }
+        if (fd < 0) {
+            fail("socket()");
+        }
         int opt = 1;
         ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
         bind_endpoint at = ep;
@@ -410,7 +448,9 @@ inline auto open_listeners(const std::vector<bind_endpoint>& endpoints, std::uin
         ::listen(fd, 256);
         fds.push_back(fd);
     }
-    if (fds.empty()) fail("no usable address family");
+    if (fds.empty()) {
+        fail("no usable address family");
+    }
     return fds;
 }
 
@@ -423,7 +463,9 @@ inline auto endpoint_host(const bind_endpoint& ep) -> std::string {
         const auto& a = reinterpret_cast<const sockaddr_in6&>(ep.addr);
         ::inet_ntop(AF_INET6, &a.sin6_addr, buf, sizeof(buf));
         std::string out(buf);
-        if (a.sin6_scope_id != 0) out += "%" + std::to_string(a.sin6_scope_id);
+        if (a.sin6_scope_id != 0) {
+            out += "%" + std::to_string(a.sin6_scope_id);
+        }
         return out;
     }
     const auto& a = reinterpret_cast<const sockaddr_in&>(ep.addr);
@@ -435,7 +477,9 @@ inline auto endpoint_host(const bind_endpoint& ep) -> std::string {
 // multi-address bind skips such an address rather than failing.
 inline auto family_supported(int family) -> bool {
     int fd = ::socket(family, SOCK_STREAM, 0);
-    if (fd < 0) return errno != EAFNOSUPPORT;
+    if (fd < 0) {
+        return errno != EAFNOSUPPORT;
+    }
     ::close(fd);
     return true;
 }

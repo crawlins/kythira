@@ -29,6 +29,7 @@
 #endif
 #include <atomic>
 #include <chrono>
+#include <ranges>
 #include <string>
 #include <thread>
 #include <vector>
@@ -214,8 +215,8 @@ struct cluster {
     }
 
     ~cluster() {
-        for (auto it = nodes.rbegin(); it != nodes.rend(); ++it) {
-            (*it)->stop();
+        for (auto& node : std::views::reverse(nodes)) {
+            node->stop();
         }
     }
 

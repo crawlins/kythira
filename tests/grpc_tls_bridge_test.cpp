@@ -86,7 +86,9 @@ template<typename Pred>
 auto eventually(Pred pred, std::chrono::milliseconds deadline = 5s) -> bool {
     auto end = std::chrono::steady_clock::now() + deadline;
     while (std::chrono::steady_clock::now() < end) {
-        if (pred()) return true;
+        if (pred()) {
+            return true;
+        }
         std::this_thread::sleep_for(50ms);
     }
     return pred();
@@ -206,7 +208,9 @@ BOOST_AUTO_TEST_CASE(rapid_reloads_never_tear_identity) {
     // Let the watcher make a few more passes over the final generation.
     std::this_thread::sleep_for(2s);
     done = true;
-    for (auto& c : clients) c.join();
+    for (auto& c : clients) {
+        c.join();
+    }
 
     BOOST_TEST_MESSAGE("handshakes: " << handshakes.load());
     BOOST_TEST(handshakes.load() > 0);
@@ -230,11 +234,15 @@ BOOST_AUTO_TEST_CASE(staging_directory_is_private_pruned_and_removed) {
         BOOST_REQUIRE(::stat((staging / "current" / "key.pem").c_str(), &st) == 0);
         BOOST_TEST((st.st_mode & 0777) == 0600U);
 
-        for (int i = 0; i < 5; ++i) bridge.apply(material(i % 2 == 0 ? b : a, ""));
+        for (int i = 0; i < 5; ++i) {
+            bridge.apply(material(i % 2 == 0 ? b : a, ""));
+        }
         std::set<std::string> gens;
         for (const auto& e : std::filesystem::directory_iterator(staging)) {
             auto name = e.path().filename().string();
-            if (name.starts_with("gen-")) gens.insert(name);
+            if (name.starts_with("gen-")) {
+                gens.insert(name);
+            }
         }
         BOOST_TEST((gens == std::set<std::string>{"gen-5", "gen-6"}));
         BOOST_TEST(std::filesystem::read_symlink(staging / "current") == "gen-6");

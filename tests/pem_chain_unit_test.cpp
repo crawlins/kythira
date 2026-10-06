@@ -50,7 +50,9 @@ auto without_trailing_newline(std::string pem) -> std::string {
 auto to_crlf(const std::string& pem) -> std::string {
     std::string out;
     for (char c : pem) {
-        if (c == '\n') out += '\r';
+        if (c == '\n') {
+            out += '\r';
+        }
         out += c;
     }
     return out;
@@ -64,7 +66,9 @@ auto rewrap(const std::string& pem, std::size_t width) -> std::string {
     const auto body_end = pem.find(end);
     std::string base64;
     for (auto i = body_start; i < body_end; ++i) {
-        if (pem[i] != '\n' && pem[i] != '\r') base64 += pem[i];
+        if (pem[i] != '\n' && pem[i] != '\r') {
+            base64 += pem[i];
+        }
     }
     std::string out = begin + "\n";
     for (std::size_t i = 0; i < base64.size(); i += width) {

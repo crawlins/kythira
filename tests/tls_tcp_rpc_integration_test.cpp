@@ -102,14 +102,22 @@ auto can_connect(const std::string& address, std::uint16_t port) -> bool {
 // The first IPv4 address of a non-loopback interface, if the host has one.
 auto non_loopback_ipv4() -> std::optional<std::string> {
     ifaddrs* ifs = nullptr;
-    if (::getifaddrs(&ifs) != 0) return std::nullopt;
+    if (::getifaddrs(&ifs) != 0) {
+        return std::nullopt;
+    }
     std::optional<std::string> found;
     for (ifaddrs* i = ifs; i != nullptr && !found; i = i->ifa_next) {
-        if (i->ifa_addr == nullptr || i->ifa_addr->sa_family != AF_INET) continue;
+        if (i->ifa_addr == nullptr || i->ifa_addr->sa_family != AF_INET) {
+            continue;
+        }
         auto* in = reinterpret_cast<sockaddr_in*>(i->ifa_addr);
-        if ((ntohl(in->sin_addr.s_addr) >> 24) == 127) continue;
+        if ((ntohl(in->sin_addr.s_addr) >> 24) == 127) {
+            continue;
+        }
         char buf[INET_ADDRSTRLEN];
-        if (::inet_ntop(AF_INET, &in->sin_addr, buf, sizeof(buf)) != nullptr) found = buf;
+        if (::inet_ntop(AF_INET, &in->sin_addr, buf, sizeof(buf)) != nullptr) {
+            found = buf;
+        }
     }
     ::freeifaddrs(ifs);
     return found;
@@ -550,7 +558,7 @@ struct tls_identity {
                          detail_testing::unsafe_extract_ca_private_key_pem(cred)};
     std::string fp = fingerprint_of_root(cred.root_certificate_pem());
 
-    auto config(kythira::tcp_server_limits limits = {}) const -> tls_tcp_rpc_config {
+    [[nodiscard]] auto config(kythira::tcp_server_limits limits = {}) const -> tls_tcp_rpc_config {
         tls_tcp_rpc_config cfg{files.cert_path, files.key_path, pinned_fingerprint(fp)};
         cfg.server_limits = limits;
         return cfg;

@@ -1917,7 +1917,9 @@ auto cpp_httplib_server<Types>::reload_tls_material() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     std::vector<httplib::SSLServer*> ssl_servers;
     for (auto* server : _listeners->servers()) {
-        if (auto* ssl = dynamic_cast<httplib::SSLServer*>(server)) ssl_servers.push_back(ssl);
+        if (auto* ssl = dynamic_cast<httplib::SSLServer*>(server)) {
+            ssl_servers.push_back(ssl);
+        }
     }
     if (ssl_servers.empty()) {
         throw std::logic_error(

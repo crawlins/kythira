@@ -508,7 +508,7 @@ auto settle(Future&& f, std::chrono::milliseconds budget) -> std::exception_ptr 
         return std::make_exception_ptr(std::runtime_error("settle: future never resolved"));
     }
     try {
-        std::ignore = std::move(f).get();
+        std::ignore = std::forward<Future>(f).get();
         return nullptr;
     } catch (...) {
         return std::current_exception();

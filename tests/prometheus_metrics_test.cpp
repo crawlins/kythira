@@ -54,11 +54,13 @@ auto test_counter_accumulates_across_copies() -> bool {
     copy.emit();
 
     auto text = registry->render_text();
-    if (!expect_line(text, "# TYPE http_client_request_sent_total counter", "TYPE line"))
+    if (!expect_line(text, "# TYPE http_client_request_sent_total counter", "TYPE line")) {
         return false;
+    }
     if (!expect_line(text, "http_client_request_sent_total{rpc_type=\"request_vote\"} 3",
-                     "accumulated counter"))
+                     "accumulated counter")) {
         return false;
+    }
 
     std::cout << "  OK\n";
     return true;
@@ -77,8 +79,12 @@ auto test_gauge_last_value_wins() -> bool {
     metrics.emit();
 
     auto text = registry->render_text();
-    if (!expect_line(text, "# TYPE http_client_request_size gauge", "TYPE line")) return false;
-    if (!expect_line(text, "http_client_request_size 250.5", "last gauge value")) return false;
+    if (!expect_line(text, "# TYPE http_client_request_size gauge", "TYPE line")) {
+        return false;
+    }
+    if (!expect_line(text, "http_client_request_size 250.5", "last gauge value")) {
+        return false;
+    }
     if (contains(text, "100")) {
         std::cerr << "  x stale gauge value still rendered:\n" << text << "\n";
         return false;
@@ -106,14 +112,27 @@ auto test_histogram_buckets_sum_count() -> bool {
     metrics.emit();
 
     auto text = registry->render_text();
-    if (!expect_line(text, "# TYPE rpc_latency histogram", "TYPE line")) return false;
-    if (!expect_line(text, "rpc_latency_bucket{le=\"1\"} 0", "le=1 bucket")) return false;
-    if (!expect_line(text, "rpc_latency_bucket{le=\"10\"} 1", "le=10 bucket")) return false;
-    if (!expect_line(text, "rpc_latency_bucket{le=\"100\"} 2", "le=100 cumulative bucket"))
+    if (!expect_line(text, "# TYPE rpc_latency histogram", "TYPE line")) {
         return false;
-    if (!expect_line(text, "rpc_latency_bucket{le=\"+Inf\"} 3", "+Inf bucket")) return false;
-    if (!expect_line(text, "rpc_latency_sum 2055", "sum")) return false;
-    if (!expect_line(text, "rpc_latency_count 3", "count")) return false;
+    }
+    if (!expect_line(text, "rpc_latency_bucket{le=\"1\"} 0", "le=1 bucket")) {
+        return false;
+    }
+    if (!expect_line(text, "rpc_latency_bucket{le=\"10\"} 1", "le=10 bucket")) {
+        return false;
+    }
+    if (!expect_line(text, "rpc_latency_bucket{le=\"100\"} 2", "le=100 cumulative bucket")) {
+        return false;
+    }
+    if (!expect_line(text, "rpc_latency_bucket{le=\"+Inf\"} 3", "+Inf bucket")) {
+        return false;
+    }
+    if (!expect_line(text, "rpc_latency_sum 2055", "sum")) {
+        return false;
+    }
+    if (!expect_line(text, "rpc_latency_count 3", "count")) {
+        return false;
+    }
 
     std::cout << "  OK\n";
     return true;
@@ -133,10 +152,12 @@ auto test_histogram_le_merges_into_existing_labels() -> bool {
 
     auto text = registry->render_text();
     if (!expect_line(text, "rpc_latency_bucket{rpc_type=\"append_entries\",le=\"10\"} 1",
-                     "merged label block"))
+                     "merged label block")) {
         return false;
-    if (!expect_line(text, "rpc_latency_sum{rpc_type=\"append_entries\"} 1", "labeled sum"))
+    }
+    if (!expect_line(text, "rpc_latency_sum{rpc_type=\"append_entries\"} 1", "labeled sum")) {
         return false;
+    }
 
     std::cout << "  OK\n";
     return true;
@@ -156,8 +177,9 @@ auto test_sanitization_and_escaping() -> bool {
     if (!expect_line(text,
                      "http_client_tls_reload_failed_total{error_detail=\"line1\\nline\\\"2\\\"\\\\"
                      "end\"} 1",
-                     "sanitized+escaped series"))
+                     "sanitized+escaped series")) {
         return false;
+    }
 
     std::cout << "  OK\n";
     return true;
@@ -180,8 +202,9 @@ auto test_dimension_order_does_not_split_series() -> bool {
     metrics.emit();
 
     auto text = registry->render_text();
-    if (!expect_line(text, "requests_total{a=\"1\",b=\"2\"} 2", "single merged series"))
+    if (!expect_line(text, "requests_total{a=\"1\",b=\"2\"} 2", "single merged series")) {
         return false;
+    }
 
     std::cout << "  OK\n";
     return true;
@@ -217,8 +240,9 @@ auto test_emit_resets_staging() -> bool {
     metrics.emit();  // Nothing staged: must not double-count.
 
     auto text = registry->render_text();
-    if (!expect_line(text, "requests_total{rpc_type=\"request_vote\"} 1", "single count"))
+    if (!expect_line(text, "requests_total{rpc_type=\"request_vote\"} 1", "single count")) {
         return false;
+    }
 
     std::cout << "  OK\n";
     return true;
@@ -253,8 +277,9 @@ auto test_scrape_server_end_to_end() -> bool {
         std::cerr << "  x wrong content type: " << res->get_header_value("Content-Type") << "\n";
         return false;
     }
-    if (!expect_line(res->body, "command_received_total{node_id=\"7\"} 1", "scraped series"))
+    if (!expect_line(res->body, "command_received_total{node_id=\"7\"} 1", "scraped series")) {
         return false;
+    }
 
     server.stop();
     std::cout << "  OK\n";
@@ -276,7 +301,9 @@ auto main() -> int {
 
     int failed = 0;
     auto run = [&](bool (*test)()) {
-        if (!test()) ++failed;
+        if (!test()) {
+            ++failed;
+        }
     };
 
     run(test_counter_accumulates_across_copies);

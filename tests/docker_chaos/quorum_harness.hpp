@@ -166,7 +166,7 @@ public:
                 auto s = n.status();
                 if (s["role"].as_string() == "leader") {
                     std::int64_t term = s["term"].as_int64();
-                    if (term_leaders.contains(term) != 0u) {
+                    if (static_cast<unsigned int>(term_leaders.contains(term)) != 0u) {
                         throw split_brain_detected(
                             "split brain: nodes " + std::to_string(term_leaders[term]) + " and " +
                             std::to_string(id) + " both claim leadership in term " +

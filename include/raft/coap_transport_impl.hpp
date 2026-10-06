@@ -347,8 +347,10 @@ coap_client<Types>::coap_client(
 
     // Initialize libcoap context
 #ifdef LIBCOAP_AVAILABLE
+    // Not a member initializer: the context exists only when libcoap does.
+    // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
     _coap_context = coap_new_context(nullptr);
-    if (!_coap_context) {
+    if (_coap_context == nullptr) {
         throw coap_transport_error("Failed to create CoAP context");
     }
     if (!_dtls_cipher_list.empty()) {
@@ -399,7 +401,7 @@ coap_client<Types>::coap_client(
         [](coap_session_t* session, const coap_pdu_t* sent, const coap_nack_reason_t reason,
            const coap_mid_t /*mid*/) -> void {
             auto* client = static_cast<coap_client<Types>*>(coap_session_get_app_data(session));
-            if (!client || !sent) {
+            if (!client || (sent == nullptr)) {
                 return;
             }
             coap_bin_const_t token = coap_pdu_get_token(sent);
@@ -469,7 +471,7 @@ coap_client<Types>::coap_client(
         while (!stop_token.stop_requested()) {
             {
                 std::lock_guard lock(_mutex);
-                if (_coap_context) {
+                if (_coap_context != nullptr) {
                     coap_io_process(_coap_context, COAP_IO_NO_WAIT);
                 }
             }
@@ -554,7 +556,7 @@ coap_client<Types>::~coap_client() {
         std::lock_guard lock(_mutex);
         for (auto& [token, collector] : _multicast_requests) {
 #ifdef LIBCOAP_AVAILABLE
-            if (collector->session) {
+            if (collector->session != nullptr) {
                 coap_session_release(collector->session);
                 collector->session = nullptr;
             }
@@ -579,7 +581,7 @@ coap_client<Types>::~coap_client() {
 
     // Cleanup libcoap context
 #ifdef LIBCOAP_AVAILABLE
-    if (_coap_context) {
+    if (_coap_context != nullptr) {
         coap_free_context(_coap_context);
         _coap_context = nullptr;
     }
@@ -743,8 +745,10 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
 
     // Initialize libcoap context
 #ifdef LIBCOAP_AVAILABLE
+    // Not a member initializer: the context exists only when libcoap does.
+    // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
     _coap_context = coap_new_context(nullptr);
-    if (!_coap_context) {
+    if (_coap_context == nullptr) {
         throw coap_transport_error("Failed to create CoAP server context");
     }
     if (!_dtls_cipher_list.empty()) {
@@ -828,7 +832,7 @@ coap_server<Types>::~coap_server() {
 
     // Cleanup libcoap context
 #ifdef LIBCOAP_AVAILABLE
-    if (_coap_context) {
+    if (_coap_context != nullptr) {
         coap_free_context(_coap_context);
         _coap_context = nullptr;
     }
@@ -977,7 +981,7 @@ auto coap_server<Types>::start() -> void {
                   {"dtls_enabled", _config.enable_dtls ? "true" : "false"}});
 
 #ifdef LIBCOAP_AVAILABLE
-    if (!_coap_context) {
+    if (_coap_context == nullptr) {
         throw coap_transport_error("CoAP context is null, cannot start server");
     }
 
@@ -1000,7 +1004,9 @@ auto coap_server<Types>::start() -> void {
     // the option, IPv4 is then served. A host without IPv6 just gets
     // 0.0.0.0.
     auto is_unspecified = [](const kythira::net_bind::bind_endpoint& ep, int family) {
-        if (ep.addr.ss_family != family) return false;
+        if (ep.addr.ss_family != family) {
+            return false;
+        }
         if (family == AF_INET) {
             return reinterpret_cast<const sockaddr_in&>(ep.addr).sin_addr.s_addr ==
                    htonl(INADDR_ANY);
@@ -1058,10 +1064,10 @@ auto coap_server<Types>::start() -> void {
         coap_endpoint_t* endpoint = coap_new_endpoint(
             _coap_context, &bind_addr, _config.enable_dtls ? COAP_PROTO_DTLS : COAP_PROTO_UDP);
         auto host = kythira::net_bind::endpoint_host(ep);
-        if (!endpoint && v6_any_bound && is_unspecified(ep, AF_INET)) {
+        if ((endpoint == nullptr) && v6_any_bound && is_unspecified(ep, AF_INET)) {
             continue;  // "::" is dual-stack and already serves IPv4.
         }
-        if (!endpoint) {
+        if (endpoint == nullptr) {
             // An address family the kernel lacks (IPv6 disabled while
             // /etc/hosts still lists ::1) is skipped when there are others.
             if (bind_endpoints.size() > 1 &&
@@ -1143,7 +1149,7 @@ auto coap_server<Types>::start() -> void {
 #ifdef LIBCOAP_AVAILABLE
     _io_thread = std::jthread([this](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
-            if (_coap_context) {
+            if (_coap_context != nullptr) {
                 coap_io_process(_coap_context, 20);
             }
         }
@@ -1194,7 +1200,7 @@ auto coap_server<Types>::stop() -> void {
                   {"active_connections", std::to_string(_active_connections.load())}});
 
 #ifdef LIBCOAP_AVAILABLE
-    if (_coap_context) {
+    if (_coap_context != nullptr) {
         // Session/endpoint teardown is not done here: libcoap 4.3.5 has no
         // public API to walk a context's session or endpoint lists (the
         // coap_session_get_first/get_next, coap_get_endpoint, and
@@ -1286,8 +1292,8 @@ auto coap_client<Types>::add_uri_path_options(coap_pdu_t* pdu, const std::string
         if (end == std::string::npos) {
             end = resource_path.size();
         }
-        if (!coap_add_option(pdu, COAP_OPTION_URI_PATH, end - start,
-                             reinterpret_cast<const uint8_t*>(resource_path.data() + start))) {
+        if (coap_add_option(pdu, COAP_OPTION_URI_PATH, end - start,
+                            reinterpret_cast<const uint8_t*>(resource_path.data() + start)) == 0u) {
             return false;
         }
         start = end + 1;
@@ -1381,7 +1387,7 @@ auto coap_client<Types>::setup_dtls_context() -> void {
                 try {
                     // Convert ASN.1 certificate to PEM format for validation
                     BIO* bio = BIO_new(BIO_s_mem());
-                    if (!bio) {
+                    if (bio == nullptr) {
                         client->_logger.error("Failed to create BIO for certificate conversion");
                         return 0;
                     }
@@ -1389,14 +1395,14 @@ auto coap_client<Types>::setup_dtls_context() -> void {
                     // Create X509 from ASN.1 data
                     const uint8_t* cert_data = asn1_public_cert;
                     X509* cert = d2i_X509(nullptr, &cert_data, static_cast<long>(asn1_length));
-                    if (!cert) {
+                    if (cert == nullptr) {
                         BIO_free(bio);
                         client->_logger.error("Failed to parse ASN.1 certificate data");
                         return 0;
                     }
 
                     // Convert to PEM format
-                    if (!PEM_write_bio_X509(bio, cert)) {
+                    if (PEM_write_bio_X509(bio, cert) == 0) {
                         X509_free(cert);
                         BIO_free(bio);
                         client->_logger.error("Failed to convert certificate to PEM format");
@@ -1404,7 +1410,7 @@ auto coap_client<Types>::setup_dtls_context() -> void {
                     }
 
                     // Get PEM data
-                    char* pem_data;
+                    char* pem_data = nullptr;
                     long pem_length = BIO_get_mem_data(bio, &pem_data);
                     std::string cert_pem(pem_data, pem_length);
 
@@ -1416,7 +1422,7 @@ auto coap_client<Types>::setup_dtls_context() -> void {
                     bool validation_result = client->validate_peer_certificate(cert_pem);
 
                     client->_logger.debug("Certificate validation callback completed",
-                                          {{"cn", cn ? cn : "unknown"},
+                                          {{"cn", (cn != nullptr) ? cn : "unknown"},
                                            {"depth", std::to_string(depth)},
                                            {"result", validation_result ? "success" : "failure"}});
 
@@ -1425,7 +1431,7 @@ auto coap_client<Types>::setup_dtls_context() -> void {
                 } catch (const std::exception& e) {
                     client->_logger.error("Certificate validation callback failed",
                                           {{"error", e.what()},
-                                           {"cn", cn ? cn : "unknown"},
+                                           {"cn", (cn != nullptr) ? cn : "unknown"},
                                            {"depth", std::to_string(depth)}});
                     return 0;
                 }
@@ -1436,7 +1442,7 @@ auto coap_client<Types>::setup_dtls_context() -> void {
         if (!_dtls_cipher_list.empty()) {
             pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
         }
-        if (!coap_context_set_pki(_coap_context, &pki_config)) {
+        if (coap_context_set_pki(_coap_context, &pki_config) == 0) {
             throw coap_security_error("Failed to configure DTLS PKI context");
         }
         detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
@@ -1467,9 +1473,9 @@ auto coap_client<Types>::setup_dtls_context() -> void {
         cpsk_config.psk_info.key.s = reinterpret_cast<const uint8_t*>(_config.psk_key.data());
         cpsk_config.psk_info.key.length = _config.psk_key.size();
 
-        if (!coap_context_set_psk(_coap_context, _config.psk_identity.c_str(),
-                                  reinterpret_cast<const uint8_t*>(_config.psk_key.data()),
-                                  _config.psk_key.size())) {
+        if (coap_context_set_psk(_coap_context, _config.psk_identity.c_str(),
+                                 reinterpret_cast<const uint8_t*>(_config.psk_key.data()),
+                                 _config.psk_key.size()) == 0) {
             throw coap_security_error("Failed to configure DTLS PSK context");
         }
 
@@ -1593,7 +1599,7 @@ auto coap_client<Types>::reload_tls_material() -> void {
 #endif
 
 #ifdef LIBCOAP_AVAILABLE
-    if (!_coap_context) {
+    if (_coap_context == nullptr) {
         throw coap_security_error("reload_tls_material: CoAP context is null");
     }
 
@@ -1618,19 +1624,21 @@ auto coap_client<Types>::reload_tls_material() -> void {
             auto* client = static_cast<coap_client<Types>*>(arg);
             try {
                 BIO* bio = BIO_new(BIO_s_mem());
-                if (!bio) return 0;
+                if (bio == nullptr) {
+                    return 0;
+                }
                 const uint8_t* cert_data = asn1_public_cert;
                 X509* cert = d2i_X509(nullptr, &cert_data, static_cast<long>(asn1_length));
-                if (!cert) {
+                if (cert == nullptr) {
                     BIO_free(bio);
                     return 0;
                 }
-                if (!PEM_write_bio_X509(bio, cert)) {
+                if (PEM_write_bio_X509(bio, cert) == 0) {
                     X509_free(cert);
                     BIO_free(bio);
                     return 0;
                 }
-                char* pem_data;
+                char* pem_data = nullptr;
                 long pem_length = BIO_get_mem_data(bio, &pem_data);
                 std::string cert_pem(pem_data, pem_length);
                 X509_free(cert);
@@ -1646,7 +1654,7 @@ auto coap_client<Types>::reload_tls_material() -> void {
     if (!_dtls_cipher_list.empty()) {
         pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
     }
-    if (!coap_context_set_pki(_coap_context, &pki_config)) {
+    if (coap_context_set_pki(_coap_context, &pki_config) == 0) {
         throw coap_security_error("reload_tls_material: PKI setup rejected");
     }
     detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
@@ -1740,9 +1748,10 @@ auto coap_client<Types>::initiate_dtls_handshake(const std::string& endpoint) ->
     }
 
     const uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
-    coap_addr_info_t* addr_info = coap_resolve_address_info(
-        &uri.host, uri.port, uri.port, 0, 0, 0, scheme_hint_bits, COAP_RESOLVE_TYPE_REMOTE);
-    if (!addr_info) {
+    coap_addr_info_t* addr_info =
+        coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0,
+                                  static_cast<int>(scheme_hint_bits), COAP_RESOLVE_TYPE_REMOTE);
+    if (addr_info == nullptr) {
         _logger.error("Failed to resolve DTLS endpoint", {{"endpoint", endpoint}});
         return false;
     }
@@ -1750,7 +1759,7 @@ auto coap_client<Types>::initiate_dtls_handshake(const std::string& endpoint) ->
     coap_free_address_info(addr_info);
 
     coap_session_t* session = new_dtls_client_session(&dst_addr);
-    if (!session) {
+    if (session == nullptr) {
         _logger.error("Failed to create DTLS session", {{"endpoint", endpoint}});
         return false;
     }
@@ -1971,9 +1980,9 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
             std::string error_msg = error_info.description;
 
             // Try to extract diagnostic payload if present
-            size_t payload_len;
-            const uint8_t* payload_data;
-            if (coap_get_data(response, &payload_len, &payload_data)) {
+            size_t payload_len = 0;
+            const uint8_t* payload_data = nullptr;
+            if (coap_get_data(response, &payload_len, &payload_data) != 0) {
                 std::string diagnostic(reinterpret_cast<const char*>(payload_data), payload_len);
                 error_msg += " - " + diagnostic;
             }
@@ -2060,20 +2069,22 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
         std::vector<std::byte> response_data;
 
         if (coap_get_data_large(response, &payload_len, &payload_data, &payload_offset,
-                                &payload_total)) {
+                                &payload_total) != 0) {
             response_data.resize(payload_len);
             std::memcpy(response_data.data(), payload_data, payload_len);
         }
 
         // libcoap delivers only the final response of a block-wise exchange,
         // so whatever arrives here completes the request.
+        // Read before the move below hands the buffer to the callback.
+        const auto payload_size = response_data.size();
         it->second->resolve_callback(std::move(response_data), response_media_type);
         _pending_requests.erase(it);
 
         _logger.debug("CoAP response processed successfully",
                       {{"token", token},
                        {"response_code", std::to_string(response_code)},
-                       {"payload_size", std::to_string(response_data.size())}});
+                       {"payload_size", std::to_string(payload_size)}});
 #else
         // Stub implementation when libcoap is not available
         std::vector<std::byte> response_data;
@@ -2202,9 +2213,10 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
 
     // Resolve the address
     uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
-    coap_addr_info_t* addr_info = coap_resolve_address_info(
-        &uri.host, uri.port, uri.port, 0, 0, 0, scheme_hint_bits, COAP_RESOLVE_TYPE_REMOTE);
-    if (!addr_info) {
+    coap_addr_info_t* addr_info =
+        coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0,
+                                  static_cast<int>(scheme_hint_bits), COAP_RESOLVE_TYPE_REMOTE);
+    if (addr_info == nullptr) {
         throw coap_network_error("Failed to resolve endpoint address: " + endpoint);
     }
     coap_address_t dst_addr = addr_info->addr;
@@ -2218,7 +2230,7 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
         std::lock_guard lock(_mutex);
         session = new_dtls_client_session(&dst_addr);
     }
-    if (!session) {
+    if (session == nullptr) {
         throw coap_network_error("Failed to create DTLS session to endpoint: " + endpoint);
     }
 
@@ -2243,12 +2255,10 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
 
         // Check for handshake failure
         if (session_state == COAP_SESSION_STATE_NONE ||
-            session_state == COAP_SESSION_STATE_CONNECTING) {
-            // Still connecting, continue waiting
+            session_state == COAP_SESSION_STATE_CONNECTING ||
+            session_state == COAP_SESSION_STATE_HANDSHAKE) {
+            // Still connecting or mid-handshake: keep waiting
             coap_io_process(_coap_context, 100);  // Process for 100ms
-        } else if (session_state == COAP_SESSION_STATE_HANDSHAKE) {
-            // DTLS handshake in progress
-            coap_io_process(_coap_context, 100);
         } else {
             // Unexpected state or failure
             coap_session_release(session);
@@ -2268,7 +2278,7 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
     coap_pdu_t* ping_pdu =
         coap_pdu_init(COAP_MESSAGE_CON, COAP_REQUEST_CODE_GET, coap_new_message_id(session),
                       coap_session_max_pdu_size(session));
-    if (ping_pdu) {
+    if (ping_pdu != nullptr) {
         // Add a simple path for connectivity test
         coap_add_option(ping_pdu, COAP_OPTION_URI_PATH, 4,
                         reinterpret_cast<const uint8_t*>("ping"));
@@ -2350,17 +2360,17 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
     try {
         // Create BIO from certificate data
         bio = BIO_new_mem_buf(peer_cert_data.c_str(), static_cast<int>(peer_cert_data.length()));
-        if (!bio) {
+        if (bio == nullptr) {
             throw coap_security_error("Failed to create BIO for certificate data");
         }
 
         // Parse PEM certificate
         cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-        if (!cert) {
+        if (cert == nullptr) {
             // Try DER format if PEM fails
             BIO_reset(bio);
             cert = d2i_X509_bio(bio, nullptr);
-            if (!cert) {
+            if (cert == nullptr) {
                 throw coap_security_error(
                     "Failed to parse peer certificate (neither PEM nor DER format)");
             }
@@ -2372,7 +2382,7 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
         ASN1_TIME* not_before = X509_get_notBefore(cert);
         ASN1_TIME* not_after = X509_get_notAfter(cert);
 
-        if (!not_before || !not_after) {
+        if ((not_before == nullptr) || (not_after == nullptr)) {
             throw coap_security_error("Certificate has invalid validity dates");
         }
 
@@ -2391,23 +2401,23 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
             _logger.debug("Verifying certificate chain", {{"ca_file", _config.ca_file}});
 
             store = X509_STORE_new();
-            if (!store) {
+            if (store == nullptr) {
                 throw coap_security_error("Failed to create X509 store");
             }
 
             // Load CA certificate(s)
-            if (!X509_STORE_load_locations(store, _config.ca_file.c_str(), nullptr)) {
+            if (X509_STORE_load_locations(store, _config.ca_file.c_str(), nullptr) == 0) {
                 throw coap_security_error("Failed to load CA certificate from: " + _config.ca_file);
             }
 
             // Create verification context
             ctx = X509_STORE_CTX_new();
-            if (!ctx) {
+            if (ctx == nullptr) {
                 throw coap_security_error("Failed to create X509 store context");
             }
 
             // Initialize verification context
-            if (!X509_STORE_CTX_init(ctx, store, cert, nullptr)) {
+            if (X509_STORE_CTX_init(ctx, store, cert, nullptr) == 0) {
                 throw coap_security_error("Failed to initialize X509 store context");
             }
 
@@ -2432,13 +2442,13 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
                 X509_check_ca(cert) == 0 ? X509_get_ext_by_NID(cert, NID_key_usage, -1) : -1;
             if (key_usage_idx >= 0) {
                 X509_EXTENSION* key_usage_ext = X509_get_ext(cert, key_usage_idx);
-                if (key_usage_ext) {
+                if (key_usage_ext != nullptr) {
                     ASN1_BIT_STRING* key_usage =
                         static_cast<ASN1_BIT_STRING*>(X509V3_EXT_d2i(key_usage_ext));
-                    if (key_usage) {
+                    if (key_usage != nullptr) {
                         // Check for digital signature and key encipherment bits
-                        if (!(ASN1_BIT_STRING_get_bit(key_usage, 0) ||   // Digital Signature
-                              ASN1_BIT_STRING_get_bit(key_usage, 2))) {  // Key Encipherment
+                        if ((ASN1_BIT_STRING_get_bit(key_usage, 0) == 0) &&  // Digital Signature
+                            (ASN1_BIT_STRING_get_bit(key_usage, 2) == 0)) {  // Key Encipherment
                             ASN1_BIT_STRING_free(key_usage);
                             throw coap_security_error(
                                 "Certificate does not have required key usage for TLS");
@@ -2449,9 +2459,9 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
             }
 
             // Verify certificate signature algorithm is secure
-            const X509_ALGOR* sig_alg;
+            const X509_ALGOR* sig_alg = nullptr;
             X509_get0_signature(nullptr, &sig_alg, cert);
-            if (sig_alg) {
+            if (sig_alg != nullptr) {
                 int sig_nid = OBJ_obj2nid(sig_alg->algorithm);
 
                 // Reject weak signature algorithms
@@ -2470,10 +2480,18 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
         }
 
         // Cleanup
-        if (ctx) X509_STORE_CTX_free(ctx);
-        if (store) X509_STORE_free(store);
-        if (cert) X509_free(cert);
-        if (bio) BIO_free(bio);
+        if (ctx != nullptr) {
+            X509_STORE_CTX_free(ctx);
+        }
+        if (store != nullptr) {
+            X509_STORE_free(store);
+        }
+        if (cert != nullptr) {
+            X509_free(cert);
+        }
+        if (bio != nullptr) {
+            BIO_free(bio);
+        }
 
         _logger.info("Peer certificate validation successful");
 
@@ -2486,10 +2504,18 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
 
     } catch (const coap_security_error&) {
         // Cleanup on error
-        if (ctx) X509_STORE_CTX_free(ctx);
-        if (store) X509_STORE_free(store);
-        if (cert) X509_free(cert);
-        if (bio) BIO_free(bio);
+        if (ctx != nullptr) {
+            X509_STORE_CTX_free(ctx);
+        }
+        if (store != nullptr) {
+            X509_STORE_free(store);
+        }
+        if (cert != nullptr) {
+            X509_free(cert);
+        }
+        if (bio != nullptr) {
+            BIO_free(bio);
+        }
 
         // Record failed validation metrics
         _metrics.add_dimension("cert_validation", "failure");
@@ -2499,10 +2525,18 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
         throw;  // Re-throw the security error
     } catch (const std::exception& e) {
         // Cleanup on unexpected error
-        if (ctx) X509_STORE_CTX_free(ctx);
-        if (store) X509_STORE_free(store);
-        if (cert) X509_free(cert);
-        if (bio) BIO_free(bio);
+        if (ctx != nullptr) {
+            X509_STORE_CTX_free(ctx);
+        }
+        if (store != nullptr) {
+            X509_STORE_free(store);
+        }
+        if (cert != nullptr) {
+            X509_free(cert);
+        }
+        if (bio != nullptr) {
+            BIO_free(bio);
+        }
 
         // Record failed validation metrics
         _metrics.add_dimension("cert_validation", "error");
@@ -2672,8 +2706,9 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
 
         // Resolve the address with proper error handling
         uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
-        coap_addr_info_t* addr_info = coap_resolve_address_info(
-            &uri.host, uri.port, uri.port, 0, 0, 0, scheme_hint_bits, COAP_RESOLVE_TYPE_REMOTE);
+        coap_addr_info_t* addr_info =
+            coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0,
+                                      static_cast<int>(scheme_hint_bits), COAP_RESOLVE_TYPE_REMOTE);
         if (!addr_info) {
             _metrics.add_dimension("error_type", "coap_address_resolution_errors");
             _metrics.add_one();
@@ -3086,7 +3121,7 @@ requires kythira::transport_types<Types>
 auto coap_server<Types>::setup_resources() -> void {
     // Set up CoAP resources for each RPC type with actual libcoap integration
 #ifdef LIBCOAP_AVAILABLE
-    if (!_coap_context) {
+    if (_coap_context == nullptr) {
         _logger.error("Cannot setup resources: CoAP context is null");
         return;
     }
@@ -3101,7 +3136,7 @@ auto coap_server<Types>::setup_resources() -> void {
     // Register /raft/request_vote resource
     coap_resource_t* rv_resource =
         coap_resource_init(coap_make_str_const("raft/request_vote"), raft_resource_flags);
-    if (rv_resource) {
+    if (rv_resource != nullptr) {
         // Set resource handler with proper C-style callback that calls our member function
         coap_register_handler(
             rv_resource, COAP_REQUEST_POST,
@@ -3136,7 +3171,7 @@ auto coap_server<Types>::setup_resources() -> void {
     // Register /raft/append_entries resource with block transfer support
     coap_resource_t* ae_resource =
         coap_resource_init(coap_make_str_const("raft/append_entries"), raft_resource_flags);
-    if (ae_resource) {
+    if (ae_resource != nullptr) {
         coap_register_handler(
             ae_resource, COAP_REQUEST_POST,
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
@@ -3184,7 +3219,7 @@ auto coap_server<Types>::setup_resources() -> void {
     // Register /raft/install_snapshot resource with block transfer support
     coap_resource_t* is_resource =
         coap_resource_init(coap_make_str_const("raft/install_snapshot"), raft_resource_flags);
-    if (is_resource) {
+    if (is_resource != nullptr) {
         coap_register_handler(
             is_resource, COAP_REQUEST_POST,
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
@@ -3238,7 +3273,7 @@ auto coap_server<Types>::setup_resources() -> void {
     // which a client can tell apart from the 4.04 an unknown path gets.
     coap_resource_t* tn_resource =
         coap_resource_init(coap_make_str_const("raft/timeout_now"), raft_resource_flags);
-    if (tn_resource) {
+    if (tn_resource != nullptr) {
         coap_register_handler(
             tn_resource, COAP_REQUEST_POST,
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
@@ -3274,7 +3309,7 @@ auto coap_server<Types>::setup_resources() -> void {
     // 5.01 until a handler is registered, as /raft/timeout_now does.
     coap_resource_t* fl_resource =
         coap_resource_init(coap_make_str_const("raft/fetch_log_entries"), raft_resource_flags);
-    if (fl_resource) {
+    if (fl_resource != nullptr) {
         coap_register_handler(
             fl_resource, COAP_REQUEST_POST,
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
@@ -3311,7 +3346,7 @@ auto coap_server<Types>::setup_resources() -> void {
     // handler is yet, so an unregistered one answers 5.01 rather than 4.04.
     coap_resource_t* pv_resource =
         coap_resource_init(coap_make_str_const("raft/request_pre_vote"), raft_resource_flags);
-    if (pv_resource) {
+    if (pv_resource != nullptr) {
         coap_register_handler(
             pv_resource, COAP_REQUEST_POST,
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
@@ -3402,7 +3437,7 @@ auto coap_server<Types>::setup_dtls_context() -> void {
     }
 
 #ifdef LIBCOAP_AVAILABLE
-    if (!_coap_context) {
+    if (_coap_context == nullptr) {
         throw coap_security_error("Cannot setup DTLS: CoAP context is null");
     }
     // See the client's setup_dtls_context(): Requirement 7.2 for the legacy
@@ -3450,8 +3485,9 @@ auto coap_server<Types>::setup_dtls_context() -> void {
                                           asn1_length);
                     return server->validate_client_certificate(cert_data) ? 1 : 0;
                 } catch (const std::exception& e) {
-                    server->_logger.error("Certificate validation failed",
-                                          {{"error", e.what()}, {"cn", cn ? cn : "unknown"}});
+                    server->_logger.error(
+                        "Certificate validation failed",
+                        {{"error", e.what()}, {"cn", (cn != nullptr) ? cn : "unknown"}});
                     return 0;
                 }
             };
@@ -3462,7 +3498,7 @@ auto coap_server<Types>::setup_dtls_context() -> void {
         if (!_dtls_cipher_list.empty()) {
             pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
         }
-        if (!coap_context_set_pki(_coap_context, &pki_config)) {
+        if (coap_context_set_pki(_coap_context, &pki_config) == 0) {
             throw coap_security_error("Failed to configure server DTLS PKI context");
         }
         detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
@@ -3519,17 +3555,16 @@ auto coap_server<Types>::setup_dtls_context() -> void {
                                       {{"client_identity", client_identity}});
 
                 return &psk_key;
-            } else {
-                server->_logger.warning("PSK identity validation failed",
-                                        {{"client_identity", client_identity},
-                                         {"expected_identity", server->_config.psk_identity}});
-                return nullptr;
             }
+            server->_logger.warning("PSK identity validation failed",
+                                    {{"client_identity", client_identity},
+                                     {"expected_identity", server->_config.psk_identity}});
+            return nullptr;
         };
         spsk_config.id_call_back_arg = this;
 
         // Apply PSK configuration to context
-        if (!coap_context_set_psk2(_coap_context, &spsk_config)) {
+        if (coap_context_set_psk2(_coap_context, &spsk_config) == 0) {
             throw coap_security_error("Failed to configure server DTLS PSK context");
         }
 
@@ -3643,7 +3678,7 @@ auto coap_server<Types>::reload_tls_material() -> void {
 #endif
 
 #ifdef LIBCOAP_AVAILABLE
-    if (!_coap_context) {
+    if (_coap_context == nullptr) {
         throw coap_security_error("reload_tls_material: CoAP context is null");
     }
 
@@ -3679,7 +3714,7 @@ auto coap_server<Types>::reload_tls_material() -> void {
     if (!_dtls_cipher_list.empty()) {
         pki_config.additional_tls_setup_call_back = &detail::libcoap_cipher_list_hook;
     }
-    if (!coap_context_set_pki(_coap_context, &pki_config)) {
+    if (coap_context_set_pki(_coap_context, &pki_config) == 0) {
         throw coap_security_error("reload_tls_material: PKI setup rejected");
     }
     detail::report_trust_anchor_load(_coap_context, _config.ca_file, _logger);
@@ -3749,7 +3784,7 @@ auto coap_server<Types>::initiate_dtls_handshake(coap_session_t* session) -> boo
     }
 
 #ifdef LIBCOAP_AVAILABLE
-    if (!session) {
+    if (session == nullptr) {
         _logger.error("Cannot initiate DTLS handshake: session is null");
         return false;
     }
@@ -3791,7 +3826,7 @@ auto coap_server<Types>::complete_dtls_handshake(coap_session_t* session) -> boo
     }
 
 #ifdef LIBCOAP_AVAILABLE
-    if (!session) {
+    if (session == nullptr) {
         _logger.error("Cannot complete DTLS handshake: session is null");
         return false;
     }
@@ -3911,8 +3946,8 @@ auto coap_server<Types>::send_error_response(coap_pdu_t* response, coap_pdu_code
 
     // Set diagnostic payload if provided
     if (!message.empty()) {
-        if (!coap_add_data(response, message.length(),
-                           reinterpret_cast<const std::uint8_t*>(message.c_str()))) {
+        if (coap_add_data(response, message.length(),
+                          reinterpret_cast<const std::uint8_t*>(message.c_str())) == 0) {
             _logger.error("Failed to add error message to CoAP response",
                           {{"error_code", std::to_string(code)}, {"message", message}});
         }
@@ -4019,17 +4054,17 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
         // Create BIO from certificate data
         bio =
             BIO_new_mem_buf(client_cert_data.c_str(), static_cast<int>(client_cert_data.length()));
-        if (!bio) {
+        if (bio == nullptr) {
             throw coap_security_error("Failed to create BIO for client certificate data");
         }
 
         // Parse PEM certificate
         cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-        if (!cert) {
+        if (cert == nullptr) {
             // Try DER format if PEM fails
             BIO_reset(bio);
             cert = d2i_X509_bio(bio, nullptr);
-            if (!cert) {
+            if (cert == nullptr) {
                 throw coap_security_error(
                     "Failed to parse client certificate (neither PEM nor DER format)");
             }
@@ -4041,7 +4076,7 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
         ASN1_TIME* not_before = X509_get_notBefore(cert);
         ASN1_TIME* not_after = X509_get_notAfter(cert);
 
-        if (!not_before || !not_after) {
+        if ((not_before == nullptr) || (not_after == nullptr)) {
             throw coap_security_error("Client certificate has invalid validity dates");
         }
 
@@ -4060,24 +4095,24 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
             _logger.debug("Verifying client certificate chain", {{"ca_file", _config.ca_file}});
 
             store = X509_STORE_new();
-            if (!store) {
+            if (store == nullptr) {
                 throw coap_security_error("Failed to create X509 store for client certificate");
             }
 
             // Load CA certificate(s)
-            if (!X509_STORE_load_locations(store, _config.ca_file.c_str(), nullptr)) {
+            if (X509_STORE_load_locations(store, _config.ca_file.c_str(), nullptr) == 0) {
                 throw coap_security_error("Failed to load CA certificate from: " + _config.ca_file);
             }
 
             // Create verification context
             ctx = X509_STORE_CTX_new();
-            if (!ctx) {
+            if (ctx == nullptr) {
                 throw coap_security_error(
                     "Failed to create X509 store context for client certificate");
             }
 
             // Initialize verification context
-            if (!X509_STORE_CTX_init(ctx, store, cert, nullptr)) {
+            if (X509_STORE_CTX_init(ctx, store, cert, nullptr) == 0) {
                 throw coap_security_error(
                     "Failed to initialize X509 store context for client certificate");
             }
@@ -4105,10 +4140,10 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
             is_ca_certificate ? -1 : X509_get_ext_by_NID(cert, NID_ext_key_usage, -1);
         if (ext_key_usage_idx >= 0) {
             X509_EXTENSION* ext_key_usage_ext = X509_get_ext(cert, ext_key_usage_idx);
-            if (ext_key_usage_ext) {
+            if (ext_key_usage_ext != nullptr) {
                 EXTENDED_KEY_USAGE* ext_key_usage =
                     static_cast<EXTENDED_KEY_USAGE*>(X509V3_EXT_d2i(ext_key_usage_ext));
-                if (ext_key_usage) {
+                if (ext_key_usage != nullptr) {
                     bool client_auth_found = false;
                     int num_usages = sk_ASN1_OBJECT_num(ext_key_usage);
 
@@ -4135,12 +4170,12 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
         int key_usage_idx = is_ca_certificate ? -1 : X509_get_ext_by_NID(cert, NID_key_usage, -1);
         if (key_usage_idx >= 0) {
             X509_EXTENSION* key_usage_ext = X509_get_ext(cert, key_usage_idx);
-            if (key_usage_ext) {
+            if (key_usage_ext != nullptr) {
                 ASN1_BIT_STRING* key_usage =
                     static_cast<ASN1_BIT_STRING*>(X509V3_EXT_d2i(key_usage_ext));
-                if (key_usage) {
+                if (key_usage != nullptr) {
                     // Check for digital signature bit
-                    if (!ASN1_BIT_STRING_get_bit(key_usage, 0)) {  // Digital Signature
+                    if (ASN1_BIT_STRING_get_bit(key_usage, 0) == 0) {  // Digital Signature
                         ASN1_BIT_STRING_free(key_usage);
                         throw coap_security_error(
                             "Client certificate does not have digital signature key usage");
@@ -4151,9 +4186,9 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
         }
 
         // Verify certificate signature algorithm is secure
-        const X509_ALGOR* sig_alg;
+        const X509_ALGOR* sig_alg = nullptr;
         X509_get0_signature(nullptr, &sig_alg, cert);
-        if (sig_alg) {
+        if (sig_alg != nullptr) {
             int sig_nid = OBJ_obj2nid(sig_alg->algorithm);
 
             // Reject weak signature algorithms
@@ -4169,10 +4204,18 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
         }
 
         // Cleanup
-        if (ctx) X509_STORE_CTX_free(ctx);
-        if (store) X509_STORE_free(store);
-        if (cert) X509_free(cert);
-        if (bio) BIO_free(bio);
+        if (ctx != nullptr) {
+            X509_STORE_CTX_free(ctx);
+        }
+        if (store != nullptr) {
+            X509_STORE_free(store);
+        }
+        if (cert != nullptr) {
+            X509_free(cert);
+        }
+        if (bio != nullptr) {
+            BIO_free(bio);
+        }
 
         _logger.info("Client certificate validation successful");
 
@@ -4185,10 +4228,18 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
 
     } catch (const coap_security_error&) {
         // Cleanup on error
-        if (ctx) X509_STORE_CTX_free(ctx);
-        if (store) X509_STORE_free(store);
-        if (cert) X509_free(cert);
-        if (bio) BIO_free(bio);
+        if (ctx != nullptr) {
+            X509_STORE_CTX_free(ctx);
+        }
+        if (store != nullptr) {
+            X509_STORE_free(store);
+        }
+        if (cert != nullptr) {
+            X509_free(cert);
+        }
+        if (bio != nullptr) {
+            BIO_free(bio);
+        }
 
         // Record failed validation metrics
         _metrics.add_dimension("client_cert_validation", "failure");
@@ -4198,10 +4249,18 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
         throw;  // Re-throw the security error
     } catch (const std::exception& e) {
         // Cleanup on unexpected error
-        if (ctx) X509_STORE_CTX_free(ctx);
-        if (store) X509_STORE_free(store);
-        if (cert) X509_free(cert);
-        if (bio) BIO_free(bio);
+        if (ctx != nullptr) {
+            X509_STORE_CTX_free(ctx);
+        }
+        if (store != nullptr) {
+            X509_STORE_free(store);
+        }
+        if (cert != nullptr) {
+            X509_free(cert);
+        }
+        if (bio != nullptr) {
+            BIO_free(bio);
+        }
 
         // Record failed validation metrics
         _metrics.add_dimension("client_cert_validation", "error");
@@ -4724,7 +4783,8 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
 
 #ifdef LIBCOAP_AVAILABLE
         // Validate session is still active
-        if (session && coap_session_get_state(session) == COAP_SESSION_STATE_ESTABLISHED) {
+        if ((session != nullptr) &&
+            coap_session_get_state(session) == COAP_SESSION_STATE_ESTABLISHED) {
             _logger.debug("Reusing existing session",
                           {{"endpoint", endpoint},
                            {"session_pool_size", std::to_string(pool.size())},
@@ -4736,13 +4796,12 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
             _metrics.emit();
 
             return session;
-        } else {
-            // Session is invalid, release it
-            if (session) {
-                coap_session_release(session);
-            }
-            _logger.debug("Removed invalid session from pool", {{"endpoint", endpoint}});
+        }  // Session is invalid, release it
+        if (session != nullptr) {
+            coap_session_release(session);
         }
+        _logger.debug("Removed invalid session from pool", {{"endpoint", endpoint}});
+
 #else
         // Stub implementation - assume session is valid
         _logger.debug("Reusing existing session (stub)",
@@ -4789,9 +4848,10 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
 
         // Resolve address
         uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
-        coap_addr_info_t* addr_info = coap_resolve_address_info(
-            &uri.host, uri.port, uri.port, 0, 0, 0, scheme_hint_bits, COAP_RESOLVE_TYPE_REMOTE);
-        if (!addr_info) {
+        coap_addr_info_t* addr_info =
+            coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0,
+                                      static_cast<int>(scheme_hint_bits), COAP_RESOLVE_TYPE_REMOTE);
+        if (addr_info == nullptr) {
             _logger.error("Failed to resolve endpoint address for session creation",
                           {{"endpoint", endpoint}});
             return nullptr;
@@ -4820,7 +4880,7 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
                                                                 COAP_PROTO_UDP);
         }
 
-        if (session) {
+        if (session != nullptr) {
             // Configure session parameters
             coap_session_set_max_retransmit(session, _config.max_retransmit);
             coap_session_set_ack_timeout(
@@ -4838,10 +4898,9 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
             _metrics.emit();
 
             return session;
-        } else {
-            _logger.error("Failed to create new session", {{"endpoint", endpoint}});
-            return nullptr;
         }
+        _logger.error("Failed to create new session", {{"endpoint", endpoint}});
+        return nullptr;
 
     } catch (const std::exception& e) {
         _logger.error("Exception creating new session",
@@ -4994,7 +5053,7 @@ auto coap_client<Types>::cleanup_expired_sessions() -> void {
             pool.erase(pool.begin());
 
 #ifdef LIBCOAP_AVAILABLE
-            if (session) {
+            if (session != nullptr) {
                 coap_session_release(session);
             }
 #endif
@@ -5046,7 +5105,7 @@ auto coap_client<Types>::handle_resource_exhaustion() -> void {
             pool.pop_back();
 
 #ifdef LIBCOAP_AVAILABLE
-            if (session) {
+            if (session != nullptr) {
                 coap_session_release(session);
             }
 #endif
@@ -6454,7 +6513,7 @@ auto coap_server<Types>::setup_multicast_listener() -> void {
                   {"multicast_port", std::to_string(_config.multicast_port)}});
 
 #ifdef LIBCOAP_AVAILABLE
-    if (!_coap_context) {
+    if (_coap_context == nullptr) {
         _logger.error("Cannot setup multicast listener: CoAP context is null");
         return;
     }
@@ -7035,7 +7094,7 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
     // point-to-point handshake and has no multicast form.
     coap_session_t* session =
         coap_new_client_session(_coap_context, nullptr, &group_addr, COAP_PROTO_UDP);
-    if (!session) {
+    if (session == nullptr) {
         return fail("Failed to create multicast session to " + multicast_address);
     }
     coap_session_set_app_data(session, this);
@@ -7043,7 +7102,7 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
     coap_pdu_t* pdu =
         coap_pdu_init(COAP_MESSAGE_NON, COAP_REQUEST_CODE_POST, coap_new_message_id(session),
                       coap_session_max_pdu_size(session));
-    if (!pdu) {
+    if (pdu == nullptr) {
         coap_session_release(session);
         return fail("Failed to create multicast PDU");
     }
@@ -7054,7 +7113,8 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
     // fit one PDU is refused here rather than truncated.
     if (!coap_add_token(pdu, token.length(), reinterpret_cast<const uint8_t*>(token.c_str())) ||
         !add_uri_path_options(pdu, resource_path) ||
-        !coap_add_data(pdu, payload.size(), reinterpret_cast<const uint8_t*>(payload.data()))) {
+        (coap_add_data(pdu, payload.size(), reinterpret_cast<const uint8_t*>(payload.data())) ==
+         0)) {
         coap_delete_pdu(pdu);
         coap_session_release(session);
         return fail("Failed to build multicast request (payload of " +
@@ -7278,7 +7338,7 @@ auto coap_client<Types>::join_multicast_group(const std::string& multicast_addre
         addr.sin_addr.s_addr = INADDR_ANY;  // Bind to any interface
         addr.sin_port = htons(5683);        // Standard CoAP port
 
-        if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        if (bind(sockfd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
             _logger.error("Failed to bind multicast socket",
                           {{"address", multicast_address}, {"error", strerror(errno)}});
             close(sockfd);
@@ -7521,7 +7581,7 @@ auto coap_client<Types>::finalize_multicast_response_collection(const std::strin
 
     // Clean up the multicast request
 #ifdef LIBCOAP_AVAILABLE
-    if (collector->session) {
+    if (collector->session != nullptr) {
         coap_session_release(collector->session);
         collector->session = nullptr;
     }
@@ -7559,7 +7619,7 @@ auto coap_client<Types>::cleanup_expired_multicast_requests() -> void {
                 continue;
             }
 #ifdef LIBCOAP_AVAILABLE
-            if (collector->session) {
+            if (collector->session != nullptr) {
                 coap_session_release(collector->session);
                 collector->session = nullptr;
             }
@@ -7751,7 +7811,7 @@ auto coap_client<Types>::handle_multicast_error(const std::string& token,
 
     // Clean up the multicast request
 #ifdef LIBCOAP_AVAILABLE
-    if (collector->session) {
+    if (collector->session != nullptr) {
         coap_session_release(collector->session);
         collector->session = nullptr;
     }
@@ -7803,7 +7863,7 @@ auto coap_client<Types>::collect_multicast_response(coap_session_t* session,
     multicast_response collected;
     collected.sender_address = sender;
     collected.received_time = std::chrono::steady_clock::now();
-    if (coap_get_data_large(response, &len, &data, &offset, &total)) {
+    if (coap_get_data_large(response, &len, &data, &offset, &total) != 0) {
         const auto* bytes = reinterpret_cast<const std::byte*>(data);
         collected.response_data.assign(bytes, bytes + len);
     }
@@ -8045,7 +8105,7 @@ auto coap_server<Types>::send_multicast_response(const std::string& target_addre
                    {"response_size", std::to_string(response_data.size())}});
 
 #ifdef LIBCOAP_AVAILABLE
-    if (!_coap_context) {
+    if (_coap_context == nullptr) {
         _logger.error("Cannot send multicast response: CoAP context is null");
         return;
     }
@@ -8095,7 +8155,7 @@ auto coap_server<Types>::send_multicast_response(const std::string& target_addre
         // Create client session for response
         coap_session_t* response_session =
             coap_new_client_session(_coap_context, nullptr, &target_addr, COAP_PROTO_UDP);
-        if (!response_session) {
+        if (response_session == nullptr) {
             _logger.error("Failed to create response session",
                           {{"target_address", target_address}});
             return;
@@ -8107,7 +8167,7 @@ auto coap_server<Types>::send_multicast_response(const std::string& target_addre
                           COAP_RESPONSE_CODE_CONTENT, coap_new_message_id(response_session),
                           coap_session_max_pdu_size(response_session));
 
-        if (!response_pdu) {
+        if (response_pdu == nullptr) {
             coap_session_release(response_session);
             _logger.error("Failed to create response PDU");
             return;
@@ -8290,7 +8350,7 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
                                                                   COAP_PROTO_DTLS)
                       : new_dtls_client_session(dst_addr);
 
-        if (session) {
+        if (session != nullptr) {
             // Configure DTLS parameters
             coap_dtls_set_log_level(LOG_DEBUG);
 
@@ -8311,19 +8371,19 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
         // from the session pool's own path, which send_rpc does not use.
         session = _security_provider->create_client_session(_coap_context, nullptr, dst_addr,
                                                             COAP_PROTO_UDP);
-        if (session) {
+        if (session != nullptr) {
             _logger.debug("Created new OSCORE session", {{"protocol", "UDP"}});
         }
     } else {
         // Create regular UDP session
         session = coap_new_client_session(_coap_context, nullptr, dst_addr, COAP_PROTO_UDP);
 
-        if (session) {
+        if (session != nullptr) {
             _logger.debug("Created new UDP session", {{"protocol", "UDP"}});
         }
     }
 
-    if (!session) {
+    if (session == nullptr) {
         _metrics.add_dimension("error_type", "coap_session_creation_failures");
         _metrics.add_one();
         _metrics.emit();

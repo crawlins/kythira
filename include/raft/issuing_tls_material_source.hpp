@@ -107,7 +107,7 @@ public:
         if (!_provider) {
             throw std::invalid_argument("issuing_tls_material_source: provider is null");
         }
-        if (!(_options.renew_at_fraction > 0.0 && _options.renew_at_fraction < 1.0)) {
+        if (_options.renew_at_fraction <= 0.0 || _options.renew_at_fraction >= 1.0) {
             throw std::invalid_argument(
                 "issuing_tls_material_source: renew_at_fraction must be in (0, 1)");
         }
@@ -238,7 +238,9 @@ private:
                 }
                 wake.wait_until(lock, stop, until, [] { return false; });
             }
-            if (stop.stop_requested()) return;
+            if (stop.stop_requested()) {
+                return;
+            }
             {
                 std::lock_guard<std::mutex> issue_lock(_issue_mutex);
                 // An explicit refresh() renewed early: follow its schedule.

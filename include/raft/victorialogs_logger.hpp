@@ -119,7 +119,9 @@ namespace victorialogs_detail {
         client.set_write_timeout(secs, usecs);
 
         httplib::Headers hdrs;
-        for (const auto& [key, value] : headers) hdrs.emplace(key, value);
+        for (const auto& [key, value] : headers) {
+            hdrs.emplace(key, value);
+        }
 
         auto res =
             client.Post(insert_path, hdrs, std::string(payload) + "\n", "application/stream+json");
@@ -176,7 +178,9 @@ public:
         -> void {
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            if (level < _min_level) return;
+            if (level < _min_level) {
+                return;
+            }
         }
         boost::json::object line{
             {"_time", victorialogs_detail::rfc3339_nanos(otlp_now_unix_nanos())},
@@ -189,7 +193,9 @@ public:
         // all string escaping. Reserved-name collisions (_msg/_time/...)
         // are resolved last-writer-wins by object::operator[], which is
         // fine — a caller using those names means to set them.
-        for (const auto& [key, value] : key_value_pairs) line[key] = value;
+        for (const auto& [key, value] : key_value_pairs) {
+            line[key] = value;
+        }
         _exporter->push(boost::json::serialize(line));
     }
 

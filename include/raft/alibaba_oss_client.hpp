@@ -258,8 +258,8 @@ public:
     /// goes back to the service unmodified in a future precondition, so
     /// normalising it here would only create a way for the two spellings to
     /// disagree.
-    auto put_object(const std::string& bucket, const std::string& key, std::string_view bytes) const
-        -> put_result {
+    [[nodiscard]] auto put_object(const std::string& bucket, const std::string& key,
+                                  std::string_view bytes) const -> put_result {
         fiu_do_on("raft/alibaba/oss/put_object",
                   throw std::runtime_error("chaos: raft/alibaba/oss/put_object " + key););
         auto result = send(bucket, key, "PUT", {}, std::string(bytes));

@@ -235,10 +235,9 @@ BOOST_AUTO_TEST_CASE(test_work_submission_move_semantics, *boost::unit_test::tim
 
         BOOST_CHECK(called.load());
         // unique_ptr should have been moved
-        BOOST_CHECK_EQUAL(
-            unique_ptr.get(),
-            nullptr);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
-                       // - intentional move-semantics test
+        // Intentional move-semantics test: the moved-from pointer must be empty.
+        // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+        BOOST_CHECK_EQUAL(unique_ptr.get(), nullptr);
     }
 
     BOOST_TEST_MESSAGE("Work submission move semantics test passed");

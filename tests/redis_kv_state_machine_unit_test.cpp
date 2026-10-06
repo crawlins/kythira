@@ -133,7 +133,7 @@ BOOST_AUTO_TEST_CASE(sweep_deletes_only_matching_deadline, *boost::unit_test::ti
 BOOST_AUTO_TEST_CASE(collect_expired_is_bounded, *boost::unit_test::timeout(10)) {
     sm_type sm;
     for (int i = 0; i < 10; ++i) {
-        set(sm, static_cast<std::uint64_t>(i + 1), "k" + std::to_string(i), "v", 10);
+        set(sm, static_cast<std::uint64_t>(i) + 1, "k" + std::to_string(i), "v", 10);
     }
     BOOST_CHECK_EQUAL(sm.collect_expired(20, 4).size(), 4u);
     BOOST_CHECK_EQUAL(sm.collect_expired(5, 4).size(), 0u);
@@ -180,7 +180,7 @@ BOOST_AUTO_TEST_CASE(split_absorb_round_trip, *boost::unit_test::timeout(10)) {
     sm_type whole;
     for (char c = 'a'; c <= 'j'; ++c) {
         set(whole, static_cast<std::uint64_t>(c), std::string(1, c), std::string(3, c),
-            c % 2 ? 0 : 1000);
+            ((c % 2) != 0) ? 0 : 1000);
     }
     auto before = whole.get_state();
 
@@ -233,7 +233,7 @@ BOOST_AUTO_TEST_CASE(suggest_split_keys_never_first_key, *boost::unit_test::time
     sm_type sm;
     BOOST_CHECK(sm.suggest_split_keys(3).empty());
     for (int i = 0; i < 100; ++i) {
-        set(sm, static_cast<std::uint64_t>(i + 1), "k" + std::to_string(1000 + i), "v");
+        set(sm, static_cast<std::uint64_t>(i) + 1, "k" + std::to_string(1000 + i), "v");
     }
     auto keys = sm.suggest_split_keys(3);
     BOOST_REQUIRE_EQUAL(keys.size(), 3u);
