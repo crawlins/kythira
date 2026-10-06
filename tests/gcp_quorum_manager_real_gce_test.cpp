@@ -1005,6 +1005,11 @@ auto base_mig_config() -> gcp_mig_quorum_manager_config<std::string> {
 
 /// The MIG's target size and the names of its managed instances, read
 /// directly so an assertion does not rely on the manager's own view.
+/// Members already DELETING or ABANDONING are left out: the previous case's
+/// decommission can still be listed when the next case starts (run
+/// 37416950202 counted one as pre-existing, then failed when it finished
+/// leaving), and deleteInstances has already taken them out of the target
+/// size.
 struct mig_state {
     std::int32_t target_size{-1};
     std::vector<std::string> members;
@@ -1026,6 +1031,9 @@ auto read_mig(const std::string& project, const std::string& zone, const std::st
     mig_state state;
     state.target_size = got->target_size();
     for (const auto& mi : listed->managed_instances()) {
+        if (mi.current_action() == "DELETING" || mi.current_action() == "ABANDONING") {
+            continue;
+        }
         const auto& url = mi.instance();
         state.members.push_back(url.substr(url.find_last_of('/') + 1));
     }
@@ -1113,6 +1121,12 @@ BOOST_AUTO_TEST_CASE(mig_provision_timeout_removes_only_the_fresh_instance) {
     const auto voter_billed = cost.add_instance("mig-template-default", zone, false);
     const auto pre = read_mig(cfg.gcp.project_id, zone, mig);
     BOOST_REQUIRE(pre.has_value());
+    std::cerr << "[gcp-real] MIG before the timed-out provision: target size " << pre->target_size
+              << ", members";
+    for (const auto& name : pre->members) {
+        std::cerr << " " << name;
+    }
+    std::cerr << "\n";
 
     auto short_cfg = cfg;
     short_cfg.provision_timeout = std::chrono::seconds(5);
