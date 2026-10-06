@@ -5,6 +5,18 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 6, 2026)
 
+- **The real-EC2 test suites no longer leak empty VPCs.** Their teardown
+  slept a fixed 30 seconds after terminating instances, then deleted each
+  security group and subnet once and ignored the result. When termination
+  took longer, the instances' network interfaces were still attached, both
+  deletes failed with `DependencyViolation`, and the retried `DeleteVpc`
+  could never succeed, so every such run left a `kyt-*-vpc` behind with
+  its subnets, security groups and network ACL. Teardown in
+  `aws_quorum_manager_real_ec2_test`, `ca_cluster_node_real_ec2_test` and
+  `ca_cluster_node_rpc_tls_real_ec2_test` now waits for every instance in
+  the VPC to reach `terminated`, retries all the network deletes in order
+  until the VPC is gone, and logs whatever it still could not delete.
+
 - **Destroying a multi-raft group no longer races the tick or the
   transport.** `tick()` runs its phases over one registry snapshot, and
   `destroy_group()` freed the group's node as soon as it had drained the

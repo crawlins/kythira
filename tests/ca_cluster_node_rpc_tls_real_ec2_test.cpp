@@ -470,9 +470,12 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
                 }
                 if (any) {
                     ec2->TerminateInstances(term);
-                    std::this_thread::sleep_for(std::chrono::seconds{30});
                 }
             }
+            // Wait for `terminated` rather than a fixed 30s: until their
+            // network interfaces detach, the SG and subnet deletes below fail.
+            (void)kythira::testing::aws_real_ec2::wait_vpc_instances_terminated(
+                *ec2, vpc_id, std::chrono::seconds{180}, "ca-rpc-tls-real-ec2");
         }
 
         // Restore any AZ still isolated before deleting the NACL itself.
@@ -480,66 +483,76 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
             (void)assoc_id;
             restore_az(az);
         }
-        // Retried: an association that only just cleared (from restore_az()
-        // above, or ordinary API eventual consistency) can briefly still
-        // block this delete.
-        if (!deny_all_nacl_id.empty()) {
-            auto nacl_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
-            while (std::chrono::steady_clock::now() < nacl_deadline) {
-                Aws::EC2::Model::DeleteNetworkAclRequest req;
-                req.SetNetworkAclId(deny_all_nacl_id);
-                if (ec2->DeleteNetworkAcl(req).IsSuccess()) {
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::seconds{5});
-            }
-        }
-
         if (!key_name.empty()) {
             Aws::EC2::Model::DeleteKeyPairRequest req;
             req.SetKeyName(key_name);
             ec2->DeleteKeyPair(req);
         }
+        // Delete the network children first and retry the whole set until
+        // the VPC is gone. Each delete but the VPC's used to be issued once
+        // with its result ignored, so an ENI still detaching (DependencyViolation
+        // on the SG or subnet) or a public address still mapped through the
+        // IGW silently kept that resource and, through it, the VPC, which the
+        // VPC retry alone could never get past. AWS's own dependency
+        // resolution can also lag past the last child's delete, so the VPC
+        // itself may need several passes. The budget is the one the VPC
+        // retry alone had before.
+        namespace support = kythira::testing::aws_real_ec2;
+        std::vector<support::teardown_delete> steps;
         if (!sg_id.empty()) {
-            Aws::EC2::Model::DeleteSecurityGroupRequest req;
-            req.SetGroupId(sg_id);
-            ec2->DeleteSecurityGroup(req);
+            steps.push_back({"security group " + sg_id, [this] {
+                                 Aws::EC2::Model::DeleteSecurityGroupRequest req;
+                                 req.SetGroupId(sg_id);
+                                 return support::delete_outcome_error(
+                                     ec2->DeleteSecurityGroup(req));
+                             }});
         }
         for (const auto& [az, subnet_id] : subnet_by_az) {
             (void)az;
-            Aws::EC2::Model::DeleteSubnetRequest req;
-            req.SetSubnetId(subnet_id);
-            ec2->DeleteSubnet(req);
+            steps.push_back({"subnet " + subnet_id, [this, id = subnet_id] {
+                                 Aws::EC2::Model::DeleteSubnetRequest req;
+                                 req.SetSubnetId(id);
+                                 return support::delete_outcome_error(ec2->DeleteSubnet(req));
+                             }});
         }
         if (!route_table_id.empty()) {
-            Aws::EC2::Model::DeleteRouteTableRequest req;
-            req.SetRouteTableId(route_table_id);
-            ec2->DeleteRouteTable(req);
+            steps.push_back({"route table " + route_table_id, [this] {
+                                 Aws::EC2::Model::DeleteRouteTableRequest req;
+                                 req.SetRouteTableId(route_table_id);
+                                 return support::delete_outcome_error(ec2->DeleteRouteTable(req));
+                             }});
+        }
+        if (!deny_all_nacl_id.empty()) {
+            steps.push_back({"network ACL " + deny_all_nacl_id, [this] {
+                                 Aws::EC2::Model::DeleteNetworkAclRequest req;
+                                 req.SetNetworkAclId(deny_all_nacl_id);
+                                 return support::delete_outcome_error(ec2->DeleteNetworkAcl(req));
+                             }});
         }
         if (!igw_id.empty()) {
-            Aws::EC2::Model::DetachInternetGatewayRequest detach_req;
-            detach_req.SetVpcId(vpc_id);
-            detach_req.SetInternetGatewayId(igw_id);
-            ec2->DetachInternetGateway(detach_req);
-            Aws::EC2::Model::DeleteInternetGatewayRequest req;
-            req.SetInternetGatewayId(igw_id);
-            ec2->DeleteInternetGateway(req);
+            steps.push_back({"internet gateway attachment " + igw_id, [this] {
+                                 Aws::EC2::Model::DetachInternetGatewayRequest req;
+                                 req.SetVpcId(vpc_id);
+                                 req.SetInternetGatewayId(igw_id);
+                                 return support::delete_outcome_error(
+                                     ec2->DetachInternetGateway(req), {"Gateway.NotAttached"});
+                             }});
+            steps.push_back({"internet gateway " + igw_id, [this] {
+                                 Aws::EC2::Model::DeleteInternetGatewayRequest req;
+                                 req.SetInternetGatewayId(igw_id);
+                                 return support::delete_outcome_error(
+                                     ec2->DeleteInternetGateway(req));
+                             }});
         }
-        // Retried: AWS's own dependency resolution after ENI teardown can
-        // lag past when everything above already reports gone. See
-        // aws_quorum_manager_real_ec2_test.cpp's identical fix for the full
-        // rationale (found via the same real-AWS leaked-VPC investigation).
         if (!vpc_id.empty()) {
-            auto vpc_deadline = std::chrono::steady_clock::now() + std::chrono::minutes{5};
-            while (std::chrono::steady_clock::now() < vpc_deadline) {
-                Aws::EC2::Model::DeleteVpcRequest req;
-                req.SetVpcId(vpc_id);
-                if (ec2->DeleteVpc(req).IsSuccess()) {
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::seconds{15});
-            }
+            steps.push_back({"VPC " + vpc_id, [this] {
+                                 Aws::EC2::Model::DeleteVpcRequest req;
+                                 req.SetVpcId(vpc_id);
+                                 return support::delete_outcome_error(ec2->DeleteVpc(req));
+                             }});
         }
+        (void)support::run_teardown_deletes(std::move(steps), std::chrono::minutes{5},
+                                            std::chrono::seconds{15}, "ca-rpc-tls-real-ec2");
 
         for (auto& r : cost_report.resources) {
             r.finalize();

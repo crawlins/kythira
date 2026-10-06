@@ -425,6 +425,7 @@ auto spot_first_launch_options(Aws::EC2::EC2Client& ec2_client, const std::strin
 using kythira::testing::aws_real_ec2::AwsSignalHandlerFixture;
 using kythira::testing::aws_real_ec2::g_active_aws_fixture;
 using kythira::testing::aws_real_ec2::signal_cleanup_target;
+namespace support = kythira::testing::aws_real_ec2;
 
 // ── RealEc2Fixture ────────────────────────────────────────────────────────────
 //
@@ -1389,8 +1390,14 @@ struct RealEc2Fixture : signal_cleanup_target {
             term.AddInstanceIds(bastion_ec2_id);
             ec2->TerminateInstances(term);
         }
-        // Wait for instances to terminate (~30 s grace).
-        std::this_thread::sleep_for(std::chrono::seconds{30});
+        // Wait for every instance in the VPC to actually reach `terminated`.
+        // A fixed 30s sleep used to stand in for this; whenever termination
+        // took longer, the still-attached network interfaces made every
+        // subnet/SG delete below fail, and the VPC leaked.
+        if (ec2 && !vpc_id.empty()) {
+            (void)support::wait_vpc_instances_terminated(*ec2, vpc_id, std::chrono::seconds{180},
+                                                         "aws-real-ec2");
+        }
 
         // b: restore AZ3 NACL if still modified.
         restore_az3_nacl();
@@ -1402,29 +1409,8 @@ struct RealEc2Fixture : signal_cleanup_target {
             ec2->DeleteKeyPair(req);
         }
 
-        // d: restore NACL association → delete deny-all NACL. Retried: if
-        // restore_az3_nacl() above only just took effect, the association
-        // can still briefly show as active (API eventual consistency),
-        // which blocks this delete and, transitively, the VPC's delete
-        // below.
-        if (!deny_all_nacl_id.empty()) {
-            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
-            while (std::chrono::steady_clock::now() < deadline) {
-                Aws::EC2::Model::DeleteNetworkAclRequest req;
-                req.SetNetworkAclId(deny_all_nacl_id);
-                if (ec2->DeleteNetworkAcl(req).IsSuccess()) {
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::seconds{5});
-            }
-        }
-
-        // e: delete quarantine SG (must come after instances terminated).
-        if (!quarantine_sg_id.empty()) {
-            Aws::EC2::Model::DeleteSecurityGroupRequest req;
-            req.SetGroupId(quarantine_sg_id);
-            ec2->DeleteSecurityGroup(req);
-        }
+        // d/e: the deny-all NACL and the quarantine SG are deleted with the
+        // rest of the network in step i below, where they are retried.
 
         // f: delete NAT gateway first and poll until fully deleted.
         // This MUST happen before subnet deletion — subnets cannot be removed
@@ -1495,94 +1481,90 @@ struct RealEc2Fixture : signal_cleanup_target {
                       << "account's EIP quota)\n";
         }
 
-        // h: disassociate and delete private route table.
-        if (!subnet_az1_assoc_id.empty()) {
-            Aws::EC2::Model::DisassociateRouteTableRequest d;
-            d.SetAssociationId(subnet_az1_assoc_id);
-            ec2->DisassociateRouteTable(d);
-        }
-        if (!subnet_az2_assoc_id.empty()) {
-            Aws::EC2::Model::DisassociateRouteTableRequest d;
-            d.SetAssociationId(subnet_az2_assoc_id);
-            ec2->DisassociateRouteTable(d);
-        }
-        if (!subnet_az3_assoc_id.empty()) {
-            Aws::EC2::Model::DisassociateRouteTableRequest d;
-            d.SetAssociationId(subnet_az3_assoc_id);
-            ec2->DisassociateRouteTable(d);
-        }
-        if (!priv_rtb_id.empty()) {
-            Aws::EC2::Model::DeleteRouteTableRequest d;
-            d.SetRouteTableId(priv_rtb_id);
-            ec2->DeleteRouteTable(d);
-        }
-
-        // i: delete private subnets (AZ1/AZ2/AZ3).
-        for (const auto& sid : {subnet_az1_id, subnet_az2_id, subnet_az3_id}) {
-            if (!sid.empty()) {
-                Aws::EC2::Model::DeleteSubnetRequest d;
-                d.SetSubnetId(sid);
-                ec2->DeleteSubnet(d);
+        // h: disassociate the route tables from their subnets. Not retried:
+        // deleting a subnet in step i drops its association anyway.
+        for (const auto& assoc :
+             {subnet_az1_assoc_id, subnet_az2_assoc_id, subnet_az3_assoc_id, pub_rtb_assoc_id}) {
+            if (!assoc.empty()) {
+                Aws::EC2::Model::DisassociateRouteTableRequest d;
+                d.SetAssociationId(assoc);
+                (void)ec2->DisassociateRouteTable(d);
             }
         }
 
-        // j: disassociate public route table, delete route table, delete public subnet.
-        if (!pub_rtb_assoc_id.empty()) {
-            Aws::EC2::Model::DisassociateRouteTableRequest d;
-            d.SetAssociationId(pub_rtb_assoc_id);
-            ec2->DisassociateRouteTable(d);
-        }
-        if (!pub_rtb_id.empty()) {
-            Aws::EC2::Model::DeleteRouteTableRequest d;
-            d.SetRouteTableId(pub_rtb_id);
-            ec2->DeleteRouteTable(d);
-        }
-        if (!pub_subnet_id.empty()) {
-            Aws::EC2::Model::DeleteSubnetRequest d;
-            d.SetSubnetId(pub_subnet_id);
-            ec2->DeleteSubnet(d);
-        }
-
-        // k: delete cluster + bastion SGs.
-        for (const auto& sg : {cluster_sg_id, bastion_sg_id}) {
+        // i: delete the rest of the network, children before parents, and
+        // retry the whole set until the VPC is gone. Each delete used to be
+        // issued once with its result ignored, so an ENI still detaching from
+        // a terminated instance (DependencyViolation on the SG or subnet), or
+        // a public address still mapped through the IGW, silently kept that
+        // resource and, through it, the VPC. Only DeleteVpc was retried, which
+        // cannot succeed while its subnets survive. The 5-minute budget is
+        // the one the VPC retry alone had before.
+        std::vector<support::teardown_delete> steps;
+        for (const auto& sg : {quarantine_sg_id, cluster_sg_id, bastion_sg_id}) {
             if (!sg.empty()) {
-                Aws::EC2::Model::DeleteSecurityGroupRequest d;
-                d.SetGroupId(sg);
-                ec2->DeleteSecurityGroup(d);
+                steps.push_back({"security group " + sg, [this, sg] {
+                                     Aws::EC2::Model::DeleteSecurityGroupRequest d;
+                                     d.SetGroupId(sg);
+                                     return support::delete_outcome_error(
+                                         ec2->DeleteSecurityGroup(d));
+                                 }});
             }
         }
-
-        // l: detach + delete IGW.
+        for (const auto& sid : {subnet_az1_id, subnet_az2_id, subnet_az3_id, pub_subnet_id}) {
+            if (!sid.empty()) {
+                steps.push_back({"subnet " + sid, [this, sid] {
+                                     Aws::EC2::Model::DeleteSubnetRequest d;
+                                     d.SetSubnetId(sid);
+                                     return support::delete_outcome_error(ec2->DeleteSubnet(d));
+                                 }});
+            }
+        }
+        for (const auto& rtb : {priv_rtb_id, pub_rtb_id}) {
+            if (!rtb.empty()) {
+                steps.push_back({"route table " + rtb, [this, rtb] {
+                                     Aws::EC2::Model::DeleteRouteTableRequest d;
+                                     d.SetRouteTableId(rtb);
+                                     return support::delete_outcome_error(ec2->DeleteRouteTable(d));
+                                 }});
+            }
+        }
+        if (!deny_all_nacl_id.empty()) {
+            steps.push_back({"network ACL " + deny_all_nacl_id, [this] {
+                                 Aws::EC2::Model::DeleteNetworkAclRequest d;
+                                 d.SetNetworkAclId(deny_all_nacl_id);
+                                 return support::delete_outcome_error(ec2->DeleteNetworkAcl(d));
+                             }});
+        }
         if (!igw_id.empty() && !vpc_id.empty()) {
-            Aws::EC2::Model::DetachInternetGatewayRequest d;
-            d.SetInternetGatewayId(igw_id);
-            d.SetVpcId(vpc_id);
-            ec2->DetachInternetGateway(d);
-            Aws::EC2::Model::DeleteInternetGatewayRequest del;
-            del.SetInternetGatewayId(igw_id);
-            ec2->DeleteInternetGateway(del);
+            steps.push_back({"internet gateway attachment " + igw_id, [this] {
+                                 Aws::EC2::Model::DetachInternetGatewayRequest d;
+                                 d.SetInternetGatewayId(igw_id);
+                                 d.SetVpcId(vpc_id);
+                                 return support::delete_outcome_error(ec2->DetachInternetGateway(d),
+                                                                      {"Gateway.NotAttached"});
+                             }});
+            steps.push_back({"internet gateway " + igw_id, [this] {
+                                 Aws::EC2::Model::DeleteInternetGatewayRequest d;
+                                 d.SetInternetGatewayId(igw_id);
+                                 return support::delete_outcome_error(
+                                     ec2->DeleteInternetGateway(d));
+                             }});
         }
-
-        // m: delete VPC. Retried with a bounded poll: AWS's own dependency
-        // resolution after NAT gateway/ENI teardown (step f above) can lag
-        // well past when DescribeNatGateways first reports "deleted" — a
-        // single fire-and-forget DeleteVpc call was observed failing with
-        // DependencyViolation minutes after every visible dependency
-        // (subnets, route tables, security groups, IGW) was already gone,
-        // leaving an empty VPC shell orphaned with nothing left inside it
-        // to explain the failure. Several real leaked VPCs found and
-        // manually cleaned up during .kiro/specs/ci-real-cloud-tests/
-        // Task 12's real-AWS verification traced back to exactly this gap.
+        // AWS's own dependency resolution after NAT gateway/ENI teardown can
+        // lag well past when everything above already reports gone, so the
+        // VPC itself can need several passes after its last child is deleted
+        // (see .kiro/specs/ci-real-cloud-tests/ Task 12).
         if (!vpc_id.empty()) {
-            auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{5};
-            while (std::chrono::steady_clock::now() < deadline) {
-                Aws::EC2::Model::DeleteVpcRequest d;
-                d.SetVpcId(vpc_id);
-                if (ec2->DeleteVpc(d).IsSuccess()) {
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::seconds{15});
-            }
+            steps.push_back({"VPC " + vpc_id, [this] {
+                                 Aws::EC2::Model::DeleteVpcRequest d;
+                                 d.SetVpcId(vpc_id);
+                                 return support::delete_outcome_error(ec2->DeleteVpc(d));
+                             }});
+        }
+        if (ec2) {
+            (void)support::run_teardown_deletes(std::move(steps), std::chrono::minutes{5},
+                                                std::chrono::seconds{15}, "aws-real-ec2");
         }
 
         // Finalise all billing timers, emit per-test cost, and record in global summary.
@@ -1602,10 +1584,11 @@ BOOST_GLOBAL_FIXTURE(AwsSignalHandlerFixture);
 // ── Test cases ────────────────────────────────────────────────────────────────
 //
 // Per-case timeout budget: every case pays the same teardown tax — terminate
-// instances, then delete the NAT gateway (waiting for it to actually vanish
-// before releasing its EIP) and retry DeleteNetworkAcl/DeleteVpc — which alone
-// runs to several minutes on top of the case's own provisioning and, for the
-// stop/start cases, up to six minutes of StopInstances/StartInstances polling.
+// instances and wait for them, then delete the NAT gateway (waiting for it to
+// actually vanish before releasing its EIP) and retry the network deletes
+// until the VPC is gone — which alone runs to several minutes on top of the
+// case's own provisioning and, for the stop/start cases, up to six minutes of
+// StopInstances/StartInstances polling.
 // The 9-node cases were already raised from 1200s to 1500s for this reason;
 // the lighter cases carried a stale 600s cap that only held while the suite was
 // aborting early on other failures. Once it ran end-to-end,
