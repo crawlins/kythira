@@ -5,7 +5,8 @@
 
 /// @file aws_real_ec2_test_support.hpp
 /// @brief Shared real-EC2 integration test infrastructure: AWS cost
-/// estimation/reporting and signal-driven cleanup.
+/// estimation/reporting, signal-driven cleanup, and teardown helpers that
+/// wait for instance termination and retry network deletes.
 ///
 /// Originally implemented once, only in aws_quorum_manager_real_ec2_test.cpp
 /// (aws-quorum-manager spec Requirements 20/21). Extracted here
@@ -32,6 +33,15 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include <functional>
+#include <initializer_list>
+#include <string_view>
+#include <thread>
+
+#include <aws/ec2/EC2Client.h>
+#include <aws/ec2/model/DescribeInstancesRequest.h>
+#include <aws/ec2/model/Filter.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -240,5 +250,133 @@ inline void install_aws_signal_handlers() {
 struct AwsSignalHandlerFixture {
     AwsSignalHandlerFixture() { install_aws_signal_handlers(); }
 };
+
+// ── Teardown helpers ────────────────────────────────────────────────────────
+//
+// A terminated instance's network interface detaches asynchronously, and
+// until it does EC2 rejects DeleteSecurityGroup and DeleteSubnet with
+// DependencyViolation, and DetachInternetGateway while it still maps a
+// public address. Fixtures that slept a fixed interval after
+// TerminateInstances and then issued each delete once, ignoring the result,
+// leaked their whole network shell whenever that interval was too short:
+// the subnet and security group survived, so the retried DeleteVpc failed
+// for its whole budget too. These helpers wait on the real instance state
+// and retry every network delete, logging whatever is still failing.
+
+// Waits until no instance in `vpc_id` is in any state but `terminated`.
+// Returns false (after logging the survivors) when `budget` runs out.
+inline auto wait_vpc_instances_terminated(Aws::EC2::EC2Client& ec2, const std::string& vpc_id,
+                                          std::chrono::seconds budget, std::string_view log_tag)
+    -> bool {
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    std::vector<std::string> alive;
+    std::string last_error;
+    for (;;) {
+        Aws::EC2::Model::DescribeInstancesRequest req;
+        Aws::EC2::Model::Filter vpc_filter;
+        vpc_filter.SetName("vpc-id");
+        vpc_filter.AddValues(vpc_id);
+        req.AddFilters(vpc_filter);
+        Aws::EC2::Model::Filter state_filter;
+        state_filter.SetName("instance-state-name");
+        for (const char* st : {"pending", "running", "shutting-down", "stopping", "stopped"}) {
+            state_filter.AddValues(st);
+        }
+        req.AddFilters(state_filter);
+        auto out = ec2.DescribeInstances(req);
+        if (out.IsSuccess()) {
+            alive.clear();
+            last_error.clear();
+            for (const auto& res : out.GetResult().GetReservations()) {
+                for (const auto& inst : res.GetInstances()) {
+                    alive.emplace_back(inst.GetInstanceId());
+                }
+            }
+            if (alive.empty()) {
+                return true;
+            }
+        } else {
+            last_error = std::string(out.GetError().GetExceptionName()) + ": " +
+                         std::string(out.GetError().GetMessage());
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds{5});
+    }
+    std::cerr << "[" << log_tag << "] teardown: instances in " << vpc_id
+              << " not terminated within " << budget.count() << "s:";
+    for (const auto& id : alive) {
+        std::cerr << " " << id;
+    }
+    if (!last_error.empty()) {
+        std::cerr << " (last DescribeInstances error: " << last_error << ")";
+    }
+    std::cerr << "\n";
+    return false;
+}
+
+// Maps a delete call's outcome to std::nullopt when the resource is gone
+// (including `*.NotFound`, i.e. an earlier attempt already removed it, and
+// any extra codes the caller names as "already done"), else the error text.
+template<class Outcome>
+auto delete_outcome_error(const Outcome& out,
+                          std::initializer_list<std::string_view> done_codes = {})
+    -> std::optional<std::string> {
+    if (out.IsSuccess()) {
+        return std::nullopt;
+    }
+    const std::string code(out.GetError().GetExceptionName());
+    if (code.ends_with(".NotFound")) {
+        return std::nullopt;
+    }
+    for (auto done : done_codes) {
+        if (code == done) {
+            return std::nullopt;
+        }
+    }
+    return code + ": " + std::string(out.GetError().GetMessage());
+}
+
+// One teardown delete: `attempt` returns std::nullopt once the resource is
+// gone, else the error that kept it.
+struct teardown_delete {
+    std::string what;
+    std::function<std::optional<std::string>()> attempt;
+};
+
+// Runs `steps` in order, then re-runs whichever failed, still in order,
+// every `interval` until all succeed or `budget` runs out. Order the steps
+// children first (security groups and subnets before the VPC) so each pass
+// retries a parent only after its children's latest attempt. Logs every
+// step left over with its last error, and returns whether none was.
+inline auto run_teardown_deletes(std::vector<teardown_delete> steps, std::chrono::seconds budget,
+                                 std::chrono::seconds interval, std::string_view log_tag) -> bool {
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    std::vector<std::pair<std::string, std::string>> failed;
+    for (;;) {
+        std::vector<teardown_delete> remaining;
+        failed.clear();
+        for (auto& step : steps) {
+            if (auto err = step.attempt()) {
+                failed.emplace_back(step.what, *err);
+                remaining.push_back(std::move(step));
+            }
+        }
+        steps = std::move(remaining);
+        if (steps.empty()) {
+            return true;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(interval);
+    }
+    for (const auto& [what, err] : failed) {
+        std::cerr << "[" << log_tag << "] teardown: could not delete " << what << " within "
+                  << budget.count() << "s (last error " << err << "); it is leaked\n";
+    }
+    return false;
+}
 
 }  // namespace kythira::testing::aws_real_ec2
