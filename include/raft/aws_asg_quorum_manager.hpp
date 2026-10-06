@@ -16,8 +16,10 @@
 #ifdef KYTHIRA_HAS_AWS_SDK
 
 #include <aws/autoscaling/AutoScalingClient.h>
+#include <aws/autoscaling/model/CompleteLifecycleActionRequest.h>
 #include <aws/autoscaling/model/DescribeAutoScalingGroupsRequest.h>
 #include <aws/autoscaling/model/DescribeAutoScalingInstancesRequest.h>
+#include <aws/autoscaling/model/DescribeLifecycleHooksRequest.h>
 #include <aws/autoscaling/model/LifecycleState.h>
 #include <aws/autoscaling/model/SetInstanceProtectionRequest.h>
 #include <aws/autoscaling/model/TerminateInstanceInAutoScalingGroupRequest.h>
@@ -803,7 +805,8 @@ private:
     /// Retries while Auto Scaling refuses the call because a scaling activity
     /// is in progress, which a timed-out launch usually still is, for up to
     /// `provision_timeout`. An instance no longer in any group counts as
-    /// removed.
+    /// removed. An instance a launch lifecycle hook holds in `Pending:Wait`
+    /// is abandoned instead; see `abandon_held_launch`.
     ///
     /// @return The error text, or empty on success.
     [[nodiscard]] auto try_terminate(const std::string& ec2_id) const -> std::string {
@@ -817,16 +820,120 @@ private:
                 return {};
             }
             const std::string name(out.GetError().GetExceptionName());
-            if (aws_asg_detail::is_group_busy(name) &&
-                std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::sleep_for(_cfg.poll_interval);
-                continue;
+            if (aws_asg_detail::is_group_busy(name)) {
+                if (auto group = held_by_launch_hook(ec2_id)) {
+                    return abandon_held_launch(*group, ec2_id);
+                }
+                if (std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::sleep_for(_cfg.poll_interval);
+                    continue;
+                }
             }
             if (already_out_of_group(ec2_id)) {
                 return {};
             }
             return name + ": " + std::string(out.GetError().GetMessage());
         }
+    }
+
+    /// The group of @p ec2_id when a launch lifecycle hook holds it in
+    /// `Pending:Wait`, or nothing (including when the read fails).
+    [[nodiscard]] auto held_by_launch_hook(const std::string& ec2_id) const
+        -> std::optional<std::string> {
+        Aws::AutoScaling::Model::DescribeAutoScalingInstancesRequest req;
+        req.AddInstanceIds(ec2_id);
+        auto out = _asg->DescribeAutoScalingInstances(req);
+        if (!out.IsSuccess()) {
+            return std::nullopt;
+        }
+        for (const auto& m : out.GetResult().GetAutoScalingInstances()) {
+            if (std::string_view{m.GetLifecycleState()} == "Pending:Wait") {
+                return std::string(m.GetAutoScalingGroupName());
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// Lower @p asg_name's desired capacity by one. Returns the error text,
+    /// or empty on success.
+    [[nodiscard]] auto lower_desired_by_one(const std::string& asg_name) const -> std::string {
+        Aws::AutoScaling::Model::DescribeAutoScalingGroupsRequest dreq;
+        dreq.AddAutoScalingGroupNames(asg_name);
+        auto groups = _asg->DescribeAutoScalingGroups(dreq);
+        if (!groups.IsSuccess()) {
+            return std::string(groups.GetError().GetExceptionName()) + ": " +
+                   std::string(groups.GetError().GetMessage());
+        }
+        if (groups.GetResult().GetAutoScalingGroups().empty()) {
+            return "ASG not found: " + asg_name;
+        }
+        const int desired = groups.GetResult().GetAutoScalingGroups()[0].GetDesiredCapacity();
+        Aws::AutoScaling::Model::UpdateAutoScalingGroupRequest req;
+        req.SetAutoScalingGroupName(asg_name);
+        req.SetDesiredCapacity(desired - 1);
+        auto out = _asg->UpdateAutoScalingGroup(req);
+        if (!out.IsSuccess()) {
+            return std::string(out.GetError().GetExceptionName()) + ": " +
+                   std::string(out.GetError().GetMessage());
+        }
+        return {};
+    }
+
+    /// @brief Remove an instance a launch lifecycle hook holds in `Pending:Wait`.
+    ///
+    /// The launch's scaling activity stays open until every hook on it is
+    /// completed or its heartbeat expires (an hour by default), and until
+    /// then Auto Scaling refuses `TerminateInstanceInAutoScalingGroup` with
+    /// `ScalingActivityInProgress`, so retrying cannot outwait it. Real run
+    /// 37475165001 left the desired size at two that way. Instead the
+    /// desired capacity is lowered by one, so the group will not replace the
+    /// launch, and every launch hook's action on it is completed with
+    /// `ABANDON`, which terminates it. Lowering first matters: abandoning
+    /// first would let the group launch a replacement, held by the same hook.
+    /// The cost is that the group may pick its own scale-in victim between
+    /// the two calls; scale-in protection, set on every adopted voter, keeps
+    /// voters out of that choice.
+    ///
+    /// @return The error text, or empty on success.
+    [[nodiscard]] auto abandon_held_launch(const std::string& asg_name,
+                                           const std::string& ec2_id) const -> std::string {
+        if (auto lowered = lower_desired_by_one(asg_name); !lowered.empty()) {
+            return "lowering the desired capacity of " + asg_name + ": " + lowered;
+        }
+
+        Aws::AutoScaling::Model::DescribeLifecycleHooksRequest hreq;
+        hreq.SetAutoScalingGroupName(asg_name);
+        auto hooks = _asg->DescribeLifecycleHooks(hreq);
+        if (!hooks.IsSuccess()) {
+            return "DescribeLifecycleHooks: " + std::string(hooks.GetError().GetExceptionName()) +
+                   ": " + std::string(hooks.GetError().GetMessage());
+        }
+        std::size_t abandoned = 0;
+        std::string refusals;
+        for (const auto& hook : hooks.GetResult().GetLifecycleHooks()) {
+            if (hook.GetLifecycleTransition() != "autoscaling:EC2_INSTANCE_LAUNCHING") {
+                continue;
+            }
+            Aws::AutoScaling::Model::CompleteLifecycleActionRequest creq;
+            creq.SetAutoScalingGroupName(asg_name);
+            creq.SetLifecycleHookName(hook.GetLifecycleHookName());
+            creq.SetInstanceId(ec2_id);
+            creq.SetLifecycleActionResult("ABANDON");
+            auto done = _asg->CompleteLifecycleAction(creq);
+            if (done.IsSuccess()) {
+                ++abandoned;
+            } else {
+                refusals += "; " + std::string(hook.GetLifecycleHookName()) + ": " +
+                            std::string(done.GetError().GetExceptionName()) + ": " +
+                            std::string(done.GetError().GetMessage());
+            }
+        }
+        if (abandoned == 0) {
+            return "lowered the desired capacity of " + asg_name +
+                   ", but no launch lifecycle action on " + ec2_id + " could be abandoned" +
+                   refusals;
+        }
+        return {};
     }
 
     /// Undo a timed-out increment of @p asg_name; see `provision_node`.

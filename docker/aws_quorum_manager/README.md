@@ -83,7 +83,7 @@ are broader because they also build and tear down test fixtures.
 | Manager | Actions |
 |---|---|
 | EC2 | `ec2:RunInstances`, `ec2:CreateTags`, `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus`, `ec2:TerminateInstances`; plus `iam:PassRole` on the node role when `iam_instance_profile` is set |
-| ASG | `autoscaling:DescribeAutoScalingGroups`, `autoscaling:DescribeAutoScalingInstances`, `autoscaling:UpdateAutoScalingGroup`, `autoscaling:TerminateInstanceInAutoScalingGroup`, `ec2:CreateTags`, `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus` |
+| ASG | `autoscaling:DescribeAutoScalingGroups`, `autoscaling:DescribeAutoScalingInstances`, `autoscaling:UpdateAutoScalingGroup`, `autoscaling:TerminateInstanceInAutoScalingGroup`, `autoscaling:DescribeLifecycleHooks`, `autoscaling:CompleteLifecycleAction`, `ec2:CreateTags`, `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus` |
 
 Credentials come from `aws_client_config::credentials_provider`, or, left
 null, the SDK's default chain: environment variables, `~/.aws`, then the
