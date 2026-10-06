@@ -259,14 +259,16 @@ issuance.
 
 - **Instance Principal auth has not run on a real instance** (§4): it is
   verified against the go-sdk's contract and a cryptographic mock tier only.
-- **NodeIds are reused after a decommission.** The next id is
-  max-of-`kythira-node-id`-tags plus one, scanned across the pool — and a
-  decommissioned instance is detached, so its tag is no longer visible.
-  Decommission the highest-numbered node and the next provision gets that
-  number back. Requirement 6.4 scopes the scan to
-  `ListInstancePoolInstances`, and no OCI call exposes a detached instance's
-  tags, so a deployment that cannot tolerate a recycled identity has to keep
-  the assignment outside the pool.
+- **NodeIds are only monotonic within one manager instance.** The next id
+  is one above both the highest `kythira-node-id` tag in the pool and an
+  in-memory floor of every id the manager has assessed or allocated. The
+  floor is needed because a decommissioned instance is detached and its tag
+  is no longer visible (Requirement 6.4 scopes the scan to
+  `ListInstancePoolInstances`, and no OCI call exposes a detached
+  instance's tags). A fresh process, such as a new Raft leader's manager,
+  starts again from the scan and can hand out a vanished node's id; the
+  Raft leader refuses a replacement whose id is already a member and
+  decommissions it, so a reuse costs a retry rather than safety.
 - **Live coverage is the CI job's, not a deployment's.** `tasks.md` Task 6
   closed on 2026-08-12 with a green `oci` CI job (run 31564877239) under
   keyless Workload Identity Federation: provision, assess and decommission

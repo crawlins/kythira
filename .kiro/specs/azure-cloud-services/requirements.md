@@ -85,14 +85,19 @@ when the corresponding Azure SDK for C++ components are detected.
   it), Azure requires the caller to choose the VM resource name at creation
   time — there is no post-hoc "AWS gives you an ID, derive `NodeId` from it"
   step available for `azure_vm_quorum_manager`. The manager therefore
-  *assigns* `NodeId` values itself (a monotonically increasing counter
-  reconstructed by scanning the `kythira:node-id` tag across existing VMs in
-  the resource group — the same `next_node_id()` scan-based approach
-  `aws_asg_quorum_manager`'s tag bookkeeping uses) and *derives the VM resource
-  name from it*: `kythira-{cluster_name}-{node_id}`. This is the mirror image
-  of the AWS scheme but yields the same property — the `NodeId` ↔ Azure
-  resource identity mapping is a pure computation in both directions, with no
-  API call needed for either `node_id_to_vm_name` or `vm_name_to_node_id`.
+  *assigns* `NodeId` values itself (a counter that is monotonically
+  increasing for the life of a manager instance: reconstructed by scanning
+  the `kythira:node-id` tag across existing VMs in the resource group — the
+  same `next_node_id()` scan-based approach `aws_asg_quorum_manager`'s tag
+  bookkeeping uses — and never allowed below an in-memory floor of every id
+  that instance has assessed or allocated, since the scan alone cannot see a
+  deleted VM's id; a fresh process starts again from the scan, and the Raft
+  leader refuses a replacement id that is already a member) and *derives the
+  VM resource name from it*: `kythira-{cluster_name}-{node_id}`. This is the
+  mirror image of the AWS scheme but yields the same property — the
+  `NodeId` ↔ Azure resource identity mapping is a pure computation in both
+  directions, with no API call needed for either `node_id_to_vm_name` or
+  `vm_name_to_node_id`.
 - **`vmId`**: An immutable GUID Azure assigns to every VM (readable via
   `instanceView.vmId` or the VM resource's top-level `properties.vmId`). Not
   used for `NodeId` derivation (a 128-bit GUID does not fit a `uint64_t`

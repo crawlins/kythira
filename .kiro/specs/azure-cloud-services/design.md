@@ -738,9 +738,13 @@ AWS design's identical idempotency guarantee.
 **Validates: Requirements 5.4, 13.4**
 
 `next_node_id()` scans all `kythira:node-id` tags across all power states
-(including VMs mid-deletion) and returns `max + 1`, preventing a
-recently-decommissioned node's ID from being reused while some Raft peer
-might still reference it.
+(including VMs mid-deletion) and returns one above both that maximum and an
+in-memory floor raised by every id the manager has assessed or allocated.
+The scan prevents a VM still being deleted from having its ID reused; the
+floor covers a VM that is already gone (decommissioned, evicted or deleted
+by hand), which the scan cannot see. The floor lasts as long as the manager
+instance: across a leader change the Raft node's refusal of a replacement id
+that is already a member keeps a reuse from reaching the configuration.
 
 ### Property 4: No autonomous replacement outside the quorum manager's control
 **Validates: Requirements 10.3, 14.2**
