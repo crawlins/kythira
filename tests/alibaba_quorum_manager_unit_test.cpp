@@ -904,7 +904,8 @@ BOOST_AUTO_TEST_SUITE(alibaba_quorum_manager_maintenance)
 
 /// Requirement 9.1: assess, decommission the unreachable, refill the deficit,
 /// and return the **pre**-remediation health — answering with the post-repair
-/// state would hide the fault that triggered the repair.
+/// state would hide the fault that triggered the repair. The replacement gets
+/// a fresh id: node 1 was assessed, so its removal does not free its id.
 BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_a_dead_node_and_reports_the_prior_health,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     EssMock mock;
@@ -926,7 +927,7 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_a_dead_node_and_reports_the_prior_
 
     BOOST_CHECK_EQUAL(mock.remove_calls.load(), 1);
     BOOST_CHECK_EQUAL(mock.instance_count(), 1U);
-    BOOST_CHECK_EQUAL(mock.tags_of("i-mock2").at("kythira-node-id"), "1");
+    BOOST_CHECK_EQUAL(mock.tags_of("i-mock2").at("kythira-node-id"), "2");
 }
 
 /// Requirement 4.3: `topology()` is a pure config read. Asserted with the

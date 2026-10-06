@@ -14,6 +14,7 @@
 /// segment. See `.kiro/specs/cloud-composite-node-ids/`.
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <compare>
 #include <concepts>
@@ -21,6 +22,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <ostream>
 #include <stdexcept>
@@ -464,5 +466,75 @@ template<std::unsigned_integral N> auto next_numeric_node_id(N max_seen) -> N {
     }
     return static_cast<N>(max_seen + 1);
 }
+
+// ============================================================================
+// numeric_node_id_floor
+// ============================================================================
+
+/// @brief A never-decreasing lower bound for numeric node-id allocation.
+///
+/// A quorum manager that allocates `max(id tagged on a resource it can still
+/// list) + 1` hands a node's id out again once that node's resource stops
+/// being listed: deleted outside Kythira, evicted, self-healed away by the
+/// group, or simply aged out of the cloud's listing. Raising this floor with
+/// every id the manager assesses or allocates, and allocating above it, stops
+/// that for as long as the manager lives.
+///
+/// The floor is in memory only, and copies of one floor share it (the Raft
+/// node holds its manager by value). A fresh process, such as a newly elected
+/// leader's manager, starts again from the listing alone; the Raft node's own
+/// refusal of a replacement id that already names a member
+/// (`node::provision_replacement`) is what keeps a reuse across processes
+/// safe.
+class numeric_node_id_floor {
+public:
+    numeric_node_id_floor() = default;
+    // Copy-only on purpose: with no move members declared, a move copies the
+    // shared pointer, so a moved-from manager's floor stays usable (and
+    // shared) instead of holding a null pointer.
+    numeric_node_id_floor(const numeric_node_id_floor&) = default;
+    auto operator=(const numeric_node_id_floor&) -> numeric_node_id_floor& = default;
+    ~numeric_node_id_floor() = default;
+
+    /// Raises the floor to @p id's numeric value: the id itself for an
+    /// unsigned integer, strict decimal text for a `std::string`. Anything
+    /// else (unparseable text, a composite id) has no place in a numeric
+    /// sequence and is ignored.
+    template<typename N> void raise(const N& id) const noexcept {
+        if constexpr (std::unsigned_integral<N>) {
+            raise_value(static_cast<std::uint64_t>(id));
+        } else if constexpr (std::same_as<N, std::string>) {
+            if (auto v = node_id_traits<std::uint64_t>::from_text(id)) {
+                raise_value(*v);
+            }
+        }
+    }
+
+    void raise_value(std::uint64_t v) const noexcept {
+        auto cur = _value->load();
+        while (cur < v && !_value->compare_exchange_weak(cur, v)) {
+        }
+    }
+
+    [[nodiscard]] auto value() const noexcept -> std::uint64_t { return _value->load(); }
+
+    /// @brief One above both @p listed_max and the floor. Does not raise the
+    ///        floor: the caller raises it with the id it actually assigns.
+    /// @throws std::overflow_error if that would pass @p ceiling.
+    [[nodiscard]] auto next_above(
+        std::uint64_t listed_max,
+        std::uint64_t ceiling = std::numeric_limits<std::uint64_t>::max()) const -> std::uint64_t {
+        const auto highest = std::max(listed_max, value());
+        if (highest >= ceiling) {
+            throw std::overflow_error("numeric_node_id_floor: node id space exhausted at " +
+                                      std::to_string(highest));
+        }
+        return highest + 1;
+    }
+
+private:
+    std::shared_ptr<std::atomic<std::uint64_t>> _value =
+        std::make_shared<std::atomic<std::uint64_t>>(0);
+};
 
 }  // namespace kythira

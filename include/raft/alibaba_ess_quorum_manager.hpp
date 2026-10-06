@@ -70,6 +70,7 @@
 
 #include <raft/alibaba_client_config.hpp>
 #include <raft/alibaba_http_client.hpp>
+#include <raft/composite_node_id.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/group_scale_rollback.hpp>
@@ -417,6 +418,9 @@ public:
             if (cluster.empty()) {
                 return build_health(cluster, {});
             }
+            for (const auto& np : cluster) {
+                _id_floor.raise(np.node_id);
+            }
 
             std::map<std::string, bool> live_map;
             for (const auto& inst : cluster_members()) {
@@ -678,6 +682,8 @@ public:
             NodeId new_id{};
             try {
                 new_id = next_node_id_from(members);
+                // Spent from here on, even if tagging fails below.
+                _id_floor.raise(new_id);
 
                 std::map<std::string, std::string> tags = _cfg.extra_tags;
                 // Written last so an operator cannot redirect a managed
@@ -829,13 +835,17 @@ public:
     /// here follows (design.md Property 4) and is safe because NodeIds only
     /// need to be unique within a cluster.
     ///
-    /// **NodeIds are reused after a decommission.** The scan can only see
-    /// instances the group still lists, so once the highest-numbered node is
-    /// removed the next provision gets that number back. There is no ESS call
-    /// that would show a removed instance's tags, so this is a property of the
-    /// design rather than an oversight in it: a deployment that cannot
-    /// tolerate a recycled identity has to keep the assignment somewhere
-    /// outside the group.
+    /// The result is also above this manager's in-memory floor. The scan
+    /// alone would reuse NodeIds: it can only see instances the group still
+    /// lists, so once the highest-numbered node is removed (by this manager,
+    /// or by ESS's own health-check replacement) the next provision would get
+    /// that number back, and no ESS call shows a removed instance's tags. The
+    /// floor is raised by every id `assess_quorum` is asked about and every
+    /// id `provision_node` assigns, so an id the caller's membership still
+    /// holds is never handed out again by this manager. It is in memory only:
+    /// a fresh process (a new leader's manager) starts again from the scan, and the Raft node
+    /// refuses a replacement id that is already a member of its configuration. `next_node_id` does
+    /// not itself raise the floor.
     ///
     /// The TOCTOU race between two concurrent provisions is the one every
     /// sibling has, and its resolution stays deferred to `quorum_management.hpp`'s
@@ -1278,12 +1288,17 @@ private:
                 " already carries " + std::string(alibaba_ess_detail::tag_node_id) + "=" +
                 std::to_string(highest) + ", the largest this NodeId type can hold");
         }
+        const auto next = _id_floor.next_above(highest, node_id_ceiling());
         if constexpr (std::is_same_v<NodeId, std::string>) {
-            return std::to_string(highest + 1);
+            return std::to_string(next);
         } else {
-            return static_cast<NodeId>(highest + 1);
+            return static_cast<NodeId>(next);
         }
     }
+
+    /// Every node id this manager has assessed or allocated; see
+    /// `next_node_id`. Kept across copies and moves of this manager.
+    numeric_node_id_floor _id_floor;
 
     [[nodiscard]] auto find_instance(const NodeId& node) const
         -> std::optional<alibaba_ess_detail::instance_view> {

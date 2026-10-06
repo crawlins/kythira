@@ -449,6 +449,24 @@ BOOST_AUTO_TEST_CASE(an_adopted_member_is_tagged_and_protected) {
     BOOST_TEST(adopted->tags.at("kythira:node-id") == "4");
 }
 
+// A node this manager has assessed keeps its id after its instance leaves
+// the scale set (evicted, or deleted by hand): the tag scan alone would see
+// only 1-3 and hand out 4, then 5, ... up to a vanished 7's id; the floor
+// starts the next provision above it instead.
+BOOST_AUTO_TEST_CASE(an_assessed_id_no_longer_listed_is_not_reassigned) {
+    Cloud cloud;
+    auto mgr = cloud.make();
+    std::vector<kythira::node_placement<std::uint64_t, std::string>> members;
+    for (std::uint64_t id : {1U, 2U, 3U, 7U}) {
+        members.push_back({.node_id = id, .group_id = "1"});
+    }
+    const auto health = std::move(mgr.assess_quorum(members)).get();
+    BOOST_TEST(health.live_node_count == 3U);
+    const auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
+    BOOST_TEST(peer.node_id == 8U);
+    BOOST_TEST(cloud.arm->find(cloud.arm->last_launch())->tags.at("kythira:node-id") == "8");
+}
+
 BOOST_AUTO_TEST_CASE(a_protection_failure_does_not_fail_the_provision) {
     Cloud cloud;
     auto mgr = cloud.make();

@@ -15,6 +15,7 @@
 /// `aws_ec2_quorum_manager` and `aws_asg_quorum_manager`.
 
 #include <raft/azure_client_config.hpp>
+#include <raft/composite_node_id.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/group_scale_rollback.hpp>
@@ -37,6 +38,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -138,7 +140,8 @@ struct azure_vmss_quorum_manager_config {
 /// same cluster-wide tag-scan `next_node_id()` as `azure_vm_quorum_manager`,
 /// applying the resulting tag to the instance rather than encoding it into a
 /// resource name (scale-set member names are Azure-assigned and not
-/// renameable).
+/// renameable). Like that manager it allocates above an in-memory floor, so a
+/// removed instance's id is not handed out again by the same manager.
 ///
 /// That tag is why every scale set this manager is given must use **Flexible**
 /// orchestration: a Flexible member is an ordinary
@@ -292,6 +295,7 @@ public:
             std::set<std::string> wanted;
             for (const auto& np : cluster) {
                 wanted.insert(node_id_str(np.node_id));
+                _id_floor.raise(np.node_id);
             }
 
             std::map<std::string, bool> live_map;
@@ -461,6 +465,8 @@ public:
             }
 
             NodeId new_id = next_node_id();
+            // Spent from here on, even if tagging fails below.
+            _id_floor.raise(new_id);
             tag_instance(found_instance_id, found_vm, new_id, target_group);
             // Not fatal: the node is up and tagged, and the constructor's
             // reconcile protects it on the next start. Failing the provision
@@ -729,9 +735,18 @@ private:
         return std::string(tag->value().as_string());
     }
 
+    /// Every node id this manager has assessed or allocated; see
+    /// `next_node_id`. Kept across copies and moves of this manager.
+    numeric_node_id_floor _id_floor;
+
     /// Identical cluster-wide tag-scan bookkeeping as
     /// `azure_vm_quorum_manager::next_node_id` — deliberately copied, not
-    /// shared, per design.md's non-sharing decision.
+    /// shared, per design.md's non-sharing decision — including its floor:
+    /// one above both the highest tag still listed and `_id_floor`. The scan
+    /// alone would hand out a removed instance's id again (an eviction, a
+    /// manual delete, or the highest-numbered node's decommission). The floor
+    /// is per process; across leader changes the Raft node's refusal of a
+    /// replacement id that is already a member is what keeps a reuse safe.
     [[nodiscard]] auto next_node_id() const -> NodeId {
         std::uint64_t max_id = 0;
         for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
@@ -749,7 +764,11 @@ private:
                 }
             }
         }
-        std::uint64_t next = max_id + 1;
+        std::uint64_t ceiling = std::numeric_limits<std::uint64_t>::max();
+        if constexpr (!std::is_same_v<NodeId, std::string>) {
+            ceiling = static_cast<std::uint64_t>(std::numeric_limits<NodeId>::max());
+        }
+        std::uint64_t next = _id_floor.next_above(max_id, ceiling);
         if constexpr (std::is_same_v<NodeId, std::string>) {
             return std::to_string(next);
         } else {

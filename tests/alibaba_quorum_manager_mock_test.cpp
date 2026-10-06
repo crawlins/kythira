@@ -759,10 +759,10 @@ BOOST_AUTO_TEST_SUITE(alibaba_quorum_manager_mock_maintain)
 /// that answered with post-remediation health would report a healthy cluster
 /// and hide the fault that triggered it.
 ///
-/// The reassigned node id is pinned deliberately: node 3 is removed and the
-/// replacement comes back as 3, because the tag scan can only see instances the
-/// group still lists. That is documented on `next_node_id`; this case stops it
-/// from being rediscovered as a surprise.
+/// The replacement's node id is pinned deliberately: node 3 is removed, so the
+/// tag scan can no longer see it, but this manager assessed 3, so the
+/// replacement comes back as 4. A replacement under a still-configured
+/// member's id would let Raft rebind that member to an empty node.
 BOOST_AUTO_TEST_CASE(maintain_replaces_an_unreachable_node_and_reports_pre_remediation_health,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(180))) {
     MockFixture fixture;
@@ -781,11 +781,33 @@ BOOST_AUTO_TEST_CASE(maintain_replaces_an_unreachable_node_and_reports_pre_remed
 
     BOOST_CHECK_EQUAL(fixture.server.instance_count(), 3U);
     BOOST_CHECK_EQUAL(fixture.server.desired_capacity(), 3);
-    const std::vector<std::string> expected{"1", "2", "3"};
+    const std::vector<std::string> expected{"1", "2", "4"};
     const auto observed = node_id_tags(fixture.server);
     BOOST_CHECK_EQUAL_COLLECTIONS(observed.begin(), observed.end(), expected.begin(),
                                   expected.end());
     BOOST_CHECK_EQUAL(fixture.server.signature_failures(), 0U);
+}
+
+/// An id the manager has been asked about stays spent after its instance
+/// leaves the group: the scan alone would hand 3 out again here, since only 1
+/// and 2 are still listed (ESS's own health-check replacement removes
+/// instances this way). See `next_node_id`.
+BOOST_AUTO_TEST_CASE(an_assessed_id_no_longer_in_the_group_is_not_reassigned,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    fixture.seed_node(1);
+    fixture.seed_node(2);
+
+    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
+
+    auto health = std::move(mgr.assess_quorum(cluster_of({1, 2, 3}))).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 2U);
+    BOOST_CHECK_EQUAL(mgr.next_node_id(), 4U);
+
+    // The floor moves with the manager, which the Raft node takes by value.
+    auto moved = std::move(mgr);
+    BOOST_CHECK_EQUAL(moved.next_node_id(), 4U);
 }
 
 /// A cluster already at target is left alone: no capacity write, no removal.
