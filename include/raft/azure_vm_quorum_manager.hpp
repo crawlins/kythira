@@ -17,6 +17,7 @@
 /// `azure_key_vault_ca_provider`) is itself built on top of.
 
 #include <raft/azure_client_config.hpp>
+#include <raft/composite_node_id.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/quorum_management.hpp>
@@ -38,6 +39,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -162,7 +164,9 @@ struct azure_vm_quorum_manager_config {
 /// opposite direction: `next_node_id()` scans existing `kythira:node-id` tags for
 /// the current maximum (the same tag-scan bookkeeping `aws_asg_quorum_manager`
 /// uses), and `node_id_to_vm_name`/`vm_name_to_node_id` are pure string
-/// computations in both directions once that ID is known.
+/// computations in both directions once that ID is known. Ids are allocated
+/// above an in-memory floor as well, so a deleted VM's id is not handed out
+/// again by the same manager (see `next_node_id`).
 ///
 /// Liveness is determined solely from ARM `instanceView` power state — there is
 /// no application-level heartbeat tag in this design (see design.md's "ARM Tag
@@ -254,6 +258,9 @@ public:
 
             if (cluster.empty()) {
                 return build_health(cluster, {});
+            }
+            for (const auto& np : cluster) {
+                _id_floor.raise(np.node_id);
             }
 
             std::map<std::string, bool> live_map;
@@ -450,6 +457,7 @@ public:
                     value != nullptr && value->is_array()) {
                     for (const auto& vm : value->as_array()) {
                         if (auto id = keyed_vm_node_id(vm, key)) {
+                            _id_floor.raise(*id);
                             return future_factory_default::makeFuture(
                                 result{peer_info<NodeId, Address>{*id, vm_address(*id)}});
                         }
@@ -487,6 +495,9 @@ private:
             const std::string& subnet_id = sit->second;
 
             NodeId new_id = next_node_id();
+            // Raised before any resource exists: a failed create may still
+            // leave a VM or NIC under this name, so the id is spent either way.
+            _id_floor.raise(new_id);
             std::string vm_name = node_id_to_vm_name(new_id);
             std::string nic_name = vm_name + "-nic";
 
@@ -759,13 +770,27 @@ private:
     // '/subscriptions/{subscriptionId}'".
     std::string _resource_id_base;
 
+    /// Every node id this manager has assessed or allocated; see
+    /// `next_node_id`. Kept across copies and moves of this manager.
+    numeric_node_id_floor _id_floor;
+
     /// Scans every VM tagged `kythira:cluster = {cluster_name}` (all power
-    /// states — a VM mid-deletion is still counted) and returns
-    /// `max(kythira:node-id) + 1`, or 1 when none exist. This has the same
-    /// TOCTOU race as its AWS counterpart if two leaders call provision_node
-    /// concurrently; the quorum-management spec's concurrency rules already
-    /// prevent that (a single manager instance is never called concurrently
-    /// for the same slot).
+    /// states — a VM mid-deletion is still counted) and returns one above both
+    /// the highest `kythira:node-id` found and `_id_floor`, or 1 when neither
+    /// has any. This has the same TOCTOU race as its AWS counterpart if two
+    /// leaders call provision_node concurrently; the quorum-management spec's
+    /// concurrency rules already prevent that (a single manager instance is
+    /// never called concurrently for the same slot).
+    ///
+    /// The scan alone would hand out a deleted VM's id again (a spot
+    /// eviction, a manual delete, or the highest-numbered node's decommission
+    /// all remove the tag it would have found), and a replacement under a
+    /// still-configured member's id is a Raft safety problem. `_id_floor`
+    /// remembers every id assessed or allocated, so within this process ids
+    /// only ever increase (the spec's "monotonically increasing counter",
+    /// .kiro/specs/azure-cloud-services/requirements.md). It is in memory
+    /// only: a new leader's manager starts again from the scan, and the Raft
+    /// node refuses a replacement id that is already a member.
     [[nodiscard]] auto next_node_id() const -> NodeId {
         std::uint64_t max_id = 0;
         // Lists the resource group's VMs unfiltered and matches the cluster tag
@@ -815,7 +840,11 @@ private:
                 }
             }
         }
-        std::uint64_t next = max_id + 1;
+        std::uint64_t ceiling = std::numeric_limits<std::uint64_t>::max();
+        if constexpr (!std::is_same_v<NodeId, std::string>) {
+            ceiling = static_cast<std::uint64_t>(std::numeric_limits<NodeId>::max());
+        }
+        std::uint64_t next = _id_floor.next_above(max_id, ceiling);
         if constexpr (std::is_same_v<NodeId, std::string>) {
             return std::to_string(next);
         } else {

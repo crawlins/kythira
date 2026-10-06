@@ -530,10 +530,11 @@ BOOST_AUTO_TEST_CASE(decommissioning_an_already_terminating_instance_issues_no_d
 /// the assertion that matters; a `maintain_quorum` that returned post-remediation
 /// health would report a healthy cluster and hide the fault that triggered it.
 ///
-/// The reassigned node id is pinned deliberately. Node 3 is decommissioned and
-/// the replacement comes back as 3 again, because the id scan can only see
-/// instances still in the pool. That is documented on `next_node_id`; this case
-/// is what stops it from being rediscovered as a surprise.
+/// The replacement's node id is pinned deliberately. Node 3 is decommissioned
+/// (detached, so the id scan can no longer see its tag), but this manager
+/// assessed 3, so the replacement comes back as 4: a replacement under a
+/// still-configured member's id would let Raft rebind that member to an empty
+/// node.
 BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_a_dead_node_and_reports_pre_remediation_health,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     MockFixture fixture;
@@ -561,9 +562,30 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_a_dead_node_and_reports_pre_remedi
         }
     }
     std::ranges::sort(node_ids);
-    const std::vector<std::string> expected{"1", "2", "3"};
+    const std::vector<std::string> expected{"1", "2", "4"};
     BOOST_CHECK_EQUAL_COLLECTIONS(node_ids.begin(), node_ids.end(), expected.begin(),
                                   expected.end());
+}
+
+/// An id the manager has been asked about stays spent after its instance
+/// leaves the pool: the scan alone would hand 3 out again here, since only 1
+/// and 2 are still listed. See `next_node_id`.
+BOOST_AUTO_TEST_CASE(an_assessed_id_no_longer_in_the_pool_is_not_reassigned,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    fixture.seed_node(1);
+    fixture.seed_node(2);
+
+    oci_instance_pool_quorum_manager<> mgr{fixture.config(3)};
+    BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
+
+    auto health = std::move(mgr.assess_quorum(cluster_of(fixture, {1, 2, 3}))).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 2U);
+    BOOST_CHECK_EQUAL(mgr.next_node_id(), 4U);
+
+    // The floor moves with the manager, which the Raft node takes by value.
+    auto moved = std::move(mgr);
+    BOOST_CHECK_EQUAL(moved.next_node_id(), 4U);
 }
 
 /// Requirement 5.1: an empty cluster costs no API call at all.

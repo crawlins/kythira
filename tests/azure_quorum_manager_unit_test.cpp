@@ -468,6 +468,32 @@ BOOST_AUTO_TEST_CASE(find_follows_next_link) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// ── Node id floor ──────────────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(vm_node_id_floor)
+
+using vm_mgr_t = kythira::azure_vm_quorum_manager<std::uint64_t, std::string>;
+
+// Only VM 2 is still listed; 5 was assessed but its VM is gone (evicted, or
+// deleted by hand). The tag scan alone would hand out 3, then 3 again; the
+// floor starts above every id assessed or allocated instead.
+BOOST_AUTO_TEST_CASE(ids_assessed_or_allocated_are_never_reassigned) {
+    auto arm = std::make_shared<ArmDouble>();
+    arm->pages = {R"({"value":[)" + vm_entry("kythira-test-cluster-2", "test-cluster", "k") + "]}"};
+    vm_mgr_t mgr{keyed_vm_config(arm)};
+
+    std::vector<kythira::node_placement<std::uint64_t, std::string>> members{
+        {.node_id = 2, .group_id = "1"}, {.node_id = 5, .group_id = "1"}};
+    static_cast<void>(mgr.assess_quorum(members).get());
+
+    BOOST_CHECK_EQUAL(mgr.provision_node("1", std::nullopt).get().node_id, 6u);
+    BOOST_CHECK_EQUAL(std::string(arm->vm_put().at("tags").at("kythira:node-id").as_string()), "6");
+    // The double's VM list still shows only 2.
+    BOOST_CHECK_EQUAL(mgr.provision_node("1", std::nullopt).get().node_id, 7u);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 // ── Fault injection ────────────────────────────────────────────────────────────
 
 #ifdef FIU_ENABLE

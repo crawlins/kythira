@@ -42,6 +42,7 @@
 /// flag `CONFIG_OCI_QUORUM_MANAGER` selects whether the *tests* for it are built,
 /// not whether the header works.
 
+#include <raft/composite_node_id.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/group_scale_rollback.hpp>
@@ -421,6 +422,9 @@ public:
             if (cluster.empty()) {
                 return build_health(cluster, {});
             }
+            for (const auto& np : cluster) {
+                _id_floor.raise(np.node_id);
+            }
 
             const auto instances = describe_pool_instances();
             const auto now = std::time(nullptr);
@@ -634,6 +638,8 @@ public:
             // than a second listing: two scans could disagree, and the one that
             // matters is the one that identified the untagged instance.
             const NodeId new_id = next_node_id_from(snapshot);
+            // Spent from here on, even if tagging fails below.
+            _id_floor.raise(new_id);
 
             std::map<std::string, std::string> tags = _cfg.extra_tags;
             // Assigned after extra_tags so Requirement 4.3 holds: an operator
@@ -764,19 +770,23 @@ public:
 
     /// @brief The `NodeId` this manager would assign next.
     ///
-    /// Max-of-parsed-tags plus one, scanned across the whole pool. Exposed for
-    /// tests and diagnostics; `provision_node` uses the snapshot it already has
-    /// rather than calling this, so the two cannot disagree.
+    /// One above both the highest parsed tag, scanned across the whole pool,
+    /// and this manager's in-memory floor. Exposed for tests and diagnostics;
+    /// `provision_node` uses the snapshot it already has rather than calling
+    /// this, so the two cannot disagree. Does not itself raise the floor.
     ///
-    /// **NodeIds are reused after a decommission.** The scan can only see
-    /// instances the pool still lists, and `decommission_node` detaches its
-    /// target — so once the highest-numbered node is removed, the next
-    /// provision gets that number back. Requirement 6.4 scopes the scan to
-    /// `ListInstancePoolInstances`, and there is no OCI call that would show a
-    /// detached instance's tags, so this is a property of the design rather
-    /// than an oversight in it: a deployment that cannot tolerate a recycled
-    /// identity has to keep the assignment somewhere outside the pool. It is
-    /// pinned by a test rather than left to be rediscovered.
+    /// The scan alone would reuse NodeIds: it can only see instances the pool
+    /// still lists, and `decommission_node` detaches its target (as does the
+    /// pool replacing an instance on its own), so once the highest-numbered
+    /// node is gone the next provision would get that number back.
+    /// Requirement 6.4 scopes the scan to `ListInstancePoolInstances`, and no
+    /// OCI call shows a detached instance's tags. The floor closes that gap
+    /// for the life of the manager: it is raised by every id `assess_quorum`
+    /// is asked about and every id `provision_node` assigns, so an id the
+    /// caller's membership still holds is never handed out again. It is in
+    /// memory only: a fresh process (a new leader's manager) starts again
+    /// from the scan, and the Raft node refuses a
+    /// replacement id that is already a member of its configuration.
     [[nodiscard]] auto next_node_id() const -> NodeId {
         return next_node_id_from(describe_pool_instances());
     }
@@ -901,8 +911,12 @@ private:
                 // only ever assigns parseable ones.
             }
         }
-        return static_cast<NodeId>(highest + 1);
+        return static_cast<NodeId>(_id_floor.next_above(highest));
     }
+
+    /// Every node id this manager has assessed or allocated; see
+    /// `next_node_id`. Kept across copies and moves of this manager.
+    numeric_node_id_floor _id_floor;
 
     [[nodiscard]] auto find_instance(const NodeId& node) const
         -> std::optional<oci_detail::instance_view> {

@@ -11,12 +11,15 @@
 #include <raft/composite_node_id.hpp>
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <map>
 #include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 using namespace kythira;
@@ -216,6 +219,61 @@ BOOST_AUTO_TEST_CASE(random_round_trip_and_order_property) {
         BOOST_CHECK_EQUAL(a < b, a.to_string() < b.to_string());
         BOOST_CHECK_EQUAL(a == b, a.to_string() == b.to_string());
     }
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(numeric_floor)
+
+BOOST_AUTO_TEST_CASE(allocates_above_both_the_listing_and_every_id_raised) {
+    kythira::numeric_node_id_floor floor;
+    BOOST_CHECK_EQUAL(floor.next_above(0), 1U);
+    BOOST_CHECK_EQUAL(floor.next_above(4), 5U);
+
+    floor.raise(std::uint64_t{7});
+    BOOST_CHECK_EQUAL(floor.next_above(4), 8U);
+    BOOST_CHECK_EQUAL(floor.next_above(9), 10U);
+    // next_above does not raise the floor; only the caller's raise does.
+    BOOST_CHECK_EQUAL(floor.value(), 7U);
+
+    // Never lowered.
+    floor.raise(std::uint64_t{3});
+    BOOST_CHECK_EQUAL(floor.value(), 7U);
+}
+
+BOOST_AUTO_TEST_CASE(textual_ids_raise_only_when_strictly_decimal) {
+    kythira::numeric_node_id_floor floor;
+    floor.raise(std::string{"12"});
+    BOOST_CHECK_EQUAL(floor.value(), 12U);
+    floor.raise(std::string{"99x"});
+    floor.raise(std::string{"-1"});
+    floor.raise(std::string{});
+    floor.raise(aws_ec2_node_id{"us-east-1", "i-0123456789abcdef0"});
+    BOOST_CHECK_EQUAL(floor.value(), 12U);
+}
+
+BOOST_AUTO_TEST_CASE(refuses_to_pass_the_ceiling) {
+    kythira::numeric_node_id_floor floor;
+    floor.raise(std::uint64_t{std::numeric_limits<std::uint32_t>::max()});
+    BOOST_CHECK_THROW(
+        static_cast<void>(floor.next_above(0, std::numeric_limits<std::uint32_t>::max())),
+        std::overflow_error);
+    BOOST_CHECK_EQUAL(floor.next_above(0),
+                      std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+}
+
+BOOST_AUTO_TEST_CASE(copies_share_and_moved_from_floors_stay_usable) {
+    kythira::numeric_node_id_floor floor;
+    auto copy = floor;
+    copy.raise(std::uint64_t{5});
+    BOOST_CHECK_EQUAL(floor.value(), 5U);
+
+    auto moved = std::move(floor);
+    moved.raise(std::uint64_t{6});
+    // NOLINTNEXTLINE(bugprone-use-after-move): the point of the check.
+    BOOST_CHECK_EQUAL(floor.value(), 6U);
+    floor.raise(std::uint64_t{8});
+    BOOST_CHECK_EQUAL(moved.value(), 8U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
