@@ -68,8 +68,22 @@ trap 'rm -f "$LOG"' EXIT
 # variable itself, so it reaches every case in every real-cloud suite.
 export BOOST_TEST_LOG_LEVEL="${BOOST_TEST_LOG_LEVEL:-message}"
 
+rc=0
 ctest --test-dir "$BUILD_DIR" -L "$LABEL" -R "$TEST_REGEX" \
-    --no-tests=error -V 2>&1 | tee "$LOG"
+    --no-tests=error -V 2>&1 | tee "$LOG" || rc=$?
+
+# On a failure, repeat each failed assertion at the end, as an annotation.
+# -V streams every SDK trace line too, and the Azure suite writes hundreds of
+# thousands of them, so the job log viewers keep only the tail and a case
+# that failed early is no longer in it. Run 37393457974 reported "7 failures
+# are detected" with only one of the seven left in the retrievable log.
+if [ "$rc" -ne 0 ]; then
+    grep -aE '(fatal )?error: in "' "$LOG" | sed -E 's/\x1b\[[0-9;]*m//g' | sort -u | head -50 |
+        while IFS= read -r line; do
+            echo "::error::${line#*: }" >&2
+        done || true
+    exit "$rc"
+fi
 
 if grep -qE '\*\*\*Skipped|tests did not run' "$LOG"; then
     echo "::error::${TEST_REGEX} was SKIPPED, not run — the suite's preflight could not reach the provider, so nothing was verified. ${HINT}" >&2
