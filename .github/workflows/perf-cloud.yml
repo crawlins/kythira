@@ -259,12 +259,20 @@ jobs:
       #
       # Nothing above this line touches AWS: the burstable refusal is a string
       # match on the instance type, and the build needs no cloud at all.
+      #
+      # The OCI build cache step exported Oracle's endpoint and region as
+      # AWS_ENDPOINT_URL and AWS_REGION, which override this job's env. Clear
+      # the endpoint and name the region from the variable, not env.AWS_REGION,
+      # so STS and every later AWS call reach AWS.
+      - name: Clear the build cache's Oracle endpoint
+        run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-perf-cloud
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_PERF_CLOUD_REGION || 'us-east-1' }}
 
 
       # ── Provision, measure, retrieve, tear down ──────────────────────────

@@ -1555,6 +1555,20 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
+      # The OCI build cache action above exports Oracle's endpoint, region
+      # and keys as AWS_*; build.sh's caller check and Packer would send
+      # them to Oracle. Clear the endpoint and re-assume the CI role, as the
+      # test jobs do, so everything below talks to AWS.
+      - name: Clear the build cache's Oracle endpoint
+        run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
+
+      - name: Re-configure AWS credentials for the AMI build (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-ami-build
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
       - name: Build AMI
         run: |
           packer/ca_cluster_node/scripts/build.sh \
