@@ -54,6 +54,7 @@ coap_dtls_security_example_test examples/ is added only when folly_FOUND (root C
 coap_duplicate_detection_peer_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 coap_duplicate_detection_property_test its transport Types bundle names `folly::Executor` as executor_type
 coap_event_logging_property_test its transport Types bundle names `folly::Executor` as executor_type
+coap_fetch_log_entries_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 coap_final_integration_validation_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 coap_future_resolution_property_test its transport Types bundle names `folly::Executor` as executor_type
 coap_get_joined_multicast_groups_test its transport Types bundle names `folly::Executor` as executor_type
