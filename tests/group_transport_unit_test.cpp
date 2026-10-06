@@ -26,7 +26,11 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
+#include <latch>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using kythira::group_rpc_handlers;
@@ -432,6 +436,87 @@ BOOST_AUTO_TEST_CASE(unregistering_a_group_sends_its_messages_back_to_the_unknow
     BOOST_CHECK(demux.unregister_group(6));
     BOOST_CHECK(!demux.unregister_group(6));
     BOOST_CHECK(!demux.inner().deliver(vote_for(6, 2)).vote_granted());
+    BOOST_CHECK_EQUAL(demux.stale_group_message_count(), 1u);
+}
+
+// ── handler lifetime ─────────────────────────────────────────────────────────
+
+namespace {
+
+/// Registers a vote handler (plus the two mandatory ones) for `group` with
+/// `owner` as the object its captures live inside.
+auto install_owned(demux_type& demux, std::uint64_t group, const std::shared_ptr<const void>& owner,
+                   std::function<rv_response(const rv_request&)> vote) -> void {
+    group_scoped_server<demux_type> scoped{demux, group, std::weak_ptr<const void>(owner)};
+    scoped.register_request_vote_handler(std::move(vote));
+    scoped.register_append_entries_handler([group](const ae_request& req) {
+        return ae_response{._term = req.term(),
+                           ._success = true,
+                           ._conflict_index = std::nullopt,
+                           ._conflict_term = std::nullopt,
+                           ._group_id = group};
+    });
+    scoped.register_install_snapshot_handler([group](const is_request& req) {
+        return is_response{._term = req.term(), ._group_id = group};
+    });
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(a_dispatch_in_progress_keeps_its_owner_alive_past_unregistration) {
+    // The multi-raft host's `destroy_group()` unregisters a group and then
+    // frees its node. A dispatch that had already looked the group up was
+    // still running the node's handler on the transport's thread, and the free
+    // left it running on freed memory. Here the handler is parked inside the
+    // call while the "host" unregisters and drops its last reference: the
+    // owner has to survive until the handler returns, and not a moment longer.
+    demux_type demux{recording_server{}};
+    auto owner = std::make_shared<int>(0);
+    const std::weak_ptr<int> observer = owner;
+
+    std::latch entered{1};
+    std::latch release{1};
+    install_owned(demux, 9, owner, [&](const rv_request& req) {
+        entered.count_down();
+        release.wait();
+        return rv_response{._term = req.term(), ._vote_granted = true, ._group_id = 9};
+    });
+    demux.start();
+
+    rv_response resp{};
+    std::thread transport([&] { resp = demux.inner().deliver(vote_for(9, 1)); });
+    entered.wait();
+
+    BOOST_CHECK(demux.unregister_group(9));
+    owner.reset();
+    BOOST_CHECK(!observer.expired());
+
+    release.count_down();
+    transport.join();
+    BOOST_CHECK(resp.vote_granted());
+    BOOST_CHECK(observer.expired());
+}
+
+BOOST_AUTO_TEST_CASE(a_group_whose_owner_has_gone_is_treated_as_unregistered) {
+    // The lookup can win the race against `unregister_group()` and lose the one
+    // against the owner's destruction. Such a message must not reach the
+    // handler — its captures are gone — and is counted like any other message
+    // for a group with no replica here.
+    demux_type demux{recording_server{}};
+    auto owner = std::make_shared<int>(0);
+    int calls = 0;
+    install_owned(demux, 10, owner, [&calls](const rv_request& req) {
+        ++calls;
+        return rv_response{._term = req.term(), ._vote_granted = true, ._group_id = 10};
+    });
+    demux.start();
+
+    owner.reset();
+    BOOST_CHECK(demux.has_group(10));
+    const auto resp = demux.inner().deliver(vote_for(10, 3));
+    BOOST_CHECK_EQUAL(calls, 0);
+    BOOST_CHECK(!resp.vote_granted());
+    BOOST_CHECK_EQUAL(resp.term(), 3u);
     BOOST_CHECK_EQUAL(demux.stale_group_message_count(), 1u);
 }
 

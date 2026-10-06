@@ -349,6 +349,49 @@ BOOST_AUTO_TEST_CASE(destroying_a_group_tombstones_it_and_removes_its_routing_ro
     host.stop();
 }
 
+BOOST_AUTO_TEST_CASE(a_group_destroyed_mid_tick_is_skipped_by_the_rest_of_that_tick,
+                     *boost::unit_test::timeout(60)) {
+    // `tick()` snapshots the registry once and runs its phases over that
+    // snapshot, so a `destroy_group()` landing between two phases leaves the
+    // destroyed group in the snapshot for the phases still to come. The host
+    // used to free the node there and then, and the next phase dereferenced
+    // the null `_node` — seen in CI as a segfault at a small address in
+    // multi_raft_split_integration_test, whose test thread destroys a replica
+    // while the cluster's ticker is mid-tick.
+    //
+    // Made deterministic by destroying group 2 from group 1's apply-phase work:
+    // every phase after the apply phase then runs with group 2 already gone.
+    // Hibernation is on so that the end-of-tick hibernation pass, which reads
+    // each group's node, runs over the snapshot too.
+    message_fabric fabric{2};
+    auto cfg = make_config(fabric, 1);
+    cfg.hibernation = hibernation_mode::on;
+    cfg.hibernate_after = std::chrono::hours{1};
+    host_type host{std::move(cfg)};
+    host.create_group(1, {1});
+    host.create_group(2, {1});
+    BOOST_REQUIRE_NE(host.stripe_of(1), host.stripe_of(2));
+    host.start();
+    BOOST_REQUIRE(tick_until(
+        host, [&] { return host.group_node(1)->is_leader() && host.group_node(2)->is_leader(); }));
+
+    std::atomic<bool> destroyed{false};
+    BOOST_REQUIRE(host.defer_to_apply_phase(
+        1, [&] { destroyed = host.destroy_group(2, tombstone_reason::replica_removed); }));
+    const auto report = host.tick();
+
+    BOOST_CHECK(destroyed.load());
+    BOOST_CHECK_EQUAL(report._ready_count, 2u);
+    BOOST_CHECK(!host.has_group(2));
+    BOOST_CHECK(host.is_tombstoned(2));
+
+    // The survivor is unaffected, and the next tick no longer sees group 2.
+    const auto next = host.tick();
+    BOOST_CHECK_EQUAL(next._total_count, 1u);
+    BOOST_CHECK(host.group_node(1)->is_leader());
+    host.stop();
+}
+
 BOOST_AUTO_TEST_CASE(recreating_a_tombstoned_group_clears_its_tombstone) {
     // The placement driver may put a fresh replica of a merged-away group back
     // on this node. Leaving the tombstone would have the transport silently

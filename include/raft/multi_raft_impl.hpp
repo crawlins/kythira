@@ -179,7 +179,11 @@ auto multi_raft<Types, Key, GroupId>::create_group_impl(
     node_config<group_types> node_cfg{
         .node_id = _cfg.node_id,
         .network_client = typename group_types::network_client_type{_client, group},
-        .network_server = typename group_types::network_server_type{_demux, group},
+        // The state, not the node, is the owner: it is what holds the node, and
+        // it exists already, which the node does not.
+        .network_server =
+            typename group_types::network_server_type{_demux, group,
+                                                      std::weak_ptr<const void>(state)},
         .persistence = std::move(store),
         // Each group gets its OWN logger, metrics sink and membership manager,
         // built by a factory or default-constructed. Never a copy of the host's
@@ -272,10 +276,11 @@ auto multi_raft<Types, Key, GroupId>::destroy_group(const GroupId& group, tombst
         _groups.erase(it);
     }
 
-    // Order matters. Unregister first so the transport stops delivering, then
-    // tombstone so a message already in flight is dropped rather than
-    // re-creating the replica through the unknown-group path, and only then
-    // drain and destroy.
+    // Order matters. Mark it destroyed so a tick phase still holding this state
+    // skips it, unregister so the transport stops delivering, then tombstone so
+    // a message already in flight is dropped rather than re-creating the
+    // replica through the unknown-group path, and only then drain and stop.
+    state->_destroyed.store(true, std::memory_order_release);
     _demux.unregister_group(group);
     {
         std::lock_guard lock(_tombstone_mutex);
@@ -292,8 +297,12 @@ auto multi_raft<Types, Key, GroupId>::destroy_group(const GroupId& group, tombst
         executor->post_and_wait(state->_stripe, [] {});
     }
 
+    // Stopped, NOT reset. The drain above covers only work already queued on
+    // the stripe: a tick that took its registry snapshot before the erase
+    // still holds `state`, and posts its next phase after the drain returns.
+    // The node is freed with the last reference, which the transport also
+    // holds for the length of any dispatch already inside it.
     state->_node->stop();
-    state->_node.reset();
 
     {
         std::unique_lock lock(_map_mutex);
@@ -502,7 +511,10 @@ auto multi_raft<Types, Key, GroupId>::evaluate_hibernation(const std::vector<gro
     const auto follower_window = follower_hibernate_after().count();
 
     for (const auto& g : groups) {
-        if (g->_hibernating.load(std::memory_order_relaxed)) {
+        // `groups` is this tick's snapshot, which can hold a group destroyed
+        // since: its node is stopped, and there is nothing left to put to sleep.
+        if (g->_hibernating.load(std::memory_order_relaxed) ||
+            g->_destroyed.load(std::memory_order_acquire)) {
             continue;
         }
         const auto idle = now - g->_last_activity_ns.load(std::memory_order_relaxed);
@@ -592,7 +604,9 @@ auto multi_raft<Types, Key, GroupId>::run_phase(const std::vector<group_ptr>& re
         // against and running inline is equivalent.
         for (const auto& g : ready) {
             try {
-                fn(*g);
+                if (!g->_destroyed.load(std::memory_order_acquire)) {
+                    fn(*g);
+                }
             } catch (...) {
             }
         }
@@ -602,7 +616,12 @@ auto multi_raft<Types, Key, GroupId>::run_phase(const std::vector<group_ptr>& re
     for (const auto& g : ready) {
         const bool queued = executor->post(g->_stripe, [&, g] {
             try {
-                fn(*g);
+                // Checked on the stripe, not when the phase is queued: a
+                // destroy drains this stripe after setting the flag, so a
+                // phase that runs after the drain is guaranteed to see it.
+                if (!g->_destroyed.load(std::memory_order_acquire)) {
+                    fn(*g);
+                }
             } catch (...) {
                 // One group's failure must not stall the whole tick: the
                 // barrier below would never be reached, and every other group
@@ -805,7 +824,8 @@ auto multi_raft<Types, Key, GroupId>::flush_driver_reports() -> void {
         // Every replica applies; only the leader reports — N copies of the
         // same fact would tell the driver nothing extra.
         const auto g = find_group(r._group);
-        if (!g || !g->_node || !g->_node->is_leader()) {
+        if (!g || !g->_node || g->_destroyed.load(std::memory_order_acquire) ||
+            !g->_node->is_leader()) {
             continue;
         }
         try {
@@ -887,7 +907,7 @@ auto multi_raft<Types, Key, GroupId>::evaluate_policy(const std::vector<group_pt
     }
 
     for (const auto& g : ready) {
-        if (!g->_node || !g->_node->is_leader()) {
+        if (!g->_node || g->_destroyed.load(std::memory_order_acquire) || !g->_node->is_leader()) {
             // Leader-only. The policy's answer is frozen into the entry every
             // replica applies, so exactly one replica may decide — and the
             // leader is the only one that can propose.
@@ -1508,14 +1528,19 @@ auto multi_raft<Types, Key, GroupId>::handle_unknown_group(const GroupId& group)
     //    the InstallSnapshot the leader sends once it sees how far behind this
     //    replica is — exactly the one snapshot transfer design §9 prices this
     //    recovery at.
+    //
+    //    Counted BEFORE `create_group()` publishes the replica, and uncounted
+    //    if it fails. Counting after let a caller that saw the new replica in
+    //    the registry still read the old count.
+    _lazy_replicas.fetch_add(1, std::memory_order_relaxed);
     try {
         create_group(*desc);
     } catch (const std::exception& e) {
+        _lazy_replicas.fetch_sub(1, std::memory_order_relaxed);
         _cfg.logger.warning("Lazy replica creation failed",
                             {{"group", detail::describe_value(group)}, {"error", e.what()}});
         return unknown_group_action::drop;
     }
-    _lazy_replicas.fetch_add(1, std::memory_order_relaxed);
     _cfg.logger.info("Created a replica from an inbound message",
                      {{"group", detail::describe_value(group)}});
     return unknown_group_action::created;
@@ -2708,6 +2733,7 @@ auto multi_raft<Types, Key, GroupId>::destroy_merged_source(group_state& target,
     // threads — is deferred to the host's apply phase, because doing it here
     // would join threads while holding the target node's mutex, and would
     // deadlock outright if the source happened to share the target's stripe.
+    source->_destroyed.store(true, std::memory_order_release);
     _demux.unregister_group(source_group);
     {
         std::lock_guard lock(_tombstone_mutex);
@@ -2725,10 +2751,10 @@ auto multi_raft<Types, Key, GroupId>::destroy_merged_source(group_state& target,
     }
     // `source` is the last strong reference; handing it to the apply phase is
     // what keeps the node alive until it can be stopped off this thread.
-    defer_to_apply_phase(target._group_id, [source]() mutable {
-        source->_node->stop();
-        source->_node.reset();
-    });
+    // Stopped but not reset, for the reason `destroy_group()` gives: the
+    // source's own stripe is a different one, and a tick phase can still be
+    // queued there holding it.
+    defer_to_apply_phase(target._group_id, [source]() mutable { source->_node->stop(); });
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -3309,7 +3335,7 @@ auto multi_raft<Types, Key, GroupId>::sync_leader_membership() -> void {
     // split. A joint configuration is skipped: it is in transit, and the
     // next heartbeat sees where it landed.
     for (const auto& g : all_groups()) {
-        if (!g->_node || !g->_node->is_leader()) {
+        if (!g->_node || g->_destroyed.load(std::memory_order_acquire) || !g->_node->is_leader()) {
             continue;
         }
         const auto m = g->_node->current_membership();
@@ -3339,7 +3365,7 @@ auto multi_raft<Types, Key, GroupId>::build_shard_reports() const
     -> std::vector<shard_report_type> {
     std::vector<shard_report_type> out;
     for (const auto& g : all_groups()) {
-        if (!g->_node || !g->_node->is_leader()) {
+        if (!g->_node || g->_destroyed.load(std::memory_order_acquire) || !g->_node->is_leader()) {
             continue;
         }
         shard_report_type r;

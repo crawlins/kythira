@@ -3,6 +3,22 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 6, 2026)
+
+- **Destroying a multi-raft group no longer races the tick or the
+  transport.** `tick()` runs its phases over one registry snapshot, and
+  `destroy_group()` freed the group's node as soon as it had drained the
+  group's stripe, so any later phase of a tick already in progress
+  dereferenced a null node. CI saw it as a segfault in
+  `multi_raft_split_integration_test`. A destroyed group's node now lives
+  until its last reference goes, and the rest of the tick skips the group.
+  The merge path's source teardown had the same bug and got the same fix.
+  The transport also keeps the group alive while it is running one of the
+  group's RPC handlers, which before could outlive the node it called into.
+  `lazily_created_replica_count()` is now incremented before the new
+  replica becomes visible, so a caller that can see the replica also sees
+  the count.
+
 ### What Changed (October 5, 2026)
 
 - **CI now builds `minimal_defconfig` and `no_cloud_defconfig`, and runs the
