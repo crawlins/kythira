@@ -1330,8 +1330,9 @@ private:
     ///
     /// Held by `shared_ptr` so that a tick phase already holding a reference is
     /// unaffected by a concurrent `destroy_group()` removing it from the
-    /// registry — the node is torn down only after the stripe drains, and the
-    /// last reference goes with it.
+    /// registry. The node lives exactly as long as the `group_state` does and
+    /// goes with the last reference: `destroy_group()` stops it and sets
+    /// `_destroyed`, but never frees it out from under a holder.
     struct group_state {
         /// @param latency_windows Sub-windows in each latency digest's ring;
         ///        see `multi_raft_config::latency_window_count`.
@@ -1366,8 +1367,20 @@ private:
 
         GroupId _group_id{};
         std::size_t _stripe{0};
+        /// Never reset while the `group_state` is alive. A tick snapshots the
+        /// registry once and then posts each phase to the group's stripe
+        /// separately, so a phase can land on a group *after* `destroy_group()`
+        /// drained that stripe; resetting here turned that into a null
+        /// dereference (`g._node->is_leader()`) in the send phase.
         std::unique_ptr<group_node_type> _node;
         descriptor_type _descriptor{};
+
+        /// Set by `destroy_group()` and the merge path before they drain the
+        /// stripe and stop the node. A tick phase that still holds this state
+        /// checks it on the stripe and does nothing: the node is stopped, and
+        /// driving a stopped node's election or replication timers would only
+        /// put a dead replica's traffic back on the wire.
+        std::atomic<bool> _destroyed{false};
 
         /// Wall-free idle clock: hibernation is a local scheduling decision and
         /// must not acquire a dependency on synchronised clocks.

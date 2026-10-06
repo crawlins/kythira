@@ -134,6 +134,24 @@ template<typename Messages = group_rpc_messages<>> struct group_rpc_handlers {
     /// group's RPC to another group's replica, which at the Raft level looks
     /// like ordinary traffic and corrupts state that no invariant re-checks.
     typename Messages::group_id_type _group{};
+
+    /// @brief What the handlers' captured `this` lives inside, if anything.
+    ///
+    /// Every handler `node<Types>` installs captures a raw `this`, and nothing
+    /// else ties the node's lifetime to the table. The demultiplexer drops its
+    /// lock before calling a handler, so `unregister_group()` cannot wait out a
+    /// call already past the lookup — and the host then frees the node. The
+    /// dispatch locks this for the length of the call instead; an expired
+    /// owner means the replica is gone, and the message is treated as one for
+    /// an unregistered group.
+    ///
+    /// A `weak_ptr`, not a `shared_ptr`: the node owns its
+    /// `group_scoped_server`, which owns a copy of this table, so a strong
+    /// reference here would be a cycle that never frees the node.
+    std::weak_ptr<const void> _owner{};
+    /// Whether `_owner` was set. An owner-less table (the unit tests' bare
+    /// handlers) is always live; one whose owner expired is not.
+    bool _owned{false};
 };
 
 /// @brief Wraps one real `network_server` and fans its messages out by group id.
@@ -365,10 +383,17 @@ private:
             // most exposed to, and the cheapest one to assert away.
             assert(handlers->_group == group &&
                    "multi_group_network_server: handler table stamped with a different group");
-            const auto& fn = select(*handlers);
-            // An empty slot is an optional RPC this group's node never
-            // registered — not a stale group, so it is not counted as one.
-            return fn ? fn(req) : fallback();
+            // Held until the handler returns: the handler runs on a node that
+            // `destroy_group()` may be tearing down on another thread.
+            const auto alive = handlers->_owner.lock();
+            if (!handlers->_owned || alive) {
+                const auto& fn = select(*handlers);
+                // An empty slot is an optional RPC this group's node never
+                // registered — not a stale group, so it is not counted as one.
+                return fn ? fn(req) : fallback();
+            }
+            // Looked up just before its replica was destroyed. Falls through
+            // to the same handling as a message that arrived just after.
         }
 
         // Destroyed here by a merge or a replica removal. Dropping is the whole
@@ -380,8 +405,11 @@ private:
 
         if (_unknown_group && _unknown_group(group) == unknown_group_action::created) {
             if (auto created = lookup(group); created) {
-                const auto& fn = select(*created);
-                return fn ? fn(req) : fallback();
+                const auto alive = created->_owner.lock();
+                if (!created->_owned || alive) {
+                    const auto& fn = select(*created);
+                    return fn ? fn(req) : fallback();
+                }
             }
             // The host said it created the replica and it is not there. That is
             // a host bug, not a stale peer, but counting it keeps the anomaly
@@ -437,6 +465,16 @@ public:
     group_scoped_server() = default;
     group_scoped_server(Demux& demux, group_id_type group)
         : _demux(&demux), _group(std::move(group)) {}
+
+    /// @param owner The object whose lifetime bounds the registered handlers'
+    ///        captures; see `group_rpc_handlers::_owner`. The demultiplexer
+    ///        keeps it alive for the length of each dispatch, and drops
+    ///        messages for it once it has expired.
+    group_scoped_server(Demux& demux, group_id_type group, std::weak_ptr<const void> owner)
+        : _demux(&demux), _group(std::move(group)) {
+        _handlers._owner = std::move(owner);
+        _handlers._owned = true;
+    }
 
     auto register_request_vote_handler(
         std::function<typename messages_type::request_vote_response_type(
