@@ -30,7 +30,7 @@ Makefile
 *.cmake
 !CMakeLists.txt
 !vcpkg-overlays/**/*.cmake
-!cmake/Kconfig.cmake
+!cmake/*.cmake
 vcpkg_installed
 # A second, feature-specific dependency tree (e.g. `--x-feature=gcp` into
 # `--x-install-root=vcpkg_installed_gcp`). Kept out of the shared tree on

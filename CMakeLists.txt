@@ -2139,7 +2139,38 @@ file(GLOB_RECURSE TIDY_SOURCES
     "${CMAKE_SOURCE_DIR}/examples/*.cpp"
     "${CMAKE_SOURCE_DIR}/cmd/*.cpp"
 )
+list(SORT TIDY_SOURCES)
+
+# A full run is ~2.5 hours on a 4-core CI runner, so CI splits it across
+# parallel jobs: each configures with its own KYTHIRA_TIDY_SHARD_INDEX and
+# analyses every KYTHIRA_TIDY_SHARD_COUNT-th file of the sorted list. Round
+# robin rather than contiguous ranges, so the heavy test directories spread
+# evenly. The defaults (one shard) analyse everything.
+set(KYTHIRA_TIDY_SHARD_COUNT 1 CACHE STRING
+    "Split the static-analysis file list into this many shards")
+set(KYTHIRA_TIDY_SHARD_INDEX 0 CACHE STRING
+    "Which shard (0-based) the static-analysis targets analyse")
+if(KYTHIRA_TIDY_SHARD_COUNT GREATER 1)
+    if(KYTHIRA_TIDY_SHARD_INDEX LESS 0 OR
+       NOT KYTHIRA_TIDY_SHARD_INDEX LESS KYTHIRA_TIDY_SHARD_COUNT)
+        message(FATAL_ERROR "KYTHIRA_TIDY_SHARD_INDEX=${KYTHIRA_TIDY_SHARD_INDEX} "
+                            "is outside 0..KYTHIRA_TIDY_SHARD_COUNT-1")
+    endif()
+    set(_tidy_shard "")
+    set(_tidy_i 0)
+    foreach(_f IN LISTS TIDY_SOURCES)
+        math(EXPR _tidy_mod "${_tidy_i} % ${KYTHIRA_TIDY_SHARD_COUNT}")
+        if(_tidy_mod EQUAL KYTHIRA_TIDY_SHARD_INDEX)
+            list(APPEND _tidy_shard "${_f}")
+        endif()
+        math(EXPR _tidy_i "${_tidy_i} + 1")
+    endforeach()
+    set(TIDY_SOURCES ${_tidy_shard})
+endif()
 list(LENGTH TIDY_SOURCES TIDY_SOURCES_COUNT)
+# The exact list each run analyses, for CI logs and ad-hoc runs.
+string(REPLACE ";" "\n" _tidy_list "${TIDY_SOURCES}")
+file(WRITE "${CMAKE_BINARY_DIR}/tidy-sources.txt" "${_tidy_list}\n")
 
 if(NOT CLANG_TIDY_EXECUTABLE)
     message(WARNING "clang-tidy not found — 'static-analysis' and 'static-analysis-fix' targets "
