@@ -16,6 +16,11 @@
 //  3. On an engine with `save_hard_state`, a follower that moves to a newer
 //     term without voting stores "no vote", rather than leaving its previous
 //     term's vote on storage beside the new term.
+//  4. That holds however the node learns the term: a refused RequestVote or
+//     an AppendEntries that brings no new entries stores it before the node
+//     answers, which used to happen only when the log changed or it voted.
+//  5. A candidate that steps down to its own term's leader keeps its vote for
+//     itself, so it cannot vote a second time in that term.
 //
 // Engine-level behaviour of the two calls is in
 // batched_durable_writes_unit_test.cpp.
@@ -377,6 +382,15 @@ template<bool Extended> struct cluster {
             deadline);
     }
 
+    /// A client on a simulator node of the test's own, wired only to `id`,
+    /// for sending that member RPCs by hand.
+    auto client_to(std::uint64_t id) -> typename types::network_client_type {
+        auto net = sim.create_node("9");
+        sim.add_edge("9", std::to_string(id), network_simulator::NetworkEdge{});
+        sim.add_edge(std::to_string(id), "9", network_simulator::NetworkEdge{});
+        return typename types::network_client_type{net, typename types::serializer_type{}};
+    }
+
     /// Whether node `id`'s engine holds every entry the leader started with.
     auto caught_up(std::uint64_t id) -> bool {
         auto& r = *records[id - 1];
@@ -463,9 +477,8 @@ BOOST_AUTO_TEST_CASE(a_follower_that_moves_terms_does_not_keep_its_previous_vote
     BOOST_REQUIRE(term > k_seed_term);
 
     c.connect(3);
-    // Node 3 persists the leader's term after the entries that AppendEntries
-    // brought, before it answers. Holding the entries is therefore not enough
-    // to read its hard state: wait for the term as well.
+    // Node 3 stores the leader's term when it first hears it and its entries
+    // later; the test reads both, so it waits for both.
     auto& rec = *c.records[2];
     BOOST_REQUIRE(c.pump_until(
         [&] {
@@ -485,6 +498,154 @@ BOOST_AUTO_TEST_CASE(a_follower_that_moves_terms_does_not_keep_its_previous_vote
     BOOST_TEST(count_prefix(rec.ops, "hard:" + std::to_string(term) + ":none") +
                    count_prefix(rec.ops, "hard:" + std::to_string(term) + ":1") >=
                1U);
+}
+
+constexpr auto k_rpc_wait = std::chrono::milliseconds{2000};
+
+// Node 3 voted for itself in term 1 and refuses a RequestVote from a higher
+// term because the candidate's log is behind its own. Refusing still moves it
+// to that term, and the term and "no vote" are stored before it answers.
+BOOST_AUTO_TEST_CASE(a_refused_vote_from_a_newer_term_stores_the_term,
+                     *boost::unit_test::timeout(30)) {
+    cluster<true> c{{}, std::optional<std::uint64_t>{3}};
+    auto client = c.client_to(3);
+    constexpr std::uint64_t newer = k_seed_term + 4;
+
+    const auto response =
+        client
+            .send_request_vote(
+                3,
+                kythira::request_vote_request<>{
+                    ._term = newer, ._candidate_id = 2, ._last_log_index = 0, ._last_log_term = 0},
+                k_rpc_wait)
+            .get();
+    BOOST_TEST(!response.vote_granted());
+    BOOST_TEST(response.term() == newer);
+
+    auto& rec = *c.records[2];
+    const std::lock_guard lock(rec.mu);
+    BOOST_TEST_INFO_SCOPE("node 3: " << join(rec.ops));
+    BOOST_TEST(rec.state.load_current_term() == newer);
+    BOOST_TEST(!rec.state.load_voted_for().has_value());
+    BOOST_TEST(count_prefix(rec.ops, "hard:" + std::to_string(newer) + ":none") == 1U);
+}
+
+// The same for an AppendEntries from a newer term that brings nothing node 3
+// lacks: a heartbeat at its snapshot boundary. The log does not change, which
+// was the only AppendEntries path that stored the term.
+BOOST_AUTO_TEST_CASE(a_heartbeat_from_a_newer_term_stores_the_term,
+                     *boost::unit_test::timeout(30)) {
+    cluster<true> c{{}, std::optional<std::uint64_t>{3}};
+    auto client = c.client_to(3);
+    constexpr std::uint64_t newer = k_seed_term + 5;
+
+    const auto response = client
+                              .send_append_entries(3,
+                                                   kythira::append_entries_request<>{
+                                                       ._term = newer,
+                                                       ._leader_id = 1,
+                                                       ._prev_log_index = k_snapshot_index,
+                                                       ._prev_log_term = k_seed_term,
+                                                       ._entries = {},
+                                                       ._leader_commit = k_snapshot_index},
+                                                   k_rpc_wait)
+                              .get();
+    BOOST_TEST(response.success());
+    BOOST_TEST(response.term() == newer);
+
+    auto& rec = *c.records[2];
+    const std::lock_guard lock(rec.mu);
+    BOOST_TEST_INFO_SCOPE("node 3: " << join(rec.ops));
+    BOOST_TEST(rec.state.load_current_term() == newer);
+    BOOST_TEST(!rec.state.load_voted_for().has_value());
+    BOOST_TEST(count_prefix(rec.ops, "append") == 0U);
+    BOOST_TEST(count_prefix(rec.ops, "hard:" + std::to_string(newer) + ":none") == 1U);
+}
+
+// Node 1 campaigns with node 2's pre-vote but not its vote, so it stays a
+// candidate that has voted for itself. Node 2 then claims the term as its
+// leader; node 1 steps down within the term and must still refuse node 3,
+// whose log is as long as its own. Stepping down used to clear the vote in
+// memory, and node 1 granted it: two votes from one node in one term, which
+// is how a term gets two leaders.
+BOOST_AUTO_TEST_CASE(a_candidate_that_steps_down_in_its_term_keeps_its_vote,
+                     *boost::unit_test::timeout(30)) {
+    using types = test_types<true>;
+    using sim_t = network_simulator::NetworkSimulator<types::raft_network_types>;
+    sim_t sim;
+    sim.start();
+    for (const auto* peer : {"2", "9"}) {
+        sim.add_edge("1", peer, network_simulator::NetworkEdge{});
+        sim.add_edge(peer, "1", network_simulator::NetworkEdge{});
+    }
+
+    // Node 2 is a stand-in that grants pre-votes and refuses votes.
+    types::network_server_type node2{sim.create_node("2"), types::serializer_type{}};
+    node2.register_request_pre_vote_handler([](const kythira::request_pre_vote_request<>& r) {
+        return kythira::request_pre_vote_response<>{._term = r.term() - 1, ._vote_granted = true};
+    });
+    node2.register_request_vote_handler([](const kythira::request_vote_request<>& r) {
+        return kythira::request_vote_response<>{._term = r.term(), ._vote_granted = false};
+    });
+    node2.start();
+
+    auto record = std::make_shared<write_record>();
+    seed(*record, 1, std::nullopt);
+    auto net = sim.create_node("1");
+    kythira::node<types> node1{kythira::node_config<types>{
+        .node_id = 1,
+        .network_client = types::network_client_type{net, types::serializer_type{}},
+        .network_server = types::network_server_type{net, types::serializer_type{}},
+        .persistence = recording_engine<true>{record},
+        .logger = kythira::console_logger{kythira::log_level::error},
+        .metrics = types::metrics_type{},
+        .membership = types::membership_manager_type{},
+        .config = make_config(1),
+        .self_address = "1",
+        .peer_discovery = preset_peer_discovery<std::uint64_t, std::string>{}}};
+    node1.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds{180});
+    node1.check_election_timeout();
+    BOOST_REQUIRE(wait_until([&] { return node1.get_state() == kythira::server_state::candidate; },
+                             std::chrono::milliseconds{4000}));
+    const auto term = node1.get_current_term();
+
+    types::network_client_type client{sim.create_node("9"), types::serializer_type{}};
+    const auto heartbeat = client
+                               .send_append_entries(1,
+                                                    kythira::append_entries_request<>{
+                                                        ._term = term,
+                                                        ._leader_id = 2,
+                                                        ._prev_log_index = k_snapshot_index,
+                                                        ._prev_log_term = k_seed_term,
+                                                        ._entries = {},
+                                                        ._leader_commit = k_snapshot_index},
+                                                    k_rpc_wait)
+                               .get();
+    BOOST_TEST(heartbeat.success());
+    BOOST_REQUIRE(node1.get_state() == kythira::server_state::follower);
+    BOOST_REQUIRE(node1.get_current_term() == term);
+
+    const auto vote =
+        client
+            .send_request_vote(1,
+                               kythira::request_vote_request<>{
+                                   ._term = term,
+                                   ._candidate_id = 3,
+                                   ._last_log_index = k_snapshot_index + k_leader_trailing,
+                                   ._last_log_term = k_seed_term},
+                               k_rpc_wait)
+            .get();
+    BOOST_TEST(!vote.vote_granted());
+
+    {
+        const std::lock_guard lock(record->mu);
+        BOOST_TEST_INFO_SCOPE("node 1: " << join(record->ops));
+        BOOST_TEST(record->state.load_current_term() == term);
+        BOOST_TEST((record->state.load_voted_for() == std::optional<std::uint64_t>{1}));
+    }
+    node1.stop();
+    node2.stop();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

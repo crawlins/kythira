@@ -5717,12 +5717,8 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
         }
         _configuration = reverted;
         sync_peer2peer_membership();
-
-        // Persist current term alongside any log modification (matches the
-        // pre-extraction combined condition; the other original disjunct,
-        // "request.term() > _current_term" evaluated after Rule 2 already
-        // synced _current_term up to request.term(), was always false there).
-        persist_term_locked();
+        // No term write here: the term only changes in become_follower(),
+        // which stores it before this node answers.
     }
 
     return append_entries_response_type{_current_term, true, std::nullopt, std::nullopt};
@@ -6208,9 +6204,22 @@ auto node<Types>::become_follower(term_id_type new_term) -> void {
         _metrics.emit();
     }
 
-    _current_term = new_term;
     _state = kythira::server_state::follower;
-    _voted_for = std::nullopt;
+    // A vote belongs to its term. Moving to a newer term clears it and stores
+    // the new term before this node answers anything (Figure 2: currentTerm
+    // and votedFor are updated on stable storage before responding to RPCs).
+    // The callers that learn a term from a heartbeat, a refused vote, an
+    // AppendEntries that brings nothing new, or a response used to leave it
+    // in memory only, so storage kept the previous term and its vote.
+    //
+    // Stepping down within the same term keeps the vote: a candidate that
+    // hears from its term's leader has voted for itself in that term, and
+    // forgetting it would let it vote a second time in the term.
+    if (new_term > _current_term) {
+        _current_term = new_term;
+        _voted_for = std::nullopt;
+        persist_term_locked();
+    }
 
     // Stop quorum assessment loop if we were leader (Req 13.2)
     if (old_state == kythira::server_state::leader) {
