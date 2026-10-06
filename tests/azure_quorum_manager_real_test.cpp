@@ -310,10 +310,18 @@ auto random_suffix() -> std::string {
 }
 
 /// One VM of a cluster as ARM lists it: its node ID and group, read back from
-/// the `kythira:node-id` and `kythira:group` tags the manager stamps at create.
+/// the `kythira:node-id` and `kythira:group` tags the manager stamps at create,
+/// and ARM's own `properties.vmId`.
+///
+/// The node ID cannot tell a replacement from the VM it replaced: the manager
+/// takes the next ID from the highest one still listed, so once the old VMs
+/// are deleted a replacement can come back under a decommissioned node's ID
+/// and VM name (CI run 37093848659 recreated -7, -8 and -9 that way). vmId is
+/// a GUID ARM assigns per created VM, so it does.
 struct listed_vm {
     std::uint64_t node_id{};
     std::string group;
+    std::string vm_id;
 };
 
 /// Every VM tagged with `cluster`, with its node ID and group. Same listing
@@ -350,8 +358,17 @@ struct listed_vm {
             nid == nullptr || !nid->is_string() || group == nullptr || !group->is_string()) {
             continue;
         }
+        std::string vm_id;
+        if (const auto* props = vm.as_object().if_contains("properties");
+            props != nullptr && props->is_object()) {
+            if (const auto* id = props->as_object().if_contains("vmId");
+                id != nullptr && id->is_string()) {
+                vm_id = std::string(id->as_string());
+            }
+        }
         vms.push_back({.node_id = std::stoull(std::string(nid->as_string())),
-                       .group = std::string(group->as_string())});
+                       .group = std::string(group->as_string()),
+                       .vm_id = std::move(vm_id)});
     }
     return vms;
 }
@@ -1313,6 +1330,15 @@ BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationF
         }
     }
 
+    // ARM's identity for each original VM, so the checks below can tell a
+    // replacement that reuses a decommissioned node's ID from that node.
+    auto pipeline = make_test_arm_pipeline(azure);
+    std::map<std::uint64_t, std::string> original_vm_id;
+    for (const auto& vm : cluster_vms(pipeline, azure, cluster_name)) {
+        original_vm_id[vm.node_id] = vm.vm_id;
+    }
+    BOOST_REQUIRE_EQUAL(original_vm_id.size(), cluster.size());
+
     // Simulate a full zone-3 outage plus one zone-2 node: deallocate all 3
     // zone-3 nodes and exactly 1 zone-2 node directly via ARM, bypassing the
     // manager — 9 nodes total, 4 unreachable, leaving 5 live: critical
@@ -1338,20 +1364,26 @@ BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationF
     auto returned = std::move(mgr->maintain_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(returned.live_node_count, 5u);
     BOOST_CHECK_EQUAL(returned.unreachable_nodes.size(), 4u);
-    std::set<std::uint64_t> lost(returned.unreachable_nodes.begin(),
-                                 returned.unreachable_nodes.end());
+    std::set<std::string> lost;
+    for (const auto& nid : returned.unreachable_nodes) {
+        lost.insert(original_vm_id.at(nid));
+    }
+    std::set<std::string> originals;
+    for (const auto& [nid, vm_id] : original_vm_id) {
+        originals.insert(vm_id);
+    }
 
     // Task 8: "verify topology-correct per-zone replacement and a subsequent
     // healthy assessment". The replacements are read back from ARM by tag,
-    // since maintain_quorum hands none of them back.
-    auto pipeline = make_test_arm_pipeline(azure);
+    // since maintain_quorum hands none of them back, and told apart from the
+    // originals by vmId, since they may reuse a lost node's ID.
     std::map<std::string, std::size_t> new_by_zone;
     std::vector<kythira::node_placement<std::uint64_t, std::string>> after;
     for (const auto& vm : cluster_vms(pipeline, azure, cluster_name)) {
-        if (lost.contains(vm.node_id)) {
+        if (lost.contains(vm.vm_id)) {
             continue;  // decommissioned; ARM may still be finishing the delete
         }
-        if (std::ranges::none_of(cluster, [&](const auto& m) { return m.node_id == vm.node_id; })) {
+        if (!originals.contains(vm.vm_id)) {
             ++new_by_zone[vm.group];
             cost.resources.push_back(
                 {.label = "VM (zone " + vm.group + ", replacement, " + mgr.option().label() + ")",
@@ -1375,7 +1407,7 @@ BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationF
     bool lost_gone = false;
     for (int i = 0; i < 30 && !lost_gone; ++i) {
         lost_gone = std::ranges::none_of(cluster_vms(pipeline, azure, cluster_name),
-                                         [&](const auto& vm) { return lost.contains(vm.node_id); });
+                                         [&](const auto& vm) { return lost.contains(vm.vm_id); });
         if (!lost_gone) {
             std::this_thread::sleep_for(std::chrono::seconds{10});
         }
