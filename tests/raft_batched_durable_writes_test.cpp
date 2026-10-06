@@ -40,6 +40,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -331,7 +332,7 @@ template<bool Extended> struct cluster {
                 .network_server =
                     typename types::network_server_type{net, typename types::serializer_type{}},
                 .persistence = recording_engine<Extended>{record},
-                .logger = kythira::console_logger{kythira::log_level::error},
+                .logger = kythira::console_logger{kythira::log_level::info},
                 .metrics = typename types::metrics_type{},
                 .membership = typename types::membership_manager_type{},
                 .config = make_config(id),
@@ -372,11 +373,22 @@ template<bool Extended> struct cluster {
         }
     }
 
+    /// Ticks of the last pump_until() and the longest one, for diagnostics.
+    std::size_t pump_ticks = 0;
+    std::chrono::milliseconds longest_tick{0};
+
     /// Drives heartbeats until `pred` holds or `deadline` passes.
     template<typename Pred> auto pump_until(Pred pred, std::chrono::milliseconds deadline) -> bool {
+        pump_ticks = 0;
+        longest_tick = std::chrono::milliseconds{0};
         return wait_until(
             [&] {
+                const auto start = std::chrono::steady_clock::now();
                 leader().check_heartbeat_timeout();
+                ++pump_ticks;
+                longest_tick =
+                    std::max(longest_tick, std::chrono::duration_cast<std::chrono::milliseconds>(
+                                               std::chrono::steady_clock::now() - start));
                 return pred();
             },
             deadline);
@@ -480,7 +492,7 @@ BOOST_AUTO_TEST_CASE(a_follower_that_moves_terms_does_not_keep_its_previous_vote
     // Node 3 stores the leader's term when it first hears it and its entries
     // later; the test reads both, so it waits for both.
     auto& rec = *c.records[2];
-    BOOST_REQUIRE(c.pump_until(
+    const bool settled = c.pump_until(
         [&] {
             if (!c.caught_up(3)) {
                 return false;
@@ -488,7 +500,22 @@ BOOST_AUTO_TEST_CASE(a_follower_that_moves_terms_does_not_keep_its_previous_vote
             const std::lock_guard lock(rec.mu);
             return rec.state.load_current_term() == term;
         },
-        std::chrono::milliseconds{5000}));
+        std::chrono::milliseconds{5000});
+    if (!settled) {
+        for (std::uint64_t id = 1; id <= 3; ++id) {
+            auto& r = *c.records[id - 1];
+            const std::lock_guard lock(r.mu);
+            const auto v = r.state.load_voted_for();
+            std::cerr << "node " << id << ": live term " << c.nodes[id - 1]->get_current_term()
+                      << " state " << static_cast<int>(c.nodes[id - 1]->get_state())
+                      << ", stored term " << r.state.load_current_term() << " vote "
+                      << (v ? std::to_string(*v) : "none") << " last "
+                      << r.state.get_last_log_index() << ", ops: " << join(r.ops) << std::endl;
+        }
+        std::cerr << "pump: " << c.pump_ticks << " ticks, longest " << c.longest_tick.count()
+                  << "ms" << std::endl;
+        BOOST_FAIL("node 3 did not settle at term " << term);
+    }
 
     const std::lock_guard lock(rec.mu);
     BOOST_TEST(rec.state.load_current_term() == term);
