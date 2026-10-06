@@ -168,8 +168,9 @@ BOOST_AUTO_TEST_CASE(test_simple_future_concept, *boost::unit_test::timeout(15))
     BOOST_TEST(fut.isReady());
     BOOST_TEST(std::move(fut).get() == 42);
 
-    // Test then() chaining
-    auto fut2 = fut.then([](int x) { return x * 2; });
+    // Test then() chaining, on a fresh future: get() consumed the first.
+    SimpleFuture<int> chained(42);
+    auto fut2 = chained.then([](int x) { return x * 2; });
     BOOST_TEST(std::move(fut2).get() == 84);
 }
 

@@ -57,8 +57,6 @@
 #define CA_CLUSTER_NODE_PATH "ca_cluster_node"
 #endif
 
-extern char** environ;
-
 using namespace raft::testing;
 
 namespace {
@@ -423,7 +421,7 @@ auto try_issue_certificate_https(const std::vector<std::unique_ptr<rpc_tls_node_
     while (std::chrono::steady_clock::now() < deadline) {
         for (const auto& n : nodes) {
             httplib::SSLClient client("127.0.0.1", n->http_port);
-            client.set_ca_cert_path(listener_root_path.c_str());
+            client.set_ca_cert_path(listener_root_path);
             client.enable_server_certificate_verification(true);
             client.set_connection_timeout(5, 0);
             client.set_read_timeout(65, 0);

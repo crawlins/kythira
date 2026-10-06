@@ -64,6 +64,8 @@ BOOST_AUTO_TEST_CASE(moving_a_slot_transfers_it) {
     auto gate = std::make_shared<connection_gate>(2);
     auto a = gate->try_acquire();
     auto b = std::move(a);
+    // Intentional: a moved-from slot must report empty.
+    // NOLINTNEXTLINE(bugprone-use-after-move)
     BOOST_TEST(!static_cast<bool>(a));
     BOOST_TEST(static_cast<bool>(b));
     BOOST_TEST(gate->live() == 1u);

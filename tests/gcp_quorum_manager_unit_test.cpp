@@ -125,7 +125,7 @@ BOOST_AUTO_TEST_CASE(controller_keys_are_used_verbatim) {
 }
 
 BOOST_AUTO_TEST_CASE(unsafe_keys_map_to_a_valid_label) {
-    for (const std::string key :
+    for (const std::string& key :
          {std::string("Cap-UPPER"), std::string("cap:with/colons"), std::string("9-leading-digit"),
           std::string("cap-18446744073709551615-1759363200000-ffffffffffffffff-x"),
           std::string(200, 'a'), std::string("")}) {
@@ -1048,7 +1048,9 @@ auto resize_request(std::int32_t size, std::string request_id = {})
 auto query_value(const google::cloud::rest_internal::RestRequest& r, const std::string& key)
     -> std::optional<std::string> {
     for (const auto& [k, v] : r.parameters()) {
-        if (k == key) return v;
+        if (k == key) {
+            return v;
+        }
     }
     return std::nullopt;
 }

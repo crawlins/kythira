@@ -465,7 +465,7 @@ auto NetworkSimulator<Types>::apply_latency(address_type from, address_type to)
     // `sim_extra_latency_ms` input.
     static const std::chrono::milliseconds extra_latency = [] {
         const char* v = std::getenv("KYTHIRA_SIM_EXTRA_LATENCY_MS");
-        return std::chrono::milliseconds{v ? std::atoi(v) : 0};
+        return std::chrono::milliseconds{(v != nullptr) ? std::atoi(v) : 0};
     }();
     return to_it->second.latency() + extra_latency;
 }

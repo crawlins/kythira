@@ -61,7 +61,9 @@ namespace kythira {
                            (c >= '0' && c <= '9') || c == '_' || c == ':';
         out.push_back(valid ? c : '_');
     }
-    if (out.empty() || (out.front() >= '0' && out.front() <= '9')) out.insert(out.begin(), '_');
+    if (out.empty() || (out.front() >= '0' && out.front() <= '9')) {
+        out.insert(out.begin(), '_');
+    }
     return out;
 }
 
@@ -73,7 +75,9 @@ namespace kythira {
             (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
         out.push_back(valid ? c : '_');
     }
-    if (out.empty() || (out.front() >= '0' && out.front() <= '9')) out.insert(out.begin(), '_');
+    if (out.empty() || (out.front() >= '0' && out.front() <= '9')) {
+        out.insert(out.begin(), '_');
+    }
     return out;
 }
 
@@ -220,12 +224,16 @@ private:
     /// regardless of add_dimension() call order.
     [[nodiscard]] static auto render_labels(
         const std::vector<std::pair<std::string, std::string>>& dimensions) -> std::string {
-        if (dimensions.empty()) return "";
+        if (dimensions.empty()) {
+            return "";
+        }
         auto sorted = dimensions;
         std::ranges::sort(sorted);
         std::string out = "{";
         for (std::size_t i = 0; i < sorted.size(); ++i) {
-            if (i > 0) out += ",";
+            if (i > 0) {
+                out += ",";
+            }
             out += prometheus_sanitize_label_name(sorted[i].first) + "=\"" +
                    prometheus_escape_label_value(sorted[i].second) + "\"";
         }
@@ -239,7 +247,9 @@ private:
     [[nodiscard]] static auto merge_label(const std::string& labels, std::string_view name,
                                           std::string_view value) -> std::string {
         std::string pair = std::string(name) + "=\"" + std::string(value) + "\"";
-        if (labels.empty()) return "{" + pair + "}";
+        if (labels.empty()) {
+            return "{" + pair + "}";
+        }
         std::string out = labels;
         out.insert(out.size() - 1, "," + pair);
         return out;

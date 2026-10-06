@@ -144,7 +144,7 @@ BOOST_AUTO_TEST_CASE(caps_refuse_and_free_slots) {
 
     // Releasing a ticket closes its socket and frees both its slots.
     t1.reset();
-    char b;
+    char b = 0;
     BOOST_TEST(::read(a1.peer, &b, 1) == 0);
     BOOST_TEST(tracker->stats().active_connections == 2u);
     auto t4 = tracker->admit(c1.server, v4("10.0.0.1"));

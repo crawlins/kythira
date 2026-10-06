@@ -275,7 +275,9 @@ public:
         // or IPv6 (whichever of the identifier's A/AAAA records it picks), so
         // the default "*:80" listens on both; see kythira::net_bind::httplib_listeners.
         auto [host, port] = kythira::net_bind::split_host_port(bind_address, 0);
-        if (host.empty()) host = "*";
+        if (host.empty()) {
+            host = "*";
+        }
         if (port < 0 || port > 65535) {
             throw std::invalid_argument("acme_certificate_provider: bad http-01 port in " +
                                         bind_address);

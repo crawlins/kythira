@@ -62,7 +62,9 @@ auto emit_and_take_line(kythira::telegraf_metrics& metrics,
                         std::shared_ptr<recording_sender_state> state, std::size_t nth)
     -> std::string {
     metrics.emit();
-    if (!wait_for_payloads(*state, nth, 2000ms)) return {};
+    if (!wait_for_payloads(*state, nth, 2000ms)) {
+        return {};
+    }
     std::lock_guard<std::mutex> lock(state->mu);
     return state->payloads.at(nth - 1);
 }
@@ -100,8 +102,9 @@ auto test_gauge_and_duration_lines() -> bool {
         std::cerr << "  x timed out (gauge)\n";
         return false;
     }
-    if (!check_line(gauge_line, "http.client.request.size value=1024.5", "gauge line"))
+    if (!check_line(gauge_line, "http.client.request.size value=1024.5", "gauge line")) {
         return false;
+    }
 
     metrics.set_metric_name("rpc.latency");
     metrics.add_duration(1500us);
@@ -184,7 +187,9 @@ auto main() -> int {
 
     int failed = 0;
     auto run = [&](bool (*test)()) {
-        if (!test()) ++failed;
+        if (!test()) {
+            ++failed;
+        }
     };
 
     run(test_counter_line);

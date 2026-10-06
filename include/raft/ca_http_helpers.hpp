@@ -470,9 +470,8 @@ inline auto options_from_presented_cert(X509* cert) -> csr_signing_options {
                 const unsigned char* bytes = ASN1_STRING_get0_data(s);
                 int len = ASN1_STRING_length(s);
                 char buf[INET6_ADDRSTRLEN] = {};
-                if (len == 4 && inet_ntop(AF_INET, bytes, buf, sizeof(buf)) != nullptr) {
-                    opts.ip_addresses.emplace_back(buf);
-                } else if (len == 16 && inet_ntop(AF_INET6, bytes, buf, sizeof(buf)) != nullptr) {
+                const int family = len == 4 ? AF_INET : len == 16 ? AF_INET6 : AF_UNSPEC;
+                if (family != AF_UNSPEC && inet_ntop(family, bytes, buf, sizeof(buf)) != nullptr) {
                     opts.ip_addresses.emplace_back(buf);
                 }
             }

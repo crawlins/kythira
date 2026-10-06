@@ -56,8 +56,6 @@
 #define CA_CLUSTER_NODE_PATH "ca_cluster_node"
 #endif
 
-extern char** environ;
-
 using namespace raft::testing;
 
 namespace {

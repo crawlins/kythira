@@ -167,7 +167,9 @@ auto test_all_levels_and_overloads() -> bool {
     }
     std::lock_guard<std::mutex> lock(state->mu);
     std::string all;
-    for (const auto& body : state->bodies) all += body;
+    for (const auto& body : state->bodies) {
+        all += body;
+    }
     for (const char* level : {"trace", "debug", "info", "warning", "error", "critical"}) {
         if (all.find("\"level\":\"" + std::string(level) + "\"") == std::string::npos) {
             std::cerr << "  x level " << level << " never appeared\n";
@@ -199,7 +201,9 @@ auto main() -> int {
 
     int failed = 0;
     auto run = [&](bool (*test)()) {
-        if (!test()) ++failed;
+        if (!test()) {
+            ++failed;
+        }
     };
 
     run(test_push_path_and_stream_labels);

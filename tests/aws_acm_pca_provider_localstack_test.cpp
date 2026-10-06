@@ -151,7 +151,7 @@ auto make_client() -> Aws::ACMPCA::ACMPCAClient {
 }
 
 auto to_buffer(const std::string& s) -> Aws::Utils::ByteBuffer {
-    return Aws::Utils::ByteBuffer(reinterpret_cast<const unsigned char*>(s.data()), s.size());
+    return {reinterpret_cast<const unsigned char*>(s.data()), s.size()};
 }
 
 /// Thrown by CA provisioning; turns into a skip, not a failure, because it

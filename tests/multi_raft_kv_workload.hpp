@@ -1277,7 +1277,7 @@ inline auto describe_device(const std::string& path, machine_description& out) -
     // mount points, and a relative path matches none of them.
     if (char* resolved = ::realpath(log_path.c_str(), nullptr); resolved != nullptr) {
         m._described_path = resolved;
-        std::free(resolved);
+        std::free(resolved);  // NOLINT(cppcoreguidelines-no-malloc): realpath() mallocs it
     }
     if (auto model = detail::proc_field("/proc/cpuinfo", "model name"); !model.empty()) {
         m._cpu_model = model;

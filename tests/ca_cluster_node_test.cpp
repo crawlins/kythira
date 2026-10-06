@@ -117,7 +117,9 @@ struct cluster_node_process {
           auth_token(std::move(auth_token_)),
           peers_arg(std::move(peers_arg_)),
           bootstrap(bootstrap_) {
-        if (extra_args_) extra_args = std::move(*extra_args_);
+        if (extra_args_) {
+            extra_args = std::move(*extra_args_);
+        }
         std::filesystem::create_directories(data_dir);
         spawn();
     }
@@ -231,7 +233,9 @@ struct cluster_node_process {
             pid_t r = ::waitpid(pid, &status, WNOHANG);
             if (r == pid) {
                 pid = -1;
-                if (WIFEXITED(status)) return WEXITSTATUS(status);
+                if (WIFEXITED(status)) {
+                    return WEXITSTATUS(status);
+                }
                 return std::nullopt;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(20));

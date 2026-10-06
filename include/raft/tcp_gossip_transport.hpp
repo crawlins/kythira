@@ -493,7 +493,7 @@ private:
     auto exchange_with(const peer_info<NodeId, Address>& peer) -> void {
         std::optional<NodeId> self_id;
         if (auto self = _self_id.rlock(); self->has_value()) {
-            self_id = self->value();
+            self_id = *self;
         }
         if (!self_id.has_value()) {
             // advertise_progress() hasn't been called yet — nothing meaningful

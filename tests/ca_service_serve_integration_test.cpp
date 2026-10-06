@@ -499,7 +499,9 @@ BOOST_AUTO_TEST_CASE(plaintext_serve_allowed_with_flag_and_env_token,
         auto res =
             client.Get("/healthz", httplib::Headers{{"Authorization", "Bearer env-token-12345"}});
         healthy = res && res->status == 200;
-        if (!healthy) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (!healthy) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
     }
     BOOST_TEST(healthy);
     ::kill(pid, SIGTERM);

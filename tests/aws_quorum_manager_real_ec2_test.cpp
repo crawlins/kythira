@@ -129,8 +129,7 @@ auto refreshing_credentials_provider(const std::string& region)
         return nullptr;  // cannot re-federate without a role to assume
     }
     return std::make_shared<github_oidc_refreshing_credentials_provider>(
-        Aws::String(role_arn.c_str()), Aws::String("kythira-ci-real-cloud-tests"),
-        Aws::String(region.c_str()));
+        Aws::String(role_arn), Aws::String("kythira-ci-real-cloud-tests"), Aws::String(region));
 }
 
 // Run once before any other global fixture constructs: if
@@ -665,7 +664,7 @@ struct RealEc2Fixture : signal_cleanup_target {
         // deterministic name). Use a real random UUID instead so distinct
         // invocations of the same test case never collide.
         const Aws::String random_uuid = Aws::Utils::UUID::RandomUUID();
-        uuid = "kyt-" + std::string(random_uuid.c_str());
+        uuid = "kyt-" + std::string(random_uuid);
         az1 = region + "a";
         az2 = region + "b";
         az3 = region + "c";
@@ -1170,7 +1169,7 @@ struct RealEc2Fixture : signal_cleanup_target {
             throw std::runtime_error("getaddrinfo failed: " + std::string(gai_strerror(rc)));
         }
         int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-        ::connect(sock, res->ai_addr, res->ai_addrlen);
+        (void)::connect(sock, res->ai_addr, res->ai_addrlen);
         freeaddrinfo(res);
 
         LIBSSH2_SESSION* session = libssh2_session_init();

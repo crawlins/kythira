@@ -39,6 +39,8 @@ std::atomic<std::size_t> g_allocations{0};
 
 }  // namespace
 
+// A replacement global operator new/delete has to sit on malloc/free.
+// NOLINTBEGIN(cppcoreguidelines-no-malloc)
 void* operator new(std::size_t n) {
     g_allocations.fetch_add(1, std::memory_order_relaxed);
     if (void* p = std::malloc(n)) {
@@ -53,6 +55,7 @@ void operator delete(void* p) noexcept {
 void operator delete(void* p, std::size_t) noexcept {
     std::free(p);
 }
+// NOLINTEND(cppcoreguidelines-no-malloc)
 
 BOOST_AUTO_TEST_SUITE(latency_digest_unit)
 

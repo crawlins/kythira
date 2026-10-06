@@ -38,7 +38,9 @@ constexpr const char* k_collector_image = "otel/opentelemetry-collector-contrib:
 
 auto config_dir() -> std::string {
     const char* env = std::getenv("KYTHIRA_CLOUD_MONITORING_CONFIG_DIR");
-    if (env && *env) return env;
+    if ((env != nullptr) && (*env != 0)) {
+        return env;
+    }
     return "docker/cloud-monitoring";  // repo-root relative; CI passes the abs path
 }
 
@@ -108,14 +110,24 @@ BOOST_AUTO_TEST_CASE(oci_prometheus_emitter_properties_have_required_keys) {
     std::string compartment;
     std::string line;
     while (std::getline(in, line)) {
-        if (line.empty() || line.front() == '#') continue;
+        if (line.empty() || line.front() == '#') {
+            continue;
+        }
         auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
+        if (eq == std::string::npos) {
+            continue;
+        }
         auto key = line.substr(0, eq);
         auto value = line.substr(eq + 1);
-        if (key == "url") url = value;
-        if (key == "namespace") ns = value;
-        if (key == "compartmentId") compartment = value;
+        if (key == "url") {
+            url = value;
+        }
+        if (key == "namespace") {
+            ns = value;
+        }
+        if (key == "compartmentId") {
+            compartment = value;
+        }
     }
 
     BOOST_TEST(url.rfind("http://", 0) == 0);  // agent scrapes HTTP only

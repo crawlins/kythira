@@ -696,7 +696,7 @@ private:
     /// else is logged, because a transient read failure at startup is not a
     /// reason to refuse to run.
     void reconcile_scale_in_protection(const Aws::AutoScaling::Model::AutoScalingGroup& asg) const {
-        const std::string asg_name(asg.GetAutoScalingGroupName());
+        const std::string& asg_name = asg.GetAutoScalingGroupName();
         std::vector<std::string> unprotected;
         for (const auto& inst : asg.GetInstances()) {
             if (!inst.GetProtectedFromScaleIn() &&

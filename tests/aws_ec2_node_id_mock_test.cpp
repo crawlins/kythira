@@ -207,11 +207,21 @@ struct fake_aws {
 
 private:
     static auto state_code(const std::string& s) -> int {
-        if (s == "pending") return 0;
-        if (s == "running") return 16;
-        if (s == "shutting-down") return 32;
-        if (s == "terminated") return 48;
-        if (s == "stopping") return 64;
+        if (s == "pending") {
+            return 0;
+        }
+        if (s == "running") {
+            return 16;
+        }
+        if (s == "shutting-down") {
+            return 32;
+        }
+        if (s == "terminated") {
+            return 48;
+        }
+        if (s == "stopping") {
+            return 64;
+        }
         return 80;
     }
 

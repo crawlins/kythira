@@ -869,7 +869,7 @@ private:
         std::sort(d.begin(), d.end());
         std::string out = name + "{";
         for (std::size_t i = 0; i < d.size(); ++i) {
-            out += (i ? "," : "") + d[i].first + "=" + d[i].second;
+            out += ((i != 0u) ? "," : "") + d[i].first + "=" + d[i].second;
         }
         return out + "}";
     }
@@ -1192,7 +1192,7 @@ private:
                        ._started = now,
                        ._group = i._group};
         auto group = i._group;
-        auto key = token.key();
+        const auto& key = token.key();
         dispatch(
             std::move(c),
             [group, key](QuorumMgr& m) {
@@ -1202,7 +1202,8 @@ private:
                     return m.provision_node(group, std::nullopt);
                 }
             },
-            [](auto&& f, provider_outcome& out) { out._peer = std::move(f).get(); }, work);
+            [](auto&& f, provider_outcome& out) { out._peer = std::forward<decltype(f)>(f).get(); },
+            work);
     }
 
     auto dispatch_decommission(const intent_type& i, node_id_type node, call_op op, time_point now,
@@ -1216,7 +1217,10 @@ private:
                        ._node = node};
         dispatch(
             std::move(c), [node](QuorumMgr& m) { return m.decommission_node(node); },
-            [](auto&& f, provider_outcome&) { static_cast<void>(std::move(f).get()); }, work);
+            [](auto&& f, provider_outcome&) {
+                static_cast<void>(std::forward<decltype(f)>(f).get());
+            },
+            work);
     }
 
     auto dispatch_lookup(const intent_type& i, time_point now,
@@ -1232,7 +1236,7 @@ private:
             dispatch(
                 std::move(c), [key](QuorumMgr& m) { return m.find_by_idempotency_key(key); },
                 [](auto&& f, provider_outcome& out) {
-                    auto r = std::move(f).get();
+                    auto r = std::forward<decltype(f)>(f).get();
                     if (r) {
                         out._lookup = std::optional<peer_type>{peer_type{r->node_id, r->address}};
                     } else {
@@ -1276,7 +1280,10 @@ private:
         auto cluster = assessment_cluster();
         dispatch(
             std::move(c), [cluster](QuorumMgr& m) { return m.assess_quorum(cluster); },
-            [](auto&& f, provider_outcome& out) { out._health = std::move(f).get(); }, work);
+            [](auto&& f, provider_outcome& out) {
+                out._health = std::forward<decltype(f)>(f).get();
+            },
+            work);
     }
 
     auto dispatch_group_target(const placement_group_type& group, std::size_t n, time_point now,
@@ -1288,7 +1295,10 @@ private:
                            ._group = group};
             dispatch(
                 std::move(c), [group, n](QuorumMgr& m) { return m.set_group_target(group, n); },
-                [](auto&& f, provider_outcome&) { static_cast<void>(std::move(f).get()); }, work);
+                [](auto&& f, provider_outcome&) {
+                    static_cast<void>(std::forward<decltype(f)>(f).get());
+                },
+                work);
         } else {
             static_cast<void>(group);
             static_cast<void>(n);

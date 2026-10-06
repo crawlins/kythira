@@ -147,16 +147,24 @@ void sigterm_handler(int) {
 std::atomic<kythira::net_bind::httplib_listeners<>*> g_http_listeners{nullptr};
 void on_http_signal(int) {
     auto* listeners = g_http_listeners.load();
-    if (listeners != nullptr) listeners->request_stop();
+    if (listeners != nullptr) {
+        listeners->request_stop();
+    }
 }
 
 auto read_unseal_key(const std::string& path) -> std::string {
     std::ifstream f(path);
-    if (!f) throw std::runtime_error("cannot open --unseal-key-file " + path);
+    if (!f) {
+        throw std::runtime_error("cannot open --unseal-key-file " + path);
+    }
     std::string line;
     std::getline(f, line);
-    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
-    if (line.empty()) throw std::runtime_error("--unseal-key-file " + path + " is empty");
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+        line.pop_back();
+    }
+    if (line.empty()) {
+        throw std::runtime_error("--unseal-key-file " + path + " is empty");
+    }
     return line;
 }
 
@@ -185,7 +193,9 @@ auto extract_subject_cn(const std::string& cert_pem) -> std::string {
     BIO* bio = BIO_new_mem_buf(cert_pem.data(), static_cast<int>(cert_pem.size()));
     X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
-    if (cert == nullptr) return {};
+    if (cert == nullptr) {
+        return {};
+    }
     char buf[256] = {};
     X509_NAME_get_text_by_NID(X509_get_subject_name(cert), NID_commonName, buf, sizeof(buf));
     X509_free(cert);
@@ -226,17 +236,25 @@ auto rpc_cutover_marker_path(const std::string& data_dir) -> std::string {
 
 auto read_whole_file(const std::string& path) -> std::optional<std::string> {
     std::ifstream f(path, std::ios::binary);
-    if (!f) return std::nullopt;
+    if (!f) {
+        return std::nullopt;
+    }
     std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    if (content.empty()) return std::nullopt;
+    if (content.empty()) {
+        return std::nullopt;
+    }
     return content;
 }
 
 auto write_whole_file(const std::string& path, const std::string& content) -> void {
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f) throw std::runtime_error("ca_cluster_node: cannot write " + path);
+    if (!f) {
+        throw std::runtime_error("ca_cluster_node: cannot write " + path);
+    }
     f << content;
-    if (!f) throw std::runtime_error("ca_cluster_node: failed writing " + path);
+    if (!f) {
+        throw std::runtime_error("ca_cluster_node: failed writing " + path);
+    }
 }
 
 // Requirement 5.1's "still-valid" check: the persisted cert exists, parses,
@@ -248,12 +266,16 @@ auto have_valid_persisted_peer_cert(const std::string& data_dir) -> bool {
     auto cert_pem = read_whole_file(rpc_peer_cert_path(data_dir));
     auto key_pem = read_whole_file(rpc_peer_key_path(data_dir));
     auto root_pem = read_whole_file(rpc_peer_root_path(data_dir));
-    if (!cert_pem.has_value() || !key_pem.has_value() || !root_pem.has_value()) return false;
+    if (!cert_pem.has_value() || !key_pem.has_value() || !root_pem.has_value()) {
+        return false;
+    }
 
     BIO* bio = BIO_new_mem_buf(cert_pem->data(), static_cast<int>(cert_pem->size()));
     X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
-    if (cert == nullptr) return false;
+    if (cert == nullptr) {
+        return false;
+    }
     bool not_expired = X509_cmp_current_time(X509_get0_notAfter(cert)) > 0;
     X509_free(cert);
     return not_expired;
@@ -286,7 +308,9 @@ auto rpc_peer_identity_options(std::uint64_t node_id) -> raft::testing::leaf_cer
 auto cluster_peer_node_ids(const ca_cluster_node::ca_cluster_node_config& cfg)
     -> std::map<std::string, std::uint64_t> {
     std::map<std::string, std::uint64_t> ids;
-    for (auto id : cfg.all_node_ids()) ids[raft::testing::peer_identity_dns_name(id)] = id;
+    for (auto id : cfg.all_node_ids()) {
+        ids[raft::testing::peer_identity_dns_name(id)] = id;
+    }
     return ids;
 }
 
@@ -299,7 +323,9 @@ auto issued_peer_cert_ok(const std::string& cert_pem, const std::string& root_pe
     BIO* bio = BIO_new_mem_buf(cert_pem.data(), static_cast<int>(cert_pem.size()));
     X509* issued = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
-    if (issued == nullptr) return false;
+    if (issued == nullptr) {
+        return false;
+    }
     bool ok = raft::testing::cert_chains_to_root(issued, root_pem) &&
               raft::testing::cert_has_dns_san_in(issued,
                                                  {raft::testing::peer_identity_dns_name(node_id)});
@@ -376,7 +402,9 @@ auto rpc_trust_state_of(const raft::testing::ca_state_machine& state,
         httplib::Headers{{raft::testing::k_peer_nonce_header, nonce},
                          {raft::testing::k_peer_request_mac_header,
                           raft::testing::peer_trust_request_mac(cfg.peer_enrollment_key, nonce)}});
-    if (!res || res->status != 200 || res->body.empty()) return std::nullopt;
+    if (!res || res->status != 200 || res->body.empty()) {
+        return std::nullopt;
+    }
     auto mac = res->get_header_value(raft::testing::k_peer_trust_mac_header);
     if (!raft::testing::constant_time_equals(
             mac, raft::testing::peer_trust_mac(cfg.peer_enrollment_key, nonce, res->body))) {
@@ -406,7 +434,9 @@ auto fetch_rpc_trust_state(kythira::node<Types>& raft_node,
     if (raft_node.is_leader()) {
         try {
             auto state = read_ca_state(raft_node, std::chrono::milliseconds(5000));
-            if (!state.has_root_material()) return std::nullopt;
+            if (!state.has_root_material()) {
+                return std::nullopt;
+            }
             return rpc_trust_state_of(state, cfg.all_node_ids());
         } catch (const std::exception&) {
             return std::nullopt;
@@ -512,7 +542,9 @@ auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
     boost::json::object body;
     body["csr_pem"] = csr_pem;
     boost::json::array dns_arr;
-    for (const auto& d : sign_opts.dns_names) dns_arr.push_back(boost::json::string(d));
+    for (const auto& d : sign_opts.dns_names) {
+        dns_arr.push_back(boost::json::string(d));
+    }
     body["dns_names"] = dns_arr;
     body["server_auth"] = sign_opts.server_auth;
     body["client_auth"] = sign_opts.client_auth;
@@ -527,9 +559,13 @@ auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
     // stays empty (see fetch_rpc_trust_state()). Non-leaders answer 308/503.
     std::vector<std::string> candidates;
     if (auto leader_id = raft_node.known_leader(); leader_id.has_value()) {
-        if (auto leader_http = cfg.http_address_for(*leader_id)) candidates.push_back(*leader_http);
+        if (auto leader_http = cfg.http_address_for(*leader_id)) {
+            candidates.push_back(*leader_http);
+        }
     }
-    for (const auto& p : cfg.peers) candidates.push_back(p.http_address);
+    for (const auto& p : cfg.peers) {
+        candidates.push_back(p.http_address);
+    }
 
     std::string last_error = "no reachable leader";
     for (const auto& address : candidates) {
@@ -570,11 +606,15 @@ auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
 // This node's persisted peer certificate serial, if it has one.
 auto persisted_peer_cert_serial(const std::string& data_dir) -> std::optional<std::uint64_t> {
     auto cert_pem = read_whole_file(rpc_peer_cert_path(data_dir));
-    if (!cert_pem.has_value()) return std::nullopt;
+    if (!cert_pem.has_value()) {
+        return std::nullopt;
+    }
     BIO* bio = BIO_new_mem_buf(cert_pem->data(), static_cast<int>(cert_pem->size()));
     X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
-    if (cert == nullptr) return std::nullopt;
+    if (cert == nullptr) {
+        return std::nullopt;
+    }
     auto serial = raft::testing::cert_serial_u64(cert);
     X509_free(cert);
     return serial;
@@ -622,7 +662,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             return typename Types::network_client_type();
         }
     }();
-    for (const auto& p : cfg.peers) rpc_client.add_peer(p.node_id, p.rpc_host, p.rpc_port);
+    for (const auto& p : cfg.peers) {
+        rpc_client.add_peer(p.node_id, p.rpc_host, p.rpc_port);
+    }
 
     // Requirement 1.3/5.3/6.2/7.2: independent handle copies kept alive here
     // so the maintenance thread can reconfigure the SAME live transport
@@ -675,7 +717,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     // that: its lone pre-vote fails, its timer restarts at a random point,
     // and a later peer's timer can still fire first. So at genesis, when
     // every log is empty, the other members only vote.
-    if (!cfg.bootstrap_ca) raft_node.set_campaign_requires_log_entries(true);
+    if (!cfg.bootstrap_ca) {
+        raft_node.set_campaign_requires_log_entries(true);
+    }
 
     std::cerr << "[info] ca_cluster_node starting: id=" << cfg.node_id << " rpc=" << cfg.rpc_port
               << " http=" << cfg.http_port << " peers=" << cfg.peers.size()
@@ -696,9 +740,13 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     auto ensure_signer = [&] {
         {
             std::lock_guard lock(signer_mu);
-            if (signer != nullptr) return;
+            if (signer != nullptr) {
+                return;
+            }
         }
-        if (!raft_node.is_leader()) return;
+        if (!raft_node.is_leader()) {
+            return;
+        }
 
         raft::testing::ca_state_machine state;
         try {
@@ -706,7 +754,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         } catch (const std::exception&) {
             return;  // lost leadership mid-read, or no quorum yet — retry next tick
         }
-        if (!state.has_root_material()) return;
+        if (!state.has_root_material()) {
+            return;
+        }
 
         std::string key_pem;
         try {
@@ -739,7 +789,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         }
 
         std::lock_guard lock(signer_mu);
-        if (signer == nullptr) signer = std::move(new_signer);
+        if (signer == nullptr) {
+            signer = std::move(new_signer);
+        }
     };
 
     // ── Bootstrap (Requirement 17.10): submitted at most once per cluster
@@ -748,8 +800,12 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     std::atomic<bool> bootstrap_done_or_unnecessary{false};
 
     auto maybe_bootstrap = [&] {
-        if (!cfg.bootstrap_ca || bootstrap_done_or_unnecessary) return;
-        if (!raft_node.is_leader()) return;
+        if (!cfg.bootstrap_ca || bootstrap_done_or_unnecessary) {
+            return;
+        }
+        if (!raft_node.is_leader()) {
+            return;
+        }
 
         raft::testing::ca_state_machine state;
         try {
@@ -865,10 +921,14 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         if constexpr (!k_rpc_tls) {
             return;
         } else {
-            if (!trusted_root.has_value()) return;
+            if (!trusted_root.has_value()) {
+                return;
+            }
             kythira::tls_rpc_trust_policy policy;
             policy.ca_root_pem = *trusted_root;
-            if (!cutover_finalized) policy.bootstrap_fingerprint_hex = bootstrap_fingerprint;
+            if (!cutover_finalized) {
+                policy.bootstrap_fingerprint_hex = bootstrap_fingerprint;
+            }
             policy = policy.binding_peer_node_ids(cluster_peer_node_ids(cfg))
                          .revoking_serials(revoked_peer_serials);
             rpc_server_handle.reload_trust_policy(policy);
@@ -892,8 +952,12 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 last_trust_refresh = now;
             }
             auto state = fetch_rpc_trust_state(raft_node, cfg);
-            if (!state.has_value()) return;
-            if (!root_first_seen_at.has_value()) root_first_seen_at = now;
+            if (!state.has_value()) {
+                return;
+            }
+            if (!root_first_seen_at.has_value()) {
+                root_first_seen_at = now;
+            }
 
             bool changed = !trust_widened;
             if (trusted_root != state->root_pem) {
@@ -917,7 +981,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 std::cerr << "[info] ca_cluster_node: RPC TLS cutover finalized — bootstrap "
                              "credential no longer accepted for new connections\n";
             }
-            if (changed) apply_rpc_trust_policy();
+            if (changed) {
+                apply_rpc_trust_policy();
+            }
             trust_widened = true;
         }
     };
@@ -931,12 +997,16 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             // membership through the peer-enrollment key.
             auto own_serial = persisted_peer_cert_serial(cfg.data_dir);
             bool own_revoked = own_serial.has_value() && revoked_peer_serials.contains(*own_serial);
-            if (have_valid_persisted_peer_cert(cfg.data_dir) && !own_revoked) return;
+            if (have_valid_persisted_peer_cert(cfg.data_dir) && !own_revoked) {
+                return;
+            }
             if (!root_first_seen_at.has_value() ||
                 std::chrono::steady_clock::now() - *root_first_seen_at < k_identity_acquire_grace) {
                 return;
             }
-            if (!trusted_root.has_value()) return;
+            if (!trusted_root.has_value()) {
+                return;
+            }
             const std::string root_pem = *trusted_root;
 
             auto leaf_opts = rpc_peer_identity_options(cfg.node_id);
@@ -1006,18 +1076,24 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             return;
         } else {
             auto cert_pem = read_whole_file(rpc_peer_cert_path(cfg.data_dir));
-            if (!cert_pem.has_value()) return;  // nothing persisted yet — acquire's job
+            if (!cert_pem.has_value()) {
+                return;  // nothing persisted yet — acquire's job
+            }
 
             BIO* bio = BIO_new_mem_buf(cert_pem->data(), static_cast<int>(cert_pem->size()));
             X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
             BIO_free(bio);
-            if (cert == nullptr) return;
+            if (cert == nullptr) {
+                return;
+            }
             auto threshold = static_cast<std::time_t>(
                 std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) +
                 cfg.rpc_renewal_window.count());
             bool near_expiry = X509_cmp_time(X509_get0_notAfter(cert), &threshold) < 0;
             X509_free(cert);
-            if (!near_expiry) return;
+            if (!near_expiry) {
+                return;
+            }
 
             auto leaf_opts = rpc_peer_identity_options(cfg.node_id);
             auto csr = raft::testing::generate_key_and_csr(leaf_opts);
@@ -1046,9 +1122,13 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 }
             } else {
                 auto leader_id = raft_node.known_leader();
-                if (!leader_id.has_value()) return;
+                if (!leader_id.has_value()) {
+                    return;
+                }
                 auto leader_http = cfg.http_address_for(*leader_id);
-                if (!leader_http.has_value()) return;
+                if (!leader_http.has_value()) {
+                    return;
+                }
                 // /renew authenticates by mTLS, which a plaintext peer address
                 // cannot carry.
                 if (!leader_http->starts_with("https://")) {
@@ -1096,7 +1176,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             }
 
             auto trust = fetch_rpc_trust_state(raft_node, cfg);
-            if (!trust.has_value()) return;
+            if (!trust.has_value()) {
+                return;
+            }
 
             try {
                 if (!issued_peer_cert_ok(new_cert_pem, trust->root_pem, cfg.node_id)) {
@@ -1167,13 +1249,17 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     std::thread election_timer([&] {
         while (!g_stop) {
             std::this_thread::sleep_for(cfg.election_timeout_min / 2);
-            if (!g_stop) raft_node.check_election_timeout();
+            if (!g_stop) {
+                raft_node.check_election_timeout();
+            }
         }
     });
     std::thread heartbeat_timer([&] {
         while (!g_stop) {
             std::this_thread::sleep_for(cfg.heartbeat_interval);
-            if (!g_stop) raft_node.check_heartbeat_timeout();
+            if (!g_stop) {
+                raft_node.check_heartbeat_timeout();
+            }
         }
     });
 
@@ -1242,7 +1328,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     // or 503 no_known_leader per Requirement 17.7, and the caller must return.
     auto require_leader_or_redirect = [&](const httplib::Request& req,
                                           httplib::Response& res) -> bool {
-        if (raft_node.is_leader()) return true;
+        if (raft_node.is_leader()) {
+            return true;
+        }
         auto leader_id = raft_node.known_leader();
         if (leader_id.has_value()) {
             auto leader_http = cfg.http_address_for(*leader_id);
@@ -1308,7 +1396,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         });
 
         server->Get("/v1/root-ca", [&](const httplib::Request& req, httplib::Response& res) {
-            if (!require_leader_or_redirect(req, res)) return;
+            if (!require_leader_or_redirect(req, res)) {
+                return;
+            }
             try {
                 auto state = read_ca_state(raft_node, k_command_timeout);
                 if (!state.has_root_material()) {
@@ -1327,7 +1417,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         // the RPC trust state a follower builds its RPC TLS policy from.
         server->Get(raft::testing::k_peer_rpc_trust_path, [&](const httplib::Request& req,
                                                               httplib::Response& res) {
-            if (!require_leader_or_redirect(req, res)) return;
+            if (!require_leader_or_redirect(req, res)) {
+                return;
+            }
             try {
                 auto state = read_ca_state(raft_node, k_command_timeout);
                 if (!state.has_root_material()) {
@@ -1354,7 +1446,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             // as a peer enrollment below, or it is refused.
             const bool bearer_ok = raft::testing::constant_time_equals(
                 req.get_header_value("Authorization"), bearer_prefix + cfg.auth_token);
-            if (!require_leader_or_redirect(req, res)) return;
+            if (!require_leader_or_redirect(req, res)) {
+                return;
+            }
             try {
                 auto body = boost::json::parse(req.body).as_object();
                 auto* csr_val = body.if_contains("csr_pem");
@@ -1456,7 +1550,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
 
         server->Post("/v1/certificates/renew", [&](const httplib::Request& req,
                                                    httplib::Response& res) {
-            if (!require_leader_or_redirect(req, res)) return;
+            if (!require_leader_or_redirect(req, res)) {
+                return;
+            }
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
             if (req.ssl == nullptr) {
                 res.status = 401;
@@ -1553,7 +1649,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
 
         server->Post(
             "/v1/certificates/revoke", [&](const httplib::Request& req, httplib::Response& res) {
-                if (!require_leader_or_redirect(req, res)) return;
+                if (!require_leader_or_redirect(req, res)) {
+                    return;
+                }
                 try {
                     auto body = boost::json::parse(req.body).as_object();
                     auto* serial_val = body.if_contains("serial");
@@ -1582,7 +1680,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                     }
 
                     std::lock_guard signer_lock(signer_mu);
-                    if (signer != nullptr) signer->mark_revoked_externally(serial, revoked_at);
+                    if (signer != nullptr) {
+                        signer->mark_revoked_externally(serial, revoked_at);
+                    }
 
                     res.status = 200;
                     res.set_content(R"({"revoked":true})", "application/json");
@@ -1596,7 +1696,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             });
 
         server->Get("/v1/crl", [&](const httplib::Request& req, httplib::Response& res) {
-            if (!require_leader_or_redirect(req, res)) return;
+            if (!require_leader_or_redirect(req, res)) {
+                return;
+            }
             std::lock_guard signer_lock(signer_mu);
             if (signer == nullptr) {
                 res.status = 503;

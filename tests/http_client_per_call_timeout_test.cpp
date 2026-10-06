@@ -73,7 +73,7 @@ auto make_client(std::uint16_t port, std::chrono::milliseconds request_timeout,
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[peer_id] = std::format("http://{}:{}", bind_address, port);
     typename test_types::metrics_type metrics;
-    return kythira::cpp_httplib_client<test_types>(std::move(node_map), config, metrics);
+    return {std::move(node_map), config, metrics};
 }
 
 auto make_vote_request() -> kythira::request_vote_request<> {

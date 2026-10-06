@@ -56,7 +56,7 @@ auto free_port() -> std::uint16_t {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    (void)::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     socklen_t len = sizeof(addr);
     ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len);
     ::close(fd);
@@ -108,7 +108,7 @@ public:
         }
     }
 
-    auto address(std::uint64_t id) const -> std::string {
+    [[nodiscard]] auto address(std::uint64_t id) const -> std::string {
         return "127.0.0.1:" + std::to_string(_ports.at(id));
     }
 
@@ -159,7 +159,7 @@ public:
 
     auto node(std::uint64_t id) -> join_node& { return *_nodes.at(id); }
 
-    auto ever_led(std::uint64_t id) const -> bool { return _ever_led.at(id)->load(); }
+    [[nodiscard]] auto ever_led(std::uint64_t id) const -> bool { return _ever_led.at(id)->load(); }
 
 private:
     auto emplace(std::uint64_t id, kythira::tcp_rpc_client client, seeds_t seeds) -> join_node& {

@@ -112,7 +112,8 @@ BOOST_AUTO_TEST_CASE(property_truncated_message_rejected) {
         }
         std::uniform_int_distribution<std::size_t> cut_dist(1, full.size() - 1);
         std::size_t cut = cut_dist(rng);
-        std::vector<std::byte> truncated(full.begin(), full.begin() + cut);
+        std::vector<std::byte> truncated(full.begin(),
+                                         full.begin() + static_cast<std::ptrdiff_t>(cut));
         ++truncation_count;
 
         try {

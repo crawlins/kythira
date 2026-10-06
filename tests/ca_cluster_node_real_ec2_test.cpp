@@ -327,7 +327,7 @@ struct three_az_network_fixture : kythira::testing::aws_real_ec2::signal_cleanup
         }
 
         const Aws::String random_uuid = Aws::Utils::UUID::RandomUUID();
-        uuid = "kyt-" + std::string(random_uuid.c_str());
+        uuid = "kyt-" + std::string(random_uuid);
 
         // Register as the signal-cleanup target before any AWS resource is
         // created so a signal arriving mid-setup still invokes teardown()
@@ -987,7 +987,7 @@ BOOST_FIXTURE_TEST_CASE(three_az_cluster_survives_instance_loss_and_replacement,
         BOOST_REQUIRE(out.IsSuccess());
         for (const auto& res : out.GetResult().GetReservations()) {
             for (const auto& inst : res.GetInstances()) {
-                std::string id(inst.GetInstanceId());
+                const std::string& id(inst.GetInstanceId());
                 if (known.contains(id)) {
                     continue;
                 }

@@ -161,8 +161,8 @@ BOOST_AUTO_TEST_CASE(reconnected_follower_catches_up_via_peer, *boost::unit_test
     auto net3 = sim.create_node("3");
 
     network_simulator::NetworkEdge edge{};
-    for (auto from : {"1", "2", "3"}) {
-        for (auto to : {"1", "2", "3"}) {
+    for (const auto* from : {"1", "2", "3"}) {
+        for (const auto* to : {"1", "2", "3"}) {
             if (std::string(from) != std::string(to)) {
                 sim.add_edge(from, to, edge);
             }

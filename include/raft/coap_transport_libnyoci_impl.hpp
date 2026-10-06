@@ -1005,6 +1005,8 @@ public:
           _metrics{std::move(metrics)} {
         kythira::coap_utils::validate_registry_content_formats(_registry);
         const auto [selected_channel, security] = libnyoci_detail::plan_security(_config, "client");
+        // Not a member initializer: derived from plan_security(), which reads _config.
+        // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
         _secure = selected_channel == libnyoci_detail::channel::dtls;
         if (selected_channel == libnyoci_detail::channel::oscore) {
             _security = security;
@@ -1873,6 +1875,8 @@ public:
         // in start(), so a config this backend cannot honour fails as early as
         // it does on the libcoap side.
         auto [selected_channel, security] = libnyoci_detail::plan_security(_config, "server");
+        // Not a member initializer: derived from plan_security(), which reads _config.
+        // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
         _secure = selected_channel == libnyoci_detail::channel::dtls;
         if (selected_channel == libnyoci_detail::channel::oscore) {
             const auto& creds = std::get<oscore_credentials>(security.credentials);

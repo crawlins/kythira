@@ -116,7 +116,7 @@ auto find_free_port() -> std::uint16_t {
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     a.sin_port = 0;
-    ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
+    (void)::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
     socklen_t len = sizeof(a);
     ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len);
     auto port = ntohs(a.sin_port);

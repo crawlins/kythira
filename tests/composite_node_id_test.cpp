@@ -268,6 +268,8 @@ BOOST_AUTO_TEST_CASE(copies_share_and_moved_from_floors_stay_usable) {
     copy.raise(std::uint64_t{5});
     BOOST_CHECK_EQUAL(floor.value(), 5U);
 
+    // A move copies the shared handle; the test checks the source stays usable.
+    // NOLINTNEXTLINE(performance-move-const-arg)
     auto moved = std::move(floor);
     moved.raise(std::uint64_t{6});
     // NOLINTNEXTLINE(bugprone-use-after-move): the point of the check.

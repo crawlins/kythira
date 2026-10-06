@@ -25,7 +25,7 @@ static std::uint16_t find_free_port() {
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = INADDR_ANY;
     a.sin_port = 0;
-    ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
+    (void)::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
     socklen_t len = sizeof(a);
     ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len);
     std::uint16_t port = ntohs(a.sin_port);
@@ -51,7 +51,7 @@ static int send_cmd(std::uint16_t port, const std::string& cmd) {
     ::send(fd, line.data(), line.size(), MSG_NOSIGNAL);
     ::shutdown(fd, SHUT_WR);
     char buf[32]{};
-    int n = ::recv(fd, buf, sizeof(buf) - 1, 0);
+    const ssize_t n = ::recv(fd, buf, sizeof(buf) - 1, 0);
     ::close(fd);
     if (n <= 0) {
         return -999;

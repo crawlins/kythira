@@ -44,7 +44,7 @@ concept has_group_target = requires(T& t) { t.set_group_target(std::string{}, st
 
 template<typename F> auto failed(F&& f) -> bool {
     try {
-        static_cast<void>(std::move(f).get());
+        static_cast<void>(std::forward<F>(f).get());
         return false;
     } catch (...) {
         return true;

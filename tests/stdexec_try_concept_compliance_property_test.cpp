@@ -86,7 +86,8 @@ BOOST_AUTO_TEST_CASE(try_default_construction_and_exception_ptr_construction,
     BOOST_CHECK(from_ex.hasException());
     BOOST_CHECK_THROW(from_ex.value(), std::runtime_error);
 
-    BOOST_CHECK_THROW(Try<int>(std::exception_ptr{}), std::invalid_argument);
+    const std::exception_ptr null_exception{};
+    BOOST_CHECK_THROW(Try<int>{null_exception}, std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

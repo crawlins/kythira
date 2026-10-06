@@ -180,10 +180,10 @@ public:
             h->start();
         }
         _running = true;
-        for (std::size_t i = 0; i < _hosts.size(); ++i) {
-            _drivers.emplace_back([this, i] {
+        for (const auto& host : _hosts) {
+            _drivers.emplace_back([this, h = host.get()] {
                 while (_running.load()) {
-                    _hosts[i]->tick();
+                    h->tick();
                     std::this_thread::sleep_for(5ms);
                 }
             });

@@ -471,7 +471,7 @@ private:
     static auto matches_tag_filters(const std::map<std::string, std::string>& tags,
                                     const Aws::Vector<em::Filter>& filters) -> bool {
         for (const auto& filter : filters) {
-            const std::string name(filter.GetName());
+            const std::string& name = filter.GetName();
             if (!name.starts_with("tag:")) {
                 continue;
             }

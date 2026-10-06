@@ -122,7 +122,9 @@ public:
         -> void {
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            if (level < _min_level) return;
+            if (level < _min_level) {
+                return;
+            }
         }
 
         const auto [severity_number, severity_text] = otlp_logger_detail::severity_for(level);
@@ -133,7 +135,9 @@ public:
         record.severity_text = std::string(severity_text);
         record.body = std::string(message);
         record.attributes.reserve(key_value_pairs.size());
-        for (const auto& [key, value] : key_value_pairs) record.attributes.emplace_back(key, value);
+        for (const auto& [key, value] : key_value_pairs) {
+            record.attributes.emplace_back(key, value);
+        }
 
         _exporter.push(std::move(record));
     }

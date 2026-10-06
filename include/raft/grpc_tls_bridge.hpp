@@ -225,7 +225,9 @@ private:
         } else {
             std::error_code ec;
             base = std::filesystem::temp_directory_path(ec);
-            if (ec) base = "/tmp";
+            if (ec) {
+                base = "/tmp";
+            }
         }
         std::string tmpl = (base / "kythira-grpc-tls-XXXXXX").string();
         if (::mkdtemp(tmpl.data()) == nullptr) {  // mkdtemp creates it 0700.
@@ -236,7 +238,9 @@ private:
     }
 
     auto remove_staging_directory() noexcept -> void {
-        if (_staging.empty()) return;
+        if (_staging.empty()) {
+            return;
+        }
         std::error_code ec;
         std::filesystem::remove_all(_staging, ec);
     }
@@ -249,7 +253,9 @@ private:
     auto write_file(const std::filesystem::path& path, const std::string& contents,
                     const timespec& mtime) const -> void {
         int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-        if (fd < 0) fail("open " + path.string());
+        if (fd < 0) {
+            fail("open " + path.string());
+        }
         std::size_t written = 0;
         while (written < contents.size()) {
             auto n = ::write(fd, contents.data() + written, contents.size() - written);
@@ -282,7 +288,9 @@ private:
         const auto dir = _staging / ("gen-" + std::to_string(gen));
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);  // Left by an earlier failed attempt.
-        if (::mkdir(dir.c_str(), 0700) != 0) fail("mkdir " + dir.string());
+        if (::mkdir(dir.c_str(), 0700) != 0) {
+            fail("mkdir " + dir.string());
+        }
 
         // Strictly increasing whole seconds, so the watcher's time_t mtime
         // comparison can always tell this generation from the last.
@@ -452,13 +460,17 @@ public:
                     std::unique_lock<std::mutex> lock(wait_mutex);
                     wake.wait_for(lock, stop, poll_interval, [] { return false; });
                 }
-                if (stop.stop_requested()) return;
+                if (stop.stop_requested()) {
+                    return;
+                }
                 bool changed = false;
                 {
                     std::lock_guard<std::mutex> lock(_reload_mutex);
                     changed = file_mtimes() != _loaded_mtimes;
                 }
-                if (!changed) continue;
+                if (!changed) {
+                    continue;
+                }
                 try {
                     reload();
                 } catch (const std::exception&) {
@@ -553,11 +565,15 @@ private:
 
     [[nodiscard]] auto file_mtimes() const -> mtime_list {
         mtime_list out;
-        if (!_file_backed) return out;
+        if (!_file_backed) {
+            return out;
+        }
         const auto& paths = static_cast<const file_tls_material_source&>(*_source).paths();
         for (const auto* p : {&paths.certificate_chain_path, &paths.private_key_path,
                               &paths.root_certificates_path}) {
-            if (p->empty()) continue;
+            if (p->empty()) {
+                continue;
+            }
             std::error_code ec;
             auto t = std::filesystem::last_write_time(*p, ec);
             out.push_back(ec ? std::nullopt : std::optional(t));

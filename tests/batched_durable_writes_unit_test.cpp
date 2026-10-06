@@ -87,8 +87,8 @@ class undeclared_store {
 public:
     explicit undeclared_store(store_t inner) : _inner(std::move(inner)) {}
 
-    auto put_object(const std::string& b, const std::string& k, std::string_view v) const
-        -> kythira::put_result {
+    [[nodiscard]] auto put_object(const std::string& b, const std::string& k,
+                                  std::string_view v) const -> kythira::put_result {
         return _inner.put_object(b, k, v);
     }
     [[nodiscard]] auto get_object(const std::string& b, const std::string& k) const

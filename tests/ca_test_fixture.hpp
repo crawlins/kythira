@@ -49,8 +49,6 @@
 #define CA_SERVICE_PATH "ca_service"
 #endif
 
-extern char** environ;
-
 namespace raft::testing {
 
 struct ca_test_fixture_options {

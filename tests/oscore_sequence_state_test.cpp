@@ -179,7 +179,10 @@ BOOST_AUTO_TEST_CASE(an_unreadable_state_file_is_an_error_not_zero,
     osc::file_sequence_store store(dir.path);
     std::ofstream(dir.path / "corrupt") << "not a number";
     BOOST_CHECK_THROW((void)store.load("corrupt"), kythira::coap_security_error);
-    std::ofstream(dir.path / "empty");
+    {
+        // Creates the empty file the next check reads.
+        const std::ofstream empty(dir.path / "empty");
+    }
     BOOST_CHECK_THROW((void)store.reserve("empty", 1), kythira::coap_security_error);
 }
 

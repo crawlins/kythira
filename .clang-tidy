@@ -14,6 +14,25 @@
 #   readability-redundant-member-init        explicit zero-init is a clarity choice, not redundant
 #   cppcoreguidelines-pro-type-reinterpret-cast  required for C-interop (CoAP, memory ops, hashing)
 #   clang-analyzer-deadcode.DeadStores       too noisy in test code; computed variables for assertions
+#
+# Disabled when the CI gate landed (ci-build-matrix-coverage Requirement 3.4),
+# each after reading every site it flagged on the full tree:
+#   cppcoreguidelines-pro-type-union-access  C interop: libcoap/OpenSSL/sockaddr unions (34 sites);
+#                                            same reason as pro-type-reinterpret-cast above
+#   modernize-return-braced-init-list        its remaining sites are std::string(ptr, len),
+#                                            iterator pairs and explicit converting constructors
+#                                            (string from string_view), where clang-tidy itself
+#                                            declines a fix: braces would select an explicit or
+#                                            initializer_list constructor, or read as a two-element list
+#   performance-enum-size                    an enum's underlying type is part of its interface, and
+#                                            every flagged enum is a handful of values held singly
+#   performance-inefficient-string-concatenation  flags `a + b + c` in error and log messages
+#                                            built once on a failure path; readability wins there
+#
+# bugprone-unused-return-value.AllowCastToVoid: Boost.Asio's error_code
+# overloads (close(ec), shutdown(..., ec)) also return the error_code they
+# write, so the check flags every best-effort teardown. `(void)` marks the
+# deliberate discard at each call.
 ---
 Checks: >
   bugprone-*,
@@ -31,7 +50,7 @@ Checks: >
   modernize-pass-by-value,
   modernize-redundant-void-arg,
   modernize-replace-auto-ptr,
-  modernize-return-braced-init-list,
+  -modernize-return-braced-init-list,
   modernize-shrink-to-fit,
   modernize-unary-static-assert,
   modernize-use-bool-literals,
@@ -47,6 +66,8 @@ Checks: >
   -modernize-use-default-member-init,
   performance-*,
   -performance-avoid-endl,
+  -performance-enum-size,
+  -performance-inefficient-string-concatenation,
   -performance-inefficient-vector-operation,
   -performance-unnecessary-value-param,
   readability-braces-around-statements,
@@ -86,7 +107,7 @@ Checks: >
   cppcoreguidelines-pro-type-cstyle-cast,
   -cppcoreguidelines-pro-type-reinterpret-cast,
   cppcoreguidelines-pro-type-static-downcast,
-  cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-pro-type-union-access,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-avoid-non-const-global-variables,
   -cppcoreguidelines-interfaces-global-init,
@@ -131,4 +152,7 @@ CheckOptions:
   # modernize-use-nodiscard: don't annotate void or bool returns.
   - key:   modernize-use-nodiscard.AllowedReturnTypes
     value: "void;bool"
+  # See the header: `(void)` marks a deliberate discard.
+  - key:   bugprone-unused-return-value.AllowCastToVoid
+    value: "true"
 ...

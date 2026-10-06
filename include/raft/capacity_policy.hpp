@@ -603,7 +603,7 @@ public:
     /// @brief Every error, not the first (Requirement 3.6).
     [[nodiscard]] auto get_validation_errors() const -> std::vector<std::string> {
         std::vector<std::string> errors;
-        if (!(_cfg._min_hysteresis_margin > 0.0 && _cfg._min_hysteresis_margin < 1.0)) {
+        if (_cfg._min_hysteresis_margin <= 0.0 || _cfg._min_hysteresis_margin >= 1.0) {
             errors.push_back("_min_hysteresis_margin (" +
                              std::to_string(_cfg._min_hysteresis_margin) +
                              ") must be in (0, 1): at 1 the two watermarks may coincide, which "

@@ -112,7 +112,9 @@ namespace loki_logger_detail {
                                        std::span<const loki_log_record> records)
     -> boost::json::object {
     std::map<std::string, std::vector<const loki_log_record*>> by_level;
-    for (const auto& record : records) by_level[record.level_text].push_back(&record);
+    for (const auto& record : records) {
+        by_level[record.level_text].push_back(&record);
+    }
 
     boost::json::array streams;
     for (auto& [level, entries] : by_level) {
@@ -121,8 +123,12 @@ namespace loki_logger_detail {
         boost::json::object labels{{"job", resource.service_name},
                                    {"instance", resource.service_instance_id},
                                    {"level", level}};
-        if (resource.service_namespace) labels["namespace"] = *resource.service_namespace;
-        for (const auto& [key, value] : resource.extra_attributes) labels[key] = value;
+        if (resource.service_namespace) {
+            labels["namespace"] = *resource.service_namespace;
+        }
+        for (const auto& [key, value] : resource.extra_attributes) {
+            labels[key] = value;
+        }
 
         boost::json::array values;
         values.reserve(entries.size());
@@ -174,7 +180,9 @@ public:
         -> void {
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            if (level < _min_level) return;
+            if (level < _min_level) {
+                return;
+            }
         }
         loki_log_record record;
         record.time_unix_nano = otlp_now_unix_nanos();

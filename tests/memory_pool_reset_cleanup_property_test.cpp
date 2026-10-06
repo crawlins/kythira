@@ -403,9 +403,9 @@ BOOST_AUTO_TEST_CASE(property_raii_guard_move_semantics,
 
             // Property: Ownership should be transferred
             BOOST_CHECK(guard2.get() == ptr1);
-            BOOST_CHECK(guard1.get() ==
-                        nullptr);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
-                                   // - intentional move-semantics test
+            // Intentional move-semantics test: the moved-from guard must be empty.
+            // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+            BOOST_CHECK(guard1.get() == nullptr);
 
             auto metrics = pool.get_metrics();
             BOOST_CHECK_EQUAL(metrics.allocation_count, 1);

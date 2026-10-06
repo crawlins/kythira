@@ -89,7 +89,9 @@ template<typename Pred>
 auto eventually(Pred pred, std::chrono::milliseconds deadline = 5s) -> bool {
     auto end = std::chrono::steady_clock::now() + deadline;
     while (std::chrono::steady_clock::now() < end) {
-        if (pred()) return true;
+        if (pred()) {
+            return true;
+        }
         std::this_thread::sleep_for(10ms);
     }
     return pred();
@@ -317,7 +319,9 @@ BOOST_AUTO_TEST_CASE(concurrent_refreshes_notify_in_generation_order) {
         });
     }
     writer.join();
-    for (auto& t : refreshers) t.join();
+    for (auto& t : refreshers) {
+        t.join();
+    }
     // The writer may end on the initial material, and the refreshers may
     // have caught nothing but torn reads, so finish on material nobody has
     // seen yet: that publish is guaranteed.

@@ -78,16 +78,22 @@ struct socket_state {
 
     /// Resolve + connect if not already connected. Returns false on failure.
     [[nodiscard]] auto ensure_connected() -> bool {
-        if (fd >= 0) return true;
+        if (fd >= 0) {
+            return true;
+        }
         addrinfo hints{};
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = socktype;
         addrinfo* result = nullptr;
         const auto port_str = std::to_string(port);
-        if (::getaddrinfo(host.c_str(), port_str.c_str(), &hints, &result) != 0) return false;
+        if (::getaddrinfo(host.c_str(), port_str.c_str(), &hints, &result) != 0) {
+            return false;
+        }
         for (auto* ai = result; ai != nullptr; ai = ai->ai_next) {
             int candidate = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-            if (candidate < 0) continue;
+            if (candidate < 0) {
+                continue;
+            }
             // connect() on a UDP socket just fixes the peer address so plain
             // send() works — no packet is exchanged.
             if (::connect(candidate, ai->ai_addr, ai->ai_addrlen) == 0) {
@@ -104,7 +110,9 @@ struct socket_state {
         std::size_t sent = 0;
         while (sent < payload.size()) {
             auto n = ::send(fd, payload.data() + sent, payload.size() - sent, MSG_NOSIGNAL);
-            if (n < 0) return false;
+            if (n < 0) {
+                return false;
+            }
             sent += static_cast<std::size_t>(n);
         }
         return true;
@@ -126,7 +134,9 @@ struct socket_state {
     auto state =
         std::make_shared<metrics_line_detail::socket_state>(std::move(host), port, SOCK_DGRAM);
     return [state](std::string_view payload) -> bool {
-        if (!state->ensure_connected()) return false;
+        if (!state->ensure_connected()) {
+            return false;
+        }
         if (!state->send_all(payload)) {
             state->close_fd();
             return false;
@@ -141,7 +151,9 @@ struct socket_state {
     auto state =
         std::make_shared<metrics_line_detail::socket_state>(std::move(host), port, SOCK_STREAM);
     return [state](std::string_view payload) -> bool {
-        if (!state->ensure_connected()) return false;
+        if (!state->ensure_connected()) {
+            return false;
+        }
         std::string framed(payload);
         framed.push_back('\n');
         if (!state->send_all(framed)) {
@@ -186,7 +198,9 @@ public:
 
     /// Never blocks on I/O.
     auto push(std::string line) -> void {
-        if (_impl) _impl->push(std::move(line));
+        if (_impl) {
+            _impl->push(std::move(line));
+        }
     }
 
     /// Overflow/send-failure visibility for tests and operators.
@@ -207,7 +221,9 @@ private:
         ~impl() {
             stop_flag.store(true, std::memory_order_relaxed);
             cv.notify_all();
-            if (worker.joinable()) worker.join();
+            if (worker.joinable()) {
+                worker.join();
+            }
         }
 
         impl(const impl&) = delete;
@@ -222,7 +238,9 @@ private:
                 dropped.fetch_add(1, std::memory_order_relaxed);
             }
             queue.push_back(std::move(line));
-            if (queue.size() >= config.max_batch_lines) cv.notify_one();
+            if (queue.size() >= config.max_batch_lines) {
+                cv.notify_one();
+            }
         }
 
         [[nodiscard]] auto dropped_line_count() const -> std::uint64_t {
@@ -260,7 +278,9 @@ private:
             std::string payload;
             std::size_t payload_lines = 0;
             auto flush_payload = [&] {
-                if (payload.empty()) return;
+                if (payload.empty()) {
+                    return;
+                }
                 if (!sender(payload)) {
                     dropped.fetch_add(payload_lines, std::memory_order_relaxed);
                 }
@@ -269,8 +289,12 @@ private:
             };
             for (const auto& line : batch) {
                 const auto projected = payload.size() + (payload.empty() ? 0 : 1) + line.size();
-                if (!payload.empty() && projected > config.max_payload_bytes) flush_payload();
-                if (!payload.empty()) payload.push_back('\n');
+                if (!payload.empty() && projected > config.max_payload_bytes) {
+                    flush_payload();
+                }
+                if (!payload.empty()) {
+                    payload.push_back('\n');
+                }
                 payload += line;
                 ++payload_lines;
             }

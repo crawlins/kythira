@@ -46,7 +46,9 @@ inline auto split_host_port(const std::string& spec, int default_port)
         return {host, default_port};
     }
     auto colon = spec.rfind(':');
-    if (colon == std::string::npos) return {spec, default_port};
+    if (colon == std::string::npos) {
+        return {spec, default_port};
+    }
     return {spec.substr(0, colon), std::stoi(spec.substr(colon + 1))};
 }
 
@@ -77,7 +79,9 @@ public:
         auto endpoints = resolve_bind_addresses(address, who);
         std::vector<std::unique_ptr<Server>> servers;
         for (const auto& ep : endpoints) {
-            if (endpoints.size() > 1 && !family_supported(ep.addr.ss_family)) continue;
+            if (endpoints.size() > 1 && !family_supported(ep.addr.ss_family)) {
+                continue;
+            }
             auto server = make();
             configure(*server);
             server->set_socket_options([](socket_t sock) {
@@ -90,7 +94,9 @@ public:
             auto host = endpoint_host(ep);
             if (port == 0) {
                 int bound = server->bind_to_any_port(host);
-                if (bound <= 0) fail(who, host, port);
+                if (bound <= 0) {
+                    fail(who, host, port);
+                }
                 port = static_cast<std::uint16_t>(bound);
             } else if (!server->bind_to_port(host, port)) {
                 fail(who, host, port);
@@ -102,7 +108,9 @@ public:
                                      address + "'");
         }
         stop();
-        for (auto& slot : _raw) slot.store(nullptr);
+        for (auto& slot : _raw) {
+            slot.store(nullptr);
+        }
         std::lock_guard lock(_mu);
         _servers = std::move(servers);
         for (std::size_t i = 0; i < _servers.size() && i < k_max_raw; ++i) {
@@ -134,7 +142,9 @@ public:
 
     // Blocks until every server is accepting.
     auto wait_until_ready() -> void {
-        for (auto& server : snapshot()) server->wait_until_ready();
+        for (auto& server : snapshot()) {
+            server->wait_until_ready();
+        }
     }
 
     // Stops every server without joining; safe from a signal handler that
@@ -142,21 +152,27 @@ public:
     auto request_stop() -> void {
         for (auto& slot : _raw) {
             auto* server = slot.load();
-            if (server == nullptr) break;
+            if (server == nullptr) {
+                break;
+            }
             server->stop();
         }
     }
 
     // Stops every server and joins its thread.
     auto stop() -> void {
-        for (auto& server : snapshot()) server->stop();
+        for (auto& server : snapshot()) {
+            server->stop();
+        }
         std::vector<std::thread> threads;
         {
             std::lock_guard lock(_mu);
             threads.swap(_threads);
         }
         for (auto& t : threads) {
-            if (t.joinable()) t.join();
+            if (t.joinable()) {
+                t.join();
+            }
         }
     }
 
@@ -177,7 +193,9 @@ private:
     auto snapshot() const -> std::vector<Server*> {
         std::lock_guard lock(_mu);
         std::vector<Server*> out;
-        for (const auto& s : _servers) out.push_back(s.get());
+        for (const auto& s : _servers) {
+            out.push_back(s.get());
+        }
         return out;
     }
 

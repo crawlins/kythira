@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -69,8 +70,8 @@ class FakeTokenCredential : public Azure::Core::Credentials::TokenCredential {
 public:
     FakeTokenCredential() : TokenCredential("FakeTokenCredential") {}
 
-    auto GetToken(Azure::Core::Credentials::TokenRequestContext const&,
-                  Azure::Core::Context const&) const
+    [[nodiscard]] auto GetToken(Azure::Core::Credentials::TokenRequestContext const&,
+                                Azure::Core::Context const&) const
         -> Azure::Core::Credentials::AccessToken override {
         Azure::Core::Credentials::AccessToken token;
         token.Token = "fake-token";
@@ -144,7 +145,9 @@ public:
                             Azure::Core::Context const& context) const
         -> std::unique_ptr<Azure::Core::Http::RawResponse> override {
         auto* stream = request.GetBodyStream();
-        BOOST_REQUIRE(stream != nullptr);
+        if (stream == nullptr) {
+            throw std::logic_error("sign request carries no body stream");
+        }
         auto body_bytes = stream->ReadToEnd(context);
         std::string body_str(body_bytes.begin(), body_bytes.end());
         auto parsed = boost::json::parse(body_str);
@@ -183,7 +186,7 @@ auto parse_private_key(const std::string& pem) -> std::shared_ptr<EVP_PKEY> {
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
     BOOST_REQUIRE(pkey != nullptr);
-    return std::shared_ptr<EVP_PKEY>(pkey, EVP_PKEY_free);
+    return {pkey, EVP_PKEY_free};
 }
 
 auto make_config_with_stub(const raft::testing::certificate_authority& ca,

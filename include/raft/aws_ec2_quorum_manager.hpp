@@ -366,8 +366,8 @@ public:
                             find_tag(inst.GetTags(), "kythira:cluster") != _cfg.cluster_name) {
                             continue;
                         }
-                        const std::string ec2_id(inst.GetInstanceId());
-                        const std::string ip(inst.GetPrivateIpAddress());
+                        const std::string& ec2_id(inst.GetInstanceId());
+                        const std::string& ip(inst.GetPrivateIpAddress());
                         const std::string addr =
                             ip.empty() ? std::string{} : ip + ":" + std::to_string(_cfg.node_port);
                         auto nid = node_id_from_described(ec2_id, inst.GetTags(), _cfg.aws.region);

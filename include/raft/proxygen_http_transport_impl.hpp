@@ -873,8 +873,7 @@ inline auto send_on_session(session_lease lease, const std::string& path, const 
         delete bridge;  // never attached to a transaction -- nothing else owns it
         kythira::promise_default<http_response> failed_promise;
         auto failed_future = failed_promise.getFuture();
-        failed_promise.setException(
-            std::make_exception_ptr(std::runtime_error(std::move(description))));
+        failed_promise.setException(std::make_exception_ptr(std::runtime_error(description)));
         return failed_future;
     }
     auto* txn = result.value();
@@ -921,8 +920,7 @@ inline auto send_on_session_folly(session_lease lease, const std::string& path,
         delete bridge;
         folly::Promise<http_response> failed_promise;
         auto failed_future = failed_promise.getFuture();
-        failed_promise.setException(
-            folly::exception_wrapper(std::runtime_error(std::move(description))));
+        failed_promise.setException(folly::exception_wrapper(std::runtime_error(description)));
         return failed_future;
     }
     auto* txn = result.value();
@@ -1159,7 +1157,9 @@ auto proxygen_client<Types>::resolve_target(std::uint64_t target) const
     }
     std::vector<folly::SocketAddress> addrs;
     for (addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
-        if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6) continue;
+        if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6) {
+            continue;
+        }
         folly::SocketAddress addr;
         addr.setFromSockaddr(ai->ai_addr, ai->ai_addrlen);
         if (std::find(addrs.begin(), addrs.end(), addr) == addrs.end()) {
@@ -1928,6 +1928,9 @@ public:
 
     auto onRequest(proxygen::RequestHandler*, proxygen::HTTPMessage*) noexcept
         -> proxygen::RequestHandler* override {
+        // Proxygen owns the handler. An allocation failure here terminates,
+        // which is the only sane outcome inside this noexcept callback.
+        // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new)
         return new rpc_request_handler<Types>(_server);
     }
 
@@ -2223,7 +2226,9 @@ auto proxygen_server<Types>::start() -> void {
             ip_configs.push_back(std::move(ip_config));
         }
     } catch (...) {
-        for (int fd : fds) ::close(fd);
+        for (int fd : fds) {
+            ::close(fd);
+        }
         throw;
     }
     // preboundSockets_[i] pairs with ip_configs[i] in HTTPServer::start().

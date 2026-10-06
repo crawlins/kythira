@@ -22,7 +22,9 @@ using kythira::net_bind::httplib_listeners;
 
 auto ipv6_loopback_available() -> bool {
     int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
-    if (fd < 0) return false;
+    if (fd < 0) {
+        return false;
+    }
     sockaddr_in6 a{};
     a.sin6_family = AF_INET6;
     a.sin6_addr = in6addr_loopback;

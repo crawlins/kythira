@@ -524,7 +524,7 @@ public:
             return std::make_exception_ptr(std::runtime_error("never resolved"));
         }
         try {
-            std::ignore = std::move(f).get();
+            std::ignore = std::forward<Future>(f).get();
             return nullptr;
         } catch (...) {
             return std::current_exception();
@@ -544,7 +544,7 @@ auto settle(Future&& f, std::chrono::milliseconds budget = std::chrono::millisec
         return std::make_exception_ptr(std::runtime_error("settle: future never resolved"));
     }
     try {
-        std::ignore = std::move(f).get();
+        std::ignore = std::forward<Future>(f).get();
         return nullptr;
     } catch (...) {
         return std::current_exception();
@@ -665,7 +665,7 @@ BOOST_AUTO_TEST_CASE(a_client_of_the_source_is_redirected_after_the_merge,
     // A key that used to belong to the source now routes to the survivor, and
     // still works.
     BOOST_CHECK(c.put("oscar", "after-merge"));
-    for (auto& id : {node_id_t{1}, node_id_t{2}, node_id_t{3}}) {
+    for (const auto& id : {node_id_t{1}, node_id_t{2}, node_id_t{3}}) {
         const auto desc = c.host(id).resolve("oscar");
         BOOST_REQUIRE(desc.has_value());
         BOOST_CHECK_EQUAL(desc->_group_id, k_left);

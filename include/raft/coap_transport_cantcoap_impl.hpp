@@ -1444,6 +1444,9 @@ public:
                 coap_reply_cache_limits{_config.duplicate_reply_cache_bytes}} {
         kythira::coap_utils::validate_registry_content_formats(_registry);
         auto [selected, security] = cantcoap_detail::plan_security(_config, "server");
+        // Not member initializers: all four derive from plan_security(), which
+        // reads the already-initialised _config.
+        // NOLINTBEGIN(cppcoreguidelines-prefer-member-initializer)
         _secure = selected == cantcoap_detail::channel::oscore;
         _dtls_requested = selected == cantcoap_detail::channel::dtls;
         // When EDHOC is asked for, the context arrives when a peer runs the
@@ -1451,6 +1454,7 @@ public:
         // that resource and nothing else.
         _edhoc_bootstrap = _secure && cantcoap_detail::wants_edhoc(security);
         _security = std::move(security);
+        // NOLINTEND(cppcoreguidelines-prefer-member-initializer)
     }
 
     ~coap_cantcoap_server() { stop(); }

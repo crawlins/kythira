@@ -100,6 +100,9 @@ public:
           _config(std::move(config)),
           _metrics(std::move(metrics)),
           _executor(executor) {
+        // Not a member initializer: build_channel_credentials() reads members
+        // declared after this one.
+        // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
         _channel_credentials = build_channel_credentials();
         check_plaintext_targets();
     }
@@ -138,7 +141,9 @@ public:
 
     /// @brief Stops and joins the auto-reload thread, if any.
     auto disable_auto_reload() -> void {
-        if (_tls) _tls->disable_auto_reload();
+        if (_tls) {
+            _tls->disable_auto_reload();
+        }
     }
 
     // ── network_client ──────────────────────────────────────────────────────
@@ -602,6 +607,7 @@ public:
         // material fails closed here with grpc_tls_configuration_error, rather
         // than only when start() is called (Requirement 9.6 / Property 7) —
         // symmetric with the client's _channel_credentials.
+        // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
         _server_credentials = build_server_credentials();
     }
 
@@ -640,7 +646,9 @@ public:
 
     /// @brief Stops and joins the auto-reload thread, if any.
     auto disable_auto_reload() -> void {
-        if (_tls) _tls->disable_auto_reload();
+        if (_tls) {
+            _tls->disable_auto_reload();
+        }
     }
 
     grpc_server(const grpc_server&) = delete;
@@ -751,7 +759,9 @@ public:
                 port = ntohs(bound.ss_family == AF_INET6
                                  ? reinterpret_cast<const sockaddr_in6&>(bound).sin6_port
                                  : reinterpret_cast<const sockaddr_in&>(bound).sin_port);
-                for (int fd : fds) ::close(fd);
+                for (int fd : fds) {
+                    ::close(fd);
+                }
             }
         } catch (const std::exception& e) {
             throw grpc_transport_error(grpc::StatusCode::INVALID_ARGUMENT,

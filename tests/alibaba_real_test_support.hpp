@@ -89,13 +89,23 @@ inline auto skip_unless_configured(const real_test_config& cfg,
                                    const std::vector<std::pair<const char*, std::string>>& extra)
     -> void {
     std::vector<std::string> missing;
-    if (cfg.region.empty()) missing.emplace_back("KYTHIRA_ALIBABA_REGION");
-    if (cfg.access_key_id.empty()) missing.emplace_back("KYTHIRA_ALIBABA_ACCESS_KEY_ID");
-    if (cfg.access_key_secret.empty()) missing.emplace_back("KYTHIRA_ALIBABA_ACCESS_KEY_SECRET");
-    for (const auto& [name, value] : extra) {
-        if (value.empty()) missing.emplace_back(name);
+    if (cfg.region.empty()) {
+        missing.emplace_back("KYTHIRA_ALIBABA_REGION");
     }
-    if (missing.empty()) return;
+    if (cfg.access_key_id.empty()) {
+        missing.emplace_back("KYTHIRA_ALIBABA_ACCESS_KEY_ID");
+    }
+    if (cfg.access_key_secret.empty()) {
+        missing.emplace_back("KYTHIRA_ALIBABA_ACCESS_KEY_SECRET");
+    }
+    for (const auto& [name, value] : extra) {
+        if (value.empty()) {
+            missing.emplace_back(name);
+        }
+    }
+    if (missing.empty()) {
+        return;
+    }
 
     std::cerr << "[alibaba-real] SKIP: missing required environment:\n";
     for (const auto& name : missing) {

@@ -74,7 +74,9 @@ constexpr const char* k_internal_secret = "sccache-e2e-internal";
 
 std::string compose_file() {
     const char* env = std::getenv("KYTHIRA_SCCACHE_E2E_COMPOSE_FILE");
-    if (env && *env) return env;
+    if ((env != nullptr) && (*env != 0)) {
+        return env;
+    }
     return "docker/sccache-e2e-compose.yml";
 }
 
@@ -91,9 +93,10 @@ std::vector<std::string> compose_cmd(std::initializer_list<std::string> args) {
 
 class resp_client {
 public:
-    explicit resp_client(std::uint16_t port) {
-        _fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (_fd < 0) throw std::runtime_error("socket() failed");
+    explicit resp_client(std::uint16_t port) : _fd(::socket(AF_INET, SOCK_STREAM, 0)) {
+        if (_fd < 0) {
+            throw std::runtime_error("socket() failed");
+        }
         timeval tv{.tv_sec = 5, .tv_usec = 0};
         ::setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
         int one = 1;
@@ -108,7 +111,9 @@ public:
         }
     }
     ~resp_client() {
-        if (_fd >= 0) ::close(_fd);
+        if (_fd >= 0) {
+            ::close(_fd);
+        }
     }
     resp_client(const resp_client&) = delete;
     resp_client& operator=(const resp_client&) = delete;
@@ -118,18 +123,23 @@ public:
 
     std::string call(const std::vector<std::string>& argv) {
         std::string out = "*" + std::to_string(argv.size()) + "\r\n";
-        for (const auto& a : argv) out += "$" + std::to_string(a.size()) + "\r\n" + a + "\r\n";
+        for (const auto& a : argv) {
+            out += "$" + std::to_string(a.size()) + "\r\n" + a + "\r\n";
+        }
         for (std::size_t sent = 0; sent < out.size();) {
             auto n = ::send(_fd, out.data() + sent, out.size() - sent, MSG_NOSIGNAL);
-            if (n <= 0) throw std::runtime_error("send failed");
+            if (n <= 0) {
+                throw std::runtime_error("send failed");
+            }
             sent += static_cast<std::size_t>(n);
         }
         std::size_t len = 0;
         while ((len = kythira::resp_reply_length(_buffer)) == 0) {
             std::array<char, 65536> chunk{};
             auto n = ::recv(_fd, chunk.data(), chunk.size(), 0);
-            if (n <= 0)
+            if (n <= 0) {
                 throw std::runtime_error("connection closed or timed out waiting for a reply");
+            }
             _buffer.append(chunk.data(), static_cast<std::size_t>(n));
         }
         auto reply = _buffer.substr(0, len);
@@ -147,7 +157,9 @@ std::optional<resp_client> connect_as(std::uint16_t port, const std::string& use
     try {
         resp_client c(port);
         auto reply = c.call({"AUTH", user, k_secrets.at(user)});
-        if (reply != "+OK\r\n") throw std::runtime_error("AUTH " + user + " answered " + reply);
+        if (reply != "+OK\r\n") {
+            throw std::runtime_error("AUTH " + user + " answered " + reply);
+        }
         return c;
     } catch (const std::exception&) {
         return std::nullopt;
@@ -157,7 +169,9 @@ std::optional<resp_client> connect_as(std::uint16_t port, const std::string& use
 // `field:` value out of an INFO bulk reply, or -1 when absent.
 long info_field(const std::string& info, const std::string& field) {
     auto pos = info.find("\r\n" + field + ":");
-    if (pos == std::string::npos) return -1;
+    if (pos == std::string::npos) {
+        return -1;
+    }
     return std::stol(info.substr(pos + field.size() + 3));
 }
 
@@ -177,7 +191,9 @@ bool wait_cluster_ready(std::chrono::milliseconds timeout) {
             }
             led += std::max(0L, info_field(c->call({"INFO"}), "local_shards_led"));
         }
-        if (all_up && led == 2) return true;
+        if (all_up && led == 2) {
+            return true;
+        }
         std::this_thread::sleep_for(500ms);
     }
     return false;
@@ -202,8 +218,10 @@ struct runner_report {
 
 long sum_counts(const json::value& stats, const char* key) {
     long total = 0;
-    if (auto* obj = stats.at(key).as_object().if_contains("counts")) {
-        for (const auto& kv : obj->as_object()) total += kv.value().to_number<long>();
+    if (const auto* obj = stats.at(key).as_object().if_contains("counts")) {
+        for (const auto& kv : obj->as_object()) {
+            total += kv.value().to_number<long>();
+        }
     }
     return total;
 }
@@ -229,7 +247,9 @@ runner_report run_sccache(const std::vector<std::pair<std::string, std::string>>
     std::istringstream lines(out);
     std::string line;
     while (std::getline(lines, line)) {
-        while (!line.empty() && line.back() == '\r') line.pop_back();
+        while (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
         if (line.rfind("KYTHIRA_MODE mode=", 0) == 0) {
             r.mode = line.substr(std::string("KYTHIRA_MODE mode=").size());
         } else if (line.rfind("KYTHIRA_BUILD build=", 0) == 0) {
@@ -327,7 +347,7 @@ BOOST_AUTO_TEST_CASE(expiration_uses_setex_under_a_custom_prefix, *boost::unit_t
     // expiration as everything else, so it is the one key we know the name of.
     auto ttl = c->call({"TTL", "sccache/ttl/.sccache_check"});
     BOOST_TEST_MESSAGE("TTL sccache/ttl/.sccache_check -> " << ttl);
-    BOOST_REQUIRE(ttl.rfind(":", 0) == 0);
+    BOOST_REQUIRE(ttl.rfind(':', 0) == 0);
     auto seconds = std::stol(ttl.substr(1));
     BOOST_CHECK_GT(seconds, 0);
     BOOST_CHECK_LE(seconds, 600);

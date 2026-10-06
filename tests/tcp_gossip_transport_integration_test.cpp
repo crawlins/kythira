@@ -42,7 +42,9 @@ constexpr std::uint16_t k_port_hardening = 19709;
 
 auto host_has_ipv6() -> bool {
     int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
-    if (fd < 0) return false;
+    if (fd < 0) {
+        return false;
+    }
     ::close(fd);
     return true;
 }
@@ -195,7 +197,9 @@ auto hardened_listener(kythira::tcp_server_limits limits) -> std::unique_ptr<gos
 // One push-pull exchange against the listener, as a peer would make it.
 auto exchange_succeeds() -> bool {
     int fd = tcp_server_hardening::dial(k_port_hardening);
-    if (fd < 0) return false;
+    if (fd < 0) {
+        return false;
+    }
     kythira::gossip_exchange_message<std::uint64_t, std::string, std::uint64_t> req{9, {}};
     bool ok = kythira::tcp_detail::frame_send(fd, kythira::encode_gossip_message(req)) &&
               kythira::tcp_detail::frame_recv(fd).has_value();

@@ -244,7 +244,8 @@ private:
                 const auto page = to_int(req.get_param_value("PageNumber"), 1);
                 const auto size = to_int(req.get_param_value("PageSize"), 50);
                 boost::json::array listed;
-                for (std::size_t i = static_cast<std::size_t>((page - 1) * size);
+                for (std::size_t i =
+                         static_cast<std::size_t>(page - 1) * static_cast<std::size_t>(size);
                      i < instances.size() && listed.size() < static_cast<std::size_t>(size); ++i) {
                     boost::json::object entry;
                     entry["InstanceId"] = instances[i].id;

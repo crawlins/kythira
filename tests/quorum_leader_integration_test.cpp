@@ -33,6 +33,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <string>
 #include <thread>
@@ -101,9 +102,9 @@ struct qm_state {
     }
     [[nodiscard]] auto last_assess(std::uint64_t caller) const -> std::optional<placement_vector> {
         std::lock_guard lock(mu);
-        for (auto it = assess_calls.rbegin(); it != assess_calls.rend(); ++it) {
-            if (it->caller == caller) {
-                return it->cluster;
+        for (const auto& call : std::views::reverse(assess_calls)) {
+            if (call.caller == caller) {
+                return call.cluster;
             }
         }
         return std::nullopt;

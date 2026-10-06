@@ -53,13 +53,14 @@ struct mock_object_store_harness {
 
     // Deliberately not [[nodiscard]]: the construction-failure cases call this
     // inside BOOST_CHECK_THROW, where discarding the result is the point.
-    auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
 
-    auto make_engine(std::string bucket_name, std::string prefix_name) const -> engine_t {
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
         return engine_t{store, std::move(bucket_name), std::move(prefix_name)};
     }
 
-    auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
         return engine_t{store, bucket(), prefix(), opts};
     }
 
@@ -98,14 +99,15 @@ struct fenced_mock_object_store_harness : mock_object_store_harness {
 
     [[nodiscard]] static auto owner_id() -> std::string { return "node-a"; }
 
-    auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
 
-    auto make_engine(std::string bucket_name, std::string prefix_name) const -> engine_t {
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
         return engine_t{store, std::move(bucket_name), std::move(prefix_name),
                         with_owner(kythira::object_persistence_options{})};
     }
 
-    auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
         return engine_t{store, bucket(), prefix(), with_owner(std::move(opts))};
     }
 
@@ -113,7 +115,8 @@ struct fenced_mock_object_store_harness : mock_object_store_harness {
     /// other-owner cases. `takeover_epoch` is passed through exactly as given,
     /// including a value that does not advance, because rejecting that is one of
     /// the behaviours under test.
-    auto make_engine_as(std::string owner, std::optional<std::uint64_t> takeover_epoch) const
+    [[nodiscard]] auto make_engine_as(std::string owner,
+                                      std::optional<std::uint64_t> takeover_epoch) const
         -> engine_t {
         kythira::object_persistence_options opts;
         opts.owner_id = std::move(owner);
@@ -144,13 +147,14 @@ struct md5_versioned_mock_object_store_harness {
     [[nodiscard]] static auto bucket() -> std::string { return "kythira"; }
     [[nodiscard]] static auto prefix() -> std::string { return "raft"; }
 
-    auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
 
-    auto make_engine(std::string bucket_name, std::string prefix_name) const -> engine_t {
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
         return engine_t{store, std::move(bucket_name), std::move(prefix_name)};
     }
 
-    auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
         return engine_t{store, bucket(), prefix(), opts};
     }
 
@@ -244,13 +248,14 @@ BOOST_AUTO_TEST_CASE(the_engine_satisfies_the_persistence_engine_concept) {
 // pins that the base concept does not accidentally require the refinement.
 BOOST_AUTO_TEST_CASE(a_store_without_conditional_writes_still_satisfies_the_base_concept) {
     struct versionless_store {
-        auto put_object(const std::string&, const std::string&, std::string_view) const
-            -> kythira::put_result;
-        auto get_object(const std::string&, const std::string&) const
+        [[nodiscard]] auto put_object(const std::string&, const std::string&,
+                                      std::string_view) const -> kythira::put_result;
+        [[nodiscard]] auto get_object(const std::string&, const std::string&) const
             -> std::optional<kythira::get_result>;
         auto delete_object(const std::string&, const std::string&) const -> void;
-        auto list_keys(const std::string&, const std::string&) const -> std::vector<std::string>;
-        auto provider_name() const -> std::string_view;
+        [[nodiscard]] auto list_keys(const std::string&, const std::string&) const
+            -> std::vector<std::string>;
+        [[nodiscard]] auto provider_name() const -> std::string_view;
     };
     static_assert(kythira::key_object_store<versionless_store>);
     static_assert(!kythira::conditional_key_object_store<versionless_store>);
@@ -264,13 +269,14 @@ BOOST_AUTO_TEST_CASE(a_store_without_conditional_writes_still_satisfies_the_base
 // single most likely well-meaning change that would destroy the feature.
 BOOST_AUTO_TEST_CASE(compare_and_swap_is_unavailable_for_a_store_without_conditional_writes) {
     struct versionless_store {
-        auto put_object(const std::string&, const std::string&, std::string_view) const
-            -> kythira::put_result;
-        auto get_object(const std::string&, const std::string&) const
+        [[nodiscard]] auto put_object(const std::string&, const std::string&,
+                                      std::string_view) const -> kythira::put_result;
+        [[nodiscard]] auto get_object(const std::string&, const std::string&) const
             -> std::optional<kythira::get_result>;
         auto delete_object(const std::string&, const std::string&) const -> void;
-        auto list_keys(const std::string&, const std::string&) const -> std::vector<std::string>;
-        auto provider_name() const -> std::string_view;
+        [[nodiscard]] auto list_keys(const std::string&, const std::string&) const
+            -> std::vector<std::string>;
+        [[nodiscard]] auto provider_name() const -> std::string_view;
     };
 
     // Naming the specialization is the whole test: the constraint makes it

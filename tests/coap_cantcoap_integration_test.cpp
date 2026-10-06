@@ -91,7 +91,7 @@ constexpr std::uint16_t ephemeral_port = 0;
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    (void)::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     socklen_t length = sizeof(addr);
     ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &length);
     const auto port = ntohs(addr.sin_port);

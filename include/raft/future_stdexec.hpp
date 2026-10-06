@@ -533,7 +533,8 @@ public:
     explicit single_shot_sender(shared_state_ptr<T> state) : _state(std::move(state)) {}
 
     template<typename Receiver>
-    auto connect(Receiver receiver) const -> single_shot_operation_state<T, Receiver> {
+    [[nodiscard]] auto connect(Receiver receiver) const
+        -> single_shot_operation_state<T, Receiver> {
         return single_shot_operation_state<T, Receiver>(_state, std::move(receiver));
     }
 

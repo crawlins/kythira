@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -117,12 +118,16 @@ struct pki_material {
         key_file = (tmp_dir / ("coap_libnyoci_dtls_key_" + suffix + ".pem")).string();
 
         FILE* cert_fp = std::fopen(cert_file.c_str(), "wb");
-        BOOST_REQUIRE(cert_fp != nullptr);
+        if (cert_fp == nullptr) {
+            throw std::runtime_error("cannot open " + cert_file);
+        }
         PEM_write_X509(cert_fp, cert);
         std::fclose(cert_fp);
 
         FILE* key_fp = std::fopen(key_file.c_str(), "wb");
-        BOOST_REQUIRE(key_fp != nullptr);
+        if (key_fp == nullptr) {
+            throw std::runtime_error("cannot open " + key_file);
+        }
         PEM_write_PrivateKey(key_fp, pkey, nullptr, nullptr, 0, nullptr, nullptr);
         std::fclose(key_fp);
 

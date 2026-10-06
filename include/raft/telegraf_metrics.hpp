@@ -45,7 +45,9 @@ namespace kythira {
     std::string out;
     out.reserve(in.size());
     for (char c : in) {
-        if (c == ',' || c == ' ') out.push_back('\\');
+        if (c == ',' || c == ' ') {
+            out.push_back('\\');
+        }
         if (c == '\n') {
             out.push_back('_');
             continue;
@@ -59,7 +61,9 @@ namespace kythira {
     std::string out;
     out.reserve(in.size());
     for (char c : in) {
-        if (c == ',' || c == ' ' || c == '=') out.push_back('\\');
+        if (c == ',' || c == ' ' || c == '=') {
+            out.push_back('\\');
+        }
         if (c == '\n') {
             out.push_back('_');
             continue;
@@ -139,7 +143,9 @@ public:
             }
             line += " ";
             for (std::size_t i = 0; i < _fields.size(); ++i) {
-                if (i > 0) line += ",";
+                if (i > 0) {
+                    line += ",";
+                }
                 const auto& [field, value] = _fields[i];
                 if (field == "count" && _count_is_integer) {
                     line += field + "=" + std::format("{}", static_cast<std::int64_t>(value)) + "i";

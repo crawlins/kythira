@@ -147,7 +147,7 @@ private:
     template<typename Start> auto run(Start&& start) -> std::size_t {
         return run(std::forward<Start>(start), [this] {
             boost::system::error_code ignored;
-            lowest().close(ignored);
+            (void)lowest().close(ignored);
         });
     }
 
@@ -174,7 +174,7 @@ private:
             // later touches this frame's locals.
             std::forward<Cancel>(cancel)();
             boost::system::error_code ignored;
-            lowest().close(ignored);
+            (void)lowest().close(ignored);
             _io.restart();
             _io.run();
             throw std::runtime_error("peer gateway did not answer before the deadline");

@@ -196,7 +196,7 @@ BOOST_AUTO_TEST_CASE(factories_round_trip_through_the_accessors) {
     BOOST_CHECK(in.node() == std::optional<node_id_t>{7});
 
     // Copies are equal; a decision is a value.
-    const auto copy = in;
+    const auto& copy = in;
     BOOST_CHECK(copy == in);
 }
 

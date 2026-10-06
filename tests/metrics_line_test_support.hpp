@@ -36,7 +36,9 @@ struct recording_sender_state {
         std::lock_guard<std::mutex> lock(state->mu);
         ++state->calls;
         const bool fail = state->calls <= state->fail_first_n_calls;
-        if (!fail) state->payloads.emplace_back(payload);
+        if (!fail) {
+            state->payloads.emplace_back(payload);
+        }
         state->cv.notify_all();
         return !fail;
     };

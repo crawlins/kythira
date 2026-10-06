@@ -82,7 +82,9 @@ template<typename Pred>
 auto eventually(Pred pred, std::chrono::milliseconds deadline = 10s) -> bool {
     auto end = std::chrono::steady_clock::now() + deadline;
     while (std::chrono::steady_clock::now() < end) {
-        if (pred()) return true;
+        if (pred()) {
+            return true;
+        }
         std::this_thread::sleep_for(10ms);
     }
     return pred();

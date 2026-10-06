@@ -3224,7 +3224,7 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
             // resolved twice reports what the caller waited, not what the last
             // attempt took.
             const auto started = std::chrono::steady_clock::now();
-            auto g = local;
+            const auto& g = local;
             return local->_node->read_state(timeout).thenTry([g, started, timeout](auto&& result) {
                 // A completed read AND a timed-out read are both samples;
                 // the timeout is clamped at its deadline. A percentile over

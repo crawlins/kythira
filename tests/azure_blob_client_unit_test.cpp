@@ -816,7 +816,7 @@ BOOST_AUTO_TEST_CASE(binary_bytes_survive_a_round_trip) {
     // for char, and clang++-18 (what CI builds with) rejects it outright.
     const std::string payload(
         "\x00\x01\xff"
-        "binary\x00",
+        "binary\x00\x00",
         11);
 
     const azure_blob_client client{config_for(mock)};

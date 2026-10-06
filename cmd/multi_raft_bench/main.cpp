@@ -381,5 +381,6 @@ auto main(int argc, char** argv) -> int {
                   << ".{csv,json}\n";
     }
 
-    return row.comparable() ? 0 : 0;
+    // A row that is not comparable is reported above, never an error exit.
+    return 0;
 }

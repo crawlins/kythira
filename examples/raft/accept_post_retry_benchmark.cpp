@@ -276,11 +276,11 @@ auto main(int argc, char** argv) -> int {
 
     std::vector<arm_result> results;
     results.push_back(
-        measure_first_call_arm<single_json>("matched (1 RT)", ioc, /*advertise=*/true));
+        measure_first_call_arm<single_json>("matched (1 RT)", ioc, /*advertise_accept_post=*/true));
     results.push_back(measure_first_call_arm<multi_three>("informed Accept-Post (2 RT)", ioc,
-                                                          /*advertise=*/true));
-    results.push_back(
-        measure_first_call_arm<multi_three>("blind walk (3 RT)", ioc, /*advertise=*/false));
+                                                          /*advertise_accept_post=*/true));
+    results.push_back(measure_first_call_arm<multi_three>("blind walk (3 RT)", ioc,
+                                                          /*advertise_accept_post=*/false));
     results.push_back(measure_renegotiated_arm(ioc));
 
     std::cout << std::left << std::setw(32) << "Arm" << std::right << std::setw(12) << "p50 (us)"

@@ -420,6 +420,9 @@ public:
         : _config(config),
           _executor(std::make_shared<kythira::executor_default>(k_rpc_thread_pool_size)) {
         ignore_sigpipe_once();
+        // Not a member initializer: kept next to the null check and the
+        // cleanup that frees it if configuring the context throws.
+        // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
         _ctx = SSL_CTX_new(TLS_client_method());
         if (_ctx == nullptr) {
             throw std::runtime_error("tls_tcp_rpc_client: SSL_CTX_new failed");
@@ -582,6 +585,8 @@ public:
               tcp_detail::connection_tracker::create(config.server_limits, "tls_tcp_rpc_server")),
           _config(std::move(config)) {
         ignore_sigpipe_once();
+        // Not a member initializer; see client_impl.
+        // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
         _ctx = SSL_CTX_new(TLS_server_method());
         if (_ctx == nullptr) {
             throw std::runtime_error("tls_tcp_rpc_server: SSL_CTX_new failed");
@@ -660,7 +665,9 @@ public:
             ::shutdown(fd, SHUT_RDWR);
         }
         for (auto& t : _accept_threads) {
-            if (t.joinable()) t.join();
+            if (t.joinable()) {
+                t.join();
+            }
         }
         _accept_threads.clear();
         for (int fd : _listen_fds) {
@@ -753,27 +760,39 @@ private:
             // connection authenticated as.
             if (type == "request_vote_request" && _rv) {
                 auto req = _ser.deserialize_request_vote_request(bytes);
-                if (!sender_ok(req.candidate_id())) return;
+                if (!sender_ok(req.candidate_id())) {
+                    return;
+                }
                 resp = _ser.serialize(_rv(req));
             } else if (type == "request_pre_vote_request" && _pv) {
                 auto req = _ser.deserialize_request_pre_vote_request(bytes);
-                if (!sender_ok(req.candidate_id())) return;
+                if (!sender_ok(req.candidate_id())) {
+                    return;
+                }
                 resp = _ser.serialize(_pv(req));
             } else if (type == "timeout_now_request" && _tn) {
                 auto req = _ser.deserialize_timeout_now_request(bytes);
-                if (!sender_ok(req.leader_id())) return;
+                if (!sender_ok(req.leader_id())) {
+                    return;
+                }
                 resp = _ser.serialize(_tn(req));
             } else if (type == "append_entries_request" && _ae) {
                 auto req = _ser.deserialize_append_entries_request(bytes);
-                if (!sender_ok(req.leader_id())) return;
+                if (!sender_ok(req.leader_id())) {
+                    return;
+                }
                 resp = _ser.serialize(_ae(req));
             } else if (type == "install_snapshot_request" && _is) {
                 auto req = _ser.deserialize_install_snapshot_request(bytes);
-                if (!sender_ok(req.leader_id())) return;
+                if (!sender_ok(req.leader_id())) {
+                    return;
+                }
                 resp = _ser.serialize(_is(req));
             } else if (type == "fetch_log_entries_request" && _fl) {
                 auto req = _ser.deserialize_fetch_log_entries_request(bytes);
-                if (!sender_ok(req.requester_id())) return;
+                if (!sender_ok(req.requester_id())) {
+                    return;
+                }
                 resp = _ser.serialize(_fl(req));
             } else {
                 return;

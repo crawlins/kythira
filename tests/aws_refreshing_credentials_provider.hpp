@@ -92,7 +92,7 @@ public:
             // credentials error the caller already checks for, instead of an
             // exception escaping mid-sign.
             try {
-                reload();
+                refresh_from_oidc();
             } catch (const std::exception& e) {
                 std::cerr << "[oidc-credentials] refresh failed: " << e.what() << "\n";
             }
@@ -127,7 +127,7 @@ private:
         return expiry_ms - now_ms <= window_ms;
     }
 
-    void reload() {
+    void refresh_from_oidc() {
         const Aws::String token = fetch_github_oidc_token();
 
         Aws::STS::Model::AssumeRoleWithWebIdentityRequest req;

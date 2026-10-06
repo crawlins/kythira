@@ -220,13 +220,13 @@ public:
             << budget.count() << " ms. Expected " << expected << " peer(s) tagged "
             << _cfg.run_tag_key << '=' << _cfg.run_tag_value << ", saw " << seen.size() << ": ";
         for (std::size_t i = 0; i < seen.size(); ++i) {
-            msg << (i ? ", " : "") << to_string(seen[i].node_id) << '@' << seen[i].address;
+            msg << ((i != 0u) ? ", " : "") << to_string(seen[i].node_id) << '@' << seen[i].address;
         }
         const auto missing = missing_from(seen, required);
         if (!missing.empty()) {
             msg << ". NEVER SEEN: ";
             for (std::size_t i = 0; i < missing.size(); ++i) {
-                msg << (i ? ", " : "") << to_string(missing[i]);
+                msg << ((i != 0u) ? ", " : "") << to_string(missing[i]);
             }
         }
         msg << ". Refusing to measure a cluster with a replica missing.";
@@ -356,7 +356,7 @@ private:
                 "could not read this instance's id from IMDS, and none was configured. "
                 "Off an EC2 instance, set aws_ec2_peer_discovery_config::instance_id");
         }
-        return std::string(id.c_str());
+        return std::string(id);
     }
 
     [[nodiscard]] static auto to_string(const NodeId& id) -> std::string {

@@ -32,7 +32,9 @@ using namespace std::chrono_literals;
 
 [[nodiscard]] inline auto compose_file(const char* env_var, const char* fallback) -> std::string {
     const char* env = std::getenv(env_var);
-    if (env && *env) return env;
+    if ((env != nullptr) && (*env != 0)) {
+        return env;
+    }
     return fallback;
 }
 
@@ -62,7 +64,9 @@ using namespace std::chrono_literals;
                                      std::chrono::milliseconds timeout) -> bool {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (probe()) return true;
+        if (probe()) {
+            return true;
+        }
         std::this_thread::sleep_for(500ms);
     }
     return false;
@@ -75,7 +79,9 @@ using namespace std::chrono_literals;
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
     auto res = cli.Get(path);
-    if (!res || res->status != 200) return "";
+    if (!res || res->status != 200) {
+        return "";
+    }
     return res->body;
 }
 
@@ -125,7 +131,9 @@ struct compose_fixture {
         with_a.insert(with_a.end(), {"-f", file, "ps", "-a"});
         with_a.insert(with_a.end(), extra.begin(), extra.end());
         auto result = docker_chaos::os::real_exec(with_a);
-        if (result.code == 0) return result;
+        if (result.code == 0) {
+            return result;
+        }
 
         auto without_a = docker_chaos::os::compose_prefix();
         without_a.insert(without_a.end(), {"-f", file, "ps"});
@@ -141,10 +149,14 @@ struct compose_fixture {
         std::size_t start = 0;
         while (start < ids.out.size()) {
             auto end = ids.out.find('\n', start);
-            if (end == std::string::npos) end = ids.out.size();
+            if (end == std::string::npos) {
+                end = ids.out.size();
+            }
             auto id = ids.out.substr(start, end - start);
             start = end + 1;
-            if (id.empty()) continue;
+            if (id.empty()) {
+                continue;
+            }
             auto logs =
                 docker_chaos::os::real_exec({docker_chaos::os::container_runtime(), "logs", id});
             BOOST_TEST_MESSAGE("logs for container " << id << ":\n" << logs.out);
@@ -180,7 +192,9 @@ struct compose_fixture {
     auto require_eventually(const std::function<bool()>& probe, std::chrono::milliseconds timeout,
                             const std::function<std::string()>& evidence, const char* message) const
         -> void {
-        if (poll_until(probe, timeout)) return;
+        if (poll_until(probe, timeout)) {
+            return;
+        }
         dump_diagnostics();
         BOOST_TEST_MESSAGE("last observed evidence:\n" << evidence());
         BOOST_FAIL(std::string(message) + " — container state, logs, and evidence dumped above");

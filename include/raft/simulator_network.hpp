@@ -443,7 +443,7 @@ private:
     /// after its call timed out stays queued on its port, and could only be
     /// mistaken for a later call's reply if that exact port came round again
     /// while the stale reply was still there.
-    auto next_reply_port() const -> unsigned short {
+    [[nodiscard]] [[nodiscard]] auto next_reply_port() const -> unsigned short {
         static std::atomic<std::uint32_t> counter{0};
         constexpr std::uint32_t first = 1024;
         constexpr std::uint32_t span = 65536 - first;

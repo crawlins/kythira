@@ -38,7 +38,7 @@ public:
                std::shared_ptr<boost::asio::ssl::context> ssl_ctx)
         : _gw(gw), _strand(boost::asio::make_strand(gw._io)), _idle_timer(_strand) {
         boost::system::error_code ec;
-        socket.set_option(tcp::no_delay(true), ec);
+        (void)socket.set_option(tcp::no_delay(true), ec);
         auto remote = socket.remote_endpoint(ec);
         if (!ec) {
             _session._rate_key = redis_auth_limiter::rate_key(remote.address());
@@ -435,11 +435,11 @@ private:
         boost::system::error_code ec;
         _idle_timer.cancel();
         if (_ssl) {
-            _ssl->next_layer().shutdown(tcp::socket::shutdown_both, ec);
-            _ssl->next_layer().close(ec);
+            (void)_ssl->next_layer().shutdown(tcp::socket::shutdown_both, ec);
+            (void)_ssl->next_layer().close(ec);
         } else {
-            _plain->shutdown(tcp::socket::shutdown_both, ec);
-            _plain->close(ec);
+            (void)_plain->shutdown(tcp::socket::shutdown_both, ec);
+            (void)_plain->close(ec);
         }
         std::size_t dropped = 0;
         {
@@ -635,10 +635,10 @@ auto redis_gateway<Host, Logger, Metrics>::stop() -> void {
     }
     boost::system::error_code ec;
     for (const auto& acceptor : _acceptors) {
-        acceptor->close(ec);
+        (void)acceptor->close(ec);
     }
     for (const auto& acceptor : _tls_acceptors) {
-        acceptor->close(ec);
+        (void)acceptor->close(ec);
     }
     std::vector<std::shared_ptr<connection>> live;
     {
@@ -762,10 +762,10 @@ auto redis_gateway<Host, Logger, Metrics>::accept_loop(
             // Requirement 13.1: say why before closing.
             ++_stats._connections_rejected;
             boost::system::error_code ignored;
-            socket.non_blocking(true, ignored);
+            (void)socket.non_blocking(true, ignored);
             static constexpr std::string_view reply = "-ERR max number of clients reached\r\n";
             socket.write_some(boost::asio::buffer(reply.data(), reply.size()), ignored);
-            socket.close(ignored);
+            (void)socket.close(ignored);
             emit("redis.connections.rejected", "accept");
         } else {
             ++_stats._connections_accepted;
@@ -1401,7 +1401,7 @@ auto redis_gateway<Host, Logger, Metrics>::handle_hello(session& s, const resp_c
         resp_command a;
         a._argv = {"AUTH", auth->first, auth->second};
         auto reply = handle_auth(s, a);
-        if (reply.rfind("-", 0) == 0) {
+        if (reply.rfind('-', 0) == 0) {
             return reply;
         }
     }

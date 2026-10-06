@@ -723,12 +723,12 @@ private:
     /// The `kythira:node-id` tag on `vm`, if it carries one.
     [[nodiscard]] static auto node_id_tag(const boost::json::object& vm)
         -> std::optional<std::string> {
-        auto it = vm.find("tags");
+        const auto* it = vm.find("tags");
         if (it == vm.end() || !it->value().is_object()) {
             return std::nullopt;
         }
         const auto& tags = it->value().as_object();
-        auto tag = tags.find("kythira:node-id");
+        const auto* tag = tags.find("kythira:node-id");
         if (tag == tags.end() || !tag->value().is_string()) {
             return std::nullopt;
         }
@@ -889,7 +889,8 @@ private:
     ///
     /// @return False when ARM reports the member already gone, true when the
     ///         delete was accepted. Any other refusal throws.
-    auto delete_member(const std::string& scale_set, const std::string& vm_name) const -> bool {
+    [[nodiscard]] auto delete_member(const std::string& scale_set, const std::string& vm_name) const
+        -> bool {
         boost::json::object body;
         body["instanceIds"] = boost::json::array{vm_name};
         try {
@@ -1084,7 +1085,7 @@ private:
     void tag_instance(const std::string& vm_name, const boost::json::object& vm, const NodeId& nid,
                       const std::string& group) const {
         auto tags = build_tags(nid, group);
-        if (auto it = vm.find("tags"); it != vm.end() && it->value().is_object()) {
+        if (const auto* it = vm.find("tags"); it != vm.end() && it->value().is_object()) {
             for (const auto& existing : it->value().as_object()) {
                 if (!tags.contains(existing.key())) {
                     tags[existing.key()] = existing.value();

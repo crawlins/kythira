@@ -76,10 +76,18 @@ inline void validate(const tcp_server_limits& limits, const char* who) {
         throw std::invalid_argument(std::string(who) + ": tcp_server_limits::" + field +
                                     " must be greater than zero");
     };
-    if (limits.request_timeout.count() <= 0) fail("request_timeout");
-    if (limits.reply_timeout.count() <= 0) fail("reply_timeout");
-    if (limits.max_connections == 0) fail("max_connections");
-    if (limits.max_connections_per_source == 0) fail("max_connections_per_source");
+    if (limits.request_timeout.count() <= 0) {
+        fail("request_timeout");
+    }
+    if (limits.reply_timeout.count() <= 0) {
+        fail("reply_timeout");
+    }
+    if (limits.max_connections == 0) {
+        fail("max_connections");
+    }
+    if (limits.max_connections_per_source == 0) {
+        fail("max_connections_per_source");
+    }
 }
 
 namespace tcp_detail {
