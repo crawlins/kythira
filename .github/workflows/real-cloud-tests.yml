@@ -1555,6 +1555,17 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
+      # The OIDC session from the first credentials step lasts about an hour,
+      # and a cold vcpkg cache outlives it. Run 37223255411 configured
+      # credentials at 07:32 and reached this step at 08:49, where build.sh's
+      # GetCallerIdentity check failed with "(Unknown)" on both arches.
+      - name: Re-configure AWS credentials for the AMI build (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-ami-build
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
       - name: Build AMI
         run: |
           packer/ca_cluster_node/scripts/build.sh \
