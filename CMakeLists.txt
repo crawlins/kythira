@@ -385,7 +385,13 @@ kythira_kconfig_gate(COAP_TRANSPORT_LIBNYOCI)
 if(_KYTHIRA_GATE_COAP_TRANSPORT_LIBNYOCI)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
-        pkg_check_modules(LIBNYOCI QUIET libnyoci)
+        # IMPORTED_TARGET, not the bare LIBNYOCI_* variables: vcpkg rewrites
+        # .pc files to be relocatable (prefix=${pcfiledir}/../..), so the
+        # variables hold paths under vcpkg_installed/ inside the source tree,
+        # and putting those on network_simulator's INTERFACE properties fails
+        # the install(EXPORT) at generate time ("prefixed in the source
+        # directory"). An imported target keeps them off network_simulator.
+        pkg_check_modules(LIBNYOCI QUIET IMPORTED_TARGET libnyoci)
     endif()
 endif()
 kythira_kconfig_require(COAP_TRANSPORT_LIBNYOCI LIBNYOCI_FOUND "libnyoci")
@@ -1036,10 +1042,7 @@ if(LIBCOAP_FOUND)
 endif()
 
 if(LIBNYOCI_FOUND)
-    target_include_directories(network_simulator INTERFACE ${LIBNYOCI_INCLUDE_DIRS})
-    target_link_libraries(network_simulator INTERFACE ${LIBNYOCI_LIBRARIES})
-    target_link_directories(network_simulator INTERFACE ${LIBNYOCI_LIBRARY_DIRS})
-    target_compile_definitions(network_simulator INTERFACE ${LIBNYOCI_CFLAGS_OTHER})
+    target_link_libraries(network_simulator INTERFACE PkgConfig::LIBNYOCI)
     # Backs LIBNYOCI_AVAILABLE project-wide, exactly as the LIBCOAP_AVAILABLE
     # line above does -- without it coap_transport_libnyoci_impl.hpp compiles
     # to its stub and every coap_libnyoci_* test silently skips, which is the
