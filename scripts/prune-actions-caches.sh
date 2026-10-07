@@ -54,9 +54,10 @@
 #                  `-<ref>-<run_id>` stripped.
 #
 # vcpkg caches are deliberately NEVER touched by either rule. Their keys are
-# content-addressed by hashFiles(vcpkg.json, vcpkg-overlays/**) rather than by
-# run id, so each one is the only entry for its inputs and deleting it forces
-# an expensive cold dependency rebuild. They are 8.17 GiB of the 8.67 GiB total
+# content-addressed by hashFiles(vcpkg.json, vcpkg-configuration.json,
+# vcpkg-overlays/**) rather than by run id, so each one is the only entry for
+# its inputs and deleting it forces an expensive cold dependency rebuild.
+# They are 8.17 GiB of the 8.67 GiB total
 # as of September 9, 2026 -- 94% of it -- and every one of them is currently
 # live. Deleting one is no longer catastrophic now that the OCI binary cache
 # backs it (the rebuild becomes a download), but it is still waste, so the rule

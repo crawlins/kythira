@@ -238,7 +238,13 @@ jobs:
           # leaves the key byte-identical on every leg that does not set it,
           # so adding the GCC 14 leg neither invalidates the existing caches
           # nor stops this job sharing them with the coverage job below.
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc${{ matrix.vcpkg_cxx && format('-{0}', matrix.vcpkg_cxx) || '' }}-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          #
+          # vcpkg-configuration.json is hashed alongside vcpkg.json because
+          # its registry entry is what moves packages (openssl, curl, ...)
+          # to a newer vcpkg commit. Without it a registry-only bump hits
+          # the old tree, the install step below is skipped, and every leg
+          # keeps building against the versions it was meant to replace.
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc${{ matrix.vcpkg_cxx && format('-{0}', matrix.vcpkg_cxx) || '' }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -599,7 +605,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies (with gcp feature)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -775,7 +781,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-ion-g++-14-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-ion-g++-14-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies (with ion feature)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -964,7 +970,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -1168,7 +1174,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-coap-alt-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-coap-alt-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies (with alternate CoAP backends)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -1406,7 +1412,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-poco-dnssd-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-poco-dnssd-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -1586,7 +1592,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -1802,7 +1808,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -1967,7 +1973,7 @@ jobs:
           # This job stays x86_64-only (Requirement 8.2), so runner.arch is
           # always X64 here — included anyway to keep the key format
           # consistent with build-and-test's cache key (Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -2342,7 +2348,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-X64-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-X64-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -2699,7 +2705,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-X64-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-X64-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
