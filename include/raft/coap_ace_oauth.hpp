@@ -179,7 +179,21 @@ inline auto resolve_ace_bootstrap(coap_security_config& config) -> void {
             "security.ace_bootstrap and an EDHOC bootstrap in security.credentials are both "
             "set; configure one way of obtaining the OSCORE context");
     }
+    // The AS knows nothing about where this node keeps its OSCORE counters,
+    // so the issued context inherits the configured ones. Dropping them would
+    // restart the Sender Sequence Number at 0 whenever the AS hands back the
+    // same Master Secret after a restart.
+    std::string sequence_state_dir;
+    bool volatile_sequence_state = false;
+    if (const auto* osc = std::get_if<oscore_credentials>(&config.credentials); osc != nullptr) {
+        sequence_state_dir = osc->sequence_state_dir;
+        volatile_sequence_state = osc->volatile_sequence_state;
+    }
     auto result = run_ace_token_exchange(ace);
+    if (auto* osc = std::get_if<oscore_credentials>(&result); osc != nullptr) {
+        osc->sequence_state_dir = std::move(sequence_state_dir);
+        osc->volatile_sequence_state = volatile_sequence_state;
+    }
     std::visit([&](auto&& creds) { config.credentials = std::forward<decltype(creds)>(creds); },
                std::move(result));
 }

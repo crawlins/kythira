@@ -148,6 +148,48 @@ BOOST_AUTO_TEST_CASE(replaces_static_credentials_with_the_issued_ones,
                "issued-identity-raft-cluster");
 }
 
+// The AS knows nothing about where this node keeps its OSCORE counters: the
+// issued context keeps the configured ones, or a restart that gets the same
+// Master Secret back would start its Sender Sequence Number at 0 again.
+BOOST_AUTO_TEST_CASE(issued_oscore_context_keeps_the_configured_sequence_state,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
+    mock_authorization_server as;
+    auto config =
+        ace_config(as.token_endpoint(), ace_target_profile::oscore, coap_auth_mode::oscore);
+    oscore_credentials counters;
+    counters.sequence_state_dir = "/var/lib/kythira/oscore";
+    counters.volatile_sequence_state = true;
+    config.credentials = counters;
+    resolve_ace_bootstrap(config);
+    BOOST_REQUIRE(std::holds_alternative<oscore_credentials>(config.credentials));
+    const auto& issued = std::get<oscore_credentials>(config.credentials);
+    BOOST_TEST(issued.master_secret.size() == 16U);
+    BOOST_TEST(issued.sequence_state_dir == "/var/lib/kythira/oscore");
+    BOOST_TEST(issued.volatile_sequence_state);
+}
+
+BOOST_AUTO_TEST_CASE(static_oscore_needs_sequence_state) {
+    coap_security_config config;
+    config.mode = coap_auth_mode::oscore;
+    oscore_credentials creds;
+    creds.master_secret = std::vector<std::byte>(16, std::byte{0x2a});
+    config.credentials = creds;
+    BOOST_CHECK_THROW(validate_oscore_sequence_state(config), coap_security_config_error);
+
+    std::get<oscore_credentials>(config.credentials).sequence_state_dir = "/var/lib/kythira";
+    BOOST_CHECK_NO_THROW(validate_oscore_sequence_state(config));
+
+    creds.volatile_sequence_state = true;
+    config.credentials = creds;
+    BOOST_CHECK_NO_THROW(validate_oscore_sequence_state(config));
+
+    // EDHOC derives a fresh Master Secret per handshake.
+    creds.volatile_sequence_state = false;
+    creds.bootstrap_method = oscore_bootstrap::edhoc;
+    config.credentials = creds;
+    BOOST_CHECK_NO_THROW(validate_oscore_sequence_state(config));
+}
+
 BOOST_AUTO_TEST_CASE(no_ace_bootstrap_leaves_the_config_alone) {
     coap_security_config config;
     config.mode = coap_auth_mode::dtls_psk;
@@ -203,6 +245,26 @@ BOOST_AUTO_TEST_CASE(libcoap_refuses_mismatch_and_ambiguity_at_construction) {
             (coap_server<libcoap_types>("127.0.0.1", 0, server_config, kythira::noop_metrics{})),
             coap_security_config_error);
     }
+}
+
+BOOST_AUTO_TEST_CASE(libcoap_refuses_static_oscore_without_sequence_state) {
+    coap_security_config security;
+    security.mode = coap_auth_mode::oscore;
+    oscore_credentials creds;
+    creds.master_secret = std::vector<std::byte>(16, std::byte{0x2a});
+    creds.sender_id = {std::byte{0x01}};
+    creds.recipient_id = {std::byte{0x00}};
+    security.credentials = creds;
+
+    coap_client_config client_config;
+    client_config.security = security;
+    BOOST_CHECK_THROW((coap_client<libcoap_types>({}, client_config, kythira::noop_metrics{})),
+                      coap_security_config_error);
+    coap_server_config server_config;
+    server_config.security = security;
+    BOOST_CHECK_THROW(
+        (coap_server<libcoap_types>("127.0.0.1", 0, server_config, kythira::noop_metrics{})),
+        coap_security_config_error);
 }
 #endif  // LIBCOAP_AVAILABLE
 

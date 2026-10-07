@@ -130,9 +130,21 @@ struct oscore_credentials {
     // Directory that keeps the Sender Sequence Number and replay floor across
     // restarts (RFC 8613 Appendix B.1.1), one small file per context. Empty
     // keeps them only for the life of the process, which is enough to stop
-    // two contexts in one process reusing a nonce but not a restart: set this
-    // for any long-lived static (non-EDHOC) Master Secret.
+    // two contexts in one process reusing a nonce but not a restart.
+    //
+    // Every CoAP transport refuses a static (non-EDHOC) context with this
+    // empty unless volatile_sequence_state is set: a restart would start the
+    // Sender Sequence Number at 0 again and reuse every AES-CCM nonce it had
+    // issued under the same key, and an empty replay window would accept
+    // every request recorded before the restart. With ace_bootstrap, set it on
+    // an oscore_credentials in security.credentials; the AS-issued context
+    // keeps it.
     std::string sequence_state_dir;
+    // Accepts counters that live only as long as the process, for a Master
+    // Secret (or ID Context) that no later process will ever use again: a
+    // fresh key per boot, or a test. Nonces then repeat across restarts if
+    // that promise is broken, so leave this false for provisioned secrets.
+    bool volatile_sequence_state{false};
 };
 
 enum class ace_target_profile {
@@ -260,6 +272,35 @@ inline auto validate_pki_peer_policy(const pki_credentials& creds) -> void {
             "pki_credentials.cn_validator requires verify_peer_cert: with peer verification "
             "off the validator never runs");
     }
+}
+
+// ── OSCORE sequence state (RFC 8613 Appendix B.1.1) ──────────────────────
+
+// Refuses a static OSCORE context whose Sender Sequence Number and replay
+// floor would not survive a restart. Such a context restarts at Partial IV 0
+// under the same key, reusing AES-CCM nonces (which leaks the XOR of the two
+// plaintexts and allows forgeries), and its empty replay window accepts every
+// request recorded before the restart. EDHOC derives a fresh Master Secret
+// per handshake, so it needs no persistence. Every backend calls this after
+// resolve_ace_bootstrap() and before any EDHOC handshake, so all of them
+// refuse the same configuration with the same message.
+inline auto validate_oscore_sequence_state(const coap_security_config& config) -> void {
+    if (config.mode != coap_auth_mode::oscore) {
+        return;
+    }
+    const auto* osc = std::get_if<oscore_credentials>(&config.credentials);
+    if (osc == nullptr || osc->bootstrap_method != oscore_bootstrap::static_provisioned) {
+        return;
+    }
+    if (!osc->sequence_state_dir.empty() || osc->volatile_sequence_state) {
+        return;
+    }
+    throw coap_security_config_error(
+        "OSCORE with a static Master Secret requires oscore_credentials.sequence_state_dir: "
+        "without it a restart reuses AES-CCM nonces and accepts replays of pre-restart "
+        "requests (RFC 8613 Appendix B.1.1). Point it at a persistent directory, or set "
+        "volatile_sequence_state only if this Master Secret is never reused by a later "
+        "process");
 }
 
 // ── coap_security_provider interface (Requirement 1.4, Component 2) ──────

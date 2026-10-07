@@ -76,6 +76,7 @@ struct test_transport_types {
 auto make_oscore(std::byte sender, std::byte recipient, std::byte secret_fill)
     -> oscore_credentials {
     oscore_credentials creds;
+    creds.volatile_sequence_state = true;  // test-only keys
     creds.sender_id = {sender};
     creds.recipient_id = {recipient};
     creds.master_secret = std::vector<std::byte>(16, secret_fill);

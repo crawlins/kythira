@@ -311,6 +311,7 @@ coap_client<Types>::coap_client(
     {
         auto security = translate_legacy_fields(_config);
         resolve_ace_bootstrap(security);
+        validate_oscore_sequence_state(security);
         if (security.mode == coap_auth_mode::oscore) {
             if (!std::holds_alternative<oscore_credentials>(security.credentials)) {
                 throw coap_security_config_error(
@@ -709,6 +710,7 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
     {
         auto security = translate_legacy_fields(_config);
         resolve_ace_bootstrap(security);
+        validate_oscore_sequence_state(security);
         if (security.mode == coap_auth_mode::oscore) {
             if (!std::holds_alternative<oscore_credentials>(security.credentials)) {
                 throw coap_security_config_error(
