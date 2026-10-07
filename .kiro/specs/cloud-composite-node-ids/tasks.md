@@ -88,7 +88,7 @@ the audit and `design.md` for the types and per-component changes.
   - _Requirements: 8.1-8.6_
 
 - [ ] 6. Transports
-  - [ ] 6.1 Parameterise the three `network_client` concepts on the
+  - [x] 6.1 Parameterise the three `network_client` concepts on the
     target type
   - [ ] 6.2 Add a `NodeId` parameter to the simulator, TCP, TLS-TCP,
     httplib, Proxygen, Beast, gRPC and CoAP transports
@@ -97,6 +97,22 @@ the audit and `design.md` for the types and per-component changes.
     conversion
   - [ ] 6.5 `std::string`-target smoke test per transport; three-node
     composite-id cluster test over the simulator with forced catch-up
+  - First part done: 6.1 in full; 6.2 for the simulator and TCP; 6.3's
+    `tcp_rpc` half; 6.5's TCP smoke test and the simulator cluster test
+    (`composite_node_id_transport_test`). As built: every client and
+    server concept in `network.hpp` (the optional extensions and
+    ClusterJoin/Leave too) takes `NodeId` defaulting to `std::uint64_t`,
+    and `node<Types>` checks its extensions against `node_id_type`, so a
+    textual node keeps PreVote, TimeoutNow and catch-up.
+    `node<Types>` static-asserts the base client concept only for
+    non-numeric ids, since numeric test bundles use partial mocks. The TCP
+    transport is `basic_tcp_rpc_client<NodeId>`/`basic_tcp_rpc_server<NodeId>`
+    with the old names as numeric aliases. The cluster test also needed the
+    configuration log entry codec (`config_entry.hpp`) to encode ids
+    through `node_id_traits` and read numeric ids across the full `uint64`
+    range. Still open: TLS-TCP (its trust policy binds certificate names to
+    `uint64_t` ids, so it moves with task 7.1), httplib, Proxygen, Beast,
+    gRPC (6.4) and CoAP.
   - _Requirements: 9.1-9.6, 14.4, 14.5_
 
 - [ ] 7. CA identity and serials

@@ -5,6 +5,25 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 7, 2026)
 
+- **The simulator and TCP transports route by composite and textual node
+  ids.** The network concepts take the node id type as a second parameter
+  (defaulting to `std::uint64_t`), the simulator transport takes it as a
+  fourth template argument, and `tcp_rpc` gains `basic_tcp_rpc_client<NodeId>`
+  and `basic_tcp_rpc_server<NodeId>`, with `tcp_rpc_client` and
+  `tcp_rpc_server` kept as their numeric instantiations. `node<Types>`
+  checks PreVote, TimeoutNow, catch-up and ClusterJoin support against its
+  own id type rather than the numeric concepts, so those extensions stay on
+  for a node with a textual id. A three-node cluster named
+  by Docker composite ids now elects, replicates and catches up over the
+  simulator, which also needed configuration log entries to encode ids by
+  their text. Numeric ids in configuration entries are read across the full
+  `uint64_t` range, where an id at or above 2^63 used to throw. `tcp_rpc`'s
+  address dispatch looks a node id up in the peer table before reading the
+  text as `host:port` (a textual id such as `docker:kythira:3` also splits
+  as host `docker:kythira`, port 3), and a digit string too long for a
+  `uint64_t` fails the call instead of throwing `std::out_of_range` out of
+  `std::stoull`.
+
 - **curl moves from 8.17.0 to 8.22.0, and dependency bumps now reach CI.**
   The AWS SDK and the Azure SDK's HTTP transport link vcpkg's curl, which
   was still on the `builtin-baseline` copy, 8.17.0. That release is
