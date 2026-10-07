@@ -40,10 +40,14 @@
 
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t test_bind_port = 18199;
-constexpr std::uint16_t test_tls_bind_port = 18200;
-constexpr std::uint16_t test_multi_bind_port_base = 18210;
-constexpr const char* test_server_url = "http://127.0.0.1:18199";
+// 18400-18423, clear of beast_server_test (18200-18207) and
+// beast_integration_test (18210-18214). This binary used to start at 18199 and
+// shared every one of those ports, so under `ctest -j` whichever of two
+// concurrently running cases bound a port second failed.
+constexpr std::uint16_t test_bind_port = 18400;
+constexpr std::uint16_t test_tls_bind_port = 18411;
+constexpr std::uint16_t test_multi_bind_port_base = 18420;
+constexpr const char* test_server_url = "http://127.0.0.1:18400";
 constexpr std::uint64_t test_node_id = 1;
 
 // Requirement 12.6/19.3: a metrics implementation that records every
