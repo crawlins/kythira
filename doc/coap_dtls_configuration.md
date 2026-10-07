@@ -388,6 +388,12 @@ changing underneath it:
   refused with `coap_security_config_error` before the AS is contacted. An
   unreachable or refusing AS fails construction with
   `coap_credential_bootstrap_error`; nothing falls back to static credentials.
+  `as_token_endpoint` must be `https://`, since the request carries
+  `client_secret` and the reply the PSK or OSCORE master secret; anything else
+  is refused with `coap_security_config_error` before the AS is contacted.
+  Set `as_ca_bundle_pem` to trust a private AS's CA (unset uses the system
+  store). Plain http is accepted only to a loopback host and only with
+  `allow_plain_http_loopback = true`, which exists for tests.
 
 ## Security Best Practices
 

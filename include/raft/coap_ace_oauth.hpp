@@ -17,6 +17,7 @@
 // the rest of this transport talks to).
 
 #include <raft/coap_security.hpp>
+#include <raft/http_origin_policy.hpp>
 
 #include <httplib.h>
 #include <boost/json.hpp>
@@ -70,21 +71,59 @@ inline auto split_origin_and_path(const std::string& url) -> std::pair<std::stri
     return {url.substr(0, path_start), url.substr(path_start)};
 }
 
+// The request carries client_secret and the reply carries key material, so
+// the endpoint must be https; plain http passes only on a loopback host and
+// only with allow_plain_http_loopback set. Anything else is a config error,
+// raised before any network I/O.
+inline auto require_secure_token_endpoint(const ace_oauth_config& config) -> void {
+    const auto& url = config.as_token_endpoint;
+    if (http_origin::is_https(url)) {
+        return;
+    }
+    if (http_origin::is_loopback_http(url)) {
+        if (config.allow_plain_http_loopback) {
+            return;
+        }
+        throw coap_security_config_error(
+            "security.ace_bootstrap.as_token_endpoint " + url +
+            " is plain http; use https, or set allow_plain_http_loopback (tests only)");
+    }
+    throw coap_security_config_error("security.ace_bootstrap.as_token_endpoint " + url +
+                                     " must be https (plain http is accepted only for a "
+                                     "loopback host with allow_plain_http_loopback set)");
+}
+
 }  // namespace detail
 
 // Requests a token from `config.as_token_endpoint` via the client
 // credentials grant, and shapes the response into the credential struct
-// `config.target_profile` names. Throws coap_credential_bootstrap_error on
+// `config.target_profile` names. Throws coap_security_config_error, before
+// any network I/O, for an endpoint that is not https (see
+// require_secure_token_endpoint), and coap_credential_bootstrap_error on
 // any network error, non-2xx status, or malformed/missing response field
 // (Requirement 6.3) — never falls back to an unauthenticated session
 // (Property 8).
 inline auto run_ace_token_exchange(const ace_oauth_config& config)
     -> std::variant<psk_credentials, oscore_credentials> {
+    detail::require_secure_token_endpoint(config);
     auto [origin, path] = detail::split_origin_and_path(config.as_token_endpoint);
 
     httplib::Client client(origin);
     client.set_connection_timeout(10, 0);
     client.set_read_timeout(10, 0);
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    client.enable_server_certificate_verification(true);
+    if (config.as_ca_bundle_pem.has_value()) {
+        client.load_ca_cert_store(config.as_ca_bundle_pem->data(), config.as_ca_bundle_pem->size());
+    }
+#else
+    if (http_origin::is_https(origin)) {
+        throw coap_credential_bootstrap_error(
+            "ace-oauth",
+            "https token endpoint needs cpp-httplib built with "
+            "CPPHTTPLIB_OPENSSL_SUPPORT (CONFIG_HTTP_TRANSPORT_TLS=y)");
+    }
+#endif
 
     boost::json::object request_body{
         {"grant_type", "client_credentials"},
