@@ -886,6 +886,7 @@ jobs:
             ion_serializer_concept_test \
             ion_serialization_property_test \
             ion_malformed_message_property_test \
+            ion_serializer_range_property_test \
             ion_json_serializer_equivalence_property_test \
             shard_group_id_ion_wire_property_test \
             ion_http_coap_end_to_end_test
@@ -908,7 +909,7 @@ jobs:
       - name: Run Ion tests
         run: |
           ctest --test-dir build --output-on-failure --no-tests=error \
-            -R '^(ion_binary_decimal_regression_test|ion_serializer_concept_test|ion_serialization_property_test|ion_malformed_message_property_test|ion_json_serializer_equivalence_property_test|shard_group_id_ion_wire_property_test|ion_http_coap_end_to_end_test)$'
+            -R '^(ion_binary_decimal_regression_test|ion_serializer_concept_test|ion_serialization_property_test|ion_malformed_message_property_test|ion_serializer_range_property_test|ion_json_serializer_equivalence_property_test|shard_group_id_ion_wire_property_test|ion_http_coap_end_to_end_test)$'
 
   # ── Config variants (minimal, no-cloud, dependency isolation) ───────────────
   # .kiro/specs/ci-build-matrix-coverage/ Requirements 5 and 6. Three checks no
