@@ -149,8 +149,8 @@ int run_node(chaos_node::node_config cfg, kythira::node_config<RaftTypes> ncfg) 
         raft_node.set_cluster_configuration(cfg.all_node_ids());
     }
 
-    std::cerr << "[info] chaos_node starting: id=" << cfg.node_id << " rpc=" << cfg.rpc_port
-              << " http=" << cfg.http_port << " peers=" << cfg.peers.size()
+    std::cerr << "[info] chaos_node starting: id=" << cfg.node_id << " rpc=" << cfg.rpc_address
+              << ":" << cfg.rpc_port << " http=" << cfg.http_port << " peers=" << cfg.peers.size()
               << (cfg.join ? " join=" + cfg.self_address : std::string{}) << "\n";
 
     raft_node.start();
@@ -234,7 +234,9 @@ int main(int argc, char** argv) {
     }
 
     // ── Components ───────────────────────────────────────────────────────────
-    kythira::tcp_rpc_server server(cfg.rpc_port);
+    // Bound to cfg.rpc_address: the server's port-only constructor listens on
+    // every IPv4 interface whatever RPC_ADDRESS says.
+    kythira::tcp_rpc_server server(cfg.rpc_port, cfg.rpc_address);
     kythira::tcp_rpc_client client;
     for (const auto& p : cfg.peers) {
         client.add_peer(p.node_id, p.host, p.port);
