@@ -229,7 +229,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if AWS_CI_ROLE_ARN is unset
         if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
@@ -261,7 +263,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests
@@ -305,7 +307,7 @@ jobs:
           exit 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       - name: Resolve vcpkg triplet
         id: triplet
@@ -333,7 +335,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -346,7 +348,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -363,6 +365,9 @@ jobs:
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
         env:
@@ -440,7 +445,7 @@ jobs:
       # consistent set. Nothing after this point uses the build cache, so
       # trading Oracle's credentials away here costs nothing.
       - name: Re-configure AWS credentials for the test steps (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests
@@ -586,7 +591,7 @@ jobs:
       # start.
       - name: Re-configure AWS credentials for the ca-cluster-node bundles (OIDC)
         if: ${{ env.BUNDLE_CA_CLUSTER == 'true' || env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-ca-cluster
@@ -602,7 +607,7 @@ jobs:
 
       - name: Re-configure AWS credentials for the rpc-tls bundle (OIDC)
         if: ${{ env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-rpc-tls
@@ -653,7 +658,7 @@ jobs:
       # time the suite grew.
       - name: Re-configure AWS credentials for the audit (OIDC)
         if: always()
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-audit
@@ -907,7 +912,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if AWS_CI_ROLE_ARN is unset
         if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
@@ -916,7 +923,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-asg
@@ -971,7 +978,7 @@ jobs:
           exit 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       - name: Resolve vcpkg triplet
         id: triplet
@@ -999,7 +1006,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -1012,7 +1019,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -1029,6 +1036,9 @@ jobs:
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
         env:
@@ -1076,7 +1086,7 @@ jobs:
         run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
 
       - name: Re-configure AWS credentials for the test step (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-asg
@@ -1103,7 +1113,7 @@ jobs:
       # the `aws` job's audit refresh for the run that proved it.
       - name: Re-configure AWS credentials for the audit (OIDC)
         if: always()
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-asg-audit
@@ -1179,7 +1189,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if AWS_CI_ROLE_ARN is unset
         if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
@@ -1188,7 +1200,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-ec2lo
@@ -1242,7 +1254,7 @@ jobs:
           exit 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       - name: Resolve vcpkg triplet
         id: triplet
@@ -1270,7 +1282,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -1283,7 +1295,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -1300,6 +1312,9 @@ jobs:
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
         env:
@@ -1347,7 +1362,7 @@ jobs:
         run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
 
       - name: Re-configure AWS credentials for the test step (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-ec2lo
@@ -1375,7 +1390,7 @@ jobs:
       # the `aws` job's audit refresh for the run that proved it.
       - name: Re-configure AWS credentials for the audit (OIDC)
         if: always()
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-ec2lo-audit
@@ -1436,7 +1451,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if AWS_CI_ROLE_ARN is unset
         if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
@@ -1445,7 +1462,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-ami-build
@@ -1494,7 +1511,7 @@ jobs:
       # job, keyed on matrix.arch rather than runner.arch since Packer's
       # arch naming (amd64/arm64) is already unambiguous here.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       - name: Resolve vcpkg triplet
         id: triplet
@@ -1522,7 +1539,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -1533,7 +1550,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -1550,6 +1567,9 @@ jobs:
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
         env:
@@ -1563,7 +1583,7 @@ jobs:
         run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
 
       - name: Re-configure AWS credentials for the AMI build (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-ami-build
@@ -1576,7 +1596,7 @@ jobs:
             --region ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
 
       - name: Upload manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ca-cluster-node-ami-manifest-${{ matrix.arch }}
           path: packer-manifest.json
@@ -1635,7 +1655,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if Azure CI identity variables are unset
         if: ${{ vars.AZURE_CI_CLIENT_ID == '' || vars.AZURE_CI_TENANT_ID == '' || vars.AZURE_CI_SUBSCRIPTION_ID == '' }}
@@ -1729,7 +1751,7 @@ jobs:
           exit 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Exports the environment vcpkg's x-aws backend reads. Writer policy is
       # in the action: only a push to main gets the read-write key.
@@ -1748,7 +1770,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -1759,7 +1781,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -1776,6 +1798,9 @@ jobs:
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
         env:
@@ -1847,7 +1872,7 @@ jobs:
       # width of the two ctest steps below, not the build's own highly
       # variable (cold vs. warm cache) duration.
       - name: Azure login (Workload Identity Federation)
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
@@ -2010,7 +2035,7 @@ jobs:
       # a line to the pre-warm and does not need a re-login of its own.
       - name: Azure re-login before key-vault (fresh federated assertion)
         if: ${{ env.BUNDLE_KEY_VAULT == 'true' }}
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
@@ -2324,7 +2349,9 @@ jobs:
       BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.gcp_bundle_object_persistence == 'true') || (github.event.inputs.gcp_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_GCP_OBJECT_PERSISTENCE_ENABLED == 'true') }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if GCP WIF variables are unset
         if: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER == '' || vars.GCP_CI_SERVICE_ACCOUNT == '' }}
@@ -2350,7 +2377,7 @@ jobs:
           exit 1
 
       - name: Authenticate to Google Cloud (Workload Identity Federation)
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
@@ -2399,7 +2426,7 @@ jobs:
           exit 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       - name: Resolve vcpkg triplet
         id: triplet
@@ -2422,7 +2449,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -2439,7 +2466,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -2456,6 +2483,9 @@ jobs:
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=gcp
         env:
@@ -2533,7 +2563,7 @@ jobs:
       # It is left in place: it costs a second, and it is the right thing to do
       # for the parts of the credential chain it genuinely does refresh.
       - name: Re-authenticate to Google Cloud for the test steps
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
@@ -2763,7 +2793,9 @@ jobs:
       BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.oci_bundle_object_persistence == 'true') || (github.event.inputs.oci_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_OCI_OBJECT_PERSISTENCE_ENABLED == 'true') }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # Mirrors the AWS job's equivalent guard. A provider job with every
       # bundle off would run zero tests and report success, which is the
@@ -2821,7 +2853,7 @@ jobs:
           exit 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect.
       # This job passed the flag without installing kconfiglib from the day
@@ -2855,7 +2887,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -2866,7 +2898,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -2878,6 +2910,9 @@ jobs:
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
         env:
@@ -3275,7 +3310,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # Every provider job carries this guard because the failure it prevents
       # actually happened on the azure job: all bundles off means the job
@@ -3320,7 +3357,7 @@ jobs:
           exit 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Exports the environment vcpkg's x-aws backend reads. Writer policy is
       # in the action: only a push to main gets the read-write key.
@@ -3339,14 +3376,14 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -3358,6 +3395,9 @@ jobs:
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
         env:
@@ -3400,7 +3440,7 @@ jobs:
       # first test ran. STS credentials are short-lived; keep the gap between
       # minting and using them to the width of the test steps.
       - name: Configure Alibaba Cloud credentials (RAM OIDC)
-        uses: aliyun/configure-aliyun-credentials-action@v1
+        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1.1.0
         with:
           role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
           oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
@@ -3550,7 +3590,9 @@ jobs:
         || (github.event.inputs.aws_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED == 'true'))
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if AWS_CI_ROLE_ARN is unset
         if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
@@ -3559,7 +3601,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-monitoring-aws
@@ -3586,7 +3628,9 @@ jobs:
         || (github.event.inputs.azure_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_AZURE_MONITORING_ENABLED == 'true'))
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if Azure monitoring variables are unset
         if: ${{ vars.AZURE_CI_CLIENT_ID == '' || vars.AZURE_CI_TENANT_ID == '' || vars.AZURE_CI_SUBSCRIPTION_ID == '' || vars.AZURE_MONITORING_APP_ID == '' }}
@@ -3595,7 +3639,7 @@ jobs:
           exit 1
 
       - name: Azure login (Workload Identity Federation)
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
@@ -3622,7 +3666,9 @@ jobs:
         || (github.event.inputs.gcp_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_GCP_MONITORING_ENABLED == 'true'))
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if GCP WIF variables are unset
         if: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER == '' || vars.GCP_CI_SERVICE_ACCOUNT == '' || vars.GCP_REAL_CLOUD_TESTS_PROJECT == '' }}
@@ -3631,7 +3677,7 @@ jobs:
           exit 1
 
       - name: Authenticate to Google Cloud (Workload Identity Federation)
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
@@ -3639,7 +3685,7 @@ jobs:
       # gcloud supplies the access token for the script's query-side
       # assertion; auth@v2 above wires its credential file into gcloud.
       - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
 
       - name: Run the GCP Cloud Monitoring monitoring-config test
         env:
@@ -3663,7 +3709,9 @@ jobs:
         || (github.event.inputs.oci_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_OCI_MONITORING_ENABLED == 'true'))
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if OCI monitoring variables are unset
         run: |
@@ -3751,7 +3799,9 @@ jobs:
         || (github.event.inputs.alibaba_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_ALIBABA_MONITORING_ENABLED == 'true'))
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fail closed if Alibaba monitoring variables are unset
         if: ${{ vars.ALIBABA_CMS_REMOTE_WRITE_URL == '' || vars.ALIBABA_CMS_PROM_QUERY_URL == '' }}

@@ -26,6 +26,9 @@ name: ARM64 Docker Image Smoke Test
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   arm64-docker-smoke-test:
     name: Docker Image Smoke Test (arm64)
@@ -40,7 +43,9 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -76,7 +81,7 @@ jobs:
       # source (vcpkg's "edhoc" feature below) — see the identical step in
       # ci.yml's build-and-test job.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       - name: Resolve vcpkg triplet
         id: triplet
@@ -104,7 +109,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -126,6 +131,9 @@ jobs:
           # is a backend vcpkg removed some time ago.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
         env:
