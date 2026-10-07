@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -301,10 +302,32 @@ struct arm_call {
 
 /// ARM, as far as `provision_node` and `find_by_idempotency_key` need it: a
 /// resource group whose VM list is `pages` (each page a JSON body), NIC and VM
-/// PUTs that succeed, VMs that are running, and NICs whose IP is 10.0.0.5.
+/// PUTs that create the named resource (or, under `If-None-Match: *`, answer
+/// 412 when it already exists), VMs that are running, and NICs whose IP is
+/// 10.0.0.5. A single NIC or VM that was never created reads as 404.
 class ArmDouble : public Azure::Core::Http::HttpTransport {
 public:
     std::vector<std::string> pages{R"({"value":[]})"};
+    /// Names (VM or NIC) that already exist, e.g. created by another process.
+    std::set<std::string> existing;
+
+    /// The resource name a single-resource URL addresses, or "" for a list
+    /// or a sub-resource such as instanceView.
+    static auto resource_name(const std::string& url) -> std::string {
+        for (const std::string kind : {"/virtualMachines/", "/networkInterfaces/"}) {
+            auto at = url.find(kind);
+            if (at == std::string::npos) {
+                continue;
+            }
+            auto rest = url.substr(at + kind.size());
+            auto end = rest.find_first_of("/?");
+            if (end != std::string::npos && rest[end] == '/') {
+                return "";
+            }
+            return rest.substr(0, end);
+        }
+        return "";
+    }
 
     auto Send(Azure::Core::Http::Request& request, const Azure::Core::Context& context)
         -> std::unique_ptr<Azure::Core::Http::RawResponse> override {
@@ -316,26 +339,43 @@ public:
             call.body.assign(bytes.begin(), bytes.end());
         }
         std::string reply = "{}";
+        auto status = Azure::Core::Http::HttpStatusCode::Ok;
         const auto& url = call.url;
+        const auto name = resource_name(url);
+        std::lock_guard lock(_mu);
         if (call.method == "GET" && url.find("/page/") != std::string::npos) {
             reply = pages.at(std::stoul(url.substr(url.find("/page/") + 6)));
         } else if (call.method == "GET" && url.find("/virtualMachines?") != std::string::npos) {
             reply = pages.at(0);
         } else if (call.method == "GET" && url.find("/instanceView") != std::string::npos) {
             reply = R"({"statuses":[{"code":"PowerState/running"}]})";
+        } else if (call.method == "GET" && !name.empty() && !existing.contains(name)) {
+            status = Azure::Core::Http::HttpStatusCode::NotFound;
+            reply = R"({"error":{"code":"ResourceNotFound","message":"not found"}})";
         } else if (call.method == "GET" && url.find("/networkInterfaces/") != std::string::npos) {
             reply = R"({"properties":{"ipConfigurations":[)"
                     R"({"properties":{"privateIPAddress":"10.0.0.5"}}]}})";
+        } else if (call.method == "PUT" && !name.empty()) {
+            if (existing.contains(name)) {
+                if (const auto inm = request.GetHeader("If-None-Match");
+                    inm.HasValue() && inm.Value() == "*") {
+                    status = Azure::Core::Http::HttpStatusCode::PreconditionFailed;
+                    reply = R"({"error":{"code":"PreconditionFailed","message":"exists"}})";
+                }
+            } else {
+                existing.insert(name);
+                status = Azure::Core::Http::HttpStatusCode::Created;
+            }
+        } else if (call.method == "DELETE" && !name.empty()) {
+            existing.erase(name);
         }
-        auto response = std::make_unique<Azure::Core::Http::RawResponse>(
-            1, 1, Azure::Core::Http::HttpStatusCode::Ok, "OK");
+        auto response = std::make_unique<Azure::Core::Http::RawResponse>(1, 1, status, "OK");
         response->SetHeader("Content-Type", "application/json");
         // A body *stream*, as a real transport hands back: the pipeline's
         // transport policy reads the stream into the body itself, and has
         // nothing to read if only SetBody was called. The stream does not own
         // its bytes, so they live in `_bodies` (a deque: growing it never
         // moves an existing element) for as long as the double does.
-        std::lock_guard lock(_mu);
         _calls.push_back(std::move(call));
         const auto& bytes = _bodies.emplace_back(reply.begin(), reply.end());
         response->SetBodyStream(std::make_unique<Azure::Core::IO::MemoryBodyStream>(bytes));
@@ -439,6 +479,7 @@ BOOST_AUTO_TEST_CASE(find_returns_this_clusters_vm_carrying_the_key) {
                   "," +
                   // The one: a deallocated VM still has to be found, so it can be reaped.
                   vm_entry("kythira-test-cluster-4", "test-cluster", "cap-1-2-3") + "]}"};
+    arm->existing = {"kythira-test-cluster-4", "kythira-test-cluster-4-nic"};
     vm_mgr_t mgr{keyed_vm_config(arm)};
 
     auto found = mgr.find_by_idempotency_key("cap-1-2-3").get();
@@ -491,6 +532,112 @@ BOOST_AUTO_TEST_CASE(ids_assessed_or_allocated_are_never_reassigned) {
     BOOST_CHECK_EQUAL(std::string(arm->vm_put().at("tags").at("kythira:node-id").as_string()), "6");
     // The double's VM list still shows only 2.
     BOOST_CHECK_EQUAL(mgr.provision_node("1", std::nullopt).get().node_id, 7u);
+}
+
+// ── Claiming an id across processes ───────────────────────────────────────────
+//
+// next_node_id() is a candidate: another leader's manager may have listed the
+// same VMs and created the same id first. Its VM and NIC are not in this
+// manager's listing yet, but their names are taken, and provision_node must
+// move on without updating or deleting either.
+
+namespace {
+
+auto puts_to(const ArmDouble& arm, const std::string& name) -> std::size_t {
+    std::size_t n = 0;
+    for (const auto& c : arm.calls()) {
+        if (c.method == "PUT" && ArmDouble::resource_name(c.url) == name) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+auto deletes_of(const ArmDouble& arm, const std::string& name) -> std::size_t {
+    std::size_t n = 0;
+    for (const auto& c : arm.calls()) {
+        if (c.method == "DELETE" && ArmDouble::resource_name(c.url) == name) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(a_vm_name_another_process_holds_is_skipped_untouched) {
+    auto arm = std::make_shared<ArmDouble>();
+    arm->existing = {"kythira-test-cluster-1", "kythira-test-cluster-1-nic"};
+    vm_mgr_t mgr{keyed_vm_config(arm)};
+
+    auto peer = mgr.provision_node("1", std::nullopt).get();
+    BOOST_CHECK_EQUAL(peer.node_id, 2u);
+    BOOST_CHECK_EQUAL(puts_to(*arm, "kythira-test-cluster-1"), 0u);
+    BOOST_CHECK_EQUAL(puts_to(*arm, "kythira-test-cluster-1-nic"), 0u);
+    BOOST_CHECK_EQUAL(deletes_of(*arm, "kythira-test-cluster-1"), 0u);
+    BOOST_CHECK_EQUAL(deletes_of(*arm, "kythira-test-cluster-1-nic"), 0u);
+}
+
+// Every create is conditional, so a VM that appears between the existence
+// check and the PUT (the other leader's create landing in that gap) is
+// refused by ARM rather than updated in place.
+BOOST_AUTO_TEST_CASE(every_create_put_is_create_only) {
+    auto arm = std::make_shared<ArmDouble>();
+    vm_mgr_t mgr{keyed_vm_config(arm)};
+    static_cast<void>(mgr.provision_node("1", std::nullopt).get());
+    BOOST_CHECK_EQUAL(puts_to(*arm, "kythira-test-cluster-1-nic"), 1u);
+    BOOST_CHECK_EQUAL(puts_to(*arm, "kythira-test-cluster-1"), 1u);
+}
+
+// A VM PUT refused because the name was taken after this call created its NIC:
+// the NIC is this call's own and is cleaned up; the VM is not touched.
+class LateVmArm : public ArmDouble {
+public:
+    auto Send(Azure::Core::Http::Request& request, const Azure::Core::Context& context)
+        -> std::unique_ptr<Azure::Core::Http::RawResponse> override {
+        if (request.GetMethod() == Azure::Core::Http::HttpMethod::Put &&
+            resource_name(request.GetUrl().GetAbsoluteUrl()) == "kythira-test-cluster-1-nic") {
+            // The other process's VM lands just after this call's checks.
+            existing.insert("kythira-test-cluster-1");
+        }
+        return ArmDouble::Send(request, context);
+    }
+};
+
+BOOST_AUTO_TEST_CASE(a_vm_name_taken_after_the_nic_was_created_cleans_up_only_the_nic) {
+    auto arm = std::make_shared<LateVmArm>();
+    vm_mgr_t mgr{keyed_vm_config(arm)};
+
+    auto peer = mgr.provision_node("1", std::nullopt).get();
+    BOOST_CHECK_EQUAL(peer.node_id, 2u);
+    BOOST_CHECK_EQUAL(deletes_of(*arm, "kythira-test-cluster-1-nic"), 1u);
+    BOOST_CHECK_EQUAL(deletes_of(*arm, "kythira-test-cluster-1"), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(provision_gives_up_after_repeated_collisions) {
+    auto arm = std::make_shared<ArmDouble>();
+    for (int i = 1; i <= 10; ++i) {
+        arm->existing.insert("kythira-test-cluster-" + std::to_string(i));
+    }
+    vm_mgr_t mgr{keyed_vm_config(arm)};
+    BOOST_CHECK_THROW(mgr.provision_node("1", std::nullopt).get(), std::runtime_error);
+    for (const auto& c : arm->calls()) {
+        BOOST_CHECK(c.method != "PUT" && c.method != "DELETE");
+    }
+}
+
+// An id listed only on a later page of the VM list still counts, as does a VM
+// that carries this cluster's name but lost its tags.
+BOOST_AUTO_TEST_CASE(next_node_id_reads_every_page_and_vm_names) {
+    auto arm = std::make_shared<ArmDouble>();
+    arm->pages = {R"({"value":[)" + vm_entry("kythira-test-cluster-2", "test-cluster", "k") +
+                      R"(],"nextLink":"https://arm.test/page/1"})",
+                  R"({"value":[)" + vm_entry("kythira-test-cluster-8", "test-cluster", "k") +
+                      R"(,{"name":"kythira-test-cluster-11","tags":{}}],)"
+                      R"("nextLink":"https://arm.test/page/2"})",
+                  R"({"value":[{"name":"kythira-other-cluster-40","tags":{}}]})"};
+    vm_mgr_t mgr{keyed_vm_config(arm)};
+    BOOST_CHECK_EQUAL(mgr.provision_node("1", std::nullopt).get().node_id, 12u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

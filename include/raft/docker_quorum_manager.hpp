@@ -29,6 +29,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
@@ -235,91 +236,31 @@ private:
         -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
             auto cli = make_client();
-            NodeId new_id = next_node_id(*cli);
-            auto name = container_name(new_id);
+            // Log hint only; single-group implementation ignores it otherwise
+            (void)replacing;
 
-            if (replacing.has_value()) {
-                // Log hint only; single-group implementation ignores it otherwise
-                (void)replacing;
-            }
-
-            // Build container-create body
-            boost::json::object body;
-            body["Image"] = _cfg.image;
-
-            boost::json::object labels;
-            labels["kythira.cluster"] = _cfg.cluster_name;
-            labels["kythira.node_id"] = node_id_label(new_id);
-            if (key) {
-                labels["kythira.idempotency-key"] = *key;
-            }
-            body["Labels"] = labels;
-            // The container's name is the name its peers dial (Docker's and
-            // aardvark-dns's embedded DNS both resolve it), so make it the
-            // hostname too: a node that advertises its own hostname then
-            // advertises something its peers can resolve.
-            body["Hostname"] = name;
-
-            // Environment
-            boost::json::array env;
-            env.emplace_back("KYTHIRA_NODE_ID=" + node_id_label(new_id));
-            env.emplace_back("KYTHIRA_NODE_PORT=" + std::to_string(_cfg.node_port));
-            env.emplace_back("KYTHIRA_CLUSTER=" + _cfg.cluster_name);
-            for (const auto& e : _cfg.extra_env) {
-                env.emplace_back(e);
-            }
-            body["Env"] = env;
-
-            // Extra command arguments
-            if (!_cfg.extra_args.empty()) {
-                boost::json::array cmd;
-                for (const auto& a : _cfg.extra_args) {
-                    cmd.emplace_back(a);
+            // The daemon is the arbiter of which process gets an id: the
+            // container name embeds it and Docker refuses a second container
+            // under a name in use (409).  next_node_id() is only a guess --
+            // another leader's manager, with its own in-memory floor, may have
+            // listed the same containers a moment earlier and be creating the
+            // same id right now -- so a 409 means "taken, try the next one",
+            // never "clean up": the container under that name is someone
+            // else's, quite possibly a live member.
+            for (std::size_t attempt = 1;; ++attempt) {
+                NodeId new_id = next_node_id(*cli);
+                // Spent from here on, whatever the create does.
+                note_node_id(new_id);
+                if (auto peer = create_and_start(*cli, new_id, key)) {
+                    return future_factory_default::makeFuture(std::move(*peer));
                 }
-                body["Cmd"] = cmd;
+                if (attempt >= max_id_claim_attempts) {
+                    throw std::runtime_error("node id " + node_id_label(new_id) +
+                                             " is already in use and " +
+                                             std::to_string(max_id_claim_attempts) +
+                                             " attempts to claim a free id all collided");
+                }
             }
-
-            // Attach to Docker network
-            boost::json::object ep_config;
-            ep_config[_cfg.network_name] = boost::json::object{};
-            boost::json::object networking;
-            networking["EndpointsConfig"] = ep_config;
-            body["NetworkingConfig"] = networking;
-
-            auto serialized = boost::json::serialize(body);
-            auto create_path = "/containers/create?name=" + name;
-            auto create_res = cli->Post(create_path, serialized, "application/json");
-
-            if (!create_res || create_res->status < 200 || create_res->status >= 300) {
-                auto msg =
-                    create_res
-                        ? ("HTTP " + std::to_string(create_res->status) + ": " + create_res->body)
-                        : "connection failed";
-                // Attempt cleanup of any partially-created container (Req 18 AC 14)
-                try_remove(*cli, name);
-                return future_factory_default::makeExceptionalFuture<peer_info<NodeId, Address>>(
-                    std::make_exception_ptr(
-                        std::runtime_error("docker_quorum_manager: create failed: " + msg)));
-            }
-
-            auto start_path = "/containers/" + name + "/start";
-            auto start_res = cli->Post(start_path, "", "application/json");
-
-            if (!start_res || (start_res->status != 204 && start_res->status != 200)) {
-                auto msg =
-                    start_res
-                        ? ("HTTP " + std::to_string(start_res->status) + ": " + start_res->body)
-                        : "connection failed";
-                try_remove(*cli, name);
-                return future_factory_default::makeExceptionalFuture<peer_info<NodeId, Address>>(
-                    std::make_exception_ptr(
-                        std::runtime_error("docker_quorum_manager: start failed: " + msg)));
-            }
-
-            // Address: container hostname resolves via Docker's embedded DNS
-            Address addr = static_cast<Address>(name + ":" + std::to_string(_cfg.node_port));
-            return future_factory_default::makeFuture(peer_info<NodeId, Address>{new_id, addr});
-
         } catch (const std::exception& ex) {
             return future_factory_default::makeExceptionalFuture<peer_info<NodeId, Address>>(
                 std::make_exception_ptr(std::runtime_error(
@@ -327,7 +268,114 @@ private:
         }
     }
 
+    // Creates and starts the container for `new_id`.  Returns nullopt, having
+    // touched nothing, when Docker reports the name is already in use; throws
+    // when the create or start fails for any other reason.
+    auto create_and_start(httplib::Client& cli, const NodeId& new_id,
+                          const std::optional<std::string>& key)
+        -> std::optional<peer_info<NodeId, Address>> {
+        auto name = container_name(new_id);
+        // Marks the container as this call's own, so a cleanup after an
+        // ambiguous create (no response) removes it only if it is ours.
+        const auto claim = make_claim_token();
+
+        // Build container-create body
+        boost::json::object body;
+        body["Image"] = _cfg.image;
+
+        boost::json::object labels;
+        labels["kythira.cluster"] = _cfg.cluster_name;
+        labels["kythira.node_id"] = node_id_label(new_id);
+        if (key) {
+            labels["kythira.idempotency-key"] = *key;
+        }
+        labels[claim_label] = claim;
+        body["Labels"] = labels;
+        // The container's name is the name its peers dial (Docker's and
+        // aardvark-dns's embedded DNS both resolve it), so make it the
+        // hostname too: a node that advertises its own hostname then
+        // advertises something its peers can resolve.
+        body["Hostname"] = name;
+
+        // Environment
+        boost::json::array env;
+        env.emplace_back("KYTHIRA_NODE_ID=" + node_id_label(new_id));
+        env.emplace_back("KYTHIRA_NODE_PORT=" + std::to_string(_cfg.node_port));
+        env.emplace_back("KYTHIRA_CLUSTER=" + _cfg.cluster_name);
+        for (const auto& e : _cfg.extra_env) {
+            env.emplace_back(e);
+        }
+        body["Env"] = env;
+
+        // Extra command arguments
+        if (!_cfg.extra_args.empty()) {
+            boost::json::array cmd;
+            for (const auto& a : _cfg.extra_args) {
+                cmd.emplace_back(a);
+            }
+            body["Cmd"] = cmd;
+        }
+
+        // Attach to Docker network
+        boost::json::object ep_config;
+        ep_config[_cfg.network_name] = boost::json::object{};
+        boost::json::object networking;
+        networking["EndpointsConfig"] = ep_config;
+        body["NetworkingConfig"] = networking;
+
+        auto serialized = boost::json::serialize(body);
+        auto create_path = "/containers/create?name=" + name;
+        auto create_res = cli.Post(create_path, serialized, "application/json");
+
+        if (create_res && create_res->status == 409) {
+            return std::nullopt;
+        }
+        if (!create_res || create_res->status < 200 || create_res->status >= 300) {
+            auto msg =
+                create_res
+                    ? ("HTTP " + std::to_string(create_res->status) + ": " + create_res->body)
+                    : "connection failed";
+            // Attempt cleanup of any partially-created container (Req 18
+            // AC 14), but only one carrying this call's claim: with no
+            // answer, the name may belong to another process's container.
+            remove_if_claimed(cli, name, claim);
+            throw std::runtime_error("create failed: " + msg);
+        }
+
+        // From here the container is known to be ours: remove it by the
+        // id Docker just assigned rather than by name.
+        std::string container_id = name;
+        try {
+            auto created = boost::json::parse(create_res->body);
+            if (const auto* id = created.as_object().if_contains("Id");
+                id != nullptr && id->is_string() && !id->as_string().empty()) {
+                container_id = std::string(id->as_string());
+            }
+        } catch (const std::exception&) {
+            // Fall back to the name, which this create just claimed.
+        }
+
+        auto start_path = "/containers/" + name + "/start";
+        auto start_res = cli.Post(start_path, "", "application/json");
+
+        if (!start_res || (start_res->status != 204 && start_res->status != 200)) {
+            auto msg = start_res
+                           ? ("HTTP " + std::to_string(start_res->status) + ": " + start_res->body)
+                           : "connection failed";
+            try_remove(cli, container_id);
+            throw std::runtime_error("start failed: " + msg);
+        }
+
+        // Address: container hostname resolves via Docker's embedded DNS
+        Address addr = static_cast<Address>(name + ":" + std::to_string(_cfg.node_port));
+        return peer_info<NodeId, Address>{new_id, addr};
+    }
+
 public:
+    /// How many ids one provision tries before giving up when each turns out
+    /// to be taken by another process (see provision()).
+    static constexpr std::size_t max_id_claim_attempts = 5;
+
     // ── decommission_node (Req 18 AC 16-18) ──────────────────────────────────
 
     auto decommission_node(const NodeId& node) -> kythira::future_default<void> {
@@ -492,7 +540,9 @@ private:
     }
 
     // Determine the next node ID by finding the highest existing kythira.node_id
-    // label and incrementing (Req 18 AC 11)
+    // label and incrementing (Req 18 AC 11).  A candidate only: provision()
+    // claims it by creating the container, which Docker refuses if the name
+    // is already taken.
     auto next_node_id(httplib::Client& cli) const -> NodeId {
         const auto encoded =
             url_encode(R"({"label":["kythira.cluster=)" + _cfg.cluster_name + R"("]})");
@@ -502,8 +552,16 @@ private:
 
         // Compare numerically: for std::string IDs a lexicographic max would
         // rank "9" above "10" and hand out a duplicate.
+        // Without the listing, the floor alone could name an existing (even
+        // exited) container; the create would then only 409, but guessing is
+        // pointless when the daemon cannot answer, so fail the provision.
+        if (!res || res->status != 200) {
+            throw std::runtime_error(
+                "cannot list containers to allocate a node id: " +
+                (res ? "HTTP " + std::to_string(res->status) : httplib::to_string(res.error())));
+        }
         std::uint64_t max_id = _max_seen_node_id->load();
-        if (res && res->status == 200) {
+        {
             auto jv = boost::json::parse(res->body);
             for (const auto& ct : jv.as_array()) {
                 const auto& obj = ct.as_object();
@@ -531,10 +589,54 @@ private:
         }
     }
 
-    // Best-effort cleanup of a partially-created container
+    // Best-effort cleanup of a partially-created container, by name or id.
     auto try_remove(httplib::Client& cli, const std::string& name) const -> void {
         try {
             cli.Delete("/containers/" + name + "?force=true");
+        } catch (...) {
+        }
+    }
+
+    // Label carrying a provision call's random claim token.
+    static constexpr const char* claim_label = "kythira.provision-claim";
+
+    static auto make_claim_token() -> std::string {
+        std::random_device rd;
+        std::string out;
+        static constexpr const char* hex = "0123456789abcdef";
+        for (int i = 0; i < 4; ++i) {
+            auto v = rd();
+            for (int j = 0; j < 8; ++j) {
+                out.push_back(hex[v & 0xFU]);
+                v >>= 4U;
+            }
+        }
+        return out;
+    }
+
+    // Removes the container named `name` only if it carries `claim`, i.e. only
+    // if this call created it.  Used when a create got no answer: the create
+    // may or may not have happened, and the name may instead belong to a
+    // container another process created under the same id.
+    auto remove_if_claimed(httplib::Client& cli, const std::string& name,
+                           const std::string& claim) const -> void {
+        try {
+            auto res = cli.Get("/containers/" + name + "/json");
+            if (!res || res->status != 200) {
+                return;
+            }
+            auto jv = boost::json::parse(res->body);
+            const auto* labels = jv.as_object().if_contains("Config");
+            if (labels != nullptr && labels->is_object()) {
+                labels = labels->as_object().if_contains("Labels");
+            }
+            if (labels == nullptr || !labels->is_object()) {
+                return;
+            }
+            const auto* mine = labels->as_object().if_contains(claim_label);
+            if (mine != nullptr && mine->is_string() && mine->as_string() == claim) {
+                try_remove(cli, name);
+            }
         } catch (...) {
         }
     }

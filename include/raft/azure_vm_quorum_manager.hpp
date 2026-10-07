@@ -494,174 +494,30 @@ private:
             }
             const std::string& subnet_id = sit->second;
 
-            NodeId new_id = next_node_id();
-            // Raised before any resource exists: a failed create may still
-            // leave a VM or NIC under this name, so the id is spent either way.
-            _id_floor.raise(new_id);
-            std::string vm_name = node_id_to_vm_name(new_id);
-            std::string nic_name = vm_name + "-nic";
-
-            boost::json::object nic_ip_config;
-            nic_ip_config["name"] = "ipconfig1";
-            boost::json::object nic_ip_props;
-            nic_ip_props["subnet"] = boost::json::object{{"id", subnet_id}};
-            nic_ip_config["properties"] = std::move(nic_ip_props);
-
-            boost::json::object nic_props;
-            nic_props["ipConfigurations"] = boost::json::array{std::move(nic_ip_config)};
-            if (!_cfg.network_security_group_id.empty()) {
-                nic_props["networkSecurityGroup"] =
-                    boost::json::object{{"id", _cfg.network_security_group_id}};
-            }
-            boost::json::object nic_body;
-            nic_body["location"] = _cfg.azure.location;
-            nic_body["properties"] = std::move(nic_props);
-
-            std::string nic_path = "/providers/Microsoft.Network/networkInterfaces/" + nic_name +
-                                   "?api-version=" + network_api_version;
-            std::string nic_id;
-            try {
-                auto nic_result = arm_put(nic_path, nic_body);
-                nic_id = _resource_id_base + "/providers/Microsoft.Network/networkInterfaces/" +
-                         nic_name;
-                (void)nic_result;
-            } catch (const std::exception& ex) {
-                throw std::runtime_error("NIC creation failed: " + std::string(ex.what()));
-            }
-
-            try {
-                std::string rendered = render_custom_data(new_id, target_group);
-                std::vector<std::uint8_t> rendered_bytes(rendered.begin(), rendered.end());
-                std::string custom_data_b64 = Azure::Core::Convert::Base64Encode(rendered_bytes);
-
-                boost::json::object hw_profile;
-                hw_profile["vmSize"] = _cfg.vm_size;
-
-                boost::json::object storage_profile;
-                boost::json::object image_ref;
-                if (_cfg.image_reference.is_marketplace_form()) {
-                    image_ref["publisher"] = _cfg.image_reference.publisher;
-                    image_ref["offer"] = _cfg.image_reference.offer;
-                    image_ref["sku"] = _cfg.image_reference.sku;
-                    image_ref["version"] = _cfg.image_reference.version;
-                } else {
-                    image_ref["id"] = _cfg.image_reference.shared_gallery_image_id;
+            // ARM is the arbiter of which process gets an id: the VM and NIC
+            // names embed it, and both are created with `If-None-Match: *`, so
+            // a name that already exists is refused (412) instead of being
+            // updated in place.  next_node_id() is only a candidate -- another
+            // leader's manager, with its own in-memory floor, may have listed
+            // the same VMs a moment earlier -- so a refusal means "taken, try
+            // the next id", and the resource holding the name, which may be a
+            // live member's, is never modified or deleted.
+            for (std::size_t attempt = 1;; ++attempt) {
+                NodeId new_id = next_node_id();
+                // Raised before any resource exists: a failed create may still
+                // leave a VM or NIC under this name, so the id is spent either
+                // way.
+                _id_floor.raise(new_id);
+                if (auto peer = create_vm(new_id, target_group, subnet_id, key)) {
+                    return future_factory_default::makeFuture(std::move(*peer));
                 }
-                storage_profile["imageReference"] = std::move(image_ref);
-                // Cascade the implicitly-created OS disk's lifetime onto the
-                // VM's. Without this ARM defaults `deleteOption` to "Detach",
-                // so `decommission_node`'s VM delete leaves the managed disk
-                // behind forever — a silent, permanently-billing leak of one
-                // disk per node ever provisioned. Deleting it from
-                // `decommission_node` instead would need the disk's generated
-                // name (ARM picks it, and it is only discoverable by reading
-                // the VM back before deleting it), and would still leak
-                // whenever a VM is removed by any other path.
-                boost::json::object os_disk;
-                os_disk["createOption"] = "FromImage";
-                os_disk["deleteOption"] = "Delete";
-                storage_profile["osDisk"] = std::move(os_disk);
-
-                boost::json::object os_profile;
-                os_profile["computerName"] = vm_name;
-                os_profile["adminUsername"] = _cfg.admin_username;
-                os_profile["customData"] = custom_data_b64;
-                if (!_cfg.ssh_public_key.empty()) {
-                    boost::json::object linux_cfg;
-                    linux_cfg["disablePasswordAuthentication"] = true;
-                    boost::json::object ssh_key;
-                    ssh_key["path"] = "/home/" + _cfg.admin_username + "/.ssh/authorized_keys";
-                    ssh_key["keyData"] = _cfg.ssh_public_key;
-                    boost::json::object ssh_cfg;
-                    ssh_cfg["publicKeys"] = boost::json::array{std::move(ssh_key)};
-                    linux_cfg["ssh"] = std::move(ssh_cfg);
-                    os_profile["linuxConfiguration"] = std::move(linux_cfg);
-                }
-
-                boost::json::object nic_ref;
-                nic_ref["id"] = nic_id;
-                // Same reasoning as the OS disk above. `decommission_node`
-                // does delete the NIC explicitly, but only on the path it
-                // controls and only best-effort (it logs and swallows the
-                // failure); letting ARM cascade the delete makes NIC cleanup
-                // unconditional and ordered correctly against the VM's own
-                // teardown.
-                boost::json::object nic_props;
-                nic_props["deleteOption"] = "Delete";
-                nic_ref["properties"] = std::move(nic_props);
-                boost::json::object network_profile;
-                network_profile["networkInterfaces"] = boost::json::array{std::move(nic_ref)};
-
-                boost::json::object vm_body_props;
-                vm_body_props["hardwareProfile"] = std::move(hw_profile);
-                vm_body_props["storageProfile"] = std::move(storage_profile);
-                vm_body_props["osProfile"] = std::move(os_profile);
-                vm_body_props["networkProfile"] = std::move(network_profile);
-
-                boost::json::object vm_body;
-                vm_body["location"] = _cfg.azure.location;
-                vm_body["tags"] = build_tags(new_id, target_group, key);
-                apply_placement_fields(vm_body, vm_body_props, target_group);
-                apply_priority_fields(vm_body_props);
-                vm_body["properties"] = std::move(vm_body_props);
-
-                std::string vm_path = "/providers/Microsoft.Compute/virtualMachines/" + vm_name +
-                                      "?api-version=" + compute_api_version;
-                (void)arm_put(vm_path, vm_body);
-            } catch (const std::exception& ex) {
-                best_effort_delete_nic(nic_name);
-                throw std::runtime_error("VM creation failed: " + std::string(ex.what()));
-            }
-
-            std::string private_ip;
-            bool running = false;
-            auto deadline = std::chrono::steady_clock::now() + _cfg.provision_timeout;
-            while (!running && std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::sleep_for(_cfg.poll_interval);
-                try {
-                    auto body = arm_get("/providers/Microsoft.Compute/virtualMachines/" + vm_name +
-                                        "/instanceView?api-version=" + compute_api_version);
-                    if (body.is_object() && body.as_object().contains("statuses")) {
-                        for (const auto& st : body.at("statuses").as_array()) {
-                            if (st.is_object() && st.as_object().contains("code") &&
-                                st.at("code").as_string() == "PowerState/running") {
-                                running = true;
-                                break;
-                            }
-                        }
-                    }
-                } catch (const std::exception&) {
-                    // Keep polling; a transient error here shouldn't abort provisioning.
+                if (attempt >= max_id_claim_attempts) {
+                    throw std::runtime_error("node id " + node_id_str(new_id) +
+                                             " is already in use and " +
+                                             std::to_string(max_id_claim_attempts) +
+                                             " attempts to claim a free id all collided");
                 }
             }
-            if (!running) {
-                best_effort_delete_vm(vm_name);
-                best_effort_delete_nic(nic_name);
-                throw std::runtime_error("provision timeout waiting for " + vm_name + " to run");
-            }
-            try {
-                auto nic_body = arm_get("/providers/Microsoft.Network/networkInterfaces/" +
-                                        nic_name + "?api-version=" + network_api_version);
-                const auto& ip_configs =
-                    nic_body.at("properties").at("ipConfigurations").as_array();
-                if (!ip_configs.empty()) {
-                    private_ip = std::string(
-                        ip_configs[0].at("properties").at("privateIPAddress").as_string());
-                }
-            } catch (const std::exception& ex) {
-                best_effort_delete_vm(vm_name);
-                best_effort_delete_nic(nic_name);
-                throw std::runtime_error("failed to read NIC private IP: " +
-                                         std::string(ex.what()));
-            }
-            if (private_ip.empty()) {
-                best_effort_delete_vm(vm_name);
-                best_effort_delete_nic(nic_name);
-                throw std::runtime_error("NIC has no private IP for " + vm_name);
-            }
-
-            Address addr = static_cast<Address>(private_ip + ":" + std::to_string(_cfg.node_port));
-            return future_factory_default::makeFuture(peer_info<NodeId, Address>{new_id, addr});
         } catch (const std::exception& ex) {
             return future_factory_default::makeExceptionalFuture<peer_info<NodeId, Address>>(
                 std::make_exception_ptr(std::runtime_error(
@@ -669,7 +525,193 @@ private:
         }
     }
 
+    /// Creates the NIC and VM for `new_id` and waits for it to run.  Returns
+    /// nullopt, having modified nothing that it did not create, when either
+    /// name is already taken; throws on any other failure.
+    auto create_vm(const NodeId& new_id, const std::string& target_group,
+                   const std::string& subnet_id, const std::optional<std::string>& key)
+        -> std::optional<peer_info<NodeId, Address>> {
+        std::string vm_name = node_id_to_vm_name(new_id);
+        std::string nic_name = vm_name + "-nic";
+        const std::string vm_resource = "/providers/Microsoft.Compute/virtualMachines/" + vm_name;
+        const std::string nic_resource =
+            "/providers/Microsoft.Network/networkInterfaces/" + nic_name;
+
+        // Cheap early exit, and the guard that still holds if a resource
+        // provider ever ignored If-None-Match.
+        if (arm_exists(vm_resource + "?api-version=" + compute_api_version) ||
+            arm_exists(nic_resource + "?api-version=" + network_api_version)) {
+            return std::nullopt;
+        }
+
+        boost::json::object nic_ip_config;
+        nic_ip_config["name"] = "ipconfig1";
+        boost::json::object nic_ip_props;
+        nic_ip_props["subnet"] = boost::json::object{{"id", subnet_id}};
+        nic_ip_config["properties"] = std::move(nic_ip_props);
+
+        boost::json::object nic_props;
+        nic_props["ipConfigurations"] = boost::json::array{std::move(nic_ip_config)};
+        if (!_cfg.network_security_group_id.empty()) {
+            nic_props["networkSecurityGroup"] =
+                boost::json::object{{"id", _cfg.network_security_group_id}};
+        }
+        boost::json::object nic_body;
+        nic_body["location"] = _cfg.azure.location;
+        nic_body["properties"] = std::move(nic_props);
+
+        std::string nic_path = nic_resource + "?api-version=" + network_api_version;
+        std::string nic_id;
+        try {
+            if (arm_create(nic_path, nic_body) != arm_create_result::created) {
+                return std::nullopt;
+            }
+            nic_id = _resource_id_base + nic_resource;
+        } catch (const std::exception& ex) {
+            throw std::runtime_error("NIC creation failed: " + std::string(ex.what()));
+        }
+
+        try {
+            std::string rendered = render_custom_data(new_id, target_group);
+            std::vector<std::uint8_t> rendered_bytes(rendered.begin(), rendered.end());
+            std::string custom_data_b64 = Azure::Core::Convert::Base64Encode(rendered_bytes);
+
+            boost::json::object hw_profile;
+            hw_profile["vmSize"] = _cfg.vm_size;
+
+            boost::json::object storage_profile;
+            boost::json::object image_ref;
+            if (_cfg.image_reference.is_marketplace_form()) {
+                image_ref["publisher"] = _cfg.image_reference.publisher;
+                image_ref["offer"] = _cfg.image_reference.offer;
+                image_ref["sku"] = _cfg.image_reference.sku;
+                image_ref["version"] = _cfg.image_reference.version;
+            } else {
+                image_ref["id"] = _cfg.image_reference.shared_gallery_image_id;
+            }
+            storage_profile["imageReference"] = std::move(image_ref);
+            // Cascade the implicitly-created OS disk's lifetime onto the
+            // VM's. Without this ARM defaults `deleteOption` to "Detach",
+            // so `decommission_node`'s VM delete leaves the managed disk
+            // behind forever — a silent, permanently-billing leak of one
+            // disk per node ever provisioned. Deleting it from
+            // `decommission_node` instead would need the disk's generated
+            // name (ARM picks it, and it is only discoverable by reading
+            // the VM back before deleting it), and would still leak
+            // whenever a VM is removed by any other path.
+            boost::json::object os_disk;
+            os_disk["createOption"] = "FromImage";
+            os_disk["deleteOption"] = "Delete";
+            storage_profile["osDisk"] = std::move(os_disk);
+
+            boost::json::object os_profile;
+            os_profile["computerName"] = vm_name;
+            os_profile["adminUsername"] = _cfg.admin_username;
+            os_profile["customData"] = custom_data_b64;
+            if (!_cfg.ssh_public_key.empty()) {
+                boost::json::object linux_cfg;
+                linux_cfg["disablePasswordAuthentication"] = true;
+                boost::json::object ssh_key;
+                ssh_key["path"] = "/home/" + _cfg.admin_username + "/.ssh/authorized_keys";
+                ssh_key["keyData"] = _cfg.ssh_public_key;
+                boost::json::object ssh_cfg;
+                ssh_cfg["publicKeys"] = boost::json::array{std::move(ssh_key)};
+                linux_cfg["ssh"] = std::move(ssh_cfg);
+                os_profile["linuxConfiguration"] = std::move(linux_cfg);
+            }
+
+            boost::json::object nic_ref;
+            nic_ref["id"] = nic_id;
+            // Same reasoning as the OS disk above. `decommission_node`
+            // does delete the NIC explicitly, but only on the path it
+            // controls and only best-effort (it logs and swallows the
+            // failure); letting ARM cascade the delete makes NIC cleanup
+            // unconditional and ordered correctly against the VM's own
+            // teardown.
+            boost::json::object nic_props;
+            nic_props["deleteOption"] = "Delete";
+            nic_ref["properties"] = std::move(nic_props);
+            boost::json::object network_profile;
+            network_profile["networkInterfaces"] = boost::json::array{std::move(nic_ref)};
+
+            boost::json::object vm_body_props;
+            vm_body_props["hardwareProfile"] = std::move(hw_profile);
+            vm_body_props["storageProfile"] = std::move(storage_profile);
+            vm_body_props["osProfile"] = std::move(os_profile);
+            vm_body_props["networkProfile"] = std::move(network_profile);
+
+            boost::json::object vm_body;
+            vm_body["location"] = _cfg.azure.location;
+            vm_body["tags"] = build_tags(new_id, target_group, key);
+            apply_placement_fields(vm_body, vm_body_props, target_group);
+            apply_priority_fields(vm_body_props);
+            vm_body["properties"] = std::move(vm_body_props);
+
+            std::string vm_path = vm_resource + "?api-version=" + compute_api_version;
+            if (arm_create(vm_path, vm_body) != arm_create_result::created) {
+                // The VM name is someone else's; the NIC is this call's.
+                best_effort_delete_nic(nic_name);
+                return std::nullopt;
+            }
+        } catch (const std::exception& ex) {
+            best_effort_delete_nic(nic_name);
+            throw std::runtime_error("VM creation failed: " + std::string(ex.what()));
+        }
+
+        std::string private_ip;
+        bool running = false;
+        auto deadline = std::chrono::steady_clock::now() + _cfg.provision_timeout;
+        while (!running && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(_cfg.poll_interval);
+            try {
+                auto body = arm_get("/providers/Microsoft.Compute/virtualMachines/" + vm_name +
+                                    "/instanceView?api-version=" + compute_api_version);
+                if (body.is_object() && body.as_object().contains("statuses")) {
+                    for (const auto& st : body.at("statuses").as_array()) {
+                        if (st.is_object() && st.as_object().contains("code") &&
+                            st.at("code").as_string() == "PowerState/running") {
+                            running = true;
+                            break;
+                        }
+                    }
+                }
+            } catch (const std::exception&) {
+                // Keep polling; a transient error here shouldn't abort provisioning.
+            }
+        }
+        if (!running) {
+            best_effort_delete_vm(vm_name);
+            best_effort_delete_nic(nic_name);
+            throw std::runtime_error("provision timeout waiting for " + vm_name + " to run");
+        }
+        try {
+            auto nic_body = arm_get("/providers/Microsoft.Network/networkInterfaces/" + nic_name +
+                                    "?api-version=" + network_api_version);
+            const auto& ip_configs = nic_body.at("properties").at("ipConfigurations").as_array();
+            if (!ip_configs.empty()) {
+                private_ip =
+                    std::string(ip_configs[0].at("properties").at("privateIPAddress").as_string());
+            }
+        } catch (const std::exception& ex) {
+            best_effort_delete_vm(vm_name);
+            best_effort_delete_nic(nic_name);
+            throw std::runtime_error("failed to read NIC private IP: " + std::string(ex.what()));
+        }
+        if (private_ip.empty()) {
+            best_effort_delete_vm(vm_name);
+            best_effort_delete_nic(nic_name);
+            throw std::runtime_error("NIC has no private IP for " + vm_name);
+        }
+
+        Address addr = static_cast<Address>(private_ip + ":" + std::to_string(_cfg.node_port));
+        return peer_info<NodeId, Address>{new_id, addr};
+    }
+
 public:
+    /// How many ids one provision tries before giving up when each turns out
+    /// to be taken by another process (see provision()).
+    static constexpr std::size_t max_id_claim_attempts = 5;
+
     /// Deletes the VM identified by node_id, then its NIC. A 404 on the VM
     /// delete is treated as success (idempotent). NIC deletion failures are
     /// logged but never propagated — they don't affect whether the node is
@@ -777,10 +819,12 @@ private:
     /// Scans every VM tagged `kythira:cluster = {cluster_name}` (all power
     /// states — a VM mid-deletion is still counted) and returns one above both
     /// the highest `kythira:node-id` found and `_id_floor`, or 1 when neither
-    /// has any. This has the same TOCTOU race as its AWS counterpart if two
-    /// leaders call provision_node concurrently; the quorum-management spec's
-    /// concurrency rules already prevent that (a single manager instance is
-    /// never called concurrently for the same slot).
+    /// has any. It is a candidate, not a reservation: two leaders' managers
+    /// (an old leader still finishing a provision, and its successor) can list
+    /// the same VMs and pick the same id, which the quorum-management spec's
+    /// pending-provision tracking cannot prevent because that tracking is per
+    /// leader. provision() settles it at create time, when ARM refuses the
+    /// second VM and NIC under an existing name.
     ///
     /// The scan alone would hand out a deleted VM's id again (a spot
     /// eviction, a manual delete, or the highest-numbered node's decommission
@@ -813,12 +857,36 @@ private:
         // Client-side matching also keeps the scan correct when a resource
         // group holds more than one kythira cluster, which the tag-scan
         // approach otherwise relies on the server to separate.
+        //
+        // Every page counts: ARM pages the list, and an id on a later page
+        // that the scan missed would be handed out again (create_vm then finds
+        // the name taken and moves on, but only after a wasted attempt).  A
+        // VM named under this cluster's scheme counts even if its tags were
+        // edited away, since its name is what create_vm would collide with.
         auto body =
             arm_get(std::string("/providers/Microsoft.Compute/virtualMachines?api-version=") +
                     compute_api_version);
-        if (body.is_object() && body.as_object().contains("value")) {
+        for (;;) {
+            if (!body.is_object() || !body.as_object().contains("value")) {
+                break;
+            }
             for (const auto& vm : body.at("value").as_array()) {
-                if (!vm.is_object() || !vm.as_object().contains("tags")) {
+                if (!vm.is_object()) {
+                    continue;
+                }
+                if (const auto* name = vm.as_object().if_contains("name");
+                    name != nullptr && name->is_string()) {
+                    if (auto from_name = vm_name_to_node_id(std::string(name->as_string()))) {
+                        if constexpr (std::is_same_v<NodeId, std::string>) {
+                            if (auto v = node_id_traits<std::uint64_t>::from_text(*from_name)) {
+                                max_id = std::max(max_id, *v);
+                            }
+                        } else {
+                            max_id = std::max(max_id, static_cast<std::uint64_t>(*from_name));
+                        }
+                    }
+                }
+                if (!vm.as_object().contains("tags")) {
                     continue;
                 }
                 const auto& tags = vm.at("tags");
@@ -839,6 +907,11 @@ private:
                     // Skip unparseable tag values.
                 }
             }
+            const auto* next = body.as_object().if_contains("nextLink");
+            if (next == nullptr || !next->is_string() || next->as_string().empty()) {
+                break;
+            }
+            body = arm_get_url(std::string(next->as_string()));
         }
         std::uint64_t ceiling = std::numeric_limits<std::uint64_t>::max();
         if constexpr (!std::is_same_v<NodeId, std::string>) {
@@ -853,7 +926,7 @@ private:
     }
 
     [[nodiscard]] auto do_send(const Azure::Core::Http::HttpMethod& method, const std::string& path,
-                               const boost::json::value* body) const
+                               const boost::json::value* body, bool if_none_match = false) const
         -> std::unique_ptr<Azure::Core::Http::RawResponse> {
         Azure::Core::Url url(_arm_base + path);
         std::string serialized;
@@ -869,6 +942,9 @@ private:
             }
             return Azure::Core::Http::Request(method, url);
         }();
+        if (if_none_match) {
+            request.SetHeader("If-None-Match", "*");
+        }
 
         Azure::Core::Context context;
         if (_cfg.azure.api_timeout.count() > 0) {
@@ -930,6 +1006,34 @@ private:
         -> boost::json::value {
         auto response = do_send(Azure::Core::Http::HttpMethod::Put, path, &body);
         return parse_response(*response);
+    }
+
+    enum class arm_create_result : std::uint8_t {
+        created,
+        already_exists
+    };
+
+    /// PUT that only creates: `If-None-Match: *` makes ARM refuse, with 412,
+    /// to touch a resource that already exists under that name.
+    [[nodiscard]] auto arm_create(const std::string& path, const boost::json::value& body) const
+        -> arm_create_result {
+        auto response = do_send(Azure::Core::Http::HttpMethod::Put, path, &body, true);
+        if (static_cast<int>(response->GetStatusCode()) == 412) {
+            return arm_create_result::already_exists;
+        }
+        (void)parse_response(*response);
+        return arm_create_result::created;
+    }
+
+    /// Whether a GET of `path` finds a resource.  Any answer other than 200 or
+    /// 404 throws: an unreadable name must not be mistaken for a free one.
+    [[nodiscard]] auto arm_exists(const std::string& path) const -> bool {
+        try {
+            (void)arm_get(path);
+            return true;
+        } catch (const arm_not_found&) {
+            return false;
+        }
     }
 
     /// Returns the `Azure-AsyncOperation` header URL when present (202
