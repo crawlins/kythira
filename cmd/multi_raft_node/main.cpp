@@ -311,6 +311,18 @@ auto main(int argc, char** argv) -> int {
                      "network you trust.\n";
     }
 
+    // The capacity plane is a different matter: it does not replicate a log,
+    // it creates and destroys machines. Fail closed, as ca_service does
+    // without its bearer token, rather than warn.
+    if (opt._capacity_role == kythira::bench::capacity_role::controller &&
+        opt._capacity_token.empty() && !is_loopback_address(opt._bind_address)) {
+        std::cerr << "multi_raft_node: --capacity-role controller on " << opt._bind_address
+                  << " would let anyone who can reach port " << opt._capacity_port
+                  << " resize the cluster. Set $" << kythira::bench::k_capacity_token_env
+                  << " or --capacity-token-file, or --bind a loopback address.\n";
+        return 2;
+    }
+
     try {
         return dispatch(opt);
     } catch (const std::exception& e) {

@@ -43,7 +43,8 @@ struct capacity_extension {
                 capacity::wire_hooks(cfg, opt, *_service);
                 return;
             case capacity_role::member:
-                _client = std::make_shared<capacity::capacity_client>(opt._capacity_controller);
+                _client = std::make_shared<capacity::capacity_client>(opt._capacity_controller,
+                                                                      opt._capacity_token);
                 capacity::wire_hooks(cfg, opt, *_client);
                 return;
         }

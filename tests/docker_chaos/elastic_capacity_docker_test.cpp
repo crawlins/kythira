@@ -26,6 +26,11 @@
 /// controller created, which compose knows nothing about — and the last
 /// assertion is a leak audit that fails the run if any remains.
 ///
+/// **The capacity plane is authenticated.** Each run generates its own bearer
+/// token into `KYTHIRA_CAPACITY_TOKEN`, which the compose file hands to every
+/// node; the test reads status with it and checks that a request without it,
+/// or with the wrong one, is refused.
+///
 /// Gated on `KYTHIRA_DOCKER_INTEGRATION_TESTS=1`, as the other scenario tests
 /// are: without a container runtime there is nothing to test.
 
@@ -43,7 +48,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <iomanip>
 #include <optional>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
@@ -74,6 +81,37 @@ auto compose_file() -> std::string {
     return "docker/elastic-capacity-compose.yml";
 }
 
+/// A fresh 32-hex-digit token per run, so no fixed secret lives in the repo.
+auto random_token() -> std::string {
+    std::random_device rd;
+    std::string out;
+    for (int i = 0; i < 4; ++i) {
+        std::ostringstream hex;
+        hex << std::hex << std::setw(8) << std::setfill('0') << rd();
+        out += hex.str();
+    }
+    return out;
+}
+
+auto capacity_token() -> std::string {
+    const char* e = std::getenv("KYTHIRA_CAPACITY_TOKEN");
+    return e != nullptr ? e : "";
+}
+
+/// The status endpoint's HTTP code with `authorization` as the whole
+/// Authorization header (empty sends none); 0 when unreachable.
+auto status_code_with(const std::string& authorization) -> int {
+    httplib::Client c("127.0.0.1", k_controller_port);
+    c.set_connection_timeout(2s);
+    c.set_read_timeout(5s);
+    httplib::Headers headers;
+    if (!authorization.empty()) {
+        headers.emplace("Authorization", authorization);
+    }
+    auto res = c.Get("/capacity/status", headers);
+    return res ? res->status : 0;
+}
+
 /// The workload's key format (`tests/multi_raft_kv_workload.hpp`), so keys
 /// fall in the ranges the compose file's GROUPS and KEY_COUNT tile.
 auto kv_key(std::uint64_t n) -> std::string {
@@ -89,6 +127,7 @@ struct cluster {
 
     cluster() : _name("ecap" + std::to_string(::getpid())) {
         ::setenv("CAPACITY_CLUSTER", _name.c_str(), 1);
+        ::setenv("KYTHIRA_CAPACITY_TOKEN", random_token().c_str(), 1);
         if (std::getenv("CONTAINER_SOCKET") == nullptr && os::container_runtime() == "podman") {
             // The Docker-compatible API the controller dials, under rootless
             // Podman. `podman system service` (or the podman.socket user unit)
@@ -161,6 +200,7 @@ auto status() -> std::optional<json::object> {
     httplib::Client c("127.0.0.1", k_controller_port);
     c.set_connection_timeout(2s);
     c.set_read_timeout(5s);
+    c.set_bearer_token_auth(capacity_token());
     auto res = c.Get("/capacity/status");
     if (!res || res->status != 200) {
         return std::nullopt;
@@ -273,6 +313,13 @@ BOOST_AUTO_TEST_CASE(a_loaded_cluster_splits_provisions_a_container_and_admits_i
         BOOST_REQUIRE_MESSAGE(wait_for([] { return status() && fresh_nodes(*status()) == 3; }, 90s),
                               "the controller never saw three fresh hosts\n"
                                   << c.logs("kythira-" + c._name + "-1"));
+        // The plane refuses anyone without the token: no header, a wrong
+        // token, and the right token under the wrong scheme.
+        BOOST_TEST(status_code_with("") == 401);
+        BOOST_TEST(status_code_with("Bearer wrong-token-0123456789") == 401);
+        BOOST_TEST(status_code_with("Basic " + capacity_token()) == 401);
+        BOOST_TEST(status_code_with("Bearer " + capacity_token()) == 200);
+
         // Shards are reported by their leaders, so they can trail the hosts'
         // first heartbeats by an election and a heartbeat.
         BOOST_REQUIRE_MESSAGE(

@@ -27,6 +27,12 @@
 /// shortcut: exactly one process is configured as the controller, so nothing
 /// else could provision. A deployment with several candidate controllers uses
 /// `raft_leadership_lease` instead.
+///
+/// **The plane can resize the cluster**, so it listens on `--bind` like every
+/// other surface this host serves, and when a shared token is configured
+/// (`node_options::_capacity_token`) every request must carry it as
+/// `Authorization: Bearer <token>`. `main.cpp` refuses to start a controller
+/// on a non-loopback bind without one.
 
 #include "config.hpp"
 
@@ -55,6 +61,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -71,6 +78,22 @@ using operation = shard_operation<group_id, key_type, node_id>;
 using allocation = shard_id_allocation<group_id, node_id>;
 
 namespace json = boost::json;
+
+/// @brief Equality that takes the same time wherever the inputs differ, so a
+///        client cannot learn the token a byte at a time from response
+///        latency. Only the length leaks, and the token's length is not the
+///        secret. Written out rather than taken from OpenSSL because this
+///        binary may be built without it.
+[[nodiscard]] inline auto constant_time_equals(std::string_view a, std::string_view b) -> bool {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    volatile unsigned char diff = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        diff = diff | static_cast<unsigned char>(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The wire codec
@@ -397,7 +420,9 @@ public:
               controller_config(opt), _work.fn(), [] { return std::chrono::system_clock::now(); },
               noop_metrics{}, console_logger{log_level::info}),
           _adapter(_controller, group_id{k_first_split_id}, group_id{std::uint64_t{1} << 62U}),
-          _port(opt._capacity_port) {}
+          _bind(opt._bind_address),
+          _port(opt._capacity_port),
+          _token(opt._capacity_token) {}
 
     ~capacity_service() { stop(); }
     capacity_service(const capacity_service&) = delete;
@@ -428,6 +453,19 @@ public:
     // ── the HTTP surface ─────────────────────────────────────────────────────
 
     auto start() -> void {
+        // Before routing, so no handler (and no JSON parser) ever sees an
+        // unauthenticated body, and an unknown path is refused the same way
+        // a known one is rather than revealing which paths exist.
+        _server.set_pre_routing_handler([this](const auto& req, auto& res) {
+            if (_token.empty() ||
+                constant_time_equals(req.get_header_value("Authorization"), "Bearer " + _token)) {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
+            res.status = 401;
+            res.set_header("WWW-Authenticate", "Bearer");
+            res.set_content("capacity: missing or wrong bearer token", "text/plain");
+            return httplib::Server::HandlerResponse::Handled;
+        });
         _server.Post("/capacity/allocate", [this](const auto& req, auto& res) {
             serve(res, [&] {
                 const auto n = json::value_to<std::size_t>(json::parse(req.body));
@@ -480,8 +518,8 @@ public:
         _server.Get("/capacity/status", [this](const auto&, auto& res) {
             serve(res, [&] { return json::value(status()); });
         });
-        if (!_server.bind_to_port("0.0.0.0", _port)) {
-            throw std::runtime_error("capacity: cannot bind the control plane to port " +
+        if (!_server.bind_to_port(_bind, _port)) {
+            throw std::runtime_error("capacity: cannot bind the control plane to " + _bind + ":" +
                                      std::to_string(_port));
         }
         _thread = std::thread([this] { _server.listen_after_bind(); });
@@ -564,6 +602,13 @@ private:
         c.group_id = "default";
         c.target_count = opt._voters.size();
         c.extra_env = opt._capacity_join_env;
+        // A machine this controller creates is a member, and a member of an
+        // authenticated plane needs the token. Passed here rather than as a
+        // `--capacity-join-env`, which would put it on this process's
+        // command line.
+        if (!opt._capacity_token.empty()) {
+            c.extra_env.push_back(std::string(k_capacity_token_env) + "=" + opt._capacity_token);
+        }
         return c;
     }
 
@@ -604,7 +649,9 @@ private:
     ledger_type _ledger;
     controller_type _controller;
     adapter_type _adapter;
+    std::string _bind;
     std::uint16_t _port;
+    std::string _token;
     httplib::Server _server;
     std::thread _thread;
     std::atomic<bool> _stopped{false};
@@ -621,7 +668,11 @@ private:
 /// this host a static one, never a stuck one.
 class capacity_client {
 public:
-    explicit capacity_client(const std::string& controller) : _client("http://" + controller) {
+    capacity_client(const std::string& controller, const std::string& token)
+        : _client("http://" + controller) {
+        if (!token.empty()) {
+            _client.set_bearer_token_auth(token);
+        }
         _client.set_connection_timeout(std::chrono::seconds{2});
         _client.set_read_timeout(std::chrono::seconds{5});
         _client.set_tcp_nodelay(true);

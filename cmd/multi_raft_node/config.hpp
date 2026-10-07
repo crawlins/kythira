@@ -16,6 +16,7 @@
 /// makes every comparison between two rows a comparison of two binaries.
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -72,6 +73,12 @@ enum class persistence_mode : std::uint8_t {
     file_buffered = 1,
     file_barrier = 2,
 };
+
+/// Where the capacity plane's shared token comes from when no
+/// `--capacity-token-file` gives it. The controller passes it on under the
+/// same name to every machine it creates, so a new member can authenticate.
+inline constexpr const char* k_capacity_token_env = "KYTHIRA_CAPACITY_TOKEN";
+inline constexpr std::size_t k_min_capacity_token_size = 16;
 
 struct node_options {
     /// This host's node id. Also its identity in every peer's URL map.
@@ -216,8 +223,16 @@ struct node_options {
 
     // ── elastic capacity (off unless `--capacity-role` says otherwise) ───────
     capacity_role _capacity_role{capacity_role::off};
-    /// The controller's control-plane port.
+    /// The controller's control-plane port. It listens on `_bind_address`,
+    /// like every other surface this host serves.
     std::uint16_t _capacity_port{7003};
+    /// The shared bearer token the control plane requires on every request,
+    /// and that a member sends. From `$KYTHIRA_CAPACITY_TOKEN` or
+    /// `--capacity-token-file`, never the command line, where it would sit in
+    /// `/proc/<pid>/cmdline`. Empty leaves the plane unauthenticated, which
+    /// the binary allows only when the controller binds loopback: the plane
+    /// can resize the cluster, so an open one is a remote control for it.
+    std::string _capacity_token{};
     /// `host:port` of the controller's control plane, for a member.
     std::string _capacity_controller{};
     /// `docker_quorum_manager`'s cluster, network, image and daemon.
