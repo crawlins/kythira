@@ -20,7 +20,7 @@
 
 services:
   telegraf:
-    image: telegraf:1.31
+    image: telegraf:1.31@sha256:05ebdd3de8c4001f5745746b022df03ea9366fd1e011accacb4af4708af85c75
     container_name: telegraf-metrics-test-telegraf
     hostname: telegraf
     # No user override and no output volume: the telegraf image's entrypoint

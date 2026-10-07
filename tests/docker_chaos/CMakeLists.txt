@@ -109,7 +109,7 @@ add_docker_chaos_scenario_test(docker_dns_sd_discovery_test
 # ── OTLP telemetry backend Docker scenario test (Requirement 7) ─────────────
 # Real chaos_node + real otel/opentelemetry-collector-contrib; no custom
 # image needed for the collector (pulled directly, mirroring
-# docker/ca-provisioning-compose.yml's use of stock alpine:3.20).
+# docker/ca-provisioning-compose.yml's use of stock alpine).
 
 add_docker_chaos_scenario_test(docker_otlp_collector_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/otlp_collector_test.cpp")

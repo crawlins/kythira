@@ -58,7 +58,7 @@ services:
       - "--domain=cluster.example.local"
 
   mtls-node1:
-    image: alpine:3.20
+    image: alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
     hostname: mtls-node1
     networks:
       ca-provisioning-net:
@@ -81,7 +81,7 @@ services:
         echo "mtls-node1: certificate material present"
 
   mtls-node2:
-    image: alpine:3.20
+    image: alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
     hostname: mtls-node2
     networks:
       ca-provisioning-net:

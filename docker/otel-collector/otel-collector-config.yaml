@@ -14,7 +14,7 @@
 #     metric/log data made it all the way through (Requirement 7.3).
 #
 # Minimal-machinery by design (mirrors docker/ca-provisioning-compose.yml's
-# use of stock alpine:3.20 rather than a purpose-built image): this is the
+# use of stock alpine rather than a purpose-built image): this is the
 # official otel/opentelemetry-collector-contrib image, unmodified, configured
 # entirely via this bind-mounted file — no custom Dockerfile.
 

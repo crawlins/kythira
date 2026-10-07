@@ -34,7 +34,11 @@
 
 namespace {
 
-constexpr const char* k_collector_image = "otel/opentelemetry-collector-contrib:0.116.1";
+// Pinned by digest, matching the compose files; on one line so
+// scripts/refresh-image-digests.sh can find and rewrite it.
+// clang-format off
+constexpr const char* k_collector_image = "otel/opentelemetry-collector-contrib:0.116.1@sha256:d0ebf65280da2e1b1491d1b93648281afd353d4b9ea19160090303cec9a233bd";
+// clang-format on
 
 auto config_dir() -> std::string {
     const char* env = std::getenv("KYTHIRA_CLOUD_MONITORING_CONFIG_DIR");
