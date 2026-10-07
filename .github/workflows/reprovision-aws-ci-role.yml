@@ -1,0 +1,80 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+name: Reprovision AWS CI role
+
+# Re-applies kythira-ci-real-cloud-tests' inline bundle policy from
+# scripts/ci-cloud-credentials/aws/policies/ on main, so a merged bundle
+# change reaches AWS without anyone running provision-oidc-role.sh locally
+# with admin credentials.
+#
+# Every run waits for a required reviewer in the ci-role-admin environment,
+# which also only admits the main branch. The identity it assumes,
+# kythira-ci-role-updater, can replace that one inline policy and nothing
+# else, and the CI role's permissions boundary keeps IAM out of whatever the
+# policy says. One-time setup: provision-ci-role-updater.sh (see
+# scripts/ci-cloud-credentials/aws/README.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundles:
+        description: "Comma-separated bundles (empty = keep the bundles the role has)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Show the diff only"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reprovision-aws-ci-role
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: ci-role-admin
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Refuse anything but main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::Only main's reviewed policies may be applied; this run is on ${GITHUB_REF}." >&2
+          exit 1
+
+      - name: Fail closed if the updater role is not set up
+        if: ${{ vars.AWS_CI_ROLE_UPDATER_ARN == '' }}
+        run: |
+          echo "::error::AWS_CI_ROLE_UPDATER_ARN is unset. Run scripts/ci-cloud-credentials/aws/provision-ci-role-updater.sh once." >&2
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_UPDATER_ARN }}
+          role-session-name: kythira-ci-role-updater
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
+      - name: Apply the bundle policy
+        env:
+          BUNDLES: ${{ inputs.bundles }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          BUCKET: ${{ vars.AWS_OBJECT_PERSISTENCE_BUCKET }}
+        run: |
+          args=()
+          if [[ -n "${BUNDLES}" ]]; then args+=(--bundles "${BUNDLES}"); fi
+          if [[ -n "${BUCKET}" ]]; then args+=(--bucket "${BUCKET}"); fi
+          if [[ "${DRY_RUN}" == "true" ]]; then args+=(--dry-run); fi
+          scripts/ci-cloud-credentials/aws/update-ci-role-policy.sh "${args[@]}"
