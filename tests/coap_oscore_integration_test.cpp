@@ -208,6 +208,7 @@ auto send_and_await_echo(oscore_credentials client_creds, const std::string& pay
 auto make_oscore_credentials(std::vector<std::byte> sender_id, std::vector<std::byte> recipient_id,
                              std::vector<std::byte> master_secret) -> oscore_credentials {
     oscore_credentials creds;
+    creds.volatile_sequence_state = true;  // test-only keys
     creds.sender_id = std::move(sender_id);
     creds.recipient_id = std::move(recipient_id);
     creds.master_secret = std::move(master_secret);

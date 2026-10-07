@@ -153,6 +153,7 @@ auto send_raw(std::uint16_t port, const std::vector<std::uint8_t>& bytes) -> voi
 /// supplied: no master secret here at all, which is the point.
 [[nodiscard, maybe_unused]] auto edhoc_security(bool is_client) -> kythira::coap_security_config {
     kythira::oscore_credentials creds;
+    creds.volatile_sequence_state = true;  // test-only keys
     creds.bootstrap_method = kythira::oscore_bootstrap::edhoc;
     creds.edhoc.is_initiator = is_client;
     creds.edhoc.identity_credential = is_client ? cred_i() : cred_r();
@@ -168,6 +169,7 @@ auto send_raw(std::uint16_t port, const std::vector<std::uint8_t>& bytes) -> voi
 /// Pre-shared OSCORE credentials, mirrored between client and server.
 [[nodiscard, maybe_unused]] auto oscore_security(bool is_client) -> kythira::coap_security_config {
     kythira::oscore_credentials creds;
+    creds.volatile_sequence_state = true;  // test-only keys
     creds.master_secret = std::vector<std::byte>(16, std::byte{0x2a});
     creds.master_salt = std::vector<std::byte>(8, std::byte{0x77});
     creds.sender_id = is_client ? std::vector<std::byte>{std::byte{0x00}}
@@ -846,6 +848,7 @@ BOOST_AUTO_TEST_CASE(test_rpc_over_oscore,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     const auto security = [](bool is_client) {
         kythira::oscore_credentials creds;
+        creds.volatile_sequence_state = true;  // test-only keys
         creds.master_secret = std::vector<std::byte>(16, std::byte{0x2a});
         creds.master_salt = std::vector<std::byte>(8, std::byte{0x77});
         creds.sender_id = is_client ? std::vector<std::byte>{std::byte{0x00}}
@@ -887,6 +890,7 @@ BOOST_AUTO_TEST_CASE(test_oscore_wrong_key_is_refused,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     const auto security = [](bool is_client, std::byte secret) {
         kythira::oscore_credentials creds;
+        creds.volatile_sequence_state = true;  // test-only keys
         creds.master_secret = std::vector<std::byte>(16, secret);
         creds.master_salt = std::vector<std::byte>(8, std::byte{0x77});
         creds.sender_id = is_client ? std::vector<std::byte>{std::byte{0x00}}
@@ -932,6 +936,7 @@ BOOST_AUTO_TEST_CASE(test_oscore_wrong_key_is_refused,
 BOOST_AUTO_TEST_CASE(test_oscore_server_refuses_plaintext,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     kythira::oscore_credentials creds;
+    creds.volatile_sequence_state = true;  // test-only keys
     creds.master_secret = std::vector<std::byte>(16, std::byte{0x2a});
     creds.master_salt = std::vector<std::byte>(8, std::byte{0x77});
     creds.sender_id = std::vector<std::byte>{std::byte{0x01}};

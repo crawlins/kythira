@@ -28,10 +28,15 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
+#include <vector>
+
+#include <unistd.h>
 
 namespace parity {
 
@@ -137,6 +142,26 @@ struct recording_server {
                         ? kythira::coap_auth_mode::oscore
                         : kythira::coap_auth_mode::dtls_psk;
     security.ace_bootstrap = ace;
+    if (profile == kythira::ace_target_profile::oscore) {
+        // The AS-issued context inherits this; the mock AS issues
+        // test-only keys, so process-lifetime counters are enough.
+        kythira::oscore_credentials counters;
+        counters.volatile_sequence_state = true;
+        security.credentials = counters;
+    }
+    return security;
+}
+
+// A static OSCORE pair with test-only keys, sequence state left unset.
+[[nodiscard]] inline auto static_oscore_security(bool is_client) -> kythira::coap_security_config {
+    kythira::oscore_credentials creds;
+    creds.master_secret = std::vector<std::byte>(16, std::byte{0x2a});
+    creds.master_salt = std::vector<std::byte>(8, std::byte{0x77});
+    creds.sender_id = {is_client ? std::byte{0x00} : std::byte{0x01}};
+    creds.recipient_id = {is_client ? std::byte{0x01} : std::byte{0x00}};
+    kythira::coap_security_config security;
+    security.mode = kythira::coap_auth_mode::oscore;
+    security.credentials = creds;
     return security;
 }
 
@@ -424,6 +449,61 @@ BOOST_AUTO_TEST_CASE(oscore_without_credentials_is_a_config_error,
         (parity::test_server{parity::loopback, 0, parity::server_config_with(security),
                              kythira::noop_metrics{}}),
         kythira::coap_security_config_error);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// H7: a static Master Secret whose Sender Sequence Number lives only in
+// memory restarts at Partial IV 0 after a restart and reuses every AES-CCM
+// nonce it issued before. Every backend refuses that at construction, and
+// accepts it once the counters have somewhere durable to live.
+BOOST_AUTO_TEST_SUITE(oscore_sequence_state)
+
+BOOST_AUTO_TEST_CASE(static_oscore_without_sequence_state_is_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    BOOST_CHECK_THROW(
+        (parity::test_client{{{parity::peer_node_id, "127.0.0.1:1"}},
+                             parity::client_config_with(parity::static_oscore_security(true)),
+                             kythira::noop_metrics{}}),
+        kythira::coap_security_config_error);
+    BOOST_CHECK_THROW(
+        (parity::test_server{parity::loopback, 0,
+                             parity::server_config_with(parity::static_oscore_security(false)),
+                             kythira::noop_metrics{}}),
+        kythira::coap_security_config_error);
+}
+
+// ACE replaces the credentials with what the AS issued; without the
+// configured counters carried over, the issued context would be refused too.
+BOOST_AUTO_TEST_CASE(ace_oscore_without_sequence_state_is_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    parity::mock_authorization_server as;
+    auto security = parity::ace_security(as, kythira::ace_target_profile::oscore, "raft-cluster");
+    security.credentials = std::monostate{};
+    BOOST_CHECK_THROW((parity::test_client{{{parity::peer_node_id, "127.0.0.1:1"}},
+                                           parity::client_config_with(security),
+                                           kythira::noop_metrics{}}),
+                      kythira::coap_security_config_error);
+}
+
+BOOST_AUTO_TEST_CASE(static_oscore_with_sequence_state_dir_round_trips,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("kythira-oscore-seq-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    {
+        auto server_security = parity::static_oscore_security(false);
+        std::get<kythira::oscore_credentials>(server_security.credentials).sequence_state_dir =
+            dir.string();
+        auto client_security = parity::static_oscore_security(true);
+        std::get<kythira::oscore_credentials>(client_security.credentials).sequence_state_dir =
+            dir.string();
+        parity::recording_server peer{parity::server_config_with(server_security)};
+        auto client = parity::make_client(peer, parity::client_config_with(client_security));
+        BOOST_TEST(parity::answered(client));
+        BOOST_TEST(peer.handler_ran->load());
+    }
+    std::filesystem::remove_all(dir);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

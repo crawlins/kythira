@@ -55,6 +55,7 @@ struct test_types {
 auto credentials(std::byte sender, std::byte recipient, std::vector<std::byte> id_context)
     -> kythira::coap_security_config {
     kythira::oscore_credentials creds;
+    creds.volatile_sequence_state = true;  // test-only keys
     creds.sender_id = {sender};
     creds.recipient_id = {recipient};
     creds.master_secret = std::vector<std::byte>(16, std::byte{0x5C});

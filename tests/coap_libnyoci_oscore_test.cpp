@@ -67,6 +67,7 @@ constexpr std::uint16_t ephemeral_port = 0;
 /// and swap Sender/Recipient IDs, exactly as RFC 8613 Appendix C.1 does.
 [[nodiscard]] auto oscore_security(bool is_client) -> kythira::coap_security_config {
     kythira::oscore_credentials creds;
+    creds.volatile_sequence_state = true;  // test-only keys
     creds.master_secret = bytes({0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
                                  0x0c, 0x0d, 0x0e, 0x0f, 0x10});
     creds.master_salt = bytes({0x9e, 0x7c, 0xa9, 0x22, 0x23, 0x78, 0x63, 0x40});
@@ -114,6 +115,7 @@ constexpr std::uint16_t ephemeral_port = 0;
 /// supplied: no master secret here at all, which is the point.
 [[nodiscard]] auto edhoc_security(bool is_client) -> kythira::coap_security_config {
     kythira::oscore_credentials creds;
+    creds.volatile_sequence_state = true;  // test-only keys
     creds.bootstrap_method = kythira::oscore_bootstrap::edhoc;
     creds.edhoc.is_initiator = is_client;
     creds.edhoc.identity_credential = is_client ? cred_i() : cred_r();
