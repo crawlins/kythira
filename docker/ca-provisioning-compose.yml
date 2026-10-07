@@ -4,8 +4,8 @@
 # Demonstrates ca_service (oneshot mode) provisioning a shared root CA and
 # per-service leaf certificates into named volumes before dependent node
 # containers start. The mtls-node1/mtls-node2 services are illustrative stubs
-# (Alpine + a shell check) — wiring up an actual mTLS chaos test node is future
-# work, tracked separately from the certificate-authority framework itself.
+# (Alpine + a shell check). docker/mtls-chaos-compose.yml is the same pattern
+# with real chaos_nodes speaking mutual-TLS Raft RPC on the material.
 #
 # No static IP addresses are configured anywhere in this file; containers
 # address each other by compose service name only, so it works unmodified
@@ -70,10 +70,14 @@ services:
       ca-volume-init:
         condition: service_completed_successfully
     command:
-      - "--out-dir=/ca"
-      - "--service=mtls-node1"
-      - "--service=mtls-node2"
-      - "--domain=cluster.example.local"
+      - "--out-dir"
+      - "/ca"
+      - "--service"
+      - "mtls-node1"
+      - "--service"
+      - "mtls-node2"
+      - "--domain"
+      - "cluster.example.local"
 
   mtls-node1:
     image: alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
