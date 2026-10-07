@@ -8,6 +8,8 @@
       "packages": [
         "c-ares",
         "cpp-httplib",
+        "curl",
+        "nghttp2",
         "openssl"
       ]
     }
