@@ -50,6 +50,7 @@
 #include <raft/certificate_authority.hpp>
 #include <raft/certificate_provider.hpp>
 #include <raft/future_default.hpp>
+#include <raft/private_file.hpp>
 
 #ifdef KYTHIRA_HAS_AWS_ACM_PCA
 #include <raft/aws_acm_pca_provider.hpp>
@@ -260,17 +261,9 @@ std::vector<std::string> resolve_ips_for(const std::string& dns_name) {
 
 void write_file(const std::filesystem::path& path, const std::string& content,
                 bool restrict_perms) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        throw std::runtime_error("cannot open " + path.string() + " for writing");
-    }
-    out.write(content.data(), static_cast<std::streamsize>(content.size()));
-    out.close();
-    if (restrict_perms) {
-        std::filesystem::permissions(
-            path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-            std::filesystem::perm_options::replace);
-    }
+    raft::write_file_atomically(
+        path, content,
+        restrict_perms ? raft::file_visibility::owner_only : raft::file_visibility::standard);
 }
 
 int run_oneshot(const cli_options& opts) {

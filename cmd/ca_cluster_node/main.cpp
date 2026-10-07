@@ -66,6 +66,7 @@
 #include <raft/httplib_listeners.hpp>
 #include <raft/membership.hpp>
 #include <raft/metrics.hpp>
+#include <raft/private_file.hpp>
 #include <raft/raft.hpp>
 #include <raft/tcp_raft_types.hpp>
 #include <raft/tcp_rpc.hpp>
@@ -246,15 +247,10 @@ auto read_whole_file(const std::string& path) -> std::optional<std::string> {
     return content;
 }
 
+// Atomic (temp + rename), so a crash mid-write leaves the previous file
+// rather than a truncated one that the next start would fail to parse.
 auto write_whole_file(const std::string& path, const std::string& content) -> void {
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f) {
-        throw std::runtime_error("ca_cluster_node: cannot write " + path);
-    }
-    f << content;
-    if (!f) {
-        throw std::runtime_error("ca_cluster_node: failed writing " + path);
-    }
+    raft::write_file_atomically(path, content, raft::file_visibility::standard);
 }
 
 // Requirement 5.1's "still-valid" check: the persisted cert exists, parses,
@@ -285,7 +281,9 @@ auto persist_rpc_peer_identity(const std::string& data_dir, const std::string& c
                                const std::string& key_pem, const std::string& root_pem) -> void {
     std::filesystem::create_directories(data_dir);
     write_whole_file(rpc_peer_cert_path(data_dir), cert_pem);
-    write_whole_file(rpc_peer_key_path(data_dir), key_pem);
+    // 0600 from creation: an ofstream would leave the key world-readable
+    // under the usual 022 umask.
+    raft::write_private_file(rpc_peer_key_path(data_dir), key_pem);
     write_whole_file(rpc_peer_root_path(data_dir), root_pem);
 }
 

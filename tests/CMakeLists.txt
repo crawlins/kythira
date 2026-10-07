@@ -4759,6 +4759,17 @@ else()
     message(STATUS "Poco DNSSD not found — poco_peer_discovery_unit_test will not be built")
 endif()
 
+# ── private_file: 0600-from-creation atomic writes for key material ─────────
+
+add_executable(private_file_unit_test private_file_unit_test.cpp)
+target_link_libraries(private_file_unit_test PRIVATE Boost::unit_test_framework)
+target_compile_features(private_file_unit_test PRIVATE cxx_std_23)
+add_test(NAME private_file_unit_test COMMAND private_file_unit_test)
+set_tests_properties(private_file_unit_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;security"
+)
+
 # ── certificate_authority tests (OpenSSL required) ────────────────────────────
 
 if(TARGET certificate_authority)

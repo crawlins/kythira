@@ -195,6 +195,11 @@ BOOST_AUTO_TEST_CASE(temp_cert_files_key_mode_and_cleanup, *boost::unit_test::ti
         struct stat st{};
         BOOST_REQUIRE(::stat(key_path.c_str(), &st) == 0);
         BOOST_TEST((st.st_mode & 0777) == 0600);
+
+        // The staging directory under the shared temp dir is private too.
+        struct stat dir_st{};
+        BOOST_REQUIRE(::stat(std::filesystem::path(key_path).parent_path().c_str(), &dir_st) == 0);
+        BOOST_TEST((dir_st.st_mode & 0777) == 0700);
     }
     BOOST_TEST(!std::filesystem::exists(cert_path));
     BOOST_TEST(!std::filesystem::exists(key_path));
