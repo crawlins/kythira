@@ -14,9 +14,11 @@
 #include <openssl/x509v3.h>
 
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <sys/stat.h>
 #include <vector>
@@ -128,6 +130,45 @@ BOOST_AUTO_TEST_CASE(revoke_unknown_serial_throws, *boost::unit_test::timeout(30
     pem_material fake;
     fake.serial = 0xDEADBEEF;
     BOOST_CHECK_THROW(ca.revoke(fake), std::invalid_argument);
+}
+
+// Serials come from a CSPRNG (CA/B Baseline Requirements 7.1), not a
+// per-instance seed plus a counter. The old scheme gave every certificate from
+// one instance the same upper 32 bits and consecutive lower bits, so the next
+// serial was predictable from the last.
+BOOST_AUTO_TEST_CASE(serials_are_random_and_match_certificate, *boost::unit_test::timeout(60)) {
+    certificate_authority ca;
+    leaf_certificate_options opts;
+    opts.subject.common_name = "serial";
+    opts.dns_names = {"serial.example.com"};
+
+    constexpr std::size_t count = 32;
+    std::set<std::uint64_t> serials;
+    std::set<std::uint64_t> upper_halves;
+    std::uint64_t previous = 0;
+    bool any_consecutive = false;
+    for (std::size_t i = 0; i < count; ++i) {
+        auto material = ca.issue(opts);
+        BOOST_TEST(material.serial != 0U);
+        serials.insert(material.serial);
+        upper_halves.insert(material.serial >> 32U);
+        any_consecutive = any_consecutive || (i > 0 && material.serial == previous + 1);
+        previous = material.serial;
+
+        // The serial reported to callers (and used by revoke()) is the one in
+        // the certificate, including values above INT64_MAX.
+        auto cert = load_cert(material.certificate_pem);
+        BOOST_REQUIRE(cert);
+        std::uint64_t in_cert = 0;
+        BOOST_REQUIRE_EQUAL(ASN1_INTEGER_get_uint64(&in_cert, X509_get0_serialNumber(cert.get())),
+                            1);
+        BOOST_TEST(in_cert == material.serial);
+    }
+    BOOST_TEST(serials.size() == count);
+    // 32 random 32-bit halves collide with probability ~1e-7; one shared upper
+    // half is what the counter scheme always produced.
+    BOOST_TEST(upper_halves.size() > 1U);
+    BOOST_TEST(!any_consecutive);
 }
 
 BOOST_AUTO_TEST_CASE(temp_cert_files_key_mode_and_cleanup, *boost::unit_test::timeout(30)) {

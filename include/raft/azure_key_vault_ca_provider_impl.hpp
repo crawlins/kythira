@@ -51,7 +51,6 @@
 #include <openssl/x509.h>
 
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <stdexcept>
@@ -286,17 +285,11 @@ inline void sign_with_key_vault(X509* cert, EVP_PKEY* ca_key, KeyVaultCryptograp
     }
 }
 
-/// Combines a process-wide random-ish seed (captured once) with an atomic
-/// counter, the same scheme `certificate_authority::impl::next_serial` uses
-/// per-instance — good enough for log/debug correlation; this provider has no
-/// revoke()/CRL that depends on serial uniqueness guarantees beyond that.
+/// A CSPRNG serial, the same one `certificate_authority` issues with (see
+/// `raft::testing::detail::random_serial`). This provider keeps no record of
+/// what it issued, so uniqueness rests on the 64 random bits alone.
 [[nodiscard]] inline auto next_serial() -> std::uint64_t {
-    static const std::uint64_t seed =
-        static_cast<std::uint64_t>(
-            std::chrono::high_resolution_clock::now().time_since_epoch().count()) &
-        0xFFFFFFFFULL;
-    static std::atomic<std::uint64_t> counter{0};
-    return (seed << 32) | (++counter);
+    return raft::testing::detail::random_serial();
 }
 
 }  // namespace azure_detail
