@@ -137,7 +137,9 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -158,7 +160,7 @@ jobs:
           exit 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Exports the environment vcpkg's x-aws backend reads (and sccache's,
       # where a leg uses it). Writer policy lives in the action: only a push
@@ -177,7 +179,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: vcpkg_installed
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
@@ -194,11 +196,14 @@ jobs:
           # is a backend vcpkg removed some time ago.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
+          # (same reasoning as ci.yml's build-and-test job).
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          TRIPLET="${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}"
           /tmp/vcpkg/vcpkg install --triplet "$TRIPLET" --no-print-usage --x-feature=edhoc
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
+          TRIPLET: ${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}
 
       # Same compiler cache as every ci.yml job (oci-build-cache Req 5.1).
       # Without it CMake's `auto` launcher picks the apt-installed ccache,
@@ -211,13 +216,22 @@ jobs:
         if: steps.buildcache.outputs.enabled == 'true'
         run: scripts/oci-build-cache/start-sccache.sh
 
+      # Dispatch inputs reach the shell through env, never by expression
+      # interpolation into the script: an interpolated input is pasted in as
+      # shell source before bash parses it, so a crafted value runs commands.
       - name: Configure
+        env:
+          SCALE: ${{ github.event.inputs.timeout_scale }}
+          PROFILE: ${{ github.event.inputs.profile }}
+          COMPILER: ${{ github.event.inputs.compiler || 'clang++-18' }}
+          ARCH: ${{ github.event.inputs.arch || 'x64' }}
+          TRIPLET: ${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}
+          LAUNCHER: ${{ steps.sccache.outputs.launcher || 'none' }}
         run: |
-          SCALE="${{ github.event.inputs.timeout_scale }}"
           SCALE_ARG=""
           [ -n "$SCALE" ] && SCALE_ARG="-DKYTHIRA_TEST_TIMEOUT_SCALE=$SCALE"
-          echo "configure: profile=${{ github.event.inputs.profile }} compiler=${{ github.event.inputs.compiler || 'clang++-18' }} arch=${{ github.event.inputs.arch || 'x64' }} ${SCALE_ARG:-<no timeout scale>}"
-          if [ "${{ github.event.inputs.profile }}" = "coverage" ]; then
+          echo "configure: profile=$PROFILE compiler=$COMPILER arch=$ARCH ${SCALE_ARG:-<no timeout scale>}"
+          if [ "$PROFILE" = "coverage" ]; then
             # Models ci.yml's Coverage job: instrumented AND Debug. Note that
             # job also passes -DKYTHIRA_TEST_TIMEOUT_SCALE; pass the same value
             # via `timeout_scale` or this measures a configuration CI does not
@@ -226,16 +240,16 @@ jobs:
               -DENABLE_COVERAGE=ON \
               -DCMAKE_BUILD_TYPE=Debug \
               $SCALE_ARG \
-              -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
-              -DCMAKE_CXX_COMPILER=${{ github.event.inputs.compiler || 'clang++-18' }} \
-              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}
+              -DKYTHIRA_COMPILER_LAUNCHER="$LAUNCHER" \
+              -DCMAKE_CXX_COMPILER="$COMPILER" \
+              -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/vcpkg_installed/$TRIPLET"
           else
             cmake -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               $SCALE_ARG \
-              -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
-              -DCMAKE_CXX_COMPILER=${{ github.event.inputs.compiler || 'clang++-18' }} \
-              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}
+              -DKYTHIRA_COMPILER_LAUNCHER="$LAUNCHER" \
+              -DCMAKE_CXX_COMPILER="$COMPILER" \
+              -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/vcpkg_installed/$TRIPLET"
           fi
 
       - name: Build
@@ -256,12 +270,13 @@ jobs:
         env:
           TEST_REGEX: ${{ github.event.inputs.test_regex }}
           SIM_EXTRA_LATENCY_MS: ${{ github.event.inputs.sim_extra_latency_ms }}
+          ITER: ${{ github.event.inputs.iterations || '20' }}
+          LABEL: ${{ github.event.inputs.label }}
+          EXCLUDE: ${{ github.event.inputs.exclude_labels }}
+          JOBS: ${{ github.event.inputs.jobs }}
+          PROFILE: ${{ github.event.inputs.profile }}
         run: |
           set -uo pipefail
-          ITER="${{ github.event.inputs.iterations || '20' }}"
-          LABEL="${{ github.event.inputs.label }}"
-          EXCLUDE="${{ github.event.inputs.exclude_labels }}"
-          JOBS="${{ github.event.inputs.jobs }}"
           [ -z "$JOBS" ] && JOBS="$(nproc)"
           SEL=()
           # 'all' is the explicit no-label-filter sentinel; see the input's
@@ -286,7 +301,7 @@ jobs:
             # the directory that actually gets uploaded.
             # Under the coverage profile, set the same profile-file pattern
             # ci.yml's Coverage job uses, so instrumentation cost is included.
-            if [ "${{ github.event.inputs.profile }}" = "coverage" ]; then
+            if [ "$PROFILE" = "coverage" ]; then
               export LLVM_PROFILE_FILE="$PWD/build/%p-%m.profraw"
             fi
             ctest --test-dir build "${SEL[@]}" -j"$JOBS" \
@@ -329,7 +344,7 @@ jobs:
 
       - name: Upload raw results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coap-flake-results
           path: flake-results/

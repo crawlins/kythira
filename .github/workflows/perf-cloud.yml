@@ -109,7 +109,9 @@ jobs:
       TAG_KEY: kythira-perf-run
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # A single run-scoped tag value is the contract the teardown and the
       # audit both key off. Generated once, here, so that a re-run of the job
@@ -167,7 +169,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       - name: Resolve vcpkg triplet
         id: triplet
@@ -195,7 +197,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -268,7 +270,7 @@ jobs:
         run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-perf-cloud
@@ -346,7 +348,7 @@ jobs:
 
       - name: Upload result artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: perf-cloud-${{ env.ARCH_LABEL }}-${{ github.run_id }}
           path: |
