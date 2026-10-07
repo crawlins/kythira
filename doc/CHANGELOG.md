@@ -60,6 +60,22 @@ current list of outstanding work, see [TODO.md](TODO.md).
   `http_negotiation_integration_test` and now uses 18430. Under `ctest -j`
   whichever binary bound a shared port second would fail.
 
+- **A chaos scenario now runs Raft over mutual TLS.**
+  `docker-mtls-chaos-tests` starts three `chaos_node`s on the TLS RPC
+  transport with certificates `ca_service` mints inside the stack
+  (`docker/mtls-chaos-compose.yml`), and checks replication, leader-crash
+  re-election and catch-up over it. Two cases then stop node 3 and put an
+  impostor at its address claiming its id: one with a node3 certificate
+  from another root, one with a certificate from the cluster's own root
+  for a non-member name. The leader must never replicate an entry to
+  either. Given the real node3 identity instead, an impostor does receive
+  entries, so the check measures the trust policy and nothing else.
+  `chaos_node` gained `RPC_TLS_CERT`/`RPC_TLS_KEY`/`RPC_TLS_CA` and
+  `RPC_TIMEOUT_MS`, and the step runs in Container Scenario Tests under
+  Docker and rootless Podman. `docker/ca-provisioning-compose.yml` passed
+  `--out-dir=/ca`-style arguments, which `ca_service` rejects, so its
+  `ca-service` container had never started; they are now separate words.
+
 - **The gossip table no longer grows with whatever a peer sends.**
   `tcp_gossip_peer2peer_replicator::merge()` added every unknown node id
   it was sent and kept each one until a sender-chosen `fresh_until`, so

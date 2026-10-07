@@ -247,6 +247,10 @@ jobs:
         if: success() || failure()
         run: cmake --build build --target docker-otlp-collector-tests -j"$(nproc)"
 
+      - name: docker-mtls-chaos-tests (4 mTLS scenarios)
+        if: success() || failure()
+        run: cmake --build build --target docker-mtls-chaos-tests -j"$(nproc)"
+
       - name: docker-dns-discovery-tests
         if: success() || failure()
         run: cmake --build build --target docker-dns-discovery-tests -j"$(nproc)"

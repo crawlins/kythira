@@ -1,0 +1,213 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Three chaos_nodes speaking Raft RPC over mutual TLS, with certificates
+# that ca_service issues at startup, plus two impostors the scenario test
+# (tests/docker_chaos/mtls_chaos_test.cpp) starts by hand in node3's place.
+#
+# Every node trusts one root (/ca/root_ca.pem) and accepts a peer only if its
+# certificate chains to that root AND names it, by the host PEERS gives for
+# it, as a DNS SAN; each connection may then speak only for the node that
+# name belongs to (RPC_TLS_* in cmd/chaos_node/config.hpp). ca_service is run
+# without --domain, so each SAN is the bare service name ("node1"), which is
+# also the compose service name the peers dial.
+#
+# The impostors, behind the "rogue" profile so `up` leaves them alone:
+#
+#   rogue-foreign   holds a certificate named node3 from a different root
+#                   (ca-foreign), so it fails the chain check.
+#   rogue-intruder  holds a certificate from the cluster's own root, but for
+#                   node4, which is not a member, so it fails the name check.
+#
+# Neither has a depends_on: the test starts them with `up --no-deps` long
+# after the plain `up` ran both CAs, and a dependency would re-run ca-service,
+# minting a new root under the running cluster.
+#
+# Each takes the network alias node3 and claims NODE_ID=3. With node3
+# stopped, the leader's AppendEntries for node 3 reach the impostor, and the
+# test checks the impostor never gets a single entry.
+#
+# Key isolation follows docker/ca-provisioning-compose.yml: each identity has
+# its own volume, mounted read-only into only the node that uses it, beneath
+# a shared read-only trust volume.
+#
+# No static IP addresses: containers address each other by service name or
+# alias, so this works under Docker and rootless Podman (CLAUDE.md). The
+# impostors run without NET_ADMIN; nothing partitions them.
+
+x-node-env: &node-env
+  RPC_PORT: "7000"
+  HTTP_PORT: "8080"
+  FIU_PORT: "9000"
+  DATA_DIR: "/var/lib/chaos_node"
+  # Wider than docker-compose.yml's 150-300ms: every RPC on this transport
+  # pays a full TLS handshake, and with one member down a two-node quorum
+  # on a loaded rootless Podman runner must not churn elections.
+  ELECTION_TIMEOUT_MIN_MS: "1000"
+  ELECTION_TIMEOUT_MAX_MS: "2000"
+  HEARTBEAT_INTERVAL_MS: "100"
+  RPC_TIMEOUT_MS: "1000"
+  RPC_TLS_CA: "/ca/root_ca.pem"
+
+networks:
+  mtls_net:
+    driver: bridge
+
+volumes:
+  ca-trust:
+  node1-tls:
+  node2-tls:
+  node3-tls:
+  node4-tls:
+  foreign-trust:
+  foreign-node3-tls:
+
+services:
+  ca-service:
+    image: kythira-mtls-chaos-node:dev
+    entrypoint: ["/usr/local/bin/ca_service"]
+    networks:
+      - mtls_net
+    volumes:
+      - ca-trust:/ca
+      - node1-tls:/ca/node1
+      - node2-tls:/ca/node2
+      - node3-tls:/ca/node3
+      - node4-tls:/ca/node4
+    command:
+      - "--out-dir"
+      - "/ca"
+      - "--service"
+      - "node1"
+      - "--service"
+      - "node2"
+      - "--service"
+      - "node3"
+      - "--service"
+      - "node4"
+
+  ca-foreign:
+    image: kythira-mtls-chaos-node:dev
+    entrypoint: ["/usr/local/bin/ca_service"]
+    networks:
+      - mtls_net
+    volumes:
+      - foreign-trust:/ca
+      - foreign-node3-tls:/ca/node3
+    command:
+      - "--out-dir"
+      - "/ca"
+      - "--service"
+      - "node3"
+
+  node1:
+    image: kythira-mtls-chaos-node:dev
+    container_name: chaos_node_1
+    hostname: node1
+    environment:
+      <<: *node-env
+      NODE_ID: "1"
+      PEERS: "2:node2:7000,3:node3:7000"
+      RPC_TLS_CERT: "/ca/node1/cert.pem"
+      RPC_TLS_KEY: "/ca/node1/key.pem"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8081:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9001:9000"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - mtls_net
+    volumes:
+      - ca-trust:/ca:ro
+      - node1-tls:/ca/node1:ro
+    depends_on:
+      ca-service:
+        condition: service_completed_successfully
+
+  node2:
+    image: kythira-mtls-chaos-node:dev
+    container_name: chaos_node_2
+    hostname: node2
+    environment:
+      <<: *node-env
+      NODE_ID: "2"
+      PEERS: "1:node1:7000,3:node3:7000"
+      RPC_TLS_CERT: "/ca/node2/cert.pem"
+      RPC_TLS_KEY: "/ca/node2/key.pem"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8082:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9002:9000"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - mtls_net
+    volumes:
+      - ca-trust:/ca:ro
+      - node2-tls:/ca/node2:ro
+    depends_on:
+      ca-service:
+        condition: service_completed_successfully
+
+  node3:
+    image: kythira-mtls-chaos-node:dev
+    container_name: chaos_node_3
+    hostname: node3
+    environment:
+      <<: *node-env
+      NODE_ID: "3"
+      PEERS: "1:node1:7000,2:node2:7000"
+      RPC_TLS_CERT: "/ca/node3/cert.pem"
+      RPC_TLS_KEY: "/ca/node3/key.pem"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8083:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9003:9000"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - mtls_net
+    volumes:
+      - ca-trust:/ca:ro
+      - node3-tls:/ca/node3:ro
+    depends_on:
+      ca-service:
+        condition: service_completed_successfully
+
+  rogue-foreign:
+    image: kythira-mtls-chaos-node:dev
+    container_name: chaos_mtls_rogue_foreign
+    profiles: ["rogue"]
+    environment:
+      <<: *node-env
+      NODE_ID: "3"
+      PEERS: "1:node1:7000,2:node2:7000"
+      CHAOS_NETWORK_FAULTS: "0"
+      RPC_TLS_CERT: "/ca/node3/cert.pem"
+      RPC_TLS_KEY: "/ca/node3/key.pem"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8084:8080"
+    networks:
+      mtls_net:
+        aliases: [node3]
+    volumes:
+      - foreign-trust:/ca:ro
+      - foreign-node3-tls:/ca/node3:ro
+
+  rogue-intruder:
+    image: kythira-mtls-chaos-node:dev
+    container_name: chaos_mtls_rogue_intruder
+    profiles: ["rogue"]
+    environment:
+      <<: *node-env
+      NODE_ID: "3"
+      PEERS: "1:node1:7000,2:node2:7000"
+      CHAOS_NETWORK_FAULTS: "0"
+      RPC_TLS_CERT: "/ca/node4/cert.pem"
+      RPC_TLS_KEY: "/ca/node4/key.pem"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8085:8080"
+    networks:
+      mtls_net:
+        aliases: [node3]
+    volumes:
+      - ca-trust:/ca:ro
+      - node4-tls:/ca/node4:ro

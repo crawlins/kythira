@@ -1000,6 +1000,11 @@ ctest --test-dir build --label-regex docker_chaos_unit --output-on-failure
 # Build image + run all scenario tests against a live 3-node cluster
 cmake --build build --target docker-chaos-tests
 
+# The same cluster over mutual-TLS Raft RPC, with certificates ca_service
+# issues in the stack, plus impostors at a member's address
+# (docker/mtls-chaos-compose.yml)
+cmake --build build --target docker-mtls-chaos-tests
+
 # Or drive the cluster manually for development
 docker compose -f docker/docker-compose.yml up -d
 ./build/docker_chaos_scenario_tests --log_level=message
@@ -1019,6 +1024,8 @@ docker compose -f docker/docker-compose.yml down
 | `ELECTION_TIMEOUT_MIN_MS` | `150` | Min election timeout (ms) |
 | `ELECTION_TIMEOUT_MAX_MS` | `300` | Max election timeout (ms) |
 | `HEARTBEAT_INTERVAL_MS` | `50` | Heartbeat interval (ms) |
+| `RPC_TIMEOUT_MS` | `100` | Per-RPC deadline (ms) |
+| `RPC_TLS_CERT` / `RPC_TLS_KEY` / `RPC_TLS_CA` | unset | Mutual TLS on Raft RPC: this node's certificate and key, and the root peers must chain to. All three or none. A peer must also carry its `PEERS` host name as a DNS SAN, and may speak only for that node's id. Not combinable with `JOIN`, a telemetry backend or `QUORUM_MANAGER` |
 
 ### Port layout
 
