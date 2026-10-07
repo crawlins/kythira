@@ -1,0 +1,24 @@
+{
+  "name": "poco-dnssd",
+  "version-string": "2016-10-05",
+  "description": "Poco DNSSD (pocoproject/poco-dnssd) with its Avahi backend, built as static libraries against vcpkg's poco[net]. Upstream ships only Poco's own make rules and Visual Studio projects, so this overlay port vendors a CMakeLists. Backs kythira's poco_peer_discovery (CONFIG_POCO_DISCOVERY), gated behind the opt-in \"poco-dnssd\" manifest feature. Needs the host's Avahi client headers (libavahi-client-dev on Debian/Ubuntu): vcpkg has no avahi port.",
+  "homepage": "https://github.com/pocoproject/poco-dnssd",
+  "license": "BSL-1.0",
+  "supports": "linux",
+  "dependencies": [
+    {
+      "name": "poco",
+      "features": [
+        "net"
+      ]
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

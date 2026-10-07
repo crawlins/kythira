@@ -173,10 +173,10 @@ jobs:
       # doesn't cover.
       #
       # docker-poco-discovery-tests is marked continue-on-error for a
-      # different, also-already-documented reason: PocoDNSSD's static
-      # archives are only manually built for x64-linux in this repository
-      # (see CMakeLists.txt's POCO_DNSSD_FOUND block and README.md's "ARM
-      # (arm64) Support" section), so POCO_DNSSD_FOUND is FALSE on arm64,
+      # different, also-already-documented reason: this job does not install
+      # the opt-in poco-dnssd vcpkg feature (see CMakeLists.txt's
+      # POCO_DNSSD_FOUND block and README.md's "ARM (arm64) Support"
+      # section), so POCO_DNSSD_FOUND is FALSE here,
       # cmd/poco_discovery_node's add_subdirectory() never runs, and the
       # poco_discovery_node target simply doesn't exist to build — this is
       # the documented degrade-to-disabled behavior working as designed,

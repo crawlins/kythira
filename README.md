@@ -202,15 +202,16 @@ for the full design.
 
 **Known limitations:**
 
-- **PocoDNSSD is x86_64-only in this repository.** The `poco_peer_discovery`
-  DNSSD backend depends on manually-built `libPocoDNSSD.a`/
-  `libPocoDNSSDAvahi.a` static archives (Poco's DNSSD component isn't a
-  standard vcpkg feature) that are only provided for the `x64-linux` triplet.
-  On `arm64-linux`, CMake configuration falls through to
-  `POCO_DNSSD_FOUND=FALSE` and `poco_peer_discovery` builds with that backend
-  disabled — the same graceful degradation an x86_64 host without the
-  prebuilt archives already sees today. rfc1035/rfc2136-based discovery
-  (`libldns`) is unaffected on either architecture.
+- **PocoDNSSD is opt-in.** The `poco_peer_discovery` DNSSD backend comes from
+  the `vcpkg-overlays/poco-dnssd` overlay port, enabled with the `poco-dnssd`
+  manifest feature (`vcpkg install --x-feature=poco-dnssd`). The port builds
+  against the host's Avahi client library, so it also needs
+  `libavahi-client-dev` (and, to run `poco_peer_discovery_unit_test` or
+  `poco_discovery_node`, a running `avahi-daemon`). Without the feature or the
+  Avahi headers, CMake configuration falls through to `POCO_DNSSD_FOUND=FALSE`
+  and `poco_peer_discovery` builds with that backend disabled, on either
+  architecture. CI builds it only on x86_64, in the DNS Discovery Build job.
+  rfc1035/rfc2136-based discovery (`libldns`) is unaffected.
 - **32-bit ARM (`armv7`/`armhf`) and non-Linux ARM (macOS, Windows) are out
   of scope.** This project targets server-class 64-bit ARM Linux (e.g. AWS
   Graviton), matching the architectures already selected by

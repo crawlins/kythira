@@ -4725,7 +4725,8 @@ else()
     message(STATUS "libldns not found — dns_peer_discovery_unit_test will not be built")
 endif()
 
-# Poco DNSSD peer discovery unit tests — require Poco ≥ 1.9 with DNSSD support.
+# Poco DNSSD peer discovery unit tests — require the vcpkg poco-dnssd port
+# (manifest feature `poco-dnssd`) and the host's Avahi client library.
 if(POCO_DNSSD_FOUND)
     add_executable(poco_peer_discovery_unit_test poco_peer_discovery_unit_test.cpp)
     target_link_libraries(poco_peer_discovery_unit_test PRIVATE
@@ -4747,9 +4748,6 @@ if(POCO_DNSSD_FOUND)
             "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_context.a")
     elseif(TARGET Boost::context)
         target_link_libraries(poco_peer_discovery_unit_test PRIVATE Boost::context)
-    endif()
-    if(POCO_DNSSD_INCLUDE_DIRS)
-        target_include_directories(poco_peer_discovery_unit_test PRIVATE ${POCO_DNSSD_INCLUDE_DIRS})
     endif()
     target_compile_features(poco_peer_discovery_unit_test PRIVATE cxx_std_23)
     add_test(NAME poco_peer_discovery_unit_test COMMAND poco_peer_discovery_unit_test)

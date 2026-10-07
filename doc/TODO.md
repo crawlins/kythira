@@ -2685,6 +2685,15 @@ unverified completion claim.
   disable that backend, exactly as an x86_64 host without the prebuilt
   archives already would. Rebuilding those archives from scratch, if ever
   needed, isn't documented anywhere yet — worth adding if this bites again.
+  **Resolved (October 7, 2026):** the archives are no longer hand-built.
+  `vcpkg-overlays/poco-dnssd` builds PocoDNSSD and its Avahi backend from
+  `pocoproject/poco-dnssd` behind the opt-in `poco-dnssd` manifest feature
+  (it needs `libavahi-client-dev` on the host), CMake finds it with
+  `find_package(poco-dnssd CONFIG)`, and the DNS Discovery Build CI job
+  builds `poco_discovery_node` and runs `poco_peer_discovery_unit_test`
+  against a real `avahi-daemon`. That test's comments claim it runs without
+  a daemon; it does not (every case that constructs a
+  `poco_peer_discovery` throws `DNSSDException`), which is why CI starts one.
 
 - **Gap 2 above (per-target `folly_FOUND` CMake gating) closed for
   `tests/`/`certificate_authority`** (July 25, 2026) — scoped empirically

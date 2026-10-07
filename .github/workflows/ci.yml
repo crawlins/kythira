@@ -1054,17 +1054,24 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           sccache --show-stats
 
-  # ── DNS discovery build (libldns + BIND) ─────────────────────────────────────
-  # The only job that builds with CONFIG_DNS_DISCOVERY=y. libldns is in no other
-  # CI image, so before this job the RFC 1035/2136/6763 peer-discovery classes,
-  # the dns_discovery_node/dns_sd_discovery_node binaries and ACME dns-01 (all
-  # behind KYTHIRA_HAS_LDNS) were never compiled in CI at all.
+  # ── DNS discovery build (libldns + BIND, Poco DNSSD + Avahi) ─────────────────
+  # The only job that builds with CONFIG_DNS_DISCOVERY=y or
+  # CONFIG_POCO_DISCOVERY=y. libldns is in no other CI image, so before this job
+  # the RFC 1035/2136/6763 peer-discovery classes, the
+  # dns_discovery_node/dns_sd_discovery_node binaries and ACME dns-01 (all
+  # behind KYTHIRA_HAS_LDNS) were never compiled in CI at all. The same was
+  # true of poco_peer_discovery and poco_discovery_node (KYTHIRA_HAS_POCO_DNSSD)
+  # until the vcpkg-overlays/poco-dnssd port replaced the hand-built archives.
   #
-  # Same compiler and vcpkg tree as the g++-13 x64 Build & Test leg, under the
-  # same actions/cache key, so on a warm cache the only new work is the DNS
-  # targets themselves. libldns-dev and bind9 come from apt: libldns has no
-  # vcpkg port, and the Dockerfiles that ship these binaries already use
-  # Ubuntu's libldns3.
+  # Same compiler and vcpkg tree as the g++-13 x64 Build & Test leg plus the
+  # poco-dnssd feature, so on a warm binary cache the only new work is that
+  # port and the discovery targets. libldns-dev and bind9 come from apt:
+  # libldns has no vcpkg port, and the Dockerfiles that ship these binaries
+  # already use Ubuntu's libldns3. libavahi-client-dev is the host library the
+  # poco-dnssd port builds against (vcpkg has no avahi port), and
+  # avahi-daemon is what poco_peer_discovery_unit_test talks to: constructing
+  # a poco_peer_discovery opens an Avahi client, which throws without a
+  # running daemon.
   #
   # bind9 supplies named for dns_discovery_bind_integration_test, which starts
   # a throwaway server through scripts/dns-test-server.sh (a CTest fixture) and
@@ -1091,7 +1098,7 @@ jobs:
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
                  g++-13 cmake ninja-build libfiu-dev ccache \
                  autoconf autoconf-archive automake libtool \
-                 libldns-dev bind9; then
+                 libldns-dev bind9 libavahi-client-dev avahi-daemon; then
               break
             fi
             if [ "$attempt" = 3 ]; then
@@ -1102,6 +1109,10 @@ jobs:
             sleep 30
           done
           sudo systemctl disable --now named
+          # The package starts the daemon on install; make sure, and fail here
+          # rather than as 24 DNSSDExceptions in the Poco test if it did not.
+          sudo systemctl start avahi-daemon
+          avahi-daemon --check
           if [ -e /etc/apparmor.d/usr.sbin.named ] && [ -d /sys/kernel/security/apparmor ]; then
             sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.named
           fi
@@ -1138,15 +1149,15 @@ jobs:
           namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
           region: ${{ vars.OCI_CI_REGION }}
 
-      # Byte-identical to the g++-13 build-and-test legs' key on purpose: the
-      # vcpkg tree is the same (libldns is not in it), so this job restores
-      # their cache rather than keeping a copy of its own.
+      # The g++-13 build-and-test legs' key plus the poco-dnssd feature: the
+      # tree is theirs with one more port in it. On a miss, every port but
+      # poco-dnssd comes from the shared vcpkg binary cache.
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-poco-dnssd-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -1157,7 +1168,7 @@ jobs:
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc --x-feature=poco-dnssd
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
@@ -1169,8 +1180,9 @@ jobs:
         run: scripts/oci-build-cache/start-sccache.sh
 
       # KYTHIRA_KCONFIG_STRICT=ON is what turns "libldns-dev is installed" into
-      # an assertion: if pkg-config ever stops finding ldns, this configure
-      # FATAL_ERRORs instead of quietly dropping every target below.
+      # an assertion: if pkg-config ever stops finding ldns, or the poco-dnssd
+      # port stops resolving, this configure FATAL_ERRORs instead of quietly
+      # dropping every target below.
       - name: Configure (Release, DNS discovery)
         run: |
           cmake -B build -G Ninja \
@@ -1183,10 +1195,11 @@ jobs:
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      # Only the targets KYTHIRA_HAS_LDNS changes, not the whole tree: the rest
-      # is byte-identical to what the build-and-test legs already build. The
-      # two discovery nodes are built and not run here; their Docker scenarios
-      # need container images this job does not build.
+      # Only the targets KYTHIRA_HAS_LDNS and KYTHIRA_HAS_POCO_DNSSD change, not
+      # the whole tree: the rest is byte-identical to what the build-and-test
+      # legs already build. The three discovery nodes are built and not run
+      # here; their Docker scenarios need container images this job does not
+      # build.
       - name: Build DNS targets
         run: |
           cmake --build build -j$(nproc) --target \
@@ -1196,8 +1209,10 @@ jobs:
             acme_certificate_provider_test \
             acme_identifier_type_test \
             acme_test_server_unit_test \
+            poco_peer_discovery_unit_test \
             dns_discovery_node \
-            dns_sd_discovery_node
+            dns_sd_discovery_node \
+            poco_discovery_node
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'
@@ -1217,7 +1232,7 @@ jobs:
       - name: Run DNS tests
         run: |
           ctest --test-dir build --output-on-failure --no-tests=error --timeout 900 \
-            -R '^(dns_peer_discovery_unit_test|dns_peer_discovery_chaos_test|dns_discovery_bind_integration_test|acme_certificate_provider_test|acme_identifier_type_test|acme_test_server_unit_test)$'
+            -R '^(dns_peer_discovery_unit_test|dns_peer_discovery_chaos_test|dns_discovery_bind_integration_test|acme_certificate_provider_test|acme_identifier_type_test|acme_test_server_unit_test|poco_peer_discovery_unit_test)$'
 
       - name: Upload BIND fixture log
         if: failure()

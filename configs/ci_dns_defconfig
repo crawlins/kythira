@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ci_dns_defconfig — the feature set the DNS Discovery Build job resolves.
-# That job installs the same vcpkg tree as the g++-13 x64 Build & Test leg
-# (`--x-feature=edhoc`, shared cache key) and adds libldns-dev and bind9 from
-# apt, so this file is ci_full_defconfig with CONFIG_DNS_DISCOVERY turned on
-# and nothing else changed. Written, like ci_full_defconfig, against
+# That job installs the g++-13 x64 Build & Test leg's vcpkg tree plus the
+# poco-dnssd feature (`--x-feature=edhoc --x-feature=poco-dnssd`) and adds
+# libldns-dev, bind9, libavahi-client-dev and avahi-daemon from apt, so this
+# file is ci_full_defconfig with CONFIG_DNS_DISCOVERY and CONFIG_POCO_DISCOVERY
+# turned on and nothing else changed. Written, like ci_full_defconfig, against
 # `-DKYTHIRA_KCONFIG_STRICT=ON`; only the difference is annotated here.
 #
 #   DNS_DISCOVERY           — the point of the job. ci_full_defconfig leaves it
@@ -16,10 +17,15 @@
 #                             of quietly dropping every ldns-backed target.
 #                             It also turns on ACME dns-01, which is compiled
 #                             only under KYTHIRA_HAS_LDNS.
+#   POCO_DISCOVERY          — the vcpkg-overlays/poco-dnssd port, which needs
+#                             the host's Avahi headers and so is opt-in and in
+#                             no other job's tree. Strict mode makes a port or
+#                             Avahi regression a configure error here.
 #
 # Everything else is verbatim from ci_full_defconfig and must stay that way —
 # the job builds the DNS targets out of the same tree the main legs build.
 CONFIG_DNS_DISCOVERY=y
+CONFIG_POCO_DISCOVERY=y
 CONFIG_EDHOC=y
 CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y
@@ -31,4 +37,3 @@ CONFIG_PROTOBUF_SERIALIZER=y
 # CONFIG_GCP_PRIVATECA is not set
 # CONFIG_GCP_STORAGE is not set
 # CONFIG_GCP_STORAGE_PERSISTENCE is not set
-# CONFIG_POCO_DISCOVERY is not set

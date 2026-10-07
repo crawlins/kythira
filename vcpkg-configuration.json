@@ -18,6 +18,7 @@
     "./vcpkg-overlays/ion-c",
     "./vcpkg-overlays/mvfst",
     "./vcpkg-overlays/grpc",
-    "./vcpkg-overlays/libcoap"
+    "./vcpkg-overlays/libcoap",
+    "./vcpkg-overlays/poco-dnssd"
   ]
 }
