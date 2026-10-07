@@ -668,6 +668,55 @@ BOOST_AUTO_TEST_CASE(numeric_mode_never_reuses_an_assessed_id) {
     BOOST_CHECK_EQUAL(std::move(mgr.provision_node("AZ1", std::nullopt)).get().node_id, 52u);
 }
 
+// Every launch requires IMDSv2 unless the config opts out, so an SSRF on a
+// node cannot read its instance-profile credentials with a plain GET.
+BOOST_AUTO_TEST_CASE(launches_require_imdsv2_by_default) {
+    fake_aws fake;
+    fake.next_ids.push_back("i-0123456789abcdef0");
+    fake.next_ids.push_back("i-0123456789abcdef1");
+    fake.next_ids.push_back("i-0123456789abcdef2");
+    auto cfg = ec2_config(fake);
+    {
+        kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
+        std::move(mgr.provision_node("AZ1", std::nullopt)).get();
+    }
+    cfg.imds_hop_limit = 2;
+    {
+        kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
+        std::move(mgr.provision_node("AZ1", std::nullopt)).get();
+    }
+    cfg.require_imdsv2 = false;
+    {
+        kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
+        std::move(mgr.provision_node("AZ1", std::nullopt)).get();
+    }
+    BOOST_REQUIRE_EQUAL(fake.run_requests.size(), 3u);
+
+    auto& by_default = fake.run_requests[0];
+    BOOST_CHECK_EQUAL(by_default["MetadataOptions.HttpTokens"], "required");
+    BOOST_CHECK_EQUAL(by_default["MetadataOptions.HttpEndpoint"], "enabled");
+    BOOST_CHECK(!by_default.contains("MetadataOptions.HttpPutResponseHopLimit"));
+
+    auto& with_hop_limit = fake.run_requests[1];
+    BOOST_CHECK_EQUAL(with_hop_limit["MetadataOptions.HttpTokens"], "required");
+    BOOST_CHECK_EQUAL(with_hop_limit["MetadataOptions.HttpPutResponseHopLimit"], "2");
+
+    const auto& opted_out = fake.run_requests[2];
+    BOOST_CHECK(std::ranges::none_of(
+        opted_out, [](const auto& kv) { return kv.first.starts_with("MetadataOptions."); }));
+}
+
+BOOST_AUTO_TEST_CASE(imds_hop_limit_out_of_range_is_rejected) {
+    fake_aws fake;
+    auto cfg = ec2_config(fake);
+    cfg.imds_hop_limit = 0;
+    BOOST_CHECK_THROW(kythira::aws_ec2_quorum_manager<std::uint64_t>{cfg}, std::invalid_argument);
+    cfg.imds_hop_limit = 65;
+    BOOST_CHECK_THROW(kythira::aws_ec2_quorum_manager<std::uint64_t>{cfg}, std::invalid_argument);
+    cfg.imds_hop_limit = 64;
+    BOOST_CHECK_NO_THROW(kythira::aws_ec2_quorum_manager<std::uint64_t>{cfg});
+}
+
 BOOST_AUTO_TEST_CASE(numeric_mode_refuses_to_wrap_a_narrow_id) {
     fake_aws fake;
     fake.add_instance({.id = "i-00000000000000001",

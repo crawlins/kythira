@@ -55,6 +55,18 @@ source "amazon-ebs" "ca_cluster_node" {
   })
   snapshot_tags = local.common_tags
 
+  # Instances launched from this AMI default to IMDSv2 only (the image's
+  # ImdsSupport=v2.0 attribute, set at RegisterImage), so a server-side
+  # request forgery on a CA node cannot read its instance-profile
+  # credentials with a plain GET. The builder instance itself requires
+  # IMDSv2 too. Ubuntu's cloud-init and the AWS SDK both speak v2.
+  imds_support = "v2.0"
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
   # 8 GiB matches Ubuntu 24.04's own default root volume size — the binary
   # and its runtime libs need only a few MB more, so the default is not
   # shrunk or grown.

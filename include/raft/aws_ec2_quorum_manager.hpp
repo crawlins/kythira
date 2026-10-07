@@ -18,7 +18,10 @@
 #include <aws/ec2/model/DescribeInstancesRequest.h>
 #include <aws/ec2/model/Filter.h>
 #include <aws/ec2/model/IamInstanceProfileSpecification.h>
+#include <aws/ec2/model/HttpTokensState.h>
 #include <aws/ec2/model/InstanceMarketOptionsRequest.h>
+#include <aws/ec2/model/InstanceMetadataEndpointState.h>
+#include <aws/ec2/model/InstanceMetadataOptionsRequest.h>
 #include <aws/ec2/model/InstanceType.h>
 #include <aws/ec2/model/Placement.h>
 #include <aws/ec2/model/ResourceType.h>
@@ -121,6 +124,16 @@ struct aws_ec2_quorum_manager_config {
     std::map<std::string, ec2_placement_group_config> placement_by_group;
     /// When set, nodes are launched as Spot instances with these options.
     std::optional<ec2_spot_options> spot_options;
+    /// Launch every node with IMDSv2 required (HttpTokens=required), so a
+    /// server-side request forgery on a node cannot read the instance
+    /// profile's credentials with a plain GET to 169.254.169.254. The AWS
+    /// SDK, cloud-init and the AWS CLI all speak IMDSv2. false leaves the
+    /// metadata options to the AMI and account defaults.
+    bool require_imdsv2{true};
+    /// IMDSv2 token PUT response hop limit, 1-64, applied when require_imdsv2
+    /// is set. Unset = the AMI or account default (1 on most AMIs). A node
+    /// that runs in a container on a bridge network needs 2.
+    std::optional<std::uint32_t> imds_hop_limit;
     /// Maximum time to wait for a newly launched instance to reach "running" state.
     std::chrono::seconds provision_timeout{120};
     /// Sleep interval between DescribeInstances polls during provisioning.
@@ -170,7 +183,8 @@ public:
 
     /// Constructs the manager and validates the configuration.
     /// Throws std::invalid_argument if cluster_name, image_id, or node_port are empty/zero,
-    /// or if topology references a group not present in subnet_by_group.
+    /// if imds_hop_limit is outside 1-64, or if topology references a group not present in
+    /// subnet_by_group.
     explicit aws_ec2_quorum_manager(aws_ec2_quorum_manager_config cfg) : _cfg(std::move(cfg)) {
         if (_cfg.cluster_name.empty()) {
             throw std::invalid_argument("aws_ec2_quorum_manager: cluster_name must be non-empty");
@@ -180,6 +194,9 @@ public:
         }
         if (_cfg.node_port == 0) {
             throw std::invalid_argument("aws_ec2_quorum_manager: node_port must be non-zero");
+        }
+        if (_cfg.imds_hop_limit && (*_cfg.imds_hop_limit < 1 || *_cfg.imds_hop_limit > 64)) {
+            throw std::invalid_argument("aws_ec2_quorum_manager: imds_hop_limit must be 1-64");
         }
         for (const auto& gt : _cfg.topology.groups) {
             if (_cfg.subnet_by_group.find(gt.group_id) == _cfg.subnet_by_group.end()) {
@@ -516,6 +533,15 @@ private:
             }
             if (!_cfg.key_name.empty()) {
                 run_req.SetKeyName(_cfg.key_name);
+            }
+            if (_cfg.require_imdsv2) {
+                Aws::EC2::Model::InstanceMetadataOptionsRequest metadata;
+                metadata.SetHttpTokens(Aws::EC2::Model::HttpTokensState::required);
+                metadata.SetHttpEndpoint(Aws::EC2::Model::InstanceMetadataEndpointState::enabled);
+                if (_cfg.imds_hop_limit) {
+                    metadata.SetHttpPutResponseHopLimit(static_cast<int>(*_cfg.imds_hop_limit));
+                }
+                run_req.SetMetadataOptions(metadata);
             }
             // Numeric mode knows the id before launch, so it goes into the
             // launch tags and {NODE_ID}. When the id is the instance it does

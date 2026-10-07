@@ -50,6 +50,10 @@ template itself? `--skip-binary-build` reuses whatever is at
   `docker/ca_cluster_node/ca_cluster_node.service`, `enable`d but **not**
   started (its `EnvironmentFile`, `/etc/default/ca_cluster_node`, doesn't
   exist yet).
+- The image is registered with `ImdsSupport=v2.0`, so every instance
+  launched from it requires IMDSv2 tokens unless the launch overrides that.
+  A forged request from a CA node cannot read its instance-profile
+  credentials with a plain `GET`.
 
 **No secrets are ever baked in.** The unseal passphrase, `CA_SERVICE_AUTH_TOKEN`,
 RPC-TLS bootstrap credential, `NODE_ID`, and `--peers` all remain supplied
