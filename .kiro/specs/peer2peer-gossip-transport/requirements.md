@@ -283,7 +283,21 @@ clock synchronization or a separate coordination mechanism.
    `gossip_exchange` push-pull (Requirement 5) SHALL propagate each
    digest's already-set `fresh_until` unchanged — freshness deadlines are
    set once, at the originating node, and travel with the digest, not
-   reset by every hop.
+   reset by every hop. The one exception is 6.6's upper clamp.
+5. The local table SHALL hold at most `max_table_entries` digests
+   (`tcp_gossip_config`, default 1024; zero is rejected at construction).
+   Gossip is unauthenticated, so without a cap any peer that can reach the
+   listener could grow the table without bound with invented `node_id`s.
+   When a digest for a `node_id` not yet present arrives at a full table,
+   an expired entry SHALL be evicted to make room; failing that, a digest
+   for a current member SHALL evict the non-member entry closest to
+   expiry, so invented ids cannot lock real members out; otherwise the
+   incoming digest SHALL be dropped. A digest for a `node_id` already
+   present is merged per 6.1 whether or not the table is full.
+6. On merge, an incoming digest's `fresh_until` SHALL be clamped to at most
+   `now + freshness_interval` on the receiving node, so a sender cannot
+   choose a far-future deadline that keeps an entry (or a slot under 6.5)
+   alive indefinitely. An earlier deadline is kept as is (6.4).
 
 ### Requirement 7: Interaction with `fetch_log_entries`
 

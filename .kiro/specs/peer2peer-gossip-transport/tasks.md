@@ -313,6 +313,18 @@ static configuration supplies address resolution only.
     membership-eligibility and gossip-table staleness are independent axes
   - _Requirements: 1.4, 2.2, 2.3_
 
+- [x] 15. Bound the table against untrusted digests
+  - `tcp_gossip_config::max_table_entries` (default 1024, non-zero) caps
+    `_table`; `merge()` evicts an expired entry, or lets a current member
+    evict the non-member closest to expiry, before dropping a new id
+  - `merge()` clamps each incoming `fresh_until` to
+    `now + freshness_interval`
+  - Unit tests in `tcp_gossip_transport_merge_unit_test.cpp`: cap under a
+    1000-id flood, known ids still update at the cap, member-evicts-
+    non-member, expired-slot reuse, clamp and no-clamp cases, zero cap
+    rejected
+  - _Requirements: 6.5, 6.6_
+
 ---
 
 ## Notes
