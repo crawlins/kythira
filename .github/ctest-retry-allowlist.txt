@@ -16,13 +16,16 @@
 # ci.yml runs on 2026-10-03: 20 of the 54 jobs had at least one retry-rescued
 # test, and 9 of the 12 tests below appeared only once. A tail that long means
 # unseen flakes would still turn most runs red, so turn strict mode on once
-# the first two entries are fixed and a week of runs shows nothing new.
+# beast_server_test (27 of 200 jobs, the biggest single source now) is fixed
+# and a week of runs shows nothing new.
 #
-# Observed counts are first-attempt failures out of 54 jobs. See the TODO.md
-# entry "Retry-rescued flakes on the allowlist".
+# Observed counts are first-attempt failures out of 54 jobs (2026-10-03) unless
+# marked /200 (200 jobs across 19 runs, 2026-10-06..07, after the
+# ca_cluster_node bootstrap-election fix). See the TODO.md entry
+# "Retry-rescued flakes on the allowlist".
 
-ca_cluster_node_rpc_tls_test                      10/54, fails at ~87s or ~292s
-ca_cluster_node_rpc_tls_restart_test               4/54, always fails at 40.6s
+beast_server_test                                 27/200, fails in 0.1-0.6s, every leg but TSan
+ca_cluster_node_test                               3/200, uncaught SIGSEGV ~0.1s in, clang only
 coap_dtls_connection_establishment_property_test   2/54, once a 900s timeout
 chaos_state_machine_safety_test                    1/54
 certificate_authority_property_test                1/54
