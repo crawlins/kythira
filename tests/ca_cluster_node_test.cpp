@@ -31,6 +31,7 @@
 #include <arpa/inet.h>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -224,6 +225,26 @@ struct cluster_node_process {
 
     [[nodiscard]] auto is_running() const -> bool { return pid > 0; }
 
+    // Reaps the process if it has already exited and describes how it ended,
+    // or returns nullopt while it is still running.
+    auto reap_if_exited() -> std::optional<std::string> {
+        if (pid <= 0) {
+            return std::nullopt;
+        }
+        int status = 0;
+        if (::waitpid(pid, &status, WNOHANG) != pid) {
+            return std::nullopt;
+        }
+        pid = -1;
+        if (WIFEXITED(status)) {
+            return "exited with status " + std::to_string(WEXITSTATUS(status));
+        }
+        if (WIFSIGNALED(status)) {
+            return "killed by signal " + std::to_string(WTERMSIG(status));
+        }
+        return std::string("ended");
+    }
+
     // Waits for the process to exit on its own and returns its exit code, or
     // nullopt if it is still running at the deadline or died from a signal.
     auto wait_for_own_exit(std::chrono::milliseconds timeout) -> std::optional<int> {
@@ -262,8 +283,13 @@ auto wait_healthy(int http_port, std::chrono::seconds timeout) -> bool {
 // Polls every node round-robin (rather than waiting on each sequentially, so
 // the total wait is bounded by the slowest node, not the sum of all of
 // them — all processes are already running concurrently).
+//
+// A node that exits before answering (typically because another process took
+// one of its pre-picked ports between find_free_port() and the node's bind)
+// ends the wait at once and is described in `*died`, so the caller can retry
+// on fresh ports instead of waiting out the whole timeout.
 auto wait_all_healthy(const std::vector<std::unique_ptr<cluster_node_process>>& nodes,
-                      std::chrono::seconds timeout) -> bool {
+                      std::chrono::seconds timeout, std::string* died = nullptr) -> bool {
     std::vector<bool> healthy(nodes.size(), false);
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -271,6 +297,13 @@ auto wait_all_healthy(const std::vector<std::unique_ptr<cluster_node_process>>& 
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             if (healthy[i]) {
                 continue;
+            }
+            if (auto how = nodes[i]->reap_if_exited()) {
+                if (died != nullptr) {
+                    *died = "node " + std::to_string(nodes[i]->node_id) + " " + *how +
+                            " during startup";
+                }
+                return false;
             }
             httplib::Client c("127.0.0.1", nodes[i]->http_port);
             c.set_connection_timeout(1, 0);
@@ -346,6 +379,20 @@ auto post_with_retry_on_not_ready(httplib::Client& client, const std::string& pa
 
 constexpr const char* k_auth_token = "cluster-test-token";
 
+// This binary has died of an uncaught SIGSEGV within 0.1 s of starting, on
+// clang++-18 CI legs only (3 of 200 jobs, October 6-7 2026), with no Boost
+// output at all: ctest pipes stdout, so Boost's fully buffered progress
+// lines died with the process and only the node subprocesses' own lines
+// survived. Unbuffer stdout and log test-unit entry and exit so the next
+// occurrence names the test case and how far it got.
+struct unbuffered_progress_log {
+    unbuffered_progress_log() {
+        std::setvbuf(stdout, nullptr, _IONBF, 0);
+        boost::unit_test::unit_test_log.set_threshold_level(boost::unit_test::log_test_units);
+    }
+};
+BOOST_TEST_GLOBAL_FIXTURE(unbuffered_progress_log);
+
 struct three_node_cluster {
     std::string tmp_root;
     std::string unseal_key_file;
@@ -360,6 +407,33 @@ struct three_node_cluster {
         unseal_key_file = tmp_root + "/unseal.key";
         std::ofstream(unseal_key_file) << "multi-node-test-unseal-passphrase\n";
 
+        // find_free_port() only proves a port was free a moment ago; on a
+        // busy CI host another test can take it (as a listener or as an
+        // outgoing connection's local port) before the node binds, and that
+        // node then exits during startup. Retry on fresh ports and a fresh
+        // data directory rather than failing the test case.
+        constexpr int k_start_attempts = 3;
+        std::string died;
+        for (int attempt = 1; attempt <= k_start_attempts; ++attempt) {
+            died.clear();
+            if (start_nodes(attempt, &died)) {
+                return;
+            }
+            BOOST_REQUIRE_MESSAGE(!died.empty(),
+                                  "not every node became healthy within the timeout");
+            BOOST_TEST_MESSAGE("three_node_cluster: attempt " << attempt << ": " << died
+                                                              << "; retrying on fresh ports");
+            for (auto& n : nodes) {
+                n->stop();
+            }
+            nodes.clear();
+        }
+        BOOST_FAIL("three_node_cluster: no attempt brought all three nodes up; last: " << died);
+    }
+
+    // One attempt: picks fresh ports, spawns all three nodes into
+    // node<id>_<attempt> directories, and waits for every /healthz.
+    auto start_nodes(int attempt, std::string* died) -> bool {
         struct info {
             std::uint64_t id;
             int rpc_port;
@@ -387,12 +461,11 @@ struct three_node_cluster {
         for (std::size_t i = 0; i < infos.size(); ++i) {
             nodes.push_back(std::make_unique<cluster_node_process>(
                 infos[i].id, infos[i].rpc_port, infos[i].http_port,
-                tmp_root + "/node" + std::to_string(infos[i].id), unseal_key_file, k_auth_token,
-                peers_arg, /*bootstrap=*/i == 0));
+                tmp_root + "/node" + std::to_string(infos[i].id) + "_" + std::to_string(attempt),
+                unseal_key_file, k_auth_token, peers_arg, /*bootstrap=*/i == 0));
         }
 
-        BOOST_REQUIRE_MESSAGE(wait_all_healthy(nodes, std::chrono::seconds(60)),
-                              "not every node became healthy within the timeout");
+        return wait_all_healthy(nodes, std::chrono::seconds(60), died);
     }
 
     ~three_node_cluster() {
@@ -668,15 +741,44 @@ BOOST_AUTO_TEST_CASE(property_17_issuance_survives_leader_failover,
 
     // Precise check: revoke-by-serial against the new leader must find the
     // pre-failover entry (404 iff the ledger lost it).
-    httplib::Client new_leader_client("127.0.0.1",
-                                      cluster.nodes[new_leader->node_index]->http_port);
-    new_leader_client.set_connection_timeout(5, 0);
-    new_leader_client.set_read_timeout(65, 0);
+    //
+    // With only two nodes left, leadership can still move once more: the
+    // surviving follower may time out before the new leader's first
+    // heartbeat reaches it, take a higher term, and cancel the revoke the
+    // new leader had just accepted (a 503), or the node asked may no longer
+    // lead (a 308). Neither says anything about the ledger, so ask whichever
+    // node leads now until one answers 200 or 404. Revocation is idempotent:
+    // re-revoking a serial that a cancelled-but-committed attempt already
+    // marked still answers 200.
     boost::json::object revoke_body;
     revoke_body["serial"] = std::to_string(serial);
-    auto revoke_res =
-        new_leader_client.Post("/v1/certificates/revoke", cluster.auth_headers(),
-                               boost::json::serialize(revoke_body), "application/json");
+    httplib::Result revoke_res;
+    auto revoke_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    std::optional<leader_probe_result> current_leader = new_leader;
+    while (std::chrono::steady_clock::now() < revoke_deadline) {
+        if (!current_leader) {
+            current_leader = find_leader(cluster.nodes, k_auth_token, std::chrono::seconds(30));
+            if (!current_leader) {
+                continue;
+            }
+        }
+        httplib::Client client("127.0.0.1", cluster.nodes[current_leader->node_index]->http_port);
+        client.set_connection_timeout(5, 0);
+        client.set_read_timeout(65, 0);
+        revoke_res = client.Post("/v1/certificates/revoke", cluster.auth_headers(),
+                                 boost::json::serialize(revoke_body), "application/json");
+        if (revoke_res && (revoke_res->status == 200 || revoke_res->status == 404)) {
+            break;
+        }
+        BOOST_TEST_MESSAGE("revoke attempt on node "
+                           << cluster.nodes[current_leader->node_index]->node_id << ": "
+                           << (revoke_res
+                                   ? std::to_string(revoke_res->status) + " " + revoke_res->body
+                                   : std::string("no response"))
+                           << "; asking the current leader again");
+        current_leader.reset();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
     BOOST_REQUIRE(revoke_res);
     BOOST_TEST_MESSAGE("revoke response: " << revoke_res->status << " " << revoke_res->body);
     BOOST_TEST(revoke_res->status == 200);
