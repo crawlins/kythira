@@ -6,14 +6,27 @@
   "memory": "512",
   "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/kythira-ca-service-execution-role",
   "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/kythira-ca-service-task-role",
+  "volumes": [
+    {
+      "name": "ca-service-run"
+    }
+  ],
   "containerDefinitions": [
     {
       "name": "ca-service",
       "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-service@sha256:IMAGE_DIGEST",
       "essential": true,
+      "user": "10001:10001",
+      "readonlyRootFilesystem": true,
       "entryPoint": ["sh", "-c"],
       "command": [
-        "set -e; umask 077; echo \"$CA_SERVICE_TLS_CERT\" > /tmp/tls.crt; echo \"$CA_SERVICE_TLS_KEY\" > /tmp/tls.key; exec /usr/local/bin/ca_service --serve 0.0.0.0:8443 --tls-cert /tmp/tls.crt --tls-key /tmp/tls.key --provider aws-acm-pca --acm-pca-arn arn:aws:acm-pca:REGION:ACCOUNT_ID:certificate-authority/CA_ID --aws-region REGION"
+        "set -e; umask 077; echo \"$CA_SERVICE_TLS_CERT\" > /run/ca_service/tls.crt; echo \"$CA_SERVICE_TLS_KEY\" > /run/ca_service/tls.key; exec /usr/local/bin/ca_service --serve 0.0.0.0:8443 --tls-cert /run/ca_service/tls.crt --tls-key /run/ca_service/tls.key --provider aws-acm-pca --acm-pca-arn arn:aws:acm-pca:REGION:ACCOUNT_ID:certificate-authority/CA_ID --aws-region REGION"
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "ca-service-run",
+          "containerPath": "/run/ca_service"
+        }
       ],
       "portMappings": [
         {
@@ -39,6 +52,10 @@
         {
           "name": "CA_SERVICE_ROOT_FINGERPRINT",
           "value": "FILL_IN_VIA_ca_service---print-root-fingerprint"
+        },
+        {
+          "name": "TMPDIR",
+          "value": "/run/ca_service"
         }
       ],
       "healthCheck": {
