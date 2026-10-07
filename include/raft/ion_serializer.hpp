@@ -347,15 +347,17 @@ public:
     }
 
     // Serialize FetchLogEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>& resp) const -> Data {
+        const fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId>& resp) const
+        -> Data {
         return encode(base_estimate + entries_estimate(resp.entries()), [&](hWRITER w) {
             write_annotation(w, "fetch_log_entries_response");
             start_struct(w);
             write_field_id(w, "group_id", resp.group_id());
-            write_field_int(w, "responder_id", static_cast<std::int64_t>(resp.responder_id()));
+            write_field_id(w, "responder_id", resp.responder_id());
             write_field_bool(w, "available", resp.available());
             write_field_int(w, "prev_log_term", static_cast<std::int64_t>(resp.prev_log_term()));
             write_field_entries(w, "entries", resp.entries());
@@ -859,16 +861,17 @@ public:
     }
 
     // Deserialize FetchLogEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_response(const Data& data) const
-        -> fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> {
-        fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> resp{};
+        -> fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId> {
+        fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId> resp{};
         bool have_responder = false, have_available = false, have_plt = false, have_entries = false;
         decode(data, "fetch_log_entries_response", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
                 if (key == "responder_id") {
-                    resp._responder_id = read_int<std::uint64_t>(r, t);
+                    resp._responder_id = read_id<NodeId>(r, t);
                     have_responder = true;
                 } else if (key == "available") {
                     resp._available = read_bool(r, t);
@@ -1083,11 +1086,13 @@ private:
     }
 
     /// Write a `NodeId` field: native Ion `int` when numeric, `string` when
-    /// `std::string` (Requirement 2.7, 3.3).
+    /// `std::string` or a composite id's canonical text (Requirement 2.7, 3.3).
     template<typename NodeId>
     static auto write_field_id(hWRITER w, const char* name, const NodeId& id) -> void {
         if constexpr (std::same_as<NodeId, std::string>) {
             write_field_string(w, name, id);
+        } else if constexpr (composite_node_id<NodeId>) {
+            write_field_string(w, name, id.to_string());
         } else {
             write_field_int(w, name, static_cast<std::int64_t>(id));
         }
@@ -1208,6 +1213,15 @@ private:
     template<typename NodeId> static auto read_id(hREADER r, ION_TYPE t) -> NodeId {
         if constexpr (std::same_as<NodeId, std::string>) {
             return read_string(r, t);
+        } else if constexpr (composite_node_id<NodeId>) {
+            // A composite id travels as its canonical text; text that does not
+            // parse fails the decode rather than yielding a default id.
+            const auto text = read_string(r, t);
+            auto id = NodeId::parse(text);
+            if (!id) {
+                throw serialization_exception("invalid composite node id: \"" + text + "\"");
+            }
+            return std::move(*id);
         } else {
             return read_int<NodeId>(r, t);
         }

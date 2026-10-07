@@ -1907,7 +1907,7 @@ private:
             if constexpr (std::is_same_v<NodeId, std::string>) {
                 snap._configuration._nodes.emplace_back(n.as_string());
             } else {
-                snap._configuration._nodes.push_back(static_cast<NodeId>(n.as_int64()));
+                snap._configuration._nodes.push_back(n.to_number<NodeId>());
             }
         }
         snap._configuration._is_joint_consensus =
@@ -1918,7 +1918,7 @@ private:
                 if constexpr (std::is_same_v<NodeId, std::string>) {
                     old_nodes.emplace_back(n.as_string());
                 } else {
-                    old_nodes.push_back(static_cast<NodeId>(n.as_int64()));
+                    old_nodes.push_back(n.to_number<NodeId>());
                 }
             }
             snap._configuration._old_nodes = std::move(old_nodes);

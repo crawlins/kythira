@@ -50,6 +50,8 @@ multi_raft<Types, Key, GroupId>::multi_raft(config_type cfg)
     // protection: re-creating a merged-away group gives two shards one range.
     _demux.set_tombstone_predicate([this](const GroupId& g) { return this->is_tombstoned(g); });
 
+    _demux.set_local_node_id(_cfg.node_id);
+
     // Every inbound message is a wake signal (Requirement 5.5).
     _demux.set_message_observer([this](const GroupId& g) { this->note_activity(g); });
 

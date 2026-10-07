@@ -5,6 +5,23 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 7, 2026)
 
+- **Composite node ids work on the wire and in the Raft core.** Every RPC
+  serializer (JSON, CBOR, ION, protobuf) now encodes a composite id such as
+  `aws_ec2_node_id` as its canonical text and parses it back on decode,
+  failing the decode on text that does not parse. Before, none of them
+  compiled with a composite `NodeId`. `fetch_log_entries_response` gains a
+  `NodeId` template parameter (first, like the request types) and its
+  responder is a `NodeId`, where it was a fixed `std::uint64_t` that a
+  `std::string`-id node filled with 0. `node_id_to_u64` is gone: the
+  catch-up fetch routes by `node_id_type` like every other RPC. Protobuf
+  adds `NodeIdValue responder = 6` beside the legacy `responder_id`; a
+  numeric sender fills both and a decoder prefers the new field, so mixed
+  versions interoperate. The file and object-store persistence engines read
+  snapshot member ids with `to_number`, so an id at or above 2^63 (written
+  as an unsigned JSON number) no longer throws on load, and
+  `raft_object_backup` seeds such an id unsigned rather than negative.
+  Code that names `fetch_log_entries_response<TermId, ...>` positionally
+  now needs a leading `NodeId` argument.
 - **The Folly-free build tests the stdexec and Boost future backends.**
   Every stdexec backend test, and both Boost backend tests, were registered
   inside `tests/CMakeLists.txt`'s `if(TARGET Folly::folly)` block, so a

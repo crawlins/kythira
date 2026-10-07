@@ -177,7 +177,7 @@ public:
     using fetch_log_entries_request_type =
         fetch_log_entries_request<node_id_type, term_id_type, log_index_type>;
     using fetch_log_entries_response_type =
-        fetch_log_entries_response<term_id_type, log_index_type, log_entry_type>;
+        fetch_log_entries_response<node_id_type, term_id_type, log_index_type, log_entry_type>;
 
     // Bootstrap type aliases (with fallbacks for Types that predate them)
     using _bth = kythira::_bootstrap_type_traits<Types, node_id_type>;
@@ -669,18 +669,6 @@ private:
             return id;
         } else {
             return std::to_string(id);
-        }
-    }
-
-    // Helper to convert node_id to uint64_t for RPC target routing and
-    // fetch_log_entries_response's fixed-width responder_id field — every
-    // existing RPC send already routes by std::uint64_t target regardless of
-    // node_id_type (see network_client's send_* signatures).
-    static auto node_id_to_u64(const node_id_type& id) -> std::uint64_t {
-        if constexpr (std::is_same_v<node_id_type, std::string>) {
-            return 0;
-        } else {
-            return static_cast<std::uint64_t>(id);
         }
     }
 
@@ -7877,8 +7865,7 @@ auto node<Types>::handle_fetch_log_entries(const fetch_log_entries_request_type&
         _logger.debug("FetchLogEntries: entry not available",
                       {{"node_id", node_id_to_string(_node_id)},
                        {"from_index", std::to_string(request.from_index())}});
-        return fetch_log_entries_response_type{
-            node_id_to_u64(_node_id), false, term_id_type{0}, {}};
+        return fetch_log_entries_response_type{_node_id, false, term_id_type{0}, {}};
     }
 
     term_id_type prev_log_term{0};
@@ -7910,7 +7897,7 @@ auto node<Types>::handle_fetch_log_entries(const fetch_log_entries_request_type&
                    {"requester_id", node_id_to_string(request.requester_id())},
                    {"count", std::to_string(entries_to_send.size())}});
 
-    return fetch_log_entries_response_type{node_id_to_u64(_node_id), true, prev_log_term,
+    return fetch_log_entries_response_type{_node_id, true, prev_log_term,
                                            std::move(entries_to_send)};
 }
 
@@ -8050,8 +8037,7 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
 
                 const auto& stop_flag2 = stop_flag;
                 const auto& scope2 = scope;
-                this->_network_client
-                    .send_fetch_log_entries(node_id_to_u64(source.node_id), request, timeout)
+                this->_network_client.send_fetch_log_entries(source.node_id, request, timeout)
                     .thenTry([this, stop_flag2, scope2, from_index, source](auto resp_try) {
                         // The ticket is what makes this guard load-bearing rather than
                         // advisory: while it is held, stop()'s drain cannot return, so

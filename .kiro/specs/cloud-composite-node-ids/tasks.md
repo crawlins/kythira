@@ -65,14 +65,26 @@ the audit and `design.md` for the types and per-component changes.
   - [ ] 4.5 Composite-mode case per manager in its mock or unit suite
   - _Requirements: 5.1-5.5, 6.4, 14.3_
 
-- [ ] 5. Raft core and serializers
-  - [ ] 5.1 Remove `node_id_to_u64`; type `_responder_id` as `NodeId`;
+- [x] 5. Raft core and serializers
+  - [x] 5.1 Remove `node_id_to_u64`; type `_responder_id` as `NodeId`;
     fix `group_transport.hpp:325`
-  - [ ] 5.2 Add `NodeIdValue responder = 2` to `raft_messages.proto` with
+  - [x] 5.2 Add `NodeIdValue responder` to `raft_messages.proto` with
     fallback decoding
-  - [ ] 5.3 Serializers: textual ids through `node_id_traits`; JSON,
+  - [x] 5.3 Serializers: textual ids through `node_id_traits`; JSON,
     object-store snapshot and backup numeric paths without `int64` casts
-  - [ ] 5.4 Serializer round-trip property test for each composite type
+  - [x] 5.4 Serializer round-trip property test for each composite type
+  - Done. As built: the proto field is `responder = 6`, not 2 (tag 2 is
+    `available`). `fetch_log_entries_response` takes `NodeId` as its first
+    parameter, matching the request types. The multi-raft demultiplexer
+    learns the host's id through `set_local_node_id()` for the "unknown
+    group" answer. The JSON numeric branch was already range-checked by the
+    json-serializer-input-validation work; the remaining `as_int64()` reads
+    were the snapshot member lists in both persistence engines.
+    `composite_node_id_wire_property_test` covers all four serializers.
+    Still open: the ION serializer writes every unsigned field as `int64`,
+    so a numeric id at or above 2^63 does not survive ION; persistence
+    engines only handle numeric and `std::string` ids (composite ids there
+    belong with task 6.5's cluster test).
   - _Requirements: 8.1-8.6_
 
 - [ ] 6. Transports

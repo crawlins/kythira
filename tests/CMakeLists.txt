@@ -2617,6 +2617,30 @@ target_link_libraries(cbor_serialization_property_test PRIVATE
 target_compile_features(cbor_serialization_property_test PRIVATE cxx_std_23)
 add_test(NAME cbor_serialization_property_test COMMAND cbor_serialization_property_test)
 
+# Composite node ids on the wire (cloud-composite-node-ids spec, task 5):
+# every id-carrying message through every serializer with each composite type
+# as NodeId. JSON and CBOR always; protobuf and ION when their targets exist.
+add_executable(composite_node_id_wire_property_test composite_node_id_wire_property_test.cpp)
+target_link_libraries(composite_node_id_wire_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(PROTOBUF_SERIALIZER_FOUND)
+    target_link_libraries(composite_node_id_wire_property_test PRIVATE raft_protobuf_serializer)
+    target_compile_definitions(composite_node_id_wire_property_test PRIVATE
+        KYTHIRA_WIRE_TEST_HAS_PROTOBUF)
+endif()
+if(TARGET raft_ion_serializer)
+    target_link_libraries(composite_node_id_wire_property_test PRIVATE raft_ion_serializer)
+    target_compile_definitions(composite_node_id_wire_property_test PRIVATE
+        KYTHIRA_WIRE_TEST_HAS_ION)
+endif()
+target_compile_features(composite_node_id_wire_property_test PRIVATE cxx_std_23)
+add_test(NAME composite_node_id_wire_property_test COMMAND composite_node_id_wire_property_test)
+set_tests_properties(composite_node_id_wire_property_test PROPERTIES
+    TIMEOUT 60 LABELS "unit;raft;node_id")
+
 # CBOR malformed message property test
 add_executable(cbor_malformed_message_property_test cbor_malformed_message_property_test.cpp)
 target_link_libraries(cbor_malformed_message_property_test PRIVATE
