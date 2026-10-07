@@ -587,10 +587,14 @@ Reference implementations to study before starting:
 
 - The `next_node_id()` helper has a TOCTOU race if two leaders simultaneously
   call `provision_node`. The quorum management spec (Requirements 14.3–14.4)
-  prevents this: the leader tracks pending provisions and does not call
-  `provision_node` again for a slot while a prior call is in-flight. A single
-  `aws_ec2_quorum_manager` instance is therefore never called concurrently for the
-  same slot. No locking is required.
+  makes the leader track pending provisions, so a single
+  `aws_ec2_quorum_manager` instance is never called concurrently for the same
+  slot and no locking is required. That tracking is per leader, though, and is
+  dropped on step-down (14.7): a deposed leader finishing a launch and its
+  successor can still pick the same id. The launch's ClientToken, derived from
+  the cluster and the id (`launch_client_token`), lets EC2 accept only one
+  launch of an id; see the "Node ids across leaders" note on the
+  `quorum_manager` concept.
 
 - `user_data_template` is the primary mechanism for starting kythira on a new
   instance. In real-AWS tests the fixture constructs this dynamically with S3

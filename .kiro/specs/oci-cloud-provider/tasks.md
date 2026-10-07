@@ -661,9 +661,14 @@ Reference implementations to study before starting:
   generates the key internally; that case does not apply to the confirmed
   `MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA` config type, so
   `oci_certificates_provider_config` needs no Vault-specific field.
-- Mirror `aws-quorum-manager/tasks.md`'s closing note about
-  `next_node_id()`'s TOCTOU race: the same reasoning applies here
-  unchanged — `quorum_management.hpp`'s leader-side pending-provision
-  tracking (Requirements 14.3–14.4 in the quorum-management spec) already
-  prevents concurrent `provision_node` calls for the same slot, so no
-  additional locking is needed in `oci_instance_pool_quorum_manager`.
+- `next_node_id()`'s TOCTOU race: the leader-side pending-provision
+  tracking (Requirements 14.3–14.4 in the quorum-management spec) prevents
+  concurrent `provision_node` calls for one slot *within one leader*, so no
+  locking is needed inside `oci_instance_pool_quorum_manager`. It does not
+  cover two leaders: the tracking is dropped on step-down (14.7), and a
+  deposed leader can still be tagging an instance while its successor scans.
+  The pool tags after launch and OCI offers no arbiter for a tag, so that
+  window remains (see the "Node ids across leaders" note on the
+  `quorum_manager` concept); the Raft node's refusal of a replacement or
+  join under an existing voter's id keeps it a wasted provision rather than
+  a safety problem, and composite node ids remove it.
