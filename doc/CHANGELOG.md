@@ -18,6 +18,31 @@ current list of outstanding work, see [TODO.md](TODO.md).
   `unit_type_equivalence_property_test`) stay inside it, and
   `configs/no-folly-test-allowlist.txt` drops from 175 entries to 160.
 
+- **`coap_client::establish_dtls_connection()` no longer runs libcoap on
+  two threads at once.** It pumped `coap_io_process()` itself, and created,
+  polled, pinged and released its session, all without `_mutex`, while the
+  client's `_io_thread` was running `coap_io_process()` on the same context.
+  ThreadSanitizer over a TSan-built libcoap 4.3.5 reports 27 races in one
+  run of `coap_dtls_connection_establishment_property_test`, among them
+  unsynchronised session reference counts and a free. In CI that test
+  crashed its first attempt in 13 of about 638 jobs (2026-10-06..07): 11
+  memory access violations at a connection attempt and 2 SIGABRTs. The
+  function now makes every libcoap call under `_mutex` and sleeps outside
+  it, leaving the I/O to `_io_thread`, as `complete_dtls_handshake()`
+  already did. The constructor also holds `_mutex` around
+  `setup_dtls_context()`, whose context setters raced the already-running
+  `_io_thread`, and both client and server call `coap_startup()` once per
+  process before creating a context, which nothing did before. The same
+  run now reports 0 races, and the test is off the retry allowlist.
+
+- **`proxygen_transport_test` and `protobuf_rpc_integration_test` moved to
+  ports no other test binary binds.** `proxygen_transport_test` used
+  18199-18213, which overlapped all of `beast_server_test` (18200-18207)
+  and `beast_integration_test` (18210-18214); it now uses 18400-18423.
+  `protobuf_rpc_integration_test` shared 8097 with
+  `http_negotiation_integration_test` and now uses 18430. Under `ctest -j`
+  whichever binary bound a shared port second would fail.
+
 - **The gossip table no longer grows with whatever a peer sends.**
   `tcp_gossip_peer2peer_replicator::merge()` added every unknown node id
   it was sent and kept each one until a sender-chosen `fresh_until`, so
