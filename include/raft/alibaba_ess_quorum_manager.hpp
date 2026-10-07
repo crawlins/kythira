@@ -859,11 +859,7 @@ public:
 
 private:
     static auto node_id_str(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
+        return node_id_traits<NodeId>::to_text(id);
     }
 
     /// Requirement 6.2's whole liveness ladder, in one place so the callers
@@ -1245,20 +1241,7 @@ private:
     /// no max+1, and wrapping to 0 would hand every later provision the same
     /// identity, so it is a refusal rather than an assignment.
     static constexpr auto node_id_ceiling() -> std::uint64_t {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return std::numeric_limits<std::uint64_t>::max();
-        } else {
-            return static_cast<std::uint64_t>(std::numeric_limits<NodeId>::max());
-        }
-    }
-
-    /// Strict decimal (node_id_traits): digits only, all of them consumed,
-    /// no sign, no whitespace. `std::stoull` is not that — it reads "-1" as
-    /// the largest uint64 and "7x" as 7 — so a tag nobody here wrote could
-    /// otherwise steer the numbering instead of being ignored.
-    [[nodiscard]] static auto parse_node_id_tag(std::string_view text)
-        -> std::optional<std::uint64_t> {
-        return node_id_traits<std::uint64_t>::from_text(text);
+        return numeric_node_id_ceiling<NodeId>();
     }
 
     [[nodiscard]] auto next_node_id_from(
@@ -1277,9 +1260,12 @@ private:
             // id this manager assigns, because this manager only ever
             // assigns plain decimal ones. A value past NodeId's range is in
             // the same class — this manager could never have written it.
-            const auto parsed = parse_node_id_tag(tag->second);
-            if (parsed.has_value() && *parsed <= node_id_ceiling()) {
+            if (const auto parsed = parse_numeric_node_id<NodeId>(tag->second)) {
                 highest = std::max(highest, *parsed);
+            } else {
+                std::cerr << "[alibaba_ess_quorum_manager] ignoring instance " << inst.id
+                          << ": unparseable " << alibaba_ess_detail::tag_node_id << " tag '"
+                          << tag->second << "'\n";
             }
         }
         if (highest >= node_id_ceiling()) {
@@ -1288,12 +1274,7 @@ private:
                 " already carries " + std::string(alibaba_ess_detail::tag_node_id) + "=" +
                 std::to_string(highest) + ", the largest this NodeId type can hold");
         }
-        const auto next = _id_floor.next_above(highest, node_id_ceiling());
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return std::to_string(next);
-        } else {
-            return static_cast<NodeId>(next);
-        }
+        return numeric_node_id_as<NodeId>(_id_floor.next_above(highest, node_id_ceiling()));
     }
 
     /// Every node id this manager has assessed or allocated; see

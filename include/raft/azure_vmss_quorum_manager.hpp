@@ -302,7 +302,7 @@ public:
             for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
                 (void)group;
                 for (const auto& [vm_name, vm] : scale_set_vms(scale_set)) {
-                    auto nid_tag = node_id_tag(vm);
+                    auto nid_tag = our_node_id_tag(vm);
                     if (!nid_tag || !wanted.contains(*nid_tag)) {
                         continue;
                     }
@@ -720,6 +720,20 @@ private:
         return false;
     }
 
+    /// The `kythira:node-id` tag on `vm` when `vm` is this cluster's (its
+    /// `kythira:cluster` tag matches). A scale set can hold another cluster's
+    /// members, and a node id is only unique within one cluster, so assess,
+    /// allocation and lookup all read the id through this: otherwise another
+    /// cluster's node 3 could be assessed, allocated around, or deleted as
+    /// ours.
+    [[nodiscard]] auto our_node_id_tag(const boost::json::object& vm) const
+        -> std::optional<std::string> {
+        if (cluster_tag(vm) != _cfg.cluster_name) {
+            return std::nullopt;
+        }
+        return node_id_tag(vm);
+    }
+
     /// The `kythira:node-id` tag on `vm`, if it carries one.
     [[nodiscard]] static auto node_id_tag(const boost::json::object& vm)
         -> std::optional<std::string> {
@@ -752,28 +766,24 @@ private:
         for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
             (void)group;
             for (const auto& [vm_name, vm] : scale_set_vms(scale_set)) {
-                (void)vm_name;
-                auto tag = node_id_tag(vm);
+                auto tag = our_node_id_tag(vm);
                 if (!tag) {
                     continue;
                 }
-                try {
-                    max_id = std::max(max_id, static_cast<std::uint64_t>(std::stoull(*tag)));
-                } catch (const std::exception&) {
-                    // Skip unparseable tag values.
+                // A tag this manager did not write (not plain decimal, or
+                // past NodeId's range) is skipped: std::stoull read "-1" as
+                // the largest uint64, after which every provision failed.
+                if (const auto parsed = parse_numeric_node_id<NodeId>(*tag)) {
+                    max_id = std::max(max_id, *parsed);
+                } else {
+                    std::cerr << "[azure_vmss_quorum_manager] ignoring member " << vm_name << " of "
+                              << scale_set << ": unparseable kythira:node-id tag '" << *tag
+                              << "'\n";
                 }
             }
         }
-        std::uint64_t ceiling = std::numeric_limits<std::uint64_t>::max();
-        if constexpr (!std::is_same_v<NodeId, std::string>) {
-            ceiling = static_cast<std::uint64_t>(std::numeric_limits<NodeId>::max());
-        }
-        std::uint64_t next = _id_floor.next_above(max_id, ceiling);
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return std::to_string(next);
-        } else {
-            return static_cast<NodeId>(next);
-        }
+        return numeric_node_id_as<NodeId>(
+            _id_floor.next_above(max_id, numeric_node_id_ceiling<NodeId>()));
     }
 
     /// Scans every scale set in `scale_set_by_group` for an instance whose
@@ -790,7 +800,7 @@ private:
                 continue;
             }
             for (const auto& [vm_name, vm] : vms) {
-                if (auto tag = node_id_tag(vm); tag && *tag == target) {
+                if (auto tag = our_node_id_tag(vm); tag && *tag == target) {
                     // The VM's name, which is what the scale set's delete and
                     // deallocate actions take as an `instanceIds` entry under
                     // Flexible -- there is no separate numeric instance id.
@@ -1046,11 +1056,7 @@ private:
     }
 
     static auto node_id_str(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
+        return node_id_traits<NodeId>::to_text(id);
     }
 
     /// Applies this manager's tags to one scale-set member.

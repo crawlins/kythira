@@ -234,6 +234,21 @@ BOOST_AUTO_TEST_CASE(vm_name_to_node_id_rejects_foreign_names) {
     BOOST_CHECK(!mgr.vm_name_to_node_id("kythira-other-cluster-1").has_value());
 }
 
+// cloud-composite-node-ids Requirement 7.1: only the name this manager would
+// give an id maps back to it. "-07" is not node 7's VM, and "-1" (which
+// std::stoull accepted as the largest uint64) is no node's.
+BOOST_AUTO_TEST_CASE(vm_name_to_node_id_rejects_non_canonical_suffixes) {
+    kythira::azure_vm_quorum_manager<std::uint64_t, std::string> mgr{make_vm_config()};
+    for (const char* name :
+         {"kythira-test-cluster-07", "kythira-test-cluster--1", "kythira-test-cluster-+1",
+          "kythira-test-cluster-1x", "kythira-test-cluster-18446744073709551616"}) {
+        BOOST_CHECK_MESSAGE(!mgr.vm_name_to_node_id(name).has_value(), "accepted " << name);
+    }
+    kythira::azure_vm_quorum_manager<std::string, std::string> text_mgr{make_vm_config()};
+    BOOST_CHECK_EQUAL(text_mgr.vm_name_to_node_id("kythira-test-cluster-12").value(), "12");
+    BOOST_CHECK(!text_mgr.vm_name_to_node_id("kythira-test-cluster-012").has_value());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ── Placement/priority/spot config structs ────────────────────────────────────
@@ -491,6 +506,23 @@ BOOST_AUTO_TEST_CASE(ids_assessed_or_allocated_are_never_reassigned) {
     BOOST_CHECK_EQUAL(std::string(arm->vm_put().at("tags").at("kythira:node-id").as_string()), "6");
     // The double's VM list still shows only 2.
     BOOST_CHECK_EQUAL(mgr.provision_node("1", std::nullopt).get().node_id, 7u);
+}
+
+// Requirement 7.1-7.3: a tag this manager could not have written is skipped.
+// Read through std::stoull, "-1" was the largest uint64 and every provision
+// after it failed with overflow_error.
+BOOST_AUTO_TEST_CASE(unparseable_node_id_tags_do_not_steer_allocation) {
+    auto arm = std::make_shared<ArmDouble>();
+    auto stray = [](const std::string& name, const std::string& tag) {
+        return R"({"name":")" + name +
+               R"(","tags":{"kythira:cluster":"test-cluster","kythira:node-id":")" + tag +
+               R"("},"properties":{"provisioningState":"Succeeded"}})";
+    };
+    arm->pages = {R"({"value":[)" + vm_entry("kythira-test-cluster-2", "test-cluster", "k") + "," +
+                  stray("odd-a", "-1") + "," + stray("odd-b", "7x") + "," +
+                  stray("odd-c", "18446744073709551616") + "]}"};
+    vm_mgr_t mgr{keyed_vm_config(arm)};
+    BOOST_CHECK_EQUAL(mgr.provision_node("1", std::nullopt).get().node_id, 3u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

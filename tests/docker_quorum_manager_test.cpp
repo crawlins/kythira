@@ -551,3 +551,62 @@ BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_fails_on_a_daemon_error, MockDoc
     docker_quorum_manager<> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.find_by_idempotency_key("k").get(), std::runtime_error);
 }
+
+// ── Numeric id hardening (cloud-composite-node-ids Requirement 7) ────────────
+
+BOOST_FIXTURE_TEST_CASE(provision_node_ignores_labels_it_could_not_have_written, MockDockerServer) {
+    // "-1" read through std::stoull was the largest uint64, so the + 1 wrapped
+    // to node 0; "7x" read as 7. Neither is a label this manager writes.
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(
+            R"([{"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"2"}},
+                {"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"-1"}},
+                {"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"7x"}},
+                {"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":5}}])",
+            "application/json");
+    });
+    server.Post("/containers/create", [](const httplib::Request&, httplib::Response& res) {
+        res.status = 201;
+        res.set_content(R"({"Id":"n3"})", "application/json");
+    });
+    server.Post(R"(/containers/kythira-test-cluster-3/start)",
+                [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    BOOST_CHECK_EQUAL(mgr.provision_node("default", std::nullopt).get().node_id, 3u);
+}
+
+BOOST_FIXTURE_TEST_CASE(provision_node_refuses_to_wrap_past_the_largest_id, MockDockerServer) {
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(R"([{"Labels":{"kythira.cluster":"test-cluster",)"
+                        R"("kythira.node_id":"18446744073709551615"}}])",
+                        "application/json");
+    });
+    bool created = false;
+    server.Post("/containers/create", [&](const httplib::Request&, httplib::Response& res) {
+        created = true;
+        res.status = 201;
+        res.set_content(R"({"Id":"n0"})", "application/json");
+    });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::exception);
+    BOOST_CHECK(!created);
+}
+
+BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_skips_an_unparseable_label, MockDockerServer) {
+    // One container carrying a label nobody here wrote used to fail the whole
+    // lookup with std::invalid_argument; it is now skipped.
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(
+            R"([{"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"node-a",)"
+            R"("kythira.idempotency-key":"k"}},)"
+            R"({"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"6",)"
+            R"("kythira.idempotency-key":"k"}}])",
+            "application/json");
+    });
+    docker_quorum_manager<> mgr(make_cfg());
+    const auto found = mgr.find_by_idempotency_key("k").get();
+    BOOST_REQUIRE(found.has_value());
+    BOOST_CHECK_EQUAL(found->node_id, 6u);
+}

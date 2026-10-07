@@ -15,6 +15,7 @@
 // a single filtered GET /containers/json call independently of any in-process
 // state.
 
+#include <raft/composite_node_id.hpp>
 #include <raft/future_default.hpp>
 #include <raft/quorum_management.hpp>
 
@@ -31,6 +32,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <sys/socket.h>
 #include <vector>
 
@@ -215,11 +217,19 @@ public:
                 if (!labels.contains("kythira.node_id")) {
                     continue;
                 }
-                const auto id =
-                    parse_node_id(std::string(labels.at("kythira.node_id").as_string()));
+                const auto& label = labels.at("kythira.node_id");
+                const auto id = label.is_string() ? parse_node_id(std::string(label.get_string()))
+                                                  : std::nullopt;
+                if (!id) {
+                    // Skipped rather than failing the whole lookup: a
+                    // container someone else labelled is not this key's.
+                    std::cerr << "[docker_quorum_manager] find_by_idempotency_key: ignoring "
+                                 "a container with an unparseable kythira.node_id label\n";
+                    continue;
+                }
                 return future_factory_default::makeFuture(result{peer_info<NodeId, Address>{
-                    id, static_cast<Address>(container_name(id) + ":" +
-                                             std::to_string(_cfg.node_port))}});
+                    *id, static_cast<Address>(container_name(*id) + ":" +
+                                              std::to_string(_cfg.node_port))}});
             }
             return future_factory_default::makeFuture(result{});
         } catch (const std::exception& ex) {
@@ -430,8 +440,7 @@ private:
     // an ID that is already a live member.  The leader always assesses before
     // it provisions, so this floor is re-learned after a manager restart.
     // Shared so the manager stays copyable (node_config takes it by value).
-    std::shared_ptr<std::atomic<std::uint64_t>> _max_seen_node_id{
-        std::make_shared<std::atomic<std::uint64_t>>(0)};
+    numeric_node_id_floor _max_seen_node_id;
 
     // Build a container name for a given node ID (Req 18 AC 5)
     [[nodiscard]] auto container_name(const NodeId& id) const -> std::string {
@@ -440,19 +449,14 @@ private:
 
     // Serialize a NodeId to string for label / name purposes
     static auto node_id_label(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
+        return node_id_traits<NodeId>::to_text(id);
     }
 
-    static auto parse_node_id(const std::string& label) -> NodeId {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return label;
-        } else {
-            return static_cast<NodeId>(std::stoull(label));
-        }
+    // The NodeId a kythira.node_id label names, or nullopt for one this
+    // manager could not have written (for a numeric NodeId: anything but
+    // plain decimal that fits).
+    static auto parse_node_id(std::string_view label) -> std::optional<NodeId> {
+        return node_id_traits<NodeId>::from_text(label);
     }
 
     // Percent-encodes the characters a Docker `filters=` JSON argument uses.
@@ -502,7 +506,7 @@ private:
 
         // Compare numerically: for std::string IDs a lexicographic max would
         // rank "9" above "10" and hand out a duplicate.
-        std::uint64_t max_id = _max_seen_node_id->load();
+        std::uint64_t max_id = 0;
         if (res && res->status == 200) {
             auto jv = boost::json::parse(res->body);
             for (const auto& ct : jv.as_array()) {
@@ -514,21 +518,23 @@ private:
                 if (!labels.contains("kythira.node_id")) {
                     continue;
                 }
-                try {
-                    max_id = std::max<std::uint64_t>(
-                        max_id, std::stoull(std::string(labels.at("kythira.node_id").as_string())));
-                } catch (const std::exception&) {
-                    // A label we did not write; it cannot collide with ours.
+                // A label we did not write (not plain decimal, or past
+                // NodeId's range) cannot collide with ours and is skipped.
+                // std::stoull read "-1" as the largest uint64, and the + 1
+                // then wrapped to node 0.
+                const auto& label = labels.at("kythira.node_id");
+                if (const auto parsed = label.is_string() ? parse_numeric_node_id<NodeId>(
+                                                                std::string(label.get_string()))
+                                                          : std::nullopt) {
+                    max_id = std::max(max_id, *parsed);
                 }
             }
         }
 
-        // If no containers and no members were seen, start at 1.
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return std::to_string(max_id + 1);
-        } else {
-            return static_cast<NodeId>(max_id + 1);
-        }
+        // If no containers and no members were seen, start at 1. Past the
+        // NodeId type's maximum this throws rather than wrapping.
+        return numeric_node_id_as<NodeId>(
+            _max_seen_node_id.next_above(max_id, numeric_node_id_ceiling<NodeId>()));
     }
 
     // Best-effort cleanup of a partially-created container
@@ -568,21 +574,9 @@ private:
     }
 
     // Records the highest node ID seen in an assess_quorum cluster vector.
-    auto note_node_id(const NodeId& id) -> void {
-        std::uint64_t numeric = 0;
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            try {
-                numeric = std::stoull(id);
-            } catch (...) {
-                return;  // non-numeric IDs cannot collide with generated ones
-            }
-        } else {
-            numeric = static_cast<std::uint64_t>(id);
-        }
-        std::uint64_t prev = _max_seen_node_id->load();
-        while (numeric > prev && !_max_seen_node_id->compare_exchange_weak(prev, numeric)) {
-        }
-    }
+    // Non-numeric std::string ids cannot collide with generated ones and are
+    // ignored.
+    auto note_node_id(const NodeId& id) -> void { _max_seen_node_id.raise(id); }
 
     // Create an httplib::Client from the configured daemon_url.
     // Supports "unix:///path" and "http://host:port" forms.

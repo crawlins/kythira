@@ -251,4 +251,16 @@ inline constexpr std::string_view gcp_idempotency_key_label = "kythira-idempoten
            std::string{gcp_idempotency_key_label} + " = \"" + std::string{label_value} + "\")";
 }
 
+/// @brief The `instances.list` filter that selects one cluster's instance
+///        labelled with node id @p node_id_text.
+///
+/// The same parenthesised, ANDed shape as `gcp_idempotency_key_filter`. A
+/// node id is only unique within its cluster, so a lookup by id alone could
+/// name another cluster's instance in the same zone.
+[[nodiscard]] inline std::string gcp_node_id_filter(std::string_view cluster_name,
+                                                    std::string_view node_id_text) {
+    return "(labels.kythira-cluster = \"" + std::string{cluster_name} +
+           "\") (labels.kythira-node-id = \"" + std::string{node_id_text} + "\")";
+}
+
 }  // namespace kythira

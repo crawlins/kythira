@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 
@@ -75,4 +76,45 @@ BOOST_AUTO_TEST_CASE(next_numeric_refuses_to_wrap) {
                       std::overflow_error);
     BOOST_CHECK_THROW(next_numeric_node_id(std::numeric_limits<std::uint32_t>::max()),
                       std::overflow_error);
+}
+
+// Requirement 7 (numeric hardening): the quorum managers' shared helpers.
+
+static_assert(numeric_node_id_ceiling<std::uint16_t>() == 65535u);
+static_assert(numeric_node_id_ceiling<std::string>() == std::numeric_limits<std::uint64_t>::max());
+
+BOOST_AUTO_TEST_CASE(parse_numeric_node_id_is_strict_and_range_checked) {
+    BOOST_CHECK_EQUAL(parse_numeric_node_id<std::uint64_t>("7").value(), 7u);
+    BOOST_CHECK_EQUAL(parse_numeric_node_id<std::string>("18446744073709551615").value(),
+                      std::numeric_limits<std::uint64_t>::max());
+    BOOST_CHECK_EQUAL(parse_numeric_node_id<std::uint16_t>("65535").value(), 65535u);
+    for (const char* text : {"", "-1", "7x", " 7", "0x7", "node-a"}) {
+        BOOST_CHECK_MESSAGE(!parse_numeric_node_id<std::uint64_t>(text),
+                            "accepted '" << text << "'");
+    }
+    // Past the NodeId type's range: a value a manager of that type could
+    // never have written, so it is not one to allocate above.
+    BOOST_CHECK(!parse_numeric_node_id<std::uint16_t>("65536"));
+}
+
+BOOST_AUTO_TEST_CASE(numeric_node_id_as_refuses_narrowing) {
+    BOOST_CHECK_EQUAL(numeric_node_id_as<std::uint64_t>(9), 9u);
+    BOOST_CHECK_EQUAL(numeric_node_id_as<std::string>(9), "9");
+    BOOST_CHECK_EQUAL(numeric_node_id_as<std::uint16_t>(65535), 65535u);
+    BOOST_CHECK_THROW(numeric_node_id_as<std::uint16_t>(65536), std::overflow_error);
+    BOOST_CHECK_THROW(numeric_node_id_as<std::uint32_t>(0x1'0000'0001ULL), std::overflow_error);
+}
+
+BOOST_AUTO_TEST_CASE(random_numeric_node_id_stays_inside_the_type) {
+    std::mt19937_64 gen(42);
+    for (int i = 0; i < 10000; ++i) {
+        const auto narrow = random_numeric_node_id<std::uint8_t>(gen);
+        BOOST_REQUIRE_GE(narrow, 1u);  // never the reserved 0
+        const auto wide = random_numeric_node_id<std::uint64_t>(gen);
+        BOOST_REQUIRE_GE(wide, 1u);
+        BOOST_REQUIRE_LE(wide, std::numeric_limits<std::uint64_t>::max() >> 1);
+        const auto text = random_numeric_node_id<std::string>(gen);
+        BOOST_REQUIRE(parse_numeric_node_id<std::uint64_t>(text).value() <=
+                      (std::numeric_limits<std::uint64_t>::max() >> 1));
+    }
 }

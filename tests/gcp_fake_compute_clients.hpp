@@ -88,15 +88,27 @@ auto make_stream_range(std::vector<T> values, google::cloud::Status final_status
         });
 }
 
-/// Parses the one filter shape the managers send, `labels.KEY = "VALUE"`.
+/// Parses the filter shapes the managers send: one `labels.KEY = "VALUE"`, or
+/// several parenthesised ones, `(labels.A = "x") (labels.B = "y")`, which
+/// Compute ANDs. `std::nullopt` for anything else (no filtering).
 inline auto parse_label_filter(const std::string& filter)
-    -> std::optional<std::pair<std::string, std::string>> {
-    static const std::regex re(R"re(^labels\.([a-z0-9_-]+) = "([^"]*)"$)re");
+    -> std::optional<std::vector<std::pair<std::string, std::string>>> {
+    static const std::regex single(R"re(^labels\.([a-z0-9_-]+) = "([^"]*)"$)re");
+    static const std::regex anded(R"re(^(\(labels\.[a-z0-9_-]+ = "[^"]*"\) ?)+$)re");
+    static const std::regex term(R"re(\(labels\.([a-z0-9_-]+) = "([^"]*)"\))re");
     std::smatch m;
-    if (!std::regex_match(filter, m, re)) {
+    if (std::regex_match(filter, m, single)) {
+        return std::vector{std::pair{m[1].str(), m[2].str()}};
+    }
+    if (!std::regex_match(filter, anded)) {
         return std::nullopt;
     }
-    return std::pair{m[1].str(), m[2].str()};
+    std::vector<std::pair<std::string, std::string>> out;
+    for (auto it = std::sregex_iterator(filter.begin(), filter.end(), term);
+         it != std::sregex_iterator(); ++it) {
+        out.emplace_back((*it)[1].str(), (*it)[2].str());
+    }
+    return out;
 }
 
 // ============================================================================
@@ -176,11 +188,11 @@ public:
             if (i.zone() != request.zone()) {
                 continue;
             }
-            if (filter) {
-                auto it = i.labels().find(filter->first);
-                if (it == i.labels().end() || it->second != filter->second) {
-                    continue;
-                }
+            if (filter && !std::ranges::all_of(*filter, [&](const auto& kv) {
+                    auto it = i.labels().find(kv.first);
+                    return it != i.labels().end() && it->second == kv.second;
+                })) {
+                continue;
             }
             out.push_back(i);
         }

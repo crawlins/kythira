@@ -719,26 +719,19 @@ public:
         if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) {
             return std::nullopt;
         }
-        std::string suffix = name.substr(prefix.size());
-        try {
-            if constexpr (std::is_same_v<NodeId, std::string>) {
-                std::size_t consumed = 0;
-                std::stoull(suffix, &consumed);
-                if (consumed != suffix.size()) {
-                    return std::nullopt;
-                }
-                return suffix;
-            } else {
-                std::size_t consumed = 0;
-                auto v = std::stoull(suffix, &consumed);
-                if (consumed != suffix.size()) {
-                    return std::nullopt;
-                }
-                return static_cast<NodeId>(v);
-            }
-        } catch (const std::exception&) {
+        const auto value =
+            parse_numeric_node_id<NodeId>(std::string_view(name).substr(prefix.size()));
+        if (!value) {
             return std::nullopt;
         }
+        auto id = numeric_node_id_as<NodeId>(*value);
+        // Only the name this manager would give that id: "kythira-c-07" is
+        // not node 7's VM ("kythira-c-7" is), and decommissioning node 7 by
+        // name would never reach it.
+        if (node_id_to_vm_name(id) != name) {
+            return std::nullopt;
+        }
+        return id;
     }
 
 private:
@@ -831,25 +824,27 @@ private:
                     std::string(cluster->as_string()) != _cfg.cluster_name) {
                     continue;
                 }
-                try {
-                    auto v = static_cast<std::uint64_t>(
-                        std::stoull(std::string(tags.at("kythira:node-id").as_string())));
-                    max_id = std::max(max_id, v);
-                } catch (const std::exception&) {
-                    // Skip unparseable tag values.
+                // A tag this manager did not write (not plain decimal, or
+                // past NodeId's range) is skipped: std::stoull read "-1" as
+                // the largest uint64, after which every provision failed.
+                const auto* tag = tags.as_object().if_contains("kythira:node-id");
+                const auto parsed =
+                    tag->is_string() ? parse_numeric_node_id<NodeId>(std::string(tag->get_string()))
+                                     : std::nullopt;
+                if (parsed) {
+                    max_id = std::max(max_id, *parsed);
+                } else {
+                    const auto* name = vm.as_object().if_contains("name");
+                    std::cerr << "[azure_vm_quorum_manager] ignoring VM "
+                              << ((name != nullptr && name->is_string())
+                                      ? std::string(name->get_string())
+                                      : std::string("<unnamed>"))
+                              << ": unparseable kythira:node-id tag\n";
                 }
             }
         }
-        std::uint64_t ceiling = std::numeric_limits<std::uint64_t>::max();
-        if constexpr (!std::is_same_v<NodeId, std::string>) {
-            ceiling = static_cast<std::uint64_t>(std::numeric_limits<NodeId>::max());
-        }
-        std::uint64_t next = _id_floor.next_above(max_id, ceiling);
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return std::to_string(next);
-        } else {
-            return static_cast<NodeId>(next);
-        }
+        return numeric_node_id_as<NodeId>(
+            _id_floor.next_above(max_id, numeric_node_id_ceiling<NodeId>()));
     }
 
     [[nodiscard]] auto do_send(const Azure::Core::Http::HttpMethod& method, const std::string& path,
@@ -1044,11 +1039,7 @@ private:
     }
 
     static auto node_id_str(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
+        return node_id_traits<NodeId>::to_text(id);
     }
 
     /// The node id of @p vm when it is this cluster's VM carrying @p key and is

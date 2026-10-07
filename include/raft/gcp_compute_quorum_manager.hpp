@@ -17,6 +17,7 @@
 /// via a different mechanism (see `.kiro/specs/gcp-cloud-services/design.md`,
 /// "The Core Design Decision: Node Identity").
 
+#include <raft/composite_node_id.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/gcp_client_config.hpp>
@@ -44,6 +45,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -715,8 +717,13 @@ public:
             instance_name.compare(0, prefix.size(), prefix) != 0) {
             return std::nullopt;
         }
-        const std::string suffix = instance_name.substr(prefix.size());
-        return parse_node_id(suffix);
+        auto id = parse_node_id(instance_name.substr(prefix.size()));
+        // Only the name this manager would give that id: "kythira-c-07" is
+        // not node 7's instance ("kythira-c-7" is).
+        if (id && node_id_to_instance_name(cluster_name, *id) != instance_name) {
+            return std::nullopt;
+        }
+        return id;
     }
 
 private:
@@ -727,49 +734,25 @@ private:
     // ── NodeId helpers ──────────────────────────────────────────────────────
 
     static auto node_id_str(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
+        return node_id_traits<NodeId>::to_text(id);
     }
 
-    static auto parse_node_id(const std::string& s) -> std::optional<NodeId> {
-        if (s.empty()) {
+    /// Strict decimal that fits `NodeId` (`parse_numeric_node_id`), or
+    /// `std::nullopt`.
+    static auto parse_node_id(std::string_view s) -> std::optional<NodeId> {
+        const auto v = parse_numeric_node_id<NodeId>(s);
+        if (!v) {
             return std::nullopt;
         }
-        for (char c : s) {
-            if (c < '0' || c > '9') {
-                return std::nullopt;
-            }
-        }
-        try {
-            std::uint64_t v = std::stoull(s);
-            if constexpr (std::is_same_v<NodeId, std::string>) {
-                return std::to_string(v);
-            } else {
-                return static_cast<NodeId>(v);
-            }
-        } catch (const std::exception&) {
-            return std::nullopt;
-        }
+        return numeric_node_id_as<NodeId>(*v);
     }
 
-    /// Draws a cryptographically-strong 63-bit random value (top bit clear so it
-    /// is representable whether `NodeId` is signed or unsigned) — Requirement 5.
+    /// Draws a cryptographically-strong random id in [1, 2^63 - 1], or within
+    /// a narrower `NodeId`'s range rather than truncated into it
+    /// (Requirement 5; cloud-composite-node-ids Requirement 7.6).
     static auto generate_node_id() -> NodeId {
         std::random_device rd;
-        std::uint64_t hi = rd();
-        std::uint64_t lo = rd();
-        std::uint64_t v = ((hi << 32) | lo) & 0x7FFF'FFFF'FFFF'FFFFULL;
-        if (v == 0) {
-            v = 1;  // Never mint the reserved 0 id.
-        }
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return std::to_string(v);
-        } else {
-            return static_cast<NodeId>(v);
-        }
+        return random_numeric_node_id<NodeId>(rd);
     }
 
     // ── Zone resolution ─────────────────────────────────────────────────────

@@ -609,4 +609,60 @@ BOOST_AUTO_TEST_CASE(assessing_an_empty_cluster_makes_no_api_call,
     BOOST_CHECK_EQUAL(fixture.server.hits("GET /20160918/instancePools/{id}/instances"), before);
 }
 
+/// cloud-composite-node-ids Requirement 7.1-7.3: a tag this manager could not
+/// have written is skipped, not read through `std::stoull`. "-1" read as the
+/// largest uint64, so every later provision failed with overflow_error; "7x"
+/// read as 7.
+BOOST_AUTO_TEST_CASE(unparseable_node_id_tags_do_not_steer_allocation,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    fixture.seed_node(2);
+    for (const char* stray : {"-1", "7x", "node-a", "18446744073709551616"}) {
+        fixture.server.add_instance(
+            {{"kythira-cluster", "mock-cluster"}, {"kythira-node-id", stray}});
+    }
+    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
+}
+
+/// Requirement 7.4: a pool member of another cluster is not ours to assess,
+/// allocate around, or decommission, even when it carries one of our ids.
+BOOST_AUTO_TEST_CASE(another_clusters_pool_members_are_ignored,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    MockFixture fixture;
+    fixture.seed_node(1);
+    const auto foreign = fixture.server.add_instance(
+        {{"kythira-cluster", "other-cluster"}, {"kythira-node-id", "2"}});
+    fixture.server.add_instance({{"kythira-cluster", "other-cluster"}, {"kythira-node-id", "40"}});
+    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+
+    // Allocation counts only this cluster's ids (and the floor).
+    BOOST_CHECK_EQUAL(mgr.next_node_id(), 2U);
+
+    // Our node 2 has no instance; the other cluster's node 2 is not it.
+    auto health = std::move(mgr.assess_quorum(cluster_of(fixture, {1, 2}))).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1U);
+    BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 1U);
+    BOOST_CHECK_EQUAL(health.unreachable_nodes.front(), 2U);
+
+    // Decommissioning our node 2 must not detach the other cluster's.
+    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(std::uint64_t{2})).get());
+    const auto still = fixture.server.instance(foreign);
+    BOOST_REQUIRE(still.has_value());
+    BOOST_CHECK(still->in_pool);
+    BOOST_CHECK_EQUAL(
+        fixture.server.hits("POST /20160918/instancePools/{id}/actions/detachInstance"), 0U);
+}
+
+/// Requirement 7.7: the manager compiles and allocates with `std::string` ids,
+/// which `static_cast<NodeId>(highest + 1)` could not.
+BOOST_AUTO_TEST_CASE(string_node_ids_are_allocated_as_decimal_text,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    fixture.seed_node(9);
+    fixture.seed_node(10);
+    oci_instance_pool_quorum_manager<std::string> mgr{fixture.config()};
+    BOOST_CHECK_EQUAL(mgr.next_node_id(), "11");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -17,6 +17,7 @@
 /// respect in which it is not purely stateless — a direct consequence of MIGs
 /// owning instance naming (see the design doc, "The Core Design Decision").
 
+#include <raft/composite_node_id.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/gcp_client_config.hpp>
@@ -811,11 +812,21 @@ private:
             google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
             req.set_project(_config.gcp.project_id);
             req.set_zone(zone);
-            req.set_filter("labels.kythira-node-id = \"" + node_id_str(node_id) + "\"");
+            // Scoped to this cluster: a node id is only unique within one,
+            // and a zone can hold another cluster's MIG members. Unscoped,
+            // decommissioning node 3 could delete another cluster's node 3.
+            const auto id_text = node_id_str(node_id);
+            req.set_filter(gcp_node_id_filter(_config.cluster_name, id_text));
             for (auto const& maybe_inst : _instances.ListInstances(req)) {
                 if (!maybe_inst) {
                     throw std::runtime_error("gcp instances.list (" + zone +
                                              "): " + maybe_inst.status().message());
+                }
+                // Checked here too, so the scoping does not rest on the
+                // server honouring both filter expressions.
+                if (!has_label(*maybe_inst, "kythira-cluster", _config.cluster_name) ||
+                    !has_label(*maybe_inst, "kythira-node-id", id_text)) {
+                    continue;
                 }
                 return future_factory_default::makeFuture(
                     std::optional<std::string>{maybe_inst->self_link()});
@@ -827,9 +838,20 @@ private:
         }
     }
 
+    [[nodiscard]] static auto has_label(const google::cloud::cpp::compute::v1::Instance& inst,
+                                        const std::string& key, const std::string& value) -> bool {
+        const auto it = inst.labels().find(key);
+        return it != inst.labels().end() && it->second == value;
+    }
+
     /// True if some *other* instance in @p zone already carries this
     /// `kythira-node-id` label value (a collision — practically unreachable
     /// given the 63-bit keyspace, checked for correctness).
+    ///
+    /// Deliberately not scoped to this cluster, unlike
+    /// `find_instance_by_node_id`: treating another cluster's id as taken
+    /// only costs a redraw, and keeps an id unique across every cluster
+    /// sharing the zone.
     auto label_id_in_use(const std::string& zone, const std::string& id_str,
                          const std::string& except_name) -> bool {
         google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
@@ -845,26 +867,15 @@ private:
     }
 
     static auto node_id_str(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
+        return node_id_traits<NodeId>::to_text(id);
     }
 
+    /// A cryptographically-strong random id in [1, 2^63 - 1], or within a
+    /// narrower `NodeId`'s range rather than truncated into it
+    /// (cloud-composite-node-ids Requirement 7.6).
     static auto generate_node_id() -> NodeId {
         std::random_device rd;
-        std::uint64_t hi = rd();
-        std::uint64_t lo = rd();
-        std::uint64_t v = ((hi << 32) | lo) & 0x7FFF'FFFF'FFFF'FFFFULL;
-        if (v == 0) {
-            v = 1;
-        }
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return std::to_string(v);
-        } else {
-            return static_cast<NodeId>(v);
-        }
+        return random_numeric_node_id<NodeId>(rd);
     }
 
     [[nodiscard]] auto build_health(const std::vector<node_placement<NodeId, std::string>>& cluster,

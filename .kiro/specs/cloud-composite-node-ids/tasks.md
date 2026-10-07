@@ -20,17 +20,25 @@ the audit and `design.md` for the types and per-component changes.
     `tests/node_id_traits_test.cpp`; register outside the cloud gates
   - _Requirements: 1.1-1.7, 2.1-2.5, 3.1-3.3, 14.1, 14.2_
 
-- [ ] 2. Numeric hardening (independent of composite mode)
-  - [ ] 2.1 Replace the numeric parsers and allocators in the OCI, Azure
+- [x] 2. Numeric hardening (independent of composite mode)
+  - [x] 2.1 Replace the numeric parsers and allocators in the OCI, Azure
     VM, Azure VMSS and Docker managers and `aws_ec2_peer_discovery` with
-    the task 1.3 helpers; replace every `node_id_str` copy
-  - [ ] 2.2 Skip unparseable tags with a log line; de-duplicate discovery
+    the task 1.3 helpers; replace every `node_id_str` copy (each manager's
+    `node_id_str` is now a one-line call to `node_id_traits::to_text`;
+    parsing and allocation go through `parse_numeric_node_id`,
+    `numeric_node_id_as` and `numeric_node_id_ceiling`, added next to
+    `node_id_traits`, which Alibaba ESS and GCP now use too)
+  - [x] 2.2 Skip unparseable tags with a log line; de-duplicate discovery
     by parsed id
-  - [ ] 2.3 Add cluster filters to the OCI pool scan, the VMSS scan and
-    `assess_quorum`, and the MIG lookup and collision check
-  - [ ] 2.4 Refuse narrowing in GCP id generation; make the OCI manager
-    compile with `std::string`
-  - [ ] 2.5 Unit and mock tests for each fix
+  - [x] 2.3 Add cluster filters to the OCI pool scan, the VMSS scan and
+    `assess_quorum`, and the MIG lookup and collision check (the MIG
+    collision check stays deliberately unscoped: an id another cluster in
+    the zone holds only costs a redraw)
+  - [x] 2.4 Refuse narrowing in GCP id generation; make the OCI manager
+    compile with `std::string` (GCP now draws inside the narrower type's
+    range rather than failing; `numeric_node_id_as` refuses every other
+    narrowing with `std::overflow_error`)
+  - [x] 2.5 Unit and mock tests for each fix
   - _Requirements: 3.4, 7.1-7.7_
 
 - [ ] 3. AWS managers
