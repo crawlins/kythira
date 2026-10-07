@@ -164,6 +164,25 @@ struct desired_topology {
 /// - `decommission_node`: Must be idempotent.
 /// - `topology`: Synchronous; returns a pure policy value with no I/O.
 ///
+/// ### Node ids across leaders
+/// The leader never calls `provision_node` twice for one slot (quorum-management
+/// Req 14.3), but that bookkeeping is leader-local and is dropped on step-down
+/// (Req 14.7). A deposed leader can still be finishing a `provision_node` call
+/// while its successor, in another process, starts one, so an implementation
+/// that allocates a numeric id from what it can list (the highest id plus one)
+/// may be racing another process for the same id. Such an implementation claims
+/// the id at create time where the platform can arbitrate: the Docker and Azure
+/// VM managers create under a name that embeds the id and that the platform
+/// refuses to reuse, and the EC2 manager launches with a ClientToken derived
+/// from the cluster and the id. A refused claim moves on to the next id, and
+/// the resource that holds the claimed name is never modified or deleted. The
+/// pool-based managers (ASG, VMSS, OCI instance pool, Alibaba ESS) tag an
+/// instance the pool launched and have no such arbiter, so a short window
+/// remains there. Composite node ids, derived from the resource itself, have no
+/// race at all; the GCP managers draw random ids and retry on a name clash.
+/// Whatever the manager does, the Raft node refuses a replacement or a join
+/// whose id is already a voter, so a duplicate costs a provision, not safety.
+///
 /// @tparam Q       Concrete quorum manager type.
 /// @tparam NodeId  Must satisfy `node_id` and match `Q::node_id_type`.
 /// @tparam Address Network address type; must match `Q::address_type`.
