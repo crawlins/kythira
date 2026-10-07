@@ -8,6 +8,7 @@
 
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <cstddef>
 
@@ -230,4 +231,88 @@ BOOST_AUTO_TEST_CASE(property_missing_required_key_rejected) {
 
     BOOST_CHECK_THROW(static_cast<void>(serializer.deserialize_request_vote_request(data)),
                       kythira::serialization_exception);
+}
+
+namespace {
+
+// A valid AppendEntries request whose trailing "entries" array is empty; the
+// encoder writes entries last, so the final byte is the 0x80 array header.
+auto append_entries_without_entries(
+    const kythira::cbor_rpc_serializer<std::vector<std::byte>>& serializer)
+    -> std::vector<std::byte> {
+    kythira::append_entries_request<> req;
+    req._term = 5;
+    req._leader_id = 2;
+    auto data = serializer.serialize(req);
+    BOOST_REQUIRE(!data.empty());
+    BOOST_REQUIRE(data.back() == std::byte{0x80});
+    data.pop_back();
+    return data;
+}
+
+// The shortest log entry the decoder accepts: {"term":0,"index":0,"command":h''}.
+auto append_minimal_entry(std::vector<std::byte>& out) -> void {
+    const auto text = [&out](std::string_view s) {
+        out.push_back(static_cast<std::byte>(0x60 + s.size()));
+        for (char c : s) {
+            out.push_back(static_cast<std::byte>(c));
+        }
+    };
+    out.push_back(std::byte{0xA3});  // map, 3 pairs
+    text("term");
+    out.push_back(std::byte{0x00});
+    text("index");
+    out.push_back(std::byte{0x00});
+    text("command");
+    out.push_back(std::byte{0x40});  // empty byte string
+}
+
+}  // namespace
+
+/**
+ * Feature: cbor-rpc-serializer, Property 2: Malformed and truncated input rejected, never crashes
+ * Validates: Requirements 6.1, 6.4
+ *
+ * Property: an entries array whose count fits the remaining bytes (one byte
+ * per item) but not the shortest valid log entry is rejected before the
+ * decoder reserves storage for it, so a small body cannot make the decoder
+ * allocate many times its own size.
+ */
+BOOST_AUTO_TEST_CASE(property_entry_count_beyond_minimum_entry_size_rejected) {
+    kythira::cbor_rpc_serializer<std::vector<std::byte>> serializer;
+
+    constexpr std::size_t count = 1000;
+    auto data = append_entries_without_entries(serializer);
+    data.push_back(std::byte{0x99});  // array, 2-byte count
+    data.push_back(static_cast<std::byte>(count >> 8));
+    data.push_back(static_cast<std::byte>(count & 0xFF));
+    data.insert(data.end(), count, std::byte{0x00});
+
+    BOOST_CHECK_EXCEPTION(
+        static_cast<void>(serializer.deserialize_append_entries_request(data)),
+        kythira::serialization_exception, [](const kythira::serialization_exception& e) {
+            return std::string_view(e.what()).find("log entry count") != std::string_view::npos;
+        });
+}
+
+/**
+ * Feature: cbor-rpc-serializer, Property 2: Malformed and truncated input rejected, never crashes
+ * Validates: Requirements 6.1
+ *
+ * Property: the entry-count bound is exact; entries of the shortest valid
+ * encoding that fill the rest of the buffer still decode.
+ */
+BOOST_AUTO_TEST_CASE(property_minimal_entries_filling_buffer_accepted) {
+    kythira::cbor_rpc_serializer<std::vector<std::byte>> serializer;
+
+    constexpr std::size_t count = 3;
+    auto data = append_entries_without_entries(serializer);
+    data.push_back(static_cast<std::byte>(0x80 + count));  // array, 3 items
+    for (std::size_t i = 0; i < count; ++i) {
+        append_minimal_entry(data);
+    }
+
+    auto decoded = serializer.deserialize_append_entries_request(data);
+    BOOST_REQUIRE_EQUAL(decoded.entries().size(), count);
+    BOOST_CHECK(decoded.entries()[0].command().empty());
 }

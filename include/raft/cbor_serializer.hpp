@@ -1277,10 +1277,26 @@ private:
         }
     }
 
+    /// Shortest valid encoding of one log entry: a map header byte, then the
+    /// three required pairs with one-byte values ("term": 0, "index": 0,
+    /// "command": empty byte string). Key text strings cost one header byte
+    /// plus their length.
+    static constexpr std::uint64_t min_encoded_entry_bytes =
+        1 + (1 + 4 + 1) + (1 + 5 + 1) + (1 + 7 + 1);
+
     /// Decode a CBOR array of per-entry maps into a `std::vector<LogEntry>`.
     template<typename TermId, typename LogIndex, typename LogEntry>
     static auto read_entries(decode_cursor& cur) -> std::vector<LogEntry> {
         const std::size_t count = read_array_header(cur);
+        // read_array_header() only guarantees one byte per item, which would
+        // let a small body reserve ~48x its size in LogEntry objects. A
+        // valid entry is never shorter than min_encoded_entry_bytes, so a
+        // count the remaining input cannot hold is malformed; checking it
+        // first keeps the reserve() below proportional to the input.
+        const auto remaining = static_cast<std::uint64_t>(cur.end - cur.pos);
+        if (static_cast<std::uint64_t>(count) > remaining / min_encoded_entry_bytes) {
+            throw serialization_exception("CBOR decode: log entry count exceeds remaining input");
+        }
         std::vector<LogEntry> entries;
         entries.reserve(count);
         for (std::size_t i = 0; i < count; ++i) {
