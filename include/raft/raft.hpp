@@ -1216,7 +1216,8 @@ private:
     // is released, for the same reason as finish_leader_transfer().
     auto abandon_server_addition(std::exception_ptr error) -> std::function<void()>;
     // True while a joint-consensus change or a pending add_server() catch-up
-    // is in flight. Must be called with _mutex held.
+    // is in flight, or while the configuration is joint. Must be called with
+    // _mutex held.
     [[nodiscard]] auto membership_change_in_progress() -> bool;
     // Requirement 9.6: whether `candidate` may be granted a vote by
     // membership — a voter of the current configuration (either half while
@@ -4226,8 +4227,12 @@ auto node<Types>::candidate_in_configuration(const node_id_type& candidate) -> b
 }
 
 template<raft_types Types> auto node<Types>::membership_change_in_progress() -> bool {
+    // A joint configuration counts even when the synchronizer has nothing in
+    // flight: a timed-out change, or one inherited from a deposed leader,
+    // leaves its joint entry in the log, and a change started on top of it
+    // would build its entries from C_old,new.
     return _config_synchronizer.is_configuration_change_in_progress() ||
-           _server_addition.has_value();
+           _server_addition.has_value() || _configuration.is_joint_consensus();
 }
 
 template<raft_types Types>
@@ -4988,6 +4993,10 @@ auto node<Types>::check_heartbeat_timeout() -> void {
     // Same reason: a pending add_server() must be failed when this node stops
     // leading, and only the tick notices that.
     drive_server_addition();
+    // And a joint-consensus change that never commits (its new server died
+    // after the promotion began, or this node stepped down and the entry was
+    // truncated) must fail its caller once the change's timeout elapses.
+    _config_synchronizer.handle_timeout();
 
     bool should_heartbeat = false;
 
@@ -7018,6 +7027,25 @@ auto node<Types>::become_leader() -> void {
     // purpose: the commit-index advance that establishes the leader's term
     // depends on it, so it is barriered like the rest (Requirement 1.3).
     persist_and_barrier_locked(no_op_entry);
+
+    // Dissertation §4.3: the leader appends C_new once C_old,new commits.
+    // apply_committed_entries() does that only when it applies the joint
+    // entry while leading, so a node that applied it as a follower (the old
+    // leader's C_new had not reached it) must do it on taking over, or the
+    // cluster stays joint and every later membership change is refused.
+    if (_configuration.is_joint_consensus() && !has_later_configuration_entry(_last_applied)) {
+        cluster_configuration_type c_new{_configuration.nodes(), false, std::nullopt,
+                                         _configuration.learners()};
+        log_entry_type c_new_entry{._term = _current_term,
+                                   ._index = get_last_log_index() + 1,
+                                   ._command = encode_configuration(c_new),
+                                   ._type = entry_type::configuration};
+        append_log_entry(c_new_entry);
+        persist_and_barrier_locked(c_new_entry);
+        _logger.info("Appended C_new for a joint configuration committed before this term",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"c_new_index", std::to_string(c_new_entry.index())}});
+    }
 
     // Initialize leader-specific state
     auto last_log_idx = get_last_log_index();
