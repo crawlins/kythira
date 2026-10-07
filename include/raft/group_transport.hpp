@@ -79,7 +79,7 @@ struct group_rpc_messages {
     using fetch_log_entries_request_type =
         fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId>;
     using fetch_log_entries_response_type =
-        fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>;
+        fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId>;
     using timeout_now_request_type = timeout_now_request<NodeId, TermId, LogIndex, GroupId>;
     using timeout_now_response_type = timeout_now_response<TermId, GroupId>;
 };
@@ -246,6 +246,15 @@ public:
         _observer = std::move(observer);
     }
 
+    /// @brief The id this process answers as, stamped on the responses the
+    /// transport itself builds for messages no local replica can take.
+    ///
+    /// Set once by the host before `start()`. Without it those answers carry
+    /// `node_id_type{}`, which for a textual id is not a member's id.
+    auto set_local_node_id(typename Messages::node_id_type id) -> void {
+        _local_node_id = std::move(id);
+    }
+
     /// @brief Count of messages dropped because their group is tombstoned or
     /// unplaceable here. The host publishes this as `stale_group_message`.
     [[nodiscard]] auto stale_group_message_count() const -> std::uint64_t {
@@ -334,13 +343,13 @@ public:
                     return dispatch(
                         req,
                         [](const handlers_type& h) -> const auto& { return h._fetch_log_entries; },
-                        [&req] {
+                        [this, &req] {
                             // `_available = false` is the peer-to-peer path's
                             // own "I cannot serve this" answer, so an unknown
                             // group looks to the requester exactly like a peer
                             // that has compacted past the range.
                             return typename Messages::fetch_log_entries_response_type{
-                                ._responder_id = 0,
+                                ._responder_id = _local_node_id,
                                 ._available = false,
                                 ._prev_log_term = 0,
                                 ._entries = {},
@@ -431,6 +440,7 @@ private:
     std::function<unknown_group_action(const GroupId&)> _unknown_group;
     std::function<bool(const GroupId&)> _is_tombstoned;
     std::function<void(const GroupId&)> _observer;
+    typename Messages::node_id_type _local_node_id{};
     std::atomic<std::uint64_t> _stale_group_messages{0};
 };
 

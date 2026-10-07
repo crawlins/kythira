@@ -312,7 +312,7 @@ to the right peer.
    be addressed by `node_id_type`.
 2. `fetch_log_entries_response::_responder_id` (`types.hpp:425,432`) SHALL
    have type `NodeId`.
-3. `proto/raft_messages.proto` SHALL add `NodeIdValue responder = 2` to the
+3. `proto/raft_messages.proto` SHALL add `NodeIdValue responder = 6` to the
    fetch response; encoders SHALL write it, and decoders SHALL prefer it
    and fall back to `responder_id = 1` for numeric ids from older peers.
 4. The JSON serializer's numeric branch SHALL decode with

@@ -248,14 +248,20 @@ public:
     }
 
     // Serialize FetchLogEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>& resp) const -> Data {
+        const fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId>& resp) const
+        -> Data {
         raft_pb::FetchLogEntriesResponse msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
-        // responder_id stays a bare uint64 (see raft_messages.proto note).
-        msg.set_responder_id(static_cast<std::uint64_t>(resp.responder_id()));
+        // Numeric ids also fill the legacy responder_id for older peers (see
+        // raft_messages.proto).
+        *msg.mutable_responder() = to_node_id_value<NodeId>(resp.responder_id());
+        if constexpr (std::unsigned_integral<NodeId>) {
+            msg.set_responder_id(static_cast<std::uint64_t>(resp.responder_id()));
+        }
         msg.set_available(resp.available());
         msg.set_prev_log_term(static_cast<std::uint64_t>(resp.prev_log_term()));
         for (const auto& entry : resp.entries()) {
@@ -500,16 +506,25 @@ public:
     }
 
     // Deserialize FetchLogEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_response(const Data& data) const
-        -> fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> {
+        -> fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId> {
         auto msg =
             decode<raft_pb::FetchLogEntriesResponse>(message_tag::fetch_log_entries_response, data);
 
-        fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> resp;
+        fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId> resp;
         resp._group_id = from_group_id_value<GroupId>(msg.group_id());
-        resp._responder_id = static_cast<std::uint64_t>(msg.responder_id());
+        if (msg.has_responder()) {
+            resp._responder_id = from_node_id_value<NodeId>(msg.responder());
+        } else if constexpr (std::unsigned_integral<NodeId>) {
+            // An older peer sends only the legacy numeric field.
+            resp._responder_id = static_cast<NodeId>(msg.responder_id());
+        } else {
+            throw serialization_exception(
+                "FetchLogEntriesResponse: no responder for a textual node id");
+        }
         resp._available = msg.available();
         resp._prev_log_term = static_cast<TermId>(msg.prev_log_term());
         resp._entries.reserve(static_cast<std::size_t>(msg.entries_size()));
@@ -655,6 +670,8 @@ private:
         raft_pb::NodeIdValue v;
         if constexpr (std::same_as<NodeId, std::string>) {
             v.set_text(id);
+        } else if constexpr (composite_node_id<NodeId>) {
+            v.set_text(id.to_string());
         } else {
             v.set_numeric(static_cast<std::uint64_t>(id));
         }
@@ -670,6 +687,16 @@ private:
                 throw serialization_exception("NodeIdValue: expected string, got numeric");
             }
             return v.text();
+        } else if constexpr (composite_node_id<NodeId>) {
+            if (v.value_case() != raft_pb::NodeIdValue::kText) {
+                throw serialization_exception("NodeIdValue: expected string, got numeric");
+            }
+            auto id = NodeId::parse(v.text());
+            if (!id) {
+                throw serialization_exception("NodeIdValue: invalid composite node id \"" +
+                                              v.text() + "\"");
+            }
+            return std::move(*id);
         } else {
             if (v.value_case() != raft_pb::NodeIdValue::kNumeric) {
                 throw serialization_exception("NodeIdValue: expected numeric, got string");

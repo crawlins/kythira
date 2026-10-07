@@ -74,7 +74,8 @@ BOOST_AUTO_TEST_CASE(protobuf_round_trips_a_non_zero_group_id) {
         BOOST_CHECK(!out.conflict_index().has_value());
     }
     {
-        const fetch_log_entries_response<std::uint64_t, std::uint64_t, log_entry<>, std::uint64_t>
+        const fetch_log_entries_response<std::uint64_t, std::uint64_t, std::uint64_t, log_entry<>,
+                                         std::uint64_t>
             in{._responder_id = 3,
                ._available = true,
                ._prev_log_term = 4,
