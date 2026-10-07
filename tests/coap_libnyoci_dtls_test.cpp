@@ -398,6 +398,66 @@ BOOST_AUTO_TEST_CASE(test_dtls_pki_cipher_suites_accept_iana_names,
     BOOST_CHECK_THROW(server.start(), kythira::coap_security_config_error);
 }
 
+// With no cipher_suites configured the server offers forward-secret AEAD
+// suites only. libnyoci's own default ("ALL:...") kept CBC-SHA1 and
+// static-RSA suites; a client that insists on one now gets no handshake.
+BOOST_AUTO_TEST_CASE(test_dtls_pki_defaults_refuse_cbc_suites,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    const pki_material server_material{"server"};
+    kythira::pki_credentials server_creds;
+    server_creds.cert_file = server_material.cert_file;
+    server_creds.key_file = server_material.key_file;
+    server_creds.verify_peer_cert = false;
+
+    kythira::coap_server_config server_config;
+    server_config.security.mode = kythira::coap_auth_mode::dtls_pki;
+    server_config.security.credentials = server_creds;
+
+    test_server server{loopback, ephemeral_port, server_config, test_metrics{}};
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& request) {
+        return kythira::request_vote_response<>{request.term(), true};
+    });
+    server.start();
+
+    const pki_material client_material{"client"};
+    kythira::pki_credentials client_creds;
+    client_creds.cert_file = client_material.cert_file;
+    client_creds.key_file = client_material.key_file;
+    client_creds.verify_peer_cert = false;
+    client_creds.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA"};
+
+    kythira::coap_client_config client_config;
+    client_config.security.mode = kythira::coap_auth_mode::dtls_pki;
+    client_config.security.credentials = client_creds;
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, client_config, test_metrics{}};
+
+    const kythira::request_vote_request<> request{3, 1, 0, 0};
+    bool rejected = false;
+    try {
+        (void)client.send_request_vote(peer_node_id, request, std::chrono::seconds{5}).get();
+    } catch (const kythira::coap_transport_error&) {
+        rejected = true;
+    }
+    BOOST_TEST(rejected, "a CBC-only client must not complete a handshake with the defaults");
+
+    server.stop();
+}
+
+// A PSK shorter than 16 bytes is refused before a socket exists.
+BOOST_AUTO_TEST_CASE(test_dtls_psk_short_key_is_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::coap_server_config config;
+    config.security.mode = kythira::coap_auth_mode::dtls_psk;
+    config.security.credentials =
+        kythira::psk_credentials{"kythira-node", std::vector<std::byte>(15, std::byte{0x42})};
+
+    test_server server{loopback, ephemeral_port, config, test_metrics{}};
+    BOOST_CHECK_THROW(server.start(), kythira::coap_security_error);
+    BOOST_TEST(!server.is_running());
+}
+
 // A mode that names credentials of the wrong alternative is a configuration
 // error, and must say so rather than dereferencing the wrong variant member.
 BOOST_AUTO_TEST_CASE(test_psk_mode_with_pki_credentials_is_a_config_error,

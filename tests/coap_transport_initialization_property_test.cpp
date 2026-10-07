@@ -63,8 +63,7 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components,
                 // Configure PSK when DTLS is enabled
                 if (client_config.enable_dtls) {
                     client_config.psk_identity = "test_client";
-                    client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                             std::byte{0x04}};
+                    client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
                 }
 
                 kythira::noop_metrics metrics;
@@ -104,8 +103,7 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components,
                 // Configure PSK when DTLS is enabled
                 if (server_config.enable_dtls) {
                     server_config.psk_identity = "test_server";
-                    server_config.psk_key = {std::byte{0x05}, std::byte{0x06}, std::byte{0x07},
-                                             std::byte{0x08}};
+                    server_config.psk_key = std::vector<std::byte>(16, std::byte{0x05});
                 }
 
                 kythira::noop_metrics metrics;
@@ -191,16 +189,14 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components,
                 case 1:
                     // PSK-based authentication
                     dtls_config.psk_identity = "test_identity";
-                    dtls_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                           std::byte{0x04}};
+                    dtls_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
                     break;
                 case 2:
                     // Mixed configuration (should still be valid for construction)
                     dtls_config.cert_file = "/path/to/cert.pem";
                     dtls_config.key_file = "/path/to/key.pem";
                     dtls_config.psk_identity = "backup_identity";
-                    dtls_config.psk_key = {std::byte{0x05}, std::byte{0x06}, std::byte{0x07},
-                                           std::byte{0x08}};
+                    dtls_config.psk_key = std::vector<std::byte>(16, std::byte{0x05});
                     dtls_config.verify_peer_cert = false;
                     break;
 

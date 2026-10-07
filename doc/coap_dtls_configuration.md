@@ -187,6 +187,11 @@ openssl rand -hex 32 > psk.key
 # Example output: a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
 ```
 
+Keys must be 16 to 64 bytes on every backend (`coap_min_psk_key_length`,
+`coap_max_psk_key_length`). Anyone who records a PSK handshake can test
+candidate keys offline, so a short key is guessable however strong the
+cipher suite is; shorter keys are refused at construction or `start()`.
+
 ### Client Configuration
 
 ```cpp
@@ -313,7 +318,13 @@ config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
 - Every entry must name a suite this OpenSSL can negotiate over DTLS 1.2.
   An unknown name, or a TLS 1.3 suite such as `TLS_AES_128_GCM_SHA256`,
   fails construction (or `start()`) with `coap_security_config_error`.
-- An empty list keeps the backend's defaults.
+- An empty list keeps the backend's defaults. On cantcoap and libnyoci
+  those are forward-secret AEAD suites only (ECDHE with AES-GCM,
+  ChaCha20-Poly1305 or AES-CCM for certificates and raw public keys; AEAD
+  PSK and (EC)DHE-PSK suites for DTLS-PSK), not OpenSSL's `DEFAULT`, which
+  still carries static-RSA and CBC-SHA1 suites. libcoap hard-codes its own
+  list (`COAP_OPENSSL_CIPHERS`). A peer that only offers CBC or static-RSA
+  suites needs them named here.
 - `cipher_suites` cannot be combined with DTLS-PSK, and the top-level
   field cannot be combined with an explicit `security.mode`; both are
   configuration errors rather than settings that would be ignored.
@@ -613,7 +624,8 @@ cat node-cert.pem intermediate-cert.pem > cert-bundle.pem
 coap_client_config dev_config;
 dev_config.enable_dtls = true;
 dev_config.psk_identity = "dev-cluster";
-dev_config.psk_key = {std::byte{0xde}, std::byte{0xad}, std::byte{0xbe}, std::byte{0xef}};
+// At least 16 bytes (coap_min_psk_key_length); shorter keys are refused.
+dev_config.psk_key = std::vector<std::byte>(16, std::byte{0xde});
 dev_config.verify_peer_cert = false;
 ```
 

@@ -82,7 +82,7 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment,
     std::mt19937 rng(rd());
     std::uniform_int_distribution<int> bool_dist(0, 1);
     std::uniform_int_distribution<std::uint16_t> port_dist(5684, 6000);
-    std::uniform_int_distribution<std::size_t> psk_size_dist(4, 64);
+    std::uniform_int_distribution<std::size_t> psk_size_dist(16, 64);
     std::uniform_int_distribution<std::uint8_t> byte_dist(0, 255);
 
     std::size_t failures = 0;
@@ -413,7 +413,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation,
         kythira::coap_client_config config;
         config.enable_dtls = true;
         config.psk_identity = std::string(200, 'x');  // 200 characters
-        config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+        config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
 
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = "coaps://127.0.0.1:5684";

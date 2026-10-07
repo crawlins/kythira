@@ -83,13 +83,7 @@ inline auto validate_client_config(const coap_client_config& config) -> void {
         }
 
         if (has_psk_auth) {
-            if (config.psk_key.size() < 4) {
-                throw coap_security_error("PSK key must be at least 4 bytes");
-            }
-
-            if (config.psk_key.size() > 64) {
-                throw coap_security_error("PSK key must not exceed 64 bytes");
-            }
+            validate_psk_key_length(config.psk_key.size());
 
             if (config.psk_identity.size() > 128) {
                 throw coap_security_error("PSK identity must not exceed 128 characters");
@@ -183,13 +177,7 @@ inline auto validate_server_config(const coap_server_config& config) -> void {
         }
 
         if (has_psk_auth) {
-            if (config.psk_key.size() < 4) {
-                throw coap_security_error("PSK key must be at least 4 bytes");
-            }
-
-            if (config.psk_key.size() > 64) {
-                throw coap_security_error("PSK key must not exceed 64 bytes");
-            }
+            validate_psk_key_length(config.psk_key.size());
 
             if (config.psk_identity.size() > 128) {
                 throw coap_security_error("PSK identity must not exceed 128 characters");

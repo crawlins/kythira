@@ -40,9 +40,12 @@ using test_transport_types =
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
 const std::string psk_identity = "raft-node-handshake";
-const std::vector<std::byte> psk_key = {std::byte{0x11}, std::byte{0x22}, std::byte{0x33},
-                                        std::byte{0x44}, std::byte{0x55}, std::byte{0x66},
-                                        std::byte{0x77}, std::byte{0x88}};
+// 16 bytes: the minimum DTLS-PSK key length (coap_min_psk_key_length).
+const std::vector<std::byte> psk_key = {
+    std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44},
+    std::byte{0x55}, std::byte{0x66}, std::byte{0x77}, std::byte{0x88},
+    std::byte{0x99}, std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC},
+    std::byte{0xDD}, std::byte{0xEE}, std::byte{0xFF}, std::byte{0x10}};
 
 auto psk_server_config() -> coap_server_config {
     coap_server_config config;

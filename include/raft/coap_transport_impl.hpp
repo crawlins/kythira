@@ -1311,7 +1311,8 @@ requires kythira::transport_types<Types>
 auto coap_client<Types>::generate_message_token() -> std::string {
     // Fixed width, so the token cannot outgrow coap_max_token_length as the
     // counter climbs -- see format_sequential_token() for the failure this
-    // replaces.
+    // replaces. The counter goes through a per-client secret permutation
+    // first, so tokens stay unique but cannot be guessed (token_scrambler).
     //
     // Truncating the 64-bit counter to 32 bits is deliberate. Tokens only have
     // to be unique among *outstanding* requests, not for all time:
@@ -1319,7 +1320,7 @@ auto coap_client<Types>::generate_message_token() -> std::string {
     // bounded and evicted. A collision would need one client to issue 2^32
     // requests between a request being sent and its response arriving.
     return coap_utils::format_sequential_token(
-        static_cast<std::uint32_t>(_token_counter.fetch_add(1)));
+        _token_scrambler(static_cast<std::uint32_t>(_token_counter.fetch_add(1))));
 }
 
 template<typename Types>
@@ -1456,9 +1457,7 @@ auto coap_client<Types>::setup_dtls_context() -> void {
     } else if (!_config.psk_identity.empty() && !_config.psk_key.empty()) {
         // PSK-based authentication
         // Validate PSK parameters
-        if (_config.psk_key.size() < 4 || _config.psk_key.size() > 64) {
-            throw coap_security_error("PSK key length must be between 4 and 64 bytes");
-        }
+        validate_psk_key_length(_config.psk_key.size());
 
         if (_config.psk_identity.length() > 128) {
             throw coap_security_error("PSK identity length must not exceed 128 characters");
@@ -1541,9 +1540,7 @@ auto coap_client<Types>::setup_dtls_context() -> void {
 
     } else if (!_config.psk_identity.empty() && !_config.psk_key.empty()) {
         // PSK-based authentication validation
-        if (_config.psk_key.size() < 4 || _config.psk_key.size() > 64) {
-            throw coap_security_error("PSK key length must be between 4 and 64 bytes");
-        }
+        validate_psk_key_length(_config.psk_key.size());
 
         if (_config.psk_identity.length() > 128) {
             throw coap_security_error("PSK identity length must not exceed 128 characters");
@@ -3520,9 +3517,7 @@ auto coap_server<Types>::setup_dtls_context() -> void {
         // PSK-based authentication with libcoap
 
         // Validate PSK parameters
-        if (_config.psk_key.size() < 4 || _config.psk_key.size() > 64) {
-            throw coap_security_error("Server PSK key length must be between 4 and 64 bytes");
-        }
+        validate_psk_key_length(_config.psk_key.size());
 
         if (_config.psk_identity.length() > 128) {
             throw coap_security_error("Server PSK identity length must not exceed 128 characters");
@@ -3615,9 +3610,7 @@ auto coap_server<Types>::setup_dtls_context() -> void {
 
     } else if (!_config.psk_identity.empty() && !_config.psk_key.empty()) {
         // PSK-based authentication validation (stub)
-        if (_config.psk_key.size() < 4 || _config.psk_key.size() > 64) {
-            throw coap_security_error("Server PSK key length must be between 4 and 64 bytes");
-        }
+        validate_psk_key_length(_config.psk_key.size());
 
         if (_config.psk_identity.length() > 128) {
             throw coap_security_error("Server PSK identity length must not exceed 128 characters");

@@ -56,6 +56,25 @@ struct psk_credentials {
     std::vector<std::byte> key;
 };
 
+// Bounds on a DTLS pre-shared key, enforced by every backend. The floor is
+// 16 bytes (128 bits): a PSK cipher suite is only as strong as its key, and
+// anyone who records one handshake can test candidate keys offline against
+// its Finished message, so a short key falls to brute force however strong
+// the AEAD is. The 64-byte ceiling is the limit the libcoap path has always
+// applied.
+inline constexpr std::size_t coap_min_psk_key_length = 16;
+inline constexpr std::size_t coap_max_psk_key_length = 64;
+
+// Throws coap_security_error unless `length` is within the bounds above.
+inline auto validate_psk_key_length(std::size_t length) -> void {
+    if (length < coap_min_psk_key_length || length > coap_max_psk_key_length) {
+        throw coap_security_error("PSK key length must be between " +
+                                  std::to_string(coap_min_psk_key_length) + " and " +
+                                  std::to_string(coap_max_psk_key_length) + " bytes (got " +
+                                  std::to_string(length) + ")");
+    }
+}
+
 // Certificate revocation checking for DTLS peers (coap-transport
 // Requirements 6.5 and 11.3). Off by default. When enabled it fails closed:
 // a CRL that cannot be read, or (unless allow_missing_crl) an issuer with no
