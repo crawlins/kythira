@@ -348,7 +348,7 @@ jobs:
           path: vcpkg_installed
           # runner.arch keeps the x64 and arm64 legs' caches isolated from
           # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1051,7 +1051,7 @@ jobs:
           path: vcpkg_installed
           # runner.arch keeps the x64 and arm64 legs' caches isolated from
           # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1327,7 +1327,7 @@ jobs:
           path: vcpkg_installed
           # runner.arch keeps the x64 and arm64 legs' caches isolated from
           # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1582,7 +1582,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ matrix.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1813,7 +1813,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-azure-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-azure-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -2498,7 +2498,7 @@ jobs:
           # job restore an aws-populated cache that lacks google-cloud-cpp,
           # leaving KYTHIRA_HAS_GCP_SDK false and the real-GCE/CAS test binaries
           # unbuilt.
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -2930,7 +2930,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -3431,7 +3431,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Export Actions cache credentials for vcpkg
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0

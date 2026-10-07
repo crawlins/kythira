@@ -116,7 +116,7 @@ jobs:
           # Shares the same key format (and, on a warm cache, the same
           # entry) as ci.yml's build-and-test job, so this job doesn't pay
           # its own from-scratch vcpkg build if that cache is still live.
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
