@@ -1,8 +1,9 @@
 # Implementation Plan — CI Build-Matrix Coverage
 
-## Status: In progress — 7/12 tasks
+## Status: In progress — 8/12 tasks
 
-**Last Updated**: October 6, 2026 (Tasks 9-10 done: `static-analysis` job).
+**Last Updated**: October 7, 2026 (Task 1 closed as superseded; Tasks 11-12
+done for every job except `alt-coap-backends`, which is open PR #463).
 
 ## Overview
 
@@ -36,7 +37,7 @@ the Folly-free target set) depend on numbers nobody has yet.
 
 ## Phase 0: Measure (Task 1)
 
-- [ ] 1. Measure each configuration locally before touching CI
+- [x] 1. Measure each configuration locally before touching CI
   - On a machine with a full vcpkg tree (Clark's, or a sandbox where
     `vcpkg install` works), record for each of the following: does it
     configure, does it build, which tests fail, and how long a cold and a
@@ -52,6 +53,14 @@ the Folly-free target set) depend on numbers nobody has yet.
       finding count.
   - List the code-generation targets a clang-tidy run needs built first.
   - Record results in this file under Notes; they size every later task.
+  - Superseded, not done as written: no sandbox here has the vcpkg tree,
+    so each configuration was measured as its job landed instead. The
+    Folly-free build by a local configure plus `clang -M -MG` (Tasks 6-7),
+    the clang-tidy scope and codegen prerequisites by a temporary CI
+    workflow (Tasks 9-10), and `minimal_defconfig`, `no_cloud_defconfig`
+    and the isolation script by the `config-variants` job's own PR runs
+    (Task 8). The alternate CoAP configuration is measured by PR #463's
+    runs (Tasks 4-5). See Notes and Task 11 for the figures.
   - _Requirements: 3.5, 7.3, 8.1_
 
 ## Phase 1: Cheap gates (Tasks 2–3)
@@ -177,6 +186,27 @@ the Folly-free target set) depend on numbers nobody has yet.
   - One green run of each job on the PR head and the first `main` push
     after merge. Record warm and cold durations in each job's
     `timeout-minutes` comment.
+  - Done for four of the five jobs; open only for `alt-coap-backends`
+    (PR #463). Each landed through a PR whose head was green (#458
+    `kconfig-check`, #479 `no-folly`, #478 `config-variants`, #491
+    `static-analysis`), and all four were green on `main` in runs
+    [37567880231](https://github.com/crawlins/kythira/actions/runs/37567880231)
+    (`b7e7e01`) and
+    [37584489048](https://github.com/crawlins/kythira/actions/runs/37584489048)
+    (`2faddb0`). Durations, now in each `timeout-minutes` comment:
+
+    | Job | Warm sccache | After a wide header change | Timeout |
+    |---|---|---|---|
+    | `kconfig-check` | 0.1 min | 0.1 min | 10 |
+    | `no-folly` | 12.8 min | 63.8 min | 180 |
+    | `config-variants` | 9.6 min | 39.4 min | 240 |
+    | `static-analysis` (6 shards) | 28.9-45.2 min | 21.4-40.5 min | 90 |
+
+    `2faddb0` changed headers included by most translation units, so its
+    run recompiled most of the tree; that is the slowest case `main` has
+    shown. No fully cold run (empty sccache) of these jobs has been seen
+    on `main`, so `config-variants` keeps its cold-build sizing.
+    `static-analysis` does not compile, so it has no warm/cold split.
   - _Requirements: 7.3, 8.2_
 
 - [ ] 12. Update stale specs and docs
@@ -186,6 +216,14 @@ the Folly-free target set) depend on numbers nobody has yet.
     note the suites now run in CI.
   - `doc/TODO.md`: close the items this spec resolves and add any
     exclusions made under Requirement 8.1.
+  - Done except the two alternate-CoAP spec notes, which can only be
+    true once `alt-coap-backends` runs (PR #463). kconfig-integration
+    and clang-tidy carry their notes; `doc/TODO.md`'s row and
+    bookkeeping list are current; Requirement 8.1's exclusions are
+    the no-folly allowlist's over-wide gates, which `doc/TODO.md`
+    already tracks; Task 8 fixed what it found rather than excluding it. The root
+    `CMakeLists.txt` comment above `kythira_find_optional(FOLLY folly)`
+    and the `CONFIG_FOLLY` help text already describe the no-folly job.
   - _Requirements: 8.3_
 
 ## Notes

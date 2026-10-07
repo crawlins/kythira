@@ -52,6 +52,12 @@ configuration, CMake targets, pre-commit hook wiring, and documentation.
   - Commit any code fixes as a separate `fix:` commit; commit any
     suppressions in the `.clang-tidy` commit
   - Document any suppressed checks and the reason in the `.clang-tidy` file
+  - Zero findings is now gated in CI, not just reached once: ci.yml's
+    `static-analysis` job (ci-build-matrix-coverage Tasks 9-10, October
+    2026) runs the `static-analysis` target over the full
+    `ci_full_defconfig` tree in six shards on every push and pull request.
+    Before it, the tree had drifted to 873 findings and the target could
+    not run at all, since `cmake/check_compdb.cmake` was never committed.
   - _Requirements: 1.4, 1.5, 2.7_
 
 ---

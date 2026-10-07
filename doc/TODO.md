@@ -272,7 +272,7 @@ nothing and would have been answered with 406.
 | `coap-client-event-driven-io` | 0/8 | Replace the libcoap client's fixed `coap_io_process(NO_WAIT)` + 5 ms sleep with a readiness wait and wake fd; task 1 is a gate that confirms six claims about libcoap first. Draft PR #392. |
 | `group-scale-up-rollback` | 8/10 | Tasks 1–8 on `main`: the vendor spike, the shared planner, mock servers that model the cloud's choice, and remove-by-id rollback in all five group managers (ESS and OCI instance pool first, then ASG, VMSS and MIG in `794b7e5`). Task 9's real-cloud timeout cases are written (`498333b`) but not yet dispatched, which the task requires before it is ticked; the AWS CI role must be re-provisioned for the new `PutLifecycleHook` and `SetInstanceProtection` grants first. Task 10 (provider READMEs and cross-references from the five provider specs) is open. |
 | `cloud-composite-node-ids` | 2/10 | Task 1 (`38da1e0`: `composite_node_id.hpp`, provider rule sets, `node_id_traits`) and task 9 (LocalStack without the hook, `d0519be`) are on `main`; separately, `0b1d853` stopped the AWS managers parsing EC2 instance ids as 64-bit node ids. Open: numeric hardening, the AWS and other managers in composite mode, the Raft core and serializers, transports, CA identity and serials, self id and binaries, docs and the default flip. The largest open spec. |
-| `ci-build-matrix-coverage` | 4/12 (task 3 done, unticked) | `kconfig-check` (task 2), the Folly-free prefix script and `no-folly` job (tasks 6–7, `268c07b`) and `config-variants` (task 8) are on `main`. **Task 3 is done and not ticked**: `723dd71` added `cmd/` to `FORMAT_SOURCES` and `TIDY_SOURCES`. The `alt-coap-backends` job (tasks 4–5) is open PR #463; task 1's measurements, the tidy-to-zero work and the `static-analysis` job have no PR. |
+| `ci-build-matrix-coverage` | 8/12 | Four of the five jobs are on `main` and green there: `kconfig-check` (task 2), `no-folly` (tasks 6–7), `config-variants` (task 8) and the six-shard `static-analysis` clang-tidy gate (tasks 9–10, after taking the tree from 873 findings to zero); task 3 (`cmd/` in `FORMAT_SOURCES`/`TIDY_SOURCES`) is ticked. Task 1 is closed as superseded, since each configuration was measured as its job landed. Their `main` durations are in the `timeout-minutes` comments and task 11. **Open: only the `alt-coap-backends` job** (tasks 4–5, PR #463), its task 11 run, and the coap-transport-cantcoap task 8 / coap-transport-libnyoci task 6 notes in task 12 that depend on it. |
 | `object-backup-oci-oss-credentials` | 8/9 | Tasks 1–8 on `main` (October 3). Task 9 is a manual live check that needs the real-suite OCI and Alibaba credentials; open PR #483 runs `raft_object_backup list` against both buckets in Real Cloud Tests instead. |
 | `batched-durable-writes` | 5/6 | Bulk log append and a combined term-and-vote write on the persistence seam, landed in `c087752`. Task 6, a live measurement against a real object store, is open. The moved-terms case of `raft_batched_durable_writes_test` that failed in bursts on the boost and stdexec full-suite legs stopped failing once `4884c34` (store a newer term when it is learned; keep a same-term vote) landed on main with the `f901874` diagnostics on 2026-10-06 ~10:55Z. Before that, 11 Full suite jobs across 7 of 14 runs failed it (5 of them 3/3); after it, no Full suite, Build & Test, No Folly or Coverage job in the 51 runs since (through `b7e7e01`) shows a failure or a retry of it, and it never failed locally (0/96 under 3x CPU oversubscription on the fix, 0/30 on `c087752`, 10 of them pinned to one busy core). The exact stall the old code hit was not reproduced; if the case fails again, the `f901874` dump names each node's live and stored term. |
 | `aws-quorum-manager` | 7/8 | Task 8, a real-EC2 `process_crash_triggers_replacement` using leader-driven liveness (`quorum_peer_dead_after`) with the process killed over SSH. `process_crash_via_ssh_kill` in `tests/aws_quorum_manager_real_ec2_test.cpp` still uses `StopInstances`, and no test uses `quorum_peer_dead_after`. |
@@ -409,7 +409,7 @@ unverified completion claim.
     (`ca-cluster-node-ami` tasks.md ~261).
   - **Checkbox bookkeeping owed in the specs themselves**, so the next audit
     does not rediscover it: `tcp-rpc-server-hardening` tasks 1–5, 6.2 and
-    6.3; `ci-build-matrix-coverage` task 3; `stdexec-future-backend`'s
+    6.3; `stdexec-future-backend`'s
     header, which still says "not yet merged into `main`"; and
     `cloud-object-persistence` 15.3, a firm "decided no" that is marked
     `[~]` (blocked) rather than closed.
@@ -3046,7 +3046,9 @@ unverified completion claim.
   checks staged files first; `SKIP_FORMAT_CHECK=1` escape hatch
 - [x] **clang-tidy integration** — `.clang-tidy` config with `WarningsAsErrors: "*"`;
   CMake `static-analysis`/`static-analysis-fix` targets; pre-commit opt-in hook
-  step; zero findings across 291 source files
+  step; zero findings across the full tree, gated in CI since October 2026 by
+  ci.yml's six-shard `static-analysis` job (it had drifted to 873 findings
+  while nothing ran it)
 - [x] **Code coverage** — CMake `ENABLE_COVERAGE` option using Clang/LLVM
   source-based instrumentation (`llvm-profdata`/`llvm-cov`, switched from an
   earlier gcovr approach that undercounted template-heavy headers via
