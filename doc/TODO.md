@@ -1458,9 +1458,10 @@ unverified completion claim.
     `true`, which is not set yet. The reason is the data in the next entry:
     one in three test jobs had a retry-rescued test, and most of those tests
     appeared once in 54 jobs, so strict mode today would turn most runs red on
-    flakes nobody has seen before. Set the variable once the two
-    `ca_cluster_node_rpc_tls*` flakes are fixed and a week of runs adds nothing
-    new to the allowlist. The verdict is now read from the retry lines too
+    flakes nobody has seen before. The two `ca_cluster_node_rpc_tls*` flakes
+    this waited on are fixed (October 7 re-measurement below); set the
+    variable once `beast_server_test` is fixed too and a week of runs adds
+    nothing new to the allowlist. The verdict is now read from the retry lines too
     (ctest prints those without the `N/M` prefix), so a test that failed every
     attempt is left to ctest's own failure and no longer also listed as a
     retry. Original entry:
@@ -1496,6 +1497,28 @@ unverified completion claim.
       they are logic races, not timeouts.
     All twelve are in `.github/ctest-retry-allowlist.txt`; delete a line when
     its flake is fixed.
+    **Re-measured October 7, 2026** over 200 test jobs in 19 `ci.yml` runs
+    (2026-10-06..07), all after the bootstrap-election fix
+    (`set_campaign_requires_log_entries()`): the two `ca_cluster_node_rpc_tls*`
+    tests failed **no** first attempt (they had been 14 of 54), so both are off
+    the allowlist. Two new entries took their place:
+    - `beast_server_test`: 27 of 200 jobs, failing in 0.1-0.6 s on every leg
+      except ThreadSanitizer and Config Variants. Now the largest source of
+      retries by far and the blocker for `CTEST_STRICT_RETRIES`. Not yet
+      investigated.
+    - `ca_cluster_node_test`: 5 of 200, three different ways. Two were test
+      races, fixed the same day: the fixture's pre-picked ports could be taken
+      before a node bound them (that node exited and the fixture waited out
+      its 60 s; it now spots the exit and retries on fresh ports), and
+      `property_17_issuance_survives_leader_failover` sent its revoke once,
+      so a further leadership change between the two survivors turned it
+      into a 503 (it now retries on the current leader; revocation is
+      idempotent). The third is open: three clang++-18 jobs saw the test
+      binary die of an uncaught SIGSEGV about 0.1 s in, with no Boost output
+      at all (buffered stdout died with the process), which Boost would
+      normally catch and report. 60 local clang -O2 runs and an ASan/UBSan
+      run did not reproduce it. The binary now unbuffers stdout and logs
+      test-unit entry and exit, so the next occurrence names the test case.
   - **Assert each job's configuration actually took effect. PARTLY DONE**
     (noted October 6, 2026): the future-backend compat legs assert
     `KYTHIRA_DEFAULT_FUTURE_BACKEND` from `CMakeCache.txt` before building
