@@ -304,3 +304,6 @@ if(TARGET raft_grpc_transport AND TARGET certificate_authority)
 else()
     message(STATUS "grpc_transport_example: skipped (requires raft_grpc_transport and certificate_authority)")
 endif()
+
+# Boost.Test case reports for CI; see cmake/TestReports.cmake.
+kythira_attach_test_reports()

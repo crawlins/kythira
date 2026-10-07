@@ -256,3 +256,6 @@ add_raft_example(state_machine_migration_example state_machine_migration_example
 #
 # Run completion examples in parallel:
 #   ctest -L "completion" -j$(nproc)
+
+# Boost.Test case reports for CI; see cmake/TestReports.cmake.
+kythira_attach_test_reports()

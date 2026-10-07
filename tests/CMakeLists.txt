@@ -5702,6 +5702,9 @@ endif()
 # the required env vars/credentials are absent, so ctest reports "Not Run"
 # rather than "Failed"). Built only when the option is set, so ordinary CI
 # builds don't pay to compile them. See .github/workflows/real-cloud-tests.yml.
+# Declared, not just read, so scripts/check-build-config.py can tell this
+# option apart from a misspelled or renamed one.
+option(KYTHIRA_GCP_REAL_TESTS "Build the GCP real-cloud integration tests" OFF)
 if(KYTHIRA_GCP_REAL_TESTS)
     add_executable(gcp_quorum_manager_real_gce_test gcp_quorum_manager_real_gce_test.cpp)
     target_link_libraries(gcp_quorum_manager_real_gce_test PRIVATE
@@ -6594,3 +6597,6 @@ if(KYTHIRA_TEST_TIMEOUT_SCALE GREATER 1)
         "Test timeouts scaled by ${KYTHIRA_TEST_TIMEOUT_SCALE}x "
         "(Boost per-case budgets and CTest TIMEOUT properties)")
 endif()
+
+# Boost.Test case reports for CI; see cmake/TestReports.cmake.
+kythira_attach_test_reports()

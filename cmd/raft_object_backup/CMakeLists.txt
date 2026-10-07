@@ -138,3 +138,6 @@ else()
     message(STATUS "raft_object_backup: enabled with NO providers — it will build and run, and "
         "report every provider as not compiled in (Requirement 16.4)")
 endif()
+
+# Boost.Test case reports for CI; see cmake/TestReports.cmake.
+kythira_attach_test_reports()

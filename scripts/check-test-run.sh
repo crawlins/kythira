@@ -19,6 +19,10 @@
 #   * A test that exits with SKIP_RETURN_CODE (77) reports "Skipped" and counts
 #     as success, so a fixture that stops being satisfiable silently stops
 #     testing anything.
+#   * The same one level down: a Boost.Test case whose precondition() is false
+#     is "skipped" inside a binary that still exits 0, so ctest says Passed
+#     with none of that case's assertions run. Only the binary's own report
+#     shows it (--case-reports below).
 #
 # This script re-reads the raw ctest log and asserts what the exit code cannot:
 # that the expected set of tests existed, ran, and were not quietly skipped —
@@ -70,6 +74,18 @@
 #   --allow-retry RE  extended regex of test names allowed to pass only on a
 #                     retry under --strict-retries. Repeatable. The match is
 #                     anchored: RE must match the whole test name.
+#   --case-reports DIR
+#                     directory of per-test Boost.Test reports, written when
+#                     the build was configured with -DKYTHIRA_TEST_REPORT_DIR
+#                     (cmake/TestReports.cmake). Fails if no test that ran left
+#                     a report (the setting did not take effect), and on any
+#                     case or suite a report lists as skipped unless it is
+#                     allowlisted with --allow-case-skip.
+#   --allow-case-skip RE
+#                     extended regex for a skipped case or suite allowed under
+#                     --case-reports, matched against "<ctest name>:<unit
+#                     path>" (e.g. "foo_test:suite/case"). Repeatable, and
+#                     anchored like --allow-retry.
 #   --allow-retry-file FILE
 #                     read --allow-retry patterns from FILE, one per line.
 #                     Blank lines and lines starting with '#' are ignored, as
@@ -101,6 +117,8 @@ FLOOR=""
 STRICT_RETRIES=0
 ALLOW_SKIP=()
 ALLOW_RETRY=()
+CASE_REPORTS=""
+ALLOW_CASE_SKIP=()
 CTEST_FILTER_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -112,6 +130,8 @@ while [[ $# -gt 0 ]]; do
         --allow-skip)     ALLOW_SKIP+=("$2"); shift 2 ;;
         --strict-retries) STRICT_RETRIES=1; shift ;;
         --allow-retry)    ALLOW_RETRY+=("$2"); shift 2 ;;
+        --case-reports)   CASE_REPORTS="$2"; shift 2 ;;
+        --allow-case-skip) ALLOW_CASE_SKIP+=("$2"); shift 2 ;;
         --allow-retry-file)
             if [[ ! -f "$2" ]]; then
                 echo "[check-test-run] --allow-retry-file not found: $2" >&2
@@ -256,6 +276,78 @@ if [[ -n "$SKIPPED" ]]; then
         echo "                 skip is intended in this job." >&2
         exit 1
     fi
+fi
+
+# ── Check 2b: no Boost case or suite was skipped inside a passing binary ─────
+# ctest sees one exit code per binary. Boost reports a case whose
+# precondition() failed as "skipped" and still exits 0, so the checks above see
+# a pass. The detailed report each test wrote (cmake/TestReports.cmake) lists
+# those units by name:
+#     Test case "suite/case" was skipped
+#     Test suite "suite" was skipped
+# Cases left out by a --run_test filter or marked disabled() are not listed
+# that way, which is right: both are decided in the source, not at run time.
+if [[ -n "$CASE_REPORTS" ]]; then
+    if [[ ! -d "$CASE_REPORTS" ]]; then
+        fail "--case-reports directory not found: $CASE_REPORTS"
+        echo "                 The build was not configured with" >&2
+        echo "                 -DKYTHIRA_TEST_REPORT_DIR=$CASE_REPORTS, so no" >&2
+        echo "                 test wrote a case report." >&2
+        exit 1
+    fi
+    RAN_NAMES="$(printf '%s\n' "$RESULT_LINES" \
+        | sed -E 's/^ *[0-9]+\/[0-9]+ +Test +#[0-9]+: +([^ ]+) .*/\1/' \
+        | sort -u)"
+    N_REPORTS=0
+    UNEXPECTED_CASE_SKIPS=()
+    while IFS= read -r t; do
+        [[ -z "$t" ]] && continue
+        # Same rule as cmake/TestReports.cmake.
+        f="$CASE_REPORTS/$(printf '%s' "$t" | sed -E 's/[^A-Za-z0-9_.-]/_/g').txt"
+        [[ -f "$f" ]] || continue
+        N_REPORTS=$((N_REPORTS + 1))
+        while IFS= read -r unit; do
+            [[ -z "$unit" ]] && continue
+            allowed=0
+            for re in ${ALLOW_CASE_SKIP[@]+"${ALLOW_CASE_SKIP[@]}"}; do
+                if [[ "$t:$unit" =~ ^($re)$ ]]; then allowed=1; break; fi
+            done
+            if [[ "$allowed" -eq 1 ]]; then
+                note "skipped case (allowlisted): $t:$unit"
+            else
+                UNEXPECTED_CASE_SKIPS+=("$t:$unit")
+            fi
+        done < <(sed -nE 's/^ *Test (case|suite) "(.*)" was skipped.*/\2/p' "$f")
+    done <<< "$RAN_NAMES"
+
+    if [[ "$N_REPORTS" -eq 0 ]]; then
+        fail "none of the $RAN tests that ran left a Boost report in $CASE_REPORTS"
+        echo "                 Every Boost.Test binary writes one when the build" >&2
+        echo "                 is configured with -DKYTHIRA_TEST_REPORT_DIR, so" >&2
+        echo "                 that setting did not take effect and no skipped" >&2
+        echo "                 case could have been seen." >&2
+        exit 1
+    fi
+    if [[ ${#UNEXPECTED_CASE_SKIPS[@]} -gt 0 ]]; then
+        fail "${#UNEXPECTED_CASE_SKIPS[@]} Boost test case(s) or suite(s) were skipped inside passing tests"
+        printf '                 %s\n' "${UNEXPECTED_CASE_SKIPS[@]}" >&2
+        echo "                 ctest counts these tests as Passed, but the" >&2
+        echo "                 listed units never ran: their precondition() was" >&2
+        echo "                 false. Fix what the precondition needs, or add" >&2
+        echo "                 --allow-case-skip '<test>:<unit>' to record that" >&2
+        echo "                 the skip is expected in this job." >&2
+        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            {
+                echo "### Boost test units skipped inside passing tests (${#UNEXPECTED_CASE_SKIPS[@]})"
+                echo ""
+                echo '```'
+                printf '%s\n' "${UNEXPECTED_CASE_SKIPS[@]}"
+                echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+        fi
+        exit 1
+    fi
+    note "read $N_REPORTS Boost case report(s), no unexpected skipped case"
 fi
 
 # ── Check 3: first-attempt failures --repeat absorbed ───────────────────────

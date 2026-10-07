@@ -350,8 +350,25 @@ jobs:
             -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DKYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # Asserts the configure above produced the configuration this job is
+      # named for (scripts/check-build-config.py): the defconfig, every
+      # CONFIG_ line in it resolved as written, the compiler, and the options
+      # that make this leg different from the others. A green job proves
+      # nothing about a configuration that silently did not take effect.
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/ci_full_defconfig \
+            --compiler ${{ matrix.compiler }} \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            --expect KYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports
 
       - name: Build
         run: cmake --build build -j$(nproc)
@@ -420,6 +437,7 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build \
             --log ctest-out.txt \
+            --case-reports ${{ github.workspace }}/case-reports \
             --floor 400 \
             ${{ vars.CTEST_STRICT_RETRIES == 'true' && '--strict-retries' || '' }} \
             --allow-retry-file .github/ctest-retry-allowlist.txt \
@@ -651,6 +669,17 @@ jobs:
             -DKYTHIRA_GCP_REAL_TESTS=ON \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
+      # Same assertion as build-and-test; see scripts/check-build-config.py.
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/ci_gcp_defconfig \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_GCP_REAL_TESTS=ON
+
       - name: Build GCP targets
         run: |
           cmake --build build -j$(nproc) --target \
@@ -836,6 +865,17 @@ jobs:
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
+      # Same assertion as build-and-test; see scripts/check-build-config.py.
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/ci_ion_defconfig \
+            --compiler g++-14 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4
+
       # Only the ion-gated targets, not the whole tree: everything else here is
       # byte-identical to what the build-and-test legs already build, and this
       # job is not a second full build.
@@ -1006,6 +1046,16 @@ jobs:
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
 
+      # Same assertion as build-and-test; see scripts/check-build-config.py.
+      - name: Assert the minimal build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build-minimal \
+            --defconfig configs/minimal_defconfig \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON
+
       # Every target the configuration enables (Requirement 5.1), not a
       # sample: "smallest buildable configuration" is a claim about all of
       # them. Nothing is run; ci_full_defconfig's legs already run a superset.
@@ -1028,6 +1078,16 @@ jobs:
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+
+      # Same assertion as build-and-test; see scripts/check-build-config.py.
+      - name: Assert the no-cloud build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build-nocloud \
+            --defconfig configs/no_cloud_defconfig \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4
 
       - name: Build (no_cloud_defconfig)
         run: cmake --build build-nocloud -j$(nproc) --target object_store_persistence_unit_test
@@ -1210,8 +1270,21 @@ jobs:
             -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DKYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # Same assertion as build-and-test; see scripts/check-build-config.py.
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/ci_alt_coap_defconfig \
+            --compiler g++-13 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            --expect KYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports
 
       # Fails before the build, not after it, when a backend's test sources
       # would compile without its *_AVAILABLE define: strict mode proves the
@@ -1300,6 +1373,7 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build \
             --log ctest-out.txt \
+            --case-reports ${{ github.workspace }}/case-reports \
             --floor 72 \
             -- -R '^coap_' -LE '^(slow|performance|verbose|benchmark|docker)$'
 
@@ -1449,6 +1523,17 @@ jobs:
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # Same assertion as build-and-test; see scripts/check-build-config.py.
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/ci_dns_defconfig \
+            --compiler g++-13 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4
 
       # Only the targets KYTHIRA_HAS_LDNS and KYTHIRA_HAS_POCO_DNSSD change, not
       # the whole tree: the rest is byte-identical to what the build-and-test
@@ -1632,7 +1717,20 @@ jobs:
             -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DKYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/no-folly-prefix"
+
+      # Same assertion as build-and-test; see scripts/check-build-config.py.
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/ci_no_folly_defconfig \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            --expect KYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports
 
       # Requirement 2.4: the job must not be able to regress quietly into a
       # Folly build. folly_FOUND is a plain variable, not a cache entry, so
@@ -1706,6 +1804,7 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build \
             --log ctest-out.txt \
+            --case-reports ${{ github.workspace }}/case-reports \
             --floor 380 \
             ${{ vars.CTEST_STRICT_RETRIES == 'true' && '--strict-retries' || '' }} \
             --allow-retry-file .github/ctest-retry-allowlist.txt \
@@ -1845,6 +1944,18 @@ jobs:
             -DKYTHIRA_TIDY_SHARD_COUNT=6 \
             -DKYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }}
           echo "This shard analyses $(wc -l < build/tidy-sources.txt) files."
+
+      # Same assertion as build-and-test; see scripts/check-build-config.py.
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/ci_full_defconfig \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TIDY_SHARD_COUNT=6 \
+            --expect KYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }}
 
       - name: Build generated sources and precompiled headers
         run: scripts/build-tidy-prerequisites.sh build
@@ -2039,8 +2150,22 @@ jobs:
             -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DKYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      # Same assertion as build-and-test; see scripts/check-build-config.py.
+      - name: Assert the coverage build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build-coverage \
+            --defconfig configs/ci_full_defconfig \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Debug \
+            --expect ENABLE_COVERAGE=ON \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            --expect KYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports
 
       - name: Build (Coverage)
         run: cmake --build build-coverage -j$(nproc)
@@ -2085,6 +2210,7 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build-coverage \
             --log ctest-coverage-out.txt \
+            --case-reports ${{ github.workspace }}/case-reports \
             --floor 395 \
             ${{ vars.CTEST_STRICT_RETRIES == 'true' && '--strict-retries' || '' }} \
             --allow-retry-file .github/ctest-retry-allowlist.txt \
@@ -2404,6 +2530,7 @@ jobs:
         run: |
           cmake -B build-tsan -G Ninja \
             -DKYTHIRA_SANITIZER=thread \
+            -DKYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports \
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
@@ -2412,12 +2539,13 @@ jobs:
 
       - name: Assert ThreadSanitizer was requested
         run: |
-          cached=$(grep -E '^KYTHIRA_SANITIZER:' build-tsan/CMakeCache.txt | cut -d= -f2)
-          if [ "$cached" != "thread" ]; then
-            echo "::error::KYTHIRA_SANITIZER is '$cached', expected 'thread'"
-            exit 1
-          fi
-          echo "confirmed: KYTHIRA_SANITIZER=$cached"
+          scripts/check-build-config.py \
+            --build-dir build-tsan \
+            --defconfig configs/ci_full_defconfig \
+            --compiler g++-13 \
+            --expect KYTHIRA_SANITIZER=thread \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports
 
       # three_way_http_transport_equivalence_test was previously excluded from
       # this job after it reproduced an identical early SIGSEGV (~2.1s in, zero
@@ -2533,6 +2661,7 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build-tsan \
             --log ctest-tsan-out.txt \
+            --case-reports ${{ github.workspace }}/case-reports \
             --floor 11 \
             ${{ vars.CTEST_STRICT_RETRIES == 'true' && '--strict-retries' || '' }} \
             --allow-retry-file .github/ctest-retry-allowlist.txt \
@@ -2774,6 +2903,7 @@ jobs:
             -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DKYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       # This job's entire value is that it builds under a *non-default*
@@ -2784,13 +2914,15 @@ jobs:
       # FATAL_ERRORs on an invalid value; this asserts the valid one landed.
       - name: Assert the build really is configured for ${{ matrix.backend }}
         run: |
-          actual=$(grep -E '^KYTHIRA_DEFAULT_FUTURE_BACKEND:' \
-                     build-${{ matrix.backend }}/CMakeCache.txt | cut -d= -f2)
-          if [ "$actual" != "${{ matrix.backend }}" ]; then
-            echo "::error::this job claims to test the ${{ matrix.backend }} backend, but CMakeCache.txt says '$actual'"
-            exit 1
-          fi
-          echo "confirmed: KYTHIRA_DEFAULT_FUTURE_BACKEND=$actual"
+          scripts/check-build-config.py \
+            --build-dir build-${{ matrix.backend }} \
+            --defconfig configs/ci_full_defconfig \
+            --compiler g++-13 \
+            --expect KYTHIRA_DEFAULT_FUTURE_BACKEND=${{ matrix.backend }} \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            --expect KYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports
 
       # No --target list. An explicit list is what kept this job HTTP-only for
       # as long as it was: it covered exactly the targets somebody had already
@@ -2965,6 +3097,7 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build-${{ matrix.backend }} \
             --log ctest-out.txt \
+            --case-reports ${{ github.workspace }}/case-reports \
             --floor 400 \
             ${{ vars.CTEST_STRICT_RETRIES == 'true' && '--strict-retries' || '' }} \
             --allow-retry-file .github/ctest-retry-allowlist.txt \
