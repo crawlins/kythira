@@ -5,6 +5,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 7, 2026)
 
+- **The CBOR decoder no longer reserves memory a body cannot fill.** It
+  reserved storage for an `entries` array as soon as the header was read,
+  and the header was only checked against one byte per item, so an
+  AppendEntries or fetch-entries body could reserve about 48 times its
+  own size in log entries before failing. A count is now rejected unless
+  the remaining input could hold that many entries at their shortest
+  valid encoding (23 bytes).
+
 - **Quorum managers no longer misread, wrap or cross-match numeric node
   ids** (cloud-composite-node-ids task 2). The OCI pool, Azure VM, Azure
   VMSS and Docker managers and `aws_ec2_peer_discovery` parsed node-id
