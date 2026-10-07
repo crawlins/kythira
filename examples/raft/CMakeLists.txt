@@ -64,16 +64,9 @@ function(add_raft_example example_name source_file)
 
     # Add CoAP transport dependencies for CoAP examples
     if(${example_name} MATCHES "coap_.*_example")
-        # Link libcoap if available
-        find_package(PkgConfig QUIET)
-        if(PkgConfig_FOUND)
-            pkg_check_modules(LIBCOAP QUIET libcoap-3)
-            if(LIBCOAP_FOUND)
-                target_link_libraries(${example_name} PRIVATE ${LIBCOAP_LIBRARIES})
-                target_include_directories(${example_name} PRIVATE ${LIBCOAP_INCLUDE_DIRS})
-                target_compile_definitions(${example_name} PRIVATE ${LIBCOAP_CFLAGS_OTHER})
-            endif()
-        endif()
+        # libcoap, when the root found it under CONFIG_COAP_BACKEND_LIBCOAP,
+        # comes through network_simulator's INTERFACE. Re-probing it here
+        # linked it into builds that had the libcoap backend turned off.
 
         # Link OpenSSL for DTLS support
         if(TARGET OpenSSL::SSL)

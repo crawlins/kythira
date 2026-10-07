@@ -2275,12 +2275,42 @@ unverified completion claim.
   - **The gRPC half is DONE**, re-checked October 4, 2026: the
     `if(gRPC_FOUND AND Protobuf_FOUND)` test is inside
     `kythira_kconfig_gate(GRPC_TRANSPORT)` in the root `CMakeLists.txt`.
-    **A latent duplicate of the same shape** may exist wherever one feature's
-    `find_package` sets a variable another feature's `if()` tests. `Protobuf`
-    is the one confirmed. The gRPC block's own
-    `if(gRPC_FOUND AND Protobuf_FOUND)` (`:303`) sits *outside* its gate and is
-    correct only because it runs before anything else populates either
-    variable — safe today, by statement order rather than by construction.
+    **The latent-duplicate audit is DONE**, October 7, 2026. Every
+    `find_package`/`pkg_check_modules` in the tree was checked against every
+    `if()` that reads its result outside the gate that runs it. Three real
+    leaks, all fixed:
+    - **pkg-config results outlived their gate.** `pkg_check_modules()` keeps
+      `<PREFIX>_FOUND` in the CMake cache, so in a tree configured once with
+      a feature on, setting its symbol to n (menuconfig, or another
+      `-DKYTHIRA_KCONFIG=`) skipped the probe and left the feature compiled
+      in. Measured: `CONFIG_DNS_DISCOVERY=n` in such a tree kept
+      `KYTHIRA_HAS_LDNS` and libldns on 306 targets; a fresh tree had none.
+      Same for `LIBCOAP`, `LIBNYOCI`, `LIBSSH2` and `FIU`.
+      `kythira_forget_pkg_found()` (`cmake/Kconfig.cmake`) now clears each one
+      before its gate, and `scripts/verify-kconfig-reconfigure.sh` (run by
+      the Config Variants job) checks that a reconfigured tree matches a fresh
+      one.
+    - **`tests/` and `examples/raft/` re-ran `pkg_check_modules(LIBCOAP)`**
+      whenever the transport was on, linking libcoap into builds with
+      `CONFIG_COAP_BACKEND_LIBCOAP=n` and refilling the cache entry the root
+      had cleared. Both are gone; libcoap comes through `network_simulator`.
+    - **The ACM PCA probe overwrote `AWSSDK_FOUND`/`AWSSDK_LINK_LIBRARIES`**,
+      which `tests/`, `cmd/multi_raft_node` and `cmd/raft_object_backup` read
+      as the core SDK's. `aws_s3_client_unit_test` links that list alone and
+      still got s3 only because AWSSDKConfig.cmake also leaks its service list
+      between calls. The root now saves and restores both around the probe,
+      and the acm-pca use sites read `_KYTHIRA_AWS_ACM_PCA_FOUND`.
+    Checked and safe by construction: the gRPC and protobuf blocks (both test
+    `Protobuf_FOUND` inside their own gates), every `kythira_find_optional`
+    result (a normal variable, never set when its gate is off), and the
+    `TARGET google-cloud-cpp::*`, `libcoap::coap-3`, `lakers::lakers`,
+    `ionc`, `proxygen::proxygen` and `Azure::*` tests (no other package
+    creates those targets). One remaining, unfixed: `TARGET OpenSSL::SSL`
+    (56 sites) is what most consumers test, and a TLS-enabled cpp-httplib
+    config package imports OpenSSL itself, so `CONFIG_OPENSSL=n` would likely
+    not remove OpenSSL from those targets (inferred, not measured). No
+    defconfig or CI job turns OpenSSL off; `minimal_defconfig` keeps it on
+    because `certificate_authority` needs it regardless.
   - **A correction worth keeping.** Three places in the tree recorded that an
     overrunning case aborts via `~std::thread()`'s `std::terminate()` on a
     still-joinable thread. That is true of a normal exception unwind and
