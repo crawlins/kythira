@@ -93,6 +93,43 @@ if you want to confirm). Then flip the corresponding
 `REAL_CLOUD_TESTS_AWS_<BUNDLE>_ENABLED` repository variable with
 `gh variable set`.
 
+## Re-applying the policy from GitHub, with approval
+
+A bundle edit merged to main reaches AWS through the **Reprovision AWS CI
+role** workflow (`.github/workflows/reprovision-aws-ci-role.yml`), with no
+local admin credentials. Each run waits for a required reviewer's approval.
+
+One-time setup, as an IAM admin:
+
+```sh
+scripts/ci-cloud-credentials/aws/provision-ci-role-updater.sh \
+    --github-org crawlins --github-repo kythira --reviewer <your-login>
+```
+
+It creates or updates:
+
+- `kythira-ci-real-cloud-tests-boundary`, set as the CI role's permissions
+  boundary. It allows everything except `iam:*`, `organizations:*` and
+  `account:*`, plus `iam:PassRole` on the quorum-test node role. Whatever
+  inline policy is applied, the CI role cannot gain IAM rights.
+- `kythira-ci-role-updater`, an OIDC role trusted only by jobs in the
+  `ci-role-admin` environment. It may read and replace the CI role's inline
+  policy, and it is explicitly denied changing the role's boundary, trust
+  policy or attached policies.
+- The `ci-role-admin` environment, which admits only `main` and requires
+  the given reviewers, and the `AWS_CI_ROLE_UPDATER_ARN` repository
+  variable.
+
+After that, run the workflow from main. With `bundles` left empty it keeps
+exactly the bundles the role already carries (`render-ci-policy.py
+--detect-bundles` reads them from the live policy's Sids), so it cannot
+revoke a bundle by omission. It prints a statement-level diff, applies the
+policy, and reads it back. Tick `dry_run` to see only the diff.
+`update-ci-role-policy.sh` is the same step, runnable locally.
+
+The workflow cannot create the role, change its trust policy, or touch the
+developer user or the node role: those still go through the scripts above.
+
 ## The `asg-quorum-manager` bundle
 
 Grants what `tests/aws_asg_quorum_manager_real_test.cpp` needs to drive

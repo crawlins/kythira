@@ -9,6 +9,11 @@ render: merge the policies/<bundle>.json fragments named by --bundles into
         CI role, and print it.
 --check: lint every fragment in policies/ and render all of them together,
         without AWS access. Run by CI on every change.
+--detect-bundles FILE: print the bundles a live inline policy document
+        (as `aws iam get-role-policy` returns it) already carries, judged by
+        the Sids only that bundle contributes. update-ci-role-policy.sh uses
+        it so that re-applying the policy keeps exactly the bundles the role
+        has, instead of revoking whichever one the operator forgot to list.
 
 Merging drops a statement whose Sid an earlier bundle already contributed,
 provided the two are identical. The EC2 bundles share their tagging
@@ -129,9 +134,29 @@ def lint_bundle(name):
     return errors
 
 
+def own_sids():
+    """Map each bundle to the Sids no other bundle contributes."""
+    sids = {p.stem: {s.get("Sid") for s in load_bundle(p.stem, SAMPLE_ACCOUNT_ID, SAMPLE_BUCKET)}
+            for p in POLICY_DIR.glob("*.json")}
+    return {b: own - set().union(*(v for k, v in sids.items() if k != b)) - {None}
+            for b, own in sids.items()}
+
+
+def detect_bundles(policy_path):
+    doc = json.loads(pathlib.Path(policy_path).read_text())
+    # get-role-policy wraps the document; accept the bare document as well.
+    doc = doc.get("PolicyDocument", doc)
+    present = {s.get("Sid") for s in as_list(doc.get("Statement", []))}
+    return sorted(b for b, own in own_sids().items() if own & present)
+
+
 def check():
     bundles = sorted(p.stem for p in POLICY_DIR.glob("*.json"))
     errors = [e for b in bundles for e in lint_bundle(b)]
+    # --detect-bundles can only see a bundle that has a Sid of its own.
+    errors += [f"{b}: every Sid is shared with another bundle, so --detect-bundles cannot "
+               f"tell whether a role carries it; give one statement a bundle-specific Sid"
+               for b, own in sorted(own_sids().items()) if not own]
     try:
         size = compact_len(merge(bundles, SAMPLE_ACCOUNT_ID, SAMPLE_BUCKET))
     except SystemExit as exc:
@@ -152,9 +177,14 @@ def main():
     parser.add_argument("--bundles", help="comma-separated bundle names")
     parser.add_argument("--account-id", default=SAMPLE_ACCOUNT_ID)
     parser.add_argument("--bucket", default="")
+    parser.add_argument("--detect-bundles", metavar="FILE",
+                        help="print the bundles the policy document in FILE carries")
     args = parser.parse_args()
     if args.check:
         return check()
+    if args.detect_bundles:
+        print(",".join(detect_bundles(args.detect_bundles)))
+        return 0
     if not args.bundles:
         parser.error("--bundles is required unless --check is given")
     doc = merge([b for b in args.bundles.split(",") if b], args.account_id, args.bucket)
