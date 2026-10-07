@@ -148,7 +148,9 @@ struct aws_ec2_quorum_manager_config {
 ///   An instance launched by the old derivation (id = the instance id's hex value)
 ///   is found by the same tag; one whose best-effort tag is missing falls back to
 ///   that derivation (R11.4). Two managers provisioning into one cluster at the same
-///   moment can allocate the same id, as with every max-plus-one allocator (R11.5).
+///   moment can allocate the same id, as with every max-plus-one allocator (R11.5);
+///   the launch's ClientToken, derived from the cluster and the id, lets only one
+///   of them launch it (see `launch_client_token`).
 ///
 /// A node is live iff its instance state is `running`, read from DescribeInstances
 /// (not heartbeats).
@@ -517,23 +519,6 @@ private:
             if (!_cfg.key_name.empty()) {
                 run_req.SetKeyName(_cfg.key_name);
             }
-            // Numeric mode knows the id before launch, so it goes into the
-            // launch tags and {NODE_ID}. When the id is the instance it does
-            // not exist until RunInstances answers: {NODE_ID} is left as is
-            // and Name/kythira:node-id are applied afterwards.
-            std::optional<NodeId> pre_launch_id;
-            if constexpr (!instance_is_node_id) {
-                pre_launch_id =
-                    allocate_numeric_node_id(*_ec2, _cfg.cluster_name, _id_floor->load());
-                raise_id_floor(*pre_launch_id);
-            }
-
-            if (!_cfg.user_data_template.empty()) {
-                std::string rendered = render_user_data(pre_launch_id, target_group);
-                Aws::Utils::ByteBuffer user_data_bytes(
-                    reinterpret_cast<const unsigned char*>(rendered.data()), rendered.size());
-                run_req.SetUserData(Aws::Utils::Base64::Base64().Encode(user_data_bytes));
-            }
             if (auto pit = _cfg.placement_by_group.find(target_group);
                 pit != _cfg.placement_by_group.end() && !pit->second.name.empty()) {
                 Aws::EC2::Model::Placement placement;
@@ -558,25 +543,70 @@ private:
                 run_req.SetInstanceMarketOptions(market_opts);
             }
 
-            // Tag in the launch request, so every tag that can be known before
-            // the instance exists is applied atomically with it. RunInstances
-            // and CreateTags are two round trips, and an instance orphaned
-            // between them carries no tags at all -- invisible to the post-run
-            // leak audit, which filters on kythira:managed-by. That is how a
-            // t4g.micro bastion (the same shape of gap, in the real-EC2 fixture)
-            // billed ~44h on 2026-09-27 while the audit reported clean.
+            // Numeric mode knows the id before launch, so it goes into the
+            // launch tags and {NODE_ID}. When the id is the instance it does
+            // not exist until RunInstances answers: {NODE_ID} is left as is
+            // and Name/kythira:node-id are applied afterwards.
             //
-            // In numeric mode Name and kythira:node-id come along too, so the
-            // tag the reverse lookup reads can never be missing. When the node
-            // id is the instance neither value exists until RunInstances has
-            // answered; apply_identity_tags writes them afterwards, and they are
-            // cosmetic for leak detection -- the tags the audit actually reads
-            // are all in here.
-            const std::string market_tag = _cfg.spot_options ? "spot" : "on-demand";
-            run_req.AddTagSpecifications(
-                launch_tag_specification(target_group, market_tag, key, pre_launch_id));
+            // The allocated id is a candidate, not a reservation: an old
+            // leader still finishing a provision and its successor can both
+            // list the cluster and pick the same id. EC2 enforces no unique
+            // names, so the claim is made with RunInstances' ClientToken,
+            // derived from the cluster and the id alone (launch_client_token).
+            // A second launch of the same id then either gets the first one's
+            // instance back (same parameters: both callers hold one node, not
+            // two) or fails with IdempotentParameterMismatch, or with
+            // IdempotentInstanceTerminated when that instance is gone; both
+            // mean "taken", and this call moves on to the next id.
+            std::optional<NodeId> pre_launch_id;
+            Aws::EC2::Model::RunInstancesOutcome outcome;
+            for (std::size_t attempt = 1;; ++attempt) {
+                if constexpr (!instance_is_node_id) {
+                    pre_launch_id =
+                        allocate_numeric_node_id(*_ec2, _cfg.cluster_name, _id_floor->load());
+                    raise_id_floor(*pre_launch_id);
+                    run_req.SetClientToken(launch_client_token(_cfg.cluster_name, *pre_launch_id));
+                }
 
-            auto outcome = _ec2->RunInstances(run_req);
+                if (!_cfg.user_data_template.empty()) {
+                    std::string rendered = render_user_data(pre_launch_id, target_group);
+                    Aws::Utils::ByteBuffer user_data_bytes(
+                        reinterpret_cast<const unsigned char*>(rendered.data()), rendered.size());
+                    run_req.SetUserData(Aws::Utils::Base64::Base64().Encode(user_data_bytes));
+                }
+
+                // Tag in the launch request, so every tag that can be known before
+                // the instance exists is applied atomically with it. RunInstances
+                // and CreateTags are two round trips, and an instance orphaned
+                // between them carries no tags at all -- invisible to the post-run
+                // leak audit, which filters on kythira:managed-by. That is how a
+                // t4g.micro bastion (the same shape of gap, in the real-EC2 fixture)
+                // billed ~44h on 2026-09-27 while the audit reported clean.
+                //
+                // In numeric mode Name and kythira:node-id come along too, so the
+                // tag the reverse lookup reads can never be missing. When the node
+                // id is the instance neither value exists until RunInstances has
+                // answered; apply_identity_tags writes them afterwards, and they are
+                // cosmetic for leak detection -- the tags the audit actually reads
+                // are all in here.
+                const std::string market_tag = _cfg.spot_options ? "spot" : "on-demand";
+                run_req.SetTagSpecifications(
+                    {launch_tag_specification(target_group, market_tag, key, pre_launch_id)});
+
+                outcome = _ec2->RunInstances(run_req);
+                if constexpr (!instance_is_node_id) {
+                    if (launch_id_taken(outcome)) {
+                        if (attempt >= max_id_claim_attempts) {
+                            throw std::runtime_error("node id " + node_id_str(*pre_launch_id) +
+                                                     " is already in use and " +
+                                                     std::to_string(max_id_claim_attempts) +
+                                                     " attempts to claim a free id all collided");
+                        }
+                        continue;
+                    }
+                }
+                break;
+            }
             if (!outcome.IsSuccess()) {
                 throw std::runtime_error("ec2 RunInstances: " +
                                          std::string(outcome.GetError().GetMessage()));
@@ -880,6 +910,47 @@ public:
             }
         }
         return live;
+    }
+
+    /// How many ids one provision tries before giving up when each turns out
+    /// to be taken by another process (see provision()).
+    static constexpr std::size_t max_id_claim_attempts = 5;
+
+    /// @brief The RunInstances ClientToken that claims numeric id @p id in
+    ///        @p cluster: "kythira-" plus the first 48 hex digits of
+    ///        SHA-256("<cluster>/<id>"), within EC2's 64-character limit.
+    ///
+    /// It depends on nothing but the cluster and the id, so every process that
+    /// launches that id sends the same token and EC2 lets only one launch
+    /// through. Hashing keeps any cluster name within the limit.
+    static auto launch_client_token(const std::string& cluster, const NodeId& id) -> std::string
+    requires(!instance_is_node_id)
+    {
+        const auto digest = Aws::Utils::HashingUtils::CalculateSHA256(
+            Aws::String(cluster + "/" + node_id_traits<NodeId>::to_text(id)));
+        return "kythira-" + std::string(Aws::Utils::HashingUtils::HexEncode(digest)).substr(0, 48);
+    }
+
+    /// @brief Whether a numeric-mode RunInstances outcome means its ClientToken
+    ///        (and so its node id) was already claimed by another launch.
+    ///
+    /// IdempotentParameterMismatch: another launch of the id with different
+    /// parameters (another subnet or key). IdempotentInstanceTerminated: that
+    /// launch's instance has since terminated. A success that hands back an
+    /// instance already shutting down or terminated is the same case answered
+    /// without the error.
+    static auto launch_id_taken(const Aws::EC2::Model::RunInstancesOutcome& outcome) -> bool {
+        if (!outcome.IsSuccess()) {
+            const std::string code(outcome.GetError().GetExceptionName());
+            return code == "IdempotentParameterMismatch" || code == "IdempotentInstanceTerminated";
+        }
+        const auto& instances = outcome.GetResult().GetInstances();
+        if (instances.empty()) {
+            return false;
+        }
+        const auto state = instances[0].GetState().GetName();
+        return state == Aws::EC2::Model::InstanceStateName::shutting_down ||
+               state == Aws::EC2::Model::InstanceStateName::terminated;
     }
 
     /// Numeric mode: the next id, one above both `floor` and the highest

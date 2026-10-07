@@ -551,3 +551,167 @@ BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_fails_on_a_daemon_error, MockDoc
     docker_quorum_manager<> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.find_by_idempotency_key("k").get(), std::runtime_error);
 }
+
+// ── Claiming a node id across processes ──────────────────────────────────────
+//
+// next_node_id() is only a guess: another leader's manager may list the same
+// containers and create the same id first.  The container name embeds the id
+// and Docker refuses a duplicate name with 409, which provision_node must read
+// as "taken, try the next id" -- never as a reason to delete the container
+// that holds the name, which belongs to someone else.
+
+BOOST_FIXTURE_TEST_CASE(provision_node_moves_past_an_id_another_process_claimed, MockDockerServer) {
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("[]", "application/json");
+    });
+    std::vector<std::string> create_names;
+    server.Post("/containers/create", [&](const httplib::Request& req, httplib::Response& res) {
+        const auto name = req.get_param_value("name");
+        create_names.push_back(name);
+        if (name == "kythira-test-cluster-1") {
+            res.status = 409;
+            res.set_content(R"({"message":"Conflict. The container name is already in use"})",
+                            "application/json");
+            return;
+        }
+        res.status = 201;
+        res.set_content(R"({"Id":"n2"})", "application/json");
+    });
+    server.Post(R"(/containers/kythira-test-cluster-2/start)",
+                [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
+    std::vector<std::string> deletes;
+    server.Delete(R"(/containers/(.*))", [&](const httplib::Request& req, httplib::Response& res) {
+        deletes.push_back(req.path);
+        res.status = 204;
+    });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    auto peer = mgr.provision_node("default", std::nullopt).get();
+
+    BOOST_CHECK_EQUAL(peer.node_id, 2u);
+    BOOST_CHECK_EQUAL(peer.address, "kythira-test-cluster-2:7000");
+    BOOST_REQUIRE_EQUAL(create_names.size(), 2u);
+    BOOST_CHECK_EQUAL(create_names[0], "kythira-test-cluster-1");
+    BOOST_CHECK_EQUAL(create_names[1], "kythira-test-cluster-2");
+    // The other process's container is left alone.
+    BOOST_CHECK(deletes.empty());
+
+    // The collided id stays spent for this manager too.
+    server.Post(R"(/containers/kythira-test-cluster-3/start)",
+                [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
+    BOOST_CHECK_EQUAL(mgr.provision_node("default", std::nullopt).get().node_id, 3u);
+}
+
+BOOST_FIXTURE_TEST_CASE(provision_node_gives_up_after_repeated_collisions, MockDockerServer) {
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("[]", "application/json");
+    });
+    std::size_t creates = 0;
+    server.Post("/containers/create", [&](const httplib::Request&, httplib::Response& res) {
+        ++creates;
+        res.status = 409;
+    });
+    std::size_t deletes = 0;
+    server.Delete(R"(/containers/(.*))", [&](const httplib::Request&, httplib::Response& res) {
+        ++deletes;
+        res.status = 204;
+    });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
+    BOOST_CHECK_EQUAL(creates, decltype(mgr)::max_id_claim_attempts);
+    BOOST_CHECK_EQUAL(deletes, 0u);
+}
+
+// A listing that fails used to fall back to the in-memory floor alone, which
+// knows nothing about containers this process never assessed.
+BOOST_FIXTURE_TEST_CASE(provision_node_fails_when_the_listing_fails, MockDockerServer) {
+    server.Get("/containers/json",
+               [](const httplib::Request&, httplib::Response& res) { res.status = 500; });
+    bool created = false;
+    server.Post("/containers/create", [&](const httplib::Request&, httplib::Response& res) {
+        created = true;
+        res.status = 201;
+    });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
+    BOOST_CHECK(!created);
+}
+
+// After a create that failed without a clear answer, the cleanup removes the
+// container under that name only if it carries this call's claim label.
+BOOST_FIXTURE_TEST_CASE(provision_node_cleanup_removes_only_its_own_container, MockDockerServer) {
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("[]", "application/json");
+    });
+    std::string stored_labels = "{}";
+    server.Post("/containers/create", [&](const httplib::Request& req, httplib::Response& res) {
+        // The daemon created the container but the request still failed.
+        stored_labels =
+            boost::json::serialize(boost::json::parse(req.body).as_object().at("Labels"));
+        res.status = 500;
+    });
+    server.Get(R"(/containers/kythira-test-cluster-1/json)",
+               [&](const httplib::Request&, httplib::Response& res) {
+                   res.set_content(R"({"Id":"c1","Config":{"Labels":)" + stored_labels + "}}",
+                                   "application/json");
+               });
+    std::vector<std::string> deletes;
+    server.Delete(R"(/containers/(.*))", [&](const httplib::Request& req, httplib::Response& res) {
+        deletes.push_back(req.path);
+        res.status = 204;
+    });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
+    BOOST_REQUIRE_EQUAL(deletes.size(), 1u);
+    BOOST_CHECK_EQUAL(deletes[0], "/containers/kythira-test-cluster-1");
+}
+
+BOOST_FIXTURE_TEST_CASE(provision_node_cleanup_spares_another_process_container, MockDockerServer) {
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("[]", "application/json");
+    });
+    server.Post("/containers/create",
+                [](const httplib::Request&, httplib::Response& res) { res.status = 500; });
+    server.Get(R"(/containers/kythira-test-cluster-1/json)",
+               [](const httplib::Request&, httplib::Response& res) {
+                   res.set_content(R"({"Id":"c1","Config":{"Labels":{"kythira.node_id":"1",)"
+                                   R"("kythira.provision-claim":"someone-else"}}})",
+                                   "application/json");
+               });
+    std::size_t deletes = 0;
+    server.Delete(R"(/containers/(.*))", [&](const httplib::Request&, httplib::Response& res) {
+        ++deletes;
+        res.status = 204;
+    });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
+    BOOST_CHECK_EQUAL(deletes, 0u);
+}
+
+// Once this call's create succeeded the container is known to be its own, so
+// a failed start removes it by the id Docker returned, not by name.
+BOOST_FIXTURE_TEST_CASE(provision_node_start_failure_removes_by_container_id, MockDockerServer) {
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("[]", "application/json");
+    });
+    server.Post("/containers/create", [](const httplib::Request&, httplib::Response& res) {
+        res.status = 201;
+        res.set_content(R"({"Id":"deadbeef"})", "application/json");
+    });
+    server.Post(R"(/containers/kythira-test-cluster-1/start)",
+                [](const httplib::Request&, httplib::Response& res) { res.status = 500; });
+    std::vector<std::string> deletes;
+    server.Delete(R"(/containers/(.*))", [&](const httplib::Request& req, httplib::Response& res) {
+        deletes.push_back(req.path);
+        res.status = 204;
+    });
+
+    docker_quorum_manager<> mgr(make_cfg());
+    BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
+    BOOST_REQUIRE_EQUAL(deletes.size(), 1u);
+    BOOST_CHECK_EQUAL(deletes[0], "/containers/deadbeef");
+}
