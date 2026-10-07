@@ -389,13 +389,10 @@ unverified completion claim.
     `coap-transport-libnyoci` tasks.md ~337). Also from
     `coap-transport-libnyoci`, with no PR: a two-process cross-backend
     interop test, and Block1 for InstallSnapshot.
-  - **Serializer integer-range and validation gaps**
-    (`json-serializer-input-validation` tasks.md ~139–144). Ion writes every
-    `uint64` field as `int64` (`static_cast<std::int64_t>` throughout
-    `include/raft/ion_serializer.hpp`), so terms and indices at or above
-    2^63 are rejected on decode; Protobuf's `uint64` conversions are
-    unchecked (parity-audit Z2); and only CBOR has a declared-length
-    preflight (Z3).
+  - **Serializer declared-length preflight**
+    (`json-serializer-input-validation` tasks.md ~139–146). Only CBOR has a
+    declared-length preflight (parity-audit Z3). The Ion and protobuf
+    integer-range gaps (Z2) are closed.
   - **Tests that assert nothing.** Five property suites still end most cases
     in a `BOOST_CHECK(true)` "Placeholder" and count toward the passing
     total: `raft_replicate_to_followers_property_test.cpp` (30),

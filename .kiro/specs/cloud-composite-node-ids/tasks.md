@@ -81,10 +81,9 @@ the audit and `design.md` for the types and per-component changes.
     json-serializer-input-validation work; the remaining `as_int64()` reads
     were the snapshot member lists in both persistence engines.
     `composite_node_id_wire_property_test` covers all four serializers.
-    Still open: the ION serializer writes every unsigned field as `int64`,
-    so a numeric id at or above 2^63 does not survive ION; persistence
-    engines only handle numeric and `std::string` ids (composite ids there
-    belong with task 6.5's cluster test).
+    Still open: persistence engines only handle numeric and `std::string`
+    ids (composite ids there belong with task 6.5's cluster test). (The ION
+    gap for numeric ids at or above 2^63 was closed separately.)
   - _Requirements: 8.1-8.6_
 
 - [ ] 6. Transports

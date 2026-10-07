@@ -40,6 +40,20 @@ current list of outstanding work, see [TODO.md](TODO.md).
   ACE config aimed at a plain http AS stops working until it moves to
   https (or, in a test, sets the opt-in).
 
+- **Ion carries the full `uint64` range; Ion and protobuf range-check every
+  integer.** The Ion serializer cast every term, index and numeric id to
+  `int64_t` before writing it, so a value at or above 2^63 went on the wire
+  as a negative int and every receiver rejected it. It now writes such a
+  value as the positive Ion int it is (Ion ints are arbitrary precision)
+  and reads every int through `ION_INT`, which also makes it reject values
+  past 2^64 and `null.int` with a `serialization_exception`. Protobuf
+  converted wire `uint64`s with plain casts, so a receiver whose `TermId`,
+  `LogIndex`, `NodeId` or `GroupId` is narrower than 64 bits silently
+  truncated, and an entry type past 255 wrapped into an unrelated one; both
+  now fail the decode, as JSON and CBOR already did. Output bytes for every
+  value below 2^63 are unchanged (golden vectors in the two new
+  `*_serializer_range_property_test`s).
+
 - **Composite node ids work on the wire and in the Raft core.** Every RPC
   serializer (JSON, CBOR, ION, protobuf) now encodes a composite id such as
   `aws_ec2_node_id` as its canonical text and parses it back on decode,

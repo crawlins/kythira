@@ -138,7 +138,9 @@ Spec written October 2, 2026 from the sibling-implementation parity audit
 
 ## Known Follow-ups
 
-- Ion writes `std::uint64_t` fields as `static_cast<std::int64_t>`, so values
-  at or above 2^63 are rejected on decode. Separate Ion change.
-- Protobuf's unchecked `uint64` casts (`protobuf_serializer.hpp:278-324`,
-  audit Z2) and CBOR-only declared-length preflight (audit Z3).
+- Done (2026-10-07): Ion writes unsigned values above `INT64_MAX` through an
+  arbitrary-precision `ION_INT` and reads every int that way, and protobuf's
+  `uint64` conversions are range-checked (audit Z2). Covered by
+  `ion_serializer_range_property_test` and
+  `protobuf_serializer_range_property_test`.
+- CBOR-only declared-length preflight (audit Z3).

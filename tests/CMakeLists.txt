@@ -2730,6 +2730,20 @@ if(PROTOBUF_SERIALIZER_FOUND)
     add_test(NAME protobuf_rpc_malformed_message_property_test
              COMMAND protobuf_rpc_malformed_message_property_test)
 
+    # Integer range checks, golden vectors and narrow-target rejection; the
+    # protobuf counterpart of json_serializer_range_property_test.
+    add_executable(protobuf_serializer_range_property_test
+                   protobuf_serializer_range_property_test.cpp)
+    target_link_libraries(protobuf_serializer_range_property_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        raft_protobuf_serializer
+    )
+    target_compile_features(protobuf_serializer_range_property_test PRIVATE cxx_std_23)
+    add_test(NAME protobuf_serializer_range_property_test
+             COMMAND protobuf_serializer_range_property_test)
+
     # protobuf-vs-json size/latency benchmark (Requirement 8.1). Registered as a
     # CTest for CI visibility; numbers are recorded in
     # doc/protobuf_serializer_performance_comparison.md (Requirement 8.2).
@@ -2843,6 +2857,19 @@ if(TARGET raft_ion_serializer)
     )
     target_compile_features(ion_malformed_message_property_test PRIVATE cxx_std_23)
     add_test(NAME ion_malformed_message_property_test COMMAND ion_malformed_message_property_test)
+
+    # Full uint64 range (values >= 2^63 included), golden vectors and
+    # narrow-target rejection; the Ion counterpart of json_serializer_range_property_test.
+    add_executable(ion_serializer_range_property_test ion_serializer_range_property_test.cpp)
+    target_link_libraries(ion_serializer_range_property_test PRIVATE
+        raft_ion_serializer
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    target_compile_features(ion_serializer_range_property_test PRIVATE cxx_std_23)
+    add_test(NAME ion_serializer_range_property_test COMMAND ion_serializer_range_property_test)
+    set_tests_properties(ion_serializer_range_property_test PROPERTIES LABELS "ion" TIMEOUT 60)
 
     add_executable(ion_json_serializer_equivalence_property_test
         ion_json_serializer_equivalence_property_test.cpp)
