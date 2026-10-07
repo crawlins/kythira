@@ -5,6 +5,22 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 7, 2026)
 
+- **curl moves from 8.17.0 to 8.22.0, and dependency bumps now reach CI.**
+  The AWS SDK and the Azure SDK's HTTP transport link vcpkg's curl, which
+  was still on the `builtin-baseline` copy, 8.17.0. That release is
+  affected by 43 published curl advisories (15 medium, 28 low), among them
+  OpenSSL pinning bypass (CVE-2026-80230), HTTP/2 server push
+  use-after-free (CVE-2026-18924), stale proxy password leak
+  (CVE-2026-9079) and mTLS config mismatch on connection reuse
+  (CVE-2026-8932); 8.22.0 has none. `curl` and `nghttp2` now come from the
+  same newer registry commit as openssl, c-ares and cpp-httplib (nghttp2
+  1.70.0 is only built when curl's `http2` feature is on, which no Kythira
+  build enables today). Every vcpkg `actions/cache` key now hashes
+  `vcpkg-configuration.json` too: before, a change that only touched the
+  registry list restored the old installed tree and skipped
+  `vcpkg install`, so CI kept testing against the versions it was meant to
+  replace.
+
 - **The ACE token request and the pinned root fetch refuse plain http.**
   `run_ace_token_exchange()` posted `client_secret` to whatever
   `as_token_endpoint` named and took the PSK or OSCORE master secret back
