@@ -5,6 +5,16 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 7, 2026)
 
+- **The gossip table no longer grows with whatever a peer sends.**
+  `tcp_gossip_peer2peer_replicator::merge()` added every unknown node id
+  it was sent and kept each one until a sender-chosen `fresh_until`, so
+  any host that could reach the gossip listener could grow the table
+  without bound and pin its entries there. The table is now capped by
+  `tcp_gossip_config::max_table_entries` (default 1024): a full table
+  reuses an expired slot, or lets a current member evict a non-member,
+  and otherwise drops the new id. Incoming `fresh_until` values are
+  clamped to `now + freshness_interval`.
+
 - **The CBOR decoder no longer reserves memory a body cannot fill.** It
   reserved storage for an `entries` array as soon as the header was read,
   and the header was only checked against one byte per item, so an

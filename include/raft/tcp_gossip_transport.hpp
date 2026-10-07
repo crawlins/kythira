@@ -155,6 +155,10 @@ template<typename NodeId, typename Address> struct tcp_gossip_config {
     /// Connection caps and deadlines for the listener (see
     /// .kiro/specs/tcp-rpc-server-hardening/).
     tcp_server_limits listener_limits{};
+    /// Most digests the local table holds (Requirement 6.5). Gossip is
+    /// unauthenticated, so without a cap any peer could grow the table with
+    /// invented node ids. Must be non-zero.
+    std::size_t max_table_entries{1024};
 };
 
 namespace gossip_detail {
@@ -226,6 +230,10 @@ public:
     explicit tcp_gossip_peer2peer_replicator(tcp_gossip_config<NodeId, Address> cfg)
         : _cfg(std::move(cfg)) {
         validate(_cfg.listener_limits, "tcp_gossip_peer2peer_replicator");
+        if (_cfg.max_table_entries == 0) {
+            throw std::invalid_argument(
+                "tcp_gossip_peer2peer_replicator: max_table_entries must be non-zero");
+        }
     }
 
     ~tcp_gossip_peer2peer_replicator() { stop(); }
@@ -375,15 +383,29 @@ public:
     // no unsafe side effects beyond mutating this instance's own local state.
 
     // Requirement 6.1: higher (term, last_log_index) wins per node_id; a
-    // node_id not yet present is always added.
+    // node_id not yet present is added while the table has room
+    // (Requirement 6.5). Requirement 6.6: no incoming fresh_until may reach
+    // past now + freshness_interval, so a sender cannot pin an entry.
     auto merge(const std::vector<gossip_digest<NodeId, Address, LogIndex>>& incoming) -> void {
+        const auto now = gossip_detail::epoch_seconds_now();
+        const auto latest_fresh_until = now + freshness_seconds();
+        auto members = _active_members.rlock();
         auto locked = _table.wlock();
-        for (const auto& d : incoming) {
+        for (auto d : incoming) {
+            d.fresh_until = std::min(d.fresh_until, latest_fresh_until);
             auto it = locked->find(d.node_id);
-            if (it == locked->end() || std::tie(d.term, d.last_log_index) >
-                                           std::tie(it->second.term, it->second.last_log_index)) {
-                (*locked)[d.node_id] = d;
+            if (it != locked->end()) {
+                if (std::tie(d.term, d.last_log_index) >
+                    std::tie(it->second.term, it->second.last_log_index)) {
+                    it->second = std::move(d);
+                }
+                continue;
             }
+            if (locked->size() >= _cfg.max_table_entries &&
+                !make_room(*locked, *members, d.node_id, now)) {
+                continue;
+            }
+            locked->emplace(d.node_id, std::move(d));
         }
     }
 
@@ -426,6 +448,41 @@ public:
     }
 
 private:
+    using table_type = std::unordered_map<NodeId, gossip_digest<NodeId, Address, LogIndex>>;
+
+    [[nodiscard]] auto freshness_seconds() const -> std::int64_t {
+        return std::chrono::duration_cast<std::chrono::seconds>(_cfg.freshness_interval).count();
+    }
+
+    // Requirement 6.5: frees one slot in a full table for `incoming_id`.
+    // An expired entry goes first; failing that, a current member may evict
+    // the non-member entry closest to expiry, so ids invented by a hostile
+    // peer cannot lock real members out. Returns false when nothing may go.
+    static auto make_room(table_type& table, const std::unordered_set<NodeId>& members,
+                          const NodeId& incoming_id, std::int64_t now) -> bool {
+        auto victim = table.end();
+        for (auto it = table.begin(); it != table.end(); ++it) {
+            if (it->second.fresh_until < now) {
+                victim = it;
+                break;
+            }
+        }
+        if (victim == table.end() && members.contains(incoming_id)) {
+            for (auto it = table.begin(); it != table.end(); ++it) {
+                if (!members.contains(it->first) &&
+                    (victim == table.end() ||
+                     it->second.fresh_until < victim->second.fresh_until)) {
+                    victim = it;
+                }
+            }
+        }
+        if (victim == table.end()) {
+            return false;
+        }
+        table.erase(victim);
+        return true;
+    }
+
     // ── Gossip round (Requirement 4) ─────────────────────────────────────────
 
     auto start_gossip_thread() -> void {
