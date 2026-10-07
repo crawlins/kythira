@@ -162,6 +162,98 @@ permissions:
   contents: read
 
 jobs:
+  # ── Run plan ─────────────────────────────────────────────────────────────
+  # Every job below is gated by an `if:` on the master switch and its own
+  # toggle, and a job whose `if:` is false reports "skipped", which GitHub
+  # renders as success. With the master switch off, a whole run therefore
+  # reads as a green tick having touched no cloud at all. This job has no
+  # gate, so it always runs and says what the run will and will not do:
+  #
+  #   * it writes the plan (each job, on or off) to the run summary;
+  #   * a manual dispatch that selects nothing fails, because whoever
+  #     dispatched it asked for a run and got none;
+  #   * a scheduled run with the master switch (REAL_CLOUD_TESTS_ENABLED) off
+  #     warns instead of failing: switching the schedule off is a deliberate
+  #     setting, and a red run every Monday would bury real failures;
+  #   * a scheduled run with the master switch on but every job's toggle off
+  #     fails, since that contradiction is a misconfiguration.
+  #
+  # The expressions repeat each job's own `if:` (minus always()); keep them
+  # in step when a gate changes.
+  run-plan:
+    name: Real Cloud Tests run plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      MASTER: ${{ github.event.inputs.run_real_cloud_tests == 'true' || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true') }}
+      AWS: ${{ github.event.inputs.aws_enabled == 'true' || (github.event.inputs.aws_enabled == null && vars.REAL_CLOUD_TESTS_AWS_ENABLED == 'true') }}
+      AWS_ASG: ${{ github.event.inputs.aws_bundle_ec2_quorum == 'true' || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_ASG_QUORUM_ENABLED == 'true') }}
+      AWS_EC2_LAUNCH_OPTIONS: ${{ github.event.inputs.aws_bundle_ec2_quorum == 'true' || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_EC2_LAUNCH_OPTIONS_ENABLED == 'true') }}
+      AMI_BUILD: ${{ github.event.inputs.aws_bundle_ami_build == 'true' || (github.event.inputs.aws_bundle_ami_build == null && vars.REAL_CLOUD_TESTS_AWS_AMI_BUILD_ENABLED == 'true') }}
+      AZURE: ${{ github.event.inputs.azure_enabled == 'true' || (github.event.inputs.azure_enabled == null && vars.REAL_CLOUD_TESTS_AZURE_ENABLED == 'true') }}
+      GCP: ${{ github.event.inputs.gcp_enabled == 'true' || (github.event.inputs.gcp_enabled == null && vars.REAL_CLOUD_TESTS_GCP_ENABLED == 'true') }}
+      OCI: ${{ github.event.inputs.oci_enabled == 'true' || (github.event.inputs.oci_enabled == null && vars.REAL_CLOUD_TESTS_OCI_ENABLED == 'true') }}
+      ALIBABA: ${{ github.event.inputs.alibaba_enabled == 'true' || (github.event.inputs.alibaba_enabled == null && vars.REAL_CLOUD_TESTS_ALIBABA_ENABLED == 'true') }}
+      AWS_MONITORING: ${{ github.event.inputs.aws_monitoring_enabled == 'true' || (github.event.inputs.aws_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED == 'true') }}
+      AZURE_MONITORING: ${{ github.event.inputs.azure_monitoring_enabled == 'true' || (github.event.inputs.azure_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_AZURE_MONITORING_ENABLED == 'true') }}
+      # No dispatch input (the 25-input cap), so only the variable decides.
+      GCP_MONITORING: ${{ vars.REAL_CLOUD_TESTS_GCP_MONITORING_ENABLED == 'true' }}
+      # No dispatch input (the 25-input cap), so only the variable decides.
+      OCI_MONITORING: ${{ vars.REAL_CLOUD_TESTS_OCI_MONITORING_ENABLED == 'true' }}
+      ALIBABA_MONITORING: ${{ github.event.inputs.alibaba_monitoring_enabled == 'true' || (github.event.inputs.alibaba_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_ALIBABA_MONITORING_ENABLED == 'true') }}
+      EVENT: ${{ github.event_name }}
+    steps:
+      - name: Report what this run will do
+        run: |
+          # "job|toggle": the AWS sub-jobs also need the AWS toggle.
+          rows=(
+            "aws|$AWS"
+            "aws-asg|$([ "$AWS" = true ] && [ "$AWS_ASG" = true ] && echo true || echo false)"
+            "aws-ec2-launch-options|$([ "$AWS" = true ] && [ "$AWS_EC2_LAUNCH_OPTIONS" = true ] && echo true || echo false)"
+            "ami-build|$([ "$AWS" = true ] && [ "$AMI_BUILD" = true ] && echo true || echo false)"
+            "azure|$AZURE"
+            "gcp|$GCP"
+            "oci|$OCI"
+            "alibaba|$ALIBABA"
+            "aws-monitoring|$AWS_MONITORING"
+            "azure-monitoring|$AZURE_MONITORING"
+            "gcp-monitoring|$GCP_MONITORING"
+            "oci-monitoring|$OCI_MONITORING"
+            "alibaba-monitoring|$ALIBABA_MONITORING"
+          )
+          selected=0
+          {
+            echo "### Real cloud run plan ($EVENT)"
+            echo ""
+            echo "Master switch: **$MASTER**"
+            echo ""
+            echo "| Job | Runs |"
+            echo "|---|---|"
+            for row in "${rows[@]}"; do
+              job=${row%%|*} on=${row#*|}
+              [ "$MASTER" = true ] || on=false
+              [ "$on" = true ] && selected=$((selected + 1))
+              echo "| $job | $([ "$on" = true ] && echo yes || echo 'no (skipped)') |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$MASTER" != true ]; then
+            msg="the master switch is off, so no real-cloud test runs and every job below reports skipped"
+            if [ "$EVENT" = workflow_dispatch ]; then
+              echo "::error::Nothing to run: $msg. Tick run_real_cloud_tests when dispatching."
+              exit 1
+            fi
+            echo "::warning::Nothing ran: $msg (repository variable REAL_CLOUD_TESTS_ENABLED is not 'true')."
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Nothing ran.** The green jobs below are skipped, not passed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$selected" -eq 0 ]; then
+            echo "::error::Nothing to run: the master switch is on but every provider and monitoring toggle is off."
+            exit 1
+          fi
+          echo "$selected job(s) selected; see the run summary."
+
   # ── AWS ──────────────────────────────────────────────────────────────────
   # Runs on both x86_64 and native arm64 runners so the Graviton/arm64 branch
   # in tests/aws_quorum_manager_real_ec2_test.cpp (instance-type fallback,
