@@ -888,7 +888,10 @@ jobs:
     name: Config Variants (clang++-18, x64)
     runs-on: ubuntu-24.04
     # Sized from build-and-test's 180-minute budget for one full cold build,
-    # plus headroom for the two smaller builds; not yet measured on a run.
+    # plus headroom for the two smaller builds. Measured on main: 9.6 min
+    # with a warm sccache (run 37567880231) and 39.4 min after a change to
+    # widely included headers (run 37584489048). No fully cold run has been
+    # observed, so the cold-build sizing stands.
     timeout-minutes: 240
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
@@ -1277,6 +1280,8 @@ jobs:
     name: No Folly (clang++-18, x64)
     runs-on: ubuntu-24.04
     # One full build and test run, the same work as a build-and-test leg.
+    # Measured on main: 12.8 min with a warm sccache (run 37567880231) and
+    # 63.8 min after a change to widely included headers (run 37584489048).
     timeout-minutes: 180
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
@@ -1490,7 +1495,9 @@ jobs:
     name: clang-tidy (shard ${{ matrix.shard }} of 6)
     runs-on: ubuntu-24.04
     # Slowest measured shard: 40 minutes, plus about 3 minutes of setup on a
-    # warm vcpkg cache.
+    # warm vcpkg cache. On main the six shards took 21-45 min (runs
+    # 37567880231 and 37584489048); clang-tidy only parses, so sccache does
+    # not change this and there is no separate cold figure.
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -2831,6 +2838,7 @@ jobs:
   kconfig-check:
     name: Kconfig defconfig check
     runs-on: ubuntu-24.04
+    # Needs no build or vcpkg tree: under 10 s on main, cold or warm.
     timeout-minutes: 10
     steps:
       - name: Checkout
