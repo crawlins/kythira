@@ -25,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <ostream>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -465,6 +466,73 @@ template<std::unsigned_integral N> auto next_numeric_node_id(N max_seen) -> N {
                                   std::to_string(max_seen));
     }
     return static_cast<N>(max_seen + 1);
+}
+
+// ============================================================================
+// Numeric-mode helpers for the quorum managers
+// ============================================================================
+
+/// @brief A node id type a quorum manager can number: an unsigned integer, or
+///        a `std::string` holding decimal text.
+template<typename N>
+concept numeric_mode_node_id = std::unsigned_integral<N> || std::same_as<N, std::string>;
+
+/// @brief The largest value a numeric-mode node id of type @p N can carry:
+///        @p N's maximum for an unsigned integer, `std::uint64_t`'s for
+///        decimal `std::string` ids.
+template<numeric_mode_node_id N>
+constexpr auto numeric_node_id_ceiling() noexcept -> std::uint64_t {
+    if constexpr (std::same_as<N, std::string>) {
+        return std::numeric_limits<std::uint64_t>::max();
+    } else {
+        return static_cast<std::uint64_t>(std::numeric_limits<N>::max());
+    }
+}
+
+/// @brief Parses a node id tag, label or name suffix that a manager whose
+///        `NodeId` is @p N may have written.
+///
+/// Strict decimal (`node_id_traits`) and range-checked against @p N. Anything
+/// else yields `std::nullopt`, and callers skip it: a manager only ever writes
+/// plain decimal ids that fit its `NodeId`, so a value it cannot parse is one
+/// it did not write and cannot collide with one it assigns. `std::stoull` is
+/// not that check: it reads "-1" as the largest `uint64_t`, which would make
+/// the next allocation overflow, and "7x" as 7.
+template<numeric_mode_node_id N>
+auto parse_numeric_node_id(std::string_view text) noexcept -> std::optional<std::uint64_t> {
+    const auto v = node_id_traits<std::uint64_t>::from_text(text);
+    if (!v || *v > numeric_node_id_ceiling<N>()) {
+        return std::nullopt;
+    }
+    return v;
+}
+
+/// @brief The @p N for numeric value @p v: @p v itself, or its decimal text.
+/// @throws std::overflow_error when @p v does not fit @p N. Narrowing would
+///         hand out an id that names a different node.
+template<numeric_mode_node_id N> auto numeric_node_id_as(std::uint64_t v) -> N {
+    if (v > numeric_node_id_ceiling<N>()) {
+        throw std::overflow_error("numeric node id " + std::to_string(v) +
+                                  " does not fit the NodeId type");
+    }
+    if constexpr (std::same_as<N, std::string>) {
+        return std::to_string(v);
+    } else {
+        return static_cast<N>(v);
+    }
+}
+
+/// @brief A random numeric node id, uniform over [1, min(2^63 - 1, the
+///        ceiling of @p N)].
+///
+/// The top bit stays clear, as the GCP managers have always drawn, and the
+/// draw is made inside @p N's range rather than truncated into it: a cast
+/// down from 63 bits would fold many draws onto one id and could produce 0.
+template<numeric_mode_node_id N, typename URBG> auto random_numeric_node_id(URBG& gen) -> N {
+    constexpr std::uint64_t top_bit_clear = std::numeric_limits<std::uint64_t>::max() >> 1;
+    std::uniform_int_distribution<std::uint64_t> dist(
+        1, std::min(top_bit_clear, numeric_node_id_ceiling<N>()));
+    return numeric_node_id_as<N>(dist(gen));
 }
 
 // ============================================================================

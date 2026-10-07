@@ -44,6 +44,7 @@
 /// through, and the row records which it got.
 
 #include <raft/aws_client_config.hpp>
+#include <raft/composite_node_id.hpp>
 #include <raft/future_default.hpp>
 #include <raft/peer_discovery.hpp>
 
@@ -60,6 +61,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <iostream>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -274,7 +276,7 @@ private:
         }
 
         std::vector<peer_info<NodeId, Address>> peers;
-        std::set<std::string> seen_ids;
+        std::set<NodeId> seen_ids;
         std::string token;
         do {
             if (!token.empty()) {
@@ -310,14 +312,25 @@ private:
                         // address, which would be a peer nothing can reach.
                         continue;
                     }
-                    // An instance id may appear twice across pages during a
-                    // concurrent change; a node id appearing twice would make
-                    // a cluster look larger than it is.
-                    if (!seen_ids.insert(node_id_value).second) {
+                    // A tag this cluster's nodes could not have written is
+                    // one instance's problem, not the scan's: skipped with a
+                    // line saying why. std::stoull threw on "abc" (failing
+                    // discovery outright) and read "-1" as a real id.
+                    const auto node_id = node_id_traits<NodeId>::from_text(node_id_value);
+                    if (!node_id) {
+                        std::cerr << "[aws_ec2_peer_discovery] ignoring instance "
+                                  << instance.GetInstanceId() << ": unparseable "
+                                  << _cfg.node_id_tag_key << " tag '" << node_id_value << "'\n";
                         continue;
                     }
-                    peers.push_back(peer_info<NodeId, Address>{from_string(node_id_value),
-                                                               Address(address_value)});
+                    // An instance id may appear twice across pages during a
+                    // concurrent change; a node id appearing twice would make
+                    // a cluster look larger than it is. Compared parsed, so
+                    // "01" and "1" are the same node.
+                    if (!seen_ids.insert(*node_id).second) {
+                        continue;
+                    }
+                    peers.push_back(peer_info<NodeId, Address>{*node_id, Address(address_value)});
                 }
             }
             token = outcome.GetResult().GetNextToken();
@@ -360,19 +373,7 @@ private:
     }
 
     [[nodiscard]] static auto to_string(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
-    }
-
-    [[nodiscard]] static auto from_string(const std::string& s) -> NodeId {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return s;
-        } else {
-            return static_cast<NodeId>(std::stoull(s));
-        }
+        return node_id_traits<NodeId>::to_text(id);
     }
 
     static auto make_ec2_client(const aws_client_config& aws)

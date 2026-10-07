@@ -518,3 +518,45 @@ BOOST_AUTO_TEST_CASE(provisioning_states_map_onto_the_planners_classes) {
     BOOST_TEST((rollback_state("Failed") == member_state::pending));
     BOOST_TEST((rollback_state("Deleting") == member_state::terminal));
 }
+
+// ── Numeric id hardening (cloud-composite-node-ids Requirement 7) ────────────
+
+BOOST_AUTO_TEST_SUITE(vmss_numeric_node_ids)
+
+// Requirement 7.4: another cluster's member in the same scale set is not ours
+// to assess, allocate around, or delete, even when it carries one of our ids.
+BOOST_AUTO_TEST_CASE(another_clusters_members_are_ignored) {
+    Cloud cloud;
+    cloud.arm->seed("other_4", node_tags("4", "other-cluster"), true);
+    cloud.arm->seed("other_40", node_tags("40", "other-cluster"), true);
+    auto mgr = cloud.make();
+
+    std::vector<kythira::node_placement<std::uint64_t, std::string>> members;
+    for (std::uint64_t id : {1U, 2U, 3U, 4U}) {
+        members.push_back({.node_id = id, .group_id = "1"});
+    }
+    const auto health = std::move(mgr.assess_quorum(members)).get();
+    BOOST_TEST(health.live_node_count == 3U);
+    BOOST_REQUIRE(health.unreachable_nodes.size() == 1U);
+    BOOST_TEST(health.unreachable_nodes.front() == 4U);
+
+    // Our node 4 has no member, so this deletes nothing.
+    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(std::uint64_t{4})).get());
+    BOOST_TEST(cloud.arm->find("other_4").has_value());
+
+    // 40 is the other cluster's; ours tops out at the assessed 4.
+    const auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
+    BOOST_TEST(peer.node_id == 5U);
+}
+
+// Requirement 7.1-7.3: a tag this manager could not have written is skipped.
+BOOST_AUTO_TEST_CASE(unparseable_node_id_tags_do_not_steer_allocation) {
+    Cloud cloud;
+    cloud.arm->seed("odd_a", node_tags("-1"), true);
+    cloud.arm->seed("odd_b", node_tags("7x"), true);
+    auto mgr = cloud.make();
+    const auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
+    BOOST_TEST(peer.node_id == 4U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()

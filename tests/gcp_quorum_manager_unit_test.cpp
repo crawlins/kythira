@@ -154,6 +154,14 @@ BOOST_AUTO_TEST_CASE(filter_selects_cluster_and_key) {
         R"((labels.kythira-cluster = "test-cluster") (labels.kythira-idempotency-key = "cap-1-2-3"))");
 }
 
+// cloud-composite-node-ids Requirement 7.4: a node id is unique only within
+// its cluster, so the MIG lookup by id is scoped to the cluster too.
+BOOST_AUTO_TEST_CASE(node_id_filter_selects_cluster_and_id) {
+    BOOST_CHECK_EQUAL(
+        kythira::gcp_node_id_filter("test-cluster", "42"),
+        R"((labels.kythira-cluster = "test-cluster") (labels.kythira-node-id = "42"))");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 #ifdef KYTHIRA_HAS_GCP_SDK
@@ -329,6 +337,20 @@ BOOST_AUTO_TEST_CASE(instance_name_to_node_id_rejects_foreign_names) {
     BOOST_CHECK(!mgr_t::instance_name_to_node_id("test-cluster", "some-other-vm").has_value());
     BOOST_CHECK(!mgr_t::instance_name_to_node_id("test-cluster", "kythira-test-cluster-notanumber")
                      .has_value());
+}
+
+// Requirement 7.1: only the name this manager would give an id maps back to
+// it, and an id past NodeId's range is refused rather than truncated.
+BOOST_AUTO_TEST_CASE(instance_name_to_node_id_rejects_non_canonical_suffixes) {
+    using mgr_t = kythira::gcp_compute_quorum_manager<std::uint64_t, std::string>;
+    BOOST_CHECK(!mgr_t::instance_name_to_node_id("test-cluster", "kythira-test-cluster-07"));
+    BOOST_CHECK(!mgr_t::instance_name_to_node_id("test-cluster",
+                                                 "kythira-test-cluster-18446744073709551616"));
+    using narrow_t = kythira::gcp_compute_quorum_manager<std::uint16_t, std::string>;
+    BOOST_CHECK(!narrow_t::instance_name_to_node_id("test-cluster", "kythira-test-cluster-65536"));
+    BOOST_CHECK_EQUAL(
+        narrow_t::instance_name_to_node_id("test-cluster", "kythira-test-cluster-65535").value(),
+        65535u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -793,6 +815,20 @@ BOOST_AUTO_TEST_CASE(assess_quorum_resolves_nodes_by_node_id_label) {
     auto health = mgr.assess_quorum(cluster).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 1u);
     BOOST_CHECK((health.unreachable_nodes == std::vector<std::uint64_t>{8}));
+}
+
+// cloud-composite-node-ids Requirement 7.4: another cluster's MIG member in
+// the same zone carrying our node's id is not our node. Decommissioning it
+// would delete another cluster's voter.
+BOOST_AUTO_TEST_CASE(decommission_ignores_another_clusters_instance_with_the_same_id) {
+    fakes::fake_compute f;
+    f.instances->add("us-central1-a", "other-mig-a-abcd", "RUNNING",
+                     {{"kythira-cluster", "other-cluster"}, {"kythira-node-id", "42"}});
+    auto mgr = make_mig(f);
+
+    BOOST_CHECK_NO_THROW(mgr.decommission_node(42).get());
+    BOOST_CHECK_EQUAL(f.migs->delete_instances_calls, 0);
+    BOOST_CHECK(f.instances->find("us-central1-a", "other-mig-a-abcd") != nullptr);
 }
 
 #ifdef FIU_ENABLE

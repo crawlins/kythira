@@ -431,6 +431,9 @@ public:
 
             std::map<std::string, bool> live_map;
             for (const auto& inst : instances) {
+                if (!in_this_cluster(inst)) {
+                    continue;
+                }
                 const auto id_tag = inst.freeform_tags.find(oci_detail::tag_node_id);
                 if (id_tag == inst.freeform_tags.end()) {
                     continue;
@@ -770,7 +773,7 @@ public:
 
     /// @brief The `NodeId` this manager would assign next.
     ///
-    /// One above both the highest parsed tag, scanned across the whole pool,
+    /// One above both the highest parsed tag on this cluster's pool members
     /// and this manager's in-memory floor. Exposed for tests and diagnostics;
     /// `provision_node` uses the snapshot it already has rather than calling
     /// this, so the two cannot disagree. Does not itself raise the floor.
@@ -812,11 +815,18 @@ public:
 
 private:
     static auto node_id_str(const NodeId& id) -> std::string {
-        if constexpr (std::is_same_v<NodeId, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
+        return node_id_traits<NodeId>::to_text(id);
+    }
+
+    /// True when @p inst carries this cluster's `kythira-cluster` tag. A pool
+    /// can hold another cluster's members (or an operator's instance someone
+    /// tagged by hand), and a node id is only unique within one cluster, so
+    /// every scan that reads `kythira-node-id` checks this first: otherwise
+    /// another cluster's node 3 could be assessed, allocated around, or
+    /// decommissioned as ours.
+    [[nodiscard]] auto in_this_cluster(const oci_detail::instance_view& inst) const -> bool {
+        const auto tag = inst.freeform_tags.find(oci_detail::tag_cluster);
+        return tag != inst.freeform_tags.end() && tag->second == _cfg.cluster_name;
     }
 
     /// Requirement 5.3's ladder, in one place so `assess_quorum` reads as
@@ -899,19 +909,28 @@ private:
         const std::vector<oci_detail::instance_view>& instances) const -> NodeId {
         std::uint64_t highest = 0;
         for (const auto& inst : instances) {
+            if (!in_this_cluster(inst)) {
+                continue;
+            }
             const auto tag = inst.freeform_tags.find(oci_detail::tag_node_id);
             if (tag == inst.freeform_tags.end()) {
                 continue;
             }
-            try {
-                highest = std::max(highest, static_cast<std::uint64_t>(std::stoull(tag->second)));
-            } catch (const std::exception&) {
-                // A tag nobody here wrote. Ignoring it is right: it cannot
-                // collide with an id this manager assigns, because this manager
-                // only ever assigns parseable ones.
+            // A tag nobody here wrote (not plain decimal, or past NodeId's
+            // range) is skipped: it cannot collide with an id this manager
+            // assigns, because this manager only ever assigns ones that
+            // parse. std::stoull read "-1" as the largest uint64, after which
+            // every provision failed with overflow_error.
+            if (const auto parsed = parse_numeric_node_id<NodeId>(tag->second)) {
+                highest = std::max(highest, *parsed);
+            } else {
+                std::cerr << "[oci_instance_pool_quorum_manager] ignoring instance " << inst.id
+                          << ": unparseable " << oci_detail::tag_node_id << " tag '" << tag->second
+                          << "'\n";
             }
         }
-        return static_cast<NodeId>(_id_floor.next_above(highest));
+        return numeric_node_id_as<NodeId>(
+            _id_floor.next_above(highest, numeric_node_id_ceiling<NodeId>()));
     }
 
     /// Every node id this manager has assessed or allocated; see
@@ -922,6 +941,9 @@ private:
         -> std::optional<oci_detail::instance_view> {
         const auto wanted = node_id_str(node);
         for (auto& inst : describe_pool_instances()) {
+            if (!in_this_cluster(inst)) {
+                continue;
+            }
             const auto tag = inst.freeform_tags.find(oci_detail::tag_node_id);
             if (tag != inst.freeform_tags.end() && tag->second == wanted) {
                 return inst;

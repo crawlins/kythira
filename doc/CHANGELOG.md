@@ -5,6 +5,27 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 7, 2026)
 
+- **Quorum managers no longer misread, wrap or cross-match numeric node
+  ids** (cloud-composite-node-ids task 2). The OCI pool, Azure VM, Azure
+  VMSS and Docker managers and `aws_ec2_peer_discovery` parsed node-id
+  tags with `std::stoull`, which reads `-1` as the largest `uint64_t` (one
+  stray tag then made every later provision fail with `overflow_error`, or
+  Docker wrap to node 0) and `7x` as 7; Docker's `find_by_idempotency_key`
+  and EC2 discovery failed outright on one unparseable tag. All of them now
+  parse through `node_id_traits` (digits only, range-checked against the
+  `NodeId` type) via new shared helpers in `composite_node_id.hpp`
+  (`parse_numeric_node_id`, `numeric_node_id_as`,
+  `numeric_node_id_ceiling`, `random_numeric_node_id`), skip a tag they
+  could not have written with a log line, and refuse to allocate past the
+  type's maximum. The OCI pool and Azure VMSS managers now read ids only
+  from members tagged with their own cluster, in assessment, allocation and
+  lookup, and the GCP MIG lookup filters on the cluster label, so another
+  cluster's node 3 sharing a pool, scale set or zone can no longer be
+  decommissioned as ours. EC2 discovery de-duplicates by parsed id, Azure
+  VM and GCP Compute map only canonical names back to ids (`-07` is not node
+  7), GCP draws random ids inside a narrower `NodeId`'s range instead of
+  truncating, and the OCI pool manager now compiles with `std::string` ids.
+
 - **Poco DNSSD is a vcpkg overlay port instead of hand-built archives.**
   `poco_peer_discovery` and `poco_discovery_node` linked `libPocoDNSSD.a`
   and `libPocoDNSSDAvahi.a`, which someone built by hand and copied into
