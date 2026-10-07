@@ -1,0 +1,40 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Keeps the SHA-pinned GitHub Actions current. Every third-party `uses:` is
+# pinned to a full commit SHA with its release in a trailing comment (the
+# workflow-input-limits job enforces that); Dependabot rewrites both the SHA
+# and the comment, so its PRs pass that check unchanged.
+#
+# Only GitHub Actions is covered. vcpkg ports have no Dependabot ecosystem
+# and are bumped by hand through vcpkg.json's builtin-baseline and the
+# registry pins in vcpkg-configuration.json.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    # The root entry covers .github/workflows; the composite action under
+    # .github/actions/ has its own `uses:` lines and must be listed itself.
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: weekly
+      day: monday
+    # Minor and patch bumps share one weekly PR: every action bump runs the
+    # full CI matrix, and the Actions concurrency cap is account-wide. Major
+    # bumps (most actions here are one or more majors behind, e.g.
+    # actions/checkout v4 -> v7) come one PR per action, since each can
+    # change inputs or the Node runtime and should be reviewed on its own.
+    # The limit keeps that first backlog from flooding the CI queue.
+    groups:
+      github-actions-minor:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    open-pull-requests-limit: 3
+    commit-message:
+      # Conventional Commits, as CLAUDE.md requires: "ci(deps): ..."
+      prefix: ci
+      include: scope
