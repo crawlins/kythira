@@ -10,6 +10,7 @@ add_executable(poco_discovery_node main.cpp)
 
 target_include_directories(poco_discovery_node PRIVATE
     "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/cmd/discovery_node_common"
 )
 
 # network_simulator INTERFACE target propagates KYTHIRA_HAS_POCO_DNSSD, Folly, Poco DNSSD libs.

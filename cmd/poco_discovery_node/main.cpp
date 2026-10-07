@@ -18,13 +18,16 @@
 #include <raft/poco_peer_discovery.hpp>
 
 #include <httplib.h>
+#include "peers_endpoint.hpp"
 #include <folly/init/Init.h>
 
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unistd.h>
 
 #ifndef KYTHIRA_HAS_POCO_DNSSD
@@ -86,23 +89,20 @@ int main(int argc, char** argv) {
     });
 
     srv.Get("/peers", [&discovery](const httplib::Request& req, httplib::Response& res) {
-        int timeout_ms = 2000;
+        std::optional<std::string_view> param;
+        std::string raw;
         if (req.has_param("timeout_ms")) {
-            try {
-                timeout_ms = std::stoi(req.get_param_value("timeout_ms"));
-            } catch (...) {
-            }
+            raw = req.get_param_value("timeout_ms");
+            param = raw;
         }
-        auto peers = discovery.find_peers(std::chrono::milliseconds{timeout_ms}).get();
-        std::string json = "[";
-        bool first = true;
-        for (const auto& p : peers) {
-            if (!first) json += ',';
-            json += R"({"id":")" + p.node_id + R"(","address":")" + p.address + R"("})";
-            first = false;
+        const auto timeout = kythira::discovery_node::parse_peers_timeout(param);
+        if (!timeout) {
+            res.status = 400;
+            res.set_content("timeout_ms must be a decimal integer", "text/plain");
+            return;
         }
-        json += ']';
-        res.set_content(json, "application/json");
+        auto peers = discovery.find_peers(*timeout).get();
+        res.set_content(kythira::discovery_node::peers_to_json(peers), "application/json");
     });
 
     std::cout << "[discovery_node] HTTP listening on :" << http_port << "\n";
