@@ -182,6 +182,16 @@ struct boost_beast_server_config {
     /// (`text/plain`, `Connection: close`) and the connection is closed.
     std::size_t max_request_body_size{10 * 1024 * 1024};  // 10 MB
     std::chrono::seconds request_timeout{30};
+    /// Longest a TLS handshake may take, from the moment the connection is
+    /// accepted. A client that connects and then stalls holds a
+    /// `max_concurrent_connections` slot, so without a deadline a few
+    /// hundred idle sockets lock every peer out; past it the socket is
+    /// closed and the slot released.
+    /// `request_timeout` takes over once the handshake completes. Beast-only:
+    /// cpp-httplib and Proxygen bound the handshake with their own read
+    /// timeouts. Ignored without `enable_ssl`; zero or negative is refused
+    /// by the constructor with `std::invalid_argument`.
+    std::chrono::seconds handshake_timeout{10};
     bool enable_ssl{false};
     std::string ssl_cert_path{};
     std::string ssl_key_path{};
@@ -1110,6 +1120,10 @@ private:
     /// `shared_ptr` because each session's slot keeps it alive, so a session
     /// torn down after this server is gone still releases safely.
     std::shared_ptr<http_detail::connection_gate> _gate;
+    /// One per entry of `_acceptors`: the timer `do_accept` waits on after
+    /// an accept fails for want of descriptors or memory. `stop()` cancels
+    /// them along with closing the acceptors.
+    std::vector<std::shared_ptr<net::steady_timer>> _accept_backoff_timers;
     std::atomic<bool> _running{false};
     std::mutex _sessions_mutex;
     std::unordered_map<std::size_t, std::function<void()>> _session_closers;
@@ -1123,7 +1137,13 @@ private:
     auto validate_certificate_files() const -> void;
     auto load_server_certificates() -> void;
     auto build_ssl_context() -> net::ssl::context;
-    auto do_accept(std::shared_ptr<net::ip::tcp::acceptor> acceptor) -> void;
+    /// Accepts the next connection on `acceptor`. `backoff` is how long to
+    /// wait on `backoff_timer` if this accept fails with EMFILE, ENFILE,
+    /// ENOBUFS or ENOMEM; it doubles on each such failure up to 1 s and
+    /// resets on success, the same schedule as `tcp_detail::run_accept_loop`.
+    auto do_accept(std::shared_ptr<net::ip::tcp::acceptor> acceptor,
+                   std::shared_ptr<net::steady_timer> backoff_timer,
+                   std::chrono::milliseconds backoff) -> void;
 };
 
 }  // namespace kythira
