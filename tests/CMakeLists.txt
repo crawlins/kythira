@@ -6081,17 +6081,55 @@ set_tests_properties(concepts_future_folly_independence_test PROPERTIES
     LABELS "unit;concepts;folly-independence;stdexec;future-backend"
 )
 
+# The backend suites below need only their own backend: every source
+# includes raft/future_stdexec.hpp or raft/future_boost.hpp (never the
+# Folly-backed raft/future.hpp), and kythira_test_pch links Folly only when
+# it exists. So they are registered outside the Folly gate, and a
+# CONFIG_FOLLY=n build (ci.yml's no-folly job) tests the stdexec and Boost
+# backends instead of skipping them. backend_selection_isolation_property_test
+# reaches Folly only through raft/future_default.hpp's Folly fallback, which
+# a Folly-free build never selects. The few tests that compare a backend
+# against the Folly one stay inside the gate further down.
+if(stdexec_FOUND)
+    add_stdexec_test(single_shot_channel_property_test single_shot_channel_property_test.cpp)
+    add_stdexec_test(stdexec_try_concept_compliance_property_test stdexec_try_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_future_blocking_get_property_test stdexec_future_blocking_get_property_test.cpp)
+    add_stdexec_test(stdexec_future_factory_property_test stdexec_future_factory_property_test.cpp)
+    add_stdexec_test(stdexec_future_transformation_property_test stdexec_future_transformation_property_test.cpp)
+    add_stdexec_test(stdexec_future_scheduling_property_test stdexec_future_scheduling_property_test.cpp)
+    add_stdexec_test(stdexec_future_collector_property_test stdexec_future_collector_property_test.cpp)
+    add_stdexec_test(stdexec_future_concept_compliance_property_test stdexec_future_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_promise_concept_compliance_property_test stdexec_promise_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_semi_promise_concept_compliance_property_test stdexec_semi_promise_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_executor_concept_compliance_property_test stdexec_executor_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_concept_wrappers_unit_test stdexec_concept_wrappers_unit_test.cpp)
+    add_stdexec_test(backend_selection_isolation_property_test backend_selection_isolation_property_test.cpp)
+endif()
+
+# ── boost-future-backend (.kiro/specs/boost-future-backend/) ─────────────────
+# Only present when the boost future backend was actually enabled at
+# configure time (KYTHIRA_BUILD_BOOST_FUTURE_BACKEND or
+# KYTHIRA_DEFAULT_FUTURE_BACKEND=boost, root CMakeLists.txt) — otherwise
+# include/raft/future_boost.hpp's `#ifdef KYTHIRA_HAS_BOOST_FUTURE` guard
+# makes the whole header a no-op and these test files would fail to
+# compile (Try/Promise/Future/etc. wouldn't be defined).
+if(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND OR KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
+    add_boost_future_test(boost_future_concept_compliance_property_test boost_future_concept_compliance_property_test.cpp)
+    add_boost_future_test(boost_future_continuation_and_collector_property_test boost_future_continuation_and_collector_property_test.cpp)
+endif()
+
 # backend_non_interference_compile_fail_test (Property 14 / Property 11 —
-# see the file's own top comment) is always registered, not gated behind
-# stdexec_FOUND or the boost backend flag: raft/future_stdexec.hpp and
-# raft/future_boost.hpp are both safe no-op headers when their respective
-# backend isn't enabled, and the file's own #ifdef KYTHIRA_HAS_STDEXEC /
-# KYTHIRA_HAS_BOOST_FUTURE guards make each backend-pair's checks compile
-# away to nothing in that case — so this target builds and passes trivially
-# in a Folly-only configuration too, and exercises whichever backend pairs
-# are actually enabled otherwise. Links kythira_test_pch (not a raw
+# see the file's own top comment) is not gated behind stdexec_FOUND or the
+# boost backend flag: raft/future_stdexec.hpp and raft/future_boost.hpp are
+# both safe no-op headers when their respective backend isn't enabled, and
+# the file's own #ifdef KYTHIRA_HAS_STDEXEC / KYTHIRA_HAS_BOOST_FUTURE
+# guards make each backend-pair's checks compile away to nothing in that
+# case. It does need Folly: every pair it checks has kythira::Future (the
+# Folly backend) on one side. Links kythira_test_pch (not a raw
 # add_executable like concepts_future_folly_independence_test above) since,
-# unlike that check, this one needs Folly's real include directories.
+# unlike that check, this one needs Folly's real include directories. The
+# three stdexec tests beside it compare the stdexec backend with the Folly
+# one (folly::exception_wrapper, folly::Unit, kythira::FutureFactory).
 if(TARGET Folly::folly)
     add_executable(backend_non_interference_compile_fail_test backend_non_interference_compile_fail_test.cpp)
     target_link_libraries(backend_non_interference_compile_fail_test PRIVATE kythira_test_pch)
@@ -6101,40 +6139,13 @@ if(TARGET Folly::folly)
         LABELS "unit;concepts;stdexec;boost-future;future-backend"
     )
 
-    # Optional: only present when stdexec was found (root CMakeLists.txt).
     if(stdexec_FOUND)
-        add_stdexec_test(single_shot_channel_property_test single_shot_channel_property_test.cpp)
-        add_stdexec_test(stdexec_try_concept_compliance_property_test stdexec_try_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_future_blocking_get_property_test stdexec_future_blocking_get_property_test.cpp)
-        add_stdexec_test(stdexec_future_factory_property_test stdexec_future_factory_property_test.cpp)
-        add_stdexec_test(stdexec_future_transformation_property_test stdexec_future_transformation_property_test.cpp)
-        add_stdexec_test(stdexec_future_scheduling_property_test stdexec_future_scheduling_property_test.cpp)
-        add_stdexec_test(stdexec_future_collector_property_test stdexec_future_collector_property_test.cpp)
         add_stdexec_test(cross_backend_concept_compliance_property_test cross_backend_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_future_concept_compliance_property_test stdexec_future_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_promise_concept_compliance_property_test stdexec_promise_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_semi_promise_concept_compliance_property_test stdexec_semi_promise_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_executor_concept_compliance_property_test stdexec_executor_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_concept_wrappers_unit_test stdexec_concept_wrappers_unit_test.cpp)
         add_stdexec_test(stdexec_concept_wrappers_interoperability_property_test stdexec_concept_wrappers_interoperability_property_test.cpp)
-        add_stdexec_test(backend_selection_isolation_property_test backend_selection_isolation_property_test.cpp)
         add_stdexec_test(unit_type_equivalence_property_test unit_type_equivalence_property_test.cpp)
     endif()
-
-    # ── boost-future-backend (.kiro/specs/boost-future-backend/) ─────────────────
-    # Only present when the boost future backend was actually enabled at
-    # configure time (KYTHIRA_BUILD_BOOST_FUTURE_BACKEND or
-    # KYTHIRA_DEFAULT_FUTURE_BACKEND=boost, root CMakeLists.txt) — otherwise
-    # include/raft/future_boost.hpp's `#ifdef KYTHIRA_HAS_BOOST_FUTURE` guard
-    # makes the whole header a no-op and these test files would fail to
-    # compile (Try/Promise/Future/etc. wouldn't be defined).
-    if(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND OR KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
-        add_boost_future_test(boost_future_concept_compliance_property_test boost_future_concept_compliance_property_test.cpp)
-        add_boost_future_test(boost_future_continuation_and_collector_property_test boost_future_continuation_and_collector_property_test.cpp)
-    endif()
-
 else()
-    message(STATUS "backend_non_interference_compile_fail_test: skipped (requires Folly)")
+    message(STATUS "backend_non_interference_compile_fail_test and the Folly-comparison stdexec tests: skipped (require Folly)")
 endif()
 
 # ── future-backend-performance-benchmark (.kiro/specs/future-backend-performance-benchmark/) ─

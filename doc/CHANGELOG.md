@@ -5,6 +5,19 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 7, 2026)
 
+- **The Folly-free build tests the stdexec and Boost future backends.**
+  Every stdexec backend test, and both Boost backend tests, were registered
+  inside `tests/CMakeLists.txt`'s `if(TARGET Folly::folly)` block, so a
+  `CONFIG_FOLLY=n` build (the no-folly CI job) skipped them even though
+  their sources never include Folly; the backends meant to replace Folly
+  were only ever tested beside it. Thirteen stdexec tests and the two Boost
+  tests now register outside that gate. The four that compare a backend
+  with the Folly one (`backend_non_interference_compile_fail_test`,
+  `cross_backend_concept_compliance_property_test`,
+  `stdexec_concept_wrappers_interoperability_property_test`,
+  `unit_type_equivalence_property_test`) stay inside it, and
+  `configs/no-folly-test-allowlist.txt` drops from 175 entries to 160.
+
 - **The gossip table no longer grows with whatever a peer sends.**
   `tcp_gossip_peer2peer_replicator::merge()` added every unknown node id
   it was sent and kept each one until a sender-chosen `fresh_until`, so
