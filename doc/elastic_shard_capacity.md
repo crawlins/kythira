@@ -204,9 +204,19 @@ cpp-httplib/JSON stack only.
   it has the cluster's shape without a compose file of its own.
 
 `docker/elastic-capacity-compose.yml` wires three hosts this way. The flags
-are listed in `multi_raft_node --help`. The plane has no authentication. It
-belongs on the same trusted network as the plaintext Raft port, and the
-binary warns about that at startup.
+are listed in `multi_raft_node --help`.
+
+**The plane can create and destroy machines, so it is authenticated.** It
+listens on `--bind` like the host's other surfaces. Every host takes a shared
+bearer token from `$KYTHIRA_CAPACITY_TOKEN` or `--capacity-token-file` (at
+least 16 characters; never a command-line flag, where it would show in
+`/proc/<pid>/cmdline`). The controller answers 401 to any request without
+`Authorization: Bearer <token>`, members send it, and the controller passes it
+to every machine it creates in the same environment variable. A controller
+refuses to start on a non-loopback `--bind` without a token. The token
+authenticates; it does not encrypt. The plane is plaintext HTTP, like the Raft
+port, so it still belongs on a network you trust, where the token keeps any
+other process on that network from resizing the cluster.
 
 ### Deployment requirement: `lookup_descriptor`
 

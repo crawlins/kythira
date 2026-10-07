@@ -30,9 +30,13 @@
 #     cluster's containers, with no HostConfig (docker/container_api_proxy/
 #     proxy.py). The controller dials it over the network.
 #
-# Published ports bind to 127.0.0.1, because the control and capacity
-# surfaces take commands without authentication. Set KYTHIRA_BIND_ADDRESS to
-# publish them elsewhere, on a machine where that is safe.
+# The capacity plane requires the shared bearer token in
+# KYTHIRA_CAPACITY_TOKEN (16+ characters; the harness generates one per run).
+# Every node gets it here, and the controller hands it to each container it
+# creates, so a new member can call back. Published ports still bind to
+# 127.0.0.1, because the data and control surfaces take commands without
+# authentication. Set KYTHIRA_BIND_ADDRESS to publish them elsewhere, on a
+# machine where that is safe.
 #
 # The network has an explicit `name:` because the controller attaches the
 # containers it creates to it by that name; a compose-prefixed name would
@@ -55,6 +59,7 @@ x-shape: &shape
   CONTROL_PORT: "7002"
   SPLIT_KEYS: "${SPLIT_KEYS:-60}"
   CAPACITY_HEARTBEAT_MS: "1000"
+  KYTHIRA_CAPACITY_TOKEN: "${KYTHIRA_CAPACITY_TOKEN:?set KYTHIRA_CAPACITY_TOKEN to a random 16+ character token}"
 
 services:
   node1:

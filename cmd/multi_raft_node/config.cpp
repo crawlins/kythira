@@ -4,9 +4,12 @@
 #include "config.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 
@@ -135,7 +138,9 @@ process per node — and it is deliberately kept out of any install target. It
 has no authentication, no authorisation, no multi-tenancy and no rate limiting,
 and that is a decision rather than an omission: every one of them would add
 cost to the measured path that the numbers would then have to be corrected
-for, and none of them is what is being measured. Do not deploy it.
+for, and none of them is what is being measured. Do not deploy it. The one
+exception is the elastic-capacity control plane, which is off the measured
+path and can create machines, so it takes a bearer token (see below).
 
 Usage: multi_raft_node --node-id N --raft-port P --data-port P --control-port P
                        --peer 1=http://host:port [--peer 2=...] --voters 1,2,3
@@ -239,6 +244,14 @@ Elastic shard capacity (.kiro/specs/elastic-shard-capacity/, task 16)
                              placement-driver hooks call that control plane.
                              Needs --transport httplib --serializer json.
   --capacity-port P          The controller's control-plane port (default 7003).
+                             It listens on --bind, like the other surfaces.
+  --capacity-token-file F    A file holding the control plane's shared bearer
+                             token (16+ characters). $KYTHIRA_CAPACITY_TOKEN
+                             is the alternative; the file wins if both are
+                             set. The controller requires it on every request
+                             and refuses to start on a non-loopback --bind
+                             without one; a member sends it. The controller
+                             also hands it to every machine it creates.
   --capacity-controller H:P  Where a member reaches the controller.
   --capacity-cluster NAME    docker_quorum_manager's cluster name.
   --capacity-network NAME    The container network new machines join.
@@ -299,6 +312,24 @@ namespace {
     }
     throw std::runtime_error("multi_raft_node: --discovery must be static or ec2-tag, got " +
                              value);
+}
+
+/// The whole file, less trailing whitespace: an editor's final newline is not
+/// part of the secret, and a token that silently included one would match no
+/// member's.
+[[nodiscard]] auto read_token_file(const std::string& path) -> std::string {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("multi_raft_node: cannot read --capacity-token-file " + path);
+    }
+    std::string token((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back())) != 0) {
+        token.pop_back();
+    }
+    if (token.empty()) {
+        throw std::runtime_error("multi_raft_node: --capacity-token-file " + path + " is empty");
+    }
+    return token;
 }
 
 }  // namespace
@@ -382,6 +413,8 @@ auto parse_node_options(int argc, char** argv) -> node_options {
                 o._capacity_role = parse_capacity_role(value);
             } else if (flag == "--capacity-port") {
                 o._capacity_port = static_cast<std::uint16_t>(to_u64(value, flag.c_str()));
+            } else if (flag == "--capacity-token-file") {
+                o._capacity_token = read_token_file(value);
             } else if (flag == "--capacity-controller") {
                 o._capacity_controller = value;
             } else if (flag == "--capacity-cluster") {
@@ -490,6 +523,16 @@ auto parse_node_options(int argc, char** argv) -> node_options {
         throw std::runtime_error(
             "multi_raft_node: --capacity-role controller requires --capacity-cluster, "
             "--capacity-network and --capacity-image: they are what a new machine is made of");
+    }
+    if (out._capacity_token.empty()) {
+        if (const char* env = std::getenv(k_capacity_token_env); env != nullptr) {
+            out._capacity_token = env;
+        }
+    }
+    if (!out._capacity_token.empty() && out._capacity_token.size() < k_min_capacity_token_size) {
+        throw std::runtime_error(
+            "multi_raft_node: the capacity token must be at least 16 characters; a shorter one is "
+            "guessable by anyone who can reach the control plane");
     }
     if (out._capacity_role != capacity_role::off &&
         (out._transport != node_transport::httplib || out._serializer != wire_serializer::json)) {
