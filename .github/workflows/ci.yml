@@ -1461,7 +1461,7 @@ jobs:
       # Same retry policy as build-and-test's check (known flakes in
       # .github/ctest-retry-allowlist.txt, strict under CTEST_STRICT_RETRIES).
       # The floor is the 388 tests the first green run registered, less a
-      # small margin; 174 more are on configs/no-folly-test-allowlist.txt.
+      # small margin; 160 more are on configs/no-folly-test-allowlist.txt.
       - name: Check the test run did the work
         if: always()
         run: |

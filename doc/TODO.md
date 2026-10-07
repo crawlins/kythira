@@ -3027,13 +3027,15 @@ unverified completion claim.
 ### Build Tooling
 
 - [ ] **Over-wide Folly gates found by the no-folly CI job.** The job
-  (ci.yml, `configs/ci_no_folly_defconfig`) drops 174 tests relative to
+  (ci.yml, `configs/ci_no_folly_defconfig`) drops 160 tests relative to
   `ci_full_defconfig`; `configs/no-folly-test-allowlist.txt` gives each a
-  reason. About 65 of them are gated wider than their source needs. The
-  most valuable to fix: the whole stdexec suite (13 tests) is registered
-  inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block, so a
-  Folly-free build never tests the stdexec backend at all. Beyond that,
-  19 are behind `if(TARGET Folly::folly)` with no direct Folly use, 13 only name
+  reason. About 50 of them are gated wider than their source needs. The
+  stdexec and Boost backend suites used to be the worst case, registered
+  inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block so a
+  Folly-free build never tested either backend; 13 stdexec and 2 Boost
+  tests now sit outside it, leaving inside only the four that compare a
+  backend with the Folly one. Beyond that,
+  17 are behind `if(TARGET Folly::folly)` with no direct Folly use, 13 only name
   `folly::Executor` as a never-invoked transport `executor_type` (the 14
   ungated CoAP tests with the same pattern were switched to `int`, as
   `coap_conformance_types.hpp` does), and `tests/chaos/`,
