@@ -3,11 +3,11 @@
 
 #include <raft/certificate_authority_impl.hpp>
 #include <raft/certificate_provider.hpp>
+#include <raft/private_file.hpp>
 
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -140,29 +140,20 @@ namespace {
 
 auto write_file(const std::filesystem::path& path, const std::string& content, bool restrict_perms)
     -> std::string {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        throw std::filesystem::filesystem_error("temp_cert_files: cannot open file for writing",
-                                                path, std::make_error_code(std::errc::io_error));
-    }
-    out.write(content.data(), static_cast<std::streamsize>(content.size()));
-    out.close();
-    if (restrict_perms) {
-        std::filesystem::permissions(
-            path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-            std::filesystem::perm_options::replace);
-    }
+    raft::write_file_atomically(
+        path, content,
+        restrict_perms ? raft::file_visibility::owner_only : raft::file_visibility::standard);
     return path.string();
 }
 
 }  // namespace
 
 temp_cert_files::temp_cert_files(const pem_material& material) {
-    auto unique =
-        std::to_string(material.serial) + "_" +
-        std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count());
-    std::filesystem::path dir = std::filesystem::temp_directory_path() / ("kythira_ca_" + unique);
-    std::filesystem::create_directories(dir);
+    // mkdtemp: a fresh 0700 directory with an unpredictable name, so another
+    // user on the host can neither pre-create it nor read what lands in it.
+    std::filesystem::path dir =
+        raft::make_private_temp_directory(std::filesystem::temp_directory_path(),
+                                          "kythira_ca_" + std::to_string(material.serial) + "_");
     _dir = dir.string();
 
     _cert_path = write_file(dir / "cert.pem", material.certificate_pem, /*restrict_perms=*/false);
@@ -187,31 +178,16 @@ auto temp_cert_files::chain_path() const -> const std::string& {
     return _chain_path;
 }
 
-namespace {
-
-// Writes `content` to `final_path` via a same-directory temp file + rename,
-// so a concurrent reader never observes a partially-written file.
-void replace_file_atomically(const std::filesystem::path& final_path, const std::string& content,
-                             bool restrict_perms) {
-    auto tmp_path = final_path;
-    tmp_path += ".tmp";
-    write_file(tmp_path, content, restrict_perms);
-    std::filesystem::rename(tmp_path, final_path);
-}
-
-}  // namespace
-
 auto temp_cert_files::replace_atomically(const pem_material& material) -> void {
     std::filesystem::path dir(_dir);
-    replace_file_atomically(
-        _cert_path.empty() ? dir / "cert.pem" : std::filesystem::path(_cert_path),
-        material.certificate_pem, /*restrict_perms=*/false);
-    replace_file_atomically(_key_path.empty() ? dir / "key.pem" : std::filesystem::path(_key_path),
-                            material.private_key_pem, /*restrict_perms=*/true);
+    write_file(_cert_path.empty() ? dir / "cert.pem" : std::filesystem::path(_cert_path),
+               material.certificate_pem, /*restrict_perms=*/false);
+    write_file(_key_path.empty() ? dir / "key.pem" : std::filesystem::path(_key_path),
+               material.private_key_pem, /*restrict_perms=*/true);
     if (!material.chain_pem.empty()) {
         auto chain_target =
             _chain_path.empty() ? dir / "chain.pem" : std::filesystem::path(_chain_path);
-        replace_file_atomically(chain_target, material.chain_pem, /*restrict_perms=*/false);
+        write_file(chain_target, material.chain_pem, /*restrict_perms=*/false);
         _chain_path = chain_target.string();
     }
     if (_cert_path.empty()) {

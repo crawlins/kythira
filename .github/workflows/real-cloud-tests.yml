@@ -2983,7 +2983,7 @@ jobs:
           # The ephemeral session key pair the UPST will be bound to. The
           # exchange wants the public half as base64 PKIX DER (the same
           # sanitized form the Instance Principal federation body uses).
-          openssl genrsa -out /tmp/oci-session-key.pem 2048 2>/dev/null
+          (umask 077 && openssl genrsa -out /tmp/oci-session-key.pem 2048 2>/dev/null)
           public_key=$(openssl rsa -in /tmp/oci-session-key.pem -pubout -outform DER 2>/dev/null | base64 -w0)
 
           # This job's own GitHub OIDC JWT. The audience is the convention the
@@ -3692,7 +3692,7 @@ jobs:
           OCI_WIF_CLIENT_ID=$(printf '%s' "$OCI_WIF_CLIENT_ID" | tr -d '[:space:]')
           OCI_WIF_CLIENT_SECRET=$(printf '%s' "$OCI_WIF_CLIENT_SECRET" | tr -d '[:space:]')
 
-          openssl genrsa -out /tmp/oci-session-key.pem 2048 2>/dev/null
+          (umask 077 && openssl genrsa -out /tmp/oci-session-key.pem 2048 2>/dev/null)
           public_key=$(openssl rsa -in /tmp/oci-session-key.pem -pubout -outform DER 2>/dev/null | base64 -w0)
 
           jwt=$(timeout 60 curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
