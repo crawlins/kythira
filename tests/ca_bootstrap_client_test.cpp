@@ -17,7 +17,9 @@
 #include <raft/ca_bootstrap_client.hpp>
 #include <raft/ca_http_helpers.hpp>
 
+#include <atomic>
 #include <memory>
+#include <thread>
 
 using namespace raft::testing;
 
@@ -145,4 +147,32 @@ BOOST_AUTO_TEST_CASE(malformed_expected_fingerprint_is_a_usage_error,
         std::invalid_argument);
     BOOST_CHECK_THROW(fetch_trusted_root("https://127.0.0.1:1", "AA:BB:CC", "irrelevant-token"),
                       std::invalid_argument);  // too short
+}
+
+// Over plain http there is no handshake to pin, so the bearer token would go
+// out in clear and the "trusted" root would be whatever came back. Refused
+// before any connection, loopback included; a bare host:port counts as
+// http too, since that is how httplib::Client reads it.
+BOOST_AUTO_TEST_CASE(non_https_base_url_is_refused_before_any_request,
+                     *boost::unit_test::timeout(15)) {
+    std::atomic<int> requests{0};
+    httplib::Server plaintext;
+    plaintext.Get("/v1/root-ca", [&](const httplib::Request&, httplib::Response& res) {
+        ++requests;
+        res.set_content("not a root", "text/plain");
+    });
+    int port = plaintext.bind_to_any_port("127.0.0.1");
+    BOOST_REQUIRE(port > 0);
+    std::jthread server_thread([&] { plaintext.listen_after_bind(); });
+    plaintext.wait_until_ready();
+
+    const std::string fingerprint(64, 'A');
+    const auto host_port = "127.0.0.1:" + std::to_string(port);
+    for (const auto& url : {"http://" + host_port, host_port, "HTTPS://" + host_port,
+                            "http://localhost:" + std::to_string(port)}) {
+        BOOST_CHECK_THROW(fetch_trusted_root(url, fingerprint, "bearer-token-that-must-not-leak"),
+                          std::invalid_argument);
+    }
+    BOOST_TEST(requests.load() == 0);
+    plaintext.stop();
 }

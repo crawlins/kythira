@@ -126,6 +126,8 @@ struct ace_oauth_config {
     std::string as_token_endpoint;
     std::string client_id, client_secret, scope;
     ace_target_profile target_profile;
+    std::optional<std::string> as_ca_bundle_pem;  // unset: system trust store
+    bool allow_plain_http_loopback{false};        // tests only; https otherwise
 };
 
 struct coap_security_config {

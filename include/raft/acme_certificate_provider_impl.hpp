@@ -11,6 +11,7 @@
 
 #include <raft/acme_certificate_provider.hpp>
 #include <raft/future_default.hpp>
+#include <raft/http_origin_policy.hpp>
 #include <raft/httplib_listeners.hpp>
 
 #include <httplib.h>
@@ -70,43 +71,12 @@ struct split_url_result {
     return {url.substr(0, path_start), url.substr(path_start)};
 }
 
-// True for the hosts plain http is tolerated on: an attacker able to
-// intercept loopback traffic already owns the node.
-[[nodiscard]] inline auto is_loopback_host(std::string host) -> bool {
-    if (host.size() >= 2 && host.front() == '[' && host.back() == ']') {
-        host = host.substr(1, host.size() - 2);
-    }
-    if (host == "localhost") {
-        return true;
-    }
-    in_addr v4{};
-    if (inet_pton(AF_INET, host.c_str(), &v4) == 1) {
-        return (ntohl(v4.s_addr) >> 24) == 127;
-    }
-    in6_addr v6{};
-    return inet_pton(AF_INET6, host.c_str(), &v6) == 1 && IN6_IS_ADDR_LOOPBACK(&v6);
-}
-
 // Refuses any origin that is neither https nor plain http to a loopback
 // host. Applied to every URL contacted, including the ones the directory
 // and order objects hand back, so a server cannot steer the client off TLS.
 inline void require_secure_origin(const std::string& origin) {
-    constexpr std::string_view https = "https://";
-    constexpr std::string_view http = "http://";
-    if (origin.starts_with(https)) {
+    if (kythira::http_origin::is_https(origin) || kythira::http_origin::is_loopback_http(origin)) {
         return;
-    }
-    if (origin.starts_with(http)) {
-        auto authority = origin.substr(http.size());
-        std::string host;
-        if (authority.starts_with('[')) {
-            host = authority.substr(0, authority.find(']') + 1);
-        } else {
-            host = authority.substr(0, authority.find(':'));
-        }
-        if (is_loopback_host(host)) {
-            return;
-        }
     }
     throw std::invalid_argument("acme_certificate_provider: refusing non-https ACME URL " + origin +
                                 " (plain http is only accepted for a loopback host)");

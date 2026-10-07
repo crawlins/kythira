@@ -5,6 +5,25 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 7, 2026)
 
+- **The ACE token request and the pinned root fetch refuse plain http.**
+  `run_ace_token_exchange()` posted `client_secret` to whatever
+  `as_token_endpoint` named and took the PSK or OSCORE master secret back
+  over it, so an `http://` endpoint sent both in clear. It now refuses any
+  endpoint that is not `https://` with `coap_security_config_error`,
+  before any request goes out; plain http passes only to a loopback host
+  (`localhost`, 127.0.0.0/8, `::1`) and only with the new test-only
+  `ace_oauth_config::allow_plain_http_loopback`. The new
+  `ace_oauth_config::as_ca_bundle_pem` trusts a private AS's CA (unset
+  keeps the system store). `fetch_trusted_root()` accepted an `http://`
+  (or scheme-less) `base_url`, which skipped the fingerprint pin entirely
+  and sent the bearer token in clear; it now throws
+  `std::invalid_argument` for anything but `https://`, with no opt-out,
+  since a root fetched without its pin is not one to trust. ACME's
+  https-or-loopback rule moved to the shared
+  `include/raft/http_origin_policy.hpp`, which both now use. Breaking: an
+  ACE config aimed at a plain http AS stops working until it moves to
+  https (or, in a test, sets the opt-in).
+
 - **Composite node ids work on the wire and in the Raft core.** Every RPC
   serializer (JSON, CBOR, ION, protobuf) now encodes a composite id such as
   `aws_ec2_node_id` as its canonical text and parses it back on decode,

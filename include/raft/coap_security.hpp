@@ -172,11 +172,20 @@ enum class ace_target_profile {
 };
 
 struct ace_oauth_config {
+    /// Must be https: the request carries client_secret and the response
+    /// carries the PSK or OSCORE master secret.
     std::string as_token_endpoint;
     std::string client_id;
     std::string client_secret;
     std::string scope;
     ace_target_profile target_profile{ace_target_profile::dtls_psk};
+    /// PEM roots the AS's certificate must chain to. Unset uses the system
+    /// trust store.
+    std::optional<std::string> as_ca_bundle_pem;
+    /// Test-only escape hatch: also accept a plain http endpoint, and only
+    /// on a loopback host (localhost, 127.0.0.0/8, ::1). Off-host http is
+    /// refused whatever this says.
+    bool allow_plain_http_loopback{false};
 };
 
 // The DTLS session an OSCORE session can be layered over (Requirement 4.2:
