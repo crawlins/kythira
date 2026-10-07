@@ -26,7 +26,6 @@
 
 beast_server_test                                 27/200, fails in 0.1-0.6s, every leg but TSan
 ca_cluster_node_test                               3/200, uncaught SIGSEGV ~0.1s in, clang only
-coap_dtls_connection_establishment_property_test   2/54, once a 900s timeout
 chaos_state_machine_safety_test                    1/54
 certificate_authority_property_test                1/54
 simulator_property_test                            1/54

@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 
 // Network includes for server binding
 #ifdef LIBCOAP_AVAILABLE
@@ -70,6 +71,17 @@ namespace kythira {
 
 #ifdef LIBCOAP_AVAILABLE
 namespace coap_detail {
+
+/// libcoap requires coap_startup() before any other coap_*() call; it sets up
+/// the library's global state (its lock and the TLS backend). Nothing here
+/// called it, so every client and server ran on whatever lazy initialisation
+/// libcoap falls back to, and CI logs carry "coap_startup() should be called
+/// before any other coap_*() functions are called". Once per process; never
+/// paired with coap_cleanup(), since another context may still be alive.
+inline auto ensure_libcoap_started() -> void {
+    static std::once_flag started;
+    std::call_once(started, [] { coap_startup(); });
+}
 
 /// The remote endpoint of a libcoap session as "address:port", the peer half
 /// of the duplicate-detection key (coap_exchange_table.hpp). RFC 7252 Section
@@ -349,6 +361,7 @@ coap_client<Types>::coap_client(
     // Initialize libcoap context
 #ifdef LIBCOAP_AVAILABLE
     // Not a member initializer: the context exists only when libcoap does.
+    coap_detail::ensure_libcoap_started();
     // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
     _coap_context = coap_new_context(nullptr);
     if (_coap_context == nullptr) {
@@ -493,6 +506,9 @@ coap_client<Types>::coap_client(
     // enable_dtls-gated legacy equivalent to preserve).
     if (_config.enable_dtls || _config.security.mode != coap_auth_mode::none) {
         _logger.debug("Setting up DTLS context for CoAP client");
+        // _io_thread is already running coap_io_process() on this context,
+        // so the context setters setup_dtls_context() calls need the lock.
+        std::lock_guard lock(_mutex);
         setup_dtls_context();
     }
 
@@ -748,6 +764,7 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
     // Initialize libcoap context
 #ifdef LIBCOAP_AVAILABLE
     // Not a member initializer: the context exists only when libcoap does.
+    coap_detail::ensure_libcoap_started();
     // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
     _coap_context = coap_new_context(nullptr);
     if (_coap_context == nullptr) {
@@ -2202,99 +2219,99 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
     }
 
 #ifdef LIBCOAP_AVAILABLE
-    // Real libcoap implementation
-    // Parse the endpoint URI
+    // Every libcoap call below runs under _mutex, and the waits sleep outside
+    // it: _io_thread owns coap_io_process() and drives the handshake and the
+    // ping. This function used to pump coap_io_process() itself with no lock,
+    // so two threads ran libcoap against one context at once, which is
+    // undefined. It surfaced as coap_dtls_connection_establishment_property_test
+    // failing first attempts in CI, once as a 900 s hang.
     coap_uri_t uri;
     if (coap_split_uri(reinterpret_cast<const uint8_t*>(endpoint.c_str()), endpoint.length(),
                        &uri) < 0) {
         throw coap_network_error("Failed to parse endpoint URI: " + endpoint);
     }
 
-    // Resolve the address
-    uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
-    coap_addr_info_t* addr_info =
-        coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0,
-                                  static_cast<int>(scheme_hint_bits), COAP_RESOLVE_TYPE_REMOTE);
-    if (addr_info == nullptr) {
-        throw coap_network_error("Failed to resolve endpoint address: " + endpoint);
-    }
-    coap_address_t dst_addr = addr_info->addr;
-    coap_free_address_info(addr_info);
-
-    // Create DTLS session. new_dtls_client_session() attaches a PSK
-    // identity to the session itself; PKI credentials come from the context
-    // that setup_dtls_context() configured in the constructor.
     coap_session_t* session = nullptr;
     {
         std::lock_guard lock(_mutex);
+        uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
+        coap_addr_info_t* addr_info =
+            coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0,
+                                      static_cast<int>(scheme_hint_bits), COAP_RESOLVE_TYPE_REMOTE);
+        if (addr_info == nullptr) {
+            throw coap_network_error("Failed to resolve endpoint address: " + endpoint);
+        }
+        coap_address_t dst_addr = addr_info->addr;
+        coap_free_address_info(addr_info);
+
+        // new_dtls_client_session() attaches a PSK identity to the session
+        // itself; PKI credentials come from the context that
+        // setup_dtls_context() configured in the constructor.
         session = new_dtls_client_session(&dst_addr);
+        if (session == nullptr) {
+            throw coap_network_error("Failed to create DTLS session to endpoint: " + endpoint);
+        }
+        coap_session_set_app_data(session, this);
+        coap_session_set_max_retransmit(session, _config.max_retransmit);
+        coap_session_set_ack_timeout(
+            session, coap_fixed_point_t{static_cast<uint16_t>(_config.ack_timeout.count() / 1000),
+                                        static_cast<uint16_t>(_config.ack_timeout.count() % 1000)});
     }
-    if (session == nullptr) {
-        throw coap_network_error("Failed to create DTLS session to endpoint: " + endpoint);
-    }
 
-    // Set session application data for callbacks
-    coap_session_set_app_data(session, this);
+    const auto release_session = [this, session] {
+        std::lock_guard lock(_mutex);
+        coap_session_release(session);
+    };
 
-    // Configure DTLS-specific session parameters
-    coap_session_set_max_retransmit(session, _config.max_retransmit);
-    coap_session_set_ack_timeout(
-        session, coap_fixed_point_t{static_cast<uint16_t>(_config.ack_timeout.count() / 1000),
-                                    static_cast<uint16_t>(_config.ack_timeout.count() % 1000)});
-
-    // Wait for DTLS handshake to complete (with timeout)
-    auto handshake_timeout = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    coap_session_state_t session_state = COAP_SESSION_STATE_NONE;
-
-    while ((session_state = coap_session_get_state(session)) != COAP_SESSION_STATE_ESTABLISHED) {
-        if (std::chrono::steady_clock::now() > handshake_timeout) {
-            coap_session_release(session);
+    const auto handshake_deadline = std::chrono::steady_clock::now() + dtls_handshake_timeout;
+    while (true) {
+        coap_session_state_t session_state = COAP_SESSION_STATE_NONE;
+        {
+            std::lock_guard lock(_mutex);
+            session_state = coap_session_get_state(session);
+        }
+        if (session_state == COAP_SESSION_STATE_ESTABLISHED) {
+            break;
+        }
+        if (std::chrono::steady_clock::now() > handshake_deadline) {
+            release_session();
             throw coap_timeout_error("DTLS handshake timeout for endpoint: " + endpoint);
         }
-
-        // Check for handshake failure
-        if (session_state == COAP_SESSION_STATE_NONE ||
-            session_state == COAP_SESSION_STATE_CONNECTING ||
-            session_state == COAP_SESSION_STATE_HANDSHAKE) {
-            // Still connecting or mid-handshake: keep waiting
-            coap_io_process(_coap_context, 100);  // Process for 100ms
-        } else {
-            // Unexpected state or failure
-            coap_session_release(session);
+        if (session_state != COAP_SESSION_STATE_NONE &&
+            session_state != COAP_SESSION_STATE_CONNECTING &&
+            session_state != COAP_SESSION_STATE_HANDSHAKE) {
+            release_session();
             throw coap_security_error("DTLS handshake failed for endpoint: " + endpoint);
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // Verify DTLS connection security parameters
     if (_config.verify_peer_cert) {
-        // Get peer certificate from the DTLS session
-        // Note: libcoap doesn't provide direct access to peer certificate
-        // In a real implementation, this would be handled by the DTLS callback
+        // libcoap gives no direct access to the peer certificate here; the
+        // DTLS verification callback has already checked it.
         _logger.debug("DTLS handshake completed with peer certificate verification");
     }
 
-    // Test the connection with a simple ping
-    coap_pdu_t* ping_pdu =
-        coap_pdu_init(COAP_MESSAGE_CON, COAP_REQUEST_CODE_GET, coap_new_message_id(session),
-                      coap_session_max_pdu_size(session));
-    if (ping_pdu != nullptr) {
-        // Add a simple path for connectivity test
-        coap_add_option(ping_pdu, COAP_OPTION_URI_PATH, 4,
-                        reinterpret_cast<const uint8_t*>("ping"));
-
-        // Send ping and wait for response or timeout
-        coap_mid_t mid = coap_send(session, ping_pdu);
-        if (mid != COAP_INVALID_MID) {
-            // Wait briefly for ping response (this validates the DTLS connection works)
-            auto ping_timeout = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
-            while (std::chrono::steady_clock::now() < ping_timeout) {
-                coap_io_process(_coap_context, 50);
-            }
+    // Exercise the established session with one confirmable GET. The reply
+    // is not awaited for an outcome, only given a second to arrive.
+    bool ping_sent = false;
+    {
+        std::lock_guard lock(_mutex);
+        coap_pdu_t* ping_pdu =
+            coap_pdu_init(COAP_MESSAGE_CON, COAP_REQUEST_CODE_GET, coap_new_message_id(session),
+                          coap_session_max_pdu_size(session));
+        if (ping_pdu != nullptr) {
+            coap_add_option(ping_pdu, COAP_OPTION_URI_PATH, 4,
+                            reinterpret_cast<const uint8_t*>("ping"));
+            ping_sent = coap_send(session, ping_pdu) != COAP_INVALID_MID;
         }
+    }
+    if (ping_sent) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     }
 
     // Release the session (it will be recreated when needed for actual requests)
-    coap_session_release(session);
+    release_session();
 #else
     // Stub implementation when libcoap is not available
     // Validate that endpoint has host and port after scheme

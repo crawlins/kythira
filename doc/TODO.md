@@ -1490,6 +1490,8 @@ unverified completion claim.
       which again looks like a fixed timeout being hit.
     - `coap_dtls_connection_establishment_property_test`: 2 of 54, one of them
       a full 900 s ctest timeout, so each occurrence costs 15 minutes.
+      **FIXED October 7, 2026**: a libcoap data race, not a timing flake
+      (see the late-October-7 re-measurement below); off the allowlist.
     - Once each: `chaos_state_machine_safety_test`,
       `certificate_authority_property_test` (0.04 s),
       `simulator_property_test`, `raft_commit_implies_replication_property_test`
@@ -1521,6 +1523,41 @@ unverified completion claim.
       normally catch and report. 60 local clang -O2 runs and an ASan/UBSan
       run did not reproduce it. The binary now unbuffers stdout and logs
       test-unit entry and exit, so the next occurrence names the test case.
+    **Re-measured late October 7, 2026** over 865 test jobs in 119 `ci.yml`
+    runs (2026-10-06 00:00Z to 2026-10-07 22:20Z; the log tool returns the
+    last 5000 lines, which still holds `check-test-run.sh`'s retry report):
+    - `coap_dtls_connection_establishment_property_test` crashed its first
+      attempt in 13 jobs: 11 memory access violations (fault address 0x30 or
+      0x1cc) on a roughly 10 s grid, i.e. at a handshake attempt, and 2
+      SIGABRTs. Cause: `establish_dtls_connection()` ran libcoap with no lock
+      while `_io_thread` ran `coap_io_process()` on the same context
+      (ThreadSanitizer: 27 races per run, including session refcounts and a
+      free). Fixed by locking every libcoap call there and leaving I/O to
+      `_io_thread`; TSan now reports 0. See CHANGELOG, October 7.
+    - `proxygen_transport_test` passed every attempt in 672 jobs (0.91-3.92 s),
+      so the `tls_request_vote_round_trip` ingress timeout is closed (entry
+      below). Its ports overlapped `beast_server_test`'s and
+      `beast_integration_test`'s, now fixed.
+    - `performance_equivalence_property_test` failed once in about 641 jobs,
+      and not on a timing threshold: a SegFault (`memory access violation at
+      address: 0x6000000000`) at 0.63 s in a Coverage job (job 112724270778).
+      Passing runs take 0.04-1.24 s, far inside every budget. The stdexec/
+      boost timing sensitivity noted elsewhere in this file did not show up
+      in CI. The one SegFault is unexplained.
+    - Rescued by retry and **not** allowlisted, by job count: `beast_server_test`
+      70 (PR #516), `ca_cluster_node_test` 24 (20 are the clang++-18 SegFault
+      ~0.1 s in), `redis_gateway_integration_test` 17 (always ~19 s),
+      `connection_oriented_example_test` 10 (~0.28 s), `tcp_rpc_unit_test` 8
+      (~4.9 s), `basic_connectionless_example_test` 7,
+      `kythira_keep_alive_pointer_access_property_test` 7 (some SegFaults),
+      `kythira_keep_alive_concept_compliance_property_test` 6,
+      `network_node_send_non_delivery_property_test` 5,
+      `tls_material_source_unit_test` 5, `coap_content_format_property_test`
+      4 (~20.05 s), `http_transport_reload_property_test` 4, and about 30 more
+      seen one to three times. Allowlisted and still frequent:
+      `leader_transfer_test` 18, `simulator_property_test` 17,
+      `integration_test` 15, `chaos_state_machine_safety_test` 13 (all 120 s
+      timeouts on 10-06). Strict retries would be red on most runs today.
   - **Assert each job's configuration actually took effect. PARTLY DONE**
     (noted October 6, 2026): the future-backend compat legs assert
     `KYTHIRA_DEFAULT_FUTURE_BACKEND` from `CMakeCache.txt` before building
@@ -2041,8 +2078,8 @@ unverified completion claim.
     `coap_max_token_length` `static_assert`ed against libcoap's own
     `COAP_TOKEN_DEFAULT_MAX`. Verified end-to-end: 101 dropped PDUs before,
     0 after, over the 200 requests `coap_thread_safety_property_test` issues.
-  - **`proxygen_transport_test` TLS fixtures — reduced, still open**
-    (`dd041bf`). RSA-2048 keygen via the `openssl` CLI cost 741-2966ms under
+  - **`proxygen_transport_test` TLS fixtures — CLOSED October 7, 2026**
+    (`dd041bf`): 0 failed attempts in 672 CI jobs, 2026-10-06..07. RSA-2048 keygen via the `openssl` CLI cost 741-2966ms under
     load, against a 3000ms RPC deadline the test hardcodes in nine places;
     switched to P-256 (worst case 2321ms → 192ms under identical load; 3.09s
     → 0.72s in CI artifacts) and adopted `tests/test_timeout_scale.hpp`,
