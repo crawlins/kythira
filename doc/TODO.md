@@ -1575,24 +1575,44 @@ unverified completion claim.
       `leader_transfer_test` 18, `simulator_property_test` 17,
       `integration_test` 15, `chaos_state_machine_safety_test` 13 (all 120 s
       timeouts on 10-06). Strict retries would be red on most runs today.
-  - **Assert each job's configuration actually took effect. PARTLY DONE**
-    (noted October 6, 2026): the future-backend compat legs assert
-    `KYTHIRA_DEFAULT_FUTURE_BACKEND` from `CMakeCache.txt` before building
-    (`ci.yml`, "Assert the build really is configured for …"). Other legs and
-    the "all N cases entered" check are not done. Original entry: A previous
-    session verified *by hand* that the `Proxygen transport (boost future
-    backend)` leg really configured
-    `-DKYTHIRA_DEFAULT_FUTURE_BACKEND=boost` and that all 12 of
-    `proxygen_transport_test`'s cases entered and ran, precisely because a
-    green tick alone did not establish it. Both are one-line greps against the
-    CMake cache and the ctest log; make every matrix leg do them, so the
-    assertion lives in the workflow rather than in whoever last thought to
-    check.
-  - **Fail a "ran nothing" real-cloud run. LARGELY DONE** (noted October 6,
-    2026): `scripts/run-real-cloud-suite.sh` runs ctest with
-    `--no-tests=error`, and the AWS, Azure and GCP jobs fail with an
-    `::error::` when enabled with every bundle disabled. The master switch
-    being off still reports `skipped`. Original entry: `real-cloud-tests.yml` treats
+  - **Assert each job's configuration actually took effect. DONE** (October
+    7, 2026). Every `ci.yml` leg that configures a build now runs
+    `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`
+    names the leg's defconfig, every `CONFIG_` line in it resolved as written
+    in `generated/autoconf.cmake`, `CMAKE_CXX_COMPILER` is the claimed
+    compiler, and each leg-defining option (`CMAKE_BUILD_TYPE`,
+    `KYTHIRA_SANITIZER`, `ENABLE_COVERAGE`, `KYTHIRA_DEFAULT_FUTURE_BACKEND`,
+    the tidy shard, `KYTHIRA_GCP_REAL_TESTS`, ...) is declared by the project
+    and set. A declared option matters: a `-D` the project no longer declares
+    sits in the cache as `UNINITIALIZED` and configure still succeeds, which is
+    how a renamed option looks; `KYTHIRA_GCP_REAL_TESTS` was read but never
+    declared and is now an `option()`. The two hand-written greps (future
+    backend, ThreadSanitizer) are folded into the script. One real gap found on
+    the way: Kconfiglib loads a `CONFIG_X=y` whose `depends on` is unmet
+    without any warning and resolves it to n, so strict mode never asks for
+    X's package; `check_defconfigs.py` (the `kconfig-check` job) now fails on
+    any assignment that resolves differently. No current defconfig trips it.
+    **"All N cases entered" is DONE too, one level below ctest**: with
+    `-DKYTHIRA_TEST_REPORT_DIR` (`cmake/TestReports.cmake`) every test writes a
+    detailed Boost.Test report, and `check-test-run.sh --case-reports` fails on
+    any case or suite reported "skipped" inside a passing binary — a false
+    `precondition()` exits 0, so ctest says Passed (e.g. all five
+    `coap_oscore_over_dtls_test` round trips would skip silently in a build
+    that stopped linking OSCORE with DTLS). Wired into Build & Test, No Folly,
+    Alternate CoAP Backends,
+    Coverage, ThreadSanitizer and the future-backend legs; expected skips go in
+    `--allow-case-skip`. Cases filtered out by `--run_test` or marked
+    `disabled()` are decided in source and are not counted.
+  - **Fail a "ran nothing" real-cloud run. DONE** (October 7, 2026):
+    `scripts/run-real-cloud-suite.sh` runs ctest with `--no-tests=error`, and
+    the AWS, Azure and GCP jobs fail with an `::error::` when enabled with
+    every bundle disabled. `real-cloud-tests.yml` now also has an ungated
+    `run-plan` job that writes which jobs will run to the run summary; a
+    manual dispatch that selects nothing fails, and so does a run with the
+    master switch on and every toggle off. A **scheduled** run with the master
+    switch off only warns (`::warning::` plus "Nothing ran" in the summary),
+    because that switch is a deliberate pause and a red run every Monday would
+    bury real failures. Original entry: `real-cloud-tests.yml` treats
     `run_real_cloud_tests=true` as a master switch, and omitting it reports
     `skipped` — success with nothing run. A job that claims to have exercised
     real cloud resources and registered zero cases should be a failure, not a
