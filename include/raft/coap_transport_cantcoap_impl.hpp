@@ -929,8 +929,15 @@ private:
         return std::move(future);
     }
 
+    /// Eight bytes: the counter's low 32 bits through this client's secret
+    /// permutation, which keeps tokens unique among outstanding requests (a
+    /// collision needs 2^32 requests in flight), then 32 fresh random bits.
+    /// Neither half is guessable by an off-path attacker (RFC 7252 5.3.1).
     [[nodiscard]] auto next_token() -> std::string {
-        const auto value = _token_counter.fetch_add(1);
+        const auto unique =
+            _token_scrambler(static_cast<std::uint32_t>(_token_counter.fetch_add(1)));
+        const auto salt = static_cast<std::uint32_t>(std::random_device{}());
+        const std::uint64_t value = (static_cast<std::uint64_t>(unique) << 32U) | salt;
         std::string token(8, '\0');
         for (int i = 0; i < 8; ++i) {
             token[static_cast<std::size_t>(i)] =
@@ -1406,6 +1413,7 @@ private:
     coap_exchange_table _seen;
     bool _shutting_down{false};
     std::atomic<std::uint64_t> _token_counter{1};
+    const coap_utils::token_scrambler _token_scrambler;
     /// RFC 7252 Section 4.4: the initial Message ID SHOULD be randomized, so
     /// a restarted client does not replay the IDs its predecessor used.
     std::atomic<std::uint16_t> _message_id_counter{

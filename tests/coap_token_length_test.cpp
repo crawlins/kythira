@@ -6,9 +6,11 @@
 
 #include <raft/coap_utils.hpp>
 
+#include <array>
 #include <cstdint>
 #include <set>
 #include <string>
+#include <vector>
 
 /// @file coap_token_length_test.cpp
 /// @brief Regression tests for the CoAP token length cap (RFC 7252 §5.3.1).
@@ -31,6 +33,7 @@
 
 using kythira::coap_max_token_length;
 using kythira::coap_utils::format_sequential_token;
+using kythira::coap_utils::token_scrambler;
 
 BOOST_AUTO_TEST_CASE(token_width_is_independent_of_counter) {
     // The exact values that used to straddle the boundary. 99 was the last
@@ -98,4 +101,53 @@ BOOST_AUTO_TEST_CASE(the_previous_encoding_would_have_failed_these_tests) {
 
     BOOST_CHECK_LE(old_encoding(99).size(), coap_max_token_length);
     BOOST_CHECK_GT(old_encoding(100).size(), coap_max_token_length);
+}
+
+// The scrambler is what keeps tokens unique once they stop being sequential:
+// distinct counters must still give distinct tokens. A run of 2^20 counters
+// (well past any realistic number of requests in flight) must not collide.
+BOOST_AUTO_TEST_CASE(scrambled_counters_never_collide) {
+    const token_scrambler scramble;
+    std::vector<bool> seen(std::size_t{1} << 20U);
+    std::set<std::uint32_t> outside;
+    for (std::uint32_t counter = 0; counter < (1U << 20U); ++counter) {
+        const auto value = scramble(counter);
+        if (value < seen.size()) {
+            BOOST_REQUIRE(!seen[value]);
+            seen[value] = true;
+        } else {
+            BOOST_REQUIRE(outside.insert(value).second);
+        }
+    }
+}
+
+// RFC 7252 5.3.1: an off-path attacker should not be able to guess a token.
+// Sequential counters must not come out sequential, and two clients (two
+// random keys) must not issue the same token sequence.
+BOOST_AUTO_TEST_CASE(scrambled_tokens_are_not_predictable_from_the_counter) {
+    const token_scrambler first;
+    const token_scrambler second;
+    int sequential = 0;
+    int shared = 0;
+    for (std::uint32_t counter = 1; counter <= 1000; ++counter) {
+        if (first(counter) == first(counter - 1) + 1) {
+            ++sequential;
+        }
+        if (first(counter) == second(counter)) {
+            ++shared;
+        }
+    }
+    BOOST_TEST(sequential < 5);
+    BOOST_TEST(shared < 5);
+}
+
+// Fixed keys give a fixed permutation, and the output still renders as a
+// full-width token.
+BOOST_AUTO_TEST_CASE(scrambler_is_deterministic_for_fixed_keys) {
+    const token_scrambler a{std::array<std::uint32_t, 4>{1, 2, 3, 4}};
+    const token_scrambler b{std::array<std::uint32_t, 4>{1, 2, 3, 4}};
+    const token_scrambler c{std::array<std::uint32_t, 4>{1, 2, 3, 5}};
+    BOOST_TEST(a(42) == b(42));
+    BOOST_TEST(a(42) != c(42));
+    BOOST_TEST(format_sequential_token(a(42)).size() == coap_max_token_length);
 }

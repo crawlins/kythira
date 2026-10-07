@@ -32,6 +32,35 @@
 
 namespace kythira::detail {
 
+// The suites a backend that owns its SSL_CTX (cantcoap, libnyoci) offers when
+// no cipher_suites are configured. OpenSSL's own DEFAULT list, which those
+// contexts used to fall back to, still carries static-RSA key exchange and
+// CBC-SHA1 suites: no forward secrecy, and the MAC-then-encrypt construction
+// behind Lucky13. libcoap hard-codes its own list (COAP_OPENSSL_CIPHERS), so
+// these do not apply to it.
+//
+// Certificates and raw public keys: ECDHE key exchange with an AEAD only.
+// ECDHE-ECDSA-AES128-CCM8, the suite RFC 7252 section 9.1.3.2 makes
+// mandatory, is in the AESCCM group. No "!" exclusions: OpenSSL can never
+// re-add a suite a "!" removed, and libnyoci appends the PSK list to this one.
+// "ECDHE" already excludes ECDHE-PSK, and nothing selected is anonymous.
+inline constexpr const char* default_dtls_cert_cipher_list =
+    "ECDHE+AESGCM:ECDHE+CHACHA20:ECDHE+AESCCM";
+
+// Pre-shared keys: AEAD suites authenticated by the PSK, including the
+// forward-secret (EC)DHE-PSK ones where the peer offers them. PSK-AES128-CCM8,
+// mandatory under RFC 7252 section 9.1.3.1, is in the AESCCM group. RSA-PSK is
+// left out: it needs a server certificate a PSK deployment does not have.
+inline constexpr const char* default_dtls_psk_cipher_list = "aPSK+AESGCM:aPSK+CHACHA20:aPSK+AESCCM";
+
+/// Restrict `ctx` to one of the default lists above.
+inline auto apply_default_dtls_cipher_list(SSL_CTX* ctx, const std::string& list) -> void {
+    if (SSL_CTX_set_cipher_list(ctx, list.c_str()) != 1) {
+        throw coap_security_error("no default DTLS cipher suite ('" + list +
+                                  "') is available in this OpenSSL");
+    }
+}
+
 /// The OpenSSL spelling of one configured cipher suite name.
 [[nodiscard]] inline auto openssl_cipher_name_for(const std::string& configured) -> std::string {
     const char* translated = OPENSSL_cipher_name(configured.c_str());

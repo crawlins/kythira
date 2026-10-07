@@ -198,16 +198,14 @@ public:
 // Mirrors coap_transport_impl.hpp's setup_dtls_context() PSK branch: client
 // (coap_transport_impl.hpp:816-846) uses the simple coap_context_set_psk();
 // server (:2468-2531) uses coap_context_set_psk2() with an identity-matching
-// callback. Both variants validate PSK key length (4-64 bytes) and identity
+// callback. Both variants validate PSK key length (validate_psk_key_length()) and identity
 // length (<=128 chars) identically (Requirement 2.1).
 
 class dtls_psk_provider final : public coap_security_provider {
 public:
     dtls_psk_provider(psk_credentials creds, coap_security_role role)
         : _creds(std::move(creds)), _role(role) {
-        if (_creds.key.size() < 4 || _creds.key.size() > 64) {
-            throw coap_security_error("PSK key length must be between 4 and 64 bytes");
-        }
+        validate_psk_key_length(_creds.key.size());
         if (_creds.identity.length() > 128) {
             throw coap_security_error("PSK identity length must not exceed 128 characters");
         }

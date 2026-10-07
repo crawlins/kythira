@@ -471,6 +471,7 @@ private:
     // for that call.
     mutable std::recursive_mutex _mutex;
     std::atomic<std::uint64_t> _token_counter{1};
+    const coap_utils::token_scrambler _token_scrambler;
     std::atomic<std::uint16_t> _next_message_id{1};
 
     // Helper methods

@@ -99,8 +99,7 @@ BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration,
 
             case 1:  // PSK-based with custom cipher suites
                 client_config.psk_identity = "test_cipher_suite";
-                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                         std::byte{0x04}};
+                client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
                 client_config.cipher_suites = selected_ciphers;
                 break;
 
@@ -113,8 +112,7 @@ BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration,
 
             case 3:  // PSK-based with default cipher suites
                 client_config.psk_identity = "test_default_cipher";
-                client_config.psk_key = {std::byte{0xAB}, std::byte{0xCD}, std::byte{0xEF},
-                                         std::byte{0x12}};
+                client_config.psk_key = std::vector<std::byte>(16, std::byte{0xAB});
                 // Leave cipher_suites empty for defaults
                 break;
 
@@ -218,8 +216,7 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering,
         coap_client_config client_config;
         client_config.enable_dtls = true;
         client_config.psk_identity = "test_validation";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                 std::byte{0x04}};
+        client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
         client_config.cipher_suites = mixed_ciphers;
 
         // Create test types and client
@@ -291,8 +288,7 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility,
         // Configure both for DTLS with PSK
         client_config.enable_dtls = true;
         client_config.psk_identity = "compatibility_test";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                 std::byte{0x04}};
+        client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
 
         server_config.enable_dtls = true;
         server_config.psk_identity = client_config.psk_identity;
@@ -406,8 +402,7 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement,
         coap_client_config client_config;
         client_config.enable_dtls = true;
         client_config.psk_identity = "security_test";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                 std::byte{0x04}};
+        client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
 
         // Configure different security levels
         switch (security_level) {
@@ -506,8 +501,7 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_performance_impact,
         coap_client_config client_config;
         client_config.enable_dtls = true;
         client_config.psk_identity = "performance_test";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                 std::byte{0x04}};
+        client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
         client_config.cipher_suites = large_cipher_list;
 
         auto start_time = std::chrono::steady_clock::now();

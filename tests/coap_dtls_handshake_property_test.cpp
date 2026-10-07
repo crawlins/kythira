@@ -193,7 +193,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_psk_authentication,
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<std::size_t> psk_length_dist(4, 32);
+    std::uniform_int_distribution<std::size_t> psk_length_dist(16, 32);
     std::uniform_int_distribution<std::size_t> identity_length_dist(4, 64);
     std::uniform_int_distribution<std::uint8_t> byte_dist(0, 255);
 
@@ -311,15 +311,13 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation,
 
             case 3:                                                  // PSK identity too long
                 client_config.psk_identity = std::string(200, 'x');  // 200 characters (too long)
-                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                         std::byte{0x04}};
+                client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
                 should_throw = true;
                 break;
 
             case 4:  // Valid PSK configuration
                 client_config.psk_identity = "valid_identity";
-                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                         std::byte{0x04}};
+                client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
                 should_throw = false;
                 break;
 
@@ -394,8 +392,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_session_resumption,
         coap_client_config client_config;
         client_config.enable_dtls = true;
         client_config.psk_identity = "test_session_resumption";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                 std::byte{0x04}};
+        client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
         client_config.enable_session_resumption = true;
         client_config.max_sessions = session_count * 2;
 

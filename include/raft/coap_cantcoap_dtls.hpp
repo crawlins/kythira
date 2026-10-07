@@ -205,6 +205,9 @@ public:
         // Partial writes would split one CoAP message across two records,
         // which the peer would read as two messages.
         SSL_CTX_clear_mode(_ctx.get(), SSL_MODE_ENABLE_PARTIAL_WRITE);
+        // Replaces OpenSSL's DEFAULT list; configure_psk() narrows it to PSK
+        // suites and configure_pki() to the configured cipher_suites, if any.
+        detail::apply_default_dtls_cipher_list(_ctx.get(), detail::default_dtls_cert_cipher_list);
 
         switch (config.mode) {
             case coap_auth_mode::dtls_psk:
@@ -419,6 +422,7 @@ private:
         if (creds.identity.empty() || creds.key.empty()) {
             throw coap_security_config_error("dtls_psk needs both an identity and a key");
         }
+        validate_psk_key_length(creds.key.size());
         if (creds.key.size() > PSK_MAX_PSK_LEN || creds.identity.size() > PSK_MAX_IDENTITY_LEN) {
             throw coap_security_config_error(
                 "dtls_psk identity or key is longer than OpenSSL "
@@ -427,9 +431,7 @@ private:
         _psk = creds;
         // PSK suites only: with no certificate configured, anything else would
         // fail the handshake anyway, just later and less legibly.
-        if (SSL_CTX_set_cipher_list(_ctx.get(), "PSK:!NULL") != 1) {
-            throw coap_security_error("no PSK cipher suite is available in this OpenSSL");
-        }
+        detail::apply_default_dtls_cipher_list(_ctx.get(), detail::default_dtls_psk_cipher_list);
         if (_role == coap_security_role::client) {
             SSL_CTX_set_psk_client_callback(_ctx.get(), &dtls_layer::psk_client);
         } else {

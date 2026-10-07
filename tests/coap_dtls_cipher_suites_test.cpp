@@ -20,6 +20,7 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 
+#include <raft/coap_config_validation.hpp>
 #include <raft/coap_dtls_cipher_suites.hpp>
 
 #ifdef LIBCOAP_AVAILABLE
@@ -34,6 +35,7 @@
 #include <format>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "test_timeout_scale.hpp"
@@ -73,6 +75,104 @@ BOOST_AUTO_TEST_CASE(tls13_suites_are_rejected) {
 
 BOOST_AUTO_TEST_CASE(empty_names_are_rejected) {
     BOOST_CHECK_THROW(detail::dtls_cipher_list({""}), coap_security_config_error);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// The lists cantcoap and libnyoci fall back to when no cipher_suites are
+// configured. Each must select only AEAD suites, and the certificate list only
+// ECDHE ones: no CBC-SHA1 (Lucky13) and no static-RSA key exchange (no
+// forward secrecy), which OpenSSL's DEFAULT and libnyoci's old list kept.
+namespace {
+
+[[nodiscard]] auto dtls12_suites(const std::string& list) -> std::vector<const SSL_CIPHER*> {
+    const std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> ctx(SSL_CTX_new(DTLS_method()),
+                                                                &SSL_CTX_free);
+    BOOST_REQUIRE(ctx);
+    BOOST_REQUIRE_NO_THROW(detail::apply_default_dtls_cipher_list(ctx.get(), list));
+    std::vector<const SSL_CIPHER*> suites;
+    STACK_OF(SSL_CIPHER)* stack = SSL_CTX_get_ciphers(ctx.get());
+    for (int i = 0; i < sk_SSL_CIPHER_num(stack); ++i) {
+        const SSL_CIPHER* suite = sk_SSL_CIPHER_value(stack, i);
+        // SSL_CTX_get_ciphers() also reports the TLS 1.3 suites, which are
+        // configured separately and never negotiated over DTLS 1.2.
+        if (std::string_view(SSL_CIPHER_get_version(suite)) != "TLSv1.3") {
+            suites.push_back(suite);
+        }
+    }
+    return suites;
+}
+
+[[nodiscard]] auto suite_names(const std::vector<const SSL_CIPHER*>& suites) -> std::string {
+    std::string names;
+    for (const auto* suite : suites) {
+        names += std::string(SSL_CIPHER_get_name(suite)) + " ";
+    }
+    return names;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(coap_dtls_default_cipher_lists)
+
+BOOST_AUTO_TEST_CASE(certificate_defaults_are_forward_secret_aead_only) {
+    const auto suites = dtls12_suites(detail::default_dtls_cert_cipher_list);
+    BOOST_TEST_MESSAGE("certificate defaults: " << suite_names(suites));
+    BOOST_REQUIRE(!suites.empty());
+    for (const auto* suite : suites) {
+        BOOST_TEST_CONTEXT(SSL_CIPHER_get_name(suite)) {
+            BOOST_TEST(SSL_CIPHER_is_aead(suite) == 1);
+            BOOST_TEST(SSL_CIPHER_get_kx_nid(suite) == NID_kx_ecdhe);
+            BOOST_TEST(SSL_CIPHER_get_auth_nid(suite) != NID_auth_null);
+        }
+    }
+    // RFC 7252 9.1.3.2's mandatory suite for certificates and raw keys.
+    BOOST_TEST(suite_names(suites).find("ECDHE-ECDSA-AES128-CCM8 ") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(psk_defaults_are_aead_only) {
+    const auto suites = dtls12_suites(detail::default_dtls_psk_cipher_list);
+    BOOST_TEST_MESSAGE("PSK defaults: " << suite_names(suites));
+    BOOST_REQUIRE(!suites.empty());
+    for (const auto* suite : suites) {
+        BOOST_TEST_CONTEXT(SSL_CIPHER_get_name(suite)) {
+            BOOST_TEST(SSL_CIPHER_is_aead(suite) == 1);
+            BOOST_TEST(SSL_CIPHER_get_auth_nid(suite) == NID_auth_psk);
+        }
+    }
+    // RFC 7252 9.1.3.1's mandatory PSK suite.
+    BOOST_TEST(suite_names(suites).find("PSK-AES128-CCM8 ") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// Every backend refuses a PSK shorter than 16 bytes: anyone who records a
+// handshake can test candidate keys against it offline.
+BOOST_AUTO_TEST_SUITE(coap_psk_key_length)
+
+BOOST_AUTO_TEST_CASE(sixteen_to_sixty_four_bytes_are_accepted) {
+    BOOST_CHECK_NO_THROW(validate_psk_key_length(coap_min_psk_key_length));
+    BOOST_CHECK_NO_THROW(validate_psk_key_length(32));
+    BOOST_CHECK_NO_THROW(validate_psk_key_length(coap_max_psk_key_length));
+}
+
+BOOST_AUTO_TEST_CASE(shorter_or_longer_keys_are_refused) {
+    BOOST_TEST(coap_min_psk_key_length == 16U);
+    BOOST_CHECK_THROW(validate_psk_key_length(0), coap_security_error);
+    BOOST_CHECK_THROW(validate_psk_key_length(4), coap_security_error);
+    BOOST_CHECK_THROW(validate_psk_key_length(coap_min_psk_key_length - 1), coap_security_error);
+    BOOST_CHECK_THROW(validate_psk_key_length(coap_max_psk_key_length + 1), coap_security_error);
+}
+
+// The legacy psk_key path through coap_client_config validation too.
+BOOST_AUTO_TEST_CASE(legacy_client_config_with_a_fifteen_byte_key_is_refused) {
+    coap_client_config config;
+    config.enable_dtls = true;
+    config.psk_identity = "node-1";
+    config.psk_key = std::vector<std::byte>(15, std::byte{0x42});
+    BOOST_CHECK_THROW(coap_utils::validate_client_config(config), coap_security_error);
+    config.psk_key.push_back(std::byte{0x42});
+    BOOST_CHECK_NO_THROW(coap_utils::validate_client_config(config));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -499,16 +499,20 @@ extern "C" inline auto libnyoci_server_psk_trampoline(void* context, const char*
     return static_cast<unsigned int>(state->psk_key.size());
 }
 
-/// A DTLS context with the same defaults libnyoci's own would use, but owned by
-/// us. PSK ciphersuites stay in the list for the dtls_psk path; dtls_pki
-/// narrows the verification settings afterwards.
+/// A DTLS context owned by us rather than libnyoci. libnyoci's own default
+/// list ("ALL:!EXPORT:!LOW:!aNULL:!eNULL:!SSLv2:PSK") keeps static-RSA and
+/// CBC-SHA1 suites, so this starts from the forward-secret AEAD certificate
+/// suites plus the AEAD PSK suites the dtls_psk path needs; dtls_pki narrows
+/// the verification settings, and the configured cipher_suites, afterwards.
 [[nodiscard]] inline auto make_dtls_context() -> SSL_CTX* {
     SSL_CTX* ctx = SSL_CTX_new(DTLS_method());
     if (ctx == nullptr) {
         throw coap_security_error("failed to allocate a DTLS context for the libnyoci backend");
     }
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
-    if (SSL_CTX_set_cipher_list(ctx, "ALL:!EXPORT:!LOW:!aNULL:!eNULL:!SSLv2:PSK") != 1) {
+    const std::string list = std::string(detail::default_dtls_cert_cipher_list) + ":" +
+                             detail::default_dtls_psk_cipher_list;
+    if (SSL_CTX_set_cipher_list(ctx, list.c_str()) != 1) {
         SSL_CTX_free(ctx);
         throw coap_security_error("failed to set the DTLS cipher list for the libnyoci backend");
     }
@@ -783,6 +787,7 @@ inline auto configure_dtls(nyoci_t instance, const coap_security_config& securit
             throw coap_security_config_error(
                 "dtls_psk requires a non-empty identity and key for the libnyoci backend");
         }
+        validate_psk_key_length(creds.key.size());
         state->psk_identity = creds.identity;
         state->psk_key.reserve(creds.key.size());
         for (const auto byte : creds.key) {

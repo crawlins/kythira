@@ -117,7 +117,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration,
     config.verify_peer_cert = true;
     // Add valid PSK configuration to avoid the "no valid authentication method" error
     config.psk_identity = "test_identity";
-    config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+    config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = "coaps://127.0.0.1:61061";

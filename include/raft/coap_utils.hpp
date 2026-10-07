@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 #include <cstddef>
@@ -141,13 +142,16 @@ inline auto generate_coap_token(std::size_t length = 4) -> std::vector<std::byte
 
     std::vector<std::byte> token(length);
 
-    // Use current time and random number for token generation
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    std::uniform_int_distribution<std::uint8_t> dis(0, 255);
-
-    for (std::size_t i = 0; i < length; ++i) {
-        token[i] = static_cast<std::byte>(dis(gen));
+    // Straight from std::random_device (getrandom() on Linux), not a seeded
+    // mt19937: an observer can recover a Mersenne Twister's state from its
+    // output and predict every later token, which is what RFC 7252 section
+    // 5.3.1's randomness requirement for unsecured requests is meant to stop.
+    std::random_device rd;
+    for (std::size_t i = 0; i < length; i += sizeof(std::random_device::result_type)) {
+        const auto word = rd();
+        for (std::size_t b = 0; b < sizeof(word) && i + b < length; ++b) {
+            token[i + b] = static_cast<std::byte>((word >> (8U * b)) & 0xFFU);
+        }
     }
 
     return token;
@@ -185,6 +189,58 @@ inline auto format_sequential_token(std::uint32_t counter) -> std::string {
     }
     return token;
 }
+
+/// @brief A keyed, secret permutation of the 32-bit request counter.
+///
+/// Sequential tokens are unique but guessable: an off-path attacker who knows
+/// roughly how many requests a client has sent can forge a response to a
+/// plaintext (NoSec) request by guessing its token. RFC 7252 section 5.3.1
+/// asks for at least 32 bits of randomness in such tokens. Feeding the counter
+/// through this permutation keeps the uniqueness the transports rely on (it is
+/// a bijection, so distinct counters still give distinct tokens) while making
+/// each token unpredictable to anyone who does not know the per-client key.
+///
+/// A four-round Feistel network on two 16-bit halves: bijective whatever the
+/// round function, keyed by 128 bits from std::random_device. It is not a
+/// vetted cipher and need not be one; DTLS and OSCORE, not tokens, protect
+/// secured traffic, and an on-path attacker can read plaintext tokens anyway.
+class token_scrambler {
+public:
+    token_scrambler() {
+        std::random_device rd;
+        for (auto& key : _keys) {
+            key = static_cast<std::uint32_t>(rd());
+        }
+    }
+
+    /// Construct with fixed round keys (tests only).
+    explicit token_scrambler(std::array<std::uint32_t, 4> keys) : _keys(keys) {}
+
+    [[nodiscard]] auto operator()(std::uint32_t counter) const -> std::uint32_t {
+        auto left = static_cast<std::uint16_t>(counter >> 16U);
+        auto right = static_cast<std::uint16_t>(counter & 0xFFFFU);
+        for (const auto key : _keys) {
+            const auto next = static_cast<std::uint16_t>(left ^ round(right, key));
+            left = right;
+            right = next;
+        }
+        return (static_cast<std::uint32_t>(left) << 16U) | right;
+    }
+
+private:
+    [[nodiscard]] static auto round(std::uint16_t half, std::uint32_t key) -> std::uint16_t {
+        // murmur3's finalizer: every key and input bit reaches every output bit.
+        auto mixed = (static_cast<std::uint32_t>(half) * 0x9E3779B1U) ^ key;
+        mixed ^= mixed >> 16U;
+        mixed *= 0x85EBCA6BU;
+        mixed ^= mixed >> 13U;
+        mixed *= 0xC2B2AE35U;
+        mixed ^= mixed >> 16U;
+        return static_cast<std::uint16_t>(mixed);
+    }
+
+    std::array<std::uint32_t, 4> _keys{};
+};
 
 // CoAP option handling utilities
 enum class coap_content_format : std::uint16_t {  // NOLINT(performance-enum-size)

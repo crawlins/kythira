@@ -290,14 +290,12 @@ private:
             kythira::coap_client_config psk_client_config;
             psk_client_config.enable_dtls = true;
             psk_client_config.psk_identity = "client_identity";
-            psk_client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                         std::byte{0x04}};
+            psk_client_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
 
             kythira::coap_server_config psk_server_config;
             psk_server_config.enable_dtls = true;
             psk_server_config.psk_identity = "server_identity";
-            psk_server_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
-                                         std::byte{0x04}};
+            psk_server_config.psk_key = std::vector<std::byte>(16, std::byte{0x01});
 
             std::cout << "  ✓ PSK client configuration created\n";
             std::cout << "  ✓ PSK server configuration created\n";

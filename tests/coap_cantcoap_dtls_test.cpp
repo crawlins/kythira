@@ -389,6 +389,19 @@ BOOST_AUTO_TEST_CASE(test_dtls_psk_wrong_key_is_refused,
     peer.server.stop();
 }
 
+// A PSK shorter than 16 bytes can be brute-forced offline from one recorded
+// handshake, so the server refuses it before opening a socket.
+BOOST_AUTO_TEST_CASE(test_dtls_psk_short_key_is_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::coap_server_config config;
+    config.security.mode = kythira::coap_auth_mode::dtls_psk;
+    config.security.credentials =
+        kythira::psk_credentials{"kythira-node", std::vector<std::byte>(15, std::byte{0x42})};
+    test_server server{loopback, ephemeral_port, config, test_metrics{}};
+    BOOST_CHECK_THROW(server.start(), kythira::coap_security_error);
+    BOOST_TEST(!server.is_running());
+}
+
 // A DTLS server must not answer plaintext CoAP at all, or it would be a
 // downgrade waiting to happen.
 BOOST_AUTO_TEST_CASE(test_dtls_server_ignores_plaintext_clients,
@@ -619,6 +632,35 @@ BOOST_AUTO_TEST_CASE(test_dtls_pki_cipher_suites_are_enforced,
         auto security = pki.client_security();
         std::get<kythira::pki_credentials>(security.credentials).cipher_suites = {
             "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"};
+        auto client_config = fast_client_config();
+        client_config.security = security;
+        test_client client{{{peer_node_id, endpoint}}, client_config, test_metrics{}};
+        BOOST_TEST(refused(client, std::chrono::seconds{10}));
+    }
+    peer.server.stop();
+}
+
+// With no cipher_suites configured the server offers forward-secret AEAD
+// suites only, not OpenSSL's DEFAULT: a client that insists on a CBC-SHA1
+// suite gets no handshake, while a default client still does.
+BOOST_AUTO_TEST_CASE(test_dtls_pki_defaults_refuse_cbc_suites,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    const pki_material pki;
+    kythira::coap_server_config server_config;
+    server_config.security = pki.server_security();
+    recording_server peer{server_config};
+    const auto endpoint = endpoint_for(peer.server.bound_port());
+
+    {
+        auto client_config = fast_client_config();
+        client_config.security = pki.client_security();
+        test_client client{{{peer_node_id, endpoint}}, client_config, test_metrics{}};
+        BOOST_TEST(vote(client, 41).term() == 41U);
+    }
+    {
+        auto security = pki.client_security();
+        std::get<kythira::pki_credentials>(security.credentials).cipher_suites = {
+            "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA"};
         auto client_config = fast_client_config();
         client_config.security = security;
         test_client client{{{peer_node_id, endpoint}}, client_config, test_metrics{}};
