@@ -381,17 +381,19 @@ unverified completion claim.
     2^63 are rejected on decode; Protobuf's `uint64` conversions are
     unchecked (parity-audit Z2); and only CBOR has a declared-length
     preflight (Z3).
-  - **Tests that assert nothing.** Every case in
-    `tests/raft_add_server_implementation_property_test.cpp` ends in a
-    `BOOST_CHECK(true)` placeholder (about twenty), including "Property 92.9:
-    add server adds as non-voting initially", which waits "until catch-up is
-    implemented", although learner catch-up now is.
-    `tests/network_concept_compliance_property_test.cpp` has its negative
-    `static_assert` (a client with an invalid future type must not satisfy
-    `network_client`) commented out behind a TODO, then `BOOST_CHECK(true)`.
-    All of them count toward the passing total. Open PR #447 runs real
-    nodes in the multi-node fixture, which may be the natural place to fill
-    these in.
+  - **Tests that assert nothing.** Five property suites still end most cases
+    in a `BOOST_CHECK(true)` "Placeholder" and count toward the passing
+    total: `raft_replicate_to_followers_property_test.cpp` (30),
+    `raft_remove_server_implementation_property_test.cpp` (12),
+    `raft_election_vote_collection_implementation_property_test.cpp` (10),
+    `raft_replication_acknowledgment_collection_property_test.cpp` (10) and
+    `raft_heartbeat_based_read_state_property_test.cpp` (8).
+    `raft_add_server_implementation_property_test.cpp` was the sixth; its
+    cases now drive real nodes over the simulator, and its `cluster`
+    harness (including `hold_in_joint_phase()`, which keeps a change in
+    C_old,new by isolating the new server and one old voter) is the
+    template for the rest. The negative `network_client` `static_assert` in
+    `network_concept_compliance_property_test.cpp` is enabled again.
   - **No mTLS chaos scenario.** The `mtls-node1`/`mtls-node2` services in
     `docker/ca-provisioning-compose.yml` are illustrative stubs;
     `certificate-authority` tasks.md ~966–968 calls a real mTLS chaos
