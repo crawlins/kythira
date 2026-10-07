@@ -117,3 +117,6 @@ add_custom_target(chaos-tests
     DEPENDS ${_chaos_targets}
     COMMENT "Building all chaos test executables"
 )
+
+# Boost.Test case reports for CI; see cmake/TestReports.cmake.
+kythira_attach_test_reports()

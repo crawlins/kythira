@@ -732,3 +732,6 @@ else()
     endforeach()
     message(STATUS "No container runtime found — all docker-* targets disabled")
 endif()
+
+# Boost.Test case reports for CI; see cmake/TestReports.cmake.
+kythira_attach_test_reports()
