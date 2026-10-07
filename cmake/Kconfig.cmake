@@ -117,7 +117,7 @@ endif()
 # case not-found is a hard configure error via find_package()'s own REQUIRED
 # handling (Requirement 4.1, 4.2). Not usable for dependencies resolved via
 # pkg_check_modules() or hand-written multi-step detection (libcoap,
-# libldns, libfiu, Poco DNSSD, AWS_ACM_PCA's two-step AWSSDK re-probe) --
+# libldns, libfiu, AWS_ACM_PCA's two-step AWSSDK re-probe) --
 # those keep their existing detection logic wrapped in the same
 # "if(NOT DEFINED KCONFIG_<SYMBOL> OR KCONFIG_<SYMBOL>)" gate plus an
 # explicit kythira_kconfig_require() call afterward; see the root

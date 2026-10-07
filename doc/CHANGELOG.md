@@ -3,6 +3,26 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 7, 2026)
+
+- **Poco DNSSD is a vcpkg overlay port instead of hand-built archives.**
+  `poco_peer_discovery` and `poco_discovery_node` linked `libPocoDNSSD.a`
+  and `libPocoDNSSDAvahi.a`, which someone built by hand and copied into
+  the source tree's `vcpkg_installed/`. Any reinstall of that tree deleted
+  them, nothing recorded how to rebuild them, and no CI job ever built the
+  Poco discovery code. `vcpkg-overlays/poco-dnssd` now builds both
+  libraries from `pocoproject/poco-dnssd` (pinned commit, vendored
+  CMakeLists) behind the opt-in `poco-dnssd` manifest feature, and the root
+  `CMakeLists.txt` finds them with `find_package(poco-dnssd CONFIG)`. The
+  port needs the host's `libavahi-client-dev`. The DNS Discovery Build job
+  now installs the feature, configures with `CONFIG_POCO_DISCOVERY=y` in
+  strict mode, builds `poco_discovery_node` and runs
+  `poco_peer_discovery_unit_test` against a running `avahi-daemon`.
+  The old detection paths (hand-placed archives with an include-path shim,
+  a system `Poco::DNSSD` CMake package, a `PocoDNSSD` pkg-config module)
+  are gone; a tree that relied on the hand-placed archives needs
+  `--x-feature=poco-dnssd` to keep the backend.
+
 ### What Changed (October 6, 2026)
 
 - **The real-EC2 test suites no longer leak empty VPCs.** Their teardown

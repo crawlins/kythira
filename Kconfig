@@ -233,9 +233,9 @@ config POCO_DISCOVERY
 	bool "Poco DNS-SD peer discovery"
 	default y
 	help
-	  Poco::DNSSD, either from the manually-built vcpkg_installed tree
-	  (with avahi-client/avahi-common) or system CMake config/pkg-config.
-	  Backs KYTHIRA_HAS_POCO_DNSSD.
+	  Poco DNSSD with its Avahi backend, from the vcpkg-overlays/poco-dnssd
+	  port (manifest feature `poco-dnssd`), which also needs the host's
+	  libavahi-client-dev. Backs KYTHIRA_HAS_POCO_DNSSD.
 
 endmenu # Peer Discovery
 

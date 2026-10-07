@@ -1074,121 +1074,23 @@ else()
 endif()
 
 # ── Poco DNSSD (poco_peer_discovery) ──────────────────────────────────────────
-# DNSSD is not a vcpkg feature; the static libs are built manually and placed
-# in the vcpkg_installed tree alongside the standard poco[net] artifacts.
-# This project only manually builds/provides these archives for x64-linux —
-# on any other resolved triplet (e.g. arm64-linux) the EXISTS check below
-# simply fails and POCO_DNSSD_FOUND stays FALSE, exactly like an x64-linux
-# host that hasn't built the archives either. See doc/TODO.md / README.md's
-# ARM support section for this known limitation.
+# DNSSD is not part of vcpkg's poco port, so vcpkg-overlays/poco-dnssd builds
+# it (PocoDNSSD plus the Avahi backend) behind the opt-in `poco-dnssd` manifest
+# feature. That port needs the host's Avahi client headers
+# (libavahi-client-dev); its config file reports not-found without them, so a
+# host lacking either the feature or Avahi degrades to POCO_DNSSD_FOUND=FALSE.
+# The installed headers land in vcpkg_installed/ with every other port's, so
+# consumers need no extra include path.
 set(POCO_DNSSD_FOUND FALSE)
-kythira_kconfig_gate(POCO_DISCOVERY)
-set(_poco_dnssd_lib     "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoDNSSD.a")
-set(_poco_dnssd_avahi   "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoDNSSDAvahi.a")
-set(_poco_dnssd_inc     "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/include")
-if(_KYTHIRA_GATE_POCO_DISCOVERY)
-if(EXISTS "${_poco_dnssd_lib}" AND EXISTS "${_poco_dnssd_avahi}")
-    # avahi-client / avahi-common are runtime-installed but their dev headers and
-    # unversioned .so symlinks are absent without the -dev package.  We look first
-    # in the extracted deb tree (symlinks or static archives created without sudo).
-    # CMAKE_LIBRARY_ARCHITECTURE is CMake's own Debian/Ubuntu multiarch-tuple
-    # detection (e.g. "x86_64-linux-gnu", "aarch64-linux-gnu"); fall back to a
-    # triplet-derived guess only in the unlikely case it's unset.
-    if(CMAKE_LIBRARY_ARCHITECTURE)
-        set(_avahi_multiarch_tuple "${CMAKE_LIBRARY_ARCHITECTURE}")
-    elseif(KYTHIRA_VCPKG_TRIPLET STREQUAL "arm64-linux")
-        set(_avahi_multiarch_tuple "aarch64-linux-gnu")
-    else()
-        set(_avahi_multiarch_tuple "x86_64-linux-gnu")
-    endif()
-    find_library(AVAHI_CLIENT_LIB
-        NAMES avahi-client
-        PATHS /tmp/avahi-dev/usr/lib/${_avahi_multiarch_tuple}
-              /usr/lib/${_avahi_multiarch_tuple}
-              /usr/lib
-        NO_DEFAULT_PATH
-    )
-    find_library(AVAHI_COMMON_LIB
-        NAMES avahi-common
-        PATHS /tmp/avahi-dev/usr/lib/${_avahi_multiarch_tuple}
-              /usr/lib/${_avahi_multiarch_tuple}
-              /usr/lib
-        NO_DEFAULT_PATH
-    )
-    if(AVAHI_CLIENT_LIB AND AVAHI_COMMON_LIB)
-        set(POCO_DNSSD_FOUND TRUE)
-        set(POCO_DNSSD_LIBRARIES
-            "${_poco_dnssd_avahi}"
-            "${_poco_dnssd_lib}"
-            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoNet.a"
-            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoFoundation.a"
-            "${AVAHI_CLIENT_LIB}"
-            "${AVAHI_COMMON_LIB}"
-        )
-        # Don't expose the whole manually-populated vcpkg_installed/.../include
-        # root as an include path: it also contains a full, independently-
-        # extracted copy of every other vcpkg package (boost included) that can
-        # genuinely diverge from the build tree's own vcpkg_installed/ copy —
-        # observed concretely as an unpatched, pre-fix boost/mpl (and
-        # boost/config) whose parenthesized computed-include macros
-        # (`#define BOOST_SLIST_HEADER (<ext/slist>)` etc.) don't survive
-        # BOOST_PP_STRINGIZE on Clang, producing a literal malformed path like
-        # `boost/mpl/aux_/preprocessed/(gcc/or.hpp)`. Any target that also
-        # #includes <boost/test/unit_test.hpp> (i.e. any Boost.Test-based unit
-        # test — this Poco DNSSD one is the only current example) would pick up
-        # that broken copy instead of the correct, already-on-the-search-path
-        # build-tree one. A shim directory containing only a symlink to the
-        # manually-built Poco/DNSSD subtree gets consumers exactly the headers
-        # they need without ever exposing this dir's boost/ (or anything else)
-        # to the compiler.
-        set(_poco_dnssd_shim "${CMAKE_BINARY_DIR}/poco_dnssd_include_shim")
-        file(MAKE_DIRECTORY "${_poco_dnssd_shim}/Poco")
-        if(NOT EXISTS "${_poco_dnssd_shim}/Poco/DNSSD")
-            file(CREATE_LINK "${_poco_dnssd_inc}/Poco/DNSSD" "${_poco_dnssd_shim}/Poco/DNSSD"
-                 SYMBOLIC)
-        endif()
-        set(POCO_DNSSD_INCLUDE_DIRS "${_poco_dnssd_shim}")
-        message(STATUS "Poco DNSSD found in vcpkg tree (manually built)")
-    else()
-        message(STATUS "Poco DNSSD: avahi libs not found — poco_peer_discovery disabled")
-    endif()
-else()
-    # Fall back to CMake config (system install) or pkg-config.
-    find_package(Poco QUIET COMPONENTS DNSSD Foundation)
-    if(Poco_FOUND AND TARGET Poco::DNSSD)
-        set(POCO_DNSSD_FOUND TRUE)
-        set(POCO_DNSSD_LIBRARIES Poco::DNSSD Poco::Foundation)
-        set(POCO_DNSSD_INCLUDE_DIRS "")
-        message(STATUS "Poco DNSSD found via CMake config")
-    else()
-        find_package(PkgConfig QUIET)
-        if(PkgConfig_FOUND)
-            pkg_check_modules(POCO_DNSSD QUIET PocoDNSSD)
-        endif()
-        if(POCO_DNSSD_FOUND)
-            message(STATUS "Poco DNSSD found via pkg-config: ${POCO_DNSSD_VERSION}")
-        endif()
-    endif()
+kythira_find_optional(POCO_DISCOVERY poco-dnssd CONFIG)
+if(poco-dnssd_FOUND)
+    set(POCO_DNSSD_FOUND TRUE)
+    set(POCO_DNSSD_LIBRARIES poco-dnssd::PocoDNSSDAvahi)
+    message(STATUS "Poco DNSSD found: ${poco-dnssd_VERSION} (vcpkg poco-dnssd port)")
 endif()
-endif() # _KYTHIRA_GATE_POCO_DISCOVERY
-kythira_kconfig_require(POCO_DISCOVERY POCO_DNSSD_FOUND "Poco DNSSD")
 
 if(POCO_DNSSD_FOUND)
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_POCO_DNSSD)
-    # vcpkg's toolchain already adds the build tree's own vcpkg_installed/.../include
-    # to every target's search path, which covers ordinary vcpkg-managed Poco
-    # headers (Foundation, Net, ...) automatically. It does NOT cover
-    # Poco/DNSSD specifically — those headers are manually built and placed
-    # only in the source tree's vcpkg_installed/ (see above), never
-    # replicated into the build tree's copy vcpkg itself manages. Anything
-    # that #includes <Poco/DNSSD/...> directly (poco_discovery_node,
-    # poco_peer_discovery_unit_test) must add ${POCO_DNSSD_INCLUDE_DIRS}
-    # itself; not added here because network_simulator's own headers don't
-    # need it, and propagating it INTERFACE would leak the source tree's
-    # vcpkg_installed/.../include root (with its own independently-extracted,
-    # potentially-diverged copy of every other vcpkg package) to every
-    # consumer — see POCO_DNSSD_INCLUDE_DIRS's own shim-directory comment
-    # above for the concrete bug that caused.
     target_link_libraries(network_simulator INTERFACE ${POCO_DNSSD_LIBRARIES})
 else()
     message(STATUS "Poco DNSSD not found — poco_peer_discovery disabled")

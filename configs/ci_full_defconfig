@@ -60,7 +60,10 @@
 #                             Turning the symbol off here records that
 #                             honestly instead of leaving it to silent
 #                             autodetect degradation.
-#   POCO_DISCOVERY          — Poco DNSSD, same situation as libldns.
+#   POCO_DISCOVERY          — Poco DNSSD, same situation as libldns: the
+#                             poco-dnssd vcpkg feature needs host Avahi
+#                             headers, so only the DNS Discovery Build job
+#                             installs it, under ci_dns_defconfig.
 CONFIG_EDHOC=y
 CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y

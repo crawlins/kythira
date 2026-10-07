@@ -20,9 +20,10 @@ name: Container Scenario Tests
 # workflow is proved by the PR that makes it.
 #
 # Not run here, deliberately:
-#   * docker-poco-discovery-tests: PocoDNSSD's static archives are built by
-#     hand and are not in the vcpkg tree CI restores, so the target cannot
-#     exist (see the arm64 workflow's comment on the same step).
+#   * docker-poco-discovery-tests: the vcpkg tree this workflow restores
+#     does not include the opt-in poco-dnssd feature, so the target does not
+#     exist (see the arm64 workflow's comment on the same step). Only ci.yml's
+#     DNS Discovery Build job installs it today.
 #   * docker-prometheus-remote-write-tests: no workflow runs it yet; adding it
 #     is a separate decision from adding a schedule.
 

@@ -141,6 +141,12 @@
       "dependencies": [
         "libnyoci"
       ]
+    },
+    "poco-dnssd": {
+      "description": "Poco DNSSD with its Avahi backend, for poco_peer_discovery and poco_discovery_node (CONFIG_POCO_DISCOVERY, KYTHIRA_HAS_POCO_DNSSD). DNSSD is not part of vcpkg's poco port, so the vcpkg-overlays/poco-dnssd overlay port builds it from source with a vendored CMakeLists. Opt-in: it needs the host's Avahi client headers (libavahi-client-dev), which vcpkg cannot supply. Omitting it leaves KYTHIRA_HAS_POCO_DNSSD undefined with everything else unaffected.",
+      "dependencies": [
+        "poco-dnssd"
+      ]
     }
   }
 }
