@@ -299,9 +299,11 @@ Reference implementations to study before starting:
 
 ## Notes
 
-- **NodeId TOCTOU**: tag-scan max+1 has the same benign race every
-  sibling has; resolution stays deferred to `quorum_management.hpp`'s
-  leader-side pending-provision tracking note. Do not solve it here.
+- **NodeId TOCTOU**: tag-scan max+1 races another leader's manager the
+  same way the other pool managers do (ESS tags after launch, with no
+  arbiter for a tag). Leader-side pending-provision tracking is per leader
+  and does not close it; see the "Node ids across leaders" note on the
+  `quorum_manager` concept in `quorum_management.hpp`.
 - **Zone placement**: strict per-zone provisioning needs one scaling
   group per zone (Requirement 7.3). If a deployment needs it, that is a
   config topology (N managers) — not a code change.

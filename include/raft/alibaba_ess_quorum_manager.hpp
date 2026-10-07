@@ -847,9 +847,10 @@ public:
     /// refuses a replacement id that is already a member of its configuration. `next_node_id` does
     /// not itself raise the floor.
     ///
-    /// The TOCTOU race between two concurrent provisions is the one every
-    /// sibling has, and its resolution stays deferred to `quorum_management.hpp`'s
-    /// leader-side pending-provision tracking note.
+    /// Two leaders' managers (a deposed leader still finishing a provision and
+    /// its successor) can still pick the same id: ESS tags an instance after
+    /// launching it and offers no arbiter for a tag. See the "Node ids across
+    /// leaders" note on the `quorum_manager` concept in `quorum_management.hpp`.
     ///
     /// Exposed for tests and diagnostics; `provision_node` computes the same
     /// value from the listing it already holds, so the two cannot disagree.

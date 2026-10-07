@@ -399,11 +399,17 @@ unverified completion claim.
   - **Deliberately deferred multi-raft features** (`multi-raft` tasks.md
     ~758, design Phase 9): cross-shard transactions, TiKV-style buckets as a
     load signal, and cross-group message batching. Optional.
-  - **NodeId tag-scan race** (`alibaba-cloud-services` tasks.md ~302 and its
-    sibling cloud specs): two concurrent `next_node_id()` tag scans can pick
-    the same id; deferred to leader-side pending-provision tracking.
-    `cloud-composite-node-ids` removes the numeric scan for managers that
-    switch to composite ids.
+  - **NodeId tag-scan race, pool managers only** (`alibaba-cloud-services`
+    tasks.md ~302 and its sibling cloud specs): a deposed leader finishing a
+    provision and its successor can pick the same numeric id. Leader-side
+    pending-provision tracking is per leader and cannot close it. Docker,
+    Azure VM and EC2 now claim the id at create time (a name the platform
+    will not reuse, or a ClientToken derived from the id) and move on when
+    it is taken; GCP draws random ids. The pool managers (ASG, VMSS, OCI
+    instance pool, Alibaba ESS) tag after launch with no arbiter, so a short
+    window remains there; the Raft guard against an existing voter's id
+    keeps it a wasted provision. `cloud-composite-node-ids` removes it for
+    managers that switch to composite ids.
   - **Named follow-up specs never written** (optional): a remote ccache
     backend (`ccache-adoption` tasks.md ~349) and AMI retention automation
     (`ca-cluster-node-ami` tasks.md ~261).
