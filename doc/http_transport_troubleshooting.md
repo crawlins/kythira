@@ -155,6 +155,24 @@ per target, so a five-node cluster reaches at most 4 × 10 = 40, under the
 default 100. Several Raft groups sharing one transport share these
 connections; raise the limit if many groups share one server.
 
+**Handshake deadline (Beast).** A slot is held from accept, so a client that
+connects to a TLS server and never finishes the handshake would hold it
+forever; enough of them lock every peer out. Beast closes such a connection
+after `handshake_timeout` (default 10 s, Beast-only, ignored without
+`enable_ssl`; zero or negative is rejected with `std::invalid_argument`).
+`request_timeout` applies once the handshake is done. Raise it only if peers
+sit behind very slow links.
+
+**Out of file descriptors (Beast).** When the process hits its descriptor
+limit, accepting fails with `EMFILE`/`ENFILE` while the pending connection
+keeps the listener ready. Beast then waits 10 ms before accepting again,
+doubling up to 1 s, and resets after the next successful accept, the same
+schedule as the raw TCP RPC servers. Each failure emits
+`beast_http.server.accept_error` with an `error_class` of `backoff`,
+`retry` or `fatal`; `fatal` (the listener itself is unusable) stops that
+listener. A steady stream of `backoff` means `ulimit -n` is too low for the
+connection limit.
+
 **Metrics.** Beast emits `beast_http.server.request_too_large` and
 `beast_http.server.connection_refused`; Proxygen emits the same names under
 `proxygen_http.server.`. Neither HTTP server has a logger, so these counters

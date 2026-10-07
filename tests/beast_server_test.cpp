@@ -14,6 +14,7 @@
 #include "http_limit_test_helpers.hpp"
 
 #include <netinet/in.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -494,6 +495,161 @@ BOOST_AUTO_TEST_CASE(server_connection_limit_is_shared_across_listeners) {
         BOOST_TEST(unexpected.empty());
     }
 
+    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(server_rejects_non_positive_handshake_timeout) {
+    boost::asio::io_context ioc;
+    using server_type = kythira::boost_beast_server<test_transport_types>;
+    for (auto timeout : {std::chrono::seconds(0), std::chrono::seconds(-1)}) {
+        BOOST_TEST_INFO("handshake_timeout " << timeout.count() << "s");
+        kythira::boost_beast_server_config config;
+        config.handshake_timeout = timeout;
+        BOOST_CHECK_THROW(server_type(ioc, test_bind_address, limits_port_base + 4, config,
+                                      kythira::noop_metrics{}),
+                          std::invalid_argument);
+    }
+}
+
+// A client that connects to a TLS server and never sends a ClientHello is
+// cut off after handshake_timeout, and its connection slot goes back to the
+// gate, even though request_timeout is far longer.
+BOOST_AUTO_TEST_CASE(server_drops_stalled_tls_handshake) {
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+    auto port = static_cast<std::uint16_t>(limits_port_base + 5);
+    temp_tls_material tls;
+    kythira::boost_beast_server_config config;
+    config.enable_ssl = true;
+    config.ssl_cert_path = tls.cert_path.string();
+    config.ssl_key_path = tls.key_path.string();
+    config.max_concurrent_connections = 1;
+    config.request_timeout = std::chrono::seconds(300);
+    config.handshake_timeout = std::chrono::seconds(1);
+    kythira::boost_beast_server<test_transport_types> server(ioc, test_bind_address, port, config,
+                                                             kythira::noop_metrics{});
+    register_echo_handlers(server);
+    server.start();
+
+    auto connected_at = std::chrono::steady_clock::now();
+    limits::raw_connection stalled(test_bind_address, port);
+    BOOST_REQUIRE(stalled.connected());
+    BOOST_REQUIRE(
+        limits::wait_for([&] { return server.live_connections() == 1; }, std::chrono::seconds(10)));
+
+    std::string unexpected;
+    auto outcome = stalled.read_until_close(unexpected, std::chrono::seconds(30));
+    auto held_for = std::chrono::steady_clock::now() - connected_at;
+    BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
+    BOOST_TEST(unexpected.empty());
+    BOOST_TEST(held_for >= std::chrono::milliseconds(900));
+    BOOST_REQUIRE(
+        limits::wait_for([&] { return server.live_connections() == 0; }, std::chrono::seconds(10)));
+
+    // The slot is free again: the next connection is admitted, not reset.
+    limits::raw_connection next(test_bind_address, port);
+    BOOST_REQUIRE(next.connected());
+    BOOST_TEST(
+        limits::wait_for([&] { return server.live_connections() == 1; }, std::chrono::seconds(10)));
+
+    server.stop();
+}
+
+namespace {
+
+auto process_cpu_time() -> std::chrono::microseconds {
+    rusage usage{};
+    ::getrusage(RUSAGE_SELF, &usage);
+    auto to_us = [](const timeval& tv) {
+        return std::chrono::seconds(tv.tv_sec) + std::chrono::microseconds(tv.tv_usec);
+    };
+    return to_us(usage.ru_utime) + to_us(usage.ru_stime);
+}
+
+// Uses up every descriptor the process may open, after lowering the soft
+// RLIMIT_NOFILE so that takes a bounded number of dup()s; the destructor
+// gives them all back and restores the limit.
+class descriptor_exhaustion {
+public:
+    descriptor_exhaustion() {
+        BOOST_REQUIRE(::getrlimit(RLIMIT_NOFILE, &_saved) == 0);
+        rlimit lowered = _saved;
+        lowered.rlim_cur = std::min<rlim_t>(_saved.rlim_cur, 4096);
+        BOOST_REQUIRE(::setrlimit(RLIMIT_NOFILE, &lowered) == 0);
+        while (true) {
+            int fd = ::dup(STDERR_FILENO);
+            if (fd < 0) {
+                _exhausted = errno == EMFILE;
+                break;
+            }
+            _fds.push_back(fd);
+        }
+    }
+    descriptor_exhaustion(const descriptor_exhaustion&) = delete;
+    auto operator=(const descriptor_exhaustion&) -> descriptor_exhaustion& = delete;
+    ~descriptor_exhaustion() { release(); }
+
+    [[nodiscard]] auto exhausted() const -> bool { return _exhausted; }
+
+    auto release() -> void {
+        for (int fd : _fds) {
+            ::close(fd);
+        }
+        _fds.clear();
+        (void)::setrlimit(RLIMIT_NOFILE, &_saved);
+    }
+
+private:
+    rlimit _saved{};
+    std::vector<int> _fds;
+    bool _exhausted{false};
+};
+
+}  // namespace
+
+// With no descriptors left, accept() keeps failing with EMFILE while the
+// pending connection keeps the listener readable. The server must back off
+// rather than retry at once in a loop that pins a core, and must pick the
+// connection up once descriptors are free again.
+BOOST_AUTO_TEST_CASE(server_backs_off_accept_when_out_of_descriptors) {
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+    auto port = static_cast<std::uint16_t>(limits_port_base + 6);
+    kythira::boost_beast_server<test_transport_types> server(ioc, test_bind_address, port, {},
+                                                             kythira::noop_metrics{});
+    register_echo_handlers(server);
+    server.start();
+
+    // The client's socket must exist before the descriptors run out; only
+    // connect() happens after, and that needs no new descriptor.
+    int client = ::socket(AF_INET, SOCK_STREAM, 0);
+    BOOST_REQUIRE(client >= 0);
+    std::chrono::microseconds cpu_used{};
+    {
+        descriptor_exhaustion exhaustion;
+        BOOST_REQUIRE(exhaustion.exhausted());
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_port = htons(port);
+        ::inet_pton(AF_INET, test_bind_address, &a.sin_addr);
+        int rc = ::connect(client, reinterpret_cast<sockaddr*>(&a), sizeof(a));
+        // Let the first failed accepts happen, then measure a quiet second.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        auto before = process_cpu_time();
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        cpu_used = process_cpu_time() - before;
+        exhaustion.release();
+        BOOST_REQUIRE(rc == 0);
+    }
+    BOOST_TEST_MESSAGE("CPU used while out of descriptors: " << cpu_used.count() << " us");
+    // A spinning accept loop burns the whole second on one io thread.
+    BOOST_TEST(cpu_used < std::chrono::milliseconds(500));
+
+    // The back-off tops out at 1 s, so the pending connection is accepted
+    // soon after descriptors come back.
+    BOOST_TEST(
+        limits::wait_for([&] { return server.live_connections() == 1; }, std::chrono::seconds(10)));
+    ::close(client);
     server.stop();
 }
 

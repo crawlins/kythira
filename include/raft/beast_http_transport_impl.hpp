@@ -1260,16 +1260,42 @@ auto boost_beast_client<Types>::send_fetch_log_entries(
 
 namespace beast_detail {
 
+// Accept-error handling for boost_beast_server::do_accept(), the async
+// counterpart of tcp_detail::run_accept_loop()'s: same three classes, same
+// 10 ms .. 1 s back-off.
+inline constexpr std::chrono::milliseconds accept_backoff_min{10};
+inline constexpr std::chrono::milliseconds accept_backoff_max{1000};
+
+enum class accept_error_class {
+    retry,    // concerns only the connection being accepted: accept again now
+    backoff,  // the process is short of a resource: wait, then accept again
+    fatal,    // the listening socket itself is unusable
+};
+
+inline auto classify_accept_error(const boost::system::error_code& ec) -> accept_error_class {
+    namespace errc = boost::system::errc;
+    if (ec == errc::too_many_files_open || ec == errc::too_many_files_open_in_system ||
+        ec == errc::no_buffer_space || ec == errc::not_enough_memory) {
+        return accept_error_class::backoff;
+    }
+    if (ec == errc::bad_file_descriptor || ec == errc::invalid_argument ||
+        ec == errc::not_a_socket) {
+        return accept_error_class::fatal;
+    }
+    return accept_error_class::retry;
+}
+
 template<typename Types, typename Stream>
 class server_session : public std::enable_shared_from_this<server_session<Types, Stream>> {
 public:
     server_session(Stream stream, boost_beast_server<Types>* server,
-                   std::chrono::seconds request_timeout, std::size_t max_request_body_size,
-                   http_detail::connection_gate::slot slot)
+                   std::chrono::seconds request_timeout, std::chrono::seconds handshake_timeout,
+                   std::size_t max_request_body_size, http_detail::connection_gate::slot slot)
         : _stream(std::move(stream)),
           _executor(beast::get_lowest_layer(_stream).get_executor()),
           _server(server),
           _request_timeout(request_timeout),
+          _handshake_timeout(handshake_timeout),
           _max_request_body_size(max_request_body_size),
           _slot(std::move(slot)) {}
 
@@ -1292,6 +1318,13 @@ public:
         });
         if constexpr (std::is_same_v<Stream, beast::ssl_stream<beast::tcp_stream>>) {
             auto self = this->shared_from_this();
+            // The tcp_stream's expiry bounds every read and write the SSL
+            // layer issues under it, so this caps the whole handshake. A
+            // client that connects and sends nothing (or stops half way)
+            // fails the handshake with beast::error::timeout, which routes
+            // to finish() and gives back the connection-gate slot.
+            // read_loop() sets request_timeout afresh once it succeeds.
+            beast::get_lowest_layer(_stream).expires_after(_handshake_timeout);
             async_server_handshake_kf(_stream, &_executor)
                 .thenValue([self](kythira::unit) {
                     self->read_loop();
@@ -1520,6 +1553,7 @@ private:
     boost_beast_server<Types>* _server;
     std::size_t _session_id{};
     std::chrono::seconds _request_timeout;
+    std::chrono::seconds _handshake_timeout;
     std::size_t _max_request_body_size;
     beast::flat_buffer _buffer;
     std::optional<beast_http::request_parser<beast_http::string_body>> _parser;
@@ -1563,6 +1597,9 @@ boost_beast_server<Types>::boost_beast_server(net::io_context& ioc, std::string 
       _config(std::move(config)),
       _metrics(std::move(metrics)),
       _gate(std::make_shared<http_detail::connection_gate>(_config.max_concurrent_connections)) {
+    if (_config.handshake_timeout <= std::chrono::seconds::zero()) {
+        throw std::invalid_argument("boost_beast_server: handshake_timeout must be positive");
+    }
     validate_certificate_files();
 }
 
@@ -1755,8 +1792,11 @@ auto boost_beast_server<Types>::start() -> void {
     metric.add_one();
     metric.emit();
 
+    _accept_backoff_timers.clear();
     for (const auto& acceptor : _acceptors) {
-        do_accept(acceptor);
+        auto timer = std::make_shared<net::steady_timer>(_ioc);
+        _accept_backoff_timers.push_back(timer);
+        do_accept(acceptor, std::move(timer), beast_detail::accept_backoff_min);
     }
 }
 
@@ -1787,6 +1827,10 @@ auto boost_beast_server<Types>::stop() -> void {
         (void)acceptor->close(ec);
     }
     _acceptors.clear();
+    for (const auto& timer : _accept_backoff_timers) {
+        (void)timer->cancel();
+    }
+    _accept_backoff_timers.clear();
     _running.store(false);
 
     {
@@ -1985,16 +2029,51 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::do_accept(std::shared_ptr<net::ip::tcp::acceptor> acceptor)
-    -> void {
+auto boost_beast_server<Types>::do_accept(std::shared_ptr<net::ip::tcp::acceptor> acceptor,
+                                          std::shared_ptr<net::steady_timer> backoff_timer,
+                                          std::chrono::milliseconds backoff) -> void {
     auto& a = *acceptor;
-    a.async_accept(net::make_strand(_ioc), [this, acceptor = std::move(acceptor)](
-                                               const boost::system::error_code& ec,
-                                               net::ip::tcp::socket socket) mutable {
+    a.async_accept(net::make_strand(_ioc), [this, acceptor = std::move(acceptor),
+                                            backoff_timer = std::move(backoff_timer),
+                                            backoff](const boost::system::error_code& ec,
+                                                     net::ip::tcp::socket socket) mutable {
         if (ec == net::error::operation_aborted || !_running.load()) {
             return;  // stop() closed the acceptors -- do not recurse.
         }
-        if (!ec) {
+        if (ec) {
+            auto cls = beast_detail::classify_accept_error(ec);
+            auto metric = _metrics;
+            metric.set_metric_name("beast_http.server.accept_error");
+            metric.add_dimension("error_class",
+                                 cls == beast_detail::accept_error_class::backoff ? "backoff"
+                                 : cls == beast_detail::accept_error_class::fatal ? "fatal"
+                                                                                  : "retry");
+            metric.add_one();
+            metric.emit();
+            if (cls == beast_detail::accept_error_class::fatal) {
+                return;  // the listener itself is unusable; retrying would spin.
+            }
+            if (cls == beast_detail::accept_error_class::backoff) {
+                // Out of descriptors or memory: the pending connection stays
+                // in the backlog and the listener stays readable, so
+                // accepting again at once fails the same way in a tight
+                // loop that pins a core. Wait for finished sessions to give
+                // descriptors back instead.
+                auto next = std::min(backoff * 2, beast_detail::accept_backoff_max);
+                backoff_timer->expires_after(backoff);
+                auto& timer = *backoff_timer;
+                timer.async_wait([this, acceptor = std::move(acceptor),
+                                  backoff_timer = std::move(backoff_timer),
+                                  next](const boost::system::error_code& wait_ec) mutable {
+                    if (wait_ec == net::error::operation_aborted || !_running.load()) {
+                        return;  // stop() cancelled the timer.
+                    }
+                    do_accept(std::move(acceptor), std::move(backoff_timer), next);
+                });
+                return;
+            }
+        } else {
+            backoff = beast_detail::accept_backoff_min;
             // Ask for a slot before anything is read or a handshake starts:
             // a refused connection should cost one accept() and nothing more.
             auto slot = _gate->try_acquire();
@@ -2013,19 +2092,19 @@ auto boost_beast_server<Types>::do_accept(std::shared_ptr<net::ip::tcp::acceptor
                 beast::ssl_stream<beast::tcp_stream> stream(std::move(socket), *_ssl_ctx);
                 auto session = std::make_shared<
                     beast_detail::server_session<Types, beast::ssl_stream<beast::tcp_stream>>>(
-                    std::move(stream), this, _config.request_timeout, _config.max_request_body_size,
-                    std::move(slot));
+                    std::move(stream), this, _config.request_timeout, _config.handshake_timeout,
+                    _config.max_request_body_size, std::move(slot));
                 session->run();
             } else {
                 beast::tcp_stream stream(std::move(socket));
                 auto session =
                     std::make_shared<beast_detail::server_session<Types, beast::tcp_stream>>(
-                        std::move(stream), this, _config.request_timeout,
+                        std::move(stream), this, _config.request_timeout, _config.handshake_timeout,
                         _config.max_request_body_size, std::move(slot));
                 session->run();
             }
         }
-        do_accept(std::move(acceptor));
+        do_accept(std::move(acceptor), std::move(backoff_timer), backoff);
     });
 }
 
