@@ -36,7 +36,7 @@ services:
     # observed on this test's first smoke dispatch (run 31702470663). The
     # 4.x line is the free community edition, and CloudWatch Logs +
     # CloudWatch are community-tier services.
-    image: localstack/localstack:4.14.0
+    image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
     container_name: cloudwatch-localstack-test-localstack
     hostname: localstack
     environment:
@@ -47,7 +47,7 @@ services:
       - cloudwatch-localstack-net
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.116.1
+    image: otel/opentelemetry-collector-contrib:0.116.1@sha256:d0ebf65280da2e1b1491d1b93648281afd353d4b9ea19160090303cec9a233bd
     container_name: cloudwatch-localstack-test-collector
     hostname: otel-collector
     volumes:

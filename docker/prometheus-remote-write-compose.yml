@@ -52,7 +52,7 @@
 
 services:
   prometheus:
-    image: prom/prometheus:v2.53.1
+    image: prom/prometheus:v2.53.1@sha256:f20d3127bf2876f4a1df76246fca576b41ddf1125ed1c546fbd8b16ea55117e6
     container_name: prometheus-remote-write-test-prometheus
     hostname: prometheus
     # --web.enable-remote-write-receiver is the whole point: without it
@@ -71,7 +71,7 @@ services:
       - prometheus-remote-write-net
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.116.1
+    image: otel/opentelemetry-collector-contrib:0.116.1@sha256:d0ebf65280da2e1b1491d1b93648281afd353d4b9ea19160090303cec9a233bd
     container_name: prometheus-remote-write-test-collector
     hostname: otel-collector
     # The UNMODIFIED shipped example config. Only its documented environment

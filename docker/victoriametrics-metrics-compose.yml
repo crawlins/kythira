@@ -21,7 +21,7 @@
 
 services:
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.103.0
+    image: victoriametrics/victoria-metrics:v1.103.0@sha256:4d7f1b98e9a73431a0c4ff156bf86fdf23679fc7cc06a4b3cbb042e5d03c101c
     container_name: victoriametrics-metrics-test-vm
     hostname: victoriametrics
     # Flush ingested samples to the queryable index quickly; the default
@@ -35,7 +35,7 @@ services:
   # The ecosystem's logging leg (victorialogs_logger — doc/TODO.md's
   # logging-alongside-backends item). Single-binary, zero config.
   victorialogs:
-    image: victoriametrics/victoria-logs:v1.0.0-victorialogs
+    image: victoriametrics/victoria-logs:v1.0.0-victorialogs@sha256:30ae01fbc0ef51e7b929c16f17b85112e763bb8b3427d3b2bc6495df0cbad7ac
     container_name: victoriametrics-metrics-test-victorialogs
     hostname: victorialogs
     ports:

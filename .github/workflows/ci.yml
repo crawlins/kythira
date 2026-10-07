@@ -463,7 +463,7 @@ jobs:
         run: |
           set -o pipefail
           docker run -d --rm --name localstack -p 4566:4566 -e SERVICES=ec2 \
-            localstack/localstack:4.14.0
+            localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
           ready=0
           for _ in $(seq 1 90); do
             if curl -fsS http://localhost:4566/_localstack/health \

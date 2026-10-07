@@ -20,7 +20,7 @@
 
 services:
   prometheus:
-    image: prom/prometheus:v2.53.1
+    image: prom/prometheus:v2.53.1@sha256:f20d3127bf2876f4a1df76246fca576b41ddf1125ed1c546fbd8b16ea55117e6
     container_name: prometheus-metrics-test-prometheus
     hostname: prometheus
     volumes:
@@ -35,7 +35,7 @@ services:
   # local-config.yaml (filesystem storage, auth disabled) is exactly
   # right for a scenario test; no config mount needed.
   loki:
-    image: grafana/loki:3.1.1
+    image: grafana/loki:3.1.1@sha256:e689cc634841c937de4d7ea6157f17e29cf257d6a320f1c293ab18d46cfea986
     container_name: prometheus-metrics-test-loki
     hostname: loki
     ports:
