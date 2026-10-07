@@ -19,12 +19,14 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
 #include <arpa/inet.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <ctime>
 #include <mutex>
@@ -444,6 +446,27 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
     return cert;
 }
 
+/// Returns a fresh certificate serial: 64 bits from OpenSSL's CSPRNG, never
+/// zero (RFC 5280 4.1.2.2 wants a positive integer). The CA/Browser Forum
+/// Baseline Requirements (7.1) ask for at least 64 bits of CSPRNG output so a
+/// requester cannot predict the serial of the certificate it is about to be
+/// issued, which is what made chosen-prefix collision attacks on MD5-signed
+/// certificates practical. The full `std::uint64_t` range is used, so a serial
+/// can exceed `INT64_MAX`; `ASN1_INTEGER_{set,get}_uint64` round-trip it.
+[[nodiscard]] inline auto random_serial() -> std::uint64_t {
+    std::uint64_t serial = 0;
+    while (serial == 0) {
+        std::array<unsigned char, sizeof(serial)> bytes{};
+        if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) {
+            throw_openssl_error("RAND_bytes(serial) failed");
+        }
+        for (unsigned char b : bytes) {
+            serial = (serial << 8) | b;
+        }
+    }
+    return serial;
+}
+
 }  // namespace raft::testing::detail
 
 namespace raft::testing {
@@ -457,18 +480,11 @@ struct certificate_authority::impl {
     std::string root_pem;
 
     mutable std::mutex mutex;
-    std::uint64_t instance_seed{0};
-    std::uint64_t serial_counter{0};
 
     std::set<std::uint64_t> issued_serials;
     std::vector<std::pair<std::uint64_t, std::time_t>> revoked;
 
     explicit impl(const ca_options& options) {
-        instance_seed = (static_cast<std::uint64_t>(
-                             std::chrono::high_resolution_clock::now().time_since_epoch().count()) ^
-                         reinterpret_cast<std::uintptr_t>(this)) &
-                        0xFFFFFFFFULL;
-
         ca_key = detail::generate_key(options.algorithm);
 
         ca_cert.reset(X509_new());
@@ -513,11 +529,6 @@ struct certificate_authority::impl {
     /// Builds around already-existing root CA material instead of generating a
     /// fresh root (`certificate_authority::from_existing`, Requirement 17.9).
     impl(std::string ca_cert_pem, std::string ca_key_pem) {
-        instance_seed = (static_cast<std::uint64_t>(
-                             std::chrono::high_resolution_clock::now().time_since_epoch().count()) ^
-                         reinterpret_cast<std::uintptr_t>(this)) &
-                        0xFFFFFFFFULL;
-
         auto cert_bio = detail::make_bio();
         BIO_write(cert_bio.get(), ca_cert_pem.data(), static_cast<int>(ca_cert_pem.size()));
         ca_cert.reset(PEM_read_bio_X509(cert_bio.get(), nullptr, nullptr, nullptr));
@@ -542,12 +553,18 @@ struct certificate_authority::impl {
         root_pem = detail::serialize_cert(ca_cert.get());
     }
 
-    // `ctest -jN` runs many test binaries — and multiple `certificate_authority`
-    // instances within one binary — concurrently; combining a high-resolution
-    // clock reading with `this`'s address keeps serials unique across instances
-    // without any shared/global state.
+    // Serials are random (see `detail::random_serial`), so they stay unique
+    // across instances and processes — every ca_cluster_node replica signs
+    // with the same root — without shared state. A repeat within this
+    // instance is astronomically unlikely but would break `revoke()`'s lookup,
+    // so it is drawn again. The root's serial is not recorded; it is never
+    // revoked through this API. Callers other than the constructor hold `mutex`.
     [[nodiscard]] auto next_serial() -> std::uint64_t {
-        return (instance_seed << 32) | (++serial_counter);
+        auto serial = detail::random_serial();
+        while (issued_serials.contains(serial)) {
+            serial = detail::random_serial();
+        }
+        return serial;
     }
 
     [[nodiscard]] auto issue_with_window(leaf_certificate_options options,
