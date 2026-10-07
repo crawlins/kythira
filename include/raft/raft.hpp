@@ -179,6 +179,16 @@ public:
     using fetch_log_entries_response_type =
         fetch_log_entries_response<node_id_type, term_id_type, log_index_type, log_entry_type>;
 
+    // A node on a textual or composite id must have a client that routes by
+    // that id (.kiro/specs/cloud-composite-node-ids/, Requirement 9.1); the
+    // failure otherwise is a wall of overload errors deep in the RPC paths.
+    // Numeric bundles keep today's duck typing, because several test bundles
+    // plug in partial mock clients that the full concept would reject.
+    static_assert(std::same_as<node_id_type, std::uint64_t> ||
+                      kythira::network_client<network_client_type, node_id_type>,
+                  "Types::network_client_type must satisfy "
+                  "kythira::network_client<C, node_id_type>");
+
     // Bootstrap type aliases (with fallbacks for Types that predate them)
     using _bth = kythira::_bootstrap_type_traits<Types, node_id_type>;
     using address_type = typename _bth::address_type;
@@ -663,13 +673,9 @@ private:
     // ========================================================================
 
     // Helper function to convert node_id to string for logging
-    // Handles both string and numeric node IDs
+    // Handles numeric, string and composite node IDs
     static auto node_id_to_string(const node_id_type& id) -> std::string {
-        if constexpr (std::is_same_v<node_id_type, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
+        return node_id_traits<node_id_type>::to_text(id);
     }
 
     // Initialize the node from persistent storage
@@ -2972,7 +2978,7 @@ auto node<Types>::transfer_leadership(node_id_type target, std::chrono::millisec
         return future;
     };
 
-    if constexpr (!network_client_with_timeout_now<network_client_type>) {
+    if constexpr (!network_client_with_timeout_now<network_client_type, node_id_type>) {
         // Refused at run time rather than at compile time: a Types bundle
         // without TimeoutNow is a legitimate configuration, and every other
         // multi-Raft feature works on it. Only the placement driver's
@@ -3059,7 +3065,7 @@ auto node<Types>::finish_leader_transfer(std::exception_ptr error) -> std::funct
 }
 
 template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
-    if constexpr (!network_client_with_timeout_now<network_client_type>) {
+    if constexpr (!network_client_with_timeout_now<network_client_type, node_id_type>) {
         return;
     } else {
         std::unique_lock<std::mutex> lock(_mutex);
@@ -4951,7 +4957,7 @@ auto node<Types>::check_election_timeout() -> void {
         // support it (e.g. the in-memory simulator) falls through to
         // exactly the same become_candidate()+start_election() sequence
         // this function has always used.
-        if constexpr (network_client_with_pre_vote<network_client_type>) {
+        if constexpr (network_client_with_pre_vote<network_client_type, node_id_type>) {
             lock.unlock();
             start_pre_vote();
         } else {
@@ -5190,7 +5196,7 @@ auto node<Types>::cluster_members() const -> std::vector<node_id_type> {
     auto members = _configuration.nodes();
     if (_configuration.is_joint_consensus()) {
         const auto& old_nodes = _configuration.old_nodes().value();
-        for (auto id : old_nodes) {
+        for (const auto& id : old_nodes) {
             if (std::ranges::find(members, id) == members.end()) {
                 members.push_back(id);
             }
@@ -5219,7 +5225,7 @@ auto node<Types>::register_rpc_handlers() -> void {
 
     // Register RequestPreVote handler if the network server supports it
     // (`.kiro/specs/raft-pre-vote/`)
-    if constexpr (network_server_with_pre_vote<network_server_type>) {
+    if constexpr (network_server_with_pre_vote<network_server_type, node_id_type>) {
         _network_server.register_request_pre_vote_handler(
             [this](const request_pre_vote_request_type& request) -> request_pre_vote_response_type {
                 return this->handle_request_pre_vote(request);
@@ -5228,7 +5234,7 @@ auto node<Types>::register_rpc_handlers() -> void {
 
     // Register TimeoutNow handler if the network server supports it
     // (leadership transfer, Ongaro's dissertation §3.10)
-    if constexpr (network_server_with_timeout_now<network_server_type>) {
+    if constexpr (network_server_with_timeout_now<network_server_type, node_id_type>) {
         _network_server.register_timeout_now_handler(
             [this](const timeout_now_request_type& request) -> timeout_now_response_type {
                 return this->handle_timeout_now(request);
@@ -5248,7 +5254,7 @@ auto node<Types>::register_rpc_handlers() -> void {
         });
 
     // Register ClusterJoin handler if the network server supports it
-    if constexpr (network_server_with_cluster_join<network_server_type>) {
+    if constexpr (network_server_with_cluster_join<network_server_type, node_id_type>) {
         _network_server.register_cluster_join_handler(
             [this](const cluster_join_request_type& req) -> cluster_join_response_type {
                 return this->handle_cluster_join(req);
@@ -5256,7 +5262,7 @@ auto node<Types>::register_rpc_handlers() -> void {
     }
 
     // Register ClusterLeave handler if the network server supports it
-    if constexpr (network_server_with_cluster_leave<network_server_type>) {
+    if constexpr (network_server_with_cluster_leave<network_server_type, node_id_type>) {
         _network_server.register_cluster_leave_handler(
             [this](const cluster_leave_request_type& req) -> cluster_leave_response_type {
                 return this->handle_cluster_leave(req);
@@ -5265,7 +5271,7 @@ auto node<Types>::register_rpc_handlers() -> void {
 
     // Register FetchLogEntries handler if the network server supports it
     // (.kiro/specs/peer2peer-log-replication/, Requirement 5.3)
-    if constexpr (network_server_with_log_fetch<network_server_type>) {
+    if constexpr (network_server_with_log_fetch<network_server_type, node_id_type>) {
         _network_server.register_fetch_log_entries_handler(
             [this](const fetch_log_entries_request_type& req) -> fetch_log_entries_response_type {
                 return this->handle_fetch_log_entries(req);
@@ -8018,7 +8024,7 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
 
             auto source = try_result.value().value();
 
-            if constexpr (!network_client_with_log_fetch<network_client_type>) {
+            if constexpr (!network_client_with_log_fetch<network_client_type, node_id_type>) {
                 // Requirement 5.3: transport doesn't support fetch_log_entries —
                 // peer-to-peer catch-up is unreachable regardless of
                 // peer2peer_replicator_type configuration.
@@ -9173,7 +9179,7 @@ template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
                      {{"node_id", node_id_to_string(_node_id)},
                       {"peer_count", std::to_string(peers.size())}});
 
-        if constexpr (network_client_with_cluster_join<network_client_type>) {
+        if constexpr (network_client_with_cluster_join<network_client_type, node_id_type>) {
             bool joined = false;
             auto timeout = bootstrap_peer_find_timeout();
 
@@ -9249,7 +9255,7 @@ template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
 
 template<raft_types Types>
 auto node<Types>::leave_cluster(std::chrono::milliseconds timeout) -> void {
-    if constexpr (!network_client_with_cluster_leave<network_client_type>) {
+    if constexpr (!network_client_with_cluster_leave<network_client_type, node_id_type>) {
         return;
     } else {
         std::optional<address_type> leader_addr;

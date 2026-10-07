@@ -6,6 +6,10 @@
 #include <raft/types.hpp>
 #include <boost/json.hpp>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string_view>
 #include <map>
 #include <string>
 #include <vector>
@@ -16,6 +20,45 @@
 
 namespace kythira {
 
+namespace config_entry_detail {
+
+// A node id as JSON: a number for a numeric id, its text otherwise (a
+// `std::string` as is, a composite id in canonical form).
+template<typename NodeId> auto encode_id(const NodeId& id) -> boost::json::value {
+    if constexpr (node_id_traits<NodeId>::is_textual) {
+        return boost::json::string(node_id_traits<NodeId>::to_text(id));
+    } else {
+        return static_cast<std::uint64_t>(id);
+    }
+}
+
+// The inverse of `encode_id`. A numeric id is read across the whole uint64
+// range (boost::json keeps values past INT64_MAX as uint64, which `as_int64`
+// refused) and must fit `NodeId`; a composite id's text must parse. A
+// `std::string` id is taken verbatim, as before. Anything else throws, as a
+// malformed entry always has.
+template<typename NodeId> auto decode_id(const boost::json::value& v) -> NodeId {
+    if constexpr (std::same_as<NodeId, std::string>) {
+        return std::string{v.as_string()};
+    } else if constexpr (node_id_traits<NodeId>::is_textual) {
+        auto id = node_id_traits<NodeId>::from_text(std::string_view{v.as_string()});
+        if (!id) {
+            throw std::invalid_argument("configuration entry: invalid node id '" +
+                                        std::string{v.as_string()} + "'");
+        }
+        return std::move(*id);
+    } else {
+        const auto n = v.to_number<std::uint64_t>();
+        if (n > std::numeric_limits<NodeId>::max()) {
+            throw std::out_of_range("configuration entry: node id " + std::to_string(n) +
+                                    " out of range");
+        }
+        return static_cast<NodeId>(n);
+    }
+}
+
+}  // namespace config_entry_detail
+
 template<typename NodeId>
 requires node_id<NodeId>
 auto serialize_configuration(const cluster_configuration<NodeId>& cfg,
@@ -25,11 +68,7 @@ auto serialize_configuration(const cluster_configuration<NodeId>& cfg,
 
     boost::json::array nodes;
     for (const auto& n : cfg.nodes()) {
-        if constexpr (std::same_as<NodeId, std::string>) {
-            nodes.push_back(boost::json::string(n));
-        } else {
-            nodes.push_back(static_cast<std::uint64_t>(n));
-        }
+        nodes.push_back(config_entry_detail::encode_id(n));
     }
     obj["nodes"] = std::move(nodes);
     obj["is_joint_consensus"] = cfg.is_joint_consensus();
@@ -37,11 +76,7 @@ auto serialize_configuration(const cluster_configuration<NodeId>& cfg,
     if (cfg.is_joint_consensus() && cfg.old_nodes()) {
         boost::json::array old_nodes;
         for (const auto& n : *cfg.old_nodes()) {
-            if constexpr (std::same_as<NodeId, std::string>) {
-                old_nodes.push_back(boost::json::string(n));
-            } else {
-                old_nodes.push_back(static_cast<std::uint64_t>(n));
-            }
+            old_nodes.push_back(config_entry_detail::encode_id(n));
         }
         obj["old_nodes"] = std::move(old_nodes);
     }
@@ -50,11 +85,7 @@ auto serialize_configuration(const cluster_configuration<NodeId>& cfg,
     // they are meaningful in every configuration state, joint or not.
     boost::json::array learners;
     for (const auto& n : cfg.learners()) {
-        if constexpr (std::same_as<NodeId, std::string>) {
-            learners.push_back(boost::json::string(n));
-        } else {
-            learners.push_back(static_cast<std::uint64_t>(n));
-        }
+        learners.push_back(config_entry_detail::encode_id(n));
     }
     obj["learners"] = std::move(learners);
 
@@ -67,11 +98,7 @@ auto serialize_configuration(const cluster_configuration<NodeId>& cfg,
         boost::json::array pairs;
         for (const auto& [n, group] : *placement) {
             boost::json::array pair;
-            if constexpr (std::same_as<NodeId, std::string>) {
-                pair.push_back(boost::json::string(n));
-            } else {
-                pair.push_back(static_cast<std::uint64_t>(n));
-            }
+            pair.push_back(config_entry_detail::encode_id(n));
             pair.push_back(boost::json::string(group));
             pairs.push_back(std::move(pair));
         }
@@ -101,11 +128,7 @@ auto deserialize_configuration(const std::vector<std::byte>& data)
     cluster_configuration<NodeId> cfg;
 
     for (const auto& n : obj["nodes"].as_array()) {
-        if constexpr (std::same_as<NodeId, std::string>) {
-            cfg._nodes.emplace_back(n.as_string());
-        } else {
-            cfg._nodes.push_back(static_cast<NodeId>(n.as_int64()));
-        }
+        cfg._nodes.push_back(config_entry_detail::decode_id<NodeId>(n));
     }
 
     cfg._is_joint_consensus =
@@ -114,11 +137,7 @@ auto deserialize_configuration(const std::vector<std::byte>& data)
     if (cfg._is_joint_consensus && obj.contains("old_nodes")) {
         std::vector<NodeId> old_nodes;
         for (const auto& n : obj["old_nodes"].as_array()) {
-            if constexpr (std::same_as<NodeId, std::string>) {
-                old_nodes.emplace_back(n.as_string());
-            } else {
-                old_nodes.push_back(static_cast<NodeId>(n.as_int64()));
-            }
+            old_nodes.push_back(config_entry_detail::decode_id<NodeId>(n));
         }
         cfg._old_nodes = std::move(old_nodes);
     }
@@ -127,11 +146,7 @@ auto deserialize_configuration(const std::vector<std::byte>& data)
     // cfg._learners at its default-constructed empty vector.
     if (obj.contains("learners")) {
         for (const auto& n : obj["learners"].as_array()) {
-            if constexpr (std::same_as<NodeId, std::string>) {
-                cfg._learners.emplace_back(n.as_string());
-            } else {
-                cfg._learners.push_back(static_cast<NodeId>(n.as_int64()));
-            }
+            cfg._learners.push_back(config_entry_detail::decode_id<NodeId>(n));
         }
     }
 
@@ -159,11 +174,7 @@ auto deserialize_placement(const std::vector<std::byte>& data) -> std::map<NodeI
     for (const auto& p : pairs->as_array()) {
         const auto& pair = p.as_array();
         std::string group{pair.at(1).as_string()};
-        if constexpr (std::same_as<NodeId, std::string>) {
-            placement[NodeId{pair.at(0).as_string()}] = std::move(group);
-        } else {
-            placement[static_cast<NodeId>(pair.at(0).as_int64())] = std::move(group);
-        }
+        placement[config_entry_detail::decode_id<NodeId>(pair.at(0))] = std::move(group);
     }
     return placement;
 }

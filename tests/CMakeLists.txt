@@ -2645,6 +2645,13 @@ add_test(NAME composite_node_id_wire_property_test COMMAND composite_node_id_wir
 set_tests_properties(composite_node_id_wire_property_test PROPERTIES
     TIMEOUT 60 LABELS "unit;raft;node_id")
 
+# Composite node ids through the transports (cloud-composite-node-ids spec,
+# task 6): std::string targets over tcp_rpc, its address dispatch, and a
+# three-node cluster named by composite ids over the simulator.
+add_raft_completion_test(composite_node_id_transport_test composite_node_id_transport_test.cpp)
+set_tests_properties(composite_node_id_transport_test PROPERTIES
+    TIMEOUT 120 LABELS "unit;raft;node_id")
+
 # CBOR malformed message property test
 add_executable(cbor_malformed_message_property_test cbor_malformed_message_property_test.cpp)
 target_link_libraries(cbor_malformed_message_property_test PRIVATE

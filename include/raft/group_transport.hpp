@@ -281,7 +281,7 @@ public:
                     });
             });
 
-        if constexpr (network_server_with_pre_vote<Server>) {
+        if constexpr (network_server_with_pre_vote<Server, typename Messages::node_id_type>) {
             _inner.register_request_pre_vote_handler(
                 [this](const typename Messages::request_pre_vote_request_type& req) {
                     return dispatch(
@@ -296,7 +296,7 @@ public:
                 });
         }
 
-        if constexpr (network_server_with_timeout_now<Server>) {
+        if constexpr (network_server_with_timeout_now<Server, typename Messages::node_id_type>) {
             _inner.register_timeout_now_handler(
                 [this](const typename Messages::timeout_now_request_type& req) {
                     return dispatch(
@@ -337,7 +337,7 @@ public:
                     });
             });
 
-        if constexpr (network_server_with_log_fetch<Server>) {
+        if constexpr (network_server_with_log_fetch<Server, typename Messages::node_id_type>) {
             _inner.register_fetch_log_entries_handler(
                 [this](const typename Messages::fetch_log_entries_request_type& req) {
                     return dispatch(
@@ -607,7 +607,7 @@ public:
     auto send_request_pre_vote(typename Messages::node_id_type target,
                                const typename Messages::request_pre_vote_request_type& req,
                                std::chrono::milliseconds timeout)
-    requires network_client_with_pre_vote<Client>
+    requires network_client_with_pre_vote<Client, typename Messages::node_id_type>
     {
         return _inner->send_request_pre_vote(target, stamped(req), timeout);
     }
@@ -615,7 +615,7 @@ public:
     auto send_fetch_log_entries(typename Messages::node_id_type target,
                                 const typename Messages::fetch_log_entries_request_type& req,
                                 std::chrono::milliseconds timeout)
-    requires network_client_with_log_fetch<Client>
+    requires network_client_with_log_fetch<Client, typename Messages::node_id_type>
     {
         return _inner->send_fetch_log_entries(target, stamped(req), timeout);
     }
@@ -623,7 +623,7 @@ public:
     auto send_timeout_now(typename Messages::node_id_type target,
                           const typename Messages::timeout_now_request_type& req,
                           std::chrono::milliseconds timeout)
-    requires network_client_with_timeout_now<Client>
+    requires network_client_with_timeout_now<Client, typename Messages::node_id_type>
     {
         return _inner->send_timeout_now(target, stamped(req), timeout);
     }
@@ -634,17 +634,20 @@ public:
     /// node does not yet know its own id, let alone which groups it will hold.
     /// Forwarding verbatim keeps the extension concept satisfied without
     /// pretending the message is group-scoped.
-    auto send_cluster_join_request(const std::string& address, const cluster_join_request<>& req,
+    auto send_cluster_join_request(const std::string& address,
+                                   const cluster_join_request<typename Messages::node_id_type>& req,
                                    std::chrono::milliseconds timeout)
-    requires network_client_with_cluster_join<Client>
+    requires network_client_with_cluster_join<Client, typename Messages::node_id_type>
     {
         return _inner->send_cluster_join_request(address, req, timeout);
     }
 
     /// @brief Forwarded unstamped; see `send_cluster_join_request`.
-    auto send_cluster_leave_request(const std::string& address, const cluster_leave_request<>& req,
-                                    std::chrono::milliseconds timeout)
-    requires network_client_with_cluster_leave<Client>
+    auto send_cluster_leave_request(
+        const std::string& address,
+        const cluster_leave_request<typename Messages::node_id_type>& req,
+        std::chrono::milliseconds timeout)
+    requires network_client_with_cluster_leave<Client, typename Messages::node_id_type>
     {
         return _inner->send_cluster_leave_request(address, req, timeout);
     }

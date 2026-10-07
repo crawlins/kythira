@@ -1188,11 +1188,12 @@ template<typename Data>
 requires std::ranges::range<Data> && std::same_as<std::ranges::range_value_t<Data>, std::byte>
 class json_rpc_serializer;
 
-template<typename FutureType, typename Serializer, typename Data>
+// `NodeId`: see include/raft/simulator_network.hpp.
+template<typename FutureType, typename Serializer, typename Data, typename NodeId = std::uint64_t>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_client;
 
-template<typename FutureType, typename Serializer, typename Data>
+template<typename FutureType, typename Serializer, typename Data, typename NodeId = std::uint64_t>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_server;
 

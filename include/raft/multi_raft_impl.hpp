@@ -3567,7 +3567,8 @@ auto multi_raft<Types, Key, GroupId>::apply_operator(const shard_operation_type&
                     return note_skipped_operator(op, skipped_operator_reason::precondition);
                 }
                 if constexpr (!network_client_with_timeout_now<
-                                  typename group_types::network_client_type>) {
+                                  typename group_types::network_client_type,
+                                  typename group_types::node_id_type>) {
                     return note_skipped_operator(op, skipped_operator_reason::unsupported);
                 } else {
                     g->_node->transfer_leadership(concrete._to, timeout);
@@ -3605,7 +3606,8 @@ auto multi_raft<Types, Key, GroupId>::apply_operator(const shard_operation_type&
                 return accept();
             } else {
                 if constexpr (!network_client_with_timeout_now<
-                                  typename group_types::network_client_type>) {
+                                  typename group_types::network_client_type,
+                                  typename group_types::node_id_type>) {
                     return note_skipped_operator(op, skipped_operator_reason::unsupported);
                 } else {
                     scatter(op.group_id(), timeout);
