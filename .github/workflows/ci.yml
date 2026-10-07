@@ -1055,6 +1055,17 @@ jobs:
           CMAKE_GENERATOR: Ninja
         run: scripts/verify-optional-dependency-isolation.sh
 
+      # The opposite of the separate-build-directories rule above: one tree
+      # configured with optional features on, then reconfigured with them
+      # off, must match a fresh tree. pkg_check_modules() results live in the
+      # CMake cache and used to survive the switch. Configure only, no build;
+      # libfiu-dev (apt, above) is the pkg-config feature this image has.
+      - name: Verify Kconfig reconfigure drops disabled features
+        env:
+          KYTHIRA_PREFIX_PATH: ${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+          CXX: clang++-18
+        run: scripts/verify-kconfig-reconfigure.sh
+
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'
         run: |

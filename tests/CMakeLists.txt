@@ -3647,16 +3647,12 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
         target_link_libraries(coap_integration_test PRIVATE Folly::folly)
     endif()
 
-    # Add CoAP transport dependencies
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(LIBCOAP QUIET libcoap-3)
-        if(LIBCOAP_FOUND)
-            target_link_libraries(coap_integration_test PRIVATE ${LIBCOAP_LIBRARIES})
-            target_include_directories(coap_integration_test PRIVATE ${LIBCOAP_INCLUDE_DIRS})
-            target_compile_definitions(coap_integration_test PRIVATE ${LIBCOAP_CFLAGS_OTHER})
-        endif()
-    endif()
+    # libcoap arrives through network_simulator's INTERFACE when the root
+    # CMakeLists.txt found it under CONFIG_COAP_BACKEND_LIBCOAP. No second
+    # pkg_check_modules(LIBCOAP) here: one used to run whenever the transport
+    # was on, so it linked libcoap into a build that had turned the libcoap
+    # backend off, and refilled the global LIBCOAP_FOUND cache entry the root
+    # gate had just cleared.
 
     # Link OpenSSL for DTLS support
     if(TARGET OpenSSL::SSL)
@@ -5555,7 +5551,7 @@ else()
 endif()
 
 # ── aws_acm_pca_provider tests (independent of the core AWS SDK component set) ─
-if(TARGET aws-cpp-sdk-acm-pca)
+if(_KYTHIRA_AWS_ACM_PCA_FOUND)
 
 add_executable(aws_acm_pca_provider_unit_test aws_acm_pca_provider_unit_test.cpp)
 target_link_libraries(aws_acm_pca_provider_unit_test PRIVATE
