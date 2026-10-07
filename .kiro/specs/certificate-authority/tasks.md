@@ -964,8 +964,9 @@ service on a cloud instance or in a long-running container.
   outlive the process (it's read by other containers after `ca_service` exits),
   so it writes directly to the caller-supplied `--out-dir` with no RAII cleanup.
 - The `mtls-node1`/`mtls-node2` stubs in `docker/ca-provisioning-compose.yml`
-  are illustrative only — building an actual mTLS chaos test scenario that
-  consumes this material is future work, tracked separately from this spec.
+  are illustrative only. The mTLS chaos scenario that consumes this
+  material is `docker/mtls-chaos-compose.yml` with
+  `tests/docker_chaos/mtls_chaos_test.cpp` (`docker-mtls-chaos-tests`).
 - Property-test verification (task 4) is the primary correctness gate for the
   whole framework: if `X509_verify_cert()` accepts what `issue()` produces and
   rejects what the negative presets produce, every downstream consumer (task 5

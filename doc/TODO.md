@@ -394,10 +394,13 @@ unverified completion claim.
     C_old,new by isolating the new server and one old voter) is the
     template for the rest. The negative `network_client` `static_assert` in
     `network_concept_compliance_property_test.cpp` is enabled again.
-  - **No mTLS chaos scenario.** The `mtls-node1`/`mtls-node2` services in
-    `docker/ca-provisioning-compose.yml` are illustrative stubs;
-    `certificate-authority` tasks.md ~966–968 calls a real mTLS chaos
-    scenario "future work, tracked separately", and it was not tracked.
+  - ~~**No mTLS chaos scenario.**~~ Done: `docker-mtls-chaos-tests`
+    (`docker/mtls-chaos-compose.yml`, `tests/docker_chaos/mtls_chaos_test.cpp`)
+    runs three `chaos_node`s over mutual-TLS RPC with `ca_service`-issued
+    certificates through leader crash and catch-up, and checks that
+    impostors at a member's address (foreign root; own root, non-member
+    name) are never replicated to. The `mtls-node1`/`mtls-node2` services in
+    `docker/ca-provisioning-compose.yml` stay illustrative.
   - **Deliberately deferred multi-raft features** (`multi-raft` tasks.md
     ~758, design Phase 9): cross-shard transactions, TiKV-style buckets as a
     load signal, and cross-group message batching. Optional.

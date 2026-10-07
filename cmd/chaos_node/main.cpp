@@ -24,6 +24,10 @@
 #include <raft/victorialogs_logger.hpp>
 #include <raft/victoriametrics_metrics.hpp>
 
+#ifdef KYTHIRA_CHAOS_NODE_RPC_TLS
+#include <raft/tls_tcp_rpc.hpp>
+#endif
+
 #ifdef KYTHIRA_FAULT_INJECTION
 #include <fiu.h>
 #include "fiu_remote.hpp"
@@ -36,8 +40,11 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <sstream>
 #include <mutex>
 #include <thread>
 #include <type_traits>
@@ -131,6 +138,42 @@ struct tcp_raft_types_with_telegraf_logs : tcp_raft_types_with_telegraf {
 struct tcp_raft_types_with_netdata : kythira::tcp_raft_types {
     using metrics_type = kythira::netdata_metrics;
 };
+
+#ifdef KYTHIRA_CHAOS_NODE_RPC_TLS
+// The RPC transport swapped for the mutual-TLS one (RPC_TLS_* in
+// config.hpp); everything else is the plain path's.
+struct tcp_raft_types_with_tls : kythira::tcp_raft_types {
+    using network_client_type = kythira::tls_tcp_rpc_client;
+    using network_server_type = kythira::tls_tcp_rpc_server;
+};
+
+auto read_text_file(const std::string& path) -> std::string {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("chaos_node: cannot read " + path);
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// Trusts certificates that chain to RPC_TLS_CA and name a peer by the host
+// PEERS gives for it, and binds each one to that peer's id, so one member's
+// certificate cannot speak for another and a certificate the same root
+// issued to anything else is refused.
+auto rpc_tls_config_of(const chaos_node::node_config& cfg) -> kythira::tls_tcp_rpc_config {
+    std::map<std::string, std::uint64_t> names;
+    for (const auto& p : cfg.peers) {
+        names.emplace(p.host, p.node_id);
+    }
+    return kythira::tls_tcp_rpc_config{
+        .cert_path = cfg.rpc_tls_cert_path,
+        .key_path = cfg.rpc_tls_key_path,
+        .trust_policy = kythira::ca_root_only(read_text_file(cfg.rpc_tls_ca_path))
+                            .binding_peer_node_ids(std::move(names)),
+    };
+}
+#endif
 
 // Core startup logic templated on the raft types.  Both the plain and the
 // docker-QM paths share identical timer, signal, and HTTP control logic.
@@ -231,6 +274,47 @@ int main(int argc, char** argv) {
     raft_cfg._heartbeat_interval = cfg.heartbeat_interval;
     if (cfg.quorum_check_interval) {
         raft_cfg._quorum_check_interval = *cfg.quorum_check_interval;
+    }
+    if (cfg.rpc_timeout) {
+        raft_cfg._rpc_timeout = *cfg.rpc_timeout;
+    }
+
+    // ── Mutual TLS on Raft RPC (RPC_TLS_*) ───────────────────────────────────
+    // Before the plain components below, whose server would otherwise hold
+    // the RPC port. from_env() has already refused JOIN, telemetry and the
+    // docker quorum manager alongside it.
+    if (cfg.rpc_tls()) {
+#ifdef KYTHIRA_CHAOS_NODE_RPC_TLS
+        kythira::tls_tcp_rpc_config tls_cfg;
+        try {
+            tls_cfg = rpc_tls_config_of(cfg);
+        } catch (const std::exception& e) {
+            std::cerr << e.what() << "\n";
+            return 1;
+        }
+        kythira::tls_tcp_rpc_server tls_server(cfg.rpc_port, tls_cfg, cfg.rpc_address);
+        kythira::tls_tcp_rpc_client tls_client(tls_cfg);
+        for (const auto& p : cfg.peers) {
+            tls_client.add_peer(p.node_id, p.host, p.port);
+        }
+        std::cerr << "[info] rpc: mutual TLS (cert=" << cfg.rpc_tls_cert_path
+                  << " ca=" << cfg.rpc_tls_ca_path << ")\n";
+
+        kythira::node_config<tcp_raft_types_with_tls> ncfg{
+            .node_id = cfg.node_id,
+            .network_client = std::move(tls_client),
+            .network_server = std::move(tls_server),
+            .persistence = kythira::file_persistence_engine<>(cfg.data_dir),
+            .logger = kythira::console_logger{},
+            .metrics = kythira::noop_metrics{},
+            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .config = raft_cfg,
+        };
+        return run_node<tcp_raft_types_with_tls>(cfg, std::move(ncfg));
+#else
+        std::cerr << "chaos_node: RPC_TLS_* needs a build with OpenSSL\n";
+        return 1;
+#endif
     }
 
     // ── Components ───────────────────────────────────────────────────────────

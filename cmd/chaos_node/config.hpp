@@ -33,6 +33,10 @@ struct node_config {
     std::chrono::milliseconds election_timeout_max{300};
     std::chrono::milliseconds heartbeat_interval{50};
     std::optional<std::chrono::milliseconds> quorum_check_interval;  ///< QUORUM_CHECK_INTERVAL_MS
+    // Per-RPC deadline. Unset keeps raft_configuration's 100ms, which a
+    // handshake per call (the TLS transport reconnects for every RPC) can
+    // exceed on a busy runner.
+    std::optional<std::chrono::milliseconds> rpc_timeout;  ///< RPC_TIMEOUT_MS
 
     // Joining a running cluster (quorum-management Req 19). A node started
     // with JOIN=1 does not install PEERS as its configuration: it sends a
@@ -70,6 +74,21 @@ struct node_config {
     std::optional<std::string> loki_endpoint;          ///< LOKI_ENDPOINT (needs prometheus)
     std::optional<std::string> victorialogs_endpoint;  ///< VICTORIALOGS_ENDPOINT (needs vm)
     bool telegraf_logs{false};  ///< TELEGRAF_LOGS=on (needs TELEGRAF_ENDPOINT)
+
+    // Mutual TLS on the Raft RPC channel (doc/TODO.md's mTLS chaos scenario).
+    // All three or none: this node's certificate and key, and the root its
+    // peers' certificates must chain to. A peer is accepted only if its
+    // certificate also names it, by the host PEERS gives for it, as a DNS
+    // SAN, and each connection may speak only for the node that name maps
+    // to (tls_rpc_trust_policy::binding_peer_node_ids). The TLS transport
+    // has no ClusterJoin, and this pass does not pair it with a telemetry
+    // backend or the docker quorum manager, so from_env() refuses those
+    // combinations rather than silently dropping one half.
+    std::string rpc_tls_cert_path;  ///< RPC_TLS_CERT
+    std::string rpc_tls_key_path;   ///< RPC_TLS_KEY
+    std::string rpc_tls_ca_path;    ///< RPC_TLS_CA
+
+    [[nodiscard]] auto rpc_tls() const -> bool { return !rpc_tls_cert_path.empty(); }
 
     // Parse from environment variables.
     // Throws std::invalid_argument if NODE_ID or PEERS are missing / malformed.
@@ -138,6 +157,9 @@ struct node_config {
 
         if (std::string qci = get_opt("QUORUM_CHECK_INTERVAL_MS", ""); !qci.empty()) {
             cfg.quorum_check_interval = std::chrono::milliseconds(std::stoll(qci));
+        }
+        if (std::string rt = get_opt("RPC_TIMEOUT_MS", ""); !rt.empty()) {
+            cfg.rpc_timeout = std::chrono::milliseconds(std::stoll(rt));
         }
 
         std::string join_str = get_opt("JOIN", "0");
@@ -267,6 +289,32 @@ struct node_config {
                     "set TELEGRAF_ENDPOINT too");
             }
             cfg.telegraf_logs = true;
+        }
+
+        cfg.rpc_tls_cert_path = get_opt("RPC_TLS_CERT", "");
+        cfg.rpc_tls_key_path = get_opt("RPC_TLS_KEY", "");
+        cfg.rpc_tls_ca_path = get_opt("RPC_TLS_CA", "");
+        const int tls_set = static_cast<int>(!cfg.rpc_tls_cert_path.empty()) +
+                            static_cast<int>(!cfg.rpc_tls_key_path.empty()) +
+                            static_cast<int>(!cfg.rpc_tls_ca_path.empty());
+        if (tls_set != 0 && tls_set != 3) {
+            throw std::invalid_argument(
+                "chaos_node: RPC_TLS_CERT, RPC_TLS_KEY and RPC_TLS_CA must be set together");
+        }
+        if (cfg.rpc_tls()) {
+            if (cfg.join) {
+                throw std::invalid_argument(
+                    "chaos_node: JOIN=1 is not supported with RPC_TLS_* (the TLS transport "
+                    "carries no ClusterJoin)");
+            }
+            const bool telemetry = cfg.otlp_endpoint || cfg.prometheus_metrics_port ||
+                                   cfg.victoriametrics_endpoint || cfg.telegraf_endpoint ||
+                                   cfg.netdata_endpoint;
+            if (telemetry || !get_opt("QUORUM_MANAGER", "").empty()) {
+                throw std::invalid_argument(
+                    "chaos_node: RPC_TLS_* cannot be combined with a telemetry backend or "
+                    "QUORUM_MANAGER");
+            }
         }
 
         return cfg;

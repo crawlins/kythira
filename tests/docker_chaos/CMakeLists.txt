@@ -114,6 +114,14 @@ add_docker_chaos_scenario_test(docker_dns_sd_discovery_test
 add_docker_chaos_scenario_test(docker_otlp_collector_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/otlp_collector_test.cpp")
 
+# ── Mutual-TLS chaos scenario ────────────────────────────────────────────────
+# Real chaos_nodes on the TLS RPC transport, with certificates ca_service
+# issues inside the stack (docker/mtls-chaos-compose.yml), plus impostors at a
+# member's address that must never be replicated to.
+
+add_docker_chaos_scenario_test(docker_mtls_chaos_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/mtls_chaos_test.cpp")
+
 # The real-sccache acceptance tests (.kiro/specs/redis-compatible-kv/ tasks 12
 # and 13). Gated with the feature so that CONFIG_REDIS_GATEWAY=n leaves no
 # trace of it in the target list (Requirement 16.4). The test speaks RESP to
@@ -223,6 +231,8 @@ if(_RUNTIME_EXE)
     set(_CLOUD_MONITORING_CONFIG_DIR     "${CMAKE_SOURCE_DIR}/docker/cloud-monitoring")
     set(_MULTI_RAFT_NODE_DOCKERFILE      "${CMAKE_SOURCE_DIR}/docker/multi_raft_node/Dockerfile")
     set(_ELASTIC_CAPACITY_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/elastic-capacity-compose.yml")
+    set(_MTLS_CHAOS_COMPOSE_FILE         "${CMAKE_SOURCE_DIR}/docker/mtls-chaos-compose.yml")
+    set(_MTLS_CHAOS_DOCKERFILE           "${CMAKE_SOURCE_DIR}/docker/mtls_chaos/Dockerfile")
 
     # Podman defaults to the OCI image format, which has no HEALTHCHECK
     # field: it warns and hands back an image whose health check is gone, so
@@ -488,6 +498,48 @@ if(_RUNTIME_EXE)
 
     # otel-collector's image is pulled directly (no custom Dockerfile, per
     # Requirement 7.2) — this target only needs the existing chaos-node image.
+    # kythira-chaos-node:dev plus ca_service, which the stack runs as its
+    # one-shot CA. chaos_node has its RPC_TLS_* path only when linked with
+    # certificate_authority under KYTHIRA_HTTP_TLS
+    # (cmd/chaos_node/CMakeLists.txt); ca_service needs the former too. chaos_node itself is defined after this
+    # directory, hence docker-chaos-image's own condition rather than
+    # if(TARGET chaos_node).
+    if(NOT ENABLE_COVERAGE AND folly_FOUND AND Boost_FOUND AND httplib_FOUND
+       AND TARGET ca_service AND TARGET certificate_authority AND KYTHIRA_HTTP_TLS)
+        add_custom_target(docker-mtls-chaos-image
+            DEPENDS docker-chaos-image ca_service
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_SOURCE_DIR}/docker/mtls_chaos/dist"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:ca_service>"
+                    "${CMAKE_SOURCE_DIR}/docker/mtls_chaos/dist/ca_service"
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
+                    --file "${_MTLS_CHAOS_DOCKERFILE}"
+                    --tag kythira-mtls-chaos-node:dev
+                    "${CMAKE_SOURCE_DIR}"
+            COMMENT "Staging ca_service and building kythira-mtls-chaos-node:dev image"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+        add_custom_target(docker-mtls-chaos-tests
+            COMMAND ${CMAKE_COMMAND} -E env
+                    ${_RT_ENV}
+                    KYTHIRA_MTLS_COMPOSE_FILE=${_MTLS_CHAOS_COMPOSE_FILE}
+                    $<TARGET_FILE:docker_mtls_chaos_test>
+                    --log_level=message
+            DEPENDS docker-mtls-chaos-image docker_mtls_chaos_test
+            COMMENT "Running mutual-TLS chaos scenario tests (runtime: ${CONTAINER_RUNTIME})"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    else()
+        foreach(_t docker-mtls-chaos-image docker-mtls-chaos-tests)
+            add_custom_target(${_t}
+                COMMAND ${CMAKE_COMMAND} -E echo
+                        "'${_t}' requires chaos_node, ca_service, certificate_authority (OpenSSL) and CONFIG_HTTP_TRANSPORT_TLS"
+                COMMAND ${CMAKE_COMMAND} -E false
+            )
+        endforeach()
+    endif()
+
     add_custom_target(docker-otlp-collector-tests
         COMMAND ${CMAKE_COMMAND} -E env
                 ${_RT_ENV}
@@ -641,6 +693,7 @@ if(_RUNTIME_EXE)
         "docker-dns-discovery-image, docker-dns-discovery-tests, "
         "docker-dns-sd-discovery-image, docker-dns-sd-discovery-tests, "
         "docker-otlp-collector-tests, "
+        "docker-mtls-chaos-image, docker-mtls-chaos-tests, "
         "docker-prometheus-metrics-tests, docker-prometheus-remote-write-tests, "
         "docker-victoriametrics-metrics-tests, "
         "docker-telegraf-metrics-tests, docker-netdata-metrics-tests, "
@@ -665,6 +718,7 @@ else()
         docker-dns-discovery-image docker-dns-discovery-tests
         docker-dns-sd-discovery-image docker-dns-sd-discovery-tests
         docker-otlp-collector-tests
+        docker-mtls-chaos-image docker-mtls-chaos-tests
         docker-prometheus-metrics-tests docker-prometheus-remote-write-tests
         docker-victoriametrics-metrics-tests
         docker-telegraf-metrics-tests docker-netdata-metrics-tests
