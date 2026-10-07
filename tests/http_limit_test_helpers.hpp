@@ -52,6 +52,7 @@ public:
             rc = ::connect(_fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
         }
         if (rc != 0) {
+            _connect_errno = errno;
             ::close(_fd);
             _fd = -1;
         }
@@ -61,6 +62,24 @@ public:
     ~raw_connection() { close(); }
 
     [[nodiscard]] auto connected() const -> bool { return _fd >= 0; }
+
+    /// The handshake completed and the server answered it with a reset
+    /// before connect() returned. A server that accepts and resets a
+    /// connection it refuses (the connection-limit tests) races the client:
+    /// the kernel finishes the handshake before accept(), and if the server
+    /// accepts and resets before the connecting thread is scheduled again,
+    /// connect() itself fails with ECONNRESET instead of returning 0.
+    [[nodiscard]] auto reset_while_connecting() const -> bool {
+        return _connect_errno == ECONNRESET;
+    }
+
+    /// The connection reached the server: connect() succeeded, or the
+    /// server reset it before connect() could return.
+    [[nodiscard]] auto reached_server() const -> bool {
+        return connected() || reset_while_connecting();
+    }
+
+    [[nodiscard]] auto connect_error() const -> int { return _connect_errno; }
 
     auto close() -> void {
         if (_fd >= 0) {
@@ -90,7 +109,12 @@ public:
 
     /// Reads until the peer closes (EOF or reset) or `timeout` passes,
     /// appending what arrived to `out`.
+    /// A connection the server reset before connect() returned counts as
+    /// closed with nothing sent.
     auto read_until_close(std::string& out, std::chrono::milliseconds timeout) -> read_outcome {
+        if (_fd < 0 && reset_while_connecting()) {
+            return read_outcome::closed;
+        }
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (true) {
             auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -147,6 +171,7 @@ public:
 
 private:
     int _fd{-1};
+    int _connect_errno{0};
 };
 
 /// A POST of `body` to the request_vote endpoint with a matching

@@ -1459,9 +1459,9 @@ unverified completion claim.
     one in three test jobs had a retry-rescued test, and most of those tests
     appeared once in 54 jobs, so strict mode today would turn most runs red on
     flakes nobody has seen before. The two `ca_cluster_node_rpc_tls*` flakes
-    this waited on are fixed (October 7 re-measurement below); set the
-    variable once `beast_server_test` is fixed too and a week of runs adds
-    nothing new to the allowlist. The verdict is now read from the retry lines too
+    this waited on are fixed (October 7 re-measurement below), and so is
+    `beast_server_test`, the largest source after them; set the variable once
+    a week of runs adds nothing new to the allowlist. The verdict is now read from the retry lines too
     (ctest prints those without the `N/M` prefix), so a test that failed every
     attempt is left to ctest's own failure and no longer also listed as a
     retry. Original entry:
@@ -1504,8 +1504,13 @@ unverified completion claim.
     the allowlist. Two new entries took their place:
     - `beast_server_test`: 27 of 200 jobs, failing in 0.1-0.6 s on every leg
       except ThreadSanitizer and Config Variants. Now the largest source of
-      retries by far and the blocker for `CTEST_STRICT_RETRIES`. Not yet
-      investigated.
+      retries by far and the blocker for `CTEST_STRICT_RETRIES`. **Fixed
+      the same day and off the allowlist:** every failure was the
+      connection past the limit in the two connection-limit cases. Linux
+      `connect()` fails with `ECONNRESET` when the server accepts and resets
+      the refused connection before the connecting thread runs again. The
+      tests assumed it always succeeds. `raw_connection::reached_server()`
+      now accepts both outcomes (see the CHANGELOG).
     - `ca_cluster_node_test`: 5 of 200, three different ways. Two were test
       races, fixed the same day: the fixture's pre-picked ports could be taken
       before a node bound them (that node exited and the fixture waited out

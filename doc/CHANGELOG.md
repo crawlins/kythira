@@ -5,6 +5,26 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 7, 2026)
 
+- **The connection-limit tests no longer fail when the server's reset wins
+  the race with `connect()`.** `beast_server_test` failed its first attempt
+  in 27 of 200 CI test jobs, always in `server_refuses_connections_past_the_limit`
+  or `server_connection_limit_is_shared_across_listeners`, on the
+  `third.connected()` / `extra.connected()` check. Those tests assumed a
+  connection past the limit always connects and is then closed, because the
+  kernel finishes the handshake before the server calls `accept()`. But Linux
+  `connect()` checks the socket state again when the calling thread wakes up.
+  If the server has already accepted and reset the connection by then (the
+  Beast and Proxygen servers refuse with `SO_LINGER {1, 0}`), `connect()`
+  fails with `ECONNRESET`. A standalone loop against an accept-and-reset
+  listener sees this in about 1 of 1,000 connects on an idle machine. Under
+  load the Beast test itself saw it up to 3 times in 3,000. CI starts
+  `beast_server_test` alongside three other Beast binaries, so the third
+  connection hit it about one job in eight. `raw_connection` now records the
+  `connect()` errno, and `reached_server()` accepts both outcomes as the
+  refusal, but never `ECONNREFUSED`. A connection reset that way reads as
+  closed with nothing sent. The same check in `http_server_test` and
+  `proxygen_transport_test` gets the same fix. No server code changed.
+
 - **The gossip table no longer grows with whatever a peer sends.**
   `tcp_gossip_peer2peer_replicator::merge()` added every unknown node id
   it was sent and kept each one until a sender-chosen `fresh_until`, so
