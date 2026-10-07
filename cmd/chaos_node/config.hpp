@@ -95,6 +95,10 @@ struct node_config {
         if (id_str.empty()) id_str = get_opt("KYTHIRA_NODE_ID", "");
         if (id_str.empty()) id_str = get("NODE_ID");  // throws: neither is set
         cfg.node_id = std::stoull(id_str);
+        // RPC_ADDRESS limits the plaintext Raft RPC listener to one address
+        // (IPv4/IPv6 literal or a name resolving to this host). The default
+        // stays 0.0.0.0 because peers reach a container on its bridge address.
+        cfg.rpc_address = get_opt("RPC_ADDRESS", "0.0.0.0");
         cfg.rpc_port = static_cast<std::uint16_t>(std::stoul(get_opt("RPC_PORT", "7000")));
         cfg.http_port = static_cast<std::uint16_t>(std::stoul(get_opt("HTTP_PORT", "8080")));
         cfg.fiu_port = static_cast<std::uint16_t>(std::stoul(get_opt("FIU_PORT", "9000")));
