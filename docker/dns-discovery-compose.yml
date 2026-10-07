@@ -5,12 +5,19 @@ networks:
   dns-test-net:
     driver: bridge
 
+# The TSIG key the bind9 entrypoint generates at start; the nodes sign their
+# RFC 2136 updates with it, since the zone accepts no unsigned update.
+volumes:
+  dns-test-bind9-tsig:
+
 services:
   dns-test-bind9:
     image: kythira-bind9:dev
     container_name: dns-test-bind9
     networks:
       - dns-test-net
+    volumes:
+      - dns-test-bind9-tsig:/tsig
     healthcheck:
       test: ["CMD", "dig", "@127.0.0.1", "example.local", "SOA", "+short"]
       interval: 2s
@@ -23,7 +30,10 @@ services:
     hostname: dns-discovery-node1
     networks:
       dns-test-net:
+    volumes:
+      - dns-test-bind9-tsig:/tsig:ro
     environment:
+      TSIG_KEY_DIR: "/tsig"
       NODE_ID: node1
       HTTP_PORT: "9021"
       RPC_PORT: "7021"
@@ -42,7 +52,10 @@ services:
     hostname: dns-discovery-node2
     networks:
       dns-test-net:
+    volumes:
+      - dns-test-bind9-tsig:/tsig:ro
     environment:
+      TSIG_KEY_DIR: "/tsig"
       NODE_ID: node2
       HTTP_PORT: "9022"
       RPC_PORT: "7022"
@@ -61,7 +74,10 @@ services:
     hostname: dns-discovery-node3
     networks:
       dns-test-net:
+    volumes:
+      - dns-test-bind9-tsig:/tsig:ro
     environment:
+      TSIG_KEY_DIR: "/tsig"
       NODE_ID: node3
       HTTP_PORT: "9023"
       RPC_PORT: "7023"

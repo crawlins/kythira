@@ -17,9 +17,15 @@
 //   DNS_SERVER     BIND9 IP (required)
 //   DNS_ZONE       zone name (default: "example.local.")
 //   DNS_SHARED_NAME shared A-record name (default: "cluster.example.local.")
+//   TSIG_KEY_DIR    directory holding the bind9 fixture's TSIG key (`name`,
+//                   `secret`); updates are signed with it. Unset sends
+//                   unsigned updates.
 
 // httplib must precede ldns headers: ldns redefines bool as _Bool in C++ TUs.
 #include <httplib.h>
+
+#include "peers_endpoint.hpp"
+#include "tsig_key_dir.hpp"
 
 #include <raft/rfc2136_ldns_discovery.hpp>
 
@@ -31,7 +37,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 
@@ -153,6 +161,18 @@ int main(int argc, char** argv) {
     cfg.zone = dns_zone;
     cfg.ttl = 30;
 
+    if (const char* dir = std::getenv("TSIG_KEY_DIR"); dir != nullptr && *dir != '\0') {
+        try {
+            auto key = kythira::discovery_node::read_tsig_key_dir(dir);
+            cfg.tsig_key_name = std::move(key.name);
+            cfg.tsig_key_base64 = std::move(key.secret_base64);
+            std::cout << "[dns_node] signing updates with TSIG key " << cfg.tsig_key_name << "\n";
+        } catch (const std::exception& ex) {
+            std::cerr << "[dns_node] " << ex.what() << "\n";
+            return 1;
+        }
+    }
+
     kythira::rfc2136_ldns_discovery discovery{cfg};
 
     while (true) {
@@ -179,23 +199,20 @@ int main(int argc, char** argv) {
     });
 
     srv.Get("/peers", [&discovery](const httplib::Request& req, httplib::Response& res) {
-        int timeout_ms = 2000;
+        std::optional<std::string_view> param;
+        std::string raw;
         if (req.has_param("timeout_ms")) {
-            try {
-                timeout_ms = std::stoi(req.get_param_value("timeout_ms"));
-            } catch (...) {
-            }
+            raw = req.get_param_value("timeout_ms");
+            param = raw;
         }
-        auto peers = discovery.find_peers(std::chrono::milliseconds{timeout_ms}).get();
-        std::string json = "[";
-        bool first = true;
-        for (const auto& p : peers) {
-            if (!first) json += ',';
-            json += R"({"id":")" + p.node_id + R"(","address":")" + p.address + R"("})";
-            first = false;
+        const auto timeout = kythira::discovery_node::parse_peers_timeout(param);
+        if (!timeout) {
+            res.status = 400;
+            res.set_content("timeout_ms must be a decimal integer", "text/plain");
+            return;
         }
-        json += ']';
-        res.set_content(json, "application/json");
+        auto peers = discovery.find_peers(*timeout).get();
+        res.set_content(kythira::discovery_node::peers_to_json(peers), "application/json");
     });
 
     std::cout << "[dns_node] HTTP listening on :" << http_port << "\n";

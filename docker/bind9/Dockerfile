@@ -12,12 +12,16 @@ COPY named.conf.options /etc/bind/named.conf.options
 COPY named.conf.local   /etc/bind/named.conf.local
 COPY zones/db.example.local /var/lib/bind/db.example.local
 
+COPY entrypoint.sh       /usr/local/bin/entrypoint.sh
+
+# named.conf.local includes the TSIG key entrypoint.sh writes at start, so
+# the config is checked there, once the key exists.
 RUN chown -R bind:bind /var/lib/bind /etc/bind && \
-    named-checkconf /etc/bind/named.conf
+    chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 53/udp 53/tcp
 
 HEALTHCHECK --interval=2s --timeout=3s --retries=15 \
     CMD dig @127.0.0.1 example.local SOA +short || exit 1
 
-CMD ["/usr/sbin/named", "-f", "-u", "bind", "-c", "/etc/bind/named.conf"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

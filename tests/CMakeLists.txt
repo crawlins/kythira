@@ -1448,6 +1448,13 @@ target_link_libraries(multi_raft_http_benchmark_test PRIVATE multi_raft_bench_ro
 # is now added BEFORE tests/ for Ninja scheduling reasons -- see the root
 # CMakeLists -- but cmd/multi_raft_bench still comes after, and this test must
 # not depend on either order.)
+# The /peers handler and TSIG key reader shared by the poco, dns and dns_sd
+# discovery nodes. Header-only and standard-library-only, so it builds in every
+# configuration, unlike the nodes themselves (libldns / Poco DNSSD + httplib).
+add_network_test(discovery_node_common_test discovery_node_common_test.cpp)
+target_include_directories(discovery_node_common_test PRIVATE
+    "${CMAKE_SOURCE_DIR}/cmd/discovery_node_common")
+
 if(httplib_FOUND)
     add_raft_completion_test(multi_raft_driver_agreement_test
                              multi_raft_driver_agreement_test.cpp)
