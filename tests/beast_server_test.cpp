@@ -435,7 +435,10 @@ BOOST_AUTO_TEST_CASE(server_refuses_connections_past_the_limit) {
         limits::wait_for([&] { return server.live_connections() == 2; }, std::chrono::seconds(10)));
 
     limits::raw_connection third(test_bind_address, port);
-    BOOST_REQUIRE(third.connected());  // the kernel completes it; the server drops it
+    // The kernel completes the handshake before the server accepts and resets
+    // it, so connect() normally succeeds; it fails with ECONNRESET instead when
+    // the reset lands before this thread is scheduled again.
+    BOOST_REQUIRE(third.reached_server());
     std::string unexpected;
     auto outcome = third.read_until_close(unexpected, std::chrono::seconds(10));
     BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
@@ -488,7 +491,7 @@ BOOST_AUTO_TEST_CASE(server_connection_limit_is_shared_across_listeners) {
     for (const char* address : {"127.0.0.1", "::1"}) {
         BOOST_TEST_INFO("third connection on " << address);
         limits::raw_connection extra(address, port);
-        BOOST_REQUIRE(extra.connected());
+        BOOST_REQUIRE(extra.reached_server());  // see the case above
         std::string unexpected;
         auto outcome = extra.read_until_close(unexpected, std::chrono::seconds(10));
         BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
