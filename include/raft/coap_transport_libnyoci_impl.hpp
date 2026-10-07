@@ -333,6 +333,7 @@ template<typename Config>
     // The same ACE step, in the same place, as the libcoap constructors: it
     // decides the credentials every check below looks at.
     kythira::resolve_ace_bootstrap(effective);
+    kythira::validate_oscore_sequence_state(effective);
     if (effective.mode == coap_auth_mode::oscore &&
         !std::holds_alternative<oscore_credentials>(effective.credentials)) {
         throw coap_security_config_error(
@@ -2177,6 +2178,7 @@ private:
                 return dispatch<kythira::fetch_log_entries_request<>,
                                 kythira::fetch_log_entries_response<>>(
                     copy_handler(_fetch_log_entries_handler), body, request_media_type,
+                    response_media_type, options);
             }
             if (resource_path == libnyoci_request_pre_vote_path) {
                 return dispatch<kythira::request_pre_vote_request<>,
