@@ -1,8 +1,8 @@
 # Implementation Plan — ACM Private CA Ephemeral Test CA
 
-## Status: Not started (0/7 tasks)
+## Status: In progress (5/7 tasks; 4 needs an AWS policy simulation, 7 needs Clark's go-ahead)
 
-**Last Updated**: October 3, 2026
+**Last Updated**: October 7, 2026
 
 ## Overview
 
@@ -34,7 +34,7 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
 
 ## Tasks
 
-- [ ] 1. Add `ephemeral_acm_pca` to `tests/aws_acm_pca_test_support.hpp`
+- [x] 1. Add `ephemeral_acm_pca` to `tests/aws_acm_pca_test_support.hpp`
   - Lift `create_active_root_ca`, `poll_until_ready` and `teardown` out of
     `LocalStackCaFixture` into the class from `design.md`: options struct,
     `on_created` hook, `ephemeral_ca_unavailable` exception, and an
@@ -49,8 +49,15 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
     per-step bound.
   - Verify: the header compiles in both test translation units.
   - _Requirements: 1.1-1.3, 2.1-2.3, 2.5, 3.1, 7.1_
+  - Done 2026-10-07. Two deviations from `design.md`: the constructor
+    makes no AWS call and `provision()` does the bootstrap, so a fixture
+    holds the instance before the CA exists and a signal mid-bootstrap can
+    still reach `teardown()` (an in-place constructor that threw left
+    nothing to tear down); and `created_at()` / `deleted_at()` are
+    `steady_clock`, matching `BilledResource`. Compile-checked against the
+    SDK headers; no AWS call was made.
 
-- [ ] 2. Rewrite `aws_acm_pca_provider_real_test.cpp` around `RealCaFixture`
+- [x] 2. Rewrite `aws_acm_pca_provider_real_test.cpp` around `RealCaFixture`
   - Enabled check: `KYTHIRA_ACM_PCA_REAL_TESTS=1` or
     `$KYTHIRA_TEST_ACM_PCA_ARN`, otherwise exit 77 before `Aws::InitAPI()`.
   - When an ARN is supplied, classify it with `revocation_configured()` and
@@ -67,13 +74,21 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
   - Verify: compiles; with neither variable set it exits 77 without
     touching AWS.
   - _Requirements: 1.4, 1.5, 2.4-2.6, 4.1, 4.2, 6.1, 6.2_
+  - Done 2026-10-07. The cost and signal pieces of
+    `aws_real_ec2_test_support.hpp` moved to a new
+    `tests/aws_real_test_support.hpp` (which the EC2 header includes), so
+    the suite needs no EC2 SDK component. `BilledResource` gained
+    `fixed_usd` for per-certificate charges. A `CaLifetimeFixture` deletes
+    the CAs before `AwsSdkFixture` shuts the SDK down.
 
-- [ ] 3. Port `aws_acm_pca_provider_localstack_test.cpp` to `ephemeral_acm_pca`
+- [x] 3. Port `aws_acm_pca_provider_localstack_test.cpp` to `ephemeral_acm_pca`
   - Keep the skip-on-unsupported behaviour and add no signal wiring.
   - Verify: compiles; behaviour unchanged on community LocalStack (exit 77).
   - _Requirements: 7.2, 7.3_
+  - Done 2026-10-07. It keeps general-purpose mode and a 30-day root, as
+    before, and passes no tags.
 
-- [ ] 4. Add the `acm-pca` IAM bundle
+- [ ] 4. Add the `acm-pca` IAM bundle (written; simulation and apply open)
   - `scripts/ci-cloud-credentials/aws/policies/acm-pca.json` per the
     design, after checking each action's supported condition keys in the
     ACM Private CA service authorization reference. Document any action
@@ -87,8 +102,17 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
     without the request tag.
   - Applying the bundle to the CI role needs Clark's go-ahead.
   - _Requirements: 5.1-5.3_
+  - 2026-10-07: bundle, script and README written. Every per-CA action
+    supports `aws:ResourceTag` (checked against the iam-dataset copy of the
+    service authorization reference; the AWS page was unreachable from the
+    sandbox). Deviation from Requirement 5.1: `TagCertificateAuthority` is
+    granted only under `aws:ResourceTag`, never on the request tag alone,
+    which would let CI tag any CA into scope; `render-ci-policy.py --check`
+    now fails on that. All nine bundles merge to 10,224 of 10,240
+    characters. Open: the `simulate-custom-policy` check (needs AWS
+    credentials) and applying the bundle.
 
-- [ ] 5. Add `scripts/aws-acm-pca-leaks.sh audit|sweep`
+- [x] 5. Add `scripts/aws-acm-pca-leaks.sh audit|sweep`
   - Model it on `aws-asg-leaks.sh`. List CAs, read tags with `list-tags`,
     skip `DELETED`, and apply a grace period
     (`KYTHIRA_ACM_PCA_AUDIT_GRACE_SECONDS`, default 300).
@@ -99,8 +123,11 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
     `audit` exits 1 naming it, and `sweep` removes it (needs Clark's
     go-ahead, as in the ASG task 9 check).
   - _Requirements: 3.2, 3.3_
+  - Done 2026-10-07, shellcheck clean and exercised against a stub `aws`
+    CLI. The grace period applies to `sweep` too, so a concurrent run keeps
+    its CAs. The SIGKILL check moves to task 7 with the other real runs.
 
-- [ ] 6. Wire the step into `real-cloud-tests.yml`
+- [x] 6. Wire the step into `real-cloud-tests.yml`
   - Add `BUNDLE_ACM_PCA` from `vars.REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED`
     only; add no `workflow_dispatch` input (25-input cap).
   - Steps: ctest for the one test, then audit (`if: always()`), then sweep
@@ -108,6 +135,10 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
   - Count the bundle in the zero-bundle guard and its error message.
   - Verify: actionlint clean and the `workflow-input-limits` check passes.
   - _Requirements: 6.3, 6.4_
+  - Done 2026-10-07. Runs on both matrix legs, right after the
+    object-persistence bundle, while the job's first session is fresh.
+    actionlint reports nothing new (16 pre-existing findings before and
+    after).
 
 - [ ] 7. First real runs and cost doc
   - Run locally with `KYTHIRA_ACM_PCA_REAL_TESTS=1`, then once in Actions

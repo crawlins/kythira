@@ -5601,7 +5601,10 @@ if(TARGET certificate_authority)
         LABELS "integration;certificate_authority;ca;aws;acm-pca;localstack;slow"
         SKIP_RETURN_CODE 77
     )
-    # Opt-in: needs $KYTHIRA_TEST_ACM_PCA_ARN naming an existing CA.
+    # Opt-in, because it creates billable CAs: KYTHIRA_ACM_PCA_REAL_TESTS=1
+    # (the suite creates and deletes its own two CAs) or
+    # $KYTHIRA_TEST_ACM_PCA_ARN naming an existing one. The `real-acm-pca`
+    # label is what Real Cloud Tests' acm-pca bundle selects.
     set_tests_properties(aws_acm_pca_provider_real_test PROPERTIES
         TIMEOUT 600
         LABELS "integration;certificate_authority;ca;aws;acm-pca;real-acm-pca;slow"

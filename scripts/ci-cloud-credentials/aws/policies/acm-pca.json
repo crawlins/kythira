@@ -1,0 +1,58 @@
+[
+  {
+    "Sid": "AcmPcaCreateTagged",
+    "Effect": "Allow",
+    "Action": "acm-pca:CreateCertificateAuthority",
+    "Resource": "*",
+    "Condition": {
+      "StringEquals": {
+        "aws:RequestTag/kythira:suite": "acm-pca-real-test"
+      }
+    }
+  },
+  {
+    "Sid": "AcmPcaOwnedOnly",
+    "Effect": "Allow",
+    "Action": [
+      "acm-pca:DeleteCertificateAuthority",
+      "acm-pca:DescribeCertificateAuthority",
+      "acm-pca:GetCertificate",
+      "acm-pca:GetCertificateAuthorityCertificate",
+      "acm-pca:GetCertificateAuthorityCsr",
+      "acm-pca:ImportCertificateAuthorityCertificate",
+      "acm-pca:RevokeCertificate",
+      "acm-pca:TagCertificateAuthority",
+      "acm-pca:UpdateCertificateAuthority"
+    ],
+    "Resource": "arn:aws:acm-pca:*:{{ACCOUNT_ID}}:certificate-authority/*",
+    "Condition": {
+      "StringEquals": {
+        "aws:ResourceTag/kythira:suite": "acm-pca-real-test"
+      }
+    }
+  },
+  {
+    "Sid": "AcmPcaIssueOwnedOnly",
+    "Effect": "Allow",
+    "Action": "acm-pca:IssueCertificate",
+    "Resource": "arn:aws:acm-pca:*:{{ACCOUNT_ID}}:certificate-authority/*",
+    "Condition": {
+      "StringEquals": {
+        "aws:ResourceTag/kythira:suite": "acm-pca-real-test",
+        "acm-pca:TemplateArn": [
+          "arn:aws:acm-pca:::template/EndEntityCertificate/V1",
+          "arn:aws:acm-pca:::template/RootCACertificate/V1"
+        ]
+      }
+    }
+  },
+  {
+    "Sid": "AcmPcaList",
+    "Effect": "Allow",
+    "Action": [
+      "acm-pca:ListCertificateAuthorities",
+      "acm-pca:ListTags"
+    ],
+    "Resource": "*"
+  }
+]

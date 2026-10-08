@@ -28,7 +28,9 @@ The lint enforces the rule the README's "Instance actions are tag-scoped"
 section explains: no statement may let CI stop, start, terminate, reboot or
 retag an EC2 instance without a condition. An unconditioned ec2:CreateTags
 on instances defeats every tag condition in every bundle, because CI could
-tag someone else's instance into scope and then terminate it.
+tag someone else's instance into scope and then terminate it. The same
+holds for ACM Private CA: acm-pca:TagCertificateAuthority must carry an
+aws:ResourceTag condition (README, "The `acm-pca` bundle").
 """
 
 import argparse
@@ -56,6 +58,15 @@ INSTANCE_MUTATING_ACTIONS = (
     "ec2:StartInstances",
     "ec2:StopInstances",
     "ec2:TerminateInstances",
+)
+
+# ACM Private CA's retagging actions. The acm-pca bundle scopes every per-CA
+# action on the kythira:suite tag, so a grant that could add that tag to a CA
+# not already carrying it would let CI pull any CA in the account, a
+# production one included, into scope.
+ACM_PCA_TAGGING_ACTIONS = (
+    "acm-pca:TagCertificateAuthority",
+    "acm-pca:UntagCertificateAuthority",
 )
 
 # Long enough to stand in for any real account id or bucket name when
@@ -127,6 +138,16 @@ def lint_bundle(name):
             errors.append(
                 f"{name}: statement '{stmt.get('Sid')}' grants {', '.join(granted)} on instances "
                 f"with no condition. Scope it with an aws:ResourceTag condition (see README).")
+    for stmt in stmts:
+        if stmt.get("Effect") != "Allow":
+            continue
+        granted = [a for a in ACM_PCA_TAGGING_ACTIONS
+                   if any(fnmatch.fnmatchcase(a, pat) for pat in as_list(stmt.get("Action", [])))]
+        keys = [k for cond in stmt.get("Condition", {}).values() for k in cond]
+        if granted and not any(k.startswith("aws:ResourceTag/") for k in keys):
+            errors.append(
+                f"{name}: statement '{stmt.get('Sid')}' grants {', '.join(granted)} without an "
+                f"aws:ResourceTag condition, so CI could tag any CA into scope (see README).")
     size = len(json.dumps({"Version": "2012-10-17", "Statement": stmts}))
     if size > MANAGED_POLICY_LIMIT:
         errors.append(f"{name}: renders to {size} characters, over the {MANAGED_POLICY_LIMIT}-"

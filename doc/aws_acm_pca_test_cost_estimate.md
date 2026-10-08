@@ -93,10 +93,27 @@ full session:
 (Requirement 10.3-10.4) and other read/describe API calls are not separately
 billed.
 
-`tests/aws_acm_pca_provider_real_test.cpp` on its own adds exactly one
-`IssueCertificate` per run ($0.058 short-lived, $0.75 general-purpose)
-against the existing CA named by `$KYTHIRA_TEST_ACM_PCA_ARN`, and creates no
-CA. Its `RevokeCertificate` call is not separately billed.
+`tests/aws_acm_pca_provider_real_test.cpp` on its own now models exactly
+the "Assumption" above (`.kiro/specs/acm-pca-ephemeral-ca/`): with
+`KYTHIRA_ACM_PCA_REAL_TESTS=1` it creates two short-lived root CAs, one with
+OCSP and one with no revocation configuration, and deletes both at the end
+of the run. A run issues four certificates: the two self-issued roots and
+one leaf on each CA. Its `RevokeCertificate` calls are not separately
+billed. Two CAs for about 10 minutes plus four certificates:
+
+| Item | Rate | ≈ per run |
+|---|---|---|
+| 2 short-lived CAs, ~10 min each | $0.069/hr | ≈ $0.02 |
+| 4 certificates | $0.058 each | ≈ $0.23 |
+| **Total** | | **≈ $0.25** |
+
+The suite prints its own `[aws-cost]` block at the end of each run. This
+figure is an estimate until the first real run measures it (spec task 7),
+which will also confirm whether the self-issued root is billed as a
+certificate; the 2026-10-03 manual run (one hand-made CA for 8 min 45 s,
+three certificates) came to about $0.18 on that assumption. When
+`$KYTHIRA_TEST_ACM_PCA_ARN` names an existing CA, only the other kind is
+created, so the run costs about half as much.
 
 **CA operation, prorated to the session's lifetime.** Since the CA is now
 created at the start of the session and deleted at the end (see
