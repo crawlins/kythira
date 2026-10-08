@@ -32,6 +32,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 using namespace raft::testing;
 using kythira::ca_root_only;
@@ -666,6 +667,60 @@ BOOST_AUTO_TEST_CASE(server_stop_is_prompt_mid_handshake, *boost::unit_test::tim
     limits.request_timeout = std::chrono::seconds(30);
     auto server = vote_server(id, port, limits);
     hardening::stop_is_prompt_with_idle_connection(*server, port);
+}
+
+// A peer that accepts connections but never completes a handshake holds each
+// RPC to it for the full timeout. Only k_max_inflight_per_endpoint of those
+// may occupy the client's pool at once, as in tcp_rpc_unit_test's
+// test_inflight_cap_per_endpoint: the next fails immediately instead of
+// queueing, and a slot frees up once an earlier call finishes.
+BOOST_AUTO_TEST_CASE(client_caps_rpcs_in_flight_per_endpoint, *boost::unit_test::timeout(30)) {
+    int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    BOOST_REQUIRE(listener >= 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    BOOST_REQUIRE(::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+    BOOST_REQUIRE(::listen(listener, 16) == 0);  // never accept()ed: connects queue
+    socklen_t len = sizeof(addr);
+    ::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len);
+
+    tls_identity id;
+    tls_tcp_rpc_client client(id.config());
+    client.add_peer(9, "127.0.0.1", ntohs(addr.sin_port));
+    kythira::request_vote_request<> req{7, 1, 0, 0};
+    constexpr auto slow = std::chrono::milliseconds{1500};
+    constexpr auto cap = kythira::tls_detail::client_impl::k_max_inflight_per_endpoint;
+
+    std::vector<kythira::future_default<kythira::request_vote_response<>>> held;
+    for (std::size_t i = 0; i < cap; ++i) {
+        held.push_back(client.send_request_vote(9, req, slow));
+    }
+
+    auto start = std::chrono::steady_clock::now();
+    try {
+        client.send_request_vote(9, req, slow).get();
+        BOOST_FAIL("an RPC over the in-flight cap was dispatched");
+    } catch (const kythira::network_exception& e) {
+        BOOST_TEST(std::string{e.what()}.find("too many RPCs in flight") != std::string::npos);
+    }
+    BOOST_TEST((std::chrono::steady_clock::now() - start < std::chrono::milliseconds{500}));
+
+    for (auto& f : held) {
+        BOOST_CHECK_THROW(std::move(f).get(), kythira::network_exception);
+    }
+    // Every held call has finished, and a call frees its slot before its
+    // future resolves, so this one is dispatched at once and fails on its
+    // own timeout, not on the cap.
+    std::string last_error;
+    try {
+        client.send_request_vote(9, req, std::chrono::milliseconds{200}).get();
+        BOOST_FAIL("the never-answering peer answered");
+    } catch (const kythira::network_exception& e) {
+        last_error = e.what();
+    }
+    BOOST_TEST(last_error.find("too many RPCs in flight") == std::string::npos, last_error);
+    ::close(listener);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
