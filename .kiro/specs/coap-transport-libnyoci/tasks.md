@@ -281,6 +281,11 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
       `coap_security_error`, where before it could not fail at all.
 
 - [x] 6. Tests (skipped when `LIBNYOCI_AVAILABLE` is undefined)
+  - CI runs the real suites in the `alt-coap-backends` job, which installs
+    the `coap-libnyoci` and `edhoc` features and fails if any
+    `coap_libnyoci_*` binary builds as its stub
+    (`scripts/check-coap-alt-backends.sh`). Every other job builds them
+    without libnyoci, as the skipped stubs.
   - [x] 6.1 Concept-conformance test
     - `tests/coap_libnyoci_concept_conformance_test.cpp`, 5 cases. Compiles and
       passes *with or without* libnyoci, which is the point: conformance is a
