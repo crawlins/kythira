@@ -76,6 +76,16 @@ current list of outstanding work, see [TODO.md](TODO.md).
   `--out-dir=/ca`-style arguments, which `ca_service` rejects, so its
   `ca-service` container had never started; they are now separate words.
 
+- **A peer certificate the TLS trust policy rejects is no longer retried
+  inside one RPC.** `error_handler::classify_error` treated
+  `tls_tcp_rpc_client`'s "peer certificate rejected by trust policy" as an
+  unknown error and retried it four times with backoff, a full handshake
+  each time, for every heartbeat. With an impostor at a member's address
+  that made the leader's CPU use roughly six times its baseline, and on a
+  loaded rootless Podman runner pushed commit latency past the 5s submit
+  timeout. It is now an authentication failure and is not retried; the
+  next heartbeat is the retry.
+
 - **The gossip table no longer grows with whatever a peer sends.**
   `tcp_gossip_peer2peer_replicator::merge()` added every unknown node id
   it was sent and kept each one until a sender-chosen `fresh_until`, so

@@ -240,6 +240,16 @@ BOOST_AUTO_TEST_CASE(forbidden) {
     BOOST_CHECK(r.type == kythira::error_type::permanent_failure);
 }
 
+// tls_tcp_rpc_client's message when the server's certificate fails the
+// trust policy after the handshake.
+BOOST_AUTO_TEST_CASE(tls_trust_policy_rejection) {
+    kythira::error_handler<int> h;
+    auto r = h.classify_error(std::runtime_error(
+        "tls_tcp_rpc_client: peer certificate rejected by trust policy: node3:7000"));
+    BOOST_CHECK(r.type == kythira::error_type::permanent_failure);
+    BOOST_CHECK(!r.should_retry);
+}
+
 BOOST_AUTO_TEST_CASE(temporary_failure) {
     kythira::error_handler<int> h;
     auto r = h.classify_error(std::runtime_error("temporary failure occurred"));
