@@ -1080,6 +1080,227 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           sccache --show-stats
 
+  # ── Alternate CoAP backends (cantcoap + libnyoci) ────────────────────────────
+  # The only job that builds with CONFIG_COAP_TRANSPORT_CANTCOAP=y and
+  # CONFIG_COAP_TRANSPORT_LIBNYOCI=y. Every coap_cantcoap_* and coap_libnyoci_*
+  # target is registered and built in every other job too, but without its
+  # library each compiles to a single "backend unavailable, skipped" case and
+  # passes, so before this job neither backend's real suite had run in CI at
+  # all. See .kiro/specs/ci-build-matrix-coverage/ (Requirement 1, design §2).
+  #
+  # Same compiler as the g++-13 x64 Build & Test leg, so the vcpkg binary cache
+  # already holds every package this tree shares with it and a warm run builds
+  # only the two overlay ports. The features are NOT added to the build-and-test
+  # legs (Requirement 1.6): their feature set, cache key and runtime are
+  # unchanged.
+  alt-coap-backends:
+    name: Alternate CoAP Backends (g++-13, x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    # Same build-cache-write gating as ion-serializer-build; see its comment.
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          # Drop runner-image apt sources this project never installs from; a
+          # 403 from one of them fails `apt-get update` and short-circuits the
+          # install. See the script header.
+          ./scripts/drop-unused-apt-repos.sh
+          # autoconf, autoconf-archive, automake and libtool are what the
+          # libnyoci overlay port builds with (vcpkg-overlays/libnyoci/README.md);
+          # every vcpkg job already installs them for gperf.
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 g++-13 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      # configs/ci_alt_coap_defconfig keeps CONFIG_EDHOC=y, so this job installs
+      # the edhoc feature too and needs the Rust toolchain the lakers overlay
+      # port builds from source, exactly as the build-and-test legs do.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
+      # both read, and installs the pinned sccache. The writer policy -- only a
+      # push to main gets the read-write key -- lives in that action and
+      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # Distinct key ("-edhoc-coap-alt-"): this tree is the g++-13 edhoc tree
+      # plus cantcoap and libnyoci, so restoring the plain edhoc cache would
+      # skip the install and leave both libraries missing (which strict mode
+      # would then report as a configure failure, not a cache problem).
+      - name: Cache vcpkg packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-coap-alt-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies (with alternate CoAP backends)
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          # VCPKG_BINARY_SOURCES arrives from the OCI build cache action as
+          # x-aws against the bucket; see the build-and-test job's comment.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage \
+            --x-feature=edhoc --x-feature=coap-cantcoap --x-feature=coap-libnyoci
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      # sccache, not ccache: its objects live in the OCI bucket. See the
+      # build-and-test job's comment on the same step.
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # KYTHIRA_KCONFIG_STRICT=ON is what turns "the two features are
+      # installed" into an assertion: if either stops delivering its library,
+      # this configure FATAL_ERRORs instead of quietly reverting every
+      # alternate-backend suite to its stub.
+      - name: Configure (Release, alternate CoAP backends)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_KCONFIG=configs/ci_alt_coap_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # Fails before the build, not after it, when a backend's test sources
+      # would compile without its *_AVAILABLE define: strict mode proves the
+      # library was found, this proves the define reached the tests.
+      - name: Check both backends are compiled in
+        run: scripts/check-coap-alt-backends.sh configured --build-dir build
+
+      # Only the coap_* test targets, not the whole tree: everything else is
+      # byte-identical to what the g++-13 build-and-test leg already builds.
+      # Every coap_* test, not only the cantcoap and libnyoci ones
+      # (Requirement 1.4): shared CoAP headers compiled with
+      # CANTCOAP_AVAILABLE/LIBNYOCI_AVAILABLE defined take paths the default
+      # build never compiles. The list comes from ctest's registry, so a new
+      # coap_* test is picked up without editing this file. Each test maps to
+      # the target of the same name or, for the coap_*_example tests (named
+      # <target>_test), that name without "_test". The executables do not
+      # exist yet, so ctest cannot report them itself: --show-only=json-v1
+      # omits the command of a test whose executable is missing.
+      - name: Build CoAP test targets
+        run: |
+          set -o pipefail
+          ninja -C build -t targets all | sed -nE 's/^([A-Za-z0-9_]+): .*/\1/p' \
+            | sort -u > known-targets.txt
+          mapfile -t tests < <(
+            ctest --test-dir build -N -R '^coap_' \
+              -LE '^(slow|performance|verbose|benchmark|docker)$' \
+              | sed -nE 's/^ *Test +#[0-9]+: (coap_[A-Za-z0-9_]+)$/\1/p')
+          targets=()
+          for t in "${tests[@]}"; do
+            if grep -qx "$t" known-targets.txt; then
+              targets+=("$t")
+            elif grep -qx "${t%_test}" known-targets.txt; then
+              targets+=("${t%_test}")
+            else
+              echo "::error::no build target for test $t" >&2
+              exit 1
+            fi
+          done
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "::error::ctest lists no coap_* tests; nothing to build" >&2
+            exit 1
+          fi
+          echo "Building ${#targets[@]} coap_* targets"
+          cmake --build build -j$(nproc) --target "${targets[@]}"
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — alt-coap-backends"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
+
+      # The check that catches a backend silently compiling to its stub, which
+      # the configure check and the floor below cannot: each alternate-backend
+      # binary must list its real cases and no stub case.
+      - name: Check the real suites were built
+        run: scripts/check-coap-alt-backends.sh suites --build-dir build
+
+      # Same flags as the build-and-test legs' Test step; see its comments on
+      # pipefail, --no-tests=error and --timeout.
+      - name: Run CoAP tests
+        id: test
+        run: |
+          set -o pipefail
+          ctest --test-dir build \
+            -j$(nproc) \
+            --output-on-failure \
+            --repeat until-pass:3 \
+            --no-tests=error \
+            --timeout 900 \
+            -R '^coap_' \
+            -LE '^(slow|performance|verbose|benchmark|docker)$' \
+            2>&1 | tee ctest-out.txt
+        continue-on-error: true
+
+      # The floor is the count of coap_* tests this filter matched when the job
+      # landed; a configure change that drops any of them fails here even if
+      # every remaining test passes. See scripts/check-test-run.sh.
+      - name: Check the test run did the work
+        if: always()
+        run: |
+          scripts/check-test-run.sh \
+            --build-dir build \
+            --log ctest-out.txt \
+            --floor 72 \
+            -- -R '^coap_' -LE '^(slow|performance|verbose|benchmark|docker)$'
+
+      - name: Fail if tests failed
+        if: steps.test.outcome == 'failure'
+        run: exit 1
+
   # ── DNS discovery build (libldns + BIND, Poco DNSSD + Avahi) ─────────────────
   # The only job that builds with CONFIG_DNS_DISCOVERY=y or
   # CONFIG_POCO_DISCOVERY=y. libldns is in no other CI image, so before this job
