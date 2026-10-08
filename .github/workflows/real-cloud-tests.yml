@@ -226,6 +226,13 @@ jobs:
       # contributes no meaningful wall-clock to this job's 360-minute budget
       # and runs on both matrix legs rather than being pinned to x64.
       BUNDLE_OBJECT_PERSISTENCE: ${{ (github.event.inputs.aws_bundle_object_persistence == 'true') || (github.event.inputs.aws_bundle_object_persistence == null && vars.REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED == 'true') }}
+      # .kiro/specs/acm-pca-ephemeral-ca/ task 6. The repository variable is
+      # the only switch, for manual runs too: the workflow is at GitHub's
+      # 25-input workflow_dispatch cap, so this bundle gets no input.
+      # Like object persistence it launches no instances (the suite creates
+      # and deletes two short-lived ACM Private CAs, a few minutes' work) and
+      # runs on both matrix legs.
+      BUNDLE_ACM_PCA: ${{ vars.REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED == 'true' }}
 
     steps:
       - name: Checkout
@@ -245,9 +252,9 @@ jobs:
       # the script at all. See this job's sibling guard in the azure job for
       # the real occurrence that motivated adding these.
       - name: Fail closed if no test bundle is enabled
-        if: ${{ env.BUNDLE_EC2_QUORUM != 'true' && env.BUNDLE_CA_CLUSTER != 'true' && env.BUNDLE_CA_CLUSTER_RPC_TLS != 'true' && env.BUNDLE_OBJECT_PERSISTENCE != 'true' }}
+        if: ${{ env.BUNDLE_EC2_QUORUM != 'true' && env.BUNDLE_CA_CLUSTER != 'true' && env.BUNDLE_CA_CLUSTER_RPC_TLS != 'true' && env.BUNDLE_OBJECT_PERSISTENCE != 'true' && env.BUNDLE_ACM_PCA != 'true' }}
         run: |
-          echo "::error::The AWS job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set one or more of REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED / REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED, or pass the aws_bundle_* workflow_dispatch inputs." >&2
+          echo "::error::The AWS job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set one or more of REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED / REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED / REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED, or pass the aws_bundle_* workflow_dispatch inputs." >&2
           exit 1
 
       # The bucket is an operator-owned prerequisite — the engine reads and
@@ -498,6 +505,38 @@ jobs:
             exit 1
           fi
           exit $rc
+
+      # Second for the same reason as object persistence: it runs on the
+      # job's first one-hour session and finishes in minutes. The suite
+      # deletes its own CAs, on a signal included; the audit below is what
+      # proves it did, so it runs whatever the suite's outcome. The sweep runs
+      # only after the audit has failed, which keeps the job red: detection
+      # stays loud and remediation does not hide it.
+      - name: Run acm-pca bundle
+        if: ${{ env.BUNDLE_ACM_PCA == 'true' }}
+        env:
+          KYTHIRA_ACM_PCA_REAL_TESTS: "1"
+        run: |
+          scripts/run-real-cloud-suite.sh 'real-acm-pca' '^aws_acm_pca_provider_real_test$' \
+            "Check that AWS_CI_ROLE_ARN carries the acm-pca policy; a skip here usually means CreateCertificateAuthority was denied."
+
+      - name: Audit for leaked ACM Private CAs
+        id: acm-pca-audit
+        if: ${{ always() && env.BUNDLE_ACM_PCA == 'true' }}
+        env:
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+        run: |
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+            echo "No AWS credentials in the environment (the credentials step failed or never ran), so the suite created nothing to audit."
+            exit 0
+          fi
+          scripts/aws-acm-pca-leaks.sh audit
+
+      - name: Sweep leaked ACM Private CAs
+        if: ${{ always() && steps.acm-pca-audit.outcome == 'failure' }}
+        env:
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+        run: scripts/aws-acm-pca-leaks.sh sweep
 
       # aws_quorum_manager_real_ec2_test's own RealEc2Fixture re-resolves
       # the AMI via ec2:DescribeImages in its constructor, which Boost.Test

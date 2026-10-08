@@ -209,7 +209,7 @@ are the only place several refutations are written down in one paragraph.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| `acm-pca-ephemeral-ca` | 0/7 | Written October 3, 2026. `aws_acm_pca_provider_real_test` creates and deletes its own ACM Private CAs per run instead of needing `$KYTHIRA_TEST_ACM_PCA_ARN`, with leak detection (`scripts/aws-acm-pca-leaks.sh`), cost reporting, a tag-scoped IAM bundle and an opt-in Real Cloud Tests step. No `ephemeral_acm_pca` or `RealCaFixture` exists yet and no open PR carries it. |
+| `acm-pca-ephemeral-ca` | 5/7 | Written October 3, 2026; tasks 1-3, 5 and 6 done October 7. `aws_acm_pca_provider_real_test` creates and deletes its own two ACM Private CAs per run (`ephemeral_acm_pca`, `RealCaFixture`) with `KYTHIRA_ACM_PCA_REAL_TESTS=1`, prints an `[aws-cost]` block, and Real Cloud Tests runs it plus `scripts/aws-acm-pca-leaks.sh audit` behind `REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED`. Open: task 4's `simulate-custom-policy` check and applying the `acm-pca` bundle to the CI role, and task 7's first real runs; both need AWS and Clark's go-ahead. |
 | `aws-asg-real-cloud-tests` | 0/12 | Written October 5, 2026 (`c18f9c1`). Real-cloud validation for `aws_asg_quorum_manager`: two throwaway-API-call probes first (ELB health-check type without a load balancer; egress without a public IP), an `asg-quorum-manager` IAM bundle, then a VPC/ASG fixture whose teardown lands before any case does. `tests/aws_asg_quorum_manager_real_test.cpp` does not exist yet. |
 
 This table was **empty on October 4, 2026, which undercounted it**: the

@@ -188,6 +188,72 @@ credentials proves nothing about this role. After provisioning, assume
 `kythira-ci-real-cloud-tests` (or dispatch a run) and confirm one
 `DescribeAutoScalingGroups` call succeeds.
 
+## The `acm-pca` bundle
+
+Grants what `tests/aws_acm_pca_provider_real_test.cpp` needs to create,
+bootstrap, use and delete its own ACM Private CAs
+(`.kiro/specs/acm-pca-ephemeral-ca/`, Requirement 5), and what
+`scripts/aws-acm-pca-leaks.sh` needs to find and remove any it leaked.
+
+```sh
+scripts/ci-cloud-credentials/aws/provision-oidc-role.sh \
+    --github-org <org> --github-repo <repo> \
+    --bundles <every bundle the role already has>,acm-pca
+gh variable set REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED --body true
+```
+
+Like `asg-quorum-manager`, it has **no `workflow_dispatch` input**: the
+workflow is at GitHub's cap of 25. The repository variable is its only
+switch, for scheduled and manual runs alike. Locally, run the suite with
+`KYTHIRA_ACM_PCA_REAL_TESTS=1`.
+
+Every per-CA action is conditioned on the `kythira:suite=acm-pca-real-test`
+tag, which the suite passes in `CreateCertificateAuthority`'s own `Tags`.
+The ACM Private CA service authorization reference lists
+`aws:ResourceTag/${TagKey}` for every action on a `certificate-authority`
+resource, so no per-CA action had to be left unconditioned (checked
+2026-10-07 against the `iam-dataset` copy of that reference; the AWS page
+itself was unreachable from the sandbox).
+
+| `Sid` | Resource | Why |
+|---|---|---|
+| `AcmPcaCreateTagged` | `*`, conditioned on `aws:RequestTag/kythira:suite` | The CA does not exist yet, so there is nothing to scope to but the request. CI can create a CA only if it tags it into the suite. |
+| `AcmPcaOwnedOnly` | this account's CAs, conditioned on `aws:ResourceTag/kythira:suite` | CSR, import, describe, fetch, revoke, disable and delete reach only CAs the suite created, never a production CA in the same account. |
+| `AcmPcaIssueOwnedOnly` | the same, plus `acm-pca:TemplateArn` | `IssueCertificate` additionally only with `EndEntityCertificate/V1` (the provider's leaves) and `RootCACertificate/V1` (the self-issued root), so the role cannot mint a subordinate CA certificate even from its own CA. |
+| `AcmPcaList` | `*` | `ListCertificateAuthorities` has no resource. `ListTags` must reach untagged CAs too, because reading a CA's tags is how the leak script tells the suite's CAs from everyone else's. Both are read-only. |
+
+Not granted, on purpose:
+
+- **`TagCertificateAuthority` without a resource-tag condition.** The
+  requirement asked for it next to `CreateCertificateAuthority`, conditioned
+  on the request tag. That would let CI add `kythira:suite` to any CA in the
+  account and then disable and delete it, exactly the hole the EC2 bundles
+  close for `ec2:CreateTags` (below). Tags passed in
+  `CreateCertificateAuthority` are authorised by that action's own
+  `aws:RequestTag` condition, so the suite does not need a separate tagging
+  grant; the one it has, in `AcmPcaOwnedOnly`, can only retag a CA already in
+  scope. `render-ci-policy.py --check` fails on any grant of
+  `TagCertificateAuthority` or `UntagCertificateAuthority` without an
+  `aws:ResourceTag` condition. If the first real run shows AWS also checks
+  `TagCertificateAuthority` on tag-on-create, the create fails with
+  `AccessDenied` and the suite skips without creating anything.
+- **`RestoreCertificateAuthority`, `PutPolicy`, permissions and audit
+  reports.** The suite uses none of them.
+
+Cost: two short-lived CAs for the length of a run (about $0.07 an hour each)
+plus four certificates at $0.058, roughly $0.25 a run per matrix leg; see
+`doc/aws_acm_pca_test_cost_estimate.md`. CAs in `DELETED` status count
+against the per-region CA quota (200 by default) for their seven-day restore
+window but are not billed.
+
+The role's inline policy has 10,240 characters for every bundle together,
+and with this bundle all nine render to 10,224 (`render-ci-policy.py
+--check` prints the figure). The next bundle will not fit; it needs a
+managed policy of its own or a second inline policy.
+
+Applying this bundle to the live CI role, and the first real runs, need
+Clark's go-ahead (spec task 7).
+
 ## Instance actions are tag-scoped
 
 No bundle lets CI stop, start, terminate or retag an EC2 instance it did not
@@ -285,6 +351,7 @@ prefers spot pricing where available):
 | `ca-cluster-node-rpc-tls` (same shape + NACL setup, which AWS doesn't bill for) | ≈ $0.02 |
 | `ec2-quorum-manager` (10 cases, 3-9 node clusters + bastion, ~157 min total) | ≈ $0.10 - $0.30 |
 | `asg-quorum-manager` (one to three `t3.micro`s per case, every ASG at desired capacity 0 between cases) | ≈ cents; not yet measured |
+| `acm-pca` (two short-lived CAs for ~10 min plus 4 certificates; runs on both matrix legs) | ≈ $0.25 per leg; not yet measured |
 | `aws-ec2-launch-options` job, on `ec2-quorum-manager` (6 cases, a few instances each for minutes; `c5.large`/`c6g.medium` for the cluster placement group, else `t3.micro`/`t4g.micro`) | ≈ cents; not yet measured |
 
 IAM itself (roles, policies, instance profiles, the OIDC provider) carries
