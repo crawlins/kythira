@@ -40,6 +40,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace kythira {
@@ -493,45 +494,52 @@ private:
         // background task to see valid data.
         _executor->submit([promise = std::move(promise), host, port, payload, timeout, deser,
                            inflight = _inflight, endpoint = std::move(endpoint)]() mutable {
-            struct Slot {
-                tcp_detail::inflight_limiter& limiter;
-                const std::string& endpoint;
-                ~Slot() { limiter.release(endpoint); }
-            } slot{*inflight, endpoint};
-
-            int fd = tcp_detail::connect_to(host, port, timeout);
-            if (fd < 0) {
-                promise.setException(std::make_exception_ptr(network_exception(
-                    "tcp_rpc_client: connect failed to " + host + ":" + std::to_string(port))));
-                return;
-            }
-
-            struct Guard {
-                int fd;
-                ~Guard() {
-                    if (fd >= 0) {
-                        ::close(fd);
+            // The in-flight slot is released BEFORE the promise is settled.
+            // Releasing it from a destructor at the end of this lambda let a
+            // caller whose .get() had already returned issue its next call
+            // while the slot was still held, and be refused with "too many
+            // RPCs in flight" (seen 3/3 on the boost-backend CI leg).
+            auto outcome = [&]() -> std::variant<Resp, std::exception_ptr> {
+                try {
+                    int fd = tcp_detail::connect_to(host, port, timeout);
+                    if (fd < 0) {
+                        return std::make_exception_ptr(
+                            network_exception("tcp_rpc_client: connect failed to " + host + ":" +
+                                              std::to_string(port)));
                     }
+
+                    struct Guard {
+                        int fd;
+                        ~Guard() {
+                            if (fd >= 0) {
+                                ::close(fd);
+                            }
+                        }
+                    } g{fd};
+
+                    if (!tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(payload))) {
+                        return std::make_exception_ptr(
+                            network_exception("tcp_rpc_client: send failed"));
+                    }
+
+                    auto resp = tcp_detail::frame_recv(fd);
+                    if (!resp) {
+                        return std::make_exception_ptr(
+                            network_exception("tcp_rpc_client: recv failed"));
+                    }
+
+                    return deser(tcp_detail::str_to_bytes(*resp));
+                } catch (...) {
+                    return std::current_exception();
                 }
-            } g{fd};
+            }();
 
-            if (!tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(payload))) {
-                promise.setException(
-                    std::make_exception_ptr(network_exception("tcp_rpc_client: send failed")));
-                return;
-            }
+            inflight->release(endpoint);
 
-            auto resp = tcp_detail::frame_recv(fd);
-            if (!resp) {
-                promise.setException(
-                    std::make_exception_ptr(network_exception("tcp_rpc_client: recv failed")));
-                return;
-            }
-
-            try {
-                promise.setValue(deser(tcp_detail::str_to_bytes(*resp)));
-            } catch (...) {
-                promise.setException(std::current_exception());
+            if (auto* value = std::get_if<Resp>(&outcome)) {
+                promise.setValue(std::move(*value));
+            } else {
+                promise.setException(std::get<std::exception_ptr>(std::move(outcome)));
             }
         });
 
