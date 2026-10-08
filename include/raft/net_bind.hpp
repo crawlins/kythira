@@ -29,10 +29,13 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace kythira::net_bind {
@@ -96,39 +99,213 @@ inline auto connect_one(const addrinfo& ai, std::chrono::milliseconds timeout) -
     return fd;
 }
 
-// Tries every address `host` resolves to, in getaddrinfo() order, until one
-// connects. Trying only the first broke a peer named "localhost": it
-// usually resolves to ::1 first, and a server listening on 127.0.0.1 alone
-// was then unreachable. `timeout` bounds the whole call; each attempt gets
-// an equal share of what is left, so one address that silently drops SYNs
-// cannot use up the budget before the others are tried.
-inline auto connect_to(const std::string& host, std::uint16_t port,
-                       std::chrono::milliseconds timeout) -> int {
+// One resolved dial address, kept outside getaddrinfo()'s list so it can be
+// reused after that list is freed.
+struct dial_address {
+    sockaddr_storage addr{};
+    socklen_t len{0};
+    int family{0};
+    int socktype{0};
+    int protocol{0};
+};
+
+// The addresses each host:port last resolved to, process-wide, so dialling
+// a peer does not wait on the resolver while a recent answer is in hand.
+//
+// getaddrinfo() has no timeout of its own: with an unresponsive resolver it
+// waits out resolv.conf's timeout for every name in the search list, which
+// is 20 seconds per call with glibc's defaults and one search domain.
+// Rootless Podman's aardvark-dns goes quiet like that for tens of seconds
+// after a container joins the network, and while it did, every RPC to every
+// peer, live ones included, held its slot for a full lookup; the leader's
+// heartbeats stopped arriving and a two-of-three majority committed nothing.
+//
+// An entry is fresh for k_fresh_for. After that, one caller at a time looks
+// the name up again while the others keep using the old answer, and a
+// lookup that fails leaves the old answer in place. A dial that fails on
+// the cached addresses also asks for a lookup, at most once per
+// k_retry_after, because a restarted container usually comes back at a
+// new address. Only a name with no answer at all is looked up on the
+// dialling thread.
+class dial_address_cache {
+public:
+    static constexpr std::chrono::seconds k_fresh_for{10};
+    static constexpr std::chrono::seconds k_retry_after{1};
+
+    struct lookup_plan {
+        std::vector<dial_address> addresses;  // empty: nothing usable cached
+        bool refresh{false};                  // this caller should look up again
+    };
+
+    // Never destroyed: a detached refresh may still be storing into it
+    // while the process exits.
+    static auto instance() -> dial_address_cache& {
+        static auto* cache = new dial_address_cache;
+        return *cache;
+    }
+
+    auto plan(const std::string& key) -> lookup_plan {
+        std::lock_guard lock(_mu);
+        auto it = _entries.find(key);
+        if (it == _entries.end()) {
+            return {};
+        }
+        auto& e = it->second;
+        bool refresh = false;
+        auto now = std::chrono::steady_clock::now();
+        if (!e.refreshing && now - e.resolved_at >= k_fresh_for) {
+            e.refreshing = true;
+            e.refresh_started_at = now;
+            refresh = true;
+        }
+        return {e.addresses, refresh};
+    }
+
+    // After a dial to the cached addresses failed: true if this caller
+    // should look the name up again, i.e. no lookup is in flight and none
+    // started in the last k_retry_after.
+    auto claim_retry(const std::string& key) -> bool {
+        std::lock_guard lock(_mu);
+        auto it = _entries.find(key);
+        if (it == _entries.end()) {
+            return false;
+        }
+        auto& e = it->second;
+        auto now = std::chrono::steady_clock::now();
+        if (e.refreshing || now - e.refresh_started_at < k_retry_after) {
+            return false;
+        }
+        e.refreshing = true;
+        e.refresh_started_at = now;
+        return true;
+    }
+
+    // Records a lookup's result; an empty result keeps the old addresses.
+    void store(const std::string& key, std::vector<dial_address> addresses) {
+        std::lock_guard lock(_mu);
+        auto& e = _entries[key];
+        e.refreshing = false;
+        if (!addresses.empty()) {
+            e.addresses = std::move(addresses);
+            e.resolved_at = std::chrono::steady_clock::now();
+        }
+    }
+
+private:
+    struct entry {
+        std::vector<dial_address> addresses;
+        std::chrono::steady_clock::time_point resolved_at;
+        std::chrono::steady_clock::time_point refresh_started_at;
+        bool refreshing{false};
+    };
+    std::mutex _mu;
+    std::unordered_map<std::string, entry> _entries;
+};
+
+// Every address getaddrinfo() gives for host:port, in its order; empty if
+// the lookup fails.
+inline auto resolve_dial_addresses(const std::string& host, std::uint16_t port)
+    -> std::vector<dial_address> {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-
     addrinfo* res{};
     if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) {
-        return -1;
+        return {};
     }
-
-    long candidates = 0;
+    std::vector<dial_address> resolved;
     for (addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
-        ++candidates;
+        if (ai->ai_addrlen > sizeof(sockaddr_storage)) {
+            continue;
+        }
+        dial_address a;
+        std::memcpy(&a.addr, ai->ai_addr, ai->ai_addrlen);
+        a.len = static_cast<socklen_t>(ai->ai_addrlen);
+        a.family = ai->ai_family;
+        a.socktype = ai->ai_socktype;
+        a.protocol = ai->ai_protocol;
+        resolved.push_back(a);
     }
+    ::freeaddrinfo(res);
+    return resolved;
+}
 
-    auto deadline = std::chrono::steady_clock::now() + timeout;
-    int fd = -1;
-    for (addrinfo* ai = res; ai != nullptr && fd < 0; ai = ai->ai_next, --candidates) {
+inline auto connect_one(const dial_address& a, std::chrono::milliseconds timeout) -> int {
+    addrinfo ai{};
+    ai.ai_family = a.family;
+    ai.ai_socktype = a.socktype;
+    ai.ai_protocol = a.protocol;
+    ai.ai_addrlen = a.len;
+    // connect() takes a non-const pointer type but does not write through it.
+    ai.ai_addr = const_cast<sockaddr*>(reinterpret_cast<const sockaddr*>(&a.addr));
+    return connect_one(ai, timeout);
+}
+
+// Dials `addresses` in order until one connects, each attempt getting an
+// equal share of the time left before `deadline`, so one address that
+// silently drops SYNs cannot use up the budget before the others are tried.
+inline auto connect_any(const std::vector<dial_address>& addresses,
+                        std::chrono::steady_clock::time_point deadline) -> int {
+    auto candidates = static_cast<long>(addresses.size());
+    for (const auto& a : addresses) {
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
         if (remaining.count() <= 0) {
             break;
         }
-        fd = connect_one(*ai, std::max(remaining / candidates, std::chrono::milliseconds(1)));
+        int fd = connect_one(a, std::max(remaining / candidates, std::chrono::milliseconds(1)));
+        if (fd >= 0) {
+            return fd;
+        }
+        --candidates;
     }
-    ::freeaddrinfo(res);
+    return -1;
+}
+
+// Tries every address `host` resolves to, in getaddrinfo() order, until one
+// connects. Trying only the first broke a peer named "localhost": it
+// usually resolves to ::1 first, and a server listening on 127.0.0.1 alone
+// was then unreachable. `timeout` bounds the connect attempts together; a
+// lookup is bounded only by the resolver, which is why a recent answer is
+// reused rather than waited for (see dial_address_cache).
+inline auto connect_to(const std::string& host, std::uint16_t port,
+                       std::chrono::milliseconds timeout) -> int {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto key = host + ':' + std::to_string(port);
+    auto& cache = dial_address_cache::instance();
+
+    // Looked up off the caller's thread, so a stalled resolver delays
+    // nobody: until the answer lands every dial uses the old one.
+    auto refresh_in_background = [&] {
+        std::thread([host, port, key] {
+            dial_address_cache::instance().store(key, resolve_dial_addresses(host, port));
+        }).detach();
+    };
+
+    auto plan = cache.plan(key);
+    if (plan.refresh) {
+        refresh_in_background();
+    }
+
+    int fd = -1;
+    if (!plan.addresses.empty()) {
+        fd = connect_any(plan.addresses, deadline);
+        if (fd < 0 && cache.claim_retry(key)) {
+            // The peer is down or has moved. This call still fails, but a
+            // moved peer is dialled at its new address once the lookup
+            // lands, and a down one costs at most one lookup per
+            // k_retry_after.
+            refresh_in_background();
+        }
+    } else {
+        // Never resolved, or every lookup so far failed: nothing to reuse.
+        auto fresh = resolve_dial_addresses(host, port);
+        if (fresh.empty()) {
+            return -1;
+        }
+        cache.store(key, fresh);
+        fd = connect_any(fresh, deadline);
+    }
     if (fd < 0) {
         return -1;
     }

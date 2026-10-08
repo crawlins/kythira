@@ -97,6 +97,19 @@ current list of outstanding work, see [TODO.md](TODO.md).
   endpoint at two RPCs in flight; the TLS client now does the same, and a
   call over the cap fails at once.
 
+- **A slow DNS server no longer stalls RPCs to peers that are up.** The
+  TCP and TLS RPC clients and the gossip transport looked each peer's
+  name up on every dial, and `getaddrinfo()` has no timeout: when rootless
+  Podman's aardvark-dns went quiet after a container joined the network,
+  each lookup took 20 seconds, RPCs to the live follower held their
+  in-flight slots for that long, and the leader's heartbeats stopped. A
+  dial now reuses the addresses the name last resolved to; after 10
+  seconds one background thread looks the name up again, and a failed
+  lookup keeps the old answer. A dial that fails on the cached addresses
+  also starts a lookup, at most once a second per peer, so a restarted
+  container at a new address is reached again as soon as DNS answers.
+  Only a name with no answer yet is looked up on the dialling thread.
+
 - **The gossip table no longer grows with whatever a peer sends.**
   `tcp_gossip_peer2peer_replicator::merge()` added every unknown node id
   it was sent and kept each one until a sender-chosen `fresh_until`, so
