@@ -86,6 +86,17 @@ current list of outstanding work, see [TODO.md](TODO.md).
   timeout. It is now an authentication failure and is not retried; the
   next heartbeat is the retry.
 
+- **One unreachable peer no longer stops a TLS cluster's majority from
+  committing.** `tls_tcp_rpc_client` ran every RPC on an eight-thread pool
+  with no limit per peer, and a peer that has gone away (paused, or its
+  address blackholed) holds a thread for the whole RPC timeout on every
+  heartbeat. Those calls filled the pool, RPCs to the live follower queued
+  behind them until they timed out, and a two-of-three cluster committed
+  nothing until the leader gave up on the dead voter, about 45 seconds
+  later under rootless Podman. `tcp_rpc_client` already capped each
+  endpoint at two RPCs in flight; the TLS client now does the same, and a
+  call over the cap fails at once.
+
 - **The gossip table no longer grows with whatever a peer sends.**
   `tcp_gossip_peer2peer_replicator::merge()` added every unknown node id
   it was sent and kept each one until a sender-chosen `fresh_until`, so
