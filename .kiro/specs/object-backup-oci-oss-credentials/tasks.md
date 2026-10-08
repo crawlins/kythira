@@ -2,9 +2,9 @@
 
 ## Implementation Status
 
-Tasks 1-8 done (October 3, 2026). Task 9, the manual live check, is open: it
-needs the real-suite OCI and Alibaba credentials, which the cloud sandbox
-does not have.
+All tasks done. Tasks 1-8 landed October 3, 2026 (#457). Task 9, the live
+check, passed on October 8, 2026 in the real-cloud workflow (#483), since
+the cloud sandbox has no OCI or Alibaba credentials.
 
 Two choices made during implementation:
 
@@ -91,11 +91,21 @@ failure exit 2, and document the variables in `--help` and the runbook.
   - [x] 8.4 Add a `doc/CHANGELOG.md` entry
   - _Requirements: 5.1, 5.2, 5.3_
 
-- [ ] 9. Manual live check
-  - [ ] 9.1 With the real-suite environment (`KYTHIRA_OCI_*`,
+- [x] 9. Manual live check
+  - [x] 9.1 With the real-suite environment (`KYTHIRA_OCI_*`,
     `KYTHIRA_ALIBABA_*`), run `raft_object_backup list` against
     `KYTHIRA_OCI_OBJECT_BUCKET` and `KYTHIRA_ALIBABA_OSS_BUCKET`, and record
     the result here. Read-only; no new IAM policy needed
+    - Run as a step of the real-cloud workflow instead of by hand
+      (`scripts/raft-object-backup-live-check.sh`, #483): the OCI
+      object-persistence and Alibaba oss-persistence bundles build the tool
+      and list a prefix unique to the run.
+    - Result, Real Cloud Tests run 37707372260 on main, October 8, 2026:
+      both passed on the first attempt, each printing `no finished backups
+      under <bucket>/kythira-backup-live-check/37707372260-<provider>`.
+      OCI ran in security_token mode with no namespace configured, so the
+      `GET /n/` lookup was exercised too. Alibaba ran with the STS key,
+      secret and token.
   - _Requirements: 1.1, 2.1_
 
 ## Notes
