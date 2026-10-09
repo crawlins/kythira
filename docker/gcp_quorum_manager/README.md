@@ -66,7 +66,12 @@ node the other still counts. A MIG at size 0 costs nothing.
 ## 3. IAM
 
 The principal the manager runs as needs `roles/compute.instanceAdmin.v1` on
-the project (instances, MIG resize and list, zone operations, labels). If
+the project (instances, MIG resize and list, zone operations, labels). For
+the MIG manager that role carries `compute.instanceGroupManagers.get`
+(`get`, `listManagedInstances`) and `compute.instanceGroupManagers.update`
+(`resize`, and the `deleteInstances` that the timeout rollback and
+`decommission_node` use to remove one instance by name); a custom role needs
+both. If
 the compute manager attaches a `service_account_email` to nodes, the
 principal also needs `roles/iam.serviceAccountUser` on **that one** service
 account; granted project-wide, it reaches every service account in the
@@ -97,3 +102,25 @@ It is registered only when CMake is configured with
 launches real instances that cost money. Its MIG cases additionally need
 `GCP_TEST_MIG_A`/`B`/`C` (and `GCP_TEST_MIG_AUTOHEAL` for the guard case) naming
 pre-created MIGs; see the file and `.github/workflows/real-cloud-tests.yml`.
+
+## 6. MIG manager: timeout rollback
+
+When `provision_timeout` expires before the new instance is adoptable, the
+manager undoes the resize without letting the MIG pick a victim
+(`.kiro/specs/group-scale-up-rollback/`). It removes every instance that
+was not in the MIG before the resize, by name, with
+`instanceGroupManagers.deleteInstances`, which also lowers `targetSize`.
+Only when the MIG lists no new instance does it `resize` back to the old
+target size, and it then re-lists the MIG and names any existing member
+that left. A failed restore is reported, not ignored. The timeout error
+ends with what the rollback did, e.g.
+`rollback: removed kythira-mig-abcd (fresh, CREATING)`.
+
+MIGs have no per-instance scale-in protection, so on that last path the
+re-listing is a report, not a prevention: if the MIG lists the new instance
+between the manager's final listing and its `resize`, the MIG may delete an
+existing member instead. The window is one listing-to-resize round trip.
+
+Run one manager per MIG, and do not resize it with other tooling while the
+manager runs. An instance something else adds during a provision looks new
+to the manager and is deleted if that provision times out.
