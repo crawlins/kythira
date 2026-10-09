@@ -19,6 +19,7 @@
 
 #include "multi_raft_test_fabric.hpp"
 
+#include <raft/bounded_resolver.hpp>
 #include <raft/console_logger.hpp>
 #include <raft/future_default.hpp>
 #include <raft/metrics.hpp>
@@ -39,6 +40,9 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <array>
@@ -1280,6 +1284,40 @@ BOOST_AUTO_TEST_CASE(a_peer_that_never_answers_costs_one_command_timeout,
 
     c.heal_routes();
     BOOST_CHECK_EQUAL(client.call({"GET", "sccache/hung"}), "$-1\r\n");
+}
+
+BOOST_AUTO_TEST_CASE(a_forward_dials_the_address_the_peer_was_last_seen_at,
+                     *boost::unit_test::timeout(120)) {
+    // Under rootless Podman a restarted gateway sits at an address its name
+    // does not give for a while (bounded_resolver.hpp). The forward link
+    // must then dial where the peer's Raft traffic was last seen from, as
+    // redis_gateway_node learns it: a name DNS has never answered for, with
+    // the leader's gateway port learned against it, still forwards.
+    cluster c;
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto leader = c.leader_of(k_sccache_group);
+    const auto follower = c.a_follower_of(k_sccache_group);
+    const std::string name = "kythira-gateway-" + std::to_string(c.port(leader)) + ".invalid";
+    const auto port = c.port(leader);
+    c.override_endpoint(follower, leader, name + ":" + std::to_string(port));
+
+    sockaddr_storage seen_from{};
+    auto& in4 = reinterpret_cast<sockaddr_in&>(seen_from);
+    in4.sin_family = AF_INET;
+    in4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    in4.sin_port = htons(40000);  // the ephemeral port an RPC came from
+    auto hint =
+        kythira::net_resolve::address_from(seen_from, sizeof(sockaddr_in), port, SOCK_STREAM);
+    BOOST_REQUIRE(hint.has_value());
+    kythira::net_resolve::learn(name, std::to_string(port), SOCK_STREAM, *hint);
+
+    resp_client client(c.port(follower));
+    BOOST_REQUIRE_EQUAL(client.auth("farm", "farm-secret"), "+OK\r\n");
+    const auto failures_before = c.gateway(follower).stats()._forward_failures.load();
+    BOOST_CHECK_EQUAL(client.call({"SET", "sccache/seen", "there"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(client.call({"GET", "sccache/seen"}), bulk("there"));
+    BOOST_CHECK_EQUAL(c.gateway(follower).stats()._forward_failures.load(), failures_before);
+    c.heal_routes();
 }
 
 // ── Requirement 12.5 / task 9: forwarding and listener security ─────────────

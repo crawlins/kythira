@@ -13,6 +13,7 @@
 #include "beast_test_thread_pool.hpp"
 #include "http_limit_test_helpers.hpp"
 
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -23,6 +24,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <thread>
 #include <unordered_map>
@@ -650,6 +652,77 @@ BOOST_AUTO_TEST_CASE(server_backs_off_accept_when_out_of_descriptors) {
     BOOST_TEST(
         limits::wait_for([&] { return server.live_connections() == 1; }, std::chrono::seconds(10)));
     ::close(client);
+    server.stop();
+}
+
+// A peer that sends an RPC has told the server where it is. With the
+// client's peer_seen_handler() installed, the sender's address is recorded
+// for the host its URL names, so that host can be dialled while its name
+// does not resolve (bounded_resolver.hpp). The handler carries its own copy
+// of the URL table, so it works after the client is gone.
+BOOST_AUTO_TEST_CASE(server_reports_where_a_sender_connected_from) {
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+
+    auto port = static_cast<std::uint16_t>(test_bind_port_base + 8);
+    kythira::boost_beast_server<test_transport_types> server(ioc, test_bind_address, port, {},
+                                                             kythira::noop_metrics{});
+    register_echo_handlers(server);
+
+    std::mutex seen_mu;
+    std::optional<std::pair<std::uint64_t, std::string>> seen;
+    {
+        // The learning side: a client whose URL for node 7 is a name that
+        // never resolves. It is destroyed before the RPC arrives.
+        std::unordered_map<std::uint64_t, std::string> learner_map{
+            {7, "http://kythira-sender.invalid:7007"}};
+        kythira::boost_beast_client<test_transport_types> learner(ioc, learner_map, {},
+                                                                  kythira::noop_metrics{});
+        auto learn = learner.peer_seen_handler();
+        server.set_peer_seen_handler(
+            [&, learn](std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+                learn(id, from, len);
+                char host[INET6_ADDRSTRLEN] = {};
+                if (from.ss_family == AF_INET) {
+                    ::inet_ntop(AF_INET, &reinterpret_cast<const sockaddr_in&>(from).sin_addr, host,
+                                sizeof host);
+                }
+                std::lock_guard<std::mutex> lock(seen_mu);
+                seen = std::pair{id, std::string{host}};
+            });
+    }
+    server.start();
+
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {test_node_id, std::string("http://127.0.0.1:") + std::to_string(port)}};
+    kythira::boost_beast_client<test_transport_types> client(ioc, node_map, {},
+                                                             kythira::noop_metrics{});
+    kythira::request_vote_request<> req{};
+    req._term = 2;
+    req._candidate_id = 7;
+    auto resp =
+        std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(30000)))
+            .get();
+    BOOST_TEST(resp.vote_granted());
+
+    {
+        std::lock_guard<std::mutex> lock(seen_mu);
+        BOOST_REQUIRE(seen.has_value());
+        BOOST_TEST(seen->first == 7u);
+        BOOST_TEST(seen->second == "127.0.0.1");
+    }
+
+    auto key = kythira::net_resolve::detail::key_for("kythira-sender.invalid", "7007", SOCK_STREAM);
+    auto addresses = kythira::net_resolve::resolve_using(key, std::chrono::milliseconds{2000}, [] {
+        return kythira::net_resolve::lookup_outcome{std::nullopt, false};
+    });
+    BOOST_REQUIRE(addresses.has_value());
+    BOOST_REQUIRE_EQUAL(addresses->size(), 1u);
+    const auto& a = reinterpret_cast<const sockaddr_in&>(addresses->front().addr);
+    char host[INET_ADDRSTRLEN] = {};
+    ::inet_ntop(AF_INET, &a.sin_addr, host, sizeof host);
+    BOOST_TEST(host == "127.0.0.1");
+    BOOST_TEST(ntohs(a.sin_port) == 7007u);
     server.stop();
 }
 

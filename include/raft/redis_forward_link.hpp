@@ -22,20 +22,26 @@
 /// certificate names the host the endpoint was dialled by: a DNS SAN for a
 /// host name, an IP SAN for an address literal.
 
+#include <raft/bounded_resolver.hpp>
+
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <sys/socket.h>
 #include <utility>
+#include <vector>
 
 namespace kythira {
 
@@ -65,23 +71,45 @@ public:
     /// the deadline. Throws on any failure, including a certificate that does
     /// not chain to the CA or does not name `host`.
     auto connect(const std::string& host, std::uint16_t port) -> void {
-        tcp::resolver resolver(_io);
-        tcp::resolver::results_type endpoints;
-        run(
-            [&](auto done) {
-                resolver.async_resolve(host, std::to_string(port),
-                                       [&endpoints, done](const boost::system::error_code& ec,
-                                                          tcp::resolver::results_type results) {
-                                           endpoints = std::move(results);
-                                           done(ec, 0);
-                                       });
-            },
-            [&resolver] { resolver.cancel(); });
-        run([&](auto done) {
-            boost::asio::async_connect(
-                lowest(), endpoints,
-                [done](const boost::system::error_code& ec, const tcp::endpoint&) { done(ec, 0); });
-        });
+        // The bounded resolver, not Asio's: under rootless Podman a peer
+        // gateway's name can stall in aardvark-dns for longer than the
+        // forward deadline, and a gateway that just restarted sits at a new
+        // address its name does not yet give. The resolver caps the wait,
+        // answers from the address the peer's Raft traffic was last seen
+        // from while DNS has nothing, and is told when a dial fails so a
+        // stale answer is retired (see bounded_resolver.hpp).
+        const auto service = std::to_string(port);
+        const auto dialled_at = clock::now();
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(_deadline - dialled_at);
+        auto addresses = net_resolve::resolve(host, service, SOCK_STREAM,
+                                              std::max(remaining, std::chrono::milliseconds{0}));
+        if (!addresses || addresses->empty()) {
+            _healthy = false;
+            throw std::runtime_error("peer gateway " + host +
+                                     " did not resolve before the deadline");
+        }
+        std::vector<tcp::endpoint> endpoints;
+        endpoints.reserve(addresses->size());
+        for (const auto& a : *addresses) {
+            tcp::endpoint ep;
+            if (a.len > ep.capacity()) {
+                continue;
+            }
+            std::memcpy(ep.data(), &a.addr, a.len);
+            ep.resize(a.len);
+            endpoints.push_back(ep);
+        }
+        try {
+            run([&](auto done) {
+                boost::asio::async_connect(
+                    lowest(), endpoints.begin(), endpoints.end(),
+                    [done](const boost::system::error_code& ec, auto) { done(ec, 0); });
+            });
+        } catch (...) {
+            net_resolve::mark_unreachable(host, service, SOCK_STREAM, dialled_at);
+            throw;
+        }
         lowest().set_option(tcp::no_delay(true));
         if (!_tls) {
             return;
