@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace docker_chaos {
 
@@ -210,6 +211,11 @@ public:
     // failure is decided inside the nodes and the proxy, so without this the
     // only evidence is a timeout. `compose ps -a` is not used: podman-compose
     // rejects `-a` (see metrics_scenario_support.hpp).
+    //
+    // A node logs a DEBUG line per heartbeat and an [ErrorHandler] line per
+    // retry, so the last 60 lines of a stalled node were all noise and the
+    // state change that mattered had scrolled off. Those are dropped and
+    // the last 80 remaining lines printed.
     void dump_diagnostics() {
         const auto& rt = os::container_runtime();
         auto ps = _exec({rt, "ps", "-a", "--filter", "label=kythira.cluster=" + _cluster_name,
@@ -229,9 +235,27 @@ public:
                 continue;
             }
             auto name = _exec({rt, "inspect", "--format", "{{.Name}} {{.State.Status}}", id});
-            auto logs = _exec({rt, "logs", "--tail", "60", id});
-            std::cerr << "── logs for " << name.out << logs.out << "\n";
+            auto logs = _exec({rt, "logs", "--tail", "2000", id});
+            std::cerr << "── logs for " << name.out << without_noise(logs.out, 80) << "\n";
         }
+    }
+
+    static std::string without_noise(const std::string& logs, std::size_t keep) {
+        std::vector<std::string> kept;
+        std::istringstream in(logs);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.find(" DEBUG: ") != std::string::npos ||
+                line.find("[ErrorHandler]") != std::string::npos) {
+                continue;
+            }
+            kept.push_back(line);
+        }
+        std::string out;
+        for (std::size_t i = kept.size() > keep ? kept.size() - keep : 0; i < kept.size(); ++i) {
+            out += kept[i] + '\n';
+        }
+        return out;
     }
 
 private:
