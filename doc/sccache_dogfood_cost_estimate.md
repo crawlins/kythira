@@ -69,13 +69,17 @@ keeps, and the bucket's 30-day lifecycle rule — which exists to bound storage
 — does not touch it. An estimate written around GB was measuring the two
 lines that are free.
 
-**Not yet established: the 1–5 TB/month egress band.** 130 GB in eleven days
-is not 1/30th of a month's traffic — the caches only went live on `main` on
-September 9, and September 10 alone carried six pull requests at roughly
-fifteen jobs each. The window is short and unrepresentative in both
-directions, so it neither confirms nor refutes the band. That is what task
-11's October 9 re-run is for, and it is the only part of this cross-reference
-still owed.
+**The 1–5 TB/month egress band holds for the first full month (October 9,
+2026).** Task 11's re-run over September 9 to October 9 measured **1.62 TB
+of egress, billed at zero**, and a bill of **$1.00**: $0.94 of requests and
+$0.065 of storage, the bucket having passed the 10 GB always-free allowance
+in October. On AWS at $0.087–0.12/GB the same egress is $141–194, so the
+egress thesis holds at full-month scale. The $0.50/month figure is low by
+2x, for the request-count reason above. The month is not uniform: October's
+first nine days carry 83% of both the egress and the cost, a pace of about
+4.8 TB and $3.00 for October, just under Requirement 6.5's 5 TB ceiling.
+The figures, and what is and is not known about why October is faster,
+are in task 11.
 
 **One caveat on the source.** Until September 10 the audit reported
 "no Object Storage line yet this month", and that was false — the query asked
