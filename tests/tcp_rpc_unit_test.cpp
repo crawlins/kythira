@@ -13,6 +13,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -529,128 +530,6 @@ BOOST_AUTO_TEST_CASE(test_connect_to_falls_back_across_resolved_addresses,
     server.stop();
 }
 
-namespace {
-
-auto loopback_dial_address(std::uint16_t port) -> kythira::net_bind::dial_address {
-    kythira::net_bind::dial_address a;
-    auto& sin = reinterpret_cast<sockaddr_in&>(a.addr);
-    sin.sin_family = AF_INET;
-    sin.sin_port = htons(port);
-    sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    a.len = sizeof(sockaddr_in);
-    a.family = AF_INET;
-    a.socktype = SOCK_STREAM;
-    a.protocol = IPPROTO_TCP;
-    return a;
-}
-
-}  // namespace
-
-// A name's last answer is served while it is fresh; once stale, exactly one
-// caller is told to look it up again, and a failed lookup keeps the answer.
-BOOST_AUTO_TEST_CASE(test_dial_address_cache_plan_and_store, *boost::unit_test::timeout(5)) {
-    kythira::net_bind::dial_address_cache cache;
-    BOOST_TEST(cache.plan("peer:1").addresses.empty());
-    BOOST_TEST(!cache.plan("peer:1").refresh);
-
-    cache.store("peer:1", {loopback_dial_address(1)});
-    auto fresh = cache.plan("peer:1");
-    BOOST_TEST(fresh.addresses.size() == 1U);
-    BOOST_TEST(!fresh.refresh);
-
-    // A failed lookup on an unknown name leaves nothing cached.
-    cache.store("peer:2", {});
-    BOOST_TEST(cache.plan("peer:2").addresses.empty());
-}
-
-BOOST_AUTO_TEST_CASE(test_dial_address_cache_one_refresher_when_stale,
-                     *boost::unit_test::timeout(30)) {
-    kythira::net_bind::dial_address_cache cache;
-    cache.store("peer:1", {loopback_dial_address(1)});
-    std::this_thread::sleep_for(kythira::net_bind::dial_address_cache::k_fresh_for +
-                                std::chrono::milliseconds(100));
-
-    auto first = cache.plan("peer:1");
-    auto second = cache.plan("peer:1");
-    BOOST_TEST(first.refresh);
-    BOOST_TEST(!second.refresh);  // the first caller is already refreshing
-    BOOST_TEST(second.addresses.size() == 1U);
-
-    cache.store("peer:1", {});  // the refresh failed: keep the old answer
-    auto after_failure = cache.plan("peer:1");
-    BOOST_TEST(after_failure.addresses.size() == 1U);
-    BOOST_TEST(after_failure.refresh);  // still stale, so try again
-
-    cache.store("peer:1", {loopback_dial_address(2)});
-    auto refreshed = cache.plan("peer:1");
-    BOOST_TEST(!refreshed.refresh);
-    BOOST_TEST(refreshed.addresses.size() == 1U);
-}
-
-// A failed dial asks for a lookup at most once per k_retry_after, and never
-// while one is in flight.
-BOOST_AUTO_TEST_CASE(test_dial_address_cache_retry_after_failed_dial,
-                     *boost::unit_test::timeout(10)) {
-    kythira::net_bind::dial_address_cache cache;
-    BOOST_TEST(!cache.claim_retry("peer:1"));  // nothing cached: dial resolves itself
-
-    cache.store("peer:1", {loopback_dial_address(1)});
-    BOOST_TEST(cache.claim_retry("peer:1"));
-    BOOST_TEST(!cache.claim_retry("peer:1"));  // in flight
-    cache.store("peer:1", {});
-    BOOST_TEST(!cache.claim_retry("peer:1"));  // too soon after the last one
-    std::this_thread::sleep_for(kythira::net_bind::dial_address_cache::k_retry_after +
-                                std::chrono::milliseconds(100));
-    BOOST_TEST(cache.claim_retry("peer:1"));
-}
-
-// A peer that comes back at a new address (a restarted container) is
-// reached there soon after a dial to the old one fails, not only once the
-// cached answer goes stale.
-BOOST_AUTO_TEST_CASE(test_connect_to_follows_a_moved_peer, *boost::unit_test::timeout(10)) {
-    std::uint16_t port = find_free_port();
-    kythira::tcp_rpc_server server(port, "127.0.0.1");
-    server.start();
-    auto stale = loopback_dial_address(port);
-    reinterpret_cast<sockaddr_in&>(stale.addr).sin_addr.s_addr = htonl(0x7f000002);  // 127.0.0.2
-    kythira::net_bind::dial_address_cache::instance().store("localhost:" + std::to_string(port),
-                                                            {stale});
-
-    int fd = -1;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (fd < 0 && std::chrono::steady_clock::now() < deadline) {
-        fd = kythira::tcp_detail::connect_to("localhost", port, std::chrono::milliseconds(500));
-        if (fd < 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-    }
-    BOOST_TEST(fd >= 0);
-    if (fd >= 0) {
-        ::close(fd);
-    }
-    server.stop();
-}
-
-// A peer whose name cannot be resolved right now is still dialled at the
-// address it last resolved to, so a stalled resolver does not stop RPCs to
-// peers that are up.
-BOOST_AUTO_TEST_CASE(test_connect_to_uses_last_resolved_address, *boost::unit_test::timeout(10)) {
-    std::uint16_t port = find_free_port();
-    kythira::tcp_rpc_server server(port, "127.0.0.1");
-    server.start();
-    const std::string host = "kythira-no-such-host.invalid";
-    BOOST_TEST(kythira::tcp_detail::connect_to(host, port, std::chrono::milliseconds(2000)) < 0);
-
-    kythira::net_bind::dial_address_cache::instance().store(host + ':' + std::to_string(port),
-                                                            {loopback_dial_address(port)});
-    int fd = kythira::tcp_detail::connect_to(host, port, std::chrono::milliseconds(2000));
-    BOOST_TEST(fd >= 0);
-    if (fd >= 0) {
-        ::close(fd);
-    }
-    server.stop();
-}
-
 BOOST_AUTO_TEST_CASE(test_server_default_bind_is_all_interfaces, *boost::unit_test::timeout(10)) {
     auto other = non_loopback_ipv4();
     if (!other) {
@@ -705,6 +584,74 @@ BOOST_AUTO_TEST_CASE(test_request_vote_round_trip, *boost::unit_test::timeout(15
     BOOST_TEST(resp._vote_granted == true);
 
     server.stop();
+}
+
+// The server tells its peer-seen handler which node an RPC claims to be
+// from and where the connection came from, before the handler runs.
+BOOST_AUTO_TEST_CASE(test_server_reports_where_a_sender_connected_from,
+                     *boost::unit_test::timeout(15)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+
+    std::mutex mu;
+    std::vector<std::pair<std::uint64_t, std::string>> seen;
+    server.set_peer_seen_handler(
+        [&](std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+            char host[NI_MAXHOST] = {};
+            ::getnameinfo(reinterpret_cast<const sockaddr*>(&from), len, host, sizeof host, nullptr,
+                          0, NI_NUMERICHOST);
+            std::lock_guard lock(mu);
+            seen.emplace_back(id, host);
+        });
+    server.register_request_pre_vote_handler([](const kythira::request_pre_vote_request<>&) {
+        return kythira::request_pre_vote_response<>{};
+    });
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    client.add_peer(1, "127.0.0.1", port);
+    kythira::request_pre_vote_request<> req{};
+    req._candidate_id = 7;
+    std::move(client.send_request_pre_vote(1, req, std::chrono::milliseconds{5000})).get();
+
+    std::lock_guard lock(mu);
+    BOOST_REQUIRE_EQUAL(seen.size(), 1u);
+    BOOST_TEST(seen[0].first == 7u);
+    BOOST_TEST(seen[0].second == "127.0.0.1");
+    server.stop();
+}
+
+// note_peer_seen() hands the resolver the sender's address, on the peer's
+// registered port, as where to dial the peer's name while it does not
+// resolve.
+BOOST_AUTO_TEST_CASE(test_client_learns_a_peer_address_from_where_it_spoke_from,
+                     *boost::unit_test::timeout(15)) {
+    kythira::tcp_rpc_client client;
+    client.add_peer(3, "kythira-moved-peer.invalid", 7003);
+
+    sockaddr_storage from{};
+    auto& sin = reinterpret_cast<sockaddr_in&>(from);
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons(40000);  // an ephemeral source port, not the peer's
+    BOOST_REQUIRE_EQUAL(::inet_pton(AF_INET, "192.0.2.33", &sin.sin_addr), 1);
+    // The handler must survive the client being moved into a node, as
+    // chaos_node does after wiring it to the server.
+    auto handler = client.peer_seen_handler();
+    kythira::tcp_rpc_client moved_to(std::move(client));
+    handler(3, from, sizeof(sockaddr_in));
+
+    auto key =
+        kythira::net_resolve::detail::key_for("kythira-moved-peer.invalid", "7003", SOCK_STREAM);
+    auto addresses = kythira::net_resolve::resolve_using(key, std::chrono::milliseconds{2000}, [] {
+        return kythira::net_resolve::lookup_outcome{std::nullopt, false};
+    });
+    BOOST_REQUIRE(addresses.has_value());
+    BOOST_REQUIRE_EQUAL(addresses->size(), 1u);
+    const auto& a = reinterpret_cast<const sockaddr_in&>(addresses->front().addr);
+    char host[INET_ADDRSTRLEN] = {};
+    ::inet_ntop(AF_INET, &a.sin_addr, host, sizeof host);
+    BOOST_TEST(host == "192.0.2.33");
+    BOOST_TEST(ntohs(a.sin_port) == 7003u);
 }
 
 BOOST_AUTO_TEST_CASE(test_append_entries_round_trip, *boost::unit_test::timeout(15)) {
@@ -813,6 +760,41 @@ BOOST_AUTO_TEST_CASE(test_cluster_join_round_trip_by_address, *boost::unit_test:
     BOOST_REQUIRE(seen.has_value());
     BOOST_TEST(seen->node_id == 4u);
     BOOST_TEST(seen->contact_address == "node-4:7000");
+    server.stop();
+}
+
+// A node that joins has told the server where it is: the host its
+// ClusterJoin advertises is recorded as reachable at the address the join
+// came from, so the leader can dial it before its name resolves.
+BOOST_AUTO_TEST_CASE(test_server_learns_a_joiner_address_from_its_join,
+                     *boost::unit_test::timeout(15)) {
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    server.register_cluster_join_handler([](const kythira::cluster_join_request<>&) {
+        return kythira::cluster_join_response<>{true, std::nullopt};
+    });
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    kythira::cluster_join_request<> req{.node_id = 9,
+                                        .contact_address = "kythira-joiner.invalid:7009"};
+    auto resp = client
+                    .send_cluster_join_request("127.0.0.1:" + std::to_string(port), req,
+                                               std::chrono::milliseconds{5000})
+                    .get();
+    BOOST_REQUIRE(resp.is_accepted());
+
+    auto key = kythira::net_resolve::detail::key_for("kythira-joiner.invalid", "7009", SOCK_STREAM);
+    auto addresses = kythira::net_resolve::resolve_using(key, std::chrono::milliseconds{2000}, [] {
+        return kythira::net_resolve::lookup_outcome{std::nullopt, false};
+    });
+    BOOST_REQUIRE(addresses.has_value());
+    BOOST_REQUIRE_EQUAL(addresses->size(), 1u);
+    const auto& a = reinterpret_cast<const sockaddr_in&>(addresses->front().addr);
+    char host[INET_ADDRSTRLEN] = {};
+    ::inet_ntop(AF_INET, &a.sin_addr, host, sizeof host);
+    BOOST_TEST(host == "127.0.0.1");
+    BOOST_TEST(ntohs(a.sin_port) == 7009u);
     server.stop();
 }
 

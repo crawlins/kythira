@@ -53,6 +53,7 @@
 /// backend's default continuation affinity.
 
 #include <raft/types.hpp>
+#include <raft/bounded_resolver.hpp>
 #include <raft/network.hpp>
 #include <raft/http_exceptions.hpp>
 #include <raft/metrics.hpp>
@@ -732,6 +733,22 @@ public:
                           std::chrono::milliseconds timeout)
         -> future_template<kythira::timeout_now_response<>>;
 
+    /// @brief An RPC from node `id` arrived from `from` (the server's
+    ///     peer-seen handler). Recorded with `net_resolve::learn()` as where
+    ///     to dial `id`'s URL host, on the URL's port, while that name
+    ///     cannot be resolved: a peer that restarted at a new address under
+    ///     rootless Podman is reached this way while aardvark-dns still
+    ///     answers nothing (see bounded_resolver.hpp). A URL whose host is an
+    ///     address literal needs no hint and gets none.
+    auto note_peer_seen(std::uint64_t id, const sockaddr_storage& from, socklen_t len) -> void;
+
+    /// @brief `note_peer_seen()` packaged for
+    ///     `boost_beast_server::set_peer_seen_handler()`. It carries its own
+    ///     copy of the URL table rather than referring to this client, so it
+    ///     outlives any move or destruction of the client.
+    [[nodiscard]] auto peer_seen_handler() const
+        -> std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)>;
+
     /// @brief Validates the configured TLS material, then drops every pooled
     ///     connection so subsequent RPCs build fresh ones using the reloaded
     ///     material.
@@ -773,16 +790,23 @@ private:
         }
     };
 
-    /// @brief Where a target lives, resolved once and cached.
+    /// @brief Where a target lives, resolved for each new connection.
     ///
-    /// Resolution is synchronous and happens under `_mutex`. Under the previous
-    /// one-connection-per-target scheme that cost was paid once per target; with
-    /// exclusive checkout a burst of concurrent RPCs to a cold target would
-    /// otherwise each resolve it, serialized behind the lock.
+    /// Resolution runs on the RPC's calling thread but outside `_mutex`, and
+    /// is bounded by the RPC's timeout (net_resolve::resolve()): a peer whose
+    /// name takes seconds to fail, as a stopped container's does under
+    /// rootless Podman, used to hold `_mutex` for that long and stall every
+    /// RPC to every other peer behind it. The resolver remembers each answer
+    /// and refreshes it in the background, so this client keeps no cache of
+    /// its own: one here outlived a peer that restarted at a new address.
     struct resolved_target {
         /// Every address the target's host resolved to, tried in order.
         std::vector<net::ip::tcp::endpoint> endpoints;
         std::string host_header;
+        /// What was resolved, so a failed connect can report the addresses
+        /// unreachable (net_resolve::mark_unreachable()).
+        std::string host;
+        std::string port;
     };
 
     /// @brief One connection plus what is needed to re-establish it.
@@ -795,6 +819,8 @@ private:
         std::shared_ptr<beast_detail::beast_connection> connection;
         std::vector<net::ip::tcp::endpoint> endpoints;
         std::string host_header;
+        std::string host;
+        std::string port;
         std::chrono::steady_clock::time_point last_used;
         /// The TLS generation this connection was built under. A reload bumps
         /// the client's counter; a lease acquired before it must not be pooled
@@ -839,6 +865,12 @@ private:
         }
         [[nodiscard]] auto host_header() const -> const std::string& { return _conn.host_header; }
 
+        /// @brief None of `endpoints()` could be connected to: tell the
+        /// resolver before anyone dials them again.
+        auto mark_unreachable(std::chrono::steady_clock::time_point dialled_at) const -> void {
+            kythira::net_resolve::mark_unreachable(_conn.host, _conn.port, SOCK_STREAM, dialled_at);
+        }
+
     private:
         boost_beast_client* _owner;
         std::uint64_t _target;
@@ -880,7 +912,6 @@ private:
     /// connection — absent from `_idle_connections` by definition — is closed
     /// too, which is what makes the drain below terminate.
     std::vector<std::weak_ptr<beast_detail::beast_connection>> _all_connections;
-    std::unordered_map<std::uint64_t, resolved_target> _resolved_targets;
     std::uint64_t _tls_generation{0};
     std::jthread _auto_reload_thread;
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
@@ -913,14 +944,19 @@ private:
     /// dangling-reference crash — the old signature returned
     /// `pooled_connection&`, and any concurrent teardown erased the map node
     /// underneath it.
-    auto acquire_connection(std::uint64_t target) -> pooled_connection;
+    auto acquire_connection(std::uint64_t target, std::chrono::milliseconds timeout)
+        -> pooled_connection;
     /// @brief Return a leased connection. Pooled only when `reusable` and the
     /// TLS generation still matches; dropped otherwise.
     auto release_connection(std::uint64_t target, pooled_connection conn, bool reusable) -> void;
-    /// @brief Build a fresh connection to `target`. Caller holds `_mutex`.
-    auto make_connection(std::uint64_t target) -> pooled_connection;
+    /// @brief Build a fresh connection to `target`. Caller must NOT hold
+    /// `_mutex`: resolving the target can block for up to `timeout`.
+    auto make_connection(std::uint64_t target, std::chrono::milliseconds timeout)
+        -> pooled_connection;
 
-    auto resolve_target(std::uint64_t target) -> const resolved_target&;
+    /// @brief Where `target` lives, resolved within `timeout` and without
+    /// `_mutex`. Throws when the name does not resolve in time.
+    auto resolve_target(std::uint64_t target, std::chrono::milliseconds timeout) -> resolved_target;
 
     /// @param attempted Media types already refused by this peer for this call.
     ///        Empty on the caller's first entry; the 415 retry path re-enters
@@ -1060,7 +1096,18 @@ public:
     auto dispatch(std::string_view target, const std::vector<std::byte>& body,
                   const std::string& request_media_type, const std::vector<std::string>& accepted,
                   std::string& response_body, unsigned& status_code,
-                  std::string& response_media_type) -> void;
+                  std::string& response_media_type,
+                  const std::optional<net::ip::tcp::endpoint>& from = std::nullopt) -> void;
+
+    using peer_seen_fn = std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)>;
+
+    /// @brief Called, before the registered handler, with the node an RPC
+    ///     names as its sender (the candidate of a vote request, the leader
+    ///     of the rest, the requester of a log fetch) and the address the
+    ///     request came from. `boost_beast_client::peer_seen_handler()` is
+    ///     the intended handler: it records where a peer can be dialled
+    ///     while its name does not resolve. Set it before `start()`.
+    auto set_peer_seen_handler(peer_seen_fn handler) -> void { _peer_seen = std::move(handler); }
 
     /// @brief The media type used when a peer declares none.
     ///
@@ -1116,6 +1163,7 @@ private:
         _request_pre_vote_handler;
     std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
         _timeout_now_handler;
+    peer_seen_fn _peer_seen;
     /// `max_concurrent_connections`, shared by every acceptor. A
     /// `shared_ptr` because each session's slot keeps it alive, so a session
     /// torn down after this server is gone still releases safely.

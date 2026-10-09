@@ -297,6 +297,9 @@ int main(int argc, char** argv) {
         for (const auto& p : cfg.peers) {
             tls_client.add_peer(p.node_id, p.host, p.port);
         }
+        // As on the plain path below: a sender's address, learned from its
+        // RPCs, stands in while its name cannot be resolved.
+        tls_server.set_peer_seen_handler(tls_client.peer_seen_handler());
         std::cerr << "[info] rpc: mutual TLS (cert=" << cfg.rpc_tls_cert_path
                   << " ca=" << cfg.rpc_tls_ca_path << ")\n";
 
@@ -325,6 +328,9 @@ int main(int argc, char** argv) {
     for (const auto& p : cfg.peers) {
         client.add_peer(p.node_id, p.host, p.port);
     }
+    // A peer that speaks to us has told us where it is: how a follower that
+    // restarted at a new address is reached while its name does not resolve.
+    server.set_peer_seen_handler(client.peer_seen_handler());
     // Members that joined after this node started are not in PEERS.
     if (cfg.peer_address_template) {
         client.set_peer_resolver([cfg](const std::uint64_t& id) { return cfg.resolve(id); });

@@ -260,6 +260,45 @@ private:
     resolver_fn _resolver;
 };
 
+// An RPC from node `id` arrived from `from`: tell the resolver that `id`'s
+// registered host, on its registered port, can be found there while its
+// name does not resolve (net_resolve::learn()). A peer registered by
+// address literal needs no hint and gets none.
+inline void learn_peer_address(const peer_registry<std::uint64_t>& peers, std::uint64_t id,
+                               const sockaddr_storage& from, socklen_t len) {
+    auto peer = peers.lookup(id);
+    if (!peer) {
+        return;
+    }
+    if (auto a = net_resolve::address_from(from, len, peer->second, SOCK_STREAM)) {
+        net_resolve::learn(peer->first, std::to_string(peer->second), SOCK_STREAM, *a);
+    }
+}
+
+// A node that asks to join has told us where it is: `advertised` is the
+// "host:port" its ClusterJoin carries, `fd` the connection it came over.
+// Recorded like learn_peer_address(), keyed by the advertised host, which is
+// what the leader will dial once it adds the node. A new member's name is
+// the one the leader can least afford to look up: under rootless Podman
+// the join tends to arrive while aardvark-dns is still answering the
+// leader nothing about anyone (the kill that made room for the new node
+// started that), and until the leader can reach the learner no
+// configuration change commits (see bounded_resolver.hpp).
+inline void learn_advertised_address(const std::string& advertised, int fd) {
+    auto hp = parse_host_port(advertised);
+    if (!hp) {
+        return;
+    }
+    sockaddr_storage from{};
+    socklen_t len = sizeof(from);
+    if (::getpeername(fd, reinterpret_cast<sockaddr*>(&from), &len) != 0) {
+        return;
+    }
+    if (auto a = net_resolve::address_from(from, len, hp->second, SOCK_STREAM)) {
+        net_resolve::learn(hp->first, std::to_string(hp->second), SOCK_STREAM, *a);
+    }
+}
+
 // Counts RPCs in flight per endpoint so that one unreachable peer cannot take
 // every thread of tcp_rpc_client's pool.  Shared with the dispatched tasks,
 // which release their slot when they finish.
@@ -346,7 +385,7 @@ public:
           _inflight(std::make_shared<tcp_detail::inflight_limiter>(k_max_inflight_per_endpoint)) {}
 
     void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
-        _peers.add_peer(id, std::move(host), port);
+        _peers->add_peer(id, std::move(host), port);
     }
 
     // Called by node<Types> with the address a joining node advertised in its
@@ -354,14 +393,36 @@ public:
     // `address` is "host:port"; anything else is ignored.
     void update_peer_address(std::uint64_t id, const std::string& address) {
         if (auto hp = tcp_detail::parse_host_port(address)) {
-            _peers.add_peer(id, std::move(hp->first), hp->second);
+            _peers->add_peer(id, std::move(hp->first), hp->second);
         }
+    }
+
+    // An RPC from node `id` arrived from `from` (tcp_rpc_server's peer-seen
+    // handler). Recorded with the resolver as where to dial `id`'s host
+    // when its name cannot be resolved: a peer that restarted at a new
+    // address under rootless Podman is found this way while aardvark-dns
+    // is still answering nothing (see bounded_resolver.hpp). A peer
+    // registered by address literal needs no hint and gets none.
+    void note_peer_seen(std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+        tcp_detail::learn_peer_address(*_peers, id, from, len);
+    }
+
+    // note_peer_seen() as a handler for tcp_rpc_server::set_peer_seen_handler.
+    // It shares this client's peer table rather than referring to the
+    // client, so it keeps working after the client is moved into the node
+    // (chaos_node moves it; a handler capturing `this` then looked up peers
+    // in an empty table and learned nothing).
+    [[nodiscard]] auto peer_seen_handler() const
+        -> std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)> {
+        return [peers = _peers](std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+            tcp_detail::learn_peer_address(*peers, id, from, len);
+        };
     }
 
     // Supplies an address for a peer that was never registered: a node that
     // joined after this one started, which the static peer table cannot name.
     void set_peer_resolver(tcp_detail::peer_registry<std::uint64_t>::resolver_fn resolver) {
-        _peers.set_resolver(std::move(resolver));
+        _peers->set_resolver(std::move(resolver));
     }
 
     // ClusterJoin and ClusterLeave are addressed rather than sent to a node
@@ -463,7 +524,7 @@ private:
     template<typename Resp, typename Deser>
     auto call(std::uint64_t target, const std::vector<std::byte>& payload,
               std::chrono::milliseconds timeout, Deser deser) -> future_default<Resp> {
-        auto peer = _peers.lookup(target);
+        auto peer = _peers->lookup(target);
         if (!peer) {
             return future_factory_default::makeExceptionalFuture<Resp>(std::make_exception_ptr(
                 network_exception("tcp_rpc_client: unknown peer " + std::to_string(target))));
@@ -505,7 +566,7 @@ private:
                     if (fd < 0) {
                         return std::make_exception_ptr(
                             network_exception("tcp_rpc_client: connect failed to " + host + ":" +
-                                              std::to_string(port)));
+                                              std::to_string(port) + ": " + std::strerror(errno)));
                     }
 
                     struct Guard {
@@ -546,7 +607,9 @@ private:
         return future;
     }
 
-    tcp_detail::peer_registry<std::uint64_t> _peers;
+    // Shared with the handler peer_seen_handler() returns.
+    std::shared_ptr<tcp_detail::peer_registry<std::uint64_t>> _peers{
+        std::make_shared<tcp_detail::peer_registry<std::uint64_t>>()};
     serializer_t _ser;
     std::shared_ptr<kythira::executor_default> _executor;
     std::shared_ptr<tcp_detail::inflight_limiter> _inflight;
@@ -569,6 +632,10 @@ public:
     using cj_fn = std::function<cluster_join_response<>(const cluster_join_request<>&)>;
     using cl_fn = std::function<cluster_leave_response<>(const cluster_leave_request<>&)>;
     using fl_fn = std::function<fetch_log_entries_response<>(const fetch_log_entries_request<>&)>;
+    // Called with the node an RPC claims to come from and the address it
+    // actually came from, before the RPC's handler runs.
+    using peer_seen_fn =
+        std::function<void(std::uint64_t node_id, const sockaddr_storage& from, socklen_t len)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
     explicit tcp_rpc_server(std::uint16_t port, tcp_server_limits limits = {})
@@ -606,6 +673,7 @@ public:
           _cj(std::move(other._cj)),
           _cl(std::move(other._cl)),
           _fl(std::move(other._fl)),
+          _peer_seen(std::move(other._peer_seen)),
           _ser(std::move(other._ser)) {
         other._running = false;
     }
@@ -622,6 +690,11 @@ public:
     void register_cluster_leave_handler(cl_fn h) { _cl = std::move(h); }
     // Satisfies kythira::network_server_with_log_fetch (peer-to-peer catch-up).
     void register_fetch_log_entries_handler(fl_fn h) { _fl = std::move(h); }
+    // Where each RequestVote, RequestPreVote, TimeoutNow, AppendEntries and
+    // InstallSnapshot came from, by the sender it names. The claim is as
+    // trusted as the RPC itself: this transport authenticates neither.
+    // Typically wired to tcp_rpc_client::note_peer_seen.
+    void set_peer_seen_handler(peer_seen_fn h) { _peer_seen = std::move(h); }
 
     void start() {
         if (_running.exchange(true)) {
@@ -704,17 +777,29 @@ private:
         try {
             std::vector<std::byte> resp;
             if (type == "request_vote_request" && _rv) {
-                resp = _ser.serialize(_rv(_ser.deserialize_request_vote_request(bytes)));
+                auto req = _ser.deserialize_request_vote_request(bytes);
+                peer_seen(req.candidate_id(), fd);
+                resp = _ser.serialize(_rv(req));
             } else if (type == "request_pre_vote_request" && _pv) {
-                resp = _ser.serialize(_pv(_ser.deserialize_request_pre_vote_request(bytes)));
+                auto req = _ser.deserialize_request_pre_vote_request(bytes);
+                peer_seen(req.candidate_id(), fd);
+                resp = _ser.serialize(_pv(req));
             } else if (type == "timeout_now_request" && _tn) {
-                resp = _ser.serialize(_tn(_ser.deserialize_timeout_now_request(bytes)));
+                auto req = _ser.deserialize_timeout_now_request(bytes);
+                peer_seen(req.leader_id(), fd);
+                resp = _ser.serialize(_tn(req));
             } else if (type == "append_entries_request" && _ae) {
-                resp = _ser.serialize(_ae(_ser.deserialize_append_entries_request(bytes)));
+                auto req = _ser.deserialize_append_entries_request(bytes);
+                peer_seen(req.leader_id(), fd);
+                resp = _ser.serialize(_ae(req));
             } else if (type == "install_snapshot_request" && _is) {
-                resp = _ser.serialize(_is(_ser.deserialize_install_snapshot_request(bytes)));
+                auto req = _ser.deserialize_install_snapshot_request(bytes);
+                peer_seen(req.leader_id(), fd);
+                resp = _ser.serialize(_is(req));
             } else if (type == "cluster_join_request" && _cj) {
-                resp = _ser.serialize(_cj(_ser.deserialize_cluster_join_request(bytes)));
+                auto req = _ser.deserialize_cluster_join_request(bytes);
+                tcp_detail::learn_advertised_address(req.joining_address(), fd);
+                resp = _ser.serialize(_cj(req));
             } else if (type == "cluster_leave_request" && _cl) {
                 resp = _ser.serialize(_cl(_ser.deserialize_cluster_leave_request(bytes)));
             } else if (type == "fetch_log_entries_request" && _fl) {
@@ -725,6 +810,17 @@ private:
             t.enter(phase::reply);
             tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(resp));
         } catch (...) {
+        }
+    }
+
+    void peer_seen(std::uint64_t node_id, int fd) const {
+        if (!_peer_seen) {
+            return;
+        }
+        sockaddr_storage from{};
+        socklen_t len = sizeof(from);
+        if (::getpeername(fd, reinterpret_cast<sockaddr*>(&from), &len) == 0) {
+            _peer_seen(node_id, from, len);
         }
     }
 
@@ -745,6 +841,7 @@ private:
     cj_fn _cj;
     cl_fn _cl;
     fl_fn _fl;
+    peer_seen_fn _peer_seen;
     serializer_t _ser;
 };
 

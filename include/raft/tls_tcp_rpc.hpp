@@ -77,9 +77,11 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <map>
@@ -458,6 +460,11 @@ public:
     client_impl(client_impl&&) = delete;
     auto operator=(client_impl&&) -> client_impl& = delete;
 
+    // See tcp_rpc_client::note_peer_seen.
+    void note_peer_seen(std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+        tcp_detail::learn_peer_address(_peers, id, from, len);
+    }
+
     void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
         _peers.add_peer(id, std::move(host), port);
     }
@@ -546,9 +553,9 @@ public:
 
                     int fd = tcp_detail::connect_to(host, port, timeout);
                     if (fd < 0) {
-                        return std::make_exception_ptr(
-                            network_exception("tls_tcp_rpc_client: connect failed to " + host +
-                                              ":" + std::to_string(port)));
+                        return std::make_exception_ptr(network_exception(
+                            "tls_tcp_rpc_client: connect failed to " + host + ":" +
+                            std::to_string(port) + ": " + std::strerror(errno)));
                     }
                     fd_guard fdg{fd};
 
@@ -624,6 +631,10 @@ public:
     using ae_fn = std::function<append_entries_response<>(const append_entries_request<>&)>;
     using is_fn = std::function<install_snapshot_response<>(const install_snapshot_request<>&)>;
     using fl_fn = std::function<fetch_log_entries_response<>(const fetch_log_entries_request<>&)>;
+    // Called with the node an RPC comes from and the address it came from,
+    // once the certificate has bound the connection to that node.
+    using peer_seen_fn =
+        std::function<void(std::uint64_t node_id, const sockaddr_storage& from, socklen_t len)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
     server_impl(std::uint16_t port, tls_tcp_rpc_config config,
@@ -672,6 +683,9 @@ public:
     void register_install_snapshot_handler(is_fn h) { _is = std::move(h); }
     // Satisfies kythira::network_server_with_log_fetch (peer-to-peer catch-up).
     void register_fetch_log_entries_handler(fl_fn h) { _fl = std::move(h); }
+    // See tcp_rpc_server::set_peer_seen_handler. Here the sender is the node
+    // the connection's certificate binds it to, so the address is trusted.
+    void set_peer_seen_handler(peer_seen_fn h) { _peer_seen = std::move(h); }
 
     void start() {
         if (_running.exchange(true)) {
@@ -812,36 +826,42 @@ private:
                 if (!sender_ok(req.candidate_id())) {
                     return;
                 }
+                peer_seen(req.candidate_id(), fd);
                 resp = _ser.serialize(_rv(req));
             } else if (type == "request_pre_vote_request" && _pv) {
                 auto req = _ser.deserialize_request_pre_vote_request(bytes);
                 if (!sender_ok(req.candidate_id())) {
                     return;
                 }
+                peer_seen(req.candidate_id(), fd);
                 resp = _ser.serialize(_pv(req));
             } else if (type == "timeout_now_request" && _tn) {
                 auto req = _ser.deserialize_timeout_now_request(bytes);
                 if (!sender_ok(req.leader_id())) {
                     return;
                 }
+                peer_seen(req.leader_id(), fd);
                 resp = _ser.serialize(_tn(req));
             } else if (type == "append_entries_request" && _ae) {
                 auto req = _ser.deserialize_append_entries_request(bytes);
                 if (!sender_ok(req.leader_id())) {
                     return;
                 }
+                peer_seen(req.leader_id(), fd);
                 resp = _ser.serialize(_ae(req));
             } else if (type == "install_snapshot_request" && _is) {
                 auto req = _ser.deserialize_install_snapshot_request(bytes);
                 if (!sender_ok(req.leader_id())) {
                     return;
                 }
+                peer_seen(req.leader_id(), fd);
                 resp = _ser.serialize(_is(req));
             } else if (type == "fetch_log_entries_request" && _fl) {
                 auto req = _ser.deserialize_fetch_log_entries_request(bytes);
                 if (!sender_ok(req.requester_id())) {
                     return;
                 }
+                peer_seen(req.requester_id(), fd);
                 resp = _ser.serialize(_fl(req));
             } else {
                 return;
@@ -849,6 +869,17 @@ private:
             t.enter(phase::reply);
             frame_send(raw_ssl, tcp_detail::bytes_to_str(resp));
         } catch (...) {
+        }
+    }
+
+    void peer_seen(std::uint64_t node_id, int fd) const {
+        if (!_peer_seen) {
+            return;
+        }
+        sockaddr_storage from{};
+        socklen_t len = sizeof(from);
+        if (::getpeername(fd, reinterpret_cast<sockaddr*>(&from), &len) == 0) {
+            _peer_seen(node_id, from, len);
         }
     }
 
@@ -871,6 +902,7 @@ private:
     ae_fn _ae;
     is_fn _is;
     fl_fn _fl;
+    peer_seen_fn _peer_seen;
     serializer_t _ser;
 };
 
@@ -888,6 +920,19 @@ public:
 
     void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
         _impl->add_peer(id, std::move(host), port);
+    }
+
+    void note_peer_seen(std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+        _impl->note_peer_seen(id, from, len);
+    }
+
+    // See tcp_rpc_client::peer_seen_handler(); shares the implementation, so
+    // it outlives any copy of this handle.
+    [[nodiscard]] auto peer_seen_handler() const
+        -> std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)> {
+        return [impl = _impl](std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+            impl->note_peer_seen(id, from, len);
+        };
     }
 
     auto reload_identity(std::string cert_path, std::string key_path) -> void {
@@ -980,6 +1025,9 @@ public:
 
     void register_request_vote_handler(tls_detail::server_impl::rv_fn h) {
         _impl->register_request_vote_handler(std::move(h));
+    }
+    void set_peer_seen_handler(tls_detail::server_impl::peer_seen_fn h) {
+        _impl->set_peer_seen_handler(std::move(h));
     }
     void register_request_pre_vote_handler(tls_detail::server_impl::pv_fn h) {
         _impl->register_request_pre_vote_handler(std::move(h));

@@ -1455,6 +1455,10 @@ add_network_test(discovery_node_common_test discovery_node_common_test.cpp)
 target_include_directories(discovery_node_common_test PRIVATE
     "${CMAKE_SOURCE_DIR}/cmd/discovery_node_common")
 
+# net_resolve::resolve(), the deadline every transport's dial now puts on
+# name resolution. Header-only and standard-library-only, like the above.
+add_network_test(bounded_resolver_test bounded_resolver_test.cpp)
+
 if(httplib_FOUND)
     add_raft_completion_test(multi_raft_driver_agreement_test
                              multi_raft_driver_agreement_test.cpp)
