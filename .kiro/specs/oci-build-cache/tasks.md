@@ -1,8 +1,15 @@
 # Implementation Plan — OCI-Hosted Build Cache
 
-## Status: 11/12 tasks complete (1, 1a, 2, 3, 4, 5, 6, 7, 7a, 8, 9, 10, 12)
+## Status: 12/12 tasks complete (1, 1a, 2, 3, 4, 5, 6, 7, 7a, 8, 9, 10, 11, 12)
 
-**Last Updated**: September 9, 2026. **Both caches are live on `main`** and
+**Last Updated**: October 9, 2026, when task 11's full-month audit closed
+the spec: **$1.00 and 1.62 TB of egress for September 9 to October 9**,
+inside both of Requirement 6.5's ceilings and inside the pre-registered
+1 to 5 TB band, at twice the $0.50 estimate. October's first nine days run
+at about twelve times September's daily rate, which is recorded in task 11
+and carried as a follow-up rather than absorbed.
+
+**September 9, 2026: both caches are live on `main`** and
 verified there by run
 [34296062792](https://github.com/crawlins/kythira/actions/runs/34296062792),
 15 of 15 jobs green: vcpkg's archives through `x-aws` and this project's
@@ -976,9 +983,11 @@ bucket does.
     property of that translation unit rather than of the key.
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
-- [ ] 11. Month-one audit and the cost cross-reference — **the cross-reference
-      is done and the bill is READABLE; only the full-month window is still
-      owed.** "The bill genuinely has to wait for a month to exist", which is
+- [x] 11. Month-one audit and the cost cross-reference — **closed October
+      9, 2026, on the full-month window** (see "October 9, 2026: the full
+      month" at the end of this task). Until then: the cross-reference
+      was done and the bill READABLE, and only the full-month window was
+      owed. "The bill genuinely has to wait for a month to exist", which is
       what this line said until September 10, was **half wrong, and wrong for
       this spec's signature reason**: the bill existed and the audit could not
       see it. See "The fourth variant" below.
@@ -1056,13 +1065,14 @@ bucket does.
     held for roughly 3.6 of 30 days is 0.90. The independent agreement is
     what says the reading is the right quantity and not a coincidence.
 
-  - **Still owed, and it is now only this:** re-run on or after **October 9,
+  - ~~**Still owed, and it is now only this:** re-run on or after **October 9,
     2026** for a *full month* at steady cadence, and set the egress against
     the **1 to 5 TB** pre-registered. 130 GB in eleven days is not 1/30th of a
     month — the caches went live on `main` on September 9, and September 10
     alone carried six pull requests at ~15 jobs each. The window is short and
     unrepresentative in both directions; it neither confirms nor refutes the
-    band.
+    band.~~
+    **Done October 9, 2026**; see the last entry in this task.
   - ~~Add the one-paragraph cross-reference to
     `doc/sccache_dogfood_cost_estimate.md` with the measured figure.~~
     **Done September 10, 2026**, as "Measured against this estimate". It
@@ -1102,6 +1112,78 @@ bucket does.
     does. *A stub more permissive than the service it stands in for tests
     nothing* — that sentence was already in this file, about `iam user list`,
     and it was true a second time.
+  - **October 9, 2026: the full month.** `audit.sh` against the real
+    tenancy, exit 0, leak check clean (run on the maintainer's machine with
+    `--compartment-id` set to the tenancy root, since `$OCI_CI_COMPARTMENT_ID`
+    is a CI variable and not set there). Bucket, against the September 9
+    baseline:
+
+    | | September 9 | October 9 |
+    | --- | ---: | ---: |
+    | `vcpkg/x64-linux/` | 267 objects, 3,691 MiB | 515 objects, 14,127 MiB |
+    | `vcpkg/arm64-linux/` | 131 objects, 1,373 MiB | 339 objects, 6,522 MiB |
+    | `sccache/` | 4,535 objects, 2,282 MiB | 77,064 objects, 65,405 MiB |
+    | total | ~7.2 GiB | **~84.0 GiB** |
+
+    Both lifecycle rules present and enabled (sccache/ 30 days, vcpkg/ 90).
+    Both keys ACTIVE, created 2026-09-06T10:25:52Z (rw) and 10:25:56Z (ro),
+    unmoved. The leak check listed the policy `kythira-build-cache-access`
+    twice among eight expected resources; it is named by this spec either
+    way, and why the search returns it twice was not looked into.
+
+    `audit.sh`'s usage block is month-to-date, so on October 9 it reads only
+    October. The full window is the same query `audit.sh` makes
+    (`--granularity MONTHLY --query-type COST --group-by
+    '["service","skuName"]'`) over **2026-09-09 to 2026-10-10**, which
+    returned 18 rows, six of them Object Storage:
+
+    | Object Storage line | Sept 9–30 | Oct 1–9 | window |
+    | --- | ---: | ---: | ---: |
+    | Requests | 522,023 · $0.171265 | 2,297,856 · $0.764271 | 2,819,879 · **$0.935536** |
+    | Outbound Data Transfer Zone 1 | 273.50 GB · $0 | 1,343.91 GB · $0 | **1,617.42 GB** · $0 |
+    | Storage | 7.63 GB-months · $0 | 12.56 GB-months · $0.065268 | **$0.065268** |
+    | | **$0.171265** | **$0.829539** | **$1.000804** |
+
+    The query ran at about 15:00 UTC on October 9, so the October column
+    is roughly 8.6 days.
+
+    **The request quantity changed unit since September 10, and the bill
+    checks it.** On September 10 the API reported requests as a raw count
+    (202,831); this time it reports units of 10,000 (52.2023 and 229.7856).
+    At $0.0034 per 10,000 after a 50,000-request monthly allowance,
+    October's (229.7856 − 5) × 0.0034 is $0.76427104, **exact to the eighth
+    place**. September's $0.171265 is 503,721 billed requests, leaving
+    18,302 of the allowance used by September 1–8, which is consistent
+    with the 202,831 recorded for September 1–11. Read the quantity
+    column without that check and the request count is off by ten
+    thousand times.
+
+    **Against Requirement 6.5:**
+
+    - **Bill: $1.00 for the month, under the $5 ceiling and 2.0x the $0.50
+      pre-registered.** The estimate is wrong for the reason recorded on
+      September 10: it priced bytes, and requests are 93% of this bill.
+      Storage became a line for the first time in October, because the
+      bucket passed the 10 GB always-free allowance.
+    - **Egress: 1.62 TB, inside the pre-registered 1 to 5 TB band** and
+      under the 5 TB ceiling, all of it inside OCI's 10 TB free allowance.
+      The cost estimate's thesis holds at full-month scale: on AWS at
+      $0.087–0.12/GB this is $141–194 for the month.
+    - **The month is not uniform, and that is the finding to carry.**
+      October's first ~8.6 days carry 83% of the window's egress and 83% of
+      its cost: 156 GB and $0.097 a day against September's 12.4 GB and
+      $0.0078, about twelve times the daily rate. At that rate October's 31 days come to **about 4.8 TB of
+      egress and about $3.00**: inside both ceilings, but at 97% of the
+      5 TB one, and the Usage API lags by hours, so if anything that rate
+      is low.
+      Requirement 6.5 covers the first three months, and a reading of
+      October's whole bill on or after November 1 is the one that can
+      breach it. Why October is faster is **not established**. The vcpkg
+      prefix quadrupled (4.9 to 20.2 GiB) and `sccache/` grew
+      28-fold, which points at cache churn (new vcpkg baselines, new
+      compilers or flags) rather than at more traffic of the same kind,
+      but that is inferred from object counts, not measured. Recorded in
+      `doc/TODO.md`'s Known Follow-ups.
   - _Requirements: 6.5, 7.4, 8.3_
 
 - [x] 12. TODO row and close-out — **September 9, 2026** (the row and the
