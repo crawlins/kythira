@@ -852,8 +852,19 @@ BOOST_AUTO_TEST_CASE(provision_timeout_cleanup, *boost::unit_test::timeout(1500)
     cost_report.resources.push_back(std::move(line));
     billed_line[id] = cost_report.resources.size() - 1;
 
-    BOOST_CHECK_MESSAGE(is_gone(instances.front().GetState().GetName()),
-                        id << " was not terminated by the timeout path");
+    // Polled too, for the same eventual consistency: the listing above can
+    // still report the `pending` state from before the manager's
+    // TerminateInstances landed (CI run 37801934552 saw exactly that on both
+    // arches, then `terminated` 15s later). Nothing else terminates this
+    // instance before wait_terminated below, and a launch never shuts itself
+    // down, so reaching shutting-down or terminated still proves the timeout
+    // path terminated it.
+    const bool gone = wait_until(id + " to leave `pending`/`running`", std::chrono::seconds{60},
+                                 std::chrono::seconds{5}, [&] {
+                                     auto inst = describe_instance(id);
+                                     return inst.has_value() && is_gone(inst->GetState().GetName());
+                                 });
+    BOOST_CHECK_MESSAGE(gone, id << " was not terminated by the timeout path");
     BOOST_CHECK(wait_terminated(id, std::chrono::seconds{300}));
     stop_billing(id);
 }
