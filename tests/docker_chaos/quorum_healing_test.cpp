@@ -246,8 +246,9 @@ BOOST_AUTO_TEST_CASE(dual_follower_kill_5_node_cluster, *boost::unit_test::timeo
     BOOST_CHECK_MESSAGE(f.wait_for_container_absent(victims[1], 5s),
                         "second killed follower was not decommissioned");
     BOOST_CHECK_GT(submitted, 0);
-    BOOST_CHECK_MESSAGE(committed == submitted, "only " << committed << " of " << submitted
-                                                        << " commands committed while healing");
+    CHECK_OR_DUMP(
+        f, committed == submitted,
+        "only " << committed << " of " << submitted << " commands committed while healing");
 
     f.assert_no_split_brain();
 }
