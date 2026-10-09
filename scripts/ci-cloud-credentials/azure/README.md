@@ -52,6 +52,12 @@ full IAM policy documents.
 | `quorum-manager` | `azure_quorum_manager_real_test` | Virtual Machine Contributor, Network Contributor |
 | `key-vault` | `azure_key_vault_ca_provider_real_test` | Key Vault Crypto User (scoped to the vault only) |
 
+Virtual Machine Contributor includes
+`Microsoft.Compute/virtualMachineScaleSets/virtualMachines/write`, which
+`azure_vmss_quorum_manager` needs to set scale-in protection
+(`protectionPolicy`) on the members it adopts
+(`.kiro/specs/group-scale-up-rollback/`), so that change needs no new role.
+
 ## First-time setup
 
 ### 1. Provision the CI identity and role assignments

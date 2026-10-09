@@ -83,7 +83,7 @@ are broader because they also build and tear down test fixtures.
 | Manager | Actions |
 |---|---|
 | EC2 | `ec2:RunInstances`, `ec2:CreateTags`, `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus`, `ec2:TerminateInstances`; plus `iam:PassRole` on the node role when `iam_instance_profile` is set |
-| ASG | `autoscaling:DescribeAutoScalingGroups`, `autoscaling:DescribeAutoScalingInstances`, `autoscaling:UpdateAutoScalingGroup`, `autoscaling:TerminateInstanceInAutoScalingGroup`, `autoscaling:DescribeLifecycleHooks`, `autoscaling:CompleteLifecycleAction`, `ec2:CreateTags`, `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus` |
+| ASG | `autoscaling:DescribeAutoScalingGroups`, `autoscaling:DescribeAutoScalingInstances`, `autoscaling:UpdateAutoScalingGroup`, `autoscaling:TerminateInstanceInAutoScalingGroup`, `autoscaling:SetInstanceProtection`, `autoscaling:DescribeLifecycleHooks`, `autoscaling:CompleteLifecycleAction`, `ec2:CreateTags`, `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus` |
 
 Credentials come from `aws_client_config::credentials_provider`, or, left
 null, the SDK's default chain: environment variables, `~/.aws`, then the
@@ -137,6 +137,38 @@ kythira::aws_ec2_quorum_manager<std::uint64_t, std::string> mgr{cfg};
   `KYTHIRA_TEST_INSTANCE_TYPE`, …, see each file's header and
   `.github/workflows/real-cloud-tests.yml`), not this file's, and exit 77,
   a skip, when unconfigured.
+
+## ASG manager: timeout rollback and scale-in protection
+
+When `provision_timeout` expires before the new instance is adoptable, the
+manager undoes the scale-up without letting Auto Scaling pick a victim
+(`.kiro/specs/group-scale-up-rollback/`). It terminates every instance that
+was not in the group before the increment, by id, with
+`TerminateInstanceInAutoScalingGroup(ShouldDecrementDesiredCapacity=true)`.
+A launch that a lifecycle hook holds in `Pending:Wait` cannot be terminated
+until the hook completes, so the manager lowers the desired capacity by one
+and completes each launch hook with `ABANDON` instead. Only when the group
+lists no new instance does it write the desired capacity back to its old
+value, and it then re-lists the group and names any existing member that
+left. The timeout error ends with what the rollback did, e.g.
+`rollback: removed i-0abc (fresh, Pending)`.
+
+Every instance the manager adopts is set `ProtectedFromScaleIn`, and the
+constructor protects any adopted member of the cluster that is not, so no
+capacity change, from this manager or anything else, makes the ASG choose a
+voter. `decommission_node` still terminates a protected node: protection
+does not block `TerminateInstanceInAutoScalingGroup`. Instances the manager
+has not tagged are never protected. To scale the group in by hand, clear
+protection on the instances you want removed first:
+
+```sh
+aws autoscaling set-instance-protection --auto-scaling-group-name kythira-prod-a \
+    --instance-ids i-0123456789abcdef0 --no-protected-from-scale-in
+```
+
+Run one manager per ASG, and do not scale it with other tooling while the
+manager runs. An instance something else launches during a provision looks
+new to the manager and is terminated if that provision times out.
 
 ## Known limitations
 

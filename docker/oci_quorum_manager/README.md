@@ -97,9 +97,10 @@ oci compute-management instance-pool create \
 
 Start at `--size 0` and let `maintain_quorum` grow each pool to its
 `topology` target. Starting non-zero means the pool launches instances before
-the manager exists to tag them; those instances have no `kythira-node-id`
-tag, so the first `provision_node` call adopts one of them instead of the
-instance it just paid for — harmless, but confusing to watch.
+the manager exists to tag them. The manager adopts only an instance that
+was not in the pool before its own `UpdateInstancePool` call, so those
+untagged instances are never adopted: they keep running and billing until
+you remove them.
 
 ## 3. IAM policy
 
@@ -115,8 +116,8 @@ Allow group kythira-operators to read virtual-network-family in compartment kyth
 and `read virtual-network-family` covers `ListVnicAttachments`/`GetVnic`,
 which is how a node's private IP is discovered. A deployment that grants
 `manage instance-pools` alone provisions successfully and then fails at the
-tagging step, leaving an untagged instance in the pool that the next
-`provision_node` call adopts.
+tagging step, where the manager detaches and terminates the instance it
+just launched, so every provision fails.
 
 For the certificate provider, in the compartment holding the CA:
 
@@ -254,6 +255,30 @@ Five entries: signing golden vectors, the HTTP client's transport behaviour,
 the manager's construction/tagging/fault points, and the two mock-server
 suites covering provisioning, assessment, decommission and certificate
 issuance.
+
+## 8. Timeout rollback
+
+When `provision_timeout` expires before the new instance is adoptable, the
+manager undoes the scale-up without letting the pool pick a victim
+(`.kiro/specs/group-scale-up-rollback/`). It detaches every instance that
+was not in the pool before `UpdateInstancePool`, by id, with
+`DetachInstancePoolInstance(isDecrementSize, isAutoTerminate)`, first
+waiting for the pool to return to `RUNNING`, since OCI refuses a detach
+while it is `SCALING`. Only when the pool lists no new instance does it
+write the pool size back to its old value, and it then re-lists the pool
+and names any existing member that left. The timeout error ends with what
+the rollback did. The `manage instance-pools` statement in §3 covers the
+detach.
+
+Instance pools have no per-instance scale-in protection, so on that last
+path the re-listing is a report, not a prevention: if the pool lists the new
+instance between the manager's final listing and its size write, OCI may
+terminate an existing member instead (it removes the oldest in a fault
+domain first). The window is one listing-to-resize round trip.
+
+Run one manager per pool, and do not resize it with other tooling while the
+manager runs. An instance something else adds during a provision looks new
+to the manager and is detached and terminated if that provision times out.
 
 ## Known limitations
 

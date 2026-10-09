@@ -108,6 +108,14 @@ and **Network Contributor** (the VM manager creates and deletes NICs). This
 is exactly what `scripts/ci-cloud-credentials/azure/policies/quorum-manager.json`
 grants CI.
 
+Virtual Machine Contributor also covers the VMSS manager's scale-in
+protection write. A custom role needs
+`Microsoft.Compute/virtualMachineScaleSets/virtualMachines/write` for it,
+besides `Microsoft.Compute/virtualMachineScaleSets/delete/action`, which the
+timeout rollback and `decommission_node` use to delete a member by name.
+Without the member `write` action the constructor throws as soon as a scale
+set holds an adopted member that is not protected.
+
 Credentials come from `azure_client_config::credential`, or, left null,
 `make_default_credential_chain()`: a service principal from
 `AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`, then an
@@ -171,3 +179,34 @@ money (the full VM suite has cost about four cents). It reads its own test
 variables (`AZURE_SUBSCRIPTION_ID`, `AZURE_TEST_RESOURCE_GROUP`,
 `AZURE_TEST_SUBNET_ID_ZONE{1,2,3}`, `AZURE_TEST_VMSS_NAME`, …, see the file
 and `.github/workflows/real-cloud-tests.yml`), not this file's.
+
+## 7. VMSS manager: timeout rollback and scale-in protection
+
+When `provision_timeout` expires before the new member is adoptable, the
+manager undoes the scale-up without letting the scale set's `scaleInPolicy`
+pick a victim (`.kiro/specs/group-scale-up-rollback/`). It deletes every
+member that was not in the scale set before the capacity `PATCH`, by name,
+with the scale set's `POST .../delete` action, which also lowers
+`sku.capacity`. Only when the scale set lists no new member does it `PATCH`
+the capacity back to its old value, and it then re-lists the scale set and
+names any existing member that left. The timeout error ends with what the
+rollback did.
+
+Every member the manager adopts gets `protectionPolicy.protectFromScaleIn`
+(a `PUT` on the scale set's member at api-version 2023-09-01), and the
+constructor protects any adopted member of the cluster that is not, so no
+capacity change, from this manager or anything else, makes the scale set
+choose a voter. `decommission_node` still deletes a protected node: ARM does
+not block user-initiated deletes on protected members. Members the manager
+has not tagged are never protected. To scale in by hand, clear protection on
+the members you want removed first:
+
+```sh
+az rest --method put \
+    --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/kythira-prod/providers/Microsoft.Compute/virtualMachineScaleSets/kythira-prod-z1/virtualMachines/<vm-name>?api-version=2023-09-01" \
+    --body '{"properties":{"protectionPolicy":{"protectFromScaleIn":false}}}'
+```
+
+Run one manager per scale set, and do not scale it with other tooling while
+the manager runs. A member something else adds during a provision looks new
+to the manager and is deleted if that provision times out.

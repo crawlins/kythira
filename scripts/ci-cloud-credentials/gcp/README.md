@@ -215,8 +215,10 @@ construction case has a group to reject, and is never resized. Instances
 are named `kythira-kythira-it-mig-*`, so the job's leak audit lists any
 that a failed case leaves behind. The job then returns `kythira-it-mig-a`
 to size 0 and still fails. The gcp-quorum-manager bundle's
-`roles/compute.instanceAdmin.v1` already covers resizing the groups and
-labelling their instances.
+`roles/compute.instanceAdmin.v1` already covers resizing the groups,
+labelling their instances, and the `deleteInstances` call
+(`compute.instanceGroupManagers.update`) that the timeout-rollback case
+exercises.
 
 ## Diagnosing the `privateca` 403 (`probe-id-token.sh`)
 
