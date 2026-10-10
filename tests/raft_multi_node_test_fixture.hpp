@@ -694,8 +694,8 @@ private:
     }
 
     auto rebuild_edges_locked() -> void {
-        for (const auto& [a, _] : _nodes) {
-            for (const auto& [b, __] : _nodes) {
+        for (const auto& [a, a_node] : _nodes) {
+            for (const auto& [b, b_node] : _nodes) {
                 if (a == b) {
                     continue;
                 }
