@@ -149,3 +149,10 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
     console that DELETED CAs stop accruing (design, "Ordering and quotas").
   - Run `audit` after each run and confirm it is clean.
   - _Requirements: 4.3_
+  - 2026-10-10: first Actions run done (Real Cloud Tests run
+    38065882804, both architectures). Four of five cases passed;
+    `revoke_on_bare_ca_surfaces_aws_error` failed because AWS accepts
+    RevokeCertificate on a CA with no CRL/OCSP. The case now asserts
+    that (renamed `revoke_on_bare_ca_is_accepted_by_aws`). Measured
+    $0.232 per leg, recorded in the cost doc; both leak audits clean.
+    Still open: a local run and the billing-console check.

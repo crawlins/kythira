@@ -107,11 +107,16 @@ billed. Two CAs for about 10 minutes plus four certificates:
 | 4 certificates | $0.058 each | ≈ $0.23 |
 | **Total** | | **≈ $0.25** |
 
-The suite prints its own `[aws-cost]` block at the end of each run. This
-figure is an estimate until the first real run measures it (spec task 7),
-which will also confirm whether the self-issued root is billed as a
-certificate; the 2026-10-03 manual run (one hand-made CA for 8 min 45 s,
-three certificates) came to about $0.18 on that assumption. When
+The suite prints its own `[aws-cost]` block at the end of each run.
+Measured on the first Actions run (Real Cloud Tests run 38065882804,
+2026-10-10): **$0.232 per architecture**, with both CAs ACTIVE in about
+2.5 s and the whole suite finishing in 8-9 s. The Actions step runs on the
+x64 and arm64 legs, so one dispatch creates two CA pairs and costs about
+**$0.46**. Both legs' leak audits were clean. The `[aws-cost]` figure bills
+the self-issued roots as certificates; whether AWS actually does still
+needs a look at the billing console. The 2026-10-03 manual run (one
+hand-made CA for 8 min 45 s, three certificates) came to about $0.18 on
+the same assumption. When
 `$KYTHIRA_TEST_ACM_PCA_ARN` names an existing CA, only the other kind is
 created, so the run costs about half as much.
 

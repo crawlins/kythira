@@ -68,7 +68,8 @@ public:
         -> kythira::future_default<pem_material>;
 
     /// Calls `DescribeCertificateAuthority` and reports whether the CA has a
-    /// CRL or OCSP configuration enabled, which `RevokeCertificate` needs.
+    /// CRL or OCSP configuration enabled, i.e. whether a revocation would be
+    /// published anywhere.
     /// Not cached: an operator can change the configuration at any time.
     [[nodiscard]] auto revocation_configured() -> kythira::future_default<bool>;
 
@@ -76,10 +77,11 @@ public:
     /// serial, as `openssl x509 -serial` or `-text` prints it) and `reason`,
     /// or `aws_acm_pca_provider_config::revocation_reason` when `reason` is
     /// empty. An unknown reason rejects with `std::invalid_argument` before any
-    /// AWS call. Requires the target CA to already have a CRL/OCSP
-    /// configuration (an out-of-band operator setup); a call against a CA
-    /// without one surfaces the resulting AWS error to the caller rather than
-    /// falling back to any local behavior.
+    /// AWS call; any AWS error is surfaced to the caller rather than
+    /// falling back to any local behavior. AWS accepts a revocation on a CA
+    /// with no CRL/OCSP configuration but publishes it nowhere, so callers
+    /// that need the revocation to take effect check
+    /// `revocation_configured()` first, as ca_service does.
     [[nodiscard]] auto revoke(const std::string& certificate_serial, const std::string& reason = {})
         -> kythira::future_default<void>;
 
