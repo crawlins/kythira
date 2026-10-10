@@ -7889,7 +7889,8 @@ auto node<Types>::send_install_snapshot_chunk(node_id_type target,
                 _metrics.add_dimension("target", node_id_to_string(target));
                 _metrics.add_value(static_cast<double>(snap->state_machine_state().size()));
                 _metrics.emit();
-            });
+            })
+            .detach();
     } catch (const std::exception& e) {
         _logger.error("Exception sending InstallSnapshot chunk",
                       {{"node_id", node_id_to_string(_node_id)},
