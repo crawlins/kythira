@@ -3,6 +3,18 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 12, 2026)
+
+- **The ca_cluster_node AMI build works again under the narrowed CI
+  role.** The scheduled Real Cloud Tests run on October 12 failed both
+  AMI builds with `UnauthorizedOperation` on `ec2:ModifyImageAttribute`.
+  The template's `imds_support = "v2.0"` makes Packer call that action
+  after `CreateImage`, and the `ami-build` bundle stopped granting it once
+  the live policy was re-provisioned with the October 2 change. The
+  template no longer sets the image attribute. Nodes still require
+  IMDSv2, because `aws_ec2_quorum_manager` sets `HttpTokens=required` on
+  every launch by default.
+
 ### What Changed (October 7, 2026)
 
 - **The simulator and TCP transports route by composite and textual node

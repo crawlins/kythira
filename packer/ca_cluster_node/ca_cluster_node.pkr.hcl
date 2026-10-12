@@ -55,12 +55,13 @@ source "amazon-ebs" "ca_cluster_node" {
   })
   snapshot_tags = local.common_tags
 
-  # Instances launched from this AMI default to IMDSv2 only (the image's
-  # ImdsSupport=v2.0 attribute, set at RegisterImage), so a server-side
-  # request forgery on a CA node cannot read its instance-profile
-  # credentials with a plain GET. The builder instance itself requires
-  # IMDSv2 too. Ubuntu's cloud-init and the AWS SDK both speak v2.
-  imds_support = "v2.0"
+  # No imds_support either. Packer sets an AMI's ImdsSupport attribute with
+  # ec2:ModifyImageAttribute after CreateImage, not at registration, and
+  # the ami-build bundle does not grant that action (see the note on
+  # ami_description above). Nodes still launch IMDSv2-only:
+  # aws_ec2_quorum_manager sets HttpTokens=required on every RunInstances
+  # unless its config opts out. The builder instance itself requires
+  # IMDSv2 below. Ubuntu's cloud-init and the AWS SDK both speak v2.
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
