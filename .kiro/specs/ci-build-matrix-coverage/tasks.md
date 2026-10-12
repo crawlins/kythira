@@ -1,10 +1,9 @@
 # Implementation Plan — CI Build-Matrix Coverage
 
-## Status: In progress — 11/12 tasks
+## Status: Complete — 12/12 tasks
 
-**Last Updated**: October 8, 2026 (Tasks 4, 5 and 12 done: the
-`alt-coap-backends` job runs all 72 `coap_*` tests with both alternate
-backends compiled in. Task 11 waits only on that job's first `main` run).
+**Last Updated**: October 12, 2026 (Task 11 done: `alt-coap-backends` is
+green on `main` and a required status check there).
 
 ## Overview
 
@@ -203,20 +202,22 @@ the Folly-free target set) depend on numbers nobody has yet.
 
 ## Phase 6: Close-out (Tasks 11–12)
 
-- [ ] 11. Verify every new job green on the PR and on `main`
+- [x] 11. Verify every new job green on the PR and on `main`
   - One green run of each job on the PR head and the first `main` push
     after merge. Record warm and cold durations in each job's
     `timeout-minutes` comment.
-  - Done for four of the five jobs. `alt-coap-backends` is green on its
-    PR (#463: 13.4 min with a warm vcpkg cache and a cold sccache, run
-    [37396880148](https://github.com/crawlins/kythira/actions/runs/37396880148));
-    its first `main` run and duration are still to record. Each landed through a PR whose head was green (#458
-    `kconfig-check`, #479 `no-folly`, #478 `config-variants`, #491
-    `static-analysis`), and all four were green on `main` in runs
+  - Done for all five jobs. Each landed through a PR whose head was green
+    (#458 `kconfig-check`, #479 `no-folly`, #478 `config-variants`, #491
+    `static-analysis`, #463 `alt-coap-backends`). The first four were
+    green on `main` in runs
     [37567880231](https://github.com/crawlins/kythira/actions/runs/37567880231)
     (`b7e7e01`) and
     [37584489048](https://github.com/crawlins/kythira/actions/runs/37584489048)
-    (`2faddb0`). Durations, now in each `timeout-minutes` comment:
+    (`2faddb0`); `alt-coap-backends` in
+    [37836858100](https://github.com/crawlins/kythira/actions/runs/37836858100)
+    (`f5d0a91`, the first `main` push after #463 to finish; the merge
+    commit's own run was superseded), and in every `main` run since.
+    Durations, now in each `timeout-minutes` comment:
 
     | Job | Warm sccache | After a wide header change | Timeout |
     |---|---|---|---|
@@ -224,11 +225,18 @@ the Folly-free target set) depend on numbers nobody has yet.
     | `no-folly` | 12.8 min | 63.8 min | 180 |
     | `config-variants` | 9.6 min | 39.4 min | 240 |
     | `static-analysis` (6 shards) | 28.9-45.2 min | 21.4-40.5 min | 90 |
+    | `alt-coap-backends` | 3.5 min | 13.9 min | 300 |
 
     `2faddb0` changed headers included by most translation units, so its
     run recompiled most of the tree; that is the slowest case `main` has
-    shown. No fully cold run (empty sccache) of these jobs has been seen
-    on `main`, so `config-variants` keeps its cold-build sizing.
+    shown. For `alt-coap-backends` the wide change is `57d6cf4` (run
+    [38005373530](https://github.com/crawlins/kythira/actions/runs/38005373530)),
+    and its first `main` run took 19.9 min because it also installed
+    both overlay ports and filled sccache. No fully cold run (empty
+    sccache) of these jobs has been seen on `main`, so `config-variants`
+    and `alt-coap-backends` keep their cold-build sizing.
+    `alt-coap-backends` became a required status check on `main` on
+    October 12, 2026.
     `static-analysis` does not compile, so it has no warm/cold split.
   - _Requirements: 7.3, 8.2_
 

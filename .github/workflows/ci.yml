@@ -1163,6 +1163,13 @@ jobs:
   alt-coap-backends:
     name: Alternate CoAP Backends (g++-13, x64)
     runs-on: ubuntu-24.04
+    # Sized like ion-serializer-build, the other job whose vcpkg tree can
+    # miss the binary cache and build ports from source. Measured on main:
+    # 3.5 min with a warm sccache (run 38031469225), 13.9 min after a change
+    # to widely included headers (run 38005373530) and 19.9 min on the first
+    # main run, which installed both overlay ports and filled sccache (run
+    # 37836858100). No run with an empty vcpkg binary cache has been seen,
+    # so the cold-build sizing stands.
     timeout-minutes: 300
     # Same build-cache-write gating as ion-serializer-build; see its comment.
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
