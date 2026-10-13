@@ -29,6 +29,7 @@
 #include "aws_real_test_support.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -36,10 +37,44 @@
 #include <vector>
 
 #include <aws/ec2/EC2Client.h>
+#include <aws/ec2/model/CreateVpcRequest.h>
 #include <aws/ec2/model/DescribeInstancesRequest.h>
 #include <aws/ec2/model/Filter.h>
+#include <aws/ec2/model/ResourceType.h>
+#include <aws/ec2/model/Tag.h>
+#include <aws/ec2/model/TagSpecification.h>
 
 namespace kythira::testing::aws_real_ec2 {
+
+// ── Run ownership ───────────────────────────────────────────────────────────
+//
+// The Real Cloud Tests post-run audit lists every kyt-*-vpc in the region,
+// so a run that overlaps another (the weekly schedule fires hours late and
+// lands on top of manual dispatches) used to report the other run's live
+// network as its own leak: run 38274506641 created no VPC and still failed
+// both AWS legs on one another run had created 33 seconds earlier. Stamping
+// the VPC with the GitHub run that made it lets the audit ask GitHub whether
+// that run is still going, and skip the VPC only then.
+//
+// Applied as a TagSpecification on CreateVpc rather than a later CreateTags
+// so no window exists in which the VPC is visible to an audit but not yet
+// attributable. Outside GitHub Actions GITHUB_RUN_ID is unset and nothing is
+// added; the audit counts an unattributed VPC as a leak, as before.
+inline constexpr const char* github_run_id_tag_key = "kythira:github-run-id";
+
+inline void tag_vpc_with_github_run(Aws::EC2::Model::CreateVpcRequest& req) {
+    const char* run_id = std::getenv("GITHUB_RUN_ID");
+    if (run_id == nullptr || *run_id == '\0') {
+        return;
+    }
+    Aws::EC2::Model::Tag tag;
+    tag.SetKey(github_run_id_tag_key);
+    tag.SetValue(run_id);
+    Aws::EC2::Model::TagSpecification spec;
+    spec.SetResourceType(Aws::EC2::Model::ResourceType::vpc);
+    spec.AddTags(tag);
+    req.AddTagSpecifications(spec);
+}
 
 // ── Teardown helpers ────────────────────────────────────────────────────────
 //
