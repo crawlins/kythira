@@ -335,6 +335,7 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
         try {
             Aws::EC2::Model::CreateVpcRequest vpc_req;
             vpc_req.SetCidrBlock("10.221.0.0/16");
+            kythira::testing::aws_real_ec2::tag_vpc_with_github_run(vpc_req);
             auto vpc_out = ec2->CreateVpc(vpc_req);
             BOOST_REQUIRE_MESSAGE(vpc_out.IsSuccess(),
                                   "CreateVpc: " + std::string(vpc_out.GetError().GetMessage()));

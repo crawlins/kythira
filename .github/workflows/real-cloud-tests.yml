@@ -282,6 +282,9 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      # The leak audit asks the Actions API whether the run that owns a VPC
+      # is still in progress (see "Audit for leaked instances").
+      actions: read
     if: |
       (github.event.inputs.run_real_cloud_tests == 'true'
         || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
@@ -799,6 +802,7 @@ jobs:
         if: always()
         env:
           AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
             echo "No AWS credentials in the environment (the credentials step failed or never ran) — nothing to audit with."
@@ -808,6 +812,57 @@ jobs:
             echo "::error::THE AUDIT DID NOT RUN ($1). This is not a clean result: instances may have outlived teardown and be billing now. Check EC2 in ${AWS_DEFAULT_REGION} for instances tagged kythira:managed-by=ec2_quorum_manager." >&2
             exit 1
           }
+
+          # ── Which networks belong to another run that is still going ──
+          #
+          # Everything below lists the whole region, and this job is not
+          # serialised across runs: the weekly schedule fires hours late and
+          # lands on top of manual dispatches. Both legs of run 38274506641,
+          # dispatched on 2026-10-12 while that week's scheduled run was still
+          # going, failed on kyt-71B1ED54-...-vpc and its NAT gateway, which
+          # were 33 seconds old and still pending: another run's live network.
+          # Run 38274506641 had no EC2 bundle enabled and created no VPC.
+          #
+          # The real-EC2 fixtures stamp each VPC with kythira:github-run-id at
+          # CreateVpc (aws_real_ec2_test_support.hpp). A VPC stamped with
+          # another run's id is skipped only while the Actions API says that
+          # run has not completed; that run's own audit owns it. Everything
+          # else still counts: this run's VPCs, a completed run's VPC (its
+          # audit already failed on it, and it is still a leak), an unstamped
+          # VPC, and any run whose status cannot be read, because an audit
+          # that guesses "probably fine" is the one that missed 19 VPCs.
+          inflight_vpcs='[]'
+          checked_runs=' '
+          # Reads a JSON array of {id, run} VPCs and adds to inflight_vpcs the
+          # ids of those whose foreign run is still in progress. Each run is
+          # looked up once.
+          note_inflight() {
+            local listing="$1" run status
+            for run in $(printf '%s' "${listing}" \
+                | jq -r --arg me "${GITHUB_RUN_ID}" '[.[]?.run | select(. != null and . != $me)] | unique | .[]'); do
+              case "${checked_runs}" in *" ${run} "*) continue ;; esac
+              checked_runs="${checked_runs}${run} "
+              if ! status=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run}" --jq .status 2>/dev/null); then
+                echo "::warning::Could not read the status of run ${run}, which owns a VPC here; counting its VPCs as leaked."
+                continue
+              fi
+              [ "${status}" != "completed" ] || continue
+              echo "Skipping VPCs of run ${run} (${status}): ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${run}"
+              inflight_vpcs=$(printf '%s' "${listing}" \
+                | jq --arg r "${run}" --argjson acc "${inflight_vpcs}" '$acc + [.[] | select(.run == $r) | .id]') \
+                || return 1
+            done
+          }
+          stamped=$(aws ec2 describe-vpcs \
+            --filters 'Name=tag-key,Values=kythira:github-run-id' \
+            --query 'Vpcs[].{id:VpcId,run:Tags[?Key==`kythira:github-run-id`]|[0].Value}' \
+            --output json) || audit_failed "the DescribeVpcs call for run-stamped VPCs failed"
+          note_inflight "${stamped}" || audit_failed "the in-flight VPC list could not be built"
+          # Drops entries whose `.vpc` is a network another live run owns.
+          not_inflight() {
+            jq --argjson skip "${inflight_vpcs}" '[.[]? | select(.vpc as $v | $skip | index($v) | not)]'
+          }
+
           # Scoped by the tag the producer itself applies, not by name: a name
           # prefix would also match anything an operator created by hand.
           #
@@ -820,8 +875,10 @@ jobs:
           leaked=$(aws ec2 describe-instances \
             --filters 'Name=tag:kythira:managed-by,Values=ec2_quorum_manager,aws_quorum_manager_real_ec2_test' \
                       'Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped' \
-            --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,cluster:Tags[?Key==`kythira:cluster`]|[0].Value}' \
+            --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,vpc:VpcId,cluster:Tags[?Key==`kythira:cluster`]|[0].Value}' \
             --output json) || audit_failed "the DescribeInstances call failed"
+          leaked=$(printf '%s' "${leaked}" | not_inflight) \
+            || audit_failed "the instance listing could not be filtered by owning run"
           count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
             || audit_failed "DescribeInstances returned a response this step could not parse"
           [ -n "${count}" ] || audit_failed "the parsed instance count was empty"
@@ -857,6 +914,8 @@ jobs:
             --filter 'Name=tag:Name,Values=kyt-*' 'Name=state,Values=available,pending' \
             --query 'NatGateways[].{id:NatGatewayId,state:State,vpc:VpcId,created:CreateTime}' \
             --output json) || audit_failed "the DescribeNatGateways call failed"
+          nat=$(printf '%s' "${nat}" | not_inflight) \
+            || audit_failed "the NAT gateway listing could not be filtered by owning run"
           nat_count=$(printf '%s' "${nat}" | jq 'if . == null then 0 else length end') \
             || audit_failed "DescribeNatGateways returned a response this step could not parse"
           [ -n "${nat_count}" ] || audit_failed "the parsed NAT gateway count was empty"
@@ -892,11 +951,11 @@ jobs:
           # wildcard so it can never claim a VPC these tests did not make.
           vpcs=$(aws ec2 describe-vpcs \
             --filters 'Name=tag:Name,Values=kyt-*-vpc' \
-            --query 'Vpcs[].{id:VpcId,cidr:CidrBlock,name:Tags[?Key==`Name`]|[0].Value}' \
+            --query 'Vpcs[].{id:VpcId,cidr:CidrBlock,name:Tags[?Key==`Name`]|[0].Value,run:Tags[?Key==`kythira:github-run-id`]|[0].Value}' \
             --output json) || audit_failed "the DescribeVpcs call failed — if this is an authorization error, re-run provision-oidc-role.sh to pick up the ec2:DescribeVpcs grant"
           ca_vpcs=$(aws ec2 describe-vpcs \
             --filters 'Name=cidr,Values=10.220.0.0/16,10.221.0.0/16' \
-            --query 'Vpcs[?IsDefault==`false`].{id:VpcId,cidr:CidrBlock,name:`ca-cluster-node (untagged)`}' \
+            --query 'Vpcs[?IsDefault==`false`].{id:VpcId,cidr:CidrBlock,name:`ca-cluster-node (untagged)`,run:Tags[?Key==`kythira:github-run-id`]|[0].Value}' \
             --output json) || audit_failed "the DescribeVpcs call for the ca-cluster-node CIDRs failed"
           # unique_by(.id), because the two filters now overlap. Before the
           # ca-cluster-node fixtures tagged what they create they matched only the
@@ -913,6 +972,10 @@ jobs:
           vpcs=$(printf '%s\n%s' "${vpcs}" "${ca_vpcs}" \
             | jq -s 'add // [] | unique_by(.id)') \
             || audit_failed "the two VPC listings could not be combined"
+          # Again, for a VPC another run created after the stamped listing above.
+          note_inflight "${vpcs}" || audit_failed "the in-flight VPC list could not be built"
+          vpcs=$(printf '%s' "${vpcs}" | jq 'map(.vpc = .id)' | not_inflight | jq 'map(del(.vpc))') \
+            || audit_failed "the VPC listing could not be filtered by owning run"
           vpc_count=$(printf '%s' "${vpcs}" | jq 'if . == null then 0 else length end') \
             || audit_failed "DescribeVpcs returned a response this step could not parse"
           [ -n "${vpc_count}" ] || audit_failed "the parsed VPC count was empty"

@@ -3,6 +3,17 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 13, 2026)
+
+- **The AWS leak audit no longer fails on another run's live network.**
+  The real-EC2 fixtures now tag each VPC with `kythira:github-run-id` when
+  they create it, and the post-run audit in Real Cloud Tests skips a VPC
+  (with its NAT gateways and instances) only while the Actions API says
+  the run that owns it is still in progress. On October 12 a dispatch that
+  created no VPC failed both AWS legs on a 33-second-old VPC belonging to
+  an overlapping run. A VPC from this run, from a finished run, with no
+  run tag, or whose run cannot be looked up is still reported as leaked.
+
 ### What Changed (October 12, 2026)
 
 - **The ca_cluster_node AMI build works again under the narrowed CI
