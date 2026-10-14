@@ -203,11 +203,10 @@ message FetchLogEntriesRequest {
   GroupIdValue group_id = 4;
 }
 
-// responder_id is a bare uint64, not a NodeIdValue: kythira's
-// fetch_log_entries_response::_responder_id is a fixed std::uint64_t
-// regardless of the struct's NodeId template parameter (matching
-// json_rpc_serializer's identical static_cast<std::uint64_t> treatment), so
-// there is no generic NodeId field to wrap here.
+// responder_id predates textual node ids and stays for wire compatibility.
+// An encoder fills responder for every id and also responder_id when the id
+// is numeric; a decoder prefers responder and falls back to responder_id, so
+// a numeric cluster upgrades one node at a time in either direction.
 message FetchLogEntriesResponse {
   uint64 responder_id = 1;
   bool available = 2;
@@ -215,4 +214,5 @@ message FetchLogEntriesResponse {
   repeated LogEntry entries = 4;
   // Multi-Raft group selector; absent (UNSET) means the single group.
   GroupIdValue group_id = 5;
+  NodeIdValue responder = 6;
 }

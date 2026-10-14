@@ -127,6 +127,11 @@ validation, and documentation.
     `static-analysis`
   - `kconfig-check` loads every `configs/*_defconfig` and fails on any
     Kconfiglib parse warning
+  - Requirement 5.4 is enforced in CI since October 2026: ci.yml's
+    `kconfig-check` job (ci-build-matrix-coverage Task 2) runs
+    `scripts/kconfig/check_defconfigs.py` on every push and pull request,
+    so a defconfig that stops parsing fails the run rather than waiting
+    for someone to invoke the target by hand.
   - _Requirements: 2.2, 2.3, 2.5, 5.4_
 
 ---

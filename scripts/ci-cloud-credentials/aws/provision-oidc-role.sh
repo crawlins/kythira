@@ -53,11 +53,12 @@ Required:
   --bundles LIST          Comma-separated, one per policies/*.json:
                            ec2-quorum-manager,asg-quorum-manager,
                            ca-cluster-node,ca-cluster-node-rpc-tls,ami-build,
-                           object-persistence,cloudwatch-monitoring,perf-cloud
+                           object-persistence,cloudwatch-monitoring,perf-cloud,
+                           acm-pca
                            (any non-empty subset)
                           WARNING: this rebuilds the inline policy WHOLESALE, so
                            a bundle you leave out loses its permissions. To add
-                           one permission, pass all eight, not just the bundle
+                           one permission, pass all nine, not just the bundle
                            you edited. This list omitted cloudwatch-monitoring
                            and perf-cloud until 2026-09-29, so anyone following
                            it silently revoked both -- and perf-cloud.yml
@@ -252,6 +253,7 @@ for bundle in "${BUNDLE_LIST[@]}"; do
         ca-cluster-node-rpc-tls) VAR="REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED" ;;
         ami-build) VAR="REAL_CLOUD_TESTS_AWS_AMI_BUILD_ENABLED" ;;
         object-persistence) VAR="REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED" ;;
+        acm-pca) VAR="REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED" ;;
         *) continue ;;
     esac
     echo "  gh variable set ${VAR} --body true"

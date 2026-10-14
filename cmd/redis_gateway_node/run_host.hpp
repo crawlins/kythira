@@ -21,6 +21,7 @@
 #include "multi_raft_transport_harness.hpp"
 
 #include <raft/beast_http_transport_impl.hpp>
+#include <raft/bounded_resolver.hpp>
 #include <raft/console_logger.hpp>
 #include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
@@ -38,6 +39,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <sys/socket.h>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -57,6 +59,32 @@ template<typename Serializer> struct beast_stack {
               *_ioc,
               std::unordered_map<std::uint64_t, std::string>{opt._peers.begin(), opt._peers.end()},
               kythira::boost_beast_client_config{}, kythira::noop_metrics{}, _ioc) {
+        // A peer that speaks to this node has told it where it is: how a
+        // gateway finds the shard leader to forward to while its name does
+        // not resolve, e.g. right after the gateways restart at new
+        // addresses under rootless Podman (see bounded_resolver.hpp).
+        // The Raft client learns the peer's Raft address; the forward link
+        // dials the peer's gateway listener on another port, so that address
+        // is learned here from the same sighting.
+        _server.set_peer_seen_handler(
+            [raft = _client.peer_seen_handler(), gateways = opt._peer_gateways](
+                std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+                raft(id, from, len);
+                auto it = gateways.find(id);
+                if (it == gateways.end()) {
+                    return;
+                }
+                try {
+                    auto [host, port] = kythira::redis_gateway_detail::parse_listen(it->second);
+                    if (auto addr =
+                            kythira::net_resolve::address_from(from, len, port, SOCK_STREAM)) {
+                        kythira::net_resolve::learn(host, std::to_string(port), SOCK_STREAM, *addr);
+                    }
+                } catch (const std::exception&) {
+                    // A malformed peer gateway spec is reported when it is
+                    // forwarded to; a sighting is not the place to fail.
+                }
+            });
         const auto threads = std::max(2U, std::thread::hardware_concurrency() / 2);
         for (unsigned i = 0; i < threads; ++i) {
             _io_threads.emplace_back([this] { _ioc->run(); });

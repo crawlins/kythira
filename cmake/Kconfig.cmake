@@ -156,3 +156,22 @@ macro(kythira_kconfig_gate SYMBOL)
         set(_KYTHIRA_GATE_${SYMBOL} FALSE)
     endif()
 endmacro()
+
+# kythira_forget_pkg_found(<PREFIX>)
+# Call immediately before the gate of every hand-written block that runs
+# pkg_check_modules(<PREFIX> ...) and whose <PREFIX>_FOUND is read outside
+# that gate. pkg_check_modules() stores <PREFIX>_FOUND as an INTERNAL *cache*
+# entry, not a normal variable, so it outlives the configure that set it. In a
+# tree configured once with the feature on, turning the symbol off (menuconfig,
+# or a different -DKYTHIRA_KCONFIG=) skips the probe, nothing clears the entry,
+# and every `if(<PREFIX>_FOUND)` keeps compiling the feature in -- a fresh tree
+# with the same .config does not. Measured before this macro existed: switching
+# CONFIG_DNS_DISCOVERY to n in an existing tree left KYTHIRA_HAS_LDNS and
+# libldns on 306 targets. Dropping the entry costs one pkg-config call per
+# configure when the feature is on (the probe re-runs instead of reusing it).
+# find_package() results need none of this: <Pkg>_FOUND is a normal variable
+# and is simply never set when the gated find_package() does not run.
+macro(kythira_forget_pkg_found PREFIX)
+    unset(${PREFIX}_FOUND CACHE)
+    unset(${PREFIX}_FOUND)
+endmacro()

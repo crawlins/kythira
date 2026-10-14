@@ -201,37 +201,41 @@ public:
      */
     auto is_timed_out() const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
-
-        if (_current_phase == config_change_phase::none) {
-            return false;
-        }
-
-        auto elapsed = std::chrono::steady_clock::now() - _change_started_at;
-        return elapsed > _change_timeout;
+        return timed_out_locked();
     }
 
     /**
-     * @brief Handle timeout for configuration change
+     * @brief Fail the caller's future if the configuration change has timed out
      *
-     * Should be called periodically to check for and handle timeouts
+     * Called from every `node::check_heartbeat_timeout()` tick, whatever the
+     * node's state: a leader that steps down mid-change, and whose joint
+     * entry is then truncated away, has no other way to settle the caller.
+     *
+     * Only the caller is released. A joint entry already in the log stays
+     * there and may still commit, which is why the node also refuses new
+     * membership changes for as long as its configuration is joint.
+     *
+     * The promise is settled after `_mutex` is released: continuations can
+     * run inline and may ask this synchronizer whether a change is in
+     * progress.
      */
     auto handle_timeout() -> void {
-        std::lock_guard<std::mutex> lock(_mutex);
-
-        if (_current_phase == config_change_phase::none) {
-            return;
-        }
-
-        if (is_timed_out()) {
-            if (_change_promise) {
-                std::string phase_name = (_current_phase == config_change_phase::joint_consensus)
-                                             ? "joint_consensus"
-                                             : "final_configuration";
-                _change_promise->setException(std::make_exception_ptr(
-                    configuration_change_exception(phase_name, "Configuration change timed out")));
+        std::optional<promise_type> expired;
+        std::string phase_name;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (!timed_out_locked()) {
+                return;
             }
-
+            phase_name = (_current_phase == config_change_phase::joint_consensus)
+                             ? "joint_consensus"
+                             : "final_configuration";
+            expired = std::move(_change_promise);
             reset_state();
+        }
+        if (expired) {
+            expired->setException(std::make_exception_ptr(
+                configuration_change_exception(phase_name, "Configuration change timed out")));
         }
     }
 
@@ -266,6 +270,13 @@ public:
     }
 
 private:
+    auto timed_out_locked() const -> bool {
+        if (_current_phase == config_change_phase::none) {
+            return false;
+        }
+        return std::chrono::steady_clock::now() - _change_started_at > _change_timeout;
+    }
+
     /**
      * @brief Reset internal state after configuration change completion/cancellation
      */

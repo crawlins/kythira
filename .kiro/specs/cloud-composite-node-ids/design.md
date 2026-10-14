@@ -220,7 +220,7 @@ TCP timeout.
 - `types.hpp`: `fetch_log_entries_response<NodeId, …>::_responder_id` is a
   `NodeId`. `group_transport.hpp:325` sets it from the group's local id
   instead of `0`.
-- `proto/raft_messages.proto`: `NodeIdValue responder = 2;` beside
+- `proto/raft_messages.proto`: `NodeIdValue responder = 6;` beside
   `uint64 responder_id = 1;`. Encoders write both when the id is numeric
   and only `responder` when it is textual.
 - Serializers write `node_id_traits::to_text` for textual ids into their

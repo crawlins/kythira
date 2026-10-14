@@ -9,6 +9,11 @@ render: merge the policies/<bundle>.json fragments named by --bundles into
         CI role, and print it.
 --check: lint every fragment in policies/ and render all of them together,
         without AWS access. Run by CI on every change.
+--detect-bundles FILE: print the bundles a live inline policy document
+        (as `aws iam get-role-policy` returns it) already carries, judged by
+        the Sids only that bundle contributes. update-ci-role-policy.sh uses
+        it so that re-applying the policy keeps exactly the bundles the role
+        has, instead of revoking whichever one the operator forgot to list.
 
 Merging drops a statement whose Sid an earlier bundle already contributed,
 provided the two are identical. The EC2 bundles share their tagging
@@ -23,7 +28,9 @@ The lint enforces the rule the README's "Instance actions are tag-scoped"
 section explains: no statement may let CI stop, start, terminate, reboot or
 retag an EC2 instance without a condition. An unconditioned ec2:CreateTags
 on instances defeats every tag condition in every bundle, because CI could
-tag someone else's instance into scope and then terminate it.
+tag someone else's instance into scope and then terminate it. The same
+holds for ACM Private CA: acm-pca:TagCertificateAuthority must carry an
+aws:ResourceTag condition (README, "The `acm-pca` bundle").
 """
 
 import argparse
@@ -51,6 +58,15 @@ INSTANCE_MUTATING_ACTIONS = (
     "ec2:StartInstances",
     "ec2:StopInstances",
     "ec2:TerminateInstances",
+)
+
+# ACM Private CA's retagging actions. The acm-pca bundle scopes every per-CA
+# action on the kythira:suite tag, so a grant that could add that tag to a CA
+# not already carrying it would let CI pull any CA in the account, a
+# production one included, into scope.
+ACM_PCA_TAGGING_ACTIONS = (
+    "acm-pca:TagCertificateAuthority",
+    "acm-pca:UntagCertificateAuthority",
 )
 
 # Long enough to stand in for any real account id or bucket name when
@@ -122,6 +138,16 @@ def lint_bundle(name):
             errors.append(
                 f"{name}: statement '{stmt.get('Sid')}' grants {', '.join(granted)} on instances "
                 f"with no condition. Scope it with an aws:ResourceTag condition (see README).")
+    for stmt in stmts:
+        if stmt.get("Effect") != "Allow":
+            continue
+        granted = [a for a in ACM_PCA_TAGGING_ACTIONS
+                   if any(fnmatch.fnmatchcase(a, pat) for pat in as_list(stmt.get("Action", [])))]
+        keys = [k for cond in stmt.get("Condition", {}).values() for k in cond]
+        if granted and not any(k.startswith("aws:ResourceTag/") for k in keys):
+            errors.append(
+                f"{name}: statement '{stmt.get('Sid')}' grants {', '.join(granted)} without an "
+                f"aws:ResourceTag condition, so CI could tag any CA into scope (see README).")
     size = len(json.dumps({"Version": "2012-10-17", "Statement": stmts}))
     if size > MANAGED_POLICY_LIMIT:
         errors.append(f"{name}: renders to {size} characters, over the {MANAGED_POLICY_LIMIT}-"
@@ -129,9 +155,29 @@ def lint_bundle(name):
     return errors
 
 
+def own_sids():
+    """Map each bundle to the Sids no other bundle contributes."""
+    sids = {p.stem: {s.get("Sid") for s in load_bundle(p.stem, SAMPLE_ACCOUNT_ID, SAMPLE_BUCKET)}
+            for p in POLICY_DIR.glob("*.json")}
+    return {b: own - set().union(*(v for k, v in sids.items() if k != b)) - {None}
+            for b, own in sids.items()}
+
+
+def detect_bundles(policy_path):
+    doc = json.loads(pathlib.Path(policy_path).read_text())
+    # get-role-policy wraps the document; accept the bare document as well.
+    doc = doc.get("PolicyDocument", doc)
+    present = {s.get("Sid") for s in as_list(doc.get("Statement", []))}
+    return sorted(b for b, own in own_sids().items() if own & present)
+
+
 def check():
     bundles = sorted(p.stem for p in POLICY_DIR.glob("*.json"))
     errors = [e for b in bundles for e in lint_bundle(b)]
+    # --detect-bundles can only see a bundle that has a Sid of its own.
+    errors += [f"{b}: every Sid is shared with another bundle, so --detect-bundles cannot "
+               f"tell whether a role carries it; give one statement a bundle-specific Sid"
+               for b, own in sorted(own_sids().items()) if not own]
     try:
         size = compact_len(merge(bundles, SAMPLE_ACCOUNT_ID, SAMPLE_BUCKET))
     except SystemExit as exc:
@@ -152,9 +198,14 @@ def main():
     parser.add_argument("--bundles", help="comma-separated bundle names")
     parser.add_argument("--account-id", default=SAMPLE_ACCOUNT_ID)
     parser.add_argument("--bucket", default="")
+    parser.add_argument("--detect-bundles", metavar="FILE",
+                        help="print the bundles the policy document in FILE carries")
     args = parser.parse_args()
     if args.check:
         return check()
+    if args.detect_bundles:
+        print(",".join(detect_bundles(args.detect_bundles)))
+        return 0
     if not args.bundles:
         parser.error("--bundles is required unless --check is given")
     doc = merge([b for b in args.bundles.split(",") if b], args.account_id, args.bucket)

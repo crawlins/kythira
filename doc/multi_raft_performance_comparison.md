@@ -1004,6 +1004,245 @@ noted under H2). The one-group block-wise collapse is a third, separate item:
 it is the batch size, not the group count, that decides whether an
 AppendEntries needs more than one datagram.
 
+### The CoAP row after the event-driven client
+
+`.kiro/specs/coap-client-event-driven-io/` tasks 7 and 8: the same cells, re-run
+after PR #392 replaced the client's 5 ms paced I/O loop with a readiness wait and
+a budgeted drain (design §2 there; the loop it replaced came from PR #227). The
+case, the probe and the summary script are the ones above. The probe gained two
+lines for this run: a once-a-second `rpc_rates` line counting client sends and
+server receipts process-wide, and `hold_us` / `max_step_us` on the I/O thread's
+`io_passes` line, which is how long its drain steps held `_mutex`.
+
+**Provenance.** Same machine description as above (Intel Xeon @ 2.10 GHz, 4
+logical CPUs), Release, Folly backend, Tier B, 3 nodes, 1920 operations at 16 in
+flight, 128 B values, JSON, memory persistence, five repetitions. Two
+differences from the task 14 run, both forced: the client no longer builds
+against libcoap 4.3.4 (it calls `coap_context_set_app_data`), so libcoap is
+4.3.5 built from source with OpenSSL, **and the configured 1024 B block size
+now applies** where 4.3.4 used libcoap's default; and cpp-httplib is v0.58.0,
+the version vcpkg pins. Because the libcoap version moved, the "before" column
+below is not the task 14 table: it is the parent of PR #392 (`7b9ea3a`) built
+the same way on the same machine, with the same two probe lines added.
+
+#### Hypotheses, stated before the run
+
+Recorded at 2026-10-14 00:24 UTC, after the build and before any cell ran:
+
+| | Hypothesis, as stated |
+|---|---|
+| E1 | Sends ≈ receipts at 8 and 64 groups on 2 ms (receipts ≥ 95% of sends) |
+| E2 | A full set of leaders forms at 8 and 64 groups on 2 ms, and the rows complete |
+| E3 | `lock_wait_us` p50 stays 0 and p95 is no worse than the recorded figure per cell |
+| E4 | One group still fails on 2 ms and on 10 ms, block-wise, as C4 names |
+| E5 | Most passes are 1–2 steps; the budget (64) is reached in under 1% of passes |
+
+#### Results
+
+Medians of five runs; per-group figures from the median run. "Before" is
+`7b9ea3a` on libcoap 4.3.5.
+
+| Row | Groups | Tick | ops/sec | p50 | Per-group p50 (fastest–slowest) | Outcome | Before |
+|---|---:|---:|---:|---:|---|---|---|
+| cpp-httplib | 1 | 2 ms | 3790.9 | 3.76 ms | 3.76 ms | every write committed | — |
+| cpp-httplib | 8 | 2 ms | 3433.6 | 4.16 ms | — | every write committed | — |
+| cpp-httplib | 64 | 2 ms | 3147.7 | 4.84 ms | — | every write committed | — |
+| CoAP | 1 | 2 ms | 152.0 | 52.8 ms | 52.8 ms | every write committed in all five runs; spread 29% | 0.1 ops/sec, 0–21 writes per run, the rest `not_leader` |
+| CoAP | 8 | 2 ms | 1787.1 | 4.61 ms | 1.56–14.6 ms | every write committed in all five runs; spread 37% | **stopped**: no leader on every shard |
+| CoAP | 64 | 2 ms | 1804.7 | 7.64 ms | 4.81–12.7 ms | every write committed; spread 4.5% | **stopped**: no leader on every shard |
+| CoAP | 1 | 10 ms | 127.4 | 50.5 ms | 50.5 ms | every write committed; spread 16% | 0–329 writes per run in the three runs taken |
+| CoAP | 8 | 80 ms | 2334.1 | 5.39 ms | 1.69–8.99 ms | every write committed; spread 21% | not reached (see below) |
+| CoAP | 64 | 640 ms | 2509.2 | 5.09 ms | 2.76–10.0 ms | every write committed; spread 7.9% | not reached |
+
+No cell had a `not_leader`, timeout or other failure, and no term moved during a
+measured run. The "before" sweep took 30 minutes to reach its fourth CoAP cell
+and was stopped there; the cells it did reach reproduce task 14's outcomes on
+the new libcoap, so the libcoap upgrade is not what changed them. The machine
+reported itself not quiet at the start (load 1.27), and the 1- and 8-group cells
+are marked unstable by the harness's own spread check; a second sweep with the
+hold probe (below) gave 144.5, 1622.5, 1701.6, 123.3, 2601.1 and 2364.3 ops/sec
+for the same six cells, every write committed.
+
+Sends against server receipts, the C3 figure:
+
+| Cell | Sends/s | Receipts/s | Receipts | Before: sends/s, receipts/s, receipts |
+|---|---:|---:|---:|---|
+| 1 group, 2 ms | 326 | 199 | 61% | 176, 30, 17% |
+| 8 groups, 2 ms | 2,224 | 2,146 | 96.5% | 1,803, 678, 38% |
+| 64 groups, 2 ms | 4,463 | 4,462 | 100% | 2,673, 694, 26% |
+| 1 group, 10 ms | 295 | 212 | 72% | 132, 27, 20% |
+| 8 groups, 80 ms | 1,007 | 997 | 99% | — |
+| 64 groups, 640 ms | 929 | 932 | 100% | — |
+
+Drain steps per I/O pass (`io_passes`, all clients):
+
+| Cell | Passes | Mean steps | 1 | 2 | 3–4 | 5–8 | 9–16 | 17–32 | 33–64 | Budget reached |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 group, 2 ms | 3,803 | 37.0 | 42.2% | 0.3% | 0.2% | 0.0% | 0.1% | 0.1% | 57.2% | 57.1% |
+| 8 groups, 2 ms | 26,130 | 2.0 | 69.6% | 20.6% | 6.7% | 1.6% | 0.5% | 0.2% | 0.7% | 0.62% |
+| 64 groups, 2 ms | 25,339 | 2.5 | 51.8% | 19.0% | 17.6% | 8.2% | 2.8% | 0.5% | 0.2% | 0.01% |
+| 1 group, 10 ms | 4,782 | 38.4 | 40.3% | 0.1% | 0.1% | 0.0% | 0.0% | 0.1% | 59.3% | 59.2% |
+| 8 groups, 80 ms | 4,173 | 2.4 | 69.8% | 16.5% | 8.1% | 2.3% | 1.6% | 0.7% | 1.1% | 0.65% |
+| 64 groups, 640 ms | 9,112 | 2.4 | 64.0% | 12.2% | 11.6% | 7.8% | 3.3% | 1.0% | 0.2% | 0.02% |
+
+Lock wait, all sends in each cell, against the same-machine "before" where it
+ran (µs):
+
+| Cell | Sends | p50 | p95 | p99 | max | Before p50 / p95 |
+|---|---:|---:|---:|---:|---:|---|
+| 1 group, 2 ms | 23,268 | 12,532 | 166,188 | 360,370 | 772,456 | 0 / 14,627 |
+| 8 groups, 2 ms | 53,300 | 89 | 8,066 | 16,956 | 91,661 | 0 / 1,179 |
+| 64 groups, 2 ms | 109,543 | 393 | 4,884 | 9,168 | 41,772 | 0 / 4,687 |
+| 1 group, 10 ms | 22,949 | 11,434 | 248,726 | 492,595 | 1,790,473 | 0 / 6,170 |
+| 8 groups, 80 ms | 23,723 | 552 | 8,070 | 13,970 | 41,440 | — (task 14: 0 / 909) |
+| 64 groups, 640 ms | 27,668 | 727 | 6,580 | 10,430 | 29,418 | — (task 14: 0 / 743) |
+
+What the drain steps themselves held, from the hold-probe sweep: `_mutex` was
+held by drain steps for 27% of each client's time at one group, 15% at 8 and 37%
+at 64 groups on 2 ms, and 10–12% on the slower ticks; a step took 220–510 µs on
+average, and the longest single step was 49 ms at one group, 22 ms at 8 and
+12 ms at 64. A step is that long because `handle_response()` fulfils the
+request's promise inside `coap_io_process()`, under `_mutex`, and the promise's
+continuations — the Raft node's handling of the reply, and whatever it sends
+next — run inline on that thread.
+
+#### Verdicts
+
+| | Hypothesis | Verdict | The number |
+|---|---|---|---|
+| E1 | Sends ≈ receipts at 8 and 64 groups on 2 ms | **CONFIRMED** | Receipts were 96.5% and 100% of sends (2,146 of 2,224 and 4,462 of 4,463 a second), against 38% and 26% before. The hold-probe sweep gave 94.3% and 99.8%, so 8 groups sits at the line rather than clear of it |
+| E2 | A full set of leaders forms at 8 and 64 groups on 2 ms | **CONFIRMED** | Both cells elected every leader and committed all 1920 writes in all five runs; before, both stopped with no leader on every shard. At 1787.1 and 1804.7 ops/sec they run at 52% and 57% of cpp-httplib on the same tick |
+| E3 | Lock wait does not regress | **REFUTED** | p50 is no longer 0 in any cell (89 µs to 12.5 ms), and p95 rose at one group (14.6 → 166 ms on 2 ms, 6.2 → 249 ms on 10 ms) and at 8 groups (1.2 → 8.1 ms); 64 groups on 2 ms is about level (4.7 → 4.9 ms). Part of it is load: before, the cells were not doing the work — at 8 and 64 groups the servers received a third or less of what was sent, and no write committed. The rest was the completions run under the lock, fixed below: with the fix, p95 is lower than PR #392 alone in every cell and back under the pre-change figure at 64 groups on 2 ms, but still above it at one and eight groups |
+| E4 | One group still fails, block-wise | **REFUTED** | One group committed every write on both ticks, at 152.0 and 127.4 ops/sec, with p50 of 51–53 ms. It is still block-wise: 22,711 and 22,406 "Using block-wise transfer" lines in the two cells (157,155 and 77,584 before), AppendEntries carrying about 55 entries, and only 61–72% of sends reaching a server handler. It is slow, not failing |
+| E5 | Most passes are one or two steps; the budget is rarely reached | **CONFIRMED at 8 and 64 groups, REFUTED at one** | 86–90% of passes at 8 groups and 70–76% at 64 took one or two steps, and the budget was reached in 0.01–0.65% of passes. At one group the distribution splits: about 40% of passes take one step and 57–59% run to the budget |
+
+#### The lock-wait regression, and the fix in this change
+
+Everything above was measured on `main` with PR #392 alone. The regression in
+E3 was then traced and fixed, in the same change that records it.
+
+**What the remedies measured.** Design §4 names one remedy: a `yield()`
+between drain steps, only while a `send_rpc()` caller is waiting on
+`_mutex`. Two variants were run over the whole sweep, and neither was kept:
+
+- **Yield when a waiter is present.** Lock wait p95 fell at 8 and 64 groups
+  (8.1 → 4.1 ms and 4.9 → 2.1 ms on 2 ms) but not at one group (137 ms).
+  Throughput on 2 ms fell to 619.6 and 653.9 ops/sec at 8 and 64 groups.
+- **Hand the lock to the waiter**, yielding until a waiting `send_rpc()` has
+  acquired it, for up to 1 ms. One group on 2 ms fell to 2.7 ops/sec, with
+  timeouts.
+
+Lowering `io_drain_budget` was not tried. The drain already releases `_mutex`
+between steps, so a shorter pass changes how often the loop recomputes its
+timeout, not how long a waiter waits.
+
+**What the lock was actually doing.** The hold probe showed the cost was in the
+steps themselves: 220–510 µs on average and up to 49 ms each. That is because
+`handle_response()` fulfilled the request's promise inside `coap_io_process()`,
+under `_mutex`, and the promise's continuations ran inline there. Those are
+the Raft node's handling of the reply and whatever it sent next.
+
+Moving the callbacks out of the lock exposed the second half of the problem:
+
+- `multi_raft`'s tick calls `replicate_to_followers()` for every ready group on
+  every tick: 64 groups × 2 followers × 500 ticks a second. Each call sends
+  each follower everything from `next_index`, whether or not the last
+  AppendEntries already carried it.
+- Every one of those sends queued on the client's `_mutex` while a completion
+  held it, so the client lock had been the only thing keeping the tick's
+  traffic down.
+- With callbacks run after the step but still on the I/O thread, sends rose
+  from 4,689 to 7,548 a second at 64 groups on 2 ms. Throughput collapsed to
+  2.0–143.9 ops/sec, with RPC/commit in the hundreds to thousands.
+
+**The two changes:**
+
+1. **`node::replicate_to_followers_if_due()`**, which `multi_raft`'s tick now
+   calls instead of `replicate_to_followers()`. It skips a follower while the
+   last AppendEntries sent to it already carried every entry in the log and
+   the current commit index, and is younger than one heartbeat interval. A
+   follower whose RPC fails is due again on the next tick. Heartbeats,
+   `submit_command()` and every other caller still send unconditionally. This
+   is `multi_raft`'s per-tick re-sending noted under H2, fixed where it
+   starts.
+2. **Response completions run on a per-client completion thread.**
+   `handle_response()` and `handle_nack()` queue the callback under `_mutex`.
+   The I/O thread hands the queue to the completion thread after each step,
+   and that thread runs callbacks in dispatch order without the lock. Running
+   them after the step but still on the I/O thread was measured too. It cut
+   lock wait, but the callbacks then contended with the tick threads for the
+   Raft node's own lock while the drain waited behind them, and 2 ms
+   throughput fell (560.3 and 1357.0 ops/sec at 8 and 64 groups).
+
+The intermediate points, 2 ms tick, ops/sec and lock wait p95:
+
+| Variant | 8 groups | 64 groups |
+|---|---|---|
+| PR #392 alone | 1787.1, 8.1 ms | 1804.7, 4.9 ms |
+| (1) alone | 1679.8, 11.7 ms | 1748.6, 7.6 ms |
+| (1) + completions after the step, on the I/O thread | 560.3, 5.3 ms | 1357.0, 1.7 ms |
+| (1) + completion thread (this change) | 1680.7, 7.3 ms | 1745.4, 3.5 ms |
+
+**After the fix**, the whole sweep (same machine, same build otherwise):
+
+| Cell | ops/sec | p50 | Per-group p50 | Sends/s, receipts | Lock wait p50 / p95 (µs) | PR #392 alone | Pre-change |
+|---|---:|---:|---|---|---|---|---|
+| 1 group, 2 ms | 192.3 | 55.2 ms | 55.2 ms | 372, 49% | 6,747 / 92,097 | 12,532 / 166,188 | 0 / 14,627 |
+| 8 groups, 2 ms | 1680.7 | 5.66 ms | 1.55–15.3 ms | 1,149, 89.5% | 209 / 7,317 | 89 / 8,066 | 0 / 1,179 |
+| 64 groups, 2 ms | 1745.4 | 8.62 ms | 5.10–11.6 ms | 1,649, 99.1% | 289 / 3,486 | 393 / 4,884 | 0 / 4,687 |
+| 1 group, 10 ms | 127.5 | 49.5 ms | 49.5 ms | 315, 62% | 6,072 / 227,017 | 11,434 / 248,726 | 0 / 6,170 |
+| 8 groups, 80 ms | 2458.3 | 5.38 ms | 1.77–9.80 ms | 1,042, 96.6% | 362 / 4,880 | 552 / 8,070 | task 14: 0 / 909 |
+| 64 groups, 640 ms | 2540.8 | 5.79 ms | 2.39–9.93 ms | 897, 98.0% | 59 / 2,294 | 727 / 6,580 | task 14: 0 / 743 |
+
+Every write committed in every run. Throughput is within run-to-run spread of
+PR #392 alone in every cell, and higher at one group on 2 ms (192.3 against
+152.0).
+
+- **Sends over the whole cell fell by about two thirds** at 64 groups on 2 ms
+  (4,463 → 1,649 a second), most of it ticks with nothing new to send.
+  RPC/commit inside the measured window moved less (3.8 → 3.7 at 64 groups,
+  3.3 → 2.7 at 8), because there the writes drive replication themselves.
+- **Lock wait improved in every cell against PR #392 alone.** p95 is 9–65%
+  lower in the multi-group cells and 45% lower at one group on 2 ms.
+- **Against the pre-change client it is still worse except at 64 groups on
+  2 ms**, where p95 is 3.5 ms against 4.7 ms. p50 is not 0 anywhere.
+
+Two things still hold the lock, and neither is a completion any more:
+
+- `send_rpc()` keeps `_mutex` for its whole body, from session lookup through
+  `coap_send()`, so concurrent senders queue on each other.
+- A drain step still costs 220–780 µs on average. Much of that is libcoap's
+  block-wise handling at one group, and the debug logging this benchmark runs
+  with, which writes to the console under the lock.
+
+**The defaults in design §2** were revisited against the steps-per-pass table
+and left as they are. The budget's stated reason, that 64 steps bound a pass
+to "well under a millisecond of handler work", assumed microsecond steps.
+Measured steps are hundreds of microseconds. But the budget is reached in
+under 2% of passes wherever more than one group runs, and at one group a
+lower budget would not shorten a waiter's wait, for the reason above.
+`io_max_wait` (100 ms) was never the binding timeout in a busy cell.
+
+#### What binds each cell now
+
+- **One group, either tick: the batch, not the client.** With sixteen writers
+  on one group, each AppendEntries carries about 55 entries and goes
+  block-wise. Half to two thirds of sends show up as a server receipt, and
+  the I/O thread spends 39–46% of passes at its budget working through block
+  traffic. This is C4's mechanism. This change does not touch it.
+- **8 and 64 groups on 2 ms: the shared client's serialized send path.**
+  Receipts match sends, and the tick no longer floods the client. What is left
+  is `send_rpc()` holding `_mutex` across a send and the drain steps above. The
+  rows run at 49–55% of cpp-httplib on the same tick, and at 8 groups they
+  vary widely between runs (spread 38%).
+- **8 and 64 groups on the 10 ms-per-group ticks** run at 2458.3 and
+  2540.8 ops/sec, against 56.2 and 270.0 in the task 14 table.
+
+The flake measurement (task 7) was clean on both sides: the coap-flake-measure
+workflow, 20 iterations of `-L coap` on clang++-18 / x64 / Release, recorded no
+failure on `7b9ea3a` (run 38488696828) or on `main` at `94bb994` (run
+38488699758), which also ran the new `coap_io_wait_mode_test`.
+
 ## What this document could not answer
 
 Requirement 16.5, stated plainly rather than filled in with the nearest

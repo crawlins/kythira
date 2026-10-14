@@ -3,7 +3,265 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 14, 2026)
+
+- **The CoAP row of the multi-Raft matrix now runs at the standard 2 ms
+  tick.** Re-measured after the libcoap client's I/O thread stopped
+  pacing on a 5 ms sleep ([PR #392](https://github.com/crawlins/kythira/pull/392),
+  which replaced the loop [PR #227](https://github.com/crawlins/kythira/pull/227)
+  introduced). At 8 and 64 groups on 2 ms the cells that used to stop
+  with no leader now commit every write, at 1787.1 and 1804.7 ops/sec
+  (p50 4.61 and 7.64 ms), and servers receive 96.5% and 100% of the
+  AppendEntries sent, up from 38% and 26%. One group commits every write
+  too, slowly (152.0 ops/sec), still block-wise. The 10 ms-per-group
+  cells went from 56.2 and 270.0 to 2334.1 and 2509.2 ops/sec. Lock wait
+  in `send_rpc()` regressed with #392 alone. Its median was no longer 0,
+  and p95 at one group went from 14.6 ms to 166 ms, because reply
+  callbacks, and the Raft work they trigger, ran on the I/O thread under
+  the client's lock. They now run on a per-client completion thread. That
+  showed the lock had been rate-limiting `multi_raft`'s 2 ms tick, which
+  re-sent AppendEntries to every follower of every group on every tick.
+  The tick now skips followers the last AppendEntries already covers
+  (`node::replicate_to_followers_if_due()`), which cuts sends by about
+  two thirds at 64 groups. With both changes, lock-wait p95 is lower than
+  #392 alone in every cell (3.5 ms at 64 groups on 2 ms, under the
+  pre-change 4.7 ms). It is still above the pre-change figure at 1 and 8
+  groups, and throughput is unchanged. The design's yield remedy was
+  measured and not kept, because it cost two-thirds of the 2 ms
+  throughput. The numbers, the hypothesis verdicts and what binds each
+  cell are in
+  [multi_raft_performance_comparison.md](multi_raft_performance_comparison.md),
+  "The CoAP row after the event-driven client". The CoAP flake
+  measurement was clean before and after (0 failures in 20 runs each).
+  `KYTHIRA_COAP_SEND_PROBE` now also prints client sends against server
+  receipts per second, and how long the I/O thread's drain steps hold the
+  lock.
+
+- **The AWS leak audit ignores instances that are already shutting
+  down.** EC2 stops billing an instance when it enters `shutting-down`,
+  and by then the instance reports no VPC, so the in-flight filter added
+  on October 13 could not attribute it. An overlap test the next day
+  (run 38493981760) skipped the other run's live VPC as intended but
+  still failed on the node that run had just killed in its replacement
+  case.
+
+### What Changed (October 13, 2026)
+
+- **The AWS leak audit no longer fails on another run's live network.**
+  The real-EC2 fixtures now tag each VPC with `kythira:github-run-id` when
+  they create it, and the post-run audit in Real Cloud Tests skips a VPC
+  (with its NAT gateways and instances) only while the Actions API says
+  the run that owns it is still in progress. On October 12 a dispatch that
+  created no VPC failed both AWS legs on a 33-second-old VPC belonging to
+  an overlapping run. A VPC from this run, from a finished run, with no
+  run tag, or whose run cannot be looked up is still reported as leaked.
+
+### What Changed (October 12, 2026)
+
+- **The ca_cluster_node AMI build works again under the narrowed CI
+  role.** The scheduled Real Cloud Tests run on October 12 failed both
+  AMI builds with `UnauthorizedOperation` on `ec2:ModifyImageAttribute`.
+  The template's `imds_support = "v2.0"` makes Packer call that action
+  after `CreateImage`, and the `ami-build` bundle stopped granting it once
+  the live policy was re-provisioned with the October 2 change. The
+  template no longer sets the image attribute. Nodes still require
+  IMDSv2, because `aws_ec2_quorum_manager` sets `HttpTokens=required` on
+  every launch by default.
+
 ### What Changed (October 7, 2026)
+
+- **The connection-limit tests no longer fail when the server's reset wins
+  the race with `connect()`.** `beast_server_test` failed its first attempt
+  in 27 of 200 CI test jobs, always in `server_refuses_connections_past_the_limit`
+  or `server_connection_limit_is_shared_across_listeners`, on the
+  `third.connected()` / `extra.connected()` check. Those tests assumed a
+  connection past the limit always connects and is then closed, because the
+  kernel finishes the handshake before the server calls `accept()`. But Linux
+  `connect()` checks the socket state again when the calling thread wakes up.
+  If the server has already accepted and reset the connection by then (the
+  Beast and Proxygen servers refuse with `SO_LINGER {1, 0}`), `connect()`
+  fails with `ECONNRESET`. A standalone loop against an accept-and-reset
+  listener sees this in about 1 of 1,000 connects on an idle machine. Under
+  load the Beast test itself saw it up to 3 times in 3,000. CI starts
+  `beast_server_test` alongside three other Beast binaries, so the third
+  connection hit it about one job in eight. `raw_connection` now records the
+  `connect()` errno, and `reached_server()` accepts both outcomes as the
+  refusal, but never `ECONNREFUSED`. A connection reset that way reads as
+  closed with nothing sent. The same check in `http_server_test` and
+  `proxygen_transport_test` gets the same fix. No server code changed.
+
+- **The simulator and TCP transports route by composite and textual node
+  ids.** The network concepts take the node id type as a second parameter
+  (defaulting to `std::uint64_t`), the simulator transport takes it as a
+  fourth template argument, and `tcp_rpc` gains `basic_tcp_rpc_client<NodeId>`
+  and `basic_tcp_rpc_server<NodeId>`, with `tcp_rpc_client` and
+  `tcp_rpc_server` kept as their numeric instantiations. `node<Types>`
+  checks PreVote, TimeoutNow, catch-up and ClusterJoin support against its
+  own id type rather than the numeric concepts, so those extensions stay on
+  for a node with a textual id. A three-node cluster named
+  by Docker composite ids now elects, replicates and catches up over the
+  simulator, which also needed configuration log entries to encode ids by
+  their text. Numeric ids in configuration entries are read across the full
+  `uint64_t` range, where an id at or above 2^63 used to throw. `tcp_rpc`'s
+  address dispatch looks a node id up in the peer table before reading the
+  text as `host:port` (a textual id such as `docker:kythira:3` also splits
+  as host `docker:kythira`, port 3), and a digit string too long for a
+  `uint64_t` fails the call instead of throwing `std::out_of_range` out of
+  `std::stoull`.
+
+- **curl moves from 8.17.0 to 8.22.0, and dependency bumps now reach CI.**
+  The AWS SDK and the Azure SDK's HTTP transport link vcpkg's curl, which
+  was still on the `builtin-baseline` copy, 8.17.0. That release is
+  affected by 43 published curl advisories (15 medium, 28 low), among them
+  OpenSSL pinning bypass (CVE-2026-80230), HTTP/2 server push
+  use-after-free (CVE-2026-18924), stale proxy password leak
+  (CVE-2026-9079) and mTLS config mismatch on connection reuse
+  (CVE-2026-8932); 8.22.0 has none. `curl` and `nghttp2` now come from the
+  same newer registry commit as openssl, c-ares and cpp-httplib (nghttp2
+  1.70.0 is only built when curl's `http2` feature is on, which no Kythira
+  build enables today). Every vcpkg `actions/cache` key now hashes
+  `vcpkg-configuration.json` too: before, a change that only touched the
+  registry list restored the old installed tree and skipped
+  `vcpkg install`, so CI kept testing against the versions it was meant to
+  replace.
+
+- **The ACE token request and the pinned root fetch refuse plain http.**
+  `run_ace_token_exchange()` posted `client_secret` to whatever
+  `as_token_endpoint` named and took the PSK or OSCORE master secret back
+  over it, so an `http://` endpoint sent both in clear. It now refuses any
+  endpoint that is not `https://` with `coap_security_config_error`,
+  before any request goes out; plain http passes only to a loopback host
+  (`localhost`, 127.0.0.0/8, `::1`) and only with the new test-only
+  `ace_oauth_config::allow_plain_http_loopback`. The new
+  `ace_oauth_config::as_ca_bundle_pem` trusts a private AS's CA (unset
+  keeps the system store). `fetch_trusted_root()` accepted an `http://`
+  (or scheme-less) `base_url`, which skipped the fingerprint pin entirely
+  and sent the bearer token in clear; it now throws
+  `std::invalid_argument` for anything but `https://`, with no opt-out,
+  since a root fetched without its pin is not one to trust. ACME's
+  https-or-loopback rule moved to the shared
+  `include/raft/http_origin_policy.hpp`, which both now use. Breaking: an
+  ACE config aimed at a plain http AS stops working until it moves to
+  https (or, in a test, sets the opt-in).
+
+- **Ion carries the full `uint64` range; Ion and protobuf range-check every
+  integer.** The Ion serializer cast every term, index and numeric id to
+  `int64_t` before writing it, so a value at or above 2^63 went on the wire
+  as a negative int and every receiver rejected it. It now writes such a
+  value as the positive Ion int it is (Ion ints are arbitrary precision)
+  and reads every int through `ION_INT`, which also makes it reject values
+  past 2^64 and `null.int` with a `serialization_exception`. Protobuf
+  converted wire `uint64`s with plain casts, so a receiver whose `TermId`,
+  `LogIndex`, `NodeId` or `GroupId` is narrower than 64 bits silently
+  truncated, and an entry type past 255 wrapped into an unrelated one; both
+  now fail the decode, as JSON and CBOR already did. Output bytes for every
+  value below 2^63 are unchanged (golden vectors in the two new
+  `*_serializer_range_property_test`s).
+
+- **Composite node ids work on the wire and in the Raft core.** Every RPC
+  serializer (JSON, CBOR, ION, protobuf) now encodes a composite id such as
+  `aws_ec2_node_id` as its canonical text and parses it back on decode,
+  failing the decode on text that does not parse. Before, none of them
+  compiled with a composite `NodeId`. `fetch_log_entries_response` gains a
+  `NodeId` template parameter (first, like the request types) and its
+  responder is a `NodeId`, where it was a fixed `std::uint64_t` that a
+  `std::string`-id node filled with 0. `node_id_to_u64` is gone: the
+  catch-up fetch routes by `node_id_type` like every other RPC. Protobuf
+  adds `NodeIdValue responder = 6` beside the legacy `responder_id`; a
+  numeric sender fills both and a decoder prefers the new field, so mixed
+  versions interoperate. The file and object-store persistence engines read
+  snapshot member ids with `to_number`, so an id at or above 2^63 (written
+  as an unsigned JSON number) no longer throws on load, and
+  `raft_object_backup` seeds such an id unsigned rather than negative.
+  Code that names `fetch_log_entries_response<TermId, ...>` positionally
+  now needs a leading `NodeId` argument.
+- **The Folly-free build tests the stdexec and Boost future backends.**
+  Every stdexec backend test, and both Boost backend tests, were registered
+  inside `tests/CMakeLists.txt`'s `if(TARGET Folly::folly)` block, so a
+  `CONFIG_FOLLY=n` build (the no-folly CI job) skipped them even though
+  their sources never include Folly; the backends meant to replace Folly
+  were only ever tested beside it. Thirteen stdexec tests and the two Boost
+  tests now register outside that gate. The four that compare a backend
+  with the Folly one (`backend_non_interference_compile_fail_test`,
+  `cross_backend_concept_compliance_property_test`,
+  `stdexec_concept_wrappers_interoperability_property_test`,
+  `unit_type_equivalence_property_test`) stay inside it, and
+  `configs/no-folly-test-allowlist.txt` drops from 175 entries to 160.
+
+- **`coap_client::establish_dtls_connection()` no longer runs libcoap on
+  two threads at once.** It pumped `coap_io_process()` itself, and created,
+  polled, pinged and released its session, all without `_mutex`, while the
+  client's `_io_thread` was running `coap_io_process()` on the same context.
+  ThreadSanitizer over a TSan-built libcoap 4.3.5 reports 27 races in one
+  run of `coap_dtls_connection_establishment_property_test`, among them
+  unsynchronised session reference counts and a free. In CI that test
+  crashed its first attempt in 13 of about 638 jobs (2026-10-06..07): 11
+  memory access violations at a connection attempt and 2 SIGABRTs. The
+  function now makes every libcoap call under `_mutex` and sleeps outside
+  it, leaving the I/O to `_io_thread`, as `complete_dtls_handshake()`
+  already did. The constructor also holds `_mutex` around
+  `setup_dtls_context()`, whose context setters raced the already-running
+  `_io_thread`, and both client and server call `coap_startup()` once per
+  process before creating a context, which nothing did before. The same
+  run now reports 0 races, and the test is off the retry allowlist.
+
+- **`proxygen_transport_test` and `protobuf_rpc_integration_test` moved to
+  ports no other test binary binds.** `proxygen_transport_test` used
+  18199-18213, which overlapped all of `beast_server_test` (18200-18207)
+  and `beast_integration_test` (18210-18214); it now uses 18400-18423.
+  `protobuf_rpc_integration_test` shared 8097 with
+  `http_negotiation_integration_test` and now uses 18430. Under `ctest -j`
+  whichever binary bound a shared port second would fail.
+
+- **A chaos scenario now runs Raft over mutual TLS.**
+  `docker-mtls-chaos-tests` starts three `chaos_node`s on the TLS RPC
+  transport with certificates `ca_service` mints inside the stack
+  (`docker/mtls-chaos-compose.yml`), and checks replication, leader-crash
+  re-election and catch-up over it. Two cases then stop node 3 and put an
+  impostor at its address claiming its id: one with a node3 certificate
+  from another root, one with a certificate from the cluster's own root
+  for a non-member name. The leader must never replicate an entry to
+  either. Given the real node3 identity instead, an impostor does receive
+  entries, so the check measures the trust policy and nothing else.
+  `chaos_node` gained `RPC_TLS_CERT`/`RPC_TLS_KEY`/`RPC_TLS_CA` and
+  `RPC_TIMEOUT_MS`, and the step runs in Container Scenario Tests under
+  Docker and rootless Podman. `docker/ca-provisioning-compose.yml` passed
+  `--out-dir=/ca`-style arguments, which `ca_service` rejects, so its
+  `ca-service` container had never started; they are now separate words.
+
+- **A peer certificate the TLS trust policy rejects is no longer retried
+  inside one RPC.** `error_handler::classify_error` treated
+  `tls_tcp_rpc_client`'s "peer certificate rejected by trust policy" as an
+  unknown error and retried it four times with backoff, a full handshake
+  each time, for every heartbeat. With an impostor at a member's address
+  that made the leader's CPU use roughly six times its baseline, and on a
+  loaded rootless Podman runner pushed commit latency past the 5s submit
+  timeout. It is now an authentication failure and is not retried; the
+  next heartbeat is the retry.
+
+- **One unreachable peer no longer stops a TLS cluster's majority from
+  committing.** `tls_tcp_rpc_client` ran every RPC on an eight-thread pool
+  with no limit per peer, and a peer that has gone away (paused, or its
+  address blackholed) holds a thread for the whole RPC timeout on every
+  heartbeat. Those calls filled the pool, RPCs to the live follower queued
+  behind them until they timed out, and a two-of-three cluster committed
+  nothing until the leader gave up on the dead voter, about 45 seconds
+  later under rootless Podman. `tcp_rpc_client` already capped each
+  endpoint at two RPCs in flight; the TLS client now does the same, and a
+  call over the cap fails at once.
+
+- **A slow DNS server no longer stalls RPCs to peers that are up.** The
+  TCP and TLS RPC clients and the gossip transport looked each peer's
+  name up on every dial, and `getaddrinfo()` has no timeout: when rootless
+  Podman's aardvark-dns went quiet after a container joined the network,
+  each lookup took 20 seconds, RPCs to the live follower held their
+  in-flight slots for that long, and the leader's heartbeats stopped. A
+  dial now reuses the addresses the name last resolved to; after 10
+  seconds one background thread looks the name up again, and a failed
+  lookup keeps the old answer. A dial that fails on the cached addresses
+  also starts a lookup, at most once a second per peer, so a restarted
+  container at a new address is reached again as soon as DNS answers.
+  Only a name with no answer yet is looked up on the dialling thread.
 
 - **The gossip table no longer grows with whatever a peer sends.**
   `tcp_gossip_peer2peer_replicator::merge()` added every unknown node id

@@ -711,6 +711,7 @@ struct RealEc2Fixture : signal_cleanup_target {
     void create_vpc() {
         Aws::EC2::Model::CreateVpcRequest req;
         req.SetCidrBlock("10.77.0.0/16");
+        kythira::testing::aws_real_ec2::tag_vpc_with_github_run(req);
         auto out = ec2->CreateVpc(req);
         BOOST_REQUIRE_MESSAGE(out.IsSuccess(),
                               "CreateVpc: " + std::string(out.GetError().GetMessage()));

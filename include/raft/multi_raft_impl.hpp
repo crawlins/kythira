@@ -50,6 +50,8 @@ multi_raft<Types, Key, GroupId>::multi_raft(config_type cfg)
     // protection: re-creating a merged-away group gives two shards one range.
     _demux.set_tombstone_predicate([this](const GroupId& g) { return this->is_tombstoned(g); });
 
+    _demux.set_local_node_id(_cfg.node_id);
+
     // Every inbound message is a wake signal (Requirement 5.5).
     _demux.set_message_observer([this](const GroupId& g) { this->note_activity(g); });
 
@@ -695,7 +697,7 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
                 g._leader_since_ns.store(0, std::memory_order_relaxed);
                 publish_report(g);
             }
-            g._node->replicate_to_followers();
+            g._node->replicate_to_followers_if_due();
         });
         report._send_duration = clock::now() - t0;
     }
@@ -3565,7 +3567,8 @@ auto multi_raft<Types, Key, GroupId>::apply_operator(const shard_operation_type&
                     return note_skipped_operator(op, skipped_operator_reason::precondition);
                 }
                 if constexpr (!network_client_with_timeout_now<
-                                  typename group_types::network_client_type>) {
+                                  typename group_types::network_client_type,
+                                  typename group_types::node_id_type>) {
                     return note_skipped_operator(op, skipped_operator_reason::unsupported);
                 } else {
                     g->_node->transfer_leadership(concrete._to, timeout);
@@ -3603,7 +3606,8 @@ auto multi_raft<Types, Key, GroupId>::apply_operator(const shard_operation_type&
                 return accept();
             } else {
                 if constexpr (!network_client_with_timeout_now<
-                                  typename group_types::network_client_type>) {
+                                  typename group_types::network_client_type,
+                                  typename group_types::node_id_type>) {
                     return note_skipped_operator(op, skipped_operator_reason::unsupported);
                 } else {
                     scatter(op.group_id(), timeout);

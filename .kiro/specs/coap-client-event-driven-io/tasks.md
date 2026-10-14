@@ -1,14 +1,15 @@
 # Implementation Plan — Event-Driven I/O for the libcoap Client
 
-## Status: Not started
+## Status: Complete — tasks 1–9 done
 
-**Last Updated**: October 2, 2026
+**Last Updated**: October 14, 2026
 
 This plan implements `.kiro/specs/coap-client-event-driven-io/design.md`. Four
-phases, 8 tasks. Phase 1 is a gate: the design rests on six claims about
-libcoap (design §1) that come from reading its source, and the task 14 record
-exists because readings of this transport have been wrong before. Nothing in
-phases 2–4 starts until task 1 has confirmed or corrected them.
+phases, 8 tasks, and a ninth found by task 7. Phase 1 is a gate: the design
+rests on six claims about libcoap (design §1) that come from reading its
+source, and the task 14 record exists because readings of this transport
+have been wrong before. Nothing in phases 2–4 starts until task 1 has
+confirmed or corrected them.
 
 ## Overview
 
@@ -46,7 +47,7 @@ does not, and can start before #385 lands.
 
 ## Phase 1: Gate (Task 1)
 
-- [ ] 1. Probe libcoap and record the answers in design §1
+- [x] 1. Probe libcoap and record the answers in design §1
   - Write a standalone probe (a test binary under `tests/`, not shipped) that,
     against a real libcoap context, checks L1–L6 of design §1: the value of
     `coap_context_get_coap_fd()`; whether a zero-timeout `poll()` on it tracks
@@ -65,12 +66,16 @@ does not, and can start before #385 lands.
     the design before phase 2.
   - Verify: the table exists with a measured answer per claim per build.
   - _Requirements: 1.1, 1.3, 2.1, 2.2, 6.1_
+  - **Result:** L1–L6 hold on both builds; the gate passes. Two additions,
+    recorded in design §1: `coap_io_prepare_epoll()` returns 0 for "no timer
+    scheduled" (L4), and with PR #385's per-peer session and raised NSTART a
+    peer's replies queue together on one socket, so L3 is what binds (L7).
 
 ---
 
 ## Phase 2: Configuration and Wake (Tasks 2–3)
 
-- [ ] 2. Add the wait mode, budget and intervals to `coap_client_config`
+- [x] 2. Add the wait mode, budget and intervals to `coap_client_config`
   - `coap_io_wait_mode { automatic, readiness, paced }` and the three fields
     of design §5, with the defaults in design §2's table.
   - Validation in `coap_config_validation.hpp`: zero budget, non-positive
@@ -81,8 +86,13 @@ does not, and can start before #385 lands.
   - Verify: validation unit tests; constructing with each mode on this build
     logs the expected reason.
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
+  - **Done.** `validate_io_wait_config()` is split out of
+    `validate_client_config()` and also run by the constructor, since a zero
+    budget or a non-positive wait would make the loop misbehave rather than
+    fail. Mode selection also honours `KYTHIRA_COAP_IO_WAIT_MODE` when the
+    config says `automatic` (see task 6).
 
-- [ ] 3. Wake fd and `signal_io_wake()`
+- [x] 3. Wake fd and `signal_io_wake()`
   - Create the `eventfd` in readiness mode only; close it after `_io_thread`
     is joined in `~coap_client()`.
   - Coalesce with an atomic pending flag as design §3 shows; the I/O thread
@@ -94,12 +104,19 @@ does not, and can start before #385 lands.
   - Verify: a unit test signals from several threads while the I/O thread is
     and is not waiting, and every signal is followed by a pass.
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 5.1, 5.3_
+  - **Done.** The eventfd is owned by a small RAII member declared before
+    `_io_thread`, so it is closed after the thread is joined even when the
+    constructor throws after starting it. The DTLS wake is in
+    `initiate_dtls_handshake()` and `establish_dtls_connection()`, after the
+    session exists. The multi-thread signal check is
+    `sends_wake_a_waiting_thread` in `tests/coap_io_wait_mode_test.cpp`,
+    through `send_rpc()` rather than the private `signal_io_wake()`.
 
 ---
 
 ## Phase 3: The Loop (Tasks 4–5)
 
-- [ ] 4. Replace the fixed sleep with the readiness loop
+- [x] 4. Replace the fixed sleep with the readiness loop
   - Implement design §2 in the `coap_client` constructor: budget-bounded
     drain with one `_mutex` acquisition per step and a zero-timeout readiness
     `poll()` between steps; multicast cleanup; timeout from
@@ -115,8 +132,17 @@ does not, and can start before #385 lands.
     a test-only hook) confirms `_mutex` is not owned by the I/O thread when
     it enters `poll()` or `sleep_for`.
   - _Requirements: 1.1–1.5, 2.1–2.4, 2.6, 3.1, 3.2, 3.3_
+  - **Done**, in `coap_client::run_io_loop()`. `coap_io_prepare_epoll()`
+    returning 0 means "no timer", so it maps to `io_max_wait` (design §1 L4).
+    The probe line is one aggregate per second per client
+    (`[stall-probe] io_passes ... steps_hist=1:a,2:b,3-4:c,...`), not one per
+    pass, and `scripts/coap-send-probe-summary.py` sums it per cell. The lock
+    check is behavioural rather than an assertion: `std::recursive_mutex`
+    cannot report its owner, so `the_lock_is_free_while_the_thread_waits`
+    times a public call that takes `_mutex` while the thread sits in a 10 s
+    wait.
 
-- [ ] 5. Paced fallback with the same drain
+- [x] 5. Paced fallback with the same drain
   - Implement design §6: `_io_dispatch_count` incremented in the response and
     NACK handlers; drain until a step dispatches nothing or the budget is
     reached; then sleep `io_paced_interval` outside the lock.
@@ -124,20 +150,36 @@ does not, and can start before #385 lands.
     test in place of the readiness `poll()` between steps.
   - Verify: forcing `paced` on this build runs the whole CoAP suite.
   - _Requirements: 2.5, 6.1, 6.5_
+  - **Done.** `_io_dispatches` also feeds `io_loop_stats()`. L2 held, so the
+    readiness loop keeps its `poll()` test.
 
 ---
 
 ## Phase 4: Tests and Measurement (Tasks 6–8)
 
-- [ ] 6. Tests in both modes
+- [x] 6. Tests in both modes
   - The tests of design §8's table, each new file with the copyright header.
   - Run the existing CoAP suite in both modes via a fixture parameter, not a
     second build. No existing test may be weakened, skipped or re-timed.
   - Timing checks are budgets with slack, never latency targets.
   - Verify: `ctest -R coap` passes locally in both modes; CI runs both.
   - _Requirements: 1.5, 2.3, 4.1, 5.4, 6.5, 7.1_
+  - **Done.** `tests/coap_io_wait_mode_test.cpp` covers design §8's table.
+    Two deviations: the burst check allows up to N/4 passes for N = 32
+    rather than ⌈N / budget⌉ + 1, because on loopback the client can start
+    draining before the last reply lands (measured: 1 pass in both modes);
+    and the retransmission check uses a 1 s `ack_timeout`, libcoap's floor
+    (`coap_session_set_ack_timeout()` ignores values under a second).
+  - The "fixture parameter" is an environment variable:
+    `tests/CMakeLists.txt` registers a `<name>_paced` twin of every libcoap
+    CoAP test with `KYTHIRA_COAP_IO_WAIT_MODE=paced`, labelled `paced_io`
+    instead of `coap` so `-L coap` (the flake workflow's selection) is
+    unchanged. One build, both modes, no test edited.
+  - Run in the cloud sandbox against libcoap 4.3.5 with the Boost future
+    backend (no Folly there): every CoAP test that builds without Folly, in
+    both modes. The Folly-only tests run on CI.
 
-- [ ] 7. Flake and lock-wait regression check
+- [x] 7. Flake and lock-wait regression check
   - Run the coap-flake-measure workflow before (on `main`) and after, same
     selection, same runner class, 20 iterations each as PR #227 did.
   - Collect the send probe's `lock_wait_us` for the task 14 cells and compare
@@ -148,8 +190,19 @@ does not, and can start before #385 lands.
   - Verify: no increase in failures; lock wait median 0 µs and p95 no worse
     per cell.
   - _Requirements: 3.4, 7.2, 7.4_
+  - **Result (October 14, 2026).** Flakes: 0 failures in 20 runs on both
+    sides (runs 38488696828 and 38488699758). Lock wait: **the check
+    failed** with PR #392 alone. p50 was no longer 0, and p95 rose at 1
+    and 8 groups. The §4 yield was measured in two variants and neither
+    was kept, because it cost about two-thirds of the 2 ms throughput.
+    §2's defaults were left unchanged. Task 9 fixed the cause. After it,
+    p95 is lower than PR #392 alone in every cell and meets the
+    pre-change figure at 64 groups on 2 ms. It is still above that figure
+    at 1 and 8 groups, and p50 is not 0. Figures are in
+    `doc/multi_raft_performance_comparison.md`, "The CoAP row after the
+    event-driven client".
 
-- [ ] 8. Re-run the CoAP cells of the multi-Raft matrix and record them
+- [x] 8. Re-run the CoAP cells of the multi-Raft matrix and record them
   - The task 14 CoAP cells at 1, 8 and 64 groups on the standard 2 ms tick,
     same machine description, 1920 operations at 16 in flight, five
     repetitions; also the 10 ms-per-group pass for comparison.
@@ -164,6 +217,25 @@ does not, and can start before #385 lands.
   - Add a `doc/CHANGELOG.md` entry linking PR #227 and the new numbers.
   - Verify: the section exists with measured numbers and verdicts.
   - _Requirements: 8.1, 8.2, 8.3, 8.4_
+
+- [x] 9. Run response completions off the I/O thread and outside `_mutex`
+  - Found by task 7: `handle_response()` and `handle_nack()` fulfilled the
+    request's promise inside `coap_io_process()`, under `_mutex`, and its
+    continuations ran inline there. Drain steps held the lock for 220–510 µs
+    on average and up to 49 ms. That was the lock-wait regression.
+  - The callbacks are now queued under the lock and run in order on a
+    per-client completion thread.
+  - Running them after the step on the I/O thread was tried first. It
+    showed that the lock had been throttling `multi_raft`'s tick, which
+    re-sent AppendEntries to every follower of every group on every tick.
+    With the throttle gone, 64 groups on 2 ms collapsed. So the tick now
+    calls `node::replicate_to_followers_if_due()`, which skips a follower
+    the last AppendEntries already covers.
+  - Verify: the task 8 cells were re-run. Throughput is within run spread of
+    task 8 in every cell. Lock wait p95 is lower than task 8 in every cell
+    and meets the pre-change figure at 64 groups on 2 ms, but not at 1 or 8
+    groups. The raft, multi_raft and CoAP suites pass.
+  - _Requirements: 3.4_
 
 ---
 

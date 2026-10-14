@@ -129,10 +129,15 @@ namespace ca_bootstrap_detail {
 /// `ca_service --serve`/`ca_cluster_node` requires it on every route but
 /// `/healthz` (Requirement 19.6: pinning and bearer-token auth are
 /// independent and composable, not alternatives). Throws
-/// `std::invalid_argument` on a malformed `expected_root_fingerprint_sha256`,
+/// `std::invalid_argument` on a malformed `expected_root_fingerprint_sha256`
+/// or a non-https `base_url`,
 /// or `std::runtime_error` on any connection failure or fingerprint
 /// mismatch — naming both the expected and observed fingerprints in the
-/// latter case. Never falls back to unpinned verification.
+/// latter case. Never falls back to unpinned verification. `base_url` must
+/// be https://, loopback included: over plain http there is no handshake to
+/// pin, so the bearer token would go out in clear and the "trusted" root
+/// would be whatever came back. There is no opt-out, since a root fetched
+/// without its pin is not a root anyone should trust.
 [[nodiscard]] inline auto fetch_trusted_root(std::string base_url,
                                              std::string expected_root_fingerprint_sha256,
                                              std::string auth_token = "") -> ca_bootstrap_result {
@@ -143,6 +148,15 @@ namespace ca_bootstrap_detail {
             "ca_bootstrap_client: expected_root_fingerprint_sha256 is not a well-formed SHA-256 "
             "fingerprint (64 hex digits, colons optional): " +
             expected_root_fingerprint_sha256);
+    }
+
+    // Checked before anything else touches the network. httplib::Client also
+    // reads a URL with no scheme as plain http, so require the prefix itself.
+    if (!base_url.starts_with("https://")) {
+        throw std::invalid_argument(
+            "ca_bootstrap_client: base_url must be https:// (the root fingerprint can only be "
+            "pinned on a TLS handshake): " +
+            base_url);
     }
 
     httplib::Client client(base_url);

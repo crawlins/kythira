@@ -1,0 +1,40 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# ci_alt_coap_defconfig — the feature set the Alternate CoAP Backends job
+# resolves. That job's vcpkg install is `--x-feature=edhoc
+# --x-feature=coap-cantcoap --x-feature=coap-libnyoci`, i.e. the edhoc image
+# ci_full_defconfig models plus the two alternate CoAP backends, so this file
+# is ci_full_defconfig with both backend symbols turned on and nothing else
+# changed. Written, like ci_full_defconfig, against
+# `-DKYTHIRA_KCONFIG_STRICT=ON` (Requirement 5.1) — see that file's header for
+# the reasoning; only the difference is annotated here.
+#
+#   COAP_TRANSPORT_CANTCOAP — the point of the job. Without them every
+#   COAP_TRANSPORT_LIBNYOCI   coap_cantcoap_* and coap_libnyoci_* target
+#                             compiles to its single "backend unavailable"
+#                             stub case and reports green. Strict mode turns
+#                             "the feature is installed" into an assertion:
+#                             if either vcpkg feature stops delivering its
+#                             library, this configure FATAL_ERRORs instead of
+#                             quietly reverting the suites to their stubs.
+#
+# Everything else is verbatim from ci_full_defconfig and must stay that way
+# (ci-build-matrix-coverage Requirement 1.2): a failure in this job has to be
+# attributable to the alternate backends, not to a configuration nothing else
+# builds.
+CONFIG_COAP_TRANSPORT_CANTCOAP=y
+CONFIG_COAP_TRANSPORT_LIBNYOCI=y
+CONFIG_EDHOC=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
+CONFIG_BOOST_BEAST_TRANSPORT=y
+CONFIG_PROXYGEN_TRANSPORT=y
+CONFIG_REDIS_GATEWAY=y
+CONFIG_PROTOBUF_SERIALIZER=y
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set

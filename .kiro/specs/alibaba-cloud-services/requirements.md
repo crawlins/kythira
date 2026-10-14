@@ -264,8 +264,8 @@ the manager stays stateless.
    "fix" it into one.
 3. NodeId assignment SHALL be tag-scan max+1 over the scaling group's
    current instances (the `aws_asg_quorum_manager` scheme — ESS names give
-   nothing derivable), with the same known TOCTOU caveat deferred to the
-   leader-side pending-provision tracking note in
+   nothing derivable), with the same known TOCTOU caveat described in the
+   "Node ids across leaders" note on the `quorum_manager` concept in
    `quorum_management.hpp`, and SHALL never fall at or below an id the
    manager instance has already assessed or allocated (an in-memory floor;
    the scan cannot see a removed instance's tag).

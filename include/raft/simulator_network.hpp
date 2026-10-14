@@ -17,16 +17,38 @@
 #include <iostream>
 #include <memory>
 #include <shared_mutex>
+#include <thread>
 #include <chrono>
 
 namespace kythira {
 
+/// @brief The simulator address a peer named `target` listens on.
+///
+/// A string-addressed simulator names each node by its id's text form, so a
+/// numeric id `3` is address `"3"` and a composite id is its canonical text.
+/// A numeric address type takes a numeric id as is.
+template<typename Address, typename NodeId>
+[[nodiscard]] auto simulator_address_of(const NodeId& target) -> Address {
+    if constexpr (std::is_same_v<Address, std::string>) {
+        return node_id_traits<NodeId>::to_text(target);
+    } else {
+        static_assert(std::unsigned_integral<NodeId>,
+                      "a numeric simulator address needs a numeric node id");
+        return static_cast<Address>(target);
+    }
+}
+
 // Forward declarations
-template<typename NetworkTypes, typename Serializer, typename Data>
+//
+// `NodeId` is the node id type peers are named by and the requests carry
+// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2); it defaults to
+// `std::uint64_t` in the first declaration, in raft/types.hpp. A target is
+// mapped to its simulator address by `simulator_address_of`.
+template<typename NetworkTypes, typename Serializer, typename Data, typename NodeId>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_client;
 
-template<typename NetworkTypes, typename Serializer, typename Data>
+template<typename NetworkTypes, typename Serializer, typename Data, typename NodeId>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_server;
 
@@ -51,7 +73,7 @@ template<typename AddressType> struct raft_simulator_network_types {
 };
 
 // Simulator network client implementation
-template<typename NetworkTypes, typename Serializer, typename Data>
+template<typename NetworkTypes, typename Serializer, typename Data, typename NodeId>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_client {
 public:
@@ -68,7 +90,7 @@ public:
     {}
 
     // Send RequestVote RPC - returns Future<request_vote_response<>>
-    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& req,
+    auto send_request_vote(const NodeId& target, const kythira::request_vote_request<NodeId>& req,
                            std::chrono::milliseconds timeout)
         -> kythira::future_default<kythira::request_vote_response<>> {
         fiu_do_on("raft/network/send_request_vote",
@@ -82,12 +104,7 @@ public:
         std::vector<std::byte> payload(data.begin(), data.end());
 
         // Convert target node ID to address
-        address_type target_addr;
-        if constexpr (std::is_same_v<address_type, std::string>) {
-            target_addr = std::to_string(target);
-        } else {
-            target_addr = static_cast<address_type>(target);
-        }
+        const auto target_addr = simulator_address_of<address_type>(target);
 
         // Create message
         const auto reply_port = next_reply_port();
@@ -102,7 +119,7 @@ public:
                 }
 
                 // Wait for response - return the future directly (will be flattened)
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::request_vote_response<> {
@@ -121,7 +138,8 @@ public:
 
     // Send RequestPreVote RPC — satisfies kythira::network_client_with_pre_vote
     // (include/raft/network.hpp).
-    auto send_request_pre_vote(std::uint64_t target, const kythira::request_pre_vote_request<>& req,
+    auto send_request_pre_vote(const NodeId& target,
+                               const kythira::request_pre_vote_request<NodeId>& req,
                                std::chrono::milliseconds timeout)
         -> kythira::future_default<kythira::request_pre_vote_response<>> {
         fiu_do_on("raft/network/send_request_pre_vote",
@@ -135,12 +153,7 @@ public:
         std::vector<std::byte> payload(data.begin(), data.end());
 
         // Convert target node ID to address
-        address_type target_addr;
-        if constexpr (std::is_same_v<address_type, std::string>) {
-            target_addr = std::to_string(target);
-        } else {
-            target_addr = static_cast<address_type>(target);
-        }
+        const auto target_addr = simulator_address_of<address_type>(target);
 
         // Create message
         const auto reply_port = next_reply_port();
@@ -155,7 +168,7 @@ public:
                 }
 
                 // Wait for response - return the future directly (will be flattened)
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::request_pre_vote_response<> {
@@ -174,7 +187,7 @@ public:
 
     // Send TimeoutNow RPC — satisfies kythira::network_client_with_timeout_now
     // (include/raft/network.hpp). Leadership transfer, dissertation §3.10.
-    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& req,
+    auto send_timeout_now(const NodeId& target, const kythira::timeout_now_request<NodeId>& req,
                           std::chrono::milliseconds timeout)
         -> kythira::future_default<kythira::timeout_now_response<>> {
         fiu_do_on("raft/network/send_timeout_now",
@@ -184,12 +197,7 @@ public:
         auto data = _serializer.serialize(req);
         std::vector<std::byte> payload(data.begin(), data.end());
 
-        address_type target_addr;
-        if constexpr (std::is_same_v<address_type, std::string>) {
-            target_addr = std::to_string(target);
-        } else {
-            target_addr = static_cast<address_type>(target);
-        }
+        const auto target_addr = simulator_address_of<address_type>(target);
 
         const auto reply_port = next_reply_port();
         typename NetworkTypes::message_type msg(_node->address(), reply_port, target_addr,
@@ -200,7 +208,7 @@ public:
                 if (!success) {
                     throw kythira::network_exception("Failed to send TimeoutNow RPC");
                 }
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::timeout_now_response<> {
@@ -216,7 +224,8 @@ public:
     }
 
     // Send AppendEntries RPC - returns Future<append_entries_response<>>
-    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& req,
+    auto send_append_entries(const NodeId& target,
+                             const kythira::append_entries_request<NodeId>& req,
                              std::chrono::milliseconds timeout)
         -> kythira::future_default<kythira::append_entries_response<>> {
         fiu_do_on("raft/network/send_append_entries",
@@ -230,12 +239,7 @@ public:
         std::vector<std::byte> payload(data.begin(), data.end());
 
         // Convert target node ID to address
-        address_type target_addr;
-        if constexpr (std::is_same_v<address_type, std::string>) {
-            target_addr = std::to_string(target);
-        } else {
-            target_addr = static_cast<address_type>(target);
-        }
+        const auto target_addr = simulator_address_of<address_type>(target);
 
         // Create message
         const auto reply_port = next_reply_port();
@@ -250,7 +254,7 @@ public:
                 }
 
                 // Wait for response - return the future directly
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::append_entries_response<> {
@@ -267,7 +271,8 @@ public:
     }
 
     // Send InstallSnapshot RPC - returns Future<install_snapshot_response<>>
-    auto send_install_snapshot(std::uint64_t target, const kythira::install_snapshot_request<>& req,
+    auto send_install_snapshot(const NodeId& target,
+                               const kythira::install_snapshot_request<NodeId>& req,
                                std::chrono::milliseconds timeout)
         -> kythira::future_default<kythira::install_snapshot_response<>> {
         fiu_do_on("raft/network/send_install_snapshot",
@@ -281,12 +286,7 @@ public:
         std::vector<std::byte> payload(data.begin(), data.end());
 
         // Convert target node ID to address
-        address_type target_addr;
-        if constexpr (std::is_same_v<address_type, std::string>) {
-            target_addr = std::to_string(target);
-        } else {
-            target_addr = static_cast<address_type>(target);
-        }
+        const auto target_addr = simulator_address_of<address_type>(target);
 
         // Create message
         const auto reply_port = next_reply_port();
@@ -301,7 +301,7 @@ public:
                 }
 
                 // Wait for response - return the future directly
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
                            -> kythira::install_snapshot_response<> {
@@ -319,9 +319,9 @@ public:
 
     // Send ClusterJoin RPC — routed by address_type directly (not node_id)
     auto send_cluster_join_request(const address_type& target,
-                                   const kythira::cluster_join_request<>& req,
+                                   const kythira::cluster_join_request<NodeId>& req,
                                    std::chrono::milliseconds timeout)
-        -> kythira::future_default<kythira::cluster_join_response<>> {
+        -> kythira::future_default<kythira::cluster_join_response<NodeId>> {
         auto data = _serializer.serialize(req);
         std::vector<std::byte> payload(data.begin(), data.end());
 
@@ -334,25 +334,26 @@ public:
                 if (!success) {
                     throw kythira::network_exception("Failed to send ClusterJoin RPC");
                 }
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
-                           -> kythira::cluster_join_response<> {
+                           -> kythira::cluster_join_response<NodeId> {
                 auto payload = response_msg.payload();
                 Data response_data;
                 if constexpr (requires { response_data.resize(0); }) {
                     response_data.resize(payload.size());
                     std::copy(payload.begin(), payload.end(), response_data.begin());
                 }
-                return _serializer.template deserialize_cluster_join_response<>(response_data);
+                return _serializer.template deserialize_cluster_join_response<NodeId>(
+                    response_data);
             });
     }
 
     // Send ClusterLeave RPC — routed by address_type directly (not node_id)
     auto send_cluster_leave_request(const address_type& target,
-                                    const kythira::cluster_leave_request<>& req,
+                                    const kythira::cluster_leave_request<NodeId>& req,
                                     std::chrono::milliseconds timeout)
-        -> kythira::future_default<kythira::cluster_leave_response<>> {
+        -> kythira::future_default<kythira::cluster_leave_response<NodeId>> {
         auto data = _serializer.serialize(req);
         std::vector<std::byte> payload(data.begin(), data.end());
 
@@ -365,36 +366,32 @@ public:
                 if (!success) {
                     throw kythira::network_exception("Failed to send ClusterLeave RPC");
                 }
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
-                           -> kythira::cluster_leave_response<> {
+                           -> kythira::cluster_leave_response<NodeId> {
                 auto payload = response_msg.payload();
                 Data response_data;
                 if constexpr (requires { response_data.resize(0); }) {
                     response_data.resize(payload.size());
                     std::copy(payload.begin(), payload.end(), response_data.begin());
                 }
-                return _serializer.template deserialize_cluster_leave_response<>(response_data);
+                return _serializer.template deserialize_cluster_leave_response<NodeId>(
+                    response_data);
             });
     }
 
     // Send FetchLogEntries RPC — peer-to-peer catch-up
     // (.kiro/specs/peer2peer-log-replication/), routed by node_id like the
     // core Raft RPCs.
-    auto send_fetch_log_entries(std::uint64_t target,
-                                const kythira::fetch_log_entries_request<>& req,
+    auto send_fetch_log_entries(const NodeId& target,
+                                const kythira::fetch_log_entries_request<NodeId>& req,
                                 std::chrono::milliseconds timeout)
-        -> kythira::future_default<kythira::fetch_log_entries_response<>> {
+        -> kythira::future_default<kythira::fetch_log_entries_response<NodeId>> {
         auto data = _serializer.serialize(req);
         std::vector<std::byte> payload(data.begin(), data.end());
 
-        address_type target_addr;
-        if constexpr (std::is_same_v<address_type, std::string>) {
-            target_addr = std::to_string(target);
-        } else {
-            target_addr = static_cast<address_type>(target);
-        }
+        const auto target_addr = simulator_address_of<address_type>(target);
 
         const auto reply_port = next_reply_port();
         typename NetworkTypes::message_type msg(_node->address(), reply_port, target_addr,
@@ -405,17 +402,18 @@ public:
                 if (!success) {
                     throw kythira::network_exception("Failed to send FetchLogEntries RPC");
                 }
-                return _node->receive(reply_port, timeout);
+                return receive_reply(reply_port, timeout);
             })
             .thenValue([this](typename NetworkTypes::message_type response_msg)
-                           -> kythira::fetch_log_entries_response<> {
+                           -> kythira::fetch_log_entries_response<NodeId> {
                 auto payload = response_msg.payload();
                 Data response_data;
                 if constexpr (requires { response_data.resize(0); }) {
                     response_data.resize(payload.size());
                     std::copy(payload.begin(), payload.end(), response_data.begin());
                 }
-                return _serializer.template deserialize_fetch_log_entries_response<>(response_data);
+                return _serializer.template deserialize_fetch_log_entries_response<NodeId>(
+                    response_data);
             });
     }
 
@@ -423,6 +421,36 @@ private:
     node_type _node;
     Serializer _serializer;
     unsigned short _rpc_port;
+
+    // Waits for the reply on a thread of its own and hands it back as a
+    // future.
+    //
+    // The simulator's receive blocks its caller until a message arrives or
+    // the timeout passes. On a future backend that runs continuations inline
+    // (stdexec, Folly) that caller is whichever thread sent the RPC, so a
+    // node sending to N peers waited for each reply in turn on its ticker
+    // thread: a crashed or lossy peer then stalled every other RPC, including
+    // the leader's heartbeats and a candidate's other vote requests, for an
+    // RPC timeout per retry, longer than an election timeout. Elections never
+    // finished once a peer was down. A real transport returns at once and
+    // completes the future when the reply arrives, which this restores (the
+    // boost backend already behaved this way, as its then() runs on a new
+    // thread). The thread holds the simulator node, not this client, and the
+    // simulator's own drain covers a receive still waiting at shutdown.
+    auto receive_reply(unsigned short reply_port, std::chrono::milliseconds timeout)
+        -> kythira::future_default<typename NetworkTypes::message_type> {
+        using reply_type = typename NetworkTypes::message_type;
+        kythira::promise_default<reply_type> promise;
+        auto future = promise.getFuture();
+        std::thread([node = _node, reply_port, timeout, promise = std::move(promise)]() mutable {
+            try {
+                promise.setValue(node->receive(reply_port, timeout).get());
+            } catch (...) {
+                promise.setException(std::current_exception());
+            }
+        }).detach();
+        return future;
+    }
 
     /// @brief A source port no other call in flight is using, for one RPC.
     ///
@@ -457,7 +485,7 @@ private:
 };
 
 // Simulator network server implementation
-template<typename NetworkTypes, typename Serializer, typename Data>
+template<typename NetworkTypes, typename Serializer, typename Data, typename NodeId>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_server {
 public:
@@ -521,9 +549,9 @@ public:
     simulator_network_server& operator=(const simulator_network_server&) = delete;
 
     // Register RequestVote handler
-    auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
-            handler) -> void {
+    auto register_request_vote_handler(std::function<kythira::request_vote_response<>(
+                                           const kythira::request_vote_request<NodeId>&)>
+                                           handler) -> void {
         std::unique_lock lock(_mutex);
         _request_vote_handler = std::move(handler);
     }
@@ -531,7 +559,7 @@ public:
     // Register RequestPreVote handler — satisfies
     // kythira::network_server_with_pre_vote (include/raft/network.hpp).
     auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
-                                               const kythira::request_pre_vote_request<>&)>
+                                               const kythira::request_pre_vote_request<NodeId>&)>
                                                handler) -> void {
         std::unique_lock lock(_mutex);
         _pre_vote_handler = std::move(handler);
@@ -540,49 +568,50 @@ public:
     // Register TimeoutNow handler — satisfies
     // kythira::network_server_with_timeout_now (include/raft/network.hpp).
     auto register_timeout_now_handler(
-        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
             handler) -> void {
         std::unique_lock lock(_mutex);
         _timeout_now_handler = std::move(handler);
     }
 
     // Register AppendEntries handler
-    auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
-            handler) -> void {
+    auto register_append_entries_handler(std::function<kythira::append_entries_response<>(
+                                             const kythira::append_entries_request<NodeId>&)>
+                                             handler) -> void {
         std::unique_lock lock(_mutex);
         _append_entries_handler = std::move(handler);
     }
 
     // Register InstallSnapshot handler
     auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
-                                               const kythira::install_snapshot_request<>&)>
+                                               const kythira::install_snapshot_request<NodeId>&)>
                                                handler) -> void {
         std::unique_lock lock(_mutex);
         _install_snapshot_handler = std::move(handler);
     }
 
     // Register ClusterJoin handler
-    auto register_cluster_join_handler(
-        std::function<kythira::cluster_join_response<>(const kythira::cluster_join_request<>&)>
-            handler) -> void {
+    auto register_cluster_join_handler(std::function<kythira::cluster_join_response<NodeId>(
+                                           const kythira::cluster_join_request<NodeId>&)>
+                                           handler) -> void {
         std::unique_lock lock(_mutex);
         _cluster_join_handler = std::move(handler);
     }
 
     // Register ClusterLeave handler
-    auto register_cluster_leave_handler(
-        std::function<kythira::cluster_leave_response<>(const kythira::cluster_leave_request<>&)>
-            handler) -> void {
+    auto register_cluster_leave_handler(std::function<kythira::cluster_leave_response<NodeId>(
+                                            const kythira::cluster_leave_request<NodeId>&)>
+                                            handler) -> void {
         std::unique_lock lock(_mutex);
         _cluster_leave_handler = std::move(handler);
     }
 
     // Register FetchLogEntries handler
     // (.kiro/specs/peer2peer-log-replication/, Requirement 5.4/5.5)
-    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
-                                                const kythira::fetch_log_entries_request<>&)>
-                                                handler) -> void {
+    auto register_fetch_log_entries_handler(
+        std::function<kythira::fetch_log_entries_response<NodeId>(
+            const kythira::fetch_log_entries_request<NodeId>&)>
+            handler) -> void {
         std::unique_lock lock(_mutex);
         _fetch_log_entries_handler = std::move(handler);
     }
@@ -630,22 +659,27 @@ private:
     std::thread _server_thread;
 
     // RPC handlers
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
         _request_vote_handler;
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+    std::function<kythira::request_pre_vote_response<>(
+        const kythira::request_pre_vote_request<NodeId>&)>
         _pre_vote_handler;
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
         _timeout_now_handler;
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+    std::function<kythira::append_entries_response<>(
+        const kythira::append_entries_request<NodeId>&)>
         _append_entries_handler;
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+    std::function<kythira::install_snapshot_response<>(
+        const kythira::install_snapshot_request<NodeId>&)>
         _install_snapshot_handler;
-    std::function<kythira::cluster_join_response<>(const kythira::cluster_join_request<>&)>
+    std::function<kythira::cluster_join_response<NodeId>(
+        const kythira::cluster_join_request<NodeId>&)>
         _cluster_join_handler;
-    std::function<kythira::cluster_leave_response<>(const kythira::cluster_leave_request<>&)>
+    std::function<kythira::cluster_leave_response<NodeId>(
+        const kythira::cluster_leave_request<NodeId>&)>
         _cluster_leave_handler;
-    std::function<kythira::fetch_log_entries_response<>(
-        const kythira::fetch_log_entries_request<>&)>
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         _fetch_log_entries_handler;
 
     mutable std::shared_mutex _mutex;
@@ -689,7 +723,7 @@ private:
             // Try RequestVote
             try {
                 auto request =
-                    _serializer.template deserialize_request_vote_request<>(request_data);
+                    _serializer.template deserialize_request_vote_request<NodeId>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_request_vote_handler) {
@@ -704,7 +738,7 @@ private:
             // Try RequestPreVote
             try {
                 auto request =
-                    _serializer.template deserialize_request_pre_vote_request<>(request_data);
+                    _serializer.template deserialize_request_pre_vote_request<NodeId>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_pre_vote_handler) {
@@ -721,7 +755,8 @@ private:
             // discriminates, but the try-in-order dispatch below only works if
             // the narrower shapes are attempted first.
             try {
-                auto request = _serializer.template deserialize_timeout_now_request<>(request_data);
+                auto request =
+                    _serializer.template deserialize_timeout_now_request<NodeId>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_timeout_now_handler) {
@@ -736,7 +771,7 @@ private:
             // Try AppendEntries
             try {
                 auto request =
-                    _serializer.template deserialize_append_entries_request<>(request_data);
+                    _serializer.template deserialize_append_entries_request<NodeId>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_append_entries_handler) {
@@ -751,7 +786,7 @@ private:
             // Try InstallSnapshot
             try {
                 auto request =
-                    _serializer.template deserialize_install_snapshot_request<>(request_data);
+                    _serializer.template deserialize_install_snapshot_request<NodeId>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_install_snapshot_handler) {
@@ -766,7 +801,7 @@ private:
             // Try ClusterJoin
             try {
                 auto request =
-                    _serializer.template deserialize_cluster_join_request<>(request_data);
+                    _serializer.template deserialize_cluster_join_request<NodeId>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_cluster_join_handler) {
@@ -781,7 +816,7 @@ private:
             // Try ClusterLeave
             try {
                 auto request =
-                    _serializer.template deserialize_cluster_leave_request<>(request_data);
+                    _serializer.template deserialize_cluster_leave_request<NodeId>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_cluster_leave_handler) {
@@ -795,8 +830,8 @@ private:
 
             // Try FetchLogEntries
             try {
-                auto request =
-                    _serializer.template deserialize_fetch_log_entries_request<>(request_data);
+                auto request = _serializer.template deserialize_fetch_log_entries_request<NodeId>(
+                    request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_fetch_log_entries_handler) {
@@ -896,5 +931,21 @@ static_assert(kythira::network_server_with_log_fetch<simulator_network_server<
                   TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
                   std::vector<std::byte>>>,
               "simulator_network_server must satisfy network_server_with_log_fetch");
+
+// A node named by text (.kiro/specs/cloud-composite-node-ids/, Requirement
+// 9.2) gets the same surface, keyed by its own id type.
+using TextIdSimulatorClient =
+    simulator_network_client<TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                             std::vector<std::byte>, std::string>;
+using TextIdSimulatorServer =
+    simulator_network_server<TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                             std::vector<std::byte>, std::string>;
+static_assert(kythira::network_client<TextIdSimulatorClient, std::string>);
+static_assert(kythira::network_server<TextIdSimulatorServer, std::string>);
+static_assert(kythira::network_client_with_pre_vote<TextIdSimulatorClient, std::string>);
+static_assert(kythira::network_client_with_timeout_now<TextIdSimulatorClient, std::string>);
+static_assert(kythira::network_client_with_log_fetch<TextIdSimulatorClient, std::string>);
+static_assert(kythira::network_client_with_cluster_join<TextIdSimulatorClient, std::string>);
+static_assert(kythira::network_server_with_log_fetch<TextIdSimulatorServer, std::string>);
 
 }  // namespace kythira

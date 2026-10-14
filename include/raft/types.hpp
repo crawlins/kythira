@@ -412,21 +412,24 @@ struct fetch_log_entries_request {
 /// leader; the requester applies `entries` via the same
 /// consistency-check-and-truncate logic used for `AppendEntries`, with
 /// `prev_log_index = from_index - 1` and `prev_log_term = prev_log_term()`.
+/// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
 /// @tparam TermId   Term number type; defaults to `uint64_t`.
 /// @tparam LogIndex Log index type; defaults to `uint64_t`.
 /// @tparam LogEntry Log-entry type; defaults to `log_entry<TermId, LogIndex>`.
-template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-         typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
-requires term_id<TermId> && log_index<LogIndex> && log_entry_type<LogEntry, TermId, LogIndex>
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+         typename GroupId = std::uint64_t>
+requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex> &&
+         log_entry_type<LogEntry, TermId, LogIndex>
 struct fetch_log_entries_response {
-    std::uint64_t _responder_id;
+    NodeId _responder_id{};
     bool _available;
     TermId _prev_log_term;
     std::vector<LogEntry> _entries;
 
     GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
 
-    [[nodiscard]] auto responder_id() const -> std::uint64_t { return _responder_id; }
+    [[nodiscard]] auto responder_id() const -> NodeId { return _responder_id; }
     [[nodiscard]] auto available() const -> bool { return _available; }
     [[nodiscard]] auto prev_log_term() const -> TermId { return _prev_log_term; }
     [[nodiscard]] auto entries() const -> const std::vector<LogEntry>& { return _entries; }
@@ -770,7 +773,10 @@ struct raft_configuration {
 
     // ── Log and snapshot ──────────────────────────────────────────────────────
     std::size_t _max_entries_per_append{100};  ///< Maximum entries in one AppendEntries RPC.
-    std::size_t _snapshot_threshold_bytes{10'000'000};  ///< Log size that triggers snapshotting.
+    /// Command bytes applied since the last snapshot at which the node
+    /// snapshots its state machine and compacts the log on its own. Every
+    /// replica, leader or follower, counts and snapshots independently.
+    std::size_t _snapshot_threshold_bytes{10'000'000};
     std::size_t _snapshot_chunk_size{1'000'000};  ///< Chunk size for InstallSnapshot transfers.
 
     // ── Retry policies ────────────────────────────────────────────────────────
@@ -1185,11 +1191,12 @@ template<typename Data>
 requires std::ranges::range<Data> && std::same_as<std::ranges::range_value_t<Data>, std::byte>
 class json_rpc_serializer;
 
-template<typename FutureType, typename Serializer, typename Data>
+// `NodeId`: see include/raft/simulator_network.hpp.
+template<typename FutureType, typename Serializer, typename Data, typename NodeId = std::uint64_t>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_client;
 
-template<typename FutureType, typename Serializer, typename Data>
+template<typename FutureType, typename Serializer, typename Data, typename NodeId = std::uint64_t>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_server;
 

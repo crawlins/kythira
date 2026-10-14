@@ -33,8 +33,10 @@ using test_transport_types =
 BOOST_AUTO_TEST_SUITE(protobuf_rpc_integration_tests)
 
 BOOST_AUTO_TEST_CASE(test_full_rpc_exchange, *boost::unit_test::timeout(60)) {
-    constexpr std::uint16_t unique_port = 8097;
-    constexpr const char* server_url = "http://127.0.0.1:8097";
+    // Not 8097: http_negotiation_integration_test binds that port too, and
+    // ctest -j can run the two binaries at the same time.
+    constexpr std::uint16_t unique_port = 18430;
+    constexpr const char* server_url = "http://127.0.0.1:18430";
 
     kythira::cpp_httplib_server_config server_config;
     server_config.max_concurrent_connections = 10;

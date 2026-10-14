@@ -130,12 +130,7 @@ struct recording_server {
 [[nodiscard]] inline auto ace_security(const mock_authorization_server& as,
                                        kythira::ace_target_profile profile, std::string scope)
     -> kythira::coap_security_config {
-    kythira::ace_oauth_config ace;
-    ace.as_token_endpoint = as.token_endpoint();
-    ace.client_id = "node-1";
-    ace.client_secret = "secret";
-    ace.scope = std::move(scope);
-    ace.target_profile = profile;
+    auto ace = as.config(std::move(scope), profile);
 
     kythira::coap_security_config security;
     security.mode = profile == kythira::ace_target_profile::oscore
@@ -395,7 +390,7 @@ BOOST_AUTO_TEST_CASE(denied_scope_fails_construction,
 BOOST_AUTO_TEST_CASE(profile_mode_mismatch_is_refused,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     kythira::ace_oauth_config ace;
-    ace.as_token_endpoint = "http://127.0.0.1:1/token";
+    ace.as_token_endpoint = "https://127.0.0.1:1/token";
     ace.target_profile = kythira::ace_target_profile::oscore;
     kythira::coap_security_config security;
     security.mode = kythira::coap_auth_mode::dtls_psk;
@@ -415,7 +410,7 @@ BOOST_AUTO_TEST_CASE(profile_mode_mismatch_is_refused,
 BOOST_AUTO_TEST_CASE(ace_with_edhoc_is_refused,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     kythira::ace_oauth_config ace;
-    ace.as_token_endpoint = "http://127.0.0.1:1/token";
+    ace.as_token_endpoint = "https://127.0.0.1:1/token";
     ace.target_profile = kythira::ace_target_profile::oscore;
     kythira::oscore_credentials creds;
     creds.bootstrap_method = kythira::oscore_bootstrap::edhoc;

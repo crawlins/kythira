@@ -10,6 +10,9 @@ project(network_simulator VERSION 0.1.0 LANGUAGES CXX)
 # cmake/Kconfig.cmake and .kiro/specs/kconfig-integration/ for the design.
 include(cmake/Kconfig.cmake)
 
+# Opt-in per-test Boost.Test reports for CI (KYTHIRA_TEST_REPORT_DIR).
+include(cmake/TestReports.cmake)
+
 # C++23 standard required
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -320,6 +323,7 @@ if(_KYTHIRA_GATE_COAP_TRANSPORT)
     set(KYTHIRA_BUILD_COAP_TRANSPORT TRUE)
 endif()
 
+kythira_forget_pkg_found(LIBCOAP)
 kythira_kconfig_gate(COAP_BACKEND_LIBCOAP)
 if(_KYTHIRA_GATE_COAP_TRANSPORT AND _KYTHIRA_GATE_COAP_BACKEND_LIBCOAP)
     find_package(libcoap QUIET CONFIG)
@@ -379,11 +383,18 @@ kythira_kconfig_require(COAP_BACKEND_LIBCOAP LIBCOAP_FOUND "libcoap")
 #    symbol, and no translation unit references both libraries (it cannot; their
 #    headers are mutually exclusive, see coap_transport_config.hpp). If either
 #    is ever built shared, or a third name starts overlapping, revisit this.
+kythira_forget_pkg_found(LIBNYOCI)
 kythira_kconfig_gate(COAP_TRANSPORT_LIBNYOCI)
 if(_KYTHIRA_GATE_COAP_TRANSPORT_LIBNYOCI)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
-        pkg_check_modules(LIBNYOCI QUIET libnyoci)
+        # IMPORTED_TARGET, not the bare LIBNYOCI_* variables: vcpkg rewrites
+        # .pc files to be relocatable (prefix=${pcfiledir}/../..), so the
+        # variables hold paths under vcpkg_installed/ inside the source tree,
+        # and putting those on network_simulator's INTERFACE properties fails
+        # the install(EXPORT) at generate time ("prefixed in the source
+        # directory"). An imported target keeps them off network_simulator.
+        pkg_check_modules(LIBNYOCI QUIET IMPORTED_TARGET libnyoci)
     endif()
 endif()
 kythira_kconfig_require(COAP_TRANSPORT_LIBNYOCI LIBNYOCI_FOUND "libnyoci")
@@ -554,6 +565,7 @@ else()
 endif()
 
 # Find libldns using PkgConfig (system installation; pc file is named "ldns")
+kythira_forget_pkg_found(LIBLDNS)
 kythira_kconfig_gate(DNS_DISCOVERY)
 if(_KYTHIRA_GATE_DNS_DISCOVERY)
     find_package(PkgConfig QUIET)
@@ -585,10 +597,9 @@ kythira_kconfig_require(DNS_DISCOVERY LIBLDNS_FOUND "libldns")
 # its target and its four test binaries, silently and with no warning. What
 # actually controlled this feature was CONFIG_GRPC_TRANSPORT.
 #
-# The gRPC block's own `if(gRPC_FOUND AND Protobuf_FOUND)` sits outside its
-# gate and is correct only because it runs first, so nothing has populated
-# either variable yet. That is a property of statement order, not of the code,
-# and it is why this one is written the robust way instead of matching it.
+# The gRPC block above follows the same rule: its
+# `if(gRPC_FOUND AND Protobuf_FOUND)` sits inside its own gate, so neither
+# block's answer depends on which of them CMake runs first.
 set(PROTOBUF_SERIALIZER_FOUND FALSE)
 kythira_kconfig_gate(PROTOBUF_SERIALIZER)
 if(_KYTHIRA_GATE_PROTOBUF_SERIALIZER)
@@ -1034,10 +1045,7 @@ if(LIBCOAP_FOUND)
 endif()
 
 if(LIBNYOCI_FOUND)
-    target_include_directories(network_simulator INTERFACE ${LIBNYOCI_INCLUDE_DIRS})
-    target_link_libraries(network_simulator INTERFACE ${LIBNYOCI_LIBRARIES})
-    target_link_directories(network_simulator INTERFACE ${LIBNYOCI_LIBRARY_DIRS})
-    target_compile_definitions(network_simulator INTERFACE ${LIBNYOCI_CFLAGS_OTHER})
+    target_link_libraries(network_simulator INTERFACE PkgConfig::LIBNYOCI)
     # Backs LIBNYOCI_AVAILABLE project-wide, exactly as the LIBCOAP_AVAILABLE
     # line above does -- without it coap_transport_libnyoci_impl.hpp compiles
     # to its stub and every coap_libnyoci_* test silently skips, which is the
@@ -1122,8 +1130,21 @@ endif()
 # not "did this feature's own probe succeed" -- and any other AWSSDK
 # find_package that happens to define it would then defeat CONFIG_AWS_ACM_PCA=n
 # silently. That is precisely how CONFIG_PROTOBUF_SERIALIZER came to be inert.
-# The `unset(AWSSDK_FOUND)` below is a hint that this file has already been
-# bitten once by AWSSDK's variables leaking between component probes.
+# The use sites read `_KYTHIRA_AWS_ACM_PCA_FOUND` for the same reason, here and
+# in tests/ and cmd/ca_service/.
+#
+# The `unset(AWSSDK_FOUND)` makes this second probe overwrite the AWS_SDK
+# block's results: AWSSDKConfig.cmake runs in this scope and resets
+# AWSSDK_FOUND and AWSSDK_LINK_LIBRARIES to describe the acm-pca request.
+# Those two are what tests/, cmd/multi_raft_node and cmd/raft_object_backup
+# read to mean "the core AWS SDK", and aws_s3_client_unit_test links
+# ${AWSSDK_LINK_LIBRARIES} alone, without network_simulator. That still named
+# s3 only because the upstream config file also leaks its working list of
+# services from the first call into the second, so the two leaks cancelled.
+# Save the AWS_SDK answer before the probe and put it back after, so the
+# downstream meaning holds whatever AWSSDKConfig.cmake does internally.
+set(_KYTHIRA_AWSSDK_SAVED_FOUND "${AWSSDK_FOUND}")
+set(_KYTHIRA_AWSSDK_SAVED_LINK_LIBRARIES "${AWSSDK_LINK_LIBRARIES}")
 set(_KYTHIRA_AWS_ACM_PCA_FOUND FALSE)
 kythira_kconfig_gate(AWS_ACM_PCA)
 if(_KYTHIRA_GATE_AWS_ACM_PCA)
@@ -1133,8 +1154,10 @@ if(_KYTHIRA_GATE_AWS_ACM_PCA)
         set(_KYTHIRA_AWS_ACM_PCA_FOUND TRUE)
     endif()
 endif()
+set(AWSSDK_FOUND "${_KYTHIRA_AWSSDK_SAVED_FOUND}")
+set(AWSSDK_LINK_LIBRARIES "${_KYTHIRA_AWSSDK_SAVED_LINK_LIBRARIES}")
 kythira_kconfig_require(AWS_ACM_PCA _KYTHIRA_AWS_ACM_PCA_FOUND "AWS ACM Private CA SDK component")
-if(TARGET aws-cpp-sdk-acm-pca)
+if(_KYTHIRA_AWS_ACM_PCA_FOUND)
     message(STATUS "AWS ACM Private CA SDK component found")
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_AWS_ACM_PCA)
     target_link_libraries(network_simulator INTERFACE aws-cpp-sdk-acm-pca)
@@ -1435,6 +1458,7 @@ endif()
 # ── libssh2 (real-EC2 integration tests, in-memory SSH key material) ─────────
 # Prefer the CMake config package (vcpkg, conan) over pkg-config so that we get
 # a proper imported target rather than a bare -lssh2 that the linker can't resolve.
+kythira_forget_pkg_found(LIBSSH2)
 kythira_kconfig_gate(LIBSSH2_TESTS)
 if(_KYTHIRA_GATE_LIBSSH2_TESTS)
     find_package(libssh2 QUIET)
@@ -1490,6 +1514,7 @@ target_compile_features(network_simulator INTERFACE cxx_std_23)
 # target_compile_features(test_single_case PRIVATE cxx_std_23)
 
 # Find libfiu for fault injection / chaos tests
+kythira_forget_pkg_found(FIU)
 kythira_kconfig_gate(CHAOS_TESTS)
 if(_KYTHIRA_GATE_CHAOS_TESTS)
     find_package(PkgConfig QUIET)
@@ -2167,3 +2192,5 @@ else()
         COMMAND ${CMAKE_COMMAND} -E false
     )
 endif()
+
+kythira_attach_test_reports()

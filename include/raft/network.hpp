@@ -11,37 +11,45 @@
 namespace kythira {
 
 // Network client concept - defines interface for sending RPC requests
-// Each RPC method returns its own specific future type
-template<typename C>
-concept network_client =
-    requires(C client, std::uint64_t target, const kythira::request_vote_request<>& rvr,
-             const kythira::append_entries_request<>& aer,
-             const kythira::install_snapshot_request<>& isr, std::chrono::milliseconds timeout) {
-        // Send RequestVote RPC - returns Future<request_vote_response<>>
-        {
-            client.send_request_vote(target, rvr, timeout)
-        } -> kythira::future<kythira::request_vote_response<>>;
+// Each RPC method returns its own specific future type.
+//
+// `NodeId` is the type a target is named by, and the node id type the
+// requests carry. It defaults to `std::uint64_t`, so a bare
+// `kythira::network_client<C>` keeps meaning the numeric client; a node built on a
+// textual or composite id checks `kythira::network_client<C, node_id_type>`
+// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.1).
+template<typename C, typename NodeId = std::uint64_t>
+concept network_client = requires(
+    C client, NodeId target, const kythira::request_vote_request<NodeId>& rvr,
+    const kythira::append_entries_request<NodeId>& aer,
+    const kythira::install_snapshot_request<NodeId>& isr, std::chrono::milliseconds timeout) {
+    // Send RequestVote RPC - returns Future<request_vote_response<>>
+    {
+        client.send_request_vote(target, rvr, timeout)
+    } -> kythira::future<kythira::request_vote_response<>>;
 
-        // Send AppendEntries RPC - returns Future<append_entries_response<>>
-        {
-            client.send_append_entries(target, aer, timeout)
-        } -> kythira::future<kythira::append_entries_response<>>;
+    // Send AppendEntries RPC - returns Future<append_entries_response<>>
+    {
+        client.send_append_entries(target, aer, timeout)
+    } -> kythira::future<kythira::append_entries_response<>>;
 
-        // Send InstallSnapshot RPC - returns Future<install_snapshot_response<>>
-        {
-            client.send_install_snapshot(target, isr, timeout)
-        } -> kythira::future<kythira::install_snapshot_response<>>;
-    };
+    // Send InstallSnapshot RPC - returns Future<install_snapshot_response<>>
+    {
+        client.send_install_snapshot(target, isr, timeout)
+    } -> kythira::future<kythira::install_snapshot_response<>>;
+};
 
 // Network server concept - defines interface for receiving RPC requests
-template<typename S>
+template<typename S, typename NodeId = std::uint64_t>
 concept network_server = requires(
     S server,
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
         rv_handler,
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+    std::function<kythira::append_entries_response<>(
+        const kythira::append_entries_request<NodeId>&)>
         ae_handler,
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+    std::function<kythira::install_snapshot_response<>(
+        const kythira::install_snapshot_request<NodeId>&)>
         is_handler) {
     // Register RPC handlers
     { server.register_request_vote_handler(rv_handler) } -> std::same_as<void>;
@@ -62,42 +70,42 @@ concept network_server = requires(
 // Satisfied by a network_client that additionally supports ClusterJoin RPCs.
 // The RPC is routed by address_type (std::string) because the joining node
 // does not yet know the target's node_id.
-template<typename C>
+template<typename C, typename NodeId = std::uint64_t>
 concept network_client_with_cluster_join =
-    requires(C client, const std::string& addr, const kythira::cluster_join_request<>& req,
+    requires(C client, const std::string& addr, const kythira::cluster_join_request<NodeId>& req,
              std::chrono::milliseconds timeout) {
         {
             client.send_cluster_join_request(addr, req, timeout)
-        } -> kythira::future<kythira::cluster_join_response<>>;
+        } -> kythira::future<kythira::cluster_join_response<NodeId>>;
     };
 
 // Satisfied by a network_server that can register a ClusterJoin handler.
-template<typename S>
+template<typename S, typename NodeId = std::uint64_t>
 concept network_server_with_cluster_join =
-    requires(S server,
-             std::function<kythira::cluster_join_response<>(const kythira::cluster_join_request<>&)>
-                 handler) {
+    requires(S server, std::function<kythira::cluster_join_response<NodeId>(
+                           const kythira::cluster_join_request<NodeId>&)>
+                           handler) {
         { server.register_cluster_join_handler(handler) } -> std::same_as<void>;
     };
 
 // Satisfied by a network_client that can send ClusterLeave RPCs.
-template<typename C>
+template<typename C, typename NodeId = std::uint64_t>
 concept network_client_with_cluster_leave =
-    requires(C client, const std::string& addr, const kythira::cluster_leave_request<>& req,
+    requires(C client, const std::string& addr, const kythira::cluster_leave_request<NodeId>& req,
              std::chrono::milliseconds timeout) {
         {
             client.send_cluster_leave_request(addr, req, timeout)
-        } -> kythira::future<kythira::cluster_leave_response<>>;
+        } -> kythira::future<kythira::cluster_leave_response<NodeId>>;
     };
 
 // Satisfied by a network_server that can register a ClusterLeave handler.
-template<typename S>
-concept network_server_with_cluster_leave = requires(
-    S server,
-    std::function<kythira::cluster_leave_response<>(const kythira::cluster_leave_request<>&)>
-        handler) {
-    { server.register_cluster_leave_handler(handler) } -> std::same_as<void>;
-};
+template<typename S, typename NodeId = std::uint64_t>
+concept network_server_with_cluster_leave =
+    requires(S server, std::function<kythira::cluster_leave_response<NodeId>(
+                           const kythira::cluster_leave_request<NodeId>&)>
+                           handler) {
+        { server.register_cluster_leave_handler(handler) } -> std::same_as<void>;
+    };
 
 // ============================================================================
 // Optional RequestPreVote extension (Raft "disruptive server" fix, Ongaro's
@@ -110,9 +118,9 @@ concept network_server_with_cluster_leave = requires(
 // ============================================================================
 
 // Satisfied by a network_client that can send RequestPreVote RPCs.
-template<typename C>
+template<typename C, typename NodeId = std::uint64_t>
 concept network_client_with_pre_vote =
-    requires(C client, std::uint64_t target, const kythira::request_pre_vote_request<>& pvr,
+    requires(C client, NodeId target, const kythira::request_pre_vote_request<NodeId>& pvr,
              std::chrono::milliseconds timeout) {
         {
             client.send_request_pre_vote(target, pvr, timeout)
@@ -120,13 +128,13 @@ concept network_client_with_pre_vote =
     };
 
 // Satisfied by a network_server that can register a RequestPreVote handler.
-template<typename S>
-concept network_server_with_pre_vote = requires(
-    S server,
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
-        handler) {
-    { server.register_request_pre_vote_handler(handler) } -> std::same_as<void>;
-};
+template<typename S, typename NodeId = std::uint64_t>
+concept network_server_with_pre_vote =
+    requires(S server, std::function<kythira::request_pre_vote_response<>(
+                           const kythira::request_pre_vote_request<NodeId>&)>
+                           handler) {
+        { server.register_request_pre_vote_handler(handler) } -> std::same_as<void>;
+    };
 
 // ============================================================================
 // Optional peer-to-peer catch-up extension (.kiro/specs/peer2peer-log-replication/,
@@ -136,20 +144,20 @@ concept network_server_with_pre_vote = requires(
 // ============================================================================
 
 // Satisfied by a network_client that can send fetch_log_entries RPCs.
-template<typename C>
+template<typename C, typename NodeId = std::uint64_t>
 concept network_client_with_log_fetch =
-    requires(C client, std::uint64_t target, const kythira::fetch_log_entries_request<>& req,
+    requires(C client, NodeId target, const kythira::fetch_log_entries_request<NodeId>& req,
              std::chrono::milliseconds timeout) {
         {
             client.send_fetch_log_entries(target, req, timeout)
-        } -> kythira::future<kythira::fetch_log_entries_response<>>;
+        } -> kythira::future<kythira::fetch_log_entries_response<NodeId>>;
     };
 
 // Satisfied by a network_server that can register a fetch_log_entries handler.
-template<typename S>
+template<typename S, typename NodeId = std::uint64_t>
 concept network_server_with_log_fetch =
-    requires(S server, std::function<kythira::fetch_log_entries_response<>(
-                           const kythira::fetch_log_entries_request<>&)>
+    requires(S server, std::function<kythira::fetch_log_entries_response<NodeId>(
+                           const kythira::fetch_log_entries_request<NodeId>&)>
                            handler) {
         { server.register_fetch_log_entries_handler(handler) } -> std::same_as<void>;
     };
@@ -169,9 +177,9 @@ concept network_server_with_log_fetch =
 // ============================================================================
 
 // Satisfied by a network_client that can send TimeoutNow RPCs.
-template<typename C>
+template<typename C, typename NodeId = std::uint64_t>
 concept network_client_with_timeout_now =
-    requires(C client, std::uint64_t target, const kythira::timeout_now_request<>& req,
+    requires(C client, NodeId target, const kythira::timeout_now_request<NodeId>& req,
              std::chrono::milliseconds timeout) {
         {
             client.send_timeout_now(target, req, timeout)
@@ -179,10 +187,11 @@ concept network_client_with_timeout_now =
     };
 
 // Satisfied by a network_server that can register a TimeoutNow handler.
-template<typename S>
+template<typename S, typename NodeId = std::uint64_t>
 concept network_server_with_timeout_now = requires(
     S server,
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler) {
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
+        handler) {
     { server.register_timeout_now_handler(handler) } -> std::same_as<void>;
 };
 

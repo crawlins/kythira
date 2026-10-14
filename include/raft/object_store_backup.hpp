@@ -83,6 +83,7 @@
 /// a different bucket is the recommendation and a cross-account or
 /// cross-project destination is better still.
 
+#include <raft/composite_node_id.hpp>
 #include <raft/key_object_store.hpp>
 #include <raft/object_store_persistence.hpp>
 
@@ -671,7 +672,7 @@ private:
 
         // **The node-id shape has to be preserved, and it is not a formatting
         // detail.** The engine reads this array with `as_string()` when its
-        // `NodeId` is `std::string` and `as_int64()` when it is an integer, and
+        // `NodeId` is `std::string` and `to_number()` when it is an integer, and
         // boost::json *throws* on the wrong one. Writing strings unconditionally
         // would seed a numeric-id cluster with a snapshot that parses fine here
         // and explodes at the moment an operator starts the new cluster — the
@@ -698,13 +699,16 @@ private:
                 nodes.push_back(boost::json::string(node));
                 continue;
             }
-            if (node.empty() || node.find_first_not_of("0123456789") != std::string::npos) {
+            // Unsigned on purpose: an id at or above 2^63 cast to int64_t would
+            // be written negative, which the engine refuses to load.
+            const auto numeric = node_id_traits<std::uint64_t>::from_text(node);
+            if (!numeric) {
                 throw std::runtime_error(
                     "object_store_backup: this cluster's node ids are numbers, but \"" + node +
                     "\" is not one — seeding it as a string would produce a snapshot the engine"
                     " cannot load");
             }
-            nodes.push_back(static_cast<std::int64_t>(std::stoull(node)));
+            nodes.push_back(*numeric);
         }
         obj["nodes"] = nodes;
         // The old cluster may have been mid-reconfiguration. A new cluster

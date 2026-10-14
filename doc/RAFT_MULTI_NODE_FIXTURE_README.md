@@ -1,262 +1,66 @@
 # Raft Multi-Node Test Fixture
 
-## Overview
+`tests/raft_multi_node_test_fixture.hpp` runs a cluster of real
+`kythira::node` instances in one process, connected by the network
+simulator. Each running node has a ticker thread that calls
+`check_election_timeout()` and `check_heartbeat_timeout()` every
+`tick_interval`, the way an event loop drives a deployed node, so elections,
+replication and membership changes happen on their own.
 
-The Raft multi-node test fixture provides infrastructure for testing Raft consensus with multiple nodes in a simulated network environment. This fixture is designed to support future integration testing of Raft clusters with controlled network conditions.
-
-**Task**: 700 - Create multi-node test fixture
-**Requirements**: 1.1, 1.2, 1.3, 2.1
-**Status**: Infrastructure Complete ✅
-
-## Features
-
-### Dynamic Cluster Sizes
-- Supports clusters of 3, 5, 7, or 9 nodes
-- Validates cluster size (must be odd and within range)
-- Automatically generates unique node IDs
-
-### Node Lifecycle Management
-- Start/stop individual nodes
-- Start/stop all nodes in cluster
-- Restart nodes with simulated delay
-- Track node running state
-
-### Network Simulator Integration
-- Fully connected mesh topology by default
-- Configurable network latency
-- Configurable packet loss/reliability
-- Network partition simulation
-- Network healing (restore connectivity)
-
-### Time Control
-- Manual timeout triggering (election, heartbeat)
-- Time advancement for deterministic testing
-- Configurable timeout parameters
+Tasks: raft-consensus 700, 710, 730.
 
 ## Usage
-
-### Basic Setup
 
 ```cpp
 #include "raft_multi_node_test_fixture.hpp"
 
-// Create fixture with default configuration (3 nodes)
-kythira::test::raft_multi_node_fixture fixture;
-fixture.initialize_cluster();
-fixture.start_all_nodes();
+using kythira::test::raft_multi_node_fixture;
 
-// Get node IDs
-auto node_ids = fixture.get_node_ids();
+kythira::test::cluster_config cfg;
+cfg.node_count = 5;                      // nodes 1..5, all voters
+raft_multi_node_fixture f(cfg);
+f.initialize_cluster();                  // creates nodes, starts the observer
+f.start_all_nodes();
 
-// Cleanup
-fixture.cleanup();
+auto leader = f.wait_for_leader(std::chrono::seconds{5});
+auto r = f.submit(raft_multi_node_fixture::put_command("k", "v"),
+                  std::chrono::seconds{3});
+BOOST_CHECK(r.ok);
+BOOST_CHECK(f.wait_for_convergence(std::chrono::seconds{5}));
+BOOST_CHECK(f.election_safety_violations().empty());
 ```
 
-### Custom Configuration
+Test files using the Folly backend register the fixture by its unqualified
+name, since `BOOST_GLOBAL_FIXTURE` pastes its argument into an identifier:
+`using kythira::test::folly_init_fixture; BOOST_GLOBAL_FIXTURE(folly_init_fixture);`.
 
-```cpp
-kythira::test::cluster_config config;
-config.node_count = 5;
-config.election_timeout_min = std::chrono::milliseconds(150);
-config.election_timeout_max = std::chrono::milliseconds(300);
-config.heartbeat_interval = std::chrono::milliseconds(50);
-config.enable_network_delays = true;
-config.network_latency = std::chrono::milliseconds(10);
-config.network_reliability = 0.95;  // 5% packet loss
+## What it provides
 
-kythira::test::raft_multi_node_fixture fixture(config);
-fixture.initialize_cluster();
-```
+| Area | Members |
+|------|---------|
+| Lifecycle | `start_node`, `stop_node` (crash; persistence survives), `restart_node`, `add_node` (a node outside the initial cluster) |
+| Network | `partition({{...}, {...}})`, `isolate`, `heal`, `set_node_network` / `clear_node_network` (latency, delivery probability) |
+| Leadership | `get_leader(among)`, `wait_for_leader(timeout, among)`, `term_of` |
+| Client | `submit` (follows the leader), `submit_to`, `await_result` for any byte future (`add_server`, `remove_server`, ...) |
+| Logs | `committed_entries`, `committed_logs_mismatch` (Log Matching across all pairs), `wait_for_convergence`, `cluster_summary` |
+| Safety | `election_safety_violations` (terms with two leaders), `observed_leaders`, `max_simultaneous_leaders` |
 
-### Node Lifecycle
+`get_leader` returns the node that claims leadership with a term at least as
+high as every other node it considers, so a deposed leader stranded in a
+minority is never mistaken for the current one.
 
-```cpp
-// Start all nodes
-fixture.start_all_nodes();
+A node joining through `add_server` or `add_learner` should be created with
+itself as a learner (`f.add_node(4, {1, 2, 3}, {4})`) so it cannot campaign
+before the leader's configuration entry reaches it.
 
-// Stop a specific node
-fixture.stop_node("node_0");
+## Tests built on it
 
-// Restart a node
-fixture.restart_node("node_0");
-
-// Check if node is running
-bool running = fixture.is_node_running("node_0");
-
-// Stop all nodes
-fixture.stop_all_nodes();
-```
-
-### Network Simulation
-
-```cpp
-// Simulate network partition
-std::vector<std::string> group1 = {"node_0", "node_1"};
-std::vector<std::string> group2 = {"node_2", "node_3", "node_4"};
-fixture.create_network_partition(group1, group2);
-
-// Heal partition
-fixture.heal_network_partition();
-
-// Add latency to specific node
-fixture.set_node_network_delay("node_0", std::chrono::milliseconds(50));
-
-// Simulate packet loss for specific node
-fixture.set_node_packet_loss("node_1", 0.1);  // 10% packet loss
-```
-
-### Time Control
-
-```cpp
-// Trigger election timeouts
-fixture.tick_election_timeouts();
-
-// Trigger heartbeat timeouts
-fixture.tick_heartbeat_timeouts();
-
-// Advance time by 100ms
-fixture.advance_time(std::chrono::milliseconds(100));
-```
-
-## Configuration Options
-
-### cluster_config Structure
-
-```cpp
-struct cluster_config {
-    std::size_t node_count = 3;                              // Number of nodes (3, 5, 7, or 9)
-    std::chrono::milliseconds election_timeout_min{150};     // Min election timeout
-    std::chrono::milliseconds election_timeout_max{300};     // Max election timeout
-    std::chrono::milliseconds heartbeat_interval{50};        // Heartbeat interval
-    std::chrono::milliseconds rpc_timeout{100};              // RPC timeout
-    bool enable_network_delays = false;                      // Enable simulated latency
-    std::chrono::milliseconds network_latency{10};           // Network latency
-    double network_reliability = 1.0;                        // Reliability (0.0-1.0)
-};
-```
-
-## Architecture
-
-### Components
-
-1. **Network Simulator**: Provides simulated network communication
-   - Topology management
-   - Latency simulation
-   - Packet loss simulation
-   - Partition simulation
-
-2. **Node Management**: Tracks node state and lifecycle
-   - Node creation and initialization
-   - Start/stop control
-   - Running state tracking
-
-3. **Time Control**: Deterministic time advancement
-   - Manual timeout triggering
-   - Controlled time progression
-
-### Future Integration
-
-The fixture is designed as infrastructure for future Raft node integration. To integrate actual Raft nodes:
-
-1. Replace `std::shared_ptr<void> raft_node` placeholder with actual Raft node type
-2. Implement network client/server adapters for network simulator
-3. Uncomment and implement actual Raft node method calls in:
-   - `initialize_cluster()` - set cluster configuration
-   - `start_node()` / `stop_node()` - node lifecycle
-   - `get_leader()` - leader detection
-   - `tick_election_timeouts()` / `tick_heartbeat_timeouts()` - timeout handling
-
-## Testing
-
-The fixture itself is tested in `raft_multi_node_fixture_test.cpp`:
-
-```bash
-# Build the test
-cmake --build build --target raft_multi_node_fixture_test
-
-# Run the test using CTest
-ctest --test-dir build -R raft_multi_node_fixture_test --verbose --output-on-failure
-```
-
-### Test Coverage
-
-- ✅ Fixture initialization with different cluster sizes (3, 5, 7 nodes)
-- ✅ Invalid cluster size validation (even numbers, too small)
-- ✅ Node lifecycle management (start, stop, restart)
-- ✅ Network topology configuration
-- ✅ Network partition simulation
-- ✅ Time advancement and timeout triggers
-- ✅ Cluster configuration management
-- ✅ Fixture cleanup and resource management
-
-All tests pass successfully (7/7 test cases).
-
-## Design Decisions
-
-### Why Infrastructure Only?
-
-This fixture provides the infrastructure for multi-node testing without actual Raft node integration because:
-
-1. **Separation of Concerns**: Network simulation and node management are independent of Raft implementation
-2. **Incremental Development**: Infrastructure can be tested and validated independently
-3. **Flexibility**: Easy to integrate different Raft implementations or test strategies
-4. **Reusability**: Can be used for other distributed system testing
-
-### Why Network Simulator?
-
-The network simulator provides:
-- **Deterministic Testing**: Reproducible network conditions
-- **Failure Injection**: Controlled network failures and partitions
-- **Performance Testing**: Latency and reliability simulation
-- **Integration Testing**: Multi-node communication without actual network
-
-### Why Manual Time Control?
-
-Manual time control enables:
-- **Deterministic Tests**: Reproducible timing behavior
-- **Fast Tests**: No waiting for actual timeouts
-- **Precise Control**: Trigger specific timing scenarios
-- **Debugging**: Step through timing-sensitive code
-
-## Future Work
-
-### Immediate Next Steps (Tasks 701-703)
-
-1. **Task 701**: Implement cluster initialization test
-   - Test proper cluster bootstrap
-   - Verify initial follower state
-   - Validate election timeout randomization
-   - Confirm first leader election
-
-2. **Task 702**: Test membership management operations
-   - Verify add_server with joint consensus
-   - Test remove_server with cleanup
-   - Validate configuration change safety
-
-3. **Task 703**: Test network partition scenarios
-   - Verify split-brain prevention
-   - Test leader election in majority partition
-   - Validate log replication after partition heal
-
-### Long-term Enhancements
-
-- **Raft Node Integration**: Connect actual Raft nodes to fixture
-- **Network Adapters**: Implement network client/server for simulator
-- **Advanced Scenarios**: Complex failure patterns and recovery
-- **Performance Testing**: Throughput and latency benchmarks
-- **Visualization**: Cluster state and network topology visualization
-
-## References
-
-- **Raft Paper**: [In Search of an Understandable Consensus Algorithm](https://raft.github.io/raft.pdf)
-- **Network Simulator**: `include/network_simulator/`
-- **Raft Implementation**: `include/raft/raft.hpp`
-- **Task Specification**: `.kiro/specs/raft-consensus/tasks.md`
-
-## Notes
-
-This is an **optional enhancement task**. The note in the task specification states:
-
-> "Current tests use simplified single-node implementations and mock network interactions. Core Raft functionality is already validated through property-based and integration tests."
-
-The fixture provides infrastructure for future multi-node integration testing while the core Raft algorithm is already production-ready and fully tested.
+- `tests/raft_multi_node_fixture_test.cpp`: bootstrap at 3/5/7 nodes, crash
+  and restart, leader crash, latency/loss, log inspection (700, 701, 730)
+- `tests/raft_multi_node_partition_test.cpp`: leader isolation, follower
+  isolation, minority and even splits (710-713)
+- `tests/raft_multi_node_property_test.cpp`: seeded randomized failures (731)
+- `tests/raft_membership_management_unit_test.cpp`: add/remove server, self
+  removal, learner catch-up, concurrent and partitioned changes (702)
+- `tests/membership_change_joint_safety_test.cpp`: joint quorum, truncation
+  revert, leader counts during changes (membership-change spec)
