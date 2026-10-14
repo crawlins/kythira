@@ -3,6 +3,16 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 14, 2026)
+
+- **The AWS leak audit ignores instances that are already shutting
+  down.** EC2 stops billing an instance when it enters `shutting-down`,
+  and by then the instance reports no VPC, so the in-flight filter added
+  on October 13 could not attribute it. An overlap test the next day
+  (run 38493981760) skipped the other run's live VPC as intended but
+  still failed on the node that run had just killed in its replacement
+  case.
+
 ### What Changed (October 13, 2026)
 
 - **The AWS leak audit no longer fails on another run's live network.**

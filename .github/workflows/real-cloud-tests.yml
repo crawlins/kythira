@@ -872,9 +872,16 @@ jobs:
           # 2026-09-29 -- so this filter could not see it even when tagging had
           # succeeded, and i-0c7193ec59f352ab2 ran ~44h while this step printed
           # "instances: clean". A tag the audit never reads is not coverage.
+          #
+          # shutting-down is left out, here and in the leaked-VPC query below.
+          # EC2 stops billing an instance once it enters shutting-down, so it
+          # is not a leak, and it is also the one state the in-flight filter
+          # cannot attribute: the instance has already left its VPC and
+          # reports VpcId null. Run 38493981760 failed on exactly that: the
+          # node another live run had just killed in its replacement case.
           leaked=$(aws ec2 describe-instances \
             --filters 'Name=tag:kythira:managed-by,Values=ec2_quorum_manager,aws_quorum_manager_real_ec2_test' \
-                      'Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped' \
+                      'Name=instance-state-name,Values=pending,running,stopping,stopped' \
             --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,vpc:VpcId,cluster:Tags[?Key==`kythira:cluster`]|[0].Value}' \
             --output json) || audit_failed "the DescribeInstances call failed"
           leaked=$(printf '%s' "${leaked}" | not_inflight) \
@@ -1010,7 +1017,7 @@ jobs:
             vpc_csv=$(printf '%s' "${leaked_vpc_ids}" | tr -s ' ' ',' | sed 's/^,//; s/,$//')
             stragglers=$(aws ec2 describe-instances \
               --filters "Name=vpc-id,Values=${vpc_csv}" \
-                        'Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped' \
+                        'Name=instance-state-name,Values=pending,running,stopping,stopped' \
               --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,vpc:VpcId,managedBy:Tags[?Key==`kythira:managed-by`]|[0].Value}' \
               --output json) || audit_failed "the DescribeInstances call scoped to leaked VPCs failed"
             straggler_count=$(printf '%s' "${stragglers}" | jq 'if . == null then 0 else length end') \
