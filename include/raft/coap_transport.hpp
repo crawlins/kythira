@@ -42,6 +42,8 @@
 #include <filesystem>
 #include <thread>
 #include <stop_token>
+#include <condition_variable>
+#include <deque>
 
 #include <unistd.h>
 
@@ -485,6 +487,14 @@ private:
     // thread inside coap_io_process(); paced mode's "did that step find
     // work?" test.
     std::atomic<std::uint64_t> _io_dispatches{0};
+    // Completions handed over by run_deferred_completions(), and the thread
+    // that runs them. Their own lock, not _mutex: the point is that this
+    // work never holds the lock send_rpc() and the I/O thread need. Declared
+    // before _io_thread, which feeds the queue; the destructor joins both.
+    std::mutex _completion_mutex;
+    std::condition_variable_any _completion_cv;
+    std::deque<std::function<void()>> _completion_queue;
+    std::jthread _completion_thread;
     // Pumps coap_io_process() on _coap_context for the lifetime of this
     // client -- without this, coap_register_response_handler()'s callback
     // (set up in the constructor) is never invoked by libcoap, and every
@@ -495,6 +505,9 @@ private:
 
     // Message tracking
     std::unordered_map<std::string, std::unique_ptr<pending_message>> _pending_requests;
+    // Completions handle_response()/handle_nack() queued during the current
+    // drain step; see defer_resolve(). Guarded by _mutex.
+    std::vector<std::function<void()>> _deferred_completions;
     // Keyed on (peer endpoint, Message ID, token), not the Message ID alone:
     // see coap_exchange_table.hpp for why the bare Message ID conflated peers.
     coap_exchange_table _received_messages;
@@ -646,8 +659,26 @@ private:
     // with or without _mutex; a no-op in paced mode.
     auto signal_io_wake() noexcept -> void;
     auto run_io_loop(const std::stop_token& stop_token) -> void;
-    // One coap_io_process(NO_WAIT) under _mutex.
+    // One coap_io_process(NO_WAIT) under _mutex, then the completions it
+    // queued, outside it.
     auto io_drain_step() -> void;
+    // handle_response() and handle_nack() run inside coap_io_process(),
+    // under _mutex. They queue the pending request's callback instead of
+    // calling it: the callback decodes the response and fulfils the
+    // promise, and the promise's continuations run inline -- the Raft
+    // node's handling of the reply, and whatever it sends next. Run there,
+    // that work held _mutex against every send_rpc() caller and kept the
+    // I/O thread from draining. Caller holds _mutex.
+    auto defer_resolve(pending_message& message, std::vector<std::byte> data,
+                       const std::string& media_type) -> void;
+    auto defer_reject(pending_message& message, std::exception_ptr error) -> void;
+    // Hands the queued completions to _completion_thread, in order. Called
+    // on the I/O thread after each drain step and after the timer pass, and
+    // once more by the destructor after the context is freed.
+    auto run_deferred_completions() -> void;
+    // _completion_thread's body: runs handed-over completions in order until
+    // stopped, then runs whatever is still queued and returns.
+    auto run_completion_loop(const std::stop_token& stop_token) -> void;
     // Counts a finished pass; budget_hit when it stopped with work ready.
     auto record_io_pass(bool budget_hit) -> void;
     auto handle_multicast_error(const std::string& token, const std::exception_ptr& error) -> void;

@@ -603,6 +603,8 @@ coap_client<Types>::coap_client(
                       {"io_max_wait_ms", std::to_string(_config.io_max_wait.count())},
                       {"io_paced_interval_ms", std::to_string(_config.io_paced_interval.count())}});
     }
+    _completion_thread =
+        std::jthread([this](std::stop_token stop_token) { run_completion_loop(stop_token); });
     _io_thread = std::jthread([this](std::stop_token stop_token) { run_io_loop(stop_token); });
 #else
     // Stub implementation when libcoap is not available
@@ -710,6 +712,14 @@ coap_client<Types>::~coap_client() {
     if (_coap_context != nullptr) {
         coap_free_context(_coap_context);
         _coap_context = nullptr;
+    }
+    // Completions queued by the last drain step, or by sessions failing
+    // their exchanges as the context went, go to the completion thread,
+    // which runs everything still queued before it exits.
+    run_deferred_completions();
+    if (_completion_thread.joinable()) {
+        _completion_thread.request_stop();
+        _completion_thread.join();
     }
 #else
     // Stub implementation when libcoap is not available
@@ -2070,8 +2080,8 @@ auto coap_client<Types>::handle_nack(const std::string& token,
     _logger.warning("CoAP request delivery failed",
                     {{"token", token}, {"reason", reason_description}});
 
-    it->second->reject_callback(std::make_exception_ptr(
-        coap_timeout_error("CoAP request delivery failed: " + reason_description)));
+    defer_reject(*it->second, std::make_exception_ptr(coap_timeout_error(
+                                  "CoAP request delivery failed: " + reason_description)));
     _pending_requests.erase(it);
 }
 
@@ -2095,8 +2105,8 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
 
         // Validate response PDU structure
         if (!validate_response_pdu(response)) {
-            it->second->reject_callback(std::make_exception_ptr(
-                coap_protocol_error("Invalid CoAP response PDU structure")));
+            defer_reject(*it->second, std::make_exception_ptr(coap_protocol_error(
+                                          "Invalid CoAP response PDU structure")));
             _pending_requests.erase(it);
             return;
         }
@@ -2125,14 +2135,13 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
 
             // Create appropriate exception based on error class
             if (COAP_RESPONSE_CLASS(response_code) == 4) {
-                it->second->reject_callback(
-                    std::make_exception_ptr(coap_client_error(response_code, error_msg)));
+                defer_reject(*it->second,
+                             std::make_exception_ptr(coap_client_error(response_code, error_msg)));
             } else if (COAP_RESPONSE_CLASS(response_code) == 5) {
-                it->second->reject_callback(
-                    std::make_exception_ptr(coap_server_error(response_code, error_msg)));
+                defer_reject(*it->second,
+                             std::make_exception_ptr(coap_server_error(response_code, error_msg)));
             } else {
-                it->second->reject_callback(
-                    std::make_exception_ptr(coap_protocol_error(error_msg)));
+                defer_reject(*it->second, std::make_exception_ptr(coap_protocol_error(error_msg)));
             }
 
             // Update metrics for error responses
@@ -2173,11 +2182,11 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
                     error_metric.add_one();
                     error_metric.emit();
 
-                    it->second->reject_callback(
-                        std::make_exception_ptr(coap_unsupported_content_format_error(
-                            "response Content-Format " +
-                            std::to_string(static_cast<std::uint16_t>(wire_format)) +
-                            " has no registered serializer")));
+                    defer_reject(*it->second,
+                                 std::make_exception_ptr(coap_unsupported_content_format_error(
+                                     "response Content-Format " +
+                                     std::to_string(static_cast<std::uint16_t>(wire_format)) +
+                                     " has no registered serializer")));
                     _pending_requests.erase(it);
                     return;
                 }
@@ -2206,7 +2215,7 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
         // so whatever arrives here completes the request.
         // Read before the move below hands the buffer to the callback.
         const auto payload_size = response_data.size();
-        it->second->resolve_callback(std::move(response_data), response_media_type);
+        defer_resolve(*it->second, std::move(response_data), response_media_type);
         _pending_requests.erase(it);
 
         _logger.debug("CoAP response processed successfully",
@@ -2216,14 +2225,14 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
 #else
         // Stub implementation when libcoap is not available
         std::vector<std::byte> response_data;
-        it->second->resolve_callback(std::move(response_data), _registry.default_media_type());
+        defer_resolve(*it->second, std::move(response_data), _registry.default_media_type());
         _pending_requests.erase(it);
 #endif
 
     } catch (const std::exception& e) {
         // Error processing response
-        it->second->reject_callback(std::make_exception_ptr(
-            coap_transport_error("Error processing response: " + std::string(e.what()))));
+        defer_reject(*it->second, std::make_exception_ptr(coap_transport_error(
+                                      "Error processing response: " + std::string(e.what()))));
         _pending_requests.erase(it);
     }
 }
@@ -7835,12 +7844,85 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::io_drain_step() -> void {
 #ifdef LIBCOAP_AVAILABLE
-    std::lock_guard lock(_mutex);
-    if (_coap_context != nullptr) {
-        coap_io_process(_coap_context, COAP_IO_NO_WAIT);
+    {
+        std::lock_guard lock(_mutex);
+        if (_coap_context != nullptr) {
+            coap_io_process(_coap_context, COAP_IO_NO_WAIT);
+        }
     }
+    run_deferred_completions();
 #endif
     _io_drain_steps.fetch_add(1, std::memory_order_relaxed);
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::defer_resolve(pending_message& message, std::vector<std::byte> data,
+                                       const std::string& media_type) -> void {
+    _deferred_completions.emplace_back(
+        [callback = std::move(message.resolve_callback), data = std::move(data),
+         media_type]() mutable { callback(std::move(data), media_type); });
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::defer_reject(pending_message& message, std::exception_ptr error) -> void {
+    _deferred_completions.emplace_back(
+        [callback = std::move(message.reject_callback), error = std::move(error)]() mutable {
+            callback(std::move(error));
+        });
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::run_deferred_completions() -> void {
+    std::vector<std::function<void()>> batch;
+    {
+        std::lock_guard lock(_mutex);
+        batch.swap(_deferred_completions);
+    }
+    if (batch.empty()) {
+        return;
+    }
+    {
+        std::lock_guard lock(_completion_mutex);
+        for (auto& complete : batch) {
+            _completion_queue.push_back(std::move(complete));
+        }
+    }
+    _completion_cv.notify_one();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::run_completion_loop(const std::stop_token& stop_token) -> void {
+    // Off the I/O thread on purpose. A completion is the caller's code: a
+    // Raft node takes its own lock, advances its indices and often sends
+    // again. Run on the I/O thread -- under _mutex as it first was, or
+    // after the step -- it held up the next drain step for as long as that
+    // took, which the send probe measured at 200-1,500 us a step and up to
+    // tens of milliseconds. One thread keeps completions in the order their
+    // replies were dispatched.
+    for (;;) {
+        std::deque<std::function<void()>> batch;
+        {
+            std::unique_lock lock(_completion_mutex);
+            _completion_cv.wait(lock, stop_token, [this] { return !_completion_queue.empty(); });
+            if (_completion_queue.empty()) {
+                return;  // stopped, and nothing left to run
+            }
+            batch.swap(_completion_queue);
+        }
+        for (auto& complete : batch) {
+            try {
+                complete();
+            } catch (const std::exception& e) {
+                _logger.error("CoAP response completion threw", {{"error", e.what()}});
+            } catch (...) {
+                _logger.error("CoAP response completion threw", {{"error", "unknown"}});
+            }
+        }
+    }
 }
 
 template<typename Types>
@@ -8051,6 +8133,9 @@ auto coap_client<Types>::run_io_loop(const std::stop_token& stop_token) -> void 
                 timeout = std::min(timeout, *multicast);
             }
         }
+        // coap_io_prepare_epoll() runs due timers, and a timer that gives
+        // up on an exchange calls the NACK handler.
+        run_deferred_completions();
 
         // Wait, outside the lock.
         std::array<pollfd, 2> fds{pollfd{coap_fd, POLLIN, 0}, pollfd{wake_fd, POLLIN, 0}};
