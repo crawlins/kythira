@@ -5,6 +5,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 14, 2026)
 
+- **The real-EC2 ca-cluster-node test follows a leader redirect when
+  issuing.** On October 14 run 38567059904 failed with `issuing
+  failover-during failed: 308`: leadership moved between finding the
+  leader and posting the CSR, and the test treated the redirect as a final
+  answer. Issuance now follows the 308 to the node its `Location` names.
+  Ledger probes still do not, because each one must read a specific
+  node's ledger.
+
 - **The CoAP row of the multi-Raft matrix now runs at the standard 2 ms
   tick.** Re-measured after the libcoap client's I/O thread stopped
   pacing on a 5 ms sleep ([PR #392](https://github.com/crawlins/kythira/pull/392),
