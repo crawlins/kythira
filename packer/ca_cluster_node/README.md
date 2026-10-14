@@ -50,10 +50,15 @@ template itself? `--skip-binary-build` reuses whatever is at
   `docker/ca_cluster_node/ca_cluster_node.service`, `enable`d but **not**
   started (its `EnvironmentFile`, `/etc/default/ca_cluster_node`, doesn't
   exist yet).
-- The image is registered with `ImdsSupport=v2.0`, so every instance
-  launched from it requires IMDSv2 tokens unless the launch overrides that.
-  A forged request from a CA node cannot read its instance-profile
-  credentials with a plain `GET`.
+- The image does **not** carry `ImdsSupport=v2.0`. Packer can only set
+  that attribute with `ec2:ModifyImageAttribute`, which the CI role leaves
+  out because it is also how an AMI is shared with another account. IMDSv2
+  is required at launch instead: `aws_ec2_quorum_manager` launches every
+  node with `HttpTokens=required` by default, so a forged request from a CA
+  node cannot read its instance-profile credentials with a plain `GET`.
+  Launch the image by hand with `--metadata-options HttpTokens=required`,
+  or set the account default with
+  `aws ec2 modify-instance-metadata-defaults --http-tokens required`.
 
 **No secrets are ever baked in.** The unseal passphrase, `CA_SERVICE_AUTH_TOKEN`,
 RPC-TLS bootstrap credential, `NODE_ID`, and `--peers` all remain supplied

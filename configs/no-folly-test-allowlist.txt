@@ -19,14 +19,11 @@ alibaba_oss_persistence_unit_test Alibaba component tests are gated on folly_FOU
 alibaba_quorum_manager_mock_test Alibaba component tests are gated on folly_FOUND in tests/CMakeLists.txt
 alibaba_quorum_manager_unit_test Alibaba component tests are gated on folly_FOUND in tests/CMakeLists.txt
 async_operations_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
-backend_non_interference_compile_fail_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
-backend_selection_isolation_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
+backend_non_interference_compile_fail_test every backend pair it checks has the Folly backend (`kythira::Future`, raft/future.hpp) on one side
 basic_cluster_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 basic_connectionless_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 beast_transport_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 boost_backend_migration_guide_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
-boost_future_concept_compliance_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
-boost_future_continuation_and_collector_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 ca_cluster_node_rpc_tls_restart_test cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
 ca_cluster_node_rpc_tls_test cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
 ca_cluster_node_test cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
@@ -163,23 +160,11 @@ raft_submit_command_timeout_property_test gated on `TARGET Folly::folly` in test
 redis_gateway_integration_test gated on folly_FOUND in tests/CMakeLists.txt, like cmd/redis_gateway_node
 semi_promise_concept_requirements_property_test uses Folly directly (`folly::Unit`, `folly::exception_wrapper`)
 single_serializer_regression_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
-single_shot_channel_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
 snapshot_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 state_machine_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 state_machine_migration_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 stdexec_backend_migration_guide_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
-stdexec_concept_wrappers_interoperability_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_concept_wrappers_unit_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_executor_concept_compliance_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_future_blocking_get_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_future_collector_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_future_concept_compliance_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_future_factory_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_future_scheduling_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_future_transformation_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_promise_concept_compliance_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_semi_promise_concept_compliance_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
-stdexec_try_concept_compliance_property_test the stdexec suite is registered inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block; its source uses no Folly directly
+stdexec_concept_wrappers_interoperability_property_test compares the stdexec backend with the Folly one (`kythira::FutureFactory` from raft/future.hpp)
 test_code_future_usage_property_test uses Folly directly (`folly::Future`)
 three_way_http_transport_equivalence_test compares httplib, Beast and the proxygen transport, which depends on Folly
 try_concept_requirements_property_test uses Folly directly (`folly::exception_wrapper`, `folly::Try`)

@@ -312,8 +312,13 @@ public:
                     .timeout_classification = std::nullopt};
         }
 
-        // Authentication and authorization failures (should not retry)
+        // Authentication and authorization failures (should not retry).
+        // A peer certificate the TLS trust policy rejects is rejected again
+        // on every attempt, and each attempt is a full handshake: retrying
+        // it made one impostor at a member's address cost the leader about
+        // five handshakes per heartbeat. The next heartbeat is the retry.
         if (error_msg.find("authentication failed") != std::string::npos ||
+            error_msg.find("rejected by trust policy") != std::string::npos ||
             error_msg.find("permission denied") != std::string::npos ||
             error_msg.find("access denied") != std::string::npos ||
             error_msg.find("unauthorized") != std::string::npos ||

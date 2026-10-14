@@ -8,6 +8,8 @@
       "packages": [
         "c-ares",
         "cpp-httplib",
+        "curl",
+        "nghttp2",
         "openssl"
       ]
     }
@@ -19,6 +21,8 @@
     "./vcpkg-overlays/mvfst",
     "./vcpkg-overlays/grpc",
     "./vcpkg-overlays/libcoap",
-    "./vcpkg-overlays/poco-dnssd"
+    "./vcpkg-overlays/poco-dnssd",
+    "./vcpkg-overlays/cantcoap",
+    "./vcpkg-overlays/libnyoci"
   ]
 }

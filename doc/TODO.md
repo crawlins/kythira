@@ -204,13 +204,16 @@ are the only place several refutations are written down in one paragraph.
 | `redis-compatible-kv` | **14/14** | Requirements, design and tasks written August 28, 2026; implemented September 2–3, 2026. A minimal RESP2/RESP3 server over `multi_raft` scoped to exactly the command closure sccache's `redis` backend puts on the wire (read from sccache, OpenDAL and redis-rs 1.2, not from the Redis manual), motivated by the gap ccache cannot fill: ccache has no rustc backend. Six headers (`resp_protocol`, `redis_kv_commands`, `redis_kv_state_machine`, `redis_acl`, `redis_gateway` and its impl), the `redis_gateway_node` daemon, five unit/integration binaries and one container scenario binary, all behind `CONFIG_REDIS_GATEWAY` — the ON/OFF configure diff is exactly the ten feature-owned targets and `vcpkg.json` is untouched. **The acceptance evidence is real sccache 0.10.0, not a mock**: `make docker-sccache-e2e-tests` runs the upstream binary in a container against the three-node cluster (rootless Podman here; nothing in the compose file is Docker-specific) and asserts on `sccache --show-stats` — miss then hit, `SETEX` under `SCCACHE_REDIS_EXPIRATION`, both builds green with every gateway stopped, and the `read_only` user building green with `cache_write_errors` non-zero while hitting what `read_write` stored. Two findings that shape the operator doc (`doc/redis-gateway.md`): sccache's startup storage probe turns a failed *read* into `Server startup failed` for every subsequent compile, so a CI job has to gate `RUSTC_WRAPPER` on `sccache --start-server` succeeding for the cache to be an accelerant rather than a build dependency (Requirement 17.2 is a property of the job, not only of the server); and sccache 0.10 refuses to cache `bin` crate types, so a crate has one cache key and the runner salts its library source to force a miss on demand. Serializer measurement replaced the design's estimate: an 8 MiB value is 1.333× under JSON and 158 ms of leader CPU per follower, 1.0000× and 5 ms under CBOR, so the daemon defaults to CBOR. Adopting sccache in this repository's own build remains deliberately *not* part of the spec. |
 | `elastic-shard-capacity` | **17/17** | Moved from "Not Started" October 4, 2026, where it sat as 0/17 after it had landed (PR #382). Cloud-agnostic capacity elasticity: host composition, a `capacity_policy` concept, and the split between the capacity gate and host accounting in `multi_raft.hpp`. |
 | `alibaba-cloud-services` | **12/12** (task 4 closed by descope) | **Closed October 2, 2026, by the per-task audit the note below asked for.** Each box was ticked against its own Verify line; the evidence is tabled at the top of the spec's `tasks.md`, and spike-notes Findings 11-13 close spike items 0.3 and 0.5 and record the CI runs (scheduled [36426191450](https://github.com/crawlins/kythira/actions/runs/36426191450): both bundles green, leak audit clean). The audit was not a formality: task 3's "NodeId max+1 incl. boundary" case had never been written, and the boundary was broken — a `"-1"` tag wrapped every later NodeId to 0. Fixed in the same change. What stays documentation-deep, on purpose: `DescribeScalingInstances` past one page. **The September 12 note, kept as written:** **Added to this table September 12, 2026 — it had a row in neither table**, while `doc/TODO.md` said two contradictory things about it: the Current Status bullet called it "wave 1 with its vendor-fact spike open", and the Cloud Provider Support list marked it `[x]` complete. The `[x]` is the closer of the two. **What the tree actually holds**, checked rather than inferred: `alibaba_client_config`, `alibaba_http_client`, `alibaba_signing`, `alibaba_oss_client`, **`alibaba_ess_quorum_manager` at 1,049 lines** and `alibaba_oss_persistence` — the last two landed as `5fd8f14`, which is on `main` and is exactly tasks 3 and 5, both of which the spec still shows unchecked. Also present and wired: `alibaba_mock_server.hpp`, unit/mock/real test tiers for signing, the HTTP client, the OSS client, persistence and the quorum manager, `docker/alibaba_quorum_manager/`, `scripts/ci-cloud-credentials/alibaba/`, and 70 references in `real-cloud-tests.yml`. **Seven alibaba tests are registered CTest entries in a configured tree**, which is the evidence that these are built rather than merely present — file existence on its own is not, and this file has been wrong that way before. So tasks 6 through 9 look done too. **What is genuinely outstanding is small and mostly not ours**: spike sub-items **0.2, 0.3 and 0.5** (the V4/OSS canonical form, `ModifyScalingGroup` semantics, and the `AssumeRoleWithOIDC` request shape — 0.1 and 0.4 are CONFIRMED in `spike-notes.md`), task **10**, which is marked `[operator]` and needs a real Alibaba Cloud account provisioned by a human, and task **11**, live verification, which task 10 blocks. **The task count above is deliberately the spec's own, not a corrected one.** Ticking six boxes on the strength of "the files exist and build" is the move this repo's Known Follow-ups exist to warn about — a per-task pass against each acceptance criterion is owed, by someone who can check them, and until that happens the honest thing is to record that the checklist and the tree disagree rather than to pick a number. |
+| `oci-build-cache` | **14/14** | **Closed October 9, 2026, by task 11's full-month audit.** **Both build caches are live on `main` and verified** (run [34296062792](https://github.com/crawlins/kythira/actions/runs/34296062792), 15/15 green, September 9, 2026). vcpkg archives via `x-aws` and this project's compiles via sccache now live in one OCI bucket reached through the S3 Compatibility API. Measured, with an unmodified control leg to anchor it: dependency installs **69–163 min → 4–7 min** with zero ports built from source; `gcp-sdk-build` **163.4 → 6.5 min**; the `Full suite (stdexec)` Build **170.3 → 4.1 min** at a **100% hit rate over 561 translation units**; every Requirement 6 threshold met by an order of magnitude. Requirement 1.3's two open questions are answered **yes** — across 3,856 compiles spanning Release, ThreadSanitizer and coverage builds there is not one non-cacheable call, so neither `kythira_test_pch` nor `-fprofile-instr-generate` defeats the cache, and Requirement 5.1's escape hatch for legs under 50% cacheable has no candidates. **Two premises in the spec did not survive contact and are corrected in it.** First, `x-gha` — the backend every workflow was asking for — had already been removed by vcpkg, so those jobs had no binary cache at all rather than a degraded one. Second, and more important for how this is described: moving the compiler cache out **did not relieve the 10 GB ceiling**. ccache was 0.60 GiB in total, not the 'eight families at 2 GB each' assumed, and 94% of the ceiling is the `vcpkg_installed/` tree caches that Requirement 3.3 deliberately keeps. What changed is that **eviction stopped mattering** — a tree-cache miss cost 69–163 minutes of rebuilding and now costs a 4–7 minute download. That is a better outcome than the one argued for, and a different one. **Every Requirement 6 threshold is met on the second consecutive `main` push** (run [34353211972](https://github.com/crawlins/kythira/actions/runs/34353211972), 15/15 green): `build-and-test` Builds of **2.23–4.05 min** against a 15-minute ceiling and 17–26 cold, the stdexec leg at **4.01 against 45** and 170.3 cold, hit rates of **99.82–100%**, and **zero non-cacheable calls in 4,494 requests**. Nothing needed investigating and no threshold was moved. **The negative-path verification found the one thing that was genuinely broken**, which is the argument for doing it: a job pointed at a wrong endpoint built *red* rather than degrading to no compiler cache, violating Requirement 3.5. sccache validates its storage backend lazily — on the first request — so neither subcommand the guard used could distinguish a healthy server that was already listening from a dead one, and it chose sccache over a dead one; every compile then exited 2 and ninja stopped one second in. Fixed in [PR #326](https://github.com/crawlins/kythira/pull/326) by deciding with a probe compile, in one script replacing a guard that had been duplicated verbatim at twelve sites. Storage measured at ~9.2 GB against the $0.50/month pre-registration (of which 2.04 GB is a throwaway measurement prefix that ages out; nobody holds `OBJECT_DELETE`, by design). **The negative-path verification took two attempts and found a second violation the first fix could not have caught**: `RUSTC_WRAPPER` was exported before the vcpkg install, where the lakers port's cargo build uses it and where no per-job guard can reach, so a dead backend would have failed rustc and taken the install with it ([PR #328](https://github.com/crawlins/kythira/pull/328)). Neither violation had ever fired, because the `vcpkg_installed/` tree cache had been hitting on every run and a hit skips the install entirely. The re-run is **15/15 green** (run [34358385332](https://github.com/crawlins/kythira/actions/runs/34358385332)) with 117 ports built from source, and it is also the first *controlled* measurement of what the vcpkg cache is worth — ten legs installing in **4.41–6.51 min** beside one at **95.01**, same commit, same L1 miss, the only variable being whether the cache was reachable. Every earlier figure for that ratio compared different runs on different days. A third defect turned up in `audit.sh`, which reported both credentials as "does not exist" while CI was authenticating with them: `try()` folded stderr into the captured value, so a diagnostic became an OCID ([PR #329](https://github.com/crawlins/kythira/pull/329)). All three are the same shape — something that could not answer being read as an answer. **A fourth of that shape turned up on September 10, 2026, and it is the one that had held task 11 open**: `audit.sh` had been reporting "no Object Storage line yet this month" about a line that was there the whole time, because it asked the Usage API for an *ungrouped* total and then filtered it by `service` — a field that API populates only when asked to group. Same window, same credentials: ungrouped returns one row with `service` null, `--group-by service` returns six of which Object Storage is one. So **the month-to-date bill is readable and is $0.051963**, against the **$0.50/month** pre-registered — and the shape of it was not anticipated anywhere: **requests are 100% of the cost** (202,831 of them), while storage (0.902 GB-months) and egress (130.11 GB) both round to **zero** under the 10 GB always-free and 10 TB egress allowances. This bill scales with round trips, not bytes, so the 30-day lifecycle rule that bounds storage does not touch the only line that costs anything. Four checks were added to `test-audit.sh` and all four fail against the previous `audit.sh`; the stub had to be taught to model `--group-by` first, because it answered with a service-labelled row either way and so could not reproduce the bug — the same "a stub more permissive than the service it stands in for tests nothing" lesson task 9 already recorded. The rule now written at the site: **when a query comes back empty, say whether the QUERY failed or the SUBJECT is absent, and never let those print the same sentence.** **The full month is in, and it closed the spec on October 9, 2026**: September 9 to October 9 cost **$1.00** (93% requests) and carried **1.62 TB** of egress, inside the pre-registered 1–5 TB band and under both of Requirement 6.5's ceilings, at 2x the $0.50 estimate. October's first nine days carry 83% of it, a pace just under the 5 TB ceiling; see "Known Follow-ups". The cost cross-reference in `doc/sccache_dogfood_cost_estimate.md` is **done**, and it reports that document's central thesis — egress is the expensive part, and OCI's allowance zeroes it — as holding, while noting that the document prices a three-node `redis_gateway_node` deployment that was never built. **Two findings outlive the spec**: a leg that only ever passes on a `pull_request` can never warm its own cache, because PR runs hold the read-only key — a deadlock that caught the stdexec leg; and `multi_raft_scale_test`/`multi_raft_driver_agreement_test` will kill a 16 GiB runner on any genuinely cold build, sitting outside the `heavy_tu` pool built for exactly that, which the cache now hides rather than fixes. **That second finding has since been measured and fixed, and the two targets it names are not the culprits**: ninja's `[N/M]` on a non-smart-terminal is a *completion* index, so the two targets it named were the last to finish before the machine stopped rather than the ones that stopped it. The killers are `multi_raft_http_benchmark_test` and `multi_raft_performance_report`, which never completed at all in either killed job and which peak at **21,114 and 16,640 MiB** under stdexec — 36.9 GiB together, against a runner's 16 GiB plus the 24 GiB swapfile that leg adds. All four are now pooled — see "Known Follow-ups". |
+| `ci-build-matrix-coverage` | **12/12** | **Closed October 12, 2026, by task 11's `main` run of `alt-coap-backends`.** All five jobs are on `main` and green there: `kconfig-check` (task 2), `no-folly` (tasks 6–7), `config-variants` (task 8), the six-shard `static-analysis` clang-tidy gate (tasks 9–10, after taking the tree from 873 findings to zero) and `alt-coap-backends` (tasks 4–5), which runs all 72 `coap_*` tests with cantcoap and libnyoci compiled in and is a required status check on `main` since October 12. Task 3 (`cmd/` in `FORMAT_SOURCES`/`TIDY_SOURCES`) is ticked, and task 1 is closed as superseded, since each configuration was measured as its job landed. `main` durations are in each job's `timeout-minutes` comment and task 11; `alt-coap-backends` runs in 3.5 min warm and 13.9 min after a wide header change. Running it found two build bugs, both fixed in #463: the cantcoap and libnyoci overlay ports were never registered, so neither vcpkg feature could be installed, and libnyoci's pkg-config paths broke `network_simulator`'s `install(EXPORT)`. |
 
 ### Not Started
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| `acm-pca-ephemeral-ca` | 0/7 | Written October 3, 2026. `aws_acm_pca_provider_real_test` creates and deletes its own ACM Private CAs per run instead of needing `$KYTHIRA_TEST_ACM_PCA_ARN`, with leak detection (`scripts/aws-acm-pca-leaks.sh`), cost reporting, a tag-scoped IAM bundle and an opt-in Real Cloud Tests step. No `ephemeral_acm_pca` or `RealCaFixture` exists yet and no open PR carries it. |
+| `acm-pca-ephemeral-ca` | 5/7 | Written October 3, 2026; tasks 1-3, 5 and 6 done October 7. `aws_acm_pca_provider_real_test` creates and deletes its own two ACM Private CAs per run (`ephemeral_acm_pca`, `RealCaFixture`) with `KYTHIRA_ACM_PCA_REAL_TESTS=1`, prints an `[aws-cost]` block, and Real Cloud Tests runs it plus `scripts/aws-acm-pca-leaks.sh audit` behind `REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED`. Open: task 4's `simulate-custom-policy` check and applying the `acm-pca` bundle to the CI role, and task 7's first real runs; both need AWS and Clark's go-ahead. |
 | `aws-asg-real-cloud-tests` | 0/12 | Written October 5, 2026 (`c18f9c1`). Real-cloud validation for `aws_asg_quorum_manager`: two throwaway-API-call probes first (ELB health-check type without a load balancer; egress without a public IP), an `asg-quorum-manager` IAM bundle, then a VPC/ASG fixture whose teardown lands before any case does. `tests/aws_asg_quorum_manager_real_test.cpp` does not exist yet. |
+| `mold-linker` | 0/7 | Written October 9, 2026. Link this project's binaries with mold through a `KYTHIRA_LINKER` knob (`auto` picks mold when installed, CI asks for it by name and checks `.comment`). Gated on task 1: a throwaway CI measurement must show at least a 30% cut in summed link time on the clang++-18 x64 leg, or the spec closes with the numbers. vcpkg ports and the CA Docker builders stay on ld.bfd. |
 
 This table was **empty on October 4, 2026, which undercounted it**: the
 re-check that emptied it moved the two stale rows out but did not add the
@@ -229,6 +232,9 @@ the spec's own premise did not survive: it argued for moving the compiler
 cache out of GitHub's 10 GB Actions cache to relieve the ceiling, and
 measurement showed ccache was 0.60 GiB of it. The ceiling was never the
 problem. The win is real but different — eviction stopped being expensive.
+It moved again on October 9, 2026, to "Complete since August 28" above,
+when task 11's full-month audit came in under both of Requirement 6.5's
+ceilings.
 
 `oci-cloud-provider` came **off** this table on August 12, 2026 — the fifth
 spec caught by the drift pattern this table documents below, and the most
@@ -264,15 +270,13 @@ nothing and would have been answered with 406.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| `coap-transport-multi-raft` | 9/14 | Moved from "Not Started" October 4, 2026. Phases 1-4 and 6 landed in PR #385. Open: task 7 (`TimeoutNow` on libnyoci and cantcoap ships on both, but its integration cases have never run, since both backends bind IPv6 and CI builds neither; PR #463 adds that job), tasks 9-11 (a per-(peer, group) OSCORE context, recipient-side selection, lifecycle and replay window) and task 13 (Multi-Raft over CoAP end to end). Tasks 9-11 and 13 are in draft PR #453. |
-| `oci-build-cache` | 13/14 | **Both build caches are live on `main` and verified** (run [34296062792](https://github.com/crawlins/kythira/actions/runs/34296062792), 15/15 green, September 9, 2026). vcpkg archives via `x-aws` and this project's compiles via sccache now live in one OCI bucket reached through the S3 Compatibility API. Measured, with an unmodified control leg to anchor it: dependency installs **69–163 min → 4–7 min** with zero ports built from source; `gcp-sdk-build` **163.4 → 6.5 min**; the `Full suite (stdexec)` Build **170.3 → 4.1 min** at a **100% hit rate over 561 translation units**; every Requirement 6 threshold met by an order of magnitude. Requirement 1.3's two open questions are answered **yes** — across 3,856 compiles spanning Release, ThreadSanitizer and coverage builds there is not one non-cacheable call, so neither `kythira_test_pch` nor `-fprofile-instr-generate` defeats the cache, and Requirement 5.1's escape hatch for legs under 50% cacheable has no candidates. **Two premises in the spec did not survive contact and are corrected in it.** First, `x-gha` — the backend every workflow was asking for — had already been removed by vcpkg, so those jobs had no binary cache at all rather than a degraded one. Second, and more important for how this is described: moving the compiler cache out **did not relieve the 10 GB ceiling**. ccache was 0.60 GiB in total, not the 'eight families at 2 GB each' assumed, and 94% of the ceiling is the `vcpkg_installed/` tree caches that Requirement 3.3 deliberately keeps. What changed is that **eviction stopped mattering** — a tree-cache miss cost 69–163 minutes of rebuilding and now costs a 4–7 minute download. That is a better outcome than the one argued for, and a different one. **Every Requirement 6 threshold is met on the second consecutive `main` push** (run [34353211972](https://github.com/crawlins/kythira/actions/runs/34353211972), 15/15 green): `build-and-test` Builds of **2.23–4.05 min** against a 15-minute ceiling and 17–26 cold, the stdexec leg at **4.01 against 45** and 170.3 cold, hit rates of **99.82–100%**, and **zero non-cacheable calls in 4,494 requests**. Nothing needed investigating and no threshold was moved. **The negative-path verification found the one thing that was genuinely broken**, which is the argument for doing it: a job pointed at a wrong endpoint built *red* rather than degrading to no compiler cache, violating Requirement 3.5. sccache validates its storage backend lazily — on the first request — so neither subcommand the guard used could distinguish a healthy server that was already listening from a dead one, and it chose sccache over a dead one; every compile then exited 2 and ninja stopped one second in. Fixed in [PR #326](https://github.com/crawlins/kythira/pull/326) by deciding with a probe compile, in one script replacing a guard that had been duplicated verbatim at twelve sites. Storage measured at ~9.2 GB against the $0.50/month pre-registration (of which 2.04 GB is a throwaway measurement prefix that ages out; nobody holds `OBJECT_DELETE`, by design). **The negative-path verification took two attempts and found a second violation the first fix could not have caught**: `RUSTC_WRAPPER` was exported before the vcpkg install, where the lakers port's cargo build uses it and where no per-job guard can reach, so a dead backend would have failed rustc and taken the install with it ([PR #328](https://github.com/crawlins/kythira/pull/328)). Neither violation had ever fired, because the `vcpkg_installed/` tree cache had been hitting on every run and a hit skips the install entirely. The re-run is **15/15 green** (run [34358385332](https://github.com/crawlins/kythira/actions/runs/34358385332)) with 117 ports built from source, and it is also the first *controlled* measurement of what the vcpkg cache is worth — ten legs installing in **4.41–6.51 min** beside one at **95.01**, same commit, same L1 miss, the only variable being whether the cache was reachable. Every earlier figure for that ratio compared different runs on different days. A third defect turned up in `audit.sh`, which reported both credentials as "does not exist" while CI was authenticating with them: `try()` folded stderr into the captured value, so a diagnostic became an OCID ([PR #329](https://github.com/crawlins/kythira/pull/329)). All three are the same shape — something that could not answer being read as an answer. **A fourth of that shape turned up on September 10, 2026, and it is the one that had held task 11 open**: `audit.sh` had been reporting "no Object Storage line yet this month" about a line that was there the whole time, because it asked the Usage API for an *ungrouped* total and then filtered it by `service` — a field that API populates only when asked to group. Same window, same credentials: ungrouped returns one row with `service` null, `--group-by service` returns six of which Object Storage is one. So **the month-to-date bill is readable and is $0.051963**, against the **$0.50/month** pre-registered — and the shape of it was not anticipated anywhere: **requests are 100% of the cost** (202,831 of them), while storage (0.902 GB-months) and egress (130.11 GB) both round to **zero** under the 10 GB always-free and 10 TB egress allowances. This bill scales with round trips, not bytes, so the 30-day lifecycle rule that bounds storage does not touch the only line that costs anything. Four checks were added to `test-audit.sh` and all four fail against the previous `audit.sh`; the stub had to be taught to model `--group-by` first, because it answered with a service-labelled row either way and so could not reproduce the bug — the same "a stub more permissive than the service it stands in for tests nothing" lesson task 9 already recorded. The rule now written at the site: **when a query comes back empty, say whether the QUERY failed or the SUBJECT is absent, and never let those print the same sentence.** Remaining: one *full month* of cadence for the egress figure, on or after October 9 — 130 GB over eleven days that began before the caches were live on `main` and included a six-PR day neither confirms nor refutes the 1–5 TB band. The cost cross-reference in `doc/sccache_dogfood_cost_estimate.md` is **done**, and it reports that document's central thesis — egress is the expensive part, and OCI's allowance zeroes it — as holding, while noting that the document prices a three-node `redis_gateway_node` deployment that was never built. **Two findings outlive the spec**: a leg that only ever passes on a `pull_request` can never warm its own cache, because PR runs hold the read-only key — a deadlock that caught the stdexec leg; and `multi_raft_scale_test`/`multi_raft_driver_agreement_test` will kill a 16 GiB runner on any genuinely cold build, sitting outside the `heavy_tu` pool built for exactly that, which the cache now hides rather than fixes. **That second finding has since been measured and fixed, and the two targets it names are not the culprits**: ninja's `[N/M]` on a non-smart-terminal is a *completion* index, so the two targets it named were the last to finish before the machine stopped rather than the ones that stopped it. The killers are `multi_raft_http_benchmark_test` and `multi_raft_performance_report`, which never completed at all in either killed job and which peak at **21,114 and 16,640 MiB** under stdexec — 36.9 GiB together, against a runner's 16 GiB plus the 24 GiB swapfile that leg adds. All four are now pooled — see "Known Follow-ups". |
+| `coap-transport-multi-raft` | 9/14 | Moved from "Not Started" October 4, 2026. Phases 1-4 and 6 landed in PR #385. Open: task 7 (`TimeoutNow` on libnyoci and cantcoap ships on both, but its integration cases now run in CI under the `alt-coap-backends` job, which builds both backends), tasks 9-11 (a per-(peer, group) OSCORE context, recipient-side selection, lifecycle and replay window) and task 13 (Multi-Raft over CoAP end to end). Tasks 9-11 and 13 are in draft PR #453. |
 | `tcp-rpc-server-hardening` | 0/6 ticked; **implemented** | **The checkboxes are stale, not the code.** `b15f4e3` (send with `MSG_NOSIGNAL`, read frames incrementally) and `deaac7b` (`include/raft/tcp_connection_tracker.hpp`; bounded, deadlined and drained connections on the TCP, TLS and gossip servers; four suites in the ThreadSanitizer job) are on `main` and cover tasks 1–5, 6.2 and 6.3. The spec still says "implemented in PR #423 (draft) … ticks them when it merges"; it merged and nothing was ticked. **Genuinely open: task 6.1's docker_chaos quorum-scenario run.** |
 | `http-coap-pre-vote-timeout-now` | 0/9 | RequestPreVote and TimeoutNow on the three HTTP transports, RequestPreVote on the three CoAP backends, and a core `rpc_not_implemented` fallback so elections keep working mid-upgrade. Nothing on `main`; the whole spec is in open PR #460. Its CoAP half was gated on PR #385, which has merged. |
 | `http-server-request-limits` | 0/8 | One shared `connection_gate` enforcing `max_concurrent_connections` on all three HTTP servers, plus `max_request_body_size` (413) on Proxygen. Nothing on `main` beyond `7946f77`'s bounded `cpp_httplib_server` worker queue (`include/raft/httplib_task_queue.hpp`), which predates the spec and makes its "cpp-httplib never reads `max_concurrent_connections`" out of date. Open PR #452 carries the rest. |
 | `coap-client-event-driven-io` | 0/8 | Replace the libcoap client's fixed `coap_io_process(NO_WAIT)` + 5 ms sleep with a readiness wait and wake fd; task 1 is a gate that confirms six claims about libcoap first. Draft PR #392. |
 | `group-scale-up-rollback` | 8/10 | Tasks 1–8 on `main`: the vendor spike, the shared planner, mock servers that model the cloud's choice, and remove-by-id rollback in all five group managers (ESS and OCI instance pool first, then ASG, VMSS and MIG in `794b7e5`). Task 9's real-cloud timeout cases are written (`498333b`) but not yet dispatched, which the task requires before it is ticked; the AWS CI role must be re-provisioned for the new `PutLifecycleHook` and `SetInstanceProtection` grants first. Task 10 (provider READMEs and cross-references from the five provider specs) is open. |
 | `cloud-composite-node-ids` | 2/10 | Task 1 (`38da1e0`: `composite_node_id.hpp`, provider rule sets, `node_id_traits`) and task 9 (LocalStack without the hook, `d0519be`) are on `main`; separately, `0b1d853` stopped the AWS managers parsing EC2 instance ids as 64-bit node ids. Open: numeric hardening, the AWS and other managers in composite mode, the Raft core and serializers, transports, CA identity and serials, self id and binaries, docs and the default flip. The largest open spec. |
-| `ci-build-matrix-coverage` | 4/12 (task 3 done, unticked) | `kconfig-check` (task 2), the Folly-free prefix script and `no-folly` job (tasks 6–7, `268c07b`) and `config-variants` (task 8) are on `main`. **Task 3 is done and not ticked**: `723dd71` added `cmd/` to `FORMAT_SOURCES` and `TIDY_SOURCES`. The `alt-coap-backends` job (tasks 4–5) is open PR #463; task 1's measurements, the tidy-to-zero work and the `static-analysis` job have no PR. |
 | `object-backup-oci-oss-credentials` | 8/9 | Tasks 1–8 on `main` (October 3). Task 9 is a manual live check that needs the real-suite OCI and Alibaba credentials; open PR #483 runs `raft_object_backup list` against both buckets in Real Cloud Tests instead. |
 | `batched-durable-writes` | 5/6 | Bulk log append and a combined term-and-vote write on the persistence seam, landed in `c087752`. Task 6, a live measurement against a real object store, is open. The moved-terms case of `raft_batched_durable_writes_test` that failed in bursts on the boost and stdexec full-suite legs stopped failing once `4884c34` (store a newer term when it is learned; keep a same-term vote) landed on main with the `f901874` diagnostics on 2026-10-06 ~10:55Z. Before that, 11 Full suite jobs across 7 of 14 runs failed it (5 of them 3/3); after it, no Full suite, Build & Test, No Folly or Coverage job in the 51 runs since (through `b7e7e01`) shows a failure or a retry of it, and it never failed locally (0/96 under 3x CPU oversubscription on the fix, 0/30 on `c087752`, 10 of them pinned to one busy core). The exact stall the old code hit was not reproduced; if the case fails again, the `f901874` dump names each node's live and stored term. |
 | `aws-quorum-manager` | 7/8 | Task 8, a real-EC2 `process_crash_triggers_replacement` using leader-driven liveness (`quorum_peer_dead_after`) with the process killed over SSH. `process_crash_via_ssh_kill` in `tests/aws_quorum_manager_real_ec2_test.cpp` still uses `StopInstances`, and no test uses `quorum_peer_dead_after`. |
@@ -362,54 +366,73 @@ unverified completion claim.
 
 ## Known Follow-ups
 
+- **OCI build cache: October is running at about twelve times
+  September's daily rate** (`.kiro/specs/oci-build-cache/` task 11, measured October 9,
+  2026). The bucket's first full month was $1.00 and 1.62 TB of egress,
+  inside every ceiling, but October 1–9 alone was 1.34 TB and $0.83, a
+  pace of about 4.8 TB for October against Requirement 6.5's 5 TB ceiling.
+  The bucket grew from ~7.2 to ~84 GiB over the same month (`sccache/`
+  28-fold), which suggests cache churn rather than more of the same
+  traffic; that is inferred from object counts, not measured. Read
+  October's whole bill on or after November 1 with the same grouped
+  usage query; if egress is over 5 TB, Requirement 6.5 says investigate,
+  starting with a `DAILY` breakdown to date the step.
 - **Deferred work that lived only in completed specs — collected October 4–6,
   2026.** Recorded as deferred inside specs whose boxes are all ticked, with
   no entry in this file until now. Each was checked against `main`; none is
   a regression, and several are optional by their spec's own account.
-  - **The alternate CoAP backends are not built in CI yet.** No workflow on
-    `main` mentions cantcoap or libnyoci, so CI compiles only their stub
-    paths: cross-backend EDHOC/DTLS interop is not asserted, arm64 is
+  - **The alternate CoAP backends build in CI on x64 only.** The
+    `alt-coap-backends` job runs both backends' real suites, which is what
+    `coap-transport-multi-raft` task 7 was waiting on. Still open:
+    cross-backend EDHOC/DTLS interop is not asserted and arm64 is
     unverified (`coap-transport-cantcoap` tasks.md ~201–209,
-    `coap-transport-libnyoci` tasks.md ~337), and
-    `coap-transport-multi-raft` task 7 cannot be ticked. Open PR #463 adds
-    the job. Also from `coap-transport-libnyoci`, with no PR: a two-process
-    cross-backend interop test, and Block1 for InstallSnapshot.
-  - **Serializer integer-range and validation gaps**
-    (`json-serializer-input-validation` tasks.md ~139–144). Ion writes every
-    `uint64` field as `int64` (`static_cast<std::int64_t>` throughout
-    `include/raft/ion_serializer.hpp`), so terms and indices at or above
-    2^63 are rejected on decode; Protobuf's `uint64` conversions are
-    unchecked (parity-audit Z2); and only CBOR has a declared-length
-    preflight (Z3).
-  - **Tests that assert nothing.** Every case in
-    `tests/raft_add_server_implementation_property_test.cpp` ends in a
-    `BOOST_CHECK(true)` placeholder (about twenty), including "Property 92.9:
-    add server adds as non-voting initially", which waits "until catch-up is
-    implemented", although learner catch-up now is.
-    `tests/network_concept_compliance_property_test.cpp` has its negative
-    `static_assert` (a client with an invalid future type must not satisfy
-    `network_client`) commented out behind a TODO, then `BOOST_CHECK(true)`.
-    All of them count toward the passing total. Open PR #447 runs real
-    nodes in the multi-node fixture, which may be the natural place to fill
-    these in.
-  - **No mTLS chaos scenario.** The `mtls-node1`/`mtls-node2` services in
-    `docker/ca-provisioning-compose.yml` are illustrative stubs;
-    `certificate-authority` tasks.md ~966–968 calls a real mTLS chaos
-    scenario "future work, tracked separately", and it was not tracked.
+    `coap-transport-libnyoci` tasks.md ~337). Also from
+    `coap-transport-libnyoci`, with no PR: a two-process cross-backend
+    interop test, and Block1 for InstallSnapshot.
+  - **Serializer declared-length preflight**
+    (`json-serializer-input-validation` tasks.md ~139–146). Only CBOR has a
+    declared-length preflight (parity-audit Z3). The Ion and protobuf
+    integer-range gaps (Z2) are closed.
+  - **Tests that assert nothing.** Five property suites still end most cases
+    in a `BOOST_CHECK(true)` "Placeholder" and count toward the passing
+    total: `raft_replicate_to_followers_property_test.cpp` (30),
+    `raft_remove_server_implementation_property_test.cpp` (12),
+    `raft_election_vote_collection_implementation_property_test.cpp` (10),
+    `raft_replication_acknowledgment_collection_property_test.cpp` (10) and
+    `raft_heartbeat_based_read_state_property_test.cpp` (8).
+    `raft_add_server_implementation_property_test.cpp` was the sixth; its
+    cases now drive real nodes over the simulator, and its `cluster`
+    harness (including `hold_in_joint_phase()`, which keeps a change in
+    C_old,new by isolating the new server and one old voter) is the
+    template for the rest. The negative `network_client` `static_assert` in
+    `network_concept_compliance_property_test.cpp` is enabled again.
+  - ~~**No mTLS chaos scenario.**~~ Done: `docker-mtls-chaos-tests`
+    (`docker/mtls-chaos-compose.yml`, `tests/docker_chaos/mtls_chaos_test.cpp`)
+    runs three `chaos_node`s over mutual-TLS RPC with `ca_service`-issued
+    certificates through leader crash and catch-up, and checks that
+    impostors at a member's address (foreign root; own root, non-member
+    name) are never replicated to. The `mtls-node1`/`mtls-node2` services in
+    `docker/ca-provisioning-compose.yml` stay illustrative.
   - **Deliberately deferred multi-raft features** (`multi-raft` tasks.md
     ~758, design Phase 9): cross-shard transactions, TiKV-style buckets as a
     load signal, and cross-group message batching. Optional.
-  - **NodeId tag-scan race** (`alibaba-cloud-services` tasks.md ~302 and its
-    sibling cloud specs): two concurrent `next_node_id()` tag scans can pick
-    the same id; deferred to leader-side pending-provision tracking.
-    `cloud-composite-node-ids` removes the numeric scan for managers that
-    switch to composite ids.
+  - **NodeId tag-scan race, pool managers only** (`alibaba-cloud-services`
+    tasks.md ~302 and its sibling cloud specs): a deposed leader finishing a
+    provision and its successor can pick the same numeric id. Leader-side
+    pending-provision tracking is per leader and cannot close it. Docker,
+    Azure VM and EC2 now claim the id at create time (a name the platform
+    will not reuse, or a ClientToken derived from the id) and move on when
+    it is taken; GCP draws random ids. The pool managers (ASG, VMSS, OCI
+    instance pool, Alibaba ESS) tag after launch with no arbiter, so a short
+    window remains there; the Raft guard against an existing voter's id
+    keeps it a wasted provision. `cloud-composite-node-ids` removes it for
+    managers that switch to composite ids.
   - **Named follow-up specs never written** (optional): a remote ccache
     backend (`ccache-adoption` tasks.md ~349) and AMI retention automation
     (`ca-cluster-node-ami` tasks.md ~261).
   - **Checkbox bookkeeping owed in the specs themselves**, so the next audit
     does not rediscover it: `tcp-rpc-server-hardening` tasks 1–5, 6.2 and
-    6.3; `ci-build-matrix-coverage` task 3; `stdexec-future-backend`'s
+    6.3; `stdexec-future-backend`'s
     header, which still says "not yet merged into `main`"; and
     `cloud-object-persistence` 15.3, a firm "decided no" that is marked
     `[~]` (blocked) rather than closed.
@@ -1459,9 +1482,9 @@ unverified completion claim.
     one in three test jobs had a retry-rescued test, and most of those tests
     appeared once in 54 jobs, so strict mode today would turn most runs red on
     flakes nobody has seen before. The two `ca_cluster_node_rpc_tls*` flakes
-    this waited on are fixed (October 7 re-measurement below); set the
-    variable once `beast_server_test` is fixed too and a week of runs adds
-    nothing new to the allowlist. The verdict is now read from the retry lines too
+    this waited on are fixed (October 7 re-measurement below), and so is
+    `beast_server_test`, the largest source after them; set the variable once
+    a week of runs adds nothing new to the allowlist. The verdict is now read from the retry lines too
     (ctest prints those without the `N/M` prefix), so a test that failed every
     attempt is left to ctest's own failure and no longer also listed as a
     retry. Original entry:
@@ -1488,6 +1511,8 @@ unverified completion claim.
       which again looks like a fixed timeout being hit.
     - `coap_dtls_connection_establishment_property_test`: 2 of 54, one of them
       a full 900 s ctest timeout, so each occurrence costs 15 minutes.
+      **FIXED October 7, 2026**: a libcoap data race, not a timing flake
+      (see the late-October-7 re-measurement below); off the allowlist.
     - Once each: `chaos_state_machine_safety_test`,
       `certificate_authority_property_test` (0.04 s),
       `simulator_property_test`, `raft_commit_implies_replication_property_test`
@@ -1504,8 +1529,13 @@ unverified completion claim.
     the allowlist. Two new entries took their place:
     - `beast_server_test`: 27 of 200 jobs, failing in 0.1-0.6 s on every leg
       except ThreadSanitizer and Config Variants. Now the largest source of
-      retries by far and the blocker for `CTEST_STRICT_RETRIES`. Not yet
-      investigated.
+      retries by far and the blocker for `CTEST_STRICT_RETRIES`. **Fixed
+      the same day and off the allowlist:** every failure was the
+      connection past the limit in the two connection-limit cases. Linux
+      `connect()` fails with `ECONNRESET` when the server accepts and resets
+      the refused connection before the connecting thread runs again. The
+      tests assumed it always succeeds. `raw_connection::reached_server()`
+      now accepts both outcomes (see the CHANGELOG).
     - `ca_cluster_node_test`: 5 of 200, three different ways. Two were test
       races, fixed the same day: the fixture's pre-picked ports could be taken
       before a node bound them (that node exited and the fixture waited out
@@ -1519,24 +1549,79 @@ unverified completion claim.
       normally catch and report. 60 local clang -O2 runs and an ASan/UBSan
       run did not reproduce it. The binary now unbuffers stdout and logs
       test-unit entry and exit, so the next occurrence names the test case.
-  - **Assert each job's configuration actually took effect. PARTLY DONE**
-    (noted October 6, 2026): the future-backend compat legs assert
-    `KYTHIRA_DEFAULT_FUTURE_BACKEND` from `CMakeCache.txt` before building
-    (`ci.yml`, "Assert the build really is configured for …"). Other legs and
-    the "all N cases entered" check are not done. Original entry: A previous
-    session verified *by hand* that the `Proxygen transport (boost future
-    backend)` leg really configured
-    `-DKYTHIRA_DEFAULT_FUTURE_BACKEND=boost` and that all 12 of
-    `proxygen_transport_test`'s cases entered and ran, precisely because a
-    green tick alone did not establish it. Both are one-line greps against the
-    CMake cache and the ctest log; make every matrix leg do them, so the
-    assertion lives in the workflow rather than in whoever last thought to
-    check.
-  - **Fail a "ran nothing" real-cloud run. LARGELY DONE** (noted October 6,
-    2026): `scripts/run-real-cloud-suite.sh` runs ctest with
-    `--no-tests=error`, and the AWS, Azure and GCP jobs fail with an
-    `::error::` when enabled with every bundle disabled. The master switch
-    being off still reports `skipped`. Original entry: `real-cloud-tests.yml` treats
+    **Re-measured late October 7, 2026** over 865 test jobs in 119 `ci.yml`
+    runs (2026-10-06 00:00Z to 2026-10-07 22:20Z; the log tool returns the
+    last 5000 lines, which still holds `check-test-run.sh`'s retry report):
+    - `coap_dtls_connection_establishment_property_test` crashed its first
+      attempt in 13 jobs: 11 memory access violations (fault address 0x30 or
+      0x1cc) on a roughly 10 s grid, i.e. at a handshake attempt, and 2
+      SIGABRTs. Cause: `establish_dtls_connection()` ran libcoap with no lock
+      while `_io_thread` ran `coap_io_process()` on the same context
+      (ThreadSanitizer: 27 races per run, including session refcounts and a
+      free). Fixed by locking every libcoap call there and leaving I/O to
+      `_io_thread`; TSan now reports 0. See CHANGELOG, October 7.
+    - `proxygen_transport_test` passed every attempt in 672 jobs (0.91-3.92 s),
+      so the `tls_request_vote_round_trip` ingress timeout is closed (entry
+      below). Its ports overlapped `beast_server_test`'s and
+      `beast_integration_test`'s, now fixed.
+    - `performance_equivalence_property_test` failed once in about 641 jobs,
+      and not on a timing threshold: a SegFault (`memory access violation at
+      address: 0x6000000000`) at 0.63 s in a Coverage job (job 112724270778).
+      Passing runs take 0.04-1.24 s, far inside every budget. The stdexec/
+      boost timing sensitivity noted elsewhere in this file did not show up
+      in CI. The one SegFault is unexplained.
+    - Rescued by retry and **not** allowlisted, by job count: `beast_server_test`
+      70 (PR #516), `ca_cluster_node_test` 24 (20 are the clang++-18 SegFault
+      ~0.1 s in), `redis_gateway_integration_test` 17 (always ~19 s),
+      `connection_oriented_example_test` 10 (~0.28 s), `tcp_rpc_unit_test` 8
+      (~4.9 s), `basic_connectionless_example_test` 7,
+      `kythira_keep_alive_pointer_access_property_test` 7 (some SegFaults),
+      `kythira_keep_alive_concept_compliance_property_test` 6,
+      `network_node_send_non_delivery_property_test` 5,
+      `tls_material_source_unit_test` 5, `coap_content_format_property_test`
+      4 (~20.05 s), `http_transport_reload_property_test` 4, and about 30 more
+      seen one to three times. Allowlisted and still frequent:
+      `leader_transfer_test` 18, `simulator_property_test` 17,
+      `integration_test` 15, `chaos_state_machine_safety_test` 13 (all 120 s
+      timeouts on 10-06). Strict retries would be red on most runs today.
+  - **Assert each job's configuration actually took effect. DONE** (October
+    7, 2026). Every `ci.yml` leg that configures a build now runs
+    `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`
+    names the leg's defconfig, every `CONFIG_` line in it resolved as written
+    in `generated/autoconf.cmake`, `CMAKE_CXX_COMPILER` is the claimed
+    compiler, and each leg-defining option (`CMAKE_BUILD_TYPE`,
+    `KYTHIRA_SANITIZER`, `ENABLE_COVERAGE`, `KYTHIRA_DEFAULT_FUTURE_BACKEND`,
+    the tidy shard, `KYTHIRA_GCP_REAL_TESTS`, ...) is declared by the project
+    and set. A declared option matters: a `-D` the project no longer declares
+    sits in the cache as `UNINITIALIZED` and configure still succeeds, which is
+    how a renamed option looks; `KYTHIRA_GCP_REAL_TESTS` was read but never
+    declared and is now an `option()`. The two hand-written greps (future
+    backend, ThreadSanitizer) are folded into the script. One real gap found on
+    the way: Kconfiglib loads a `CONFIG_X=y` whose `depends on` is unmet
+    without any warning and resolves it to n, so strict mode never asks for
+    X's package; `check_defconfigs.py` (the `kconfig-check` job) now fails on
+    any assignment that resolves differently. No current defconfig trips it.
+    **"All N cases entered" is DONE too, one level below ctest**: with
+    `-DKYTHIRA_TEST_REPORT_DIR` (`cmake/TestReports.cmake`) every test writes a
+    detailed Boost.Test report, and `check-test-run.sh --case-reports` fails on
+    any case or suite reported "skipped" inside a passing binary — a false
+    `precondition()` exits 0, so ctest says Passed (e.g. all five
+    `coap_oscore_over_dtls_test` round trips would skip silently in a build
+    that stopped linking OSCORE with DTLS). Wired into Build & Test, No Folly,
+    Alternate CoAP Backends,
+    Coverage, ThreadSanitizer and the future-backend legs; expected skips go in
+    `--allow-case-skip`. Cases filtered out by `--run_test` or marked
+    `disabled()` are decided in source and are not counted.
+  - **Fail a "ran nothing" real-cloud run. DONE** (October 7, 2026):
+    `scripts/run-real-cloud-suite.sh` runs ctest with `--no-tests=error`, and
+    the AWS, Azure and GCP jobs fail with an `::error::` when enabled with
+    every bundle disabled. `real-cloud-tests.yml` now also has an ungated
+    `run-plan` job that writes which jobs will run to the run summary; a
+    manual dispatch that selects nothing fails, and so does a run with the
+    master switch on and every toggle off. A **scheduled** run with the master
+    switch off only warns (`::warning::` plus "Nothing ran" in the summary),
+    because that switch is a deliberate pause and a red run every Monday would
+    bury real failures. Original entry: `real-cloud-tests.yml` treats
     `run_real_cloud_tests=true` as a master switch, and omitting it reports
     `skipped` — success with nothing run. A job that claims to have exercised
     real cloud resources and registered zero cases should be a failure, not a
@@ -2039,8 +2124,8 @@ unverified completion claim.
     `coap_max_token_length` `static_assert`ed against libcoap's own
     `COAP_TOKEN_DEFAULT_MAX`. Verified end-to-end: 101 dropped PDUs before,
     0 after, over the 200 requests `coap_thread_safety_property_test` issues.
-  - **`proxygen_transport_test` TLS fixtures — reduced, still open**
-    (`dd041bf`). RSA-2048 keygen via the `openssl` CLI cost 741-2966ms under
+  - **`proxygen_transport_test` TLS fixtures — CLOSED October 7, 2026**
+    (`dd041bf`): 0 failed attempts in 672 CI jobs, 2026-10-06..07. RSA-2048 keygen via the `openssl` CLI cost 741-2966ms under
     load, against a 3000ms RPC deadline the test hardcodes in nine places;
     switched to P-256 (worst case 2321ms → 192ms under identical load; 3.09s
     → 0.72s in CI artifacts) and adopted `tests/test_timeout_scale.hpp`,
@@ -2273,12 +2358,42 @@ unverified completion claim.
   - **The gRPC half is DONE**, re-checked October 4, 2026: the
     `if(gRPC_FOUND AND Protobuf_FOUND)` test is inside
     `kythira_kconfig_gate(GRPC_TRANSPORT)` in the root `CMakeLists.txt`.
-    **A latent duplicate of the same shape** may exist wherever one feature's
-    `find_package` sets a variable another feature's `if()` tests. `Protobuf`
-    is the one confirmed. The gRPC block's own
-    `if(gRPC_FOUND AND Protobuf_FOUND)` (`:303`) sits *outside* its gate and is
-    correct only because it runs before anything else populates either
-    variable — safe today, by statement order rather than by construction.
+    **The latent-duplicate audit is DONE**, October 7, 2026. Every
+    `find_package`/`pkg_check_modules` in the tree was checked against every
+    `if()` that reads its result outside the gate that runs it. Three real
+    leaks, all fixed:
+    - **pkg-config results outlived their gate.** `pkg_check_modules()` keeps
+      `<PREFIX>_FOUND` in the CMake cache, so in a tree configured once with
+      a feature on, setting its symbol to n (menuconfig, or another
+      `-DKYTHIRA_KCONFIG=`) skipped the probe and left the feature compiled
+      in. Measured: `CONFIG_DNS_DISCOVERY=n` in such a tree kept
+      `KYTHIRA_HAS_LDNS` and libldns on 306 targets; a fresh tree had none.
+      Same for `LIBCOAP`, `LIBNYOCI`, `LIBSSH2` and `FIU`.
+      `kythira_forget_pkg_found()` (`cmake/Kconfig.cmake`) now clears each one
+      before its gate, and `scripts/verify-kconfig-reconfigure.sh` (run by
+      the Config Variants job) checks that a reconfigured tree matches a fresh
+      one.
+    - **`tests/` and `examples/raft/` re-ran `pkg_check_modules(LIBCOAP)`**
+      whenever the transport was on, linking libcoap into builds with
+      `CONFIG_COAP_BACKEND_LIBCOAP=n` and refilling the cache entry the root
+      had cleared. Both are gone; libcoap comes through `network_simulator`.
+    - **The ACM PCA probe overwrote `AWSSDK_FOUND`/`AWSSDK_LINK_LIBRARIES`**,
+      which `tests/`, `cmd/multi_raft_node` and `cmd/raft_object_backup` read
+      as the core SDK's. `aws_s3_client_unit_test` links that list alone and
+      still got s3 only because AWSSDKConfig.cmake also leaks its service list
+      between calls. The root now saves and restores both around the probe,
+      and the acm-pca use sites read `_KYTHIRA_AWS_ACM_PCA_FOUND`.
+    Checked and safe by construction: the gRPC and protobuf blocks (both test
+    `Protobuf_FOUND` inside their own gates), every `kythira_find_optional`
+    result (a normal variable, never set when its gate is off), and the
+    `TARGET google-cloud-cpp::*`, `libcoap::coap-3`, `lakers::lakers`,
+    `ionc`, `proxygen::proxygen` and `Azure::*` tests (no other package
+    creates those targets). One remaining, unfixed: `TARGET OpenSSL::SSL`
+    (56 sites) is what most consumers test, and a TLS-enabled cpp-httplib
+    config package imports OpenSSL itself, so `CONFIG_OPENSSL=n` would likely
+    not remove OpenSSL from those targets (inferred, not measured). No
+    defconfig or CI job turns OpenSSL off; `minimal_defconfig` keeps it on
+    because `certificate_authority` needs it regardless.
   - **A correction worth keeping.** Three places in the tree recorded that an
     overrunning case aborts via `~std::thread()`'s `std::terminate()` on a
     still-joinable thread. That is true of a normal exception unwind and
@@ -3025,13 +3140,15 @@ unverified completion claim.
 ### Build Tooling
 
 - [ ] **Over-wide Folly gates found by the no-folly CI job.** The job
-  (ci.yml, `configs/ci_no_folly_defconfig`) drops 174 tests relative to
+  (ci.yml, `configs/ci_no_folly_defconfig`) drops 160 tests relative to
   `ci_full_defconfig`; `configs/no-folly-test-allowlist.txt` gives each a
-  reason. About 65 of them are gated wider than their source needs. The
-  most valuable to fix: the whole stdexec suite (13 tests) is registered
-  inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block, so a
-  Folly-free build never tests the stdexec backend at all. Beyond that,
-  19 are behind `if(TARGET Folly::folly)` with no direct Folly use, 13 only name
+  reason. About 50 of them are gated wider than their source needs. The
+  stdexec and Boost backend suites used to be the worst case, registered
+  inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block so a
+  Folly-free build never tested either backend; 13 stdexec and 2 Boost
+  tests now sit outside it, leaving inside only the four that compare a
+  backend with the Folly one. Beyond that,
+  17 are behind `if(TARGET Folly::folly)` with no direct Folly use, 13 only name
   `folly::Executor` as a never-invoked transport `executor_type` (the 14
   ungated CoAP tests with the same pattern were switched to `int`, as
   `coap_conformance_types.hpp` does), and `tests/chaos/`,
@@ -3046,7 +3163,9 @@ unverified completion claim.
   checks staged files first; `SKIP_FORMAT_CHECK=1` escape hatch
 - [x] **clang-tidy integration** — `.clang-tidy` config with `WarningsAsErrors: "*"`;
   CMake `static-analysis`/`static-analysis-fix` targets; pre-commit opt-in hook
-  step; zero findings across 291 source files
+  step; zero findings across the full tree, gated in CI since October 2026 by
+  ci.yml's six-shard `static-analysis` job (it had drifted to 873 findings
+  while nothing ran it)
 - [x] **Code coverage** — CMake `ENABLE_COVERAGE` option using Clang/LLVM
   source-based instrumentation (`llvm-profdata`/`llvm-cov`, switched from an
   earlier gcovr approach that undercounted template-heavy headers via

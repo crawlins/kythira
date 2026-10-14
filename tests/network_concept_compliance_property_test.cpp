@@ -232,9 +232,8 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_with_invalid_types, *boost::unit_t
         }
     };
 
-    // TODO: Re-enable this test once future constraints are properly implemented
-    // static_assert(!kythira::network_client<mock_client_with_invalid_future, invalid_future>,
-    //              "Valid client with invalid future type must not satisfy concept");
+    static_assert(!kythira::network_client<mock_client_with_invalid_future>,
+                  "Valid client with invalid future type must not satisfy concept");
 
     BOOST_TEST_MESSAGE("Concept constraints properly reject invalid types");
     BOOST_CHECK(true);

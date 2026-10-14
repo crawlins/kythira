@@ -79,7 +79,7 @@ struct group_rpc_messages {
     using fetch_log_entries_request_type =
         fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId>;
     using fetch_log_entries_response_type =
-        fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>;
+        fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId>;
     using timeout_now_request_type = timeout_now_request<NodeId, TermId, LogIndex, GroupId>;
     using timeout_now_response_type = timeout_now_response<TermId, GroupId>;
 };
@@ -246,6 +246,15 @@ public:
         _observer = std::move(observer);
     }
 
+    /// @brief The id this process answers as, stamped on the responses the
+    /// transport itself builds for messages no local replica can take.
+    ///
+    /// Set once by the host before `start()`. Without it those answers carry
+    /// `node_id_type{}`, which for a textual id is not a member's id.
+    auto set_local_node_id(typename Messages::node_id_type id) -> void {
+        _local_node_id = std::move(id);
+    }
+
     /// @brief Count of messages dropped because their group is tombstoned or
     /// unplaceable here. The host publishes this as `stale_group_message`.
     [[nodiscard]] auto stale_group_message_count() const -> std::uint64_t {
@@ -272,7 +281,7 @@ public:
                     });
             });
 
-        if constexpr (network_server_with_pre_vote<Server>) {
+        if constexpr (network_server_with_pre_vote<Server, typename Messages::node_id_type>) {
             _inner.register_request_pre_vote_handler(
                 [this](const typename Messages::request_pre_vote_request_type& req) {
                     return dispatch(
@@ -287,7 +296,7 @@ public:
                 });
         }
 
-        if constexpr (network_server_with_timeout_now<Server>) {
+        if constexpr (network_server_with_timeout_now<Server, typename Messages::node_id_type>) {
             _inner.register_timeout_now_handler(
                 [this](const typename Messages::timeout_now_request_type& req) {
                     return dispatch(
@@ -328,19 +337,19 @@ public:
                     });
             });
 
-        if constexpr (network_server_with_log_fetch<Server>) {
+        if constexpr (network_server_with_log_fetch<Server, typename Messages::node_id_type>) {
             _inner.register_fetch_log_entries_handler(
                 [this](const typename Messages::fetch_log_entries_request_type& req) {
                     return dispatch(
                         req,
                         [](const handlers_type& h) -> const auto& { return h._fetch_log_entries; },
-                        [&req] {
+                        [this, &req] {
                             // `_available = false` is the peer-to-peer path's
                             // own "I cannot serve this" answer, so an unknown
                             // group looks to the requester exactly like a peer
                             // that has compacted past the range.
                             return typename Messages::fetch_log_entries_response_type{
-                                ._responder_id = 0,
+                                ._responder_id = _local_node_id,
                                 ._available = false,
                                 ._prev_log_term = 0,
                                 ._entries = {},
@@ -431,6 +440,7 @@ private:
     std::function<unknown_group_action(const GroupId&)> _unknown_group;
     std::function<bool(const GroupId&)> _is_tombstoned;
     std::function<void(const GroupId&)> _observer;
+    typename Messages::node_id_type _local_node_id{};
     std::atomic<std::uint64_t> _stale_group_messages{0};
 };
 
@@ -597,7 +607,7 @@ public:
     auto send_request_pre_vote(typename Messages::node_id_type target,
                                const typename Messages::request_pre_vote_request_type& req,
                                std::chrono::milliseconds timeout)
-    requires network_client_with_pre_vote<Client>
+    requires network_client_with_pre_vote<Client, typename Messages::node_id_type>
     {
         return _inner->send_request_pre_vote(target, stamped(req), timeout);
     }
@@ -605,7 +615,7 @@ public:
     auto send_fetch_log_entries(typename Messages::node_id_type target,
                                 const typename Messages::fetch_log_entries_request_type& req,
                                 std::chrono::milliseconds timeout)
-    requires network_client_with_log_fetch<Client>
+    requires network_client_with_log_fetch<Client, typename Messages::node_id_type>
     {
         return _inner->send_fetch_log_entries(target, stamped(req), timeout);
     }
@@ -613,7 +623,7 @@ public:
     auto send_timeout_now(typename Messages::node_id_type target,
                           const typename Messages::timeout_now_request_type& req,
                           std::chrono::milliseconds timeout)
-    requires network_client_with_timeout_now<Client>
+    requires network_client_with_timeout_now<Client, typename Messages::node_id_type>
     {
         return _inner->send_timeout_now(target, stamped(req), timeout);
     }
@@ -624,17 +634,20 @@ public:
     /// node does not yet know its own id, let alone which groups it will hold.
     /// Forwarding verbatim keeps the extension concept satisfied without
     /// pretending the message is group-scoped.
-    auto send_cluster_join_request(const std::string& address, const cluster_join_request<>& req,
+    auto send_cluster_join_request(const std::string& address,
+                                   const cluster_join_request<typename Messages::node_id_type>& req,
                                    std::chrono::milliseconds timeout)
-    requires network_client_with_cluster_join<Client>
+    requires network_client_with_cluster_join<Client, typename Messages::node_id_type>
     {
         return _inner->send_cluster_join_request(address, req, timeout);
     }
 
     /// @brief Forwarded unstamped; see `send_cluster_join_request`.
-    auto send_cluster_leave_request(const std::string& address, const cluster_leave_request<>& req,
-                                    std::chrono::milliseconds timeout)
-    requires network_client_with_cluster_leave<Client>
+    auto send_cluster_leave_request(
+        const std::string& address,
+        const cluster_leave_request<typename Messages::node_id_type>& req,
+        std::chrono::milliseconds timeout)
+    requires network_client_with_cluster_leave<Client, typename Messages::node_id_type>
     {
         return _inner->send_cluster_leave_request(address, req, timeout);
     }

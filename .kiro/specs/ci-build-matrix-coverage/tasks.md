@@ -1,8 +1,9 @@
 # Implementation Plan — CI Build-Matrix Coverage
 
-## Status: In progress — 7/12 tasks
+## Status: Complete — 12/12 tasks
 
-**Last Updated**: October 6, 2026 (Tasks 9-10 done: `static-analysis` job).
+**Last Updated**: October 12, 2026 (Task 11 done: `alt-coap-backends` is
+green on `main` and a required status check there).
 
 ## Overview
 
@@ -36,7 +37,7 @@ the Folly-free target set) depend on numbers nobody has yet.
 
 ## Phase 0: Measure (Task 1)
 
-- [ ] 1. Measure each configuration locally before touching CI
+- [x] 1. Measure each configuration locally before touching CI
   - On a machine with a full vcpkg tree (Clark's, or a sandbox where
     `vcpkg install` works), record for each of the following: does it
     configure, does it build, which tests fail, and how long a cold and a
@@ -52,6 +53,14 @@ the Folly-free target set) depend on numbers nobody has yet.
       finding count.
   - List the code-generation targets a clang-tidy run needs built first.
   - Record results in this file under Notes; they size every later task.
+  - Superseded, not done as written: no sandbox here has the vcpkg tree,
+    so each configuration was measured as its job landed instead. The
+    Folly-free build by a local configure plus `clang -M -MG` (Tasks 6-7),
+    the clang-tidy scope and codegen prerequisites by a temporary CI
+    workflow (Tasks 9-10), and `minimal_defconfig`, `no_cloud_defconfig`
+    and the isolation script by the `config-variants` job's own PR runs
+    (Task 8). The alternate CoAP configuration is measured by PR #463's
+    runs (Tasks 4-5). See Notes and Task 11 for the figures.
   - _Requirements: 3.5, 7.3, 8.1_
 
 ## Phase 1: Cheap gates (Tasks 2–3)
@@ -82,14 +91,14 @@ the Folly-free target set) depend on numbers nobody has yet.
 
 ## Phase 2: Alternate CoAP backends (Tasks 4–5)
 
-- [ ] 4. Add `configs/ci_alt_coap_defconfig`
+- [x] 4. Add `configs/ci_alt_coap_defconfig`
   - `ci_full_defconfig` plus the two alternate-backend symbols, with a
     header stating the keep-in-sync rule.
   - Update `ci_full_defconfig`'s note on the two symbols to point at the new
     job.
   - _Requirements: 1.1, 1.2_
 
-- [ ] 5. Add the `alt-coap-backends` job
+- [x] 5. Add the `alt-coap-backends` job
   - Setup block copied from `ion-serializer-build`, vcpkg features
     `edhoc coap-cantcoap coap-libnyoci`, vcpkg cache key includes the
     feature set.
@@ -100,6 +109,26 @@ the Folly-free target set) depend on numbers nobody has yet.
     Requirement 8.1.
   - Negative check: dropping `coap-libnyoci` from the install fails the
     stub-case check.
+  - Done. Neither feature could ever have been installed from the manifest:
+    `vcpkg-overlays/cantcoap` and `vcpkg-overlays/libnyoci` were missing
+    from `vcpkg-configuration.json`'s `overlay-ports`, so `vcpkg install
+    --x-feature=coap-cantcoap` failed with "the baseline does not contain
+    an entry". Once installed, libnyoci's relocatable `.pc` paths (under
+    `vcpkg_installed/`, inside the source tree) on `network_simulator`'s
+    INTERFACE properties failed the `install(EXPORT)` at generate time;
+    the root `CMakeLists.txt` now links `PkgConfig::LIBNYOCI` instead.
+  - The `autoconf.hpp` assertion became `scripts/check-coap-alt-backends.sh
+    configured`, which reads `generated/autoconf.cmake` and the compile
+    commands: `autoconf.hpp` carries no macro for either backend, and
+    `*_AVAILABLE` comes from CMake, not Kconfig.
+  - The build list maps each `coap_*` test to its ninja target: the
+    `coap_*_example` tests are named `<target>_test`, and
+    `ctest --show-only=json-v1` omits the command of an unbuilt test.
+  - First green run: 72 `coap_*` tests, no failures and no first-attempt
+    failures, so nothing was excluded under Requirement 8.1. The floor is
+    72. The stub-case negative check was run against a synthetic build
+    tree; on the real job, dropping a feature fails the strict configure
+    before the stub check is reached.
   - _Requirements: 1.1, 1.3, 1.4, 1.5, 1.6, 7.1–7.5, 8.1, 8.2_
 
 ## Phase 3: Folly-free build (Tasks 6–7)
@@ -173,19 +202,59 @@ the Folly-free target set) depend on numbers nobody has yet.
 
 ## Phase 6: Close-out (Tasks 11–12)
 
-- [ ] 11. Verify every new job green on the PR and on `main`
+- [x] 11. Verify every new job green on the PR and on `main`
   - One green run of each job on the PR head and the first `main` push
     after merge. Record warm and cold durations in each job's
     `timeout-minutes` comment.
+  - Done for all five jobs. Each landed through a PR whose head was green
+    (#458 `kconfig-check`, #479 `no-folly`, #478 `config-variants`, #491
+    `static-analysis`, #463 `alt-coap-backends`). The first four were
+    green on `main` in runs
+    [37567880231](https://github.com/crawlins/kythira/actions/runs/37567880231)
+    (`b7e7e01`) and
+    [37584489048](https://github.com/crawlins/kythira/actions/runs/37584489048)
+    (`2faddb0`); `alt-coap-backends` in
+    [37836858100](https://github.com/crawlins/kythira/actions/runs/37836858100)
+    (`f5d0a91`, the first `main` push after #463 to finish; the merge
+    commit's own run was superseded), and in every `main` run since.
+    Durations, now in each `timeout-minutes` comment:
+
+    | Job | Warm sccache | After a wide header change | Timeout |
+    |---|---|---|---|
+    | `kconfig-check` | 0.1 min | 0.1 min | 10 |
+    | `no-folly` | 12.8 min | 63.8 min | 180 |
+    | `config-variants` | 9.6 min | 39.4 min | 240 |
+    | `static-analysis` (6 shards) | 28.9-45.2 min | 21.4-40.5 min | 90 |
+    | `alt-coap-backends` | 3.5 min | 13.9 min | 300 |
+
+    `2faddb0` changed headers included by most translation units, so its
+    run recompiled most of the tree; that is the slowest case `main` has
+    shown. For `alt-coap-backends` the wide change is `57d6cf4` (run
+    [38005373530](https://github.com/crawlins/kythira/actions/runs/38005373530)),
+    and its first `main` run took 19.9 min because it also installed
+    both overlay ports and filled sccache. No fully cold run (empty
+    sccache) of these jobs has been seen on `main`, so `config-variants`
+    and `alt-coap-backends` keep their cold-build sizing.
+    `alt-coap-backends` became a required status check on `main` on
+    October 12, 2026.
+    `static-analysis` does not compile, so it has no warm/cold split.
   - _Requirements: 7.3, 8.2_
 
-- [ ] 12. Update stale specs and docs
+- [x] 12. Update stale specs and docs
   - kconfig-integration tasks/status: Req 5.4 now enforced.
   - clang-tidy tasks: task 4's "zero findings" now gated in CI.
   - coap-transport-cantcoap task 8 and coap-transport-libnyoci task 6:
     note the suites now run in CI.
   - `doc/TODO.md`: close the items this spec resolves and add any
     exclusions made under Requirement 8.1.
+  - Done. The coap-transport-cantcoap and coap-transport-libnyoci notes
+    landed with the `alt-coap-backends` job (PR #463). kconfig-integration
+    and clang-tidy carry their notes; `doc/TODO.md`'s row and
+    bookkeeping list are current; Requirement 8.1's exclusions are
+    the no-folly allowlist's over-wide gates, which `doc/TODO.md`
+    already tracks; Task 8 fixed what it found rather than excluding it. The root
+    `CMakeLists.txt` comment above `kythira_find_optional(FOLLY folly)`
+    and the `CONFIG_FOLLY` help text already describe the no-folly job.
   - _Requirements: 8.3_
 
 ## Notes

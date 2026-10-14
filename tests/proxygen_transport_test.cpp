@@ -40,10 +40,14 @@
 
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t test_bind_port = 18199;
-constexpr std::uint16_t test_tls_bind_port = 18200;
-constexpr std::uint16_t test_multi_bind_port_base = 18210;
-constexpr const char* test_server_url = "http://127.0.0.1:18199";
+// 18400-18423, clear of beast_server_test (18200-18207) and
+// beast_integration_test (18210-18214). This binary used to start at 18199 and
+// shared every one of those ports, so under `ctest -j` whichever of two
+// concurrently running cases bound a port second failed.
+constexpr std::uint16_t test_bind_port = 18400;
+constexpr std::uint16_t test_tls_bind_port = 18411;
+constexpr std::uint16_t test_multi_bind_port_base = 18420;
+constexpr const char* test_server_url = "http://127.0.0.1:18400";
 constexpr std::uint64_t test_node_id = 1;
 
 // Requirement 12.6/19.3: a metrics implementation that records every
@@ -1258,7 +1262,10 @@ BOOST_AUTO_TEST_CASE(connections_past_the_limit_are_refused,
                                    kythira::testing::scaled_deadline(10000)));
 
     limits::raw_connection third(test_bind_address, port);
-    BOOST_REQUIRE(third.connected());  // the kernel completes it; the server drops it
+    // The kernel completes the handshake before the server accepts and resets
+    // it, so connect() normally succeeds; it fails with ECONNRESET instead when
+    // the reset lands before this thread is scheduled again.
+    BOOST_REQUIRE(third.reached_server());
     std::string unexpected;
     auto outcome = third.read_until_close(unexpected, kythira::testing::scaled_deadline(10000));
     BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));
@@ -1312,7 +1319,7 @@ BOOST_AUTO_TEST_CASE(connection_limit_is_shared_across_listeners,
     for (const char* address : {"127.0.0.1", "::1"}) {
         BOOST_TEST_INFO("third connection on " << address);
         limits::raw_connection extra(address, port);
-        BOOST_REQUIRE(extra.connected());
+        BOOST_REQUIRE(extra.reached_server());  // see the case above
         std::string unexpected;
         auto outcome = extra.read_until_close(unexpected, kythira::testing::scaled_deadline(10000));
         BOOST_TEST((outcome == limits::raw_connection::read_outcome::closed));

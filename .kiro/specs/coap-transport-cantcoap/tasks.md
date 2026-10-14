@@ -214,6 +214,8 @@ the socket. That principle paid for itself the first time it was tested.
 - **Cross-backend interop tests** still need two processes, since no two CoAP
   backends can share a translation unit. EDHOC and DTLS are both meant to
   interoperate with the other backends on the wire; neither is asserted yet.
-- **CI does not install the `coap-cantcoap` feature**, so CI compiles this
-  backend's stub path only. The suites above were run locally against cantcoap
-  and lakers, on OpenSSL 3.0 and 3.6, and under ASan, UBSan and TSan.
+- **CI runs these suites** in the `alt-coap-backends` job, which installs the
+  `coap-cantcoap` and `edhoc` features and fails if any `coap_cantcoap_*`
+  binary builds as its stub (`scripts/check-coap-alt-backends.sh`). Every other
+  job still compiles this backend's stub path only. Sanitizer runs (ASan, UBSan,
+  TSan) and OpenSSL 3.6 remain local-only.

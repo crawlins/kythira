@@ -530,6 +530,13 @@ underneath, `folly::Future<T>`.
 
 ## Known Follow-ups
 
+**Closed October 7, 2026.** `proxygen_transport_test` passed every attempt in
+672 `ci.yml` test jobs across 119 runs (2026-10-06 to 2026-10-07), at 0.91-3.92
+s against the 3000 ms RPC deadline: the longer stretch of CI the entry below
+asked for. The same change moved the binary to ports 18400-18423; it had been
+sharing 18200-18213 with `beast_server_test` and `beast_integration_test`.
+The history below is kept for the record.
+
 **One open item (August 4, 2026): `proxygen_transport_test`'s intermittent
 `ingress timeout, streamID=1, timeout=3000ms` in `tls_request_vote_round_trip`
 is reduced but not proven fixed.** `dd041bf` switched both TLS fixtures from

@@ -35,6 +35,8 @@
 #include <string>
 #include <vector>
 
+#include <raft/bounded_resolver.hpp>
+
 namespace kythira::net_bind {
 
 // Open a TCP connection whose connect() phase is actually bounded by
@@ -72,7 +74,9 @@ inline auto connect_one(const addrinfo& ai, std::chrono::milliseconds timeout) -
     int rc = ::connect(fd, ai.ai_addr, ai.ai_addrlen);
 
     if (rc != 0 && errno != EINPROGRESS) {
+        int err = errno;
         ::close(fd);
+        errno = err;
         return -1;
     }
 
@@ -80,14 +84,18 @@ inline auto connect_one(const addrinfo& ai, std::chrono::milliseconds timeout) -
         pollfd pfd{.fd = fd, .events = POLLOUT, .revents = 0};
         int poll_rc = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
         if (poll_rc <= 0) {  // timed out or poll() itself failed
+            int err = poll_rc == 0 ? ETIMEDOUT : errno;
             ::close(fd);
+            errno = err;
             return -1;
         }
         int so_error = 0;
         socklen_t so_error_len = sizeof(so_error);
         if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &so_error_len) != 0 ||
             so_error != 0) {
+            int err = so_error != 0 ? so_error : errno;
             ::close(fd);
+            errno = err;
             return -1;
         }
     }
@@ -96,40 +104,68 @@ inline auto connect_one(const addrinfo& ai, std::chrono::milliseconds timeout) -
     return fd;
 }
 
+// The most one connect() attempt waits for a SYN to be answered. A peer on
+// the same network answers within milliseconds and TCP retransmits an
+// unanswered SYN after one second, so two seconds without an answer means
+// the address is dead, not slow: a container that was killed and restarted
+// at another address (rootless Podman), or a stale ARP entry pointing at
+// it. Spending the whole RPC timeout on it held both of a peer's in-flight
+// slots for 5 s, and nothing could try the peer's new address meanwhile.
+inline constexpr std::chrono::milliseconds max_connect_attempt{2000};
+
 // Tries every address `host` resolves to, in getaddrinfo() order, until one
 // connects. Trying only the first broke a peer named "localhost": it
 // usually resolves to ::1 first, and a server listening on 127.0.0.1 alone
-// was then unreachable. `timeout` bounds the whole call; each attempt gets
-// an equal share of what is left, so one address that silently drops SYNs
-// cannot use up the budget before the others are tried.
+// was then unreachable. `timeout` bounds the whole call, name resolution
+// included (see bounded_resolver.hpp for why that needs saying); each
+// connect attempt gets an equal share of what is left, at most
+// max_connect_attempt, so one address that silently drops SYNs cannot use
+// up the budget before the others are tried.
+// On failure errno says why: ENXIO when the name did not resolve in time,
+// otherwise the last connect attempt's error (ETIMEDOUT for a timeout), and
+// the name is marked unreachable so the next call waits for a fresh lookup
+// instead of dialling the same addresses.
 inline auto connect_to(const std::string& host, std::uint16_t port,
                        std::chrono::milliseconds timeout) -> int {
-    addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    addrinfo* res{};
-    if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto addresses = net_resolve::resolve(host, std::to_string(port), SOCK_STREAM, timeout);
+    if (!addresses) {
+        errno = ENXIO;  // the name did not resolve (in time)
         return -1;
     }
 
-    long candidates = 0;
-    for (addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
-        ++candidates;
-    }
-
-    auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto candidates = static_cast<long>(addresses->size());
     int fd = -1;
-    for (addrinfo* ai = res; ai != nullptr && fd < 0; ai = ai->ai_next, --candidates) {
+    int err = ETIMEDOUT;  // what errno says if the budget ran out first
+    for (const auto& a : *addresses) {
+        if (fd >= 0) {
+            break;
+        }
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
         if (remaining.count() <= 0) {
             break;
         }
-        fd = connect_one(*ai, std::max(remaining / candidates, std::chrono::milliseconds(1)));
+        addrinfo ai{};
+        ai.ai_family = a.family;
+        ai.ai_socktype = a.socktype;
+        ai.ai_protocol = a.protocol;
+        ai.ai_addrlen = a.len;
+        ai.ai_addr = reinterpret_cast<sockaddr*>(const_cast<sockaddr_storage*>(&a.addr));
+        fd = connect_one(ai, std::clamp(remaining / candidates, std::chrono::milliseconds(1),
+                                        max_connect_attempt));
+        if (fd < 0) {
+            err = errno;
+        }
+        --candidates;
     }
-    ::freeaddrinfo(res);
     if (fd < 0) {
+        // Every address the name resolves to is dead, as far as this host can
+        // tell: have the resolver look the name up afresh before anyone dials
+        // them again, and drop them if the lookup cannot confirm them. A peer
+        // that restarted under Podman has a new address by now.
+        net_resolve::mark_unreachable(host, std::to_string(port), SOCK_STREAM, deadline - timeout);
+        errno = err;
         return -1;
     }
 

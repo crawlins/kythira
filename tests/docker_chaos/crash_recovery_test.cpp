@@ -6,7 +6,9 @@
 
 #include "harness.hpp"
 
+#include <string>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 using namespace docker_chaos;
@@ -56,6 +58,24 @@ BOOST_FIXTURE_TEST_CASE(follower_crash_and_catch_up, ChaosFixture,
         std::this_thread::sleep_for(500ms);
     }
     BOOST_TEST(caught_up, "restarted node did not reach cluster commit_index");
+    if (!caught_up) {
+        // What the leader and the restarted node were doing, without the
+        // per-heartbeat DEBUG lines and per-retry error-handler lines that
+        // otherwise make up the whole tail.
+        for (int id : {leader.id(), victim->id()}) {
+            std::vector<std::string> kept;
+            for (auto& line : cluster.log_lines(id, 2000)) {
+                if (line.find(" DEBUG: ") == std::string::npos &&
+                    line.find("[ErrorHandler]") == std::string::npos) {
+                    kept.push_back(std::move(line));
+                }
+            }
+            BOOST_TEST_MESSAGE("── node " << id << " logs ──");
+            for (std::size_t i = kept.size() > 60 ? kept.size() - 60 : 0; i < kept.size(); ++i) {
+                BOOST_TEST_MESSAGE(kept[i]);
+            }
+        }
+    }
     cluster.assert_no_split_brain();
 }
 

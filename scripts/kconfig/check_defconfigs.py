@@ -2,7 +2,8 @@
 # Copyright (c) 2026 Clark Rawlins
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load every configs/*_defconfig against Kconfig, fail on any parse warning.
+"""Load every configs/*_defconfig against Kconfig, fail on any parse warning
+or on any assignment that does not take effect.
 
 Catches drift between Kconfig edits and stale defconfigs (Requirement 5.4).
 Exposed as the `kconfig-check` CMake target, and run directly (no configure
@@ -37,11 +38,26 @@ def main() -> int:
         kconf.warn_assign_override = True
         kconf.warn_assign_redun = True
         kconf.load_config(path)
-        if kconf.warnings:
+        # Kconfiglib does not warn when an assignment cannot take effect: a
+        # CONFIG_X=y whose `depends on` is unmet loads silently and resolves
+        # to n, and strict mode then never asks for X's package, so every test
+        # behind X drops out of that job without a failure anywhere. Compare
+        # each bool/tristate the file assigns with what it resolved to.
+        problems = list(kconf.warnings)
+        for sym in kconf.unique_defined_syms:
+            if (sym.type in (kconfiglib.BOOL, kconfiglib.TRISTATE)
+                    and sym.user_value is not None
+                    and sym.user_value != sym.tri_value):
+                problems.append(
+                    f"CONFIG_{sym.name} is assigned "
+                    f"{kconfiglib.TRI_TO_STR[sym.user_value]} but resolves to "
+                    f"{kconfiglib.TRI_TO_STR[sym.tri_value]} (unmet `depends on`, "
+                    f"or forced by a `select`)")
+        if problems:
             failed = True
             print(f"kconfig-check: {path}:", file=sys.stderr)
-            for warning in kconf.warnings:
-                print(f"  {warning}", file=sys.stderr)
+            for problem in problems:
+                print(f"  {problem}", file=sys.stderr)
         else:
             print(f"kconfig-check: {path}: OK")
 

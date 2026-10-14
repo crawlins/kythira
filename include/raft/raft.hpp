@@ -177,7 +177,17 @@ public:
     using fetch_log_entries_request_type =
         fetch_log_entries_request<node_id_type, term_id_type, log_index_type>;
     using fetch_log_entries_response_type =
-        fetch_log_entries_response<term_id_type, log_index_type, log_entry_type>;
+        fetch_log_entries_response<node_id_type, term_id_type, log_index_type, log_entry_type>;
+
+    // A node on a textual or composite id must have a client that routes by
+    // that id (.kiro/specs/cloud-composite-node-ids/, Requirement 9.1); the
+    // failure otherwise is a wall of overload errors deep in the RPC paths.
+    // Numeric bundles keep today's duck typing, because several test bundles
+    // plug in partial mock clients that the full concept would reject.
+    static_assert(std::same_as<node_id_type, std::uint64_t> ||
+                      kythira::network_client<network_client_type, node_id_type>,
+                  "Types::network_client_type must satisfy "
+                  "kythira::network_client<C, node_id_type>");
 
     // Bootstrap type aliases (with fallbacks for Types that predate them)
     using _bth = kythira::_bootstrap_type_traits<Types, node_id_type>;
@@ -421,6 +431,18 @@ public:
     /// Useful in tests and immediately after `submit_command` to bypass the
     /// normal heartbeat interval.
     auto replicate_to_followers() -> void;
+
+    /// @brief Replicate to the followers that have something new to learn.
+    ///
+    /// The form of `replicate_to_followers()` for a host that calls it on
+    /// every tick (`multi_raft`). A follower is skipped while the last
+    /// AppendEntries sent to it already carried every entry in the log and
+    /// the current commit index, and is younger than one heartbeat
+    /// interval. Without that, a 2 ms tick re-sent the same in-flight
+    /// entries to every follower of every group on every tick whether or
+    /// not anything had changed, and the transport, not the protocol, was
+    /// what kept the rate down.
+    auto replicate_to_followers_if_due() -> void;
     /// @}
 
     /// @name Administration entries (multi-Raft, `.kiro/specs/multi-raft/` §5.1)
@@ -514,9 +536,11 @@ public:
     /// persistence engine, then discards the log entries it covers. A node
     /// restarted on the same persistence engine restores from it.
     ///
-    /// Nothing inside the node calls this yet — `snapshot_threshold_bytes` is
-    /// not wired to it — so an application that wants a bounded log calls it.
-    /// The overload that accepts caller-supplied state stays private: state
+    /// The node also does this on its own: once the commands it has applied
+    /// since its last snapshot add up to `snapshot_threshold_bytes()`, the
+    /// apply path snapshots and compacts. Calling it directly is still useful
+    /// to compact at a point the application chooses, such as before a
+    /// planned restart. The overload that accepts caller-supplied state stays private: state
     /// that did not come from this node's own state machine at
     /// `last_applied_index()` would make the snapshot lie about what it covers.
     auto create_snapshot() -> void;
@@ -663,25 +687,9 @@ private:
     // ========================================================================
 
     // Helper function to convert node_id to string for logging
-    // Handles both string and numeric node IDs
+    // Handles numeric, string and composite node IDs
     static auto node_id_to_string(const node_id_type& id) -> std::string {
-        if constexpr (std::is_same_v<node_id_type, std::string>) {
-            return id;
-        } else {
-            return std::to_string(id);
-        }
-    }
-
-    // Helper to convert node_id to uint64_t for RPC target routing and
-    // fetch_log_entries_response's fixed-width responder_id field — every
-    // existing RPC send already routes by std::uint64_t target regardless of
-    // node_id_type (see network_client's send_* signatures).
-    static auto node_id_to_u64(const node_id_type& id) -> std::uint64_t {
-        if constexpr (std::is_same_v<node_id_type, std::string>) {
-            return 0;
-        } else {
-            return static_cast<std::uint64_t>(id);
-        }
+        return node_id_traits<node_id_type>::to_text(id);
     }
 
     // Initialize the node from persistent storage
@@ -774,6 +782,14 @@ private:
     // monotonically)
     log_index_type _last_applied;
 
+    // Command bytes applied since the last snapshot this node created or
+    // installed. apply_committed_entries() snapshots automatically once this
+    // reaches the configuration's snapshot_threshold_bytes(). It counts
+    // applied entries rather than the in-memory log because only applied
+    // entries can be compacted: entries still waiting to commit would push
+    // the count over the threshold with nothing a snapshot could remove.
+    std::size_t _bytes_applied_since_snapshot{0};
+
     // Current server state (follower, candidate, or leader)
     kythira::server_state _state;
 
@@ -789,6 +805,17 @@ private:
     // For each server, index of highest log entry known to be replicated on server
     // (initialized to 0, increases monotonically)
     std::unordered_map<node_id_type, log_index_type> _match_index;
+
+    // What the last AppendEntries sent to each follower covered, and when:
+    // replicate_to_followers_if_due() skips a follower this already covers.
+    // Cleared on election; a follower's entry is dropped when its RPC fails,
+    // so the next tick sends again.
+    struct append_sent {
+        log_index_type _last_index;
+        log_index_type _commit_index;
+        std::chrono::steady_clock::time_point _at;
+    };
+    std::unordered_map<node_id_type, append_sent> _last_append_sent;
 
     // Track unresponsive followers for monitoring
     std::unordered_set<node_id_type> _unresponsive_followers;
@@ -1216,7 +1243,8 @@ private:
     // is released, for the same reason as finish_leader_transfer().
     auto abandon_server_addition(std::exception_ptr error) -> std::function<void()>;
     // True while a joint-consensus change or a pending add_server() catch-up
-    // is in flight. Must be called with _mutex held.
+    // is in flight, or while the configuration is joint. Must be called with
+    // _mutex held.
     [[nodiscard]] auto membership_change_in_progress() -> bool;
     // Requirement 9.6: whether `candidate` may be granted a vote by
     // membership — a voter of the current configuration (either half while
@@ -1355,6 +1383,7 @@ private:
 
     // Replication helpers
     auto send_append_entries_to(node_id_type target) -> void;
+    auto replicate_to_followers_impl(bool only_due) -> void;
     auto send_heartbeat_with_retry(node_id_type target) -> void;
     auto send_install_snapshot_to(node_id_type target) -> void;
     auto send_install_snapshot_chunk(node_id_type target, std::shared_ptr<const snapshot_type> snap,
@@ -1364,6 +1393,10 @@ private:
 
     // Snapshot operations (the no-argument create_snapshot() is public)
     auto create_snapshot(const std::vector<std::byte>& state_machine_state) -> void;
+    // create_snapshot() with _mutex already held, for the apply path.
+    auto create_snapshot_locked() -> void;
+    // Snapshot if _bytes_applied_since_snapshot has reached the threshold.
+    auto maybe_create_snapshot_automatically() -> void;
     auto compact_log() -> void;
     auto install_snapshot(const snapshot_type& snap) -> void;
 
@@ -2983,7 +3016,7 @@ auto node<Types>::transfer_leadership(node_id_type target, std::chrono::millisec
         return future;
     };
 
-    if constexpr (!network_client_with_timeout_now<network_client_type>) {
+    if constexpr (!network_client_with_timeout_now<network_client_type, node_id_type>) {
         // Refused at run time rather than at compile time: a Types bundle
         // without TimeoutNow is a legitimate configuration, and every other
         // multi-Raft feature works on it. Only the placement driver's
@@ -3070,7 +3103,7 @@ auto node<Types>::finish_leader_transfer(std::exception_ptr error) -> std::funct
 }
 
 template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
-    if constexpr (!network_client_with_timeout_now<network_client_type>) {
+    if constexpr (!network_client_with_timeout_now<network_client_type, node_id_type>) {
         return;
     } else {
         std::unique_lock<std::mutex> lock(_mutex);
@@ -4226,8 +4259,12 @@ auto node<Types>::candidate_in_configuration(const node_id_type& candidate) -> b
 }
 
 template<raft_types Types> auto node<Types>::membership_change_in_progress() -> bool {
+    // A joint configuration counts even when the synchronizer has nothing in
+    // flight: a timed-out change, or one inherited from a deposed leader,
+    // leaves its joint entry in the log, and a change started on top of it
+    // would build its entries from C_old,new.
     return _config_synchronizer.is_configuration_change_in_progress() ||
-           _server_addition.has_value();
+           _server_addition.has_value() || _configuration.is_joint_consensus();
 }
 
 template<raft_types Types>
@@ -4920,6 +4957,26 @@ auto node<Types>::check_election_timeout() -> void {
         return;
     }
 
+    // Nor does a server its own latest configuration leaves out (dissertation
+    // §4.2.2). A leader that removed itself steps down once C_new commits, but
+    // its followers may not have applied C_new yet; still running the joint
+    // configuration, they count it as a voter and would elect it, and it would
+    // then lead a cluster it is not part of, its heartbeats keeping the real
+    // members from ever electing one of their own. An empty voter set is a node
+    // that has not been configured yet and keeps the founding behaviour.
+    {
+        const auto& voters = _configuration.nodes();
+        bool listed =
+            voters.empty() || std::find(voters.begin(), voters.end(), _node_id) != voters.end();
+        if (!listed && _configuration.is_joint_consensus() && _configuration.old_nodes()) {
+            const auto& old_voters = *_configuration.old_nodes();
+            listed = std::find(old_voters.begin(), old_voters.end(), _node_id) != old_voters.end();
+        }
+        if (!listed) {
+            return;
+        }
+    }
+
     // A TimeoutNow accepted since the last tick campaigns NOW, without waiting
     // for the election timeout and without a pre-vote round — the leader has
     // already decided, and every other follower would refuse a pre-vote because
@@ -4958,7 +5015,7 @@ auto node<Types>::check_election_timeout() -> void {
         // support it (e.g. the in-memory simulator) falls through to
         // exactly the same become_candidate()+start_election() sequence
         // this function has always used.
-        if constexpr (network_client_with_pre_vote<network_client_type>) {
+        if constexpr (network_client_with_pre_vote<network_client_type, node_id_type>) {
             lock.unlock();
             start_pre_vote();
         } else {
@@ -4988,6 +5045,10 @@ auto node<Types>::check_heartbeat_timeout() -> void {
     // Same reason: a pending add_server() must be failed when this node stops
     // leading, and only the tick notices that.
     drive_server_addition();
+    // And a joint-consensus change that never commits (its new server died
+    // after the promotion began, or this node stepped down and the entry was
+    // truncated) must fail its caller once the change's timeout elapses.
+    _config_synchronizer.handle_timeout();
 
     bool should_heartbeat = false;
 
@@ -5142,8 +5203,20 @@ auto node<Types>::initialize_from_storage() -> void {
                       {"last_included_index", std::to_string(snap.last_included_index())}});
     }
 
-    // Reload log entries from persistence (entries after the snapshot point)
-    log_index_type first_needed = (_last_applied > 0) ? _last_applied + 1 : log_index_type{1};
+    // Reload log entries from persistence (entries after the snapshot point).
+    //
+    // The store is the only source of truth here, so the in-memory log is
+    // rebuilt from it rather than appended to. A node restarted in-process by
+    // stop() + start() still holds its previous run's log, and appending the
+    // persisted entries onto it duplicated every index after the last applied
+    // one, which broke the log-matching check for any leader that later
+    // replicated to it. For the same reason the reload starts after the
+    // snapshot, not after `_last_applied`: on an in-process restart the latter
+    // survives from the previous run, and starting there would drop committed
+    // entries no snapshot covers. In a fresh process the two are equal.
+    _log.clear();
+    log_index_type first_needed =
+        snap_opt.has_value() ? snap_opt->last_included_index() + 1 : log_index_type{1};
     log_index_type last_persisted = _persistence.get_last_log_index();
     if (last_persisted >= first_needed) {
         auto entries = _persistence.get_log_entries(first_needed, last_persisted);
@@ -5193,7 +5266,7 @@ auto node<Types>::cluster_members() const -> std::vector<node_id_type> {
     auto members = _configuration.nodes();
     if (_configuration.is_joint_consensus()) {
         const auto& old_nodes = _configuration.old_nodes().value();
-        for (auto id : old_nodes) {
+        for (const auto& id : old_nodes) {
             if (std::ranges::find(members, id) == members.end()) {
                 members.push_back(id);
             }
@@ -5222,7 +5295,7 @@ auto node<Types>::register_rpc_handlers() -> void {
 
     // Register RequestPreVote handler if the network server supports it
     // (`.kiro/specs/raft-pre-vote/`)
-    if constexpr (network_server_with_pre_vote<network_server_type>) {
+    if constexpr (network_server_with_pre_vote<network_server_type, node_id_type>) {
         _network_server.register_request_pre_vote_handler(
             [this](const request_pre_vote_request_type& request) -> request_pre_vote_response_type {
                 return this->handle_request_pre_vote(request);
@@ -5231,7 +5304,7 @@ auto node<Types>::register_rpc_handlers() -> void {
 
     // Register TimeoutNow handler if the network server supports it
     // (leadership transfer, Ongaro's dissertation §3.10)
-    if constexpr (network_server_with_timeout_now<network_server_type>) {
+    if constexpr (network_server_with_timeout_now<network_server_type, node_id_type>) {
         _network_server.register_timeout_now_handler(
             [this](const timeout_now_request_type& request) -> timeout_now_response_type {
                 return this->handle_timeout_now(request);
@@ -5251,7 +5324,7 @@ auto node<Types>::register_rpc_handlers() -> void {
         });
 
     // Register ClusterJoin handler if the network server supports it
-    if constexpr (network_server_with_cluster_join<network_server_type>) {
+    if constexpr (network_server_with_cluster_join<network_server_type, node_id_type>) {
         _network_server.register_cluster_join_handler(
             [this](const cluster_join_request_type& req) -> cluster_join_response_type {
                 return this->handle_cluster_join(req);
@@ -5259,7 +5332,7 @@ auto node<Types>::register_rpc_handlers() -> void {
     }
 
     // Register ClusterLeave handler if the network server supports it
-    if constexpr (network_server_with_cluster_leave<network_server_type>) {
+    if constexpr (network_server_with_cluster_leave<network_server_type, node_id_type>) {
         _network_server.register_cluster_leave_handler(
             [this](const cluster_leave_request_type& req) -> cluster_leave_response_type {
                 return this->handle_cluster_leave(req);
@@ -5268,7 +5341,7 @@ auto node<Types>::register_rpc_handlers() -> void {
 
     // Register FetchLogEntries handler if the network server supports it
     // (.kiro/specs/peer2peer-log-replication/, Requirement 5.3)
-    if constexpr (network_server_with_log_fetch<network_server_type>) {
+    if constexpr (network_server_with_log_fetch<network_server_type, node_id_type>) {
         _network_server.register_fetch_log_entries_handler(
             [this](const fetch_log_entries_request_type& req) -> fetch_log_entries_response_type {
                 return this->handle_fetch_log_entries(req);
@@ -7019,7 +7092,27 @@ auto node<Types>::become_leader() -> void {
     // depends on it, so it is barriered like the rest (Requirement 1.3).
     persist_and_barrier_locked(no_op_entry);
 
+    // Dissertation §4.3: the leader appends C_new once C_old,new commits.
+    // apply_committed_entries() does that only when it applies the joint
+    // entry while leading, so a node that applied it as a follower (the old
+    // leader's C_new had not reached it) must do it on taking over, or the
+    // cluster stays joint and every later membership change is refused.
+    if (_configuration.is_joint_consensus() && !has_later_configuration_entry(_last_applied)) {
+        cluster_configuration_type c_new{_configuration.nodes(), false, std::nullopt,
+                                         _configuration.learners()};
+        log_entry_type c_new_entry{._term = _current_term,
+                                   ._index = get_last_log_index() + 1,
+                                   ._command = encode_configuration(c_new),
+                                   ._type = entry_type::configuration};
+        append_log_entry(c_new_entry);
+        persist_and_barrier_locked(c_new_entry);
+        _logger.info("Appended C_new for a joint configuration committed before this term",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"c_new_index", std::to_string(c_new_entry.index())}});
+    }
+
     // Initialize leader-specific state
+    _last_append_sent.clear();
     auto last_log_idx = get_last_log_index();
     auto init_peer = [&](const node_id_type& peer_id) {
         if (peer_id != _node_id) {
@@ -7284,6 +7377,18 @@ auto node<Types>::get_log_entry(log_index_type index) const -> std::optional<log
 template<raft_types Types>
 
 auto node<Types>::replicate_to_followers() -> void {
+    replicate_to_followers_impl(false);
+}
+
+template<raft_types Types>
+
+auto node<Types>::replicate_to_followers_if_due() -> void {
+    replicate_to_followers_impl(true);
+}
+
+template<raft_types Types>
+
+auto node<Types>::replicate_to_followers_impl(bool only_due) -> void {
     // Snapshot the follower list and decide send vs. snapshot while holding _mutex.
     // The actual I/O must happen WITHOUT _mutex because the Folly callbacks (inline
     // executor) re-acquire it, which would deadlock.
@@ -7292,12 +7397,15 @@ auto node<Types>::replicate_to_followers() -> void {
         bool needs_snapshot;
     };
     std::vector<follower_action> actions;
+    bool any_follower = false;
 
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if (_state != kythira::server_state::leader) {
             return;
         }
+        const auto now = std::chrono::steady_clock::now();
+        const auto last_log_index = get_last_log_index();
 
         _logger.debug("Replicating to followers",
                       {{"node_id", node_id_to_string(_node_id)},
@@ -7311,6 +7419,15 @@ auto node<Types>::replicate_to_followers() -> void {
             if (peer_id == _node_id) {
                 continue;
             }
+            any_follower = true;
+            if (only_due) {
+                const auto sent = _last_append_sent.find(peer_id);
+                if (sent != _last_append_sent.end() && sent->second._last_index >= last_log_index &&
+                    sent->second._commit_index >= _commit_index &&
+                    now - sent->second._at < _heartbeat_interval) {
+                    continue;
+                }
+            }
             auto first_log_index = _log.empty() ? log_index_type{1} : _log.front().index();
             // nextIndex one past the snapshot boundary needs no snapshot:
             // prevLogIndex is the boundary, whose term term_at() knows.
@@ -7321,7 +7438,10 @@ auto node<Types>::replicate_to_followers() -> void {
     // _mutex released — safe to do blocking I/O now.
 
     if (actions.empty()) {
-        _logger.debug("No followers to replicate to", {{"node_id", node_id_to_string(_node_id)}});
+        if (!any_follower) {
+            _logger.debug("No followers to replicate to",
+                          {{"node_id", node_id_to_string(_node_id)}});
+        }
         std::lock_guard<std::mutex> lock(_mutex);
         advance_commit_index();
         return;
@@ -7407,6 +7527,9 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
 
             request = append_entries_request_type{_current_term, _node_id,        prev_log_index,
                                                   prev_log_term, entries_to_send, _commit_index};
+            _last_append_sent[target] =
+                append_sent{prev_log_index + entries_to_send.size(), _commit_index,
+                            std::chrono::steady_clock::now()};
 
             _logger.debug("Sending AppendEntries",
                           {{"node_id", node_id_to_string(_node_id)},
@@ -7489,6 +7612,7 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                     }
 
                     _unresponsive_followers.insert(target);
+                    _last_append_sent.erase(target);
                     note_peer_rpc_failure(target);
 
                     _metrics.set_metric_name("raft_append_entries_failed");
@@ -7521,11 +7645,30 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                     return;
                 }
 
+                // A reply from a peer this leader no longer tracks — removed by a
+                // configuration change that committed while the RPC was in flight —
+                // must not put it back: `_next_index` is the replication fan-out,
+                // so recreating the entry kept the leader sending AppendEntries to
+                // the removed server for the rest of its term.
+                if (!_next_index.contains(target)) {
+                    return;
+                }
+
                 if (response.success()) {
-                    // Success - update next_index and match_index
+                    // Success - update next_index and match_index. Only ever
+                    // forward: heartbeats and AppendEntries to one follower
+                    // overlap, so a reply to an older, shorter request can
+                    // land after a newer one. Taking it as-is moved
+                    // match_index backwards and, once the log was compacted,
+                    // pushed next_index behind the snapshot and made an
+                    // up-to-date follower take an InstallSnapshot.
                     auto new_match_index = next_idx + entries_to_send.size() - 1;
-                    _next_index[target] = new_match_index + 1;
-                    _match_index[target] = new_match_index;
+                    if (new_match_index > _match_index[target]) {
+                        _match_index[target] = new_match_index;
+                    }
+                    if (new_match_index + 1 > _next_index[target]) {
+                        _next_index[target] = new_match_index + 1;
+                    }
 
                     // Remove from unresponsive set
                     _unresponsive_followers.erase(target);
@@ -7774,9 +7917,21 @@ auto node<Types>::send_install_snapshot_chunk(node_id_type target,
                     }
 
                     if (is_last_chunk) {
-                        // Snapshot transfer complete - update next_index and match_index
-                        _next_index[target] = snap->last_included_index() + 1;
-                        _match_index[target] = snap->last_included_index();
+                        // Snapshot transfer complete - update next_index and
+                        // match_index, unless the peer was removed while the
+                        // transfer ran (see the AppendEntries reply path).
+                        // Only ever forward, as on the AppendEntries reply
+                        // path: AppendEntries may already have taken the
+                        // follower past this snapshot while it was in flight.
+                        if (_next_index.contains(target)) {
+                            const auto last_included = snap->last_included_index();
+                            if (_match_index[target] < last_included) {
+                                _match_index[target] = last_included;
+                            }
+                            if (_next_index[target] < last_included + 1) {
+                                _next_index[target] = last_included + 1;
+                            }
+                        }
                         _snapshot_transfers_in_flight.erase(target);
                     }
                 }
@@ -7804,7 +7959,8 @@ auto node<Types>::send_install_snapshot_chunk(node_id_type target,
                 _metrics.add_dimension("target", node_id_to_string(target));
                 _metrics.add_value(static_cast<double>(snap->state_machine_state().size()));
                 _metrics.emit();
-            });
+            })
+            .detach();
     } catch (const std::exception& e) {
         _logger.error("Exception sending InstallSnapshot chunk",
                       {{"node_id", node_id_to_string(_node_id)},
@@ -7849,8 +8005,7 @@ auto node<Types>::handle_fetch_log_entries(const fetch_log_entries_request_type&
         _logger.debug("FetchLogEntries: entry not available",
                       {{"node_id", node_id_to_string(_node_id)},
                        {"from_index", std::to_string(request.from_index())}});
-        return fetch_log_entries_response_type{
-            node_id_to_u64(_node_id), false, term_id_type{0}, {}};
+        return fetch_log_entries_response_type{_node_id, false, term_id_type{0}, {}};
     }
 
     term_id_type prev_log_term{0};
@@ -7882,7 +8037,7 @@ auto node<Types>::handle_fetch_log_entries(const fetch_log_entries_request_type&
                    {"requester_id", node_id_to_string(request.requester_id())},
                    {"count", std::to_string(entries_to_send.size())}});
 
-    return fetch_log_entries_response_type{node_id_to_u64(_node_id), true, prev_log_term,
+    return fetch_log_entries_response_type{_node_id, true, prev_log_term,
                                            std::move(entries_to_send)};
 }
 
@@ -8003,7 +8158,7 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
 
             auto source = try_result.value().value();
 
-            if constexpr (!network_client_with_log_fetch<network_client_type>) {
+            if constexpr (!network_client_with_log_fetch<network_client_type, node_id_type>) {
                 // Requirement 5.3: transport doesn't support fetch_log_entries —
                 // peer-to-peer catch-up is unreachable regardless of
                 // peer2peer_replicator_type configuration.
@@ -8022,8 +8177,7 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
 
                 const auto& stop_flag2 = stop_flag;
                 const auto& scope2 = scope;
-                this->_network_client
-                    .send_fetch_log_entries(node_id_to_u64(source.node_id), request, timeout)
+                this->_network_client.send_fetch_log_entries(source.node_id, request, timeout)
                     .thenTry([this, stop_flag2, scope2, from_index, source](auto resp_try) {
                         // The ticket is what makes this guard load-bearing rather than
                         // advisory: while it is held, stop()'s drain cannot return, so
@@ -8286,6 +8440,21 @@ auto node<Types>::apply_committed_entries() -> void {
         }
 
         auto& entry = entry_opt.value();
+
+        // Counts this entry toward the automatic-snapshot threshold on every
+        // path below that moves _last_applied past it (applied, skipped,
+        // admin, no-op or configuration). A halt or an exhausted retry leaves
+        // _last_applied where it was, so nothing is counted for the entry.
+        struct applied_bytes_counter {
+            node& self;
+            log_index_type index;
+            std::size_t bytes;
+            ~applied_bytes_counter() {
+                if (self._last_applied >= index) {
+                    self._bytes_applied_since_snapshot += bytes;
+                }
+            }
+        } count_applied_bytes{*this, next_index, entry.command().size()};
 
         // Administration entries (multi-Raft, `.kiro/specs/multi-raft/` §5.1) are
         // NOT applied to the state machine either. They are routed to the
@@ -8667,6 +8836,8 @@ auto node<Types>::apply_committed_entries() -> void {
         _metrics.add_duration(catchup_duration);
         _metrics.emit();
 
+        maybe_create_snapshot_automatically();
+
         // Emit remaining lag metric
         if (remaining_lag > 0) {
             _metrics.set_metric_name("catchup_remaining_lag");
@@ -8681,7 +8852,43 @@ template<raft_types Types>
 
 auto node<Types>::create_snapshot() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
+    create_snapshot_locked();
+}
 
+template<raft_types Types>
+
+auto node<Types>::maybe_create_snapshot_automatically() -> void {
+    const auto threshold = _config.snapshot_threshold_bytes();
+    if (_bytes_applied_since_snapshot < threshold || _last_applied <= _snapshot_index) {
+        return;
+    }
+
+    _logger.info("Applied log reached the snapshot threshold, snapshotting",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"bytes_applied_since_snapshot", std::to_string(_bytes_applied_since_snapshot)},
+                  {"snapshot_threshold_bytes", std::to_string(threshold)},
+                  {"last_applied", std::to_string(_last_applied)}});
+
+    try {
+        create_snapshot_locked();
+    } catch (const std::exception& e) {
+        // This runs inside AppendEntries handling, heartbeat checks and commit
+        // advancement. Letting a failed save escape would fail those instead,
+        // and the log is no worse off than before the attempt. The byte count
+        // is left as it is, so the next applied batch tries again.
+        _logger.error("Automatic snapshot failed", {{"node_id", node_id_to_string(_node_id)},
+                                                    {"last_applied", std::to_string(_last_applied)},
+                                                    {"error", e.what()}});
+        _metrics.set_metric_name("raft_automatic_snapshot_failed");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_one();
+        _metrics.emit();
+    }
+}
+
+template<raft_types Types>
+
+auto node<Types>::create_snapshot_locked() -> void {
     _logger.info("Creating snapshot from current state machine state",
                  {{"node_id", node_id_to_string(_node_id)},
                   {"last_applied", std::to_string(_last_applied)}});
@@ -8707,6 +8914,7 @@ auto node<Types>::create_snapshot() -> void {
 
     // Persist snapshot to storage
     _persistence.save_snapshot(snap);
+    _bytes_applied_since_snapshot = 0;
 
     auto end_time = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -8891,6 +9099,8 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
         _last_applied = snap.last_included_index();
         _snapshot_index = snap.last_included_index();
         _snapshot_term = snap.last_included_term();
+        // Everything applied so far is inside the installed snapshot.
+        _bytes_applied_since_snapshot = 0;
 
         // Update commit_index if snapshot index is higher
         if (snap.last_included_index() > _commit_index) {
@@ -9159,7 +9369,7 @@ template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
                      {{"node_id", node_id_to_string(_node_id)},
                       {"peer_count", std::to_string(peers.size())}});
 
-        if constexpr (network_client_with_cluster_join<network_client_type>) {
+        if constexpr (network_client_with_cluster_join<network_client_type, node_id_type>) {
             bool joined = false;
             auto timeout = bootstrap_peer_find_timeout();
 
@@ -9235,7 +9445,7 @@ template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
 
 template<raft_types Types>
 auto node<Types>::leave_cluster(std::chrono::milliseconds timeout) -> void {
-    if constexpr (!network_client_with_cluster_leave<network_client_type>) {
+    if constexpr (!network_client_with_cluster_leave<network_client_type, node_id_type>) {
         return;
     } else {
         std::optional<address_type> leader_addr;

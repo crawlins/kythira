@@ -25,6 +25,11 @@ lines starting with `#` are ignored. The check fails when:
     after all, or the reference tree no longer registers it. A stale entry
     would otherwise hide the next regression under the same name.
 
+A `<name>_paced` test is a twin tests/CMakeLists.txt registers to run
+<name>'s binary with the libcoap client in paced I/O mode, so it is disabled
+exactly when <name> is. A disabled twin whose <name> is disabled and
+allowlisted takes <name>'s reason instead of needing its own entry.
+
 The disabled-test table is printed, and appended to $GITHUB_STEP_SUMMARY
 when that is set.
 """
@@ -33,6 +38,8 @@ import json
 import os
 import subprocess
 import sys
+
+PACED_SUFFIX = "_paced"
 
 
 def registered_tests(build_dir):
@@ -83,8 +90,15 @@ def main(argv):
     allowlist, errors = read_allowlist(allowlist_path)
     disabled = sorted(reference - built)
 
+    reasons = dict(allowlist)
     for name in disabled:
-        if name not in allowlist:
+        original = name.removesuffix(PACED_SUFFIX)
+        if (original != name and name not in allowlist
+                and original in allowlist and original not in built):
+            reasons[name] = f"paced twin of `{original}`: {allowlist[original]}"
+
+    for name in disabled:
+        if name not in reasons:
             errors.append(f"{name}: registered in {reference_dir} but not in "
                           f"{build_dir}, and not in {allowlist_path}")
     for name in sorted(allowlist):
@@ -105,7 +119,7 @@ def main(argv):
         "|---|---|",
     ]
     for name in disabled:
-        lines.append(f"| `{name}` | {allowlist.get(name, '**not allowlisted**')} |")
+        lines.append(f"| `{name}` | {reasons.get(name, '**not allowlisted**')} |")
     report = "\n".join(lines) + "\n"
     print(report)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")

@@ -54,7 +54,7 @@ public:
         obj["type"] = "request_vote_request";
         encode_group_id(obj, req.group_id());
         obj["term"] = req.term();
-        obj["candidate_id"] = req.candidate_id();
+        obj["candidate_id"] = id_value(req.candidate_id());
         obj["last_log_index"] = req.last_log_index();
         obj["last_log_term"] = req.last_log_term();
 
@@ -82,7 +82,7 @@ public:
         obj["type"] = "request_pre_vote_request";
         encode_group_id(obj, req.group_id());
         obj["term"] = req.term();
-        obj["candidate_id"] = req.candidate_id();
+        obj["candidate_id"] = id_value(req.candidate_id());
         obj["last_log_index"] = req.last_log_index();
         obj["last_log_term"] = req.last_log_term();
 
@@ -111,7 +111,7 @@ public:
         obj["type"] = "timeout_now_request";
         encode_group_id(obj, req.group_id());
         obj["term"] = req.term();
-        obj["leader_id"] = req.leader_id();
+        obj["leader_id"] = id_value(req.leader_id());
         obj["last_log_index"] = req.last_log_index();
 
         return json_to_bytes(boost::json::serialize(obj));
@@ -140,7 +140,7 @@ public:
         obj["type"] = "append_entries_request";
         encode_group_id(obj, req.group_id());
         obj["term"] = req.term();
-        obj["leader_id"] = req.leader_id();
+        obj["leader_id"] = id_value(req.leader_id());
         obj["prev_log_index"] = req.prev_log_index();
         obj["prev_log_term"] = req.prev_log_term();
         obj["leader_commit"] = req.leader_commit();
@@ -191,7 +191,7 @@ public:
         obj["type"] = "install_snapshot_request";
         encode_group_id(obj, req.group_id());
         obj["term"] = req.term();
-        obj["leader_id"] = req.leader_id();
+        obj["leader_id"] = id_value(req.leader_id());
         obj["last_included_index"] = req.last_included_index();
         obj["last_included_term"] = req.last_included_term();
         obj["offset"] = req.offset();
@@ -412,7 +412,7 @@ public:
     [[nodiscard]] auto serialize(const cluster_join_request<NodeId, Address>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "cluster_join_request";
-        obj["node_id"] = req.node_id;
+        obj["node_id"] = id_value(req.node_id);
         obj["contact_address"] = req.contact_address;
         return json_to_bytes(boost::json::serialize(obj));
     }
@@ -424,7 +424,7 @@ public:
         obj["type"] = "cluster_join_response";
         obj["accepted"] = resp.accepted;
         if (resp.redirect.has_value()) {
-            obj["redirect_node_id"] = resp.redirect->node_id;
+            obj["redirect_node_id"] = id_value(resp.redirect->node_id);
             obj["redirect_address"] = resp.redirect->address;
         }
         return json_to_bytes(boost::json::serialize(obj));
@@ -468,7 +468,7 @@ public:
     [[nodiscard]] auto serialize(const cluster_leave_request<NodeId, Address>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "cluster_leave_request";
-        obj["node_id"] = req.node_id;
+        obj["node_id"] = id_value(req.node_id);
         return json_to_bytes(boost::json::serialize(obj));
     }
 
@@ -480,7 +480,7 @@ public:
         obj["type"] = "cluster_leave_response";
         obj["accepted"] = resp.accepted;
         if (resp.redirect.has_value()) {
-            obj["redirect_node_id"] = resp.redirect->node_id;
+            obj["redirect_node_id"] = id_value(resp.redirect->node_id);
             obj["redirect_address"] = resp.redirect->address;
         }
         return json_to_bytes(boost::json::serialize(obj));
@@ -526,21 +526,23 @@ public:
         boost::json::object obj;
         obj["type"] = "fetch_log_entries_request";
         encode_group_id(obj, req.group_id());
-        obj["requester_id"] = req.requester_id();
+        obj["requester_id"] = id_value(req.requester_id());
         obj["from_index"] = req.from_index();
         obj["to_index"] = req.to_index();
         return json_to_bytes(boost::json::serialize(obj));
     }
 
     // Serialize FetchLogEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>& resp) const -> Data {
+        const fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId>& resp) const
+        -> Data {
         boost::json::object obj;
         obj["type"] = "fetch_log_entries_response";
         encode_group_id(obj, resp.group_id());
-        obj["responder_id"] = resp.responder_id();
+        obj["responder_id"] = id_value(resp.responder_id());
         obj["available"] = resp.available();
         obj["prev_log_term"] = resp.prev_log_term();
 
@@ -576,16 +578,17 @@ public:
     }
 
     // Deserialize FetchLogEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_response(const Data& data) const
-        -> fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> {
+        -> fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId> {
         return guarded("fetch_log_entries_response", [&] {
             const auto obj = parse_object(data, "fetch_log_entries_response");
 
-            fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> resp;
+            fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId> resp;
             resp._group_id = decode_group_id<GroupId>(obj);
-            resp._responder_id = read_int<std::uint64_t>(obj, "responder_id");
+            resp._responder_id = read_id<NodeId>(obj, "responder_id");
             resp._available = read_bool(obj, "available");
             resp._prev_log_term = read_int<TermId>(obj, "prev_log_term");
 
@@ -809,10 +812,30 @@ private:
         return base64_to_bytes(v.get_string(), key);
     }
 
+    /// A node or group id as JSON: a number when numeric, a string when
+    /// `std::string`, and a composite id's canonical text.
+    template<typename Id> [[nodiscard]] static auto id_value(const Id& id) -> boost::json::value {
+        if constexpr (std::same_as<Id, std::string>) {
+            return boost::json::string(id);
+        } else if constexpr (composite_node_id<Id>) {
+            return boost::json::string(id.to_string());
+        } else {
+            return static_cast<std::uint64_t>(id);
+        }
+    }
+
     template<typename Id>
     [[nodiscard]] static auto read_id(const boost::json::object& obj, std::string_view key) -> Id {
         if constexpr (std::same_as<Id, std::string>) {
             return read_string(obj, key);
+        } else if constexpr (composite_node_id<Id>) {
+            // Text that does not parse fails the decode rather than yielding
+            // a default id.
+            auto id = Id::parse(read_string(obj, key));
+            if (!id) {
+                fail(key, "not a valid composite node id");
+            }
+            return std::move(*id);
         } else {
             return read_int<Id>(obj, key);
         }

@@ -230,10 +230,9 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, *boost::unit_test::timeout
         BOOST_CHECK_EQUAL(old_majority, 2);
         BOOST_CHECK_EQUAL(new_majority, 3);
 
-        // Verify that the joint configuration requires both majorities
-        // This is tested by the implementation in advance_commit_index()
-        // which checks: (new_replication_count >= new_majority) && (old_replication_count >=
-        // old_majority)
+        // That a joint entry needs both majorities is checked on a live cluster
+        // by membership_change_joint_safety_test.cpp (joint_quorum suite); this
+        // case only checks the majority sizes.
 
         leader.stop();
     }

@@ -27,27 +27,8 @@
 #include "aws_acm_pca_test_support.hpp"
 
 #include <aws/acm-pca/ACMPCAClient.h>
-#include <aws/acm-pca/model/ASN1Subject.h>
-#include <aws/acm-pca/model/CertificateAuthorityConfiguration.h>
-#include <aws/acm-pca/model/CertificateAuthorityStatus.h>
-#include <aws/acm-pca/model/CertificateAuthorityType.h>
-#include <aws/acm-pca/model/CreateCertificateAuthorityRequest.h>
-#include <aws/acm-pca/model/DeleteCertificateAuthorityRequest.h>
-#include <aws/acm-pca/model/DescribeCertificateAuthorityRequest.h>
-#include <aws/acm-pca/model/GetCertificateAuthorityCsrRequest.h>
-#include <aws/acm-pca/model/GetCertificateRequest.h>
-#include <aws/acm-pca/model/ImportCertificateAuthorityCertificateRequest.h>
-#include <aws/acm-pca/model/IssueCertificateRequest.h>
-#include <aws/acm-pca/model/KeyAlgorithm.h>
 #include <aws/acm-pca/model/ListCertificateAuthoritiesRequest.h>
-#include <aws/acm-pca/model/OcspConfiguration.h>
-#include <aws/acm-pca/model/RevocationConfiguration.h>
-#include <aws/acm-pca/model/SigningAlgorithm.h>
-#include <aws/acm-pca/model/UpdateCertificateAuthorityRequest.h>
-#include <aws/acm-pca/model/Validity.h>
-#include <aws/acm-pca/model/ValidityPeriodType.h>
 #include <aws/core/Aws.h>
-#include <aws/core/utils/Array.h>
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
@@ -64,10 +45,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
-#include <stdexcept>
+#include <memory>
 #include <string>
-#include <thread>
-#include <vector>
 
 using namespace raft::testing;
 namespace acm_pca = kythira::testing::acm_pca;
@@ -141,36 +120,21 @@ struct FollyInitFixture {
 };
 #endif
 
-auto make_client() -> Aws::ACMPCA::ACMPCAClient {
+auto client_config() -> Aws::Client::ClientConfiguration {
     Aws::Client::ClientConfiguration c;
     c.region = DUMMY_REGION;
     c.endpointOverride = LOCALSTACK_ENDPOINT;
     c.requestTimeoutMs = 10000;
     c.connectTimeoutMs = 10000;
-    return Aws::ACMPCA::ACMPCAClient{c};
-}
-
-auto to_buffer(const std::string& s) -> Aws::Utils::ByteBuffer {
-    return {reinterpret_cast<const unsigned char*>(s.data()), s.size()};
-}
-
-/// Thrown by CA provisioning; turns into a skip, not a failure, because it
-/// means this LocalStack can't emulate the setup rather than that the provider
-/// is wrong.
-struct setup_unsupported : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
-
-template<typename Outcome> void require_setup(const Outcome& outcome, const char* call) {
-    if (!outcome.IsSuccess()) {
-        throw setup_unsupported(std::string(call) + ": " + outcome.GetError().GetMessage());
-    }
+    return c;
 }
 
 /// Two ACTIVE self-signed root CAs: one with OCSP enabled (revocation works)
 /// and one with no revocation configuration (Requirement 10.7's error path).
-/// Torn down in the destructor; Boost destroys global fixtures in reverse, so
-/// this outlives every case.
+/// Both come from `ephemeral_acm_pca`, the bootstrap the real-AWS suite uses,
+/// without its tags or signal wiring: LocalStack state is throwaway
+/// (acm-pca-ephemeral-ca Requirement 7.3). Torn down in the destructor;
+/// Boost destroys global fixtures in reverse, so this outlives every case.
 struct LocalStackCaFixture {
     std::string ocsp_ca_arn;
     std::string bare_ca_arn;
@@ -180,7 +144,7 @@ struct LocalStackCaFixture {
         // Same placement as aws_quorum_manager_localstack_test.cpp: the probe
         // runs right after InitAPI in this constructor, not in a separate
         // global fixture, so the ordering can't go wrong.
-        auto client = make_client();
+        Aws::ACMPCA::ACMPCAClient client{client_config()};
         auto listed = client.ListCertificateAuthorities(model::ListCertificateAuthoritiesRequest{});
         if (!listed.IsSuccess()) {
             std::cerr << "SKIP: the acm-pca service is unusable at " << LOCALSTACK_ENDPOINT
@@ -189,21 +153,24 @@ struct LocalStackCaFixture {
             Aws::ShutdownAPI(sdk_options);
             std::exit(77);
         }
+        // A failure here means this LocalStack can't emulate the setup, not
+        // that the provider is wrong, so it is a skip (Requirement 7.2).
         try {
-            ocsp_ca_arn = create_active_root_ca(client, /*ocsp=*/true);
-            bare_ca_arn = create_active_root_ca(client, /*ocsp=*/false);
-        } catch (const setup_unsupported& ex) {
+            ocsp_ca_arn =
+                provision(ocsp_ca, acm_pca::ca_revocation::ocsp, "kythira localstack root (ocsp)");
+            bare_ca_arn = provision(bare_ca, acm_pca::ca_revocation::none,
+                                    "kythira localstack root (no revocation)");
+        } catch (const acm_pca::ephemeral_ca_unavailable& ex) {
             std::cerr << "SKIP: LocalStack could not provision an ACTIVE root CA: " << ex.what()
                       << "\n";
-            teardown(client);
+            teardown();
             Aws::ShutdownAPI(sdk_options);
             std::exit(77);
         }
     }
 
     ~LocalStackCaFixture() {
-        auto client = make_client();
-        teardown(client);
+        teardown();
         Aws::ShutdownAPI(sdk_options);
     }
 
@@ -212,108 +179,34 @@ struct LocalStackCaFixture {
 
 private:
     Aws::SDKOptions sdk_options;
-    std::vector<std::string> created;
+    std::unique_ptr<acm_pca::ephemeral_acm_pca> ocsp_ca;
+    std::unique_ptr<acm_pca::ephemeral_acm_pca> bare_ca;
 
-    /// The real-AWS root CA bootstrap: create, sign the CA's own CSR with the
-    /// RootCACertificate template, import the result.
-    auto create_active_root_ca(Aws::ACMPCA::ACMPCAClient& client, bool ocsp) -> std::string {
-        model::ASN1Subject subject;
-        subject.SetCommonName(ocsp ? "kythira localstack root (ocsp)"
-                                   : "kythira localstack root (no revocation)");
-        model::CertificateAuthorityConfiguration config;
-        config.SetKeyAlgorithm(model::KeyAlgorithm::RSA_2048);
-        config.SetSigningAlgorithm(model::SigningAlgorithm::SHA256WITHRSA);
-        config.SetSubject(subject);
-
-        model::CreateCertificateAuthorityRequest create;
-        create.SetCertificateAuthorityConfiguration(config);
-        create.SetCertificateAuthorityType(model::CertificateAuthorityType::ROOT);
-        if (ocsp) {
-            // OCSP rather than a CRL: a CRL needs an S3 bucket, OCSP nothing.
-            model::OcspConfiguration ocsp_config;
-            ocsp_config.SetEnabled(true);
-            model::RevocationConfiguration revocation;
-            revocation.SetOcspConfiguration(ocsp_config);
-            create.SetRevocationConfiguration(revocation);
-        }
-        auto created_ca = client.CreateCertificateAuthority(create);
-        require_setup(created_ca, "CreateCertificateAuthority");
-        std::string arn = created_ca.GetResult().GetCertificateAuthorityArn();
-        created.push_back(arn);
-
-        model::GetCertificateAuthorityCsrRequest csr_req;
-        csr_req.SetCertificateAuthorityArn(arn);
-        auto csr = poll_until_ready([&] { return client.GetCertificateAuthorityCsr(csr_req); },
-                                    "GetCertificateAuthorityCsr");
-
-        model::IssueCertificateRequest issue;
-        issue.SetCertificateAuthorityArn(arn);
-        issue.SetCsr(to_buffer(csr.GetResult().GetCsr()));
-        issue.SetSigningAlgorithm(model::SigningAlgorithm::SHA256WITHRSA);
-        issue.SetTemplateArn("arn:aws:acm-pca:::template/RootCACertificate/V1");
-        model::Validity validity;
-        validity.SetType(model::ValidityPeriodType::DAYS);
-        validity.SetValue(30);
-        issue.SetValidity(validity);
-        auto issued = client.IssueCertificate(issue);
-        require_setup(issued, "IssueCertificate (root)");
-
-        model::GetCertificateRequest get;
-        get.SetCertificateAuthorityArn(arn);
-        get.SetCertificateArn(issued.GetResult().GetCertificateArn());
-        auto root =
-            poll_until_ready([&] { return client.GetCertificate(get); }, "GetCertificate (root)");
-
-        model::ImportCertificateAuthorityCertificateRequest import;
-        import.SetCertificateAuthorityArn(arn);
-        import.SetCertificate(to_buffer(root.GetResult().GetCertificate()));
-        require_setup(client.ImportCertificateAuthorityCertificate(import),
-                      "ImportCertificateAuthorityCertificate");
-        return arn;
+    static auto provision(std::unique_ptr<acm_pca::ephemeral_acm_pca>& slot,
+                          acm_pca::ca_revocation revocation, const char* common_name)
+        -> std::string {
+        acm_pca::ephemeral_acm_pca::options opts;
+        opts.client = client_config();
+        opts.revocation = revocation;
+        opts.common_name = common_name;
+        // What this suite always used: LocalStack's bootstrap is quick, and
+        // a general-purpose CA with a 30-day root.
+        opts.step_timeout = std::chrono::seconds(60);
+        opts.short_lived = false;
+        opts.root_validity_days = 30;
+        slot = std::make_unique<acm_pca::ephemeral_acm_pca>(std::move(opts));
+        slot->provision();
+        return slot->arn();
     }
 
-    /// Retries while ACM Private CA answers REQUEST_IN_PROGRESS, as it does
-    /// right after CreateCertificateAuthority and IssueCertificate.
-    template<typename Call>
-    static auto poll_until_ready(Call call, const char* name) -> decltype(call()) {
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (true) {
-            auto outcome = call();
-            if (outcome.IsSuccess()) {
-                return outcome;
-            }
-            if (outcome.GetError().GetErrorType() !=
-                    Aws::ACMPCA::ACMPCAErrors::REQUEST_IN_PROGRESS ||
-                std::chrono::steady_clock::now() >= deadline) {
-                require_setup(outcome, name);
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
-    }
-
-    /// Disable, then delete, every CA this fixture created. Errors are printed
-    /// and never thrown: LocalStack state is throwaway, but a stale CA would
-    /// still confuse a reused container.
-    void teardown(Aws::ACMPCA::ACMPCAClient& client) noexcept {
-        for (const auto& arn : created) {
-            model::UpdateCertificateAuthorityRequest disable;
-            disable.SetCertificateAuthorityArn(arn);
-            disable.SetStatus(model::CertificateAuthorityStatus::DISABLED);
-            auto disabled = client.UpdateCertificateAuthority(disable);
-            if (!disabled.IsSuccess()) {
-                std::cerr << "teardown: UpdateCertificateAuthority " << arn << ": "
-                          << disabled.GetError().GetMessage() << "\n";
-            }
-            model::DeleteCertificateAuthorityRequest del;
-            del.SetCertificateAuthorityArn(arn);
-            del.SetPermanentDeletionTimeInDays(7);
-            auto deleted = client.DeleteCertificateAuthority(del);
-            if (!deleted.IsSuccess()) {
-                std::cerr << "teardown: DeleteCertificateAuthority " << arn << ": "
-                          << deleted.GetError().GetMessage() << "\n";
+    /// Errors are printed and never thrown: LocalStack state is throwaway,
+    /// but a stale CA would still confuse a reused container.
+    void teardown() noexcept {
+        for (auto* ca : {ocsp_ca.get(), bare_ca.get()}) {
+            if (ca != nullptr) {
+                ca->teardown();
             }
         }
-        created.clear();
     }
 };
 

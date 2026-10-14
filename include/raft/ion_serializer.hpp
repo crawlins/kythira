@@ -9,10 +9,12 @@
 #include <ionc/ion.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -116,10 +118,10 @@ public:
             write_annotation(w, "request_vote_request");
             start_struct(w);
             write_field_id(w, "group_id", req.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
+            write_field_int(w, "term", req.term());
             write_field_id(w, "candidate_id", req.candidate_id());
-            write_field_int(w, "last_log_index", static_cast<std::int64_t>(req.last_log_index()));
-            write_field_int(w, "last_log_term", static_cast<std::int64_t>(req.last_log_term()));
+            write_field_int(w, "last_log_index", req.last_log_index());
+            write_field_int(w, "last_log_term", req.last_log_term());
             finish_struct(w);
         });
     }
@@ -131,7 +133,7 @@ public:
             write_annotation(w, "request_vote_response");
             start_struct(w);
             write_field_id(w, "group_id", resp.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
+            write_field_int(w, "term", resp.term());
             write_field_bool(w, "vote_granted", resp.vote_granted());
             finish_struct(w);
         });
@@ -146,10 +148,10 @@ public:
             write_annotation(w, "request_pre_vote_request");
             start_struct(w);
             write_field_id(w, "group_id", req.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
+            write_field_int(w, "term", req.term());
             write_field_id(w, "candidate_id", req.candidate_id());
-            write_field_int(w, "last_log_index", static_cast<std::int64_t>(req.last_log_index()));
-            write_field_int(w, "last_log_term", static_cast<std::int64_t>(req.last_log_term()));
+            write_field_int(w, "last_log_index", req.last_log_index());
+            write_field_int(w, "last_log_term", req.last_log_term());
             finish_struct(w);
         });
     }
@@ -162,7 +164,7 @@ public:
             write_annotation(w, "request_pre_vote_response");
             start_struct(w);
             write_field_id(w, "group_id", resp.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
+            write_field_int(w, "term", resp.term());
             write_field_bool(w, "vote_granted", resp.vote_granted());
             finish_struct(w);
         });
@@ -177,9 +179,9 @@ public:
             write_annotation(w, "timeout_now_request");
             start_struct(w);
             write_field_id(w, "group_id", req.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
+            write_field_int(w, "term", req.term());
             write_field_id(w, "leader_id", req.leader_id());
-            write_field_int(w, "last_log_index", static_cast<std::int64_t>(req.last_log_index()));
+            write_field_int(w, "last_log_index", req.last_log_index());
             finish_struct(w);
         });
     }
@@ -191,7 +193,7 @@ public:
             write_annotation(w, "timeout_now_response");
             start_struct(w);
             write_field_id(w, "group_id", resp.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
+            write_field_int(w, "term", resp.term());
             write_field_bool(w, "success", resp.success());
             finish_struct(w);
         });
@@ -208,11 +210,11 @@ public:
             write_annotation(w, "append_entries_request");
             start_struct(w);
             write_field_id(w, "group_id", req.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
+            write_field_int(w, "term", req.term());
             write_field_id(w, "leader_id", req.leader_id());
-            write_field_int(w, "prev_log_index", static_cast<std::int64_t>(req.prev_log_index()));
-            write_field_int(w, "prev_log_term", static_cast<std::int64_t>(req.prev_log_term()));
-            write_field_int(w, "leader_commit", static_cast<std::int64_t>(req.leader_commit()));
+            write_field_int(w, "prev_log_index", req.prev_log_index());
+            write_field_int(w, "prev_log_term", req.prev_log_term());
+            write_field_int(w, "leader_commit", req.leader_commit());
             write_field_entries(w, "entries", req.entries());
             finish_struct(w);
         });
@@ -227,15 +229,15 @@ public:
             write_annotation(w, "append_entries_response");
             start_struct(w);
             write_field_id(w, "group_id", resp.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
+            write_field_int(w, "term", resp.term());
             write_field_bool(w, "success", resp.success());
             // Absent optionals are omitted struct fields (never Ion null), so
             // deserialize maps their absence back to std::nullopt (Requirement 2.5).
             if (const auto& ci = resp.conflict_index()) {
-                write_field_int(w, "conflict_index", static_cast<std::int64_t>(*ci));
+                write_field_int(w, "conflict_index", *ci);
             }
             if (const auto& ct = resp.conflict_term()) {
-                write_field_int(w, "conflict_term", static_cast<std::int64_t>(*ct));
+                write_field_int(w, "conflict_term", *ct);
             }
             finish_struct(w);
         });
@@ -250,13 +252,11 @@ public:
             write_annotation(w, "install_snapshot_request");
             start_struct(w);
             write_field_id(w, "group_id", req.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(req.term()));
+            write_field_int(w, "term", req.term());
             write_field_id(w, "leader_id", req.leader_id());
-            write_field_int(w, "last_included_index",
-                            static_cast<std::int64_t>(req.last_included_index()));
-            write_field_int(w, "last_included_term",
-                            static_cast<std::int64_t>(req.last_included_term()));
-            write_field_int(w, "offset", static_cast<std::int64_t>(req.offset()));
+            write_field_int(w, "last_included_index", req.last_included_index());
+            write_field_int(w, "last_included_term", req.last_included_term());
+            write_field_int(w, "offset", req.offset());
             write_field_blob(w, "data", req.data());
             write_field_bool(w, "done", req.done());
             finish_struct(w);
@@ -271,7 +271,7 @@ public:
             write_annotation(w, "install_snapshot_response");
             start_struct(w);
             write_field_id(w, "group_id", resp.group_id());
-            write_field_int(w, "term", static_cast<std::int64_t>(resp.term()));
+            write_field_int(w, "term", resp.term());
             finish_struct(w);
         });
     }
@@ -340,24 +340,26 @@ public:
             start_struct(w);
             write_field_id(w, "group_id", req.group_id());
             write_field_id(w, "requester_id", req.requester_id());
-            write_field_int(w, "from_index", static_cast<std::int64_t>(req.from_index()));
-            write_field_int(w, "to_index", static_cast<std::int64_t>(req.to_index()));
+            write_field_int(w, "from_index", req.from_index());
+            write_field_int(w, "to_index", req.to_index());
             finish_struct(w);
         });
     }
 
     // Serialize FetchLogEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
-        const fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId>& resp) const -> Data {
+        const fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId>& resp) const
+        -> Data {
         return encode(base_estimate + entries_estimate(resp.entries()), [&](hWRITER w) {
             write_annotation(w, "fetch_log_entries_response");
             start_struct(w);
             write_field_id(w, "group_id", resp.group_id());
-            write_field_int(w, "responder_id", static_cast<std::int64_t>(resp.responder_id()));
+            write_field_id(w, "responder_id", resp.responder_id());
             write_field_bool(w, "available", resp.available());
-            write_field_int(w, "prev_log_term", static_cast<std::int64_t>(resp.prev_log_term()));
+            write_field_int(w, "prev_log_term", resp.prev_log_term());
             write_field_entries(w, "entries", resp.entries());
             finish_struct(w);
         });
@@ -859,16 +861,17 @@ public:
     }
 
     // Deserialize FetchLogEntries Response
-    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
-             typename LogEntry = log_entry<TermId, LogIndex>, typename GroupId = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>,
+             typename GroupId = std::uint64_t>
     [[nodiscard]] auto deserialize_fetch_log_entries_response(const Data& data) const
-        -> fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> {
-        fetch_log_entries_response<TermId, LogIndex, LogEntry, GroupId> resp{};
+        -> fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId> {
+        fetch_log_entries_response<NodeId, TermId, LogIndex, LogEntry, GroupId> resp{};
         bool have_responder = false, have_available = false, have_plt = false, have_entries = false;
         decode(data, "fetch_log_entries_response", [&](hREADER r) {
             for_each_field(r, [&](const std::string& key, ION_TYPE t) {
                 if (key == "responder_id") {
-                    resp._responder_id = read_int<std::uint64_t>(r, t);
+                    resp._responder_id = read_id<NodeId>(r, t);
                     have_responder = true;
                 } else if (key == "available") {
                     resp._available = read_bool(r, t);
@@ -1056,9 +1059,30 @@ private:
         check_write(ion_writer_write_field_name(w, &s), "writing field name");
     }
 
-    static auto write_field_int(hWRITER w, const char* name, std::int64_t value) -> void {
+    /// Write an integer field at its exact value. Ion ints are arbitrary
+    /// precision, but `ion_writer_write_int64` is not, so an unsigned value
+    /// above `INT64_MAX` (a term, index or id at or above 2^63) goes through an
+    /// `ION_INT` instead of being cast negative. Values that fit `int64_t`
+    /// take the direct path, whose output is byte-identical to the
+    /// `ION_INT` encoding of the same value.
+    template<std::integral T>
+    static auto write_field_int(hWRITER w, const char* name, T value) -> void {
         write_field_name(w, name);
-        check_write(ion_writer_write_int64(w, value), "writing int field");
+        if (std::in_range<std::int64_t>(value)) {
+            check_write(ion_writer_write_int64(w, static_cast<std::int64_t>(value)),
+                        "writing int field");
+            return;
+        }
+        const auto magnitude = static_cast<std::uint64_t>(value);
+        std::array<BYTE, sizeof(std::uint64_t)> be{};
+        for (std::size_t i = 0; i < be.size(); ++i) {
+            be.at(i) = static_cast<BYTE>(magnitude >> (8U * (be.size() - 1U - i)));
+        }
+        const auto big = make_ion_int();
+        check_write(
+            ion_int_from_abs_bytes(big.get(), be.data(), static_cast<SIZE>(be.size()), FALSE),
+            "building int field");
+        check_write(ion_writer_write_ion_int(w, big.get()), "writing int field");
     }
 
     static auto write_field_bool(hWRITER w, const char* name, bool value) -> void {
@@ -1083,13 +1107,15 @@ private:
     }
 
     /// Write a `NodeId` field: native Ion `int` when numeric, `string` when
-    /// `std::string` (Requirement 2.7, 3.3).
+    /// `std::string` or a composite id's canonical text (Requirement 2.7, 3.3).
     template<typename NodeId>
     static auto write_field_id(hWRITER w, const char* name, const NodeId& id) -> void {
         if constexpr (std::same_as<NodeId, std::string>) {
             write_field_string(w, name, id);
+        } else if constexpr (composite_node_id<NodeId>) {
+            write_field_string(w, name, id.to_string());
         } else {
-            write_field_int(w, name, static_cast<std::int64_t>(id));
+            write_field_int(w, name, id);
         }
     }
 
@@ -1101,12 +1127,11 @@ private:
         check_write(ion_writer_start_container(w, tid_LIST), "starting entries list");
         for (const auto& entry : entries) {
             start_struct(w);
-            write_field_int(w, "term", static_cast<std::int64_t>(entry.term()));
-            write_field_int(w, "index", static_cast<std::int64_t>(entry.index()));
+            write_field_int(w, "term", entry.term());
+            write_field_int(w, "index", entry.index());
             write_field_blob(w, "command", entry.command());
             write_field_int(w, "entry_type",
-                            static_cast<std::int64_t>(
-                                static_cast<std::underlying_type_t<entry_type>>(entry.type())));
+                            static_cast<std::underlying_type_t<entry_type>>(entry.type()));
             finish_struct(w);
         }
         check_write(ion_writer_finish_container(w), "finishing entries list");
@@ -1132,35 +1157,74 @@ private:
 
     // ── Read primitives ─────────────────────────────────────────────────────
 
-    static auto read_int64(hREADER r, ION_TYPE t, const char* context) -> std::int64_t {
-        if (t != tid_INT) {
-            throw serialization_exception(std::string("expected Ion int for ") + context);
-        }
-        std::int64_t value = 0;
-        check_read(ion_reader_read_int64(r, &value), context);
-        return value;
-    }
-
     /// Read an int field and narrow it into `Target`, rejecting values outside
     /// the target type's range rather than silently truncating (Requirement 3.3, 5.3).
-    template<typename Target> static auto read_int(hREADER r, ION_TYPE t) -> Target {
-        const std::int64_t value = read_int64(r, t, "reading int field");
-        if constexpr (std::is_unsigned_v<Target>) {
-            if (value < 0) {
-                throw serialization_exception("negative Ion int for unsigned field");
-            }
-            const auto u = static_cast<std::uint64_t>(value);
-            if (u > static_cast<std::uint64_t>(std::numeric_limits<Target>::max())) {
-                throw serialization_exception("Ion int out of range for target type");
-            }
-            return static_cast<Target>(u);
-        } else {
-            if (value < static_cast<std::int64_t>(std::numeric_limits<Target>::min()) ||
-                value > static_cast<std::int64_t>(std::numeric_limits<Target>::max())) {
-                throw serialization_exception("Ion int out of range for target type");
-            }
-            return static_cast<Target>(value);
+    ///
+    /// Reads through an arbitrary-precision `ION_INT` rather than
+    /// `ion_reader_read_int64`, which fails on every value above `INT64_MAX`
+    /// and so could not decode the unsigned terms, indices and ids that
+    /// `write_field_int` emits at or above 2^63.
+    template<std::integral Target> static auto read_int(hREADER r, ION_TYPE t) -> Target {
+        if (t != tid_INT) {
+            throw serialization_exception("expected Ion int for reading int field");
         }
+        const auto big = make_ion_int();
+        check_read(ion_reader_read_ion_int(r, big.get()), "reading int field");
+        BOOL is_null = FALSE;
+        check_read(ion_int_is_null(big.get(), &is_null), "reading int field");
+        if (is_null != FALSE) {
+            throw serialization_exception("null Ion int for integer field");
+        }
+        std::int32_t signum = 0;
+        check_read(ion_int_signum(big.get(), &signum), "reading int sign");
+        if (signum < 0) {
+            if constexpr (std::is_unsigned_v<Target>) {
+                throw serialization_exception("negative Ion int for unsigned field");
+            } else {
+                std::int64_t value = 0;
+                if (ion_int_to_int64(big.get(), &value) != IERR_OK ||
+                    !std::in_range<Target>(value)) {
+                    throw serialization_exception("Ion int out of range for target type");
+                }
+                return static_cast<Target>(value);
+            }
+        }
+        SIZE length = 0;
+        check_read(ion_int_abs_bytes_length(big.get(), &length), "reading int length");
+        if (length < 0 || static_cast<std::size_t>(length) > sizeof(std::uint64_t)) {
+            throw serialization_exception("Ion int out of range for target type");
+        }
+        std::array<BYTE, sizeof(std::uint64_t)> be{};
+        SIZE written = 0;
+        if (length > 0) {
+            check_read(ion_int_to_abs_bytes(big.get(), 0, be.data(), static_cast<SIZE>(be.size()),
+                                            &written),
+                       "reading int bytes");
+        }
+        std::uint64_t magnitude = 0;
+        for (SIZE i = 0; i < written; ++i) {
+            magnitude = (magnitude << 8U) | be.at(static_cast<std::size_t>(i));
+        }
+        if (!std::in_range<Target>(magnitude)) {
+            throw serialization_exception("Ion int out of range for target type");
+        }
+        return static_cast<Target>(magnitude);
+    }
+
+    /// Owning handle for a heap `ION_INT` with no owner, released by
+    /// `ion_int_free` on every path including exceptions.
+    struct ion_int_deleter {
+        auto operator()(ION_INT* p) const noexcept -> void { ion_int_free(p); }
+    };
+    using ion_int_ptr = std::unique_ptr<ION_INT, ion_int_deleter>;
+
+    static auto make_ion_int() -> ion_int_ptr {
+        ION_INT* raw = nullptr;
+        const iERR err = ion_int_alloc(nullptr, &raw);
+        if (err != IERR_OK || raw == nullptr) {
+            translate_ion_error(err == IERR_OK ? IERR_NO_MEMORY : err, "allocating Ion int");
+        }
+        return ion_int_ptr{raw};
     }
 
     static auto read_bool(hREADER r, ION_TYPE t) -> bool {
@@ -1208,6 +1272,15 @@ private:
     template<typename NodeId> static auto read_id(hREADER r, ION_TYPE t) -> NodeId {
         if constexpr (std::same_as<NodeId, std::string>) {
             return read_string(r, t);
+        } else if constexpr (composite_node_id<NodeId>) {
+            // A composite id travels as its canonical text; text that does not
+            // parse fails the decode rather than yielding a default id.
+            const auto text = read_string(r, t);
+            auto id = NodeId::parse(text);
+            if (!id) {
+                throw serialization_exception("invalid composite node id: \"" + text + "\"");
+            }
+            return std::move(*id);
         } else {
             return read_int<NodeId>(r, t);
         }

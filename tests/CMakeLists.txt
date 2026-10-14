@@ -981,6 +981,7 @@ add_raft_completion_test(membership_change_add_server_property_test membership_c
 add_raft_completion_test(raft_safe_server_addition_test raft_safe_server_addition_test.cpp)
 add_raft_completion_test(membership_change_remove_server_property_test membership_change_remove_server_property_test.cpp)
 add_raft_completion_test(membership_change_leader_crash_property_test membership_change_leader_crash_property_test.cpp)
+add_raft_completion_test(membership_change_joint_safety_test membership_change_joint_safety_test.cpp)
 add_raft_completion_test(membership_change_leave_rpc_unit_test membership_change_leave_rpc_unit_test.cpp)
 add_raft_completion_test(membership_change_leave_rpc_property_test membership_change_leave_rpc_property_test.cpp)
 add_raft_completion_test(node_recovery_unit_test node_recovery_unit_test.cpp)
@@ -1454,6 +1455,10 @@ target_link_libraries(multi_raft_http_benchmark_test PRIVATE multi_raft_bench_ro
 add_network_test(discovery_node_common_test discovery_node_common_test.cpp)
 target_include_directories(discovery_node_common_test PRIVATE
     "${CMAKE_SOURCE_DIR}/cmd/discovery_node_common")
+
+# net_resolve::resolve(), the deadline every transport's dial now puts on
+# name resolution. Header-only and standard-library-only, like the above.
+add_network_test(bounded_resolver_test bounded_resolver_test.cpp)
 
 if(httplib_FOUND)
     add_raft_completion_test(multi_raft_driver_agreement_test
@@ -2148,6 +2153,35 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     else()
         message(STATUS "coap_raft_rate_profile_test: skipped (requires Folly)")
     endif()
+    # The libcoap client's I/O thread in readiness and paced modes: burst
+    # drain, wake on readiness and on send, retransmission and multicast
+    # deadlines under a long wait cap, idle wake rate, prompt shutdown, and
+    # the lock staying free while the thread waits --
+    # coap-client-event-driven-io task 6. Each case runs both modes itself;
+    # its paced twin below only changes what `automatic` resolves to.
+    # Backend-generic (future_default), so the no-folly build runs it too.
+    if(LIBCOAP_FOUND)
+        add_executable(coap_io_wait_mode_test coap_io_wait_mode_test.cpp)
+        target_link_libraries(coap_io_wait_mode_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        target_compile_features(coap_io_wait_mode_test PRIVATE cxx_std_23)
+        add_test(NAME coap_io_wait_mode_test COMMAND coap_io_wait_mode_test)
+        set_tests_properties(coap_io_wait_mode_test PROPERTIES TIMEOUT 300 LABELS "coap;integration;libcoap")
+    else()
+        message(STATUS "coap_io_wait_mode_test: skipped (requires libcoap)")
+    endif()
+    # Task 1's gate probe for the same spec: checks design §1's libcoap claims
+    # (L1-L7) against whatever libcoap this build links. A measurement, not a
+    # test, so it is not registered with ctest and not built by default:
+    #   cmake --build build --target coap_io_probe && build/tests/coap_io_probe
+    if(LIBCOAP_FOUND)
+        add_executable(coap_io_probe EXCLUDE_FROM_ALL coap_io_probe.cpp)
+        target_link_libraries(coap_io_probe PRIVATE network_simulator)
+        target_compile_features(coap_io_probe PRIVATE cxx_std_23)
+    endif()
     # oscore_credentials::id_context through libcoap's own OSCORE: matched
     # pair talks, mismatched does not, absent changes nothing --
     # coap-transport-multi-raft task 8.
@@ -2617,6 +2651,37 @@ target_link_libraries(cbor_serialization_property_test PRIVATE
 target_compile_features(cbor_serialization_property_test PRIVATE cxx_std_23)
 add_test(NAME cbor_serialization_property_test COMMAND cbor_serialization_property_test)
 
+# Composite node ids on the wire (cloud-composite-node-ids spec, task 5):
+# every id-carrying message through every serializer with each composite type
+# as NodeId. JSON and CBOR always; protobuf and ION when their targets exist.
+add_executable(composite_node_id_wire_property_test composite_node_id_wire_property_test.cpp)
+target_link_libraries(composite_node_id_wire_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(PROTOBUF_SERIALIZER_FOUND)
+    target_link_libraries(composite_node_id_wire_property_test PRIVATE raft_protobuf_serializer)
+    target_compile_definitions(composite_node_id_wire_property_test PRIVATE
+        KYTHIRA_WIRE_TEST_HAS_PROTOBUF)
+endif()
+if(TARGET raft_ion_serializer)
+    target_link_libraries(composite_node_id_wire_property_test PRIVATE raft_ion_serializer)
+    target_compile_definitions(composite_node_id_wire_property_test PRIVATE
+        KYTHIRA_WIRE_TEST_HAS_ION)
+endif()
+target_compile_features(composite_node_id_wire_property_test PRIVATE cxx_std_23)
+add_test(NAME composite_node_id_wire_property_test COMMAND composite_node_id_wire_property_test)
+set_tests_properties(composite_node_id_wire_property_test PROPERTIES
+    TIMEOUT 60 LABELS "unit;raft;node_id")
+
+# Composite node ids through the transports (cloud-composite-node-ids spec,
+# task 6): std::string targets over tcp_rpc, its address dispatch, and a
+# three-node cluster named by composite ids over the simulator.
+add_raft_completion_test(composite_node_id_transport_test composite_node_id_transport_test.cpp)
+set_tests_properties(composite_node_id_transport_test PROPERTIES
+    TIMEOUT 120 LABELS "unit;raft;node_id")
+
 # CBOR malformed message property test
 add_executable(cbor_malformed_message_property_test cbor_malformed_message_property_test.cpp)
 target_link_libraries(cbor_malformed_message_property_test PRIVATE
@@ -2701,6 +2766,20 @@ if(PROTOBUF_SERIALIZER_FOUND)
     target_compile_features(protobuf_rpc_malformed_message_property_test PRIVATE cxx_std_23)
     add_test(NAME protobuf_rpc_malformed_message_property_test
              COMMAND protobuf_rpc_malformed_message_property_test)
+
+    # Integer range checks, golden vectors and narrow-target rejection; the
+    # protobuf counterpart of json_serializer_range_property_test.
+    add_executable(protobuf_serializer_range_property_test
+                   protobuf_serializer_range_property_test.cpp)
+    target_link_libraries(protobuf_serializer_range_property_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        raft_protobuf_serializer
+    )
+    target_compile_features(protobuf_serializer_range_property_test PRIVATE cxx_std_23)
+    add_test(NAME protobuf_serializer_range_property_test
+             COMMAND protobuf_serializer_range_property_test)
 
     # protobuf-vs-json size/latency benchmark (Requirement 8.1). Registered as a
     # CTest for CI visibility; numbers are recorded in
@@ -2815,6 +2894,19 @@ if(TARGET raft_ion_serializer)
     )
     target_compile_features(ion_malformed_message_property_test PRIVATE cxx_std_23)
     add_test(NAME ion_malformed_message_property_test COMMAND ion_malformed_message_property_test)
+
+    # Full uint64 range (values >= 2^63 included), golden vectors and
+    # narrow-target rejection; the Ion counterpart of json_serializer_range_property_test.
+    add_executable(ion_serializer_range_property_test ion_serializer_range_property_test.cpp)
+    target_link_libraries(ion_serializer_range_property_test PRIVATE
+        raft_ion_serializer
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    target_compile_features(ion_serializer_range_property_test PRIVATE cxx_std_23)
+    add_test(NAME ion_serializer_range_property_test COMMAND ion_serializer_range_property_test)
+    set_tests_properties(ion_serializer_range_property_test PROPERTIES LABELS "ion" TIMEOUT 60)
 
     add_executable(ion_json_serializer_equivalence_property_test
         ion_json_serializer_equivalence_property_test.cpp)
@@ -3647,16 +3739,12 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
         target_link_libraries(coap_integration_test PRIVATE Folly::folly)
     endif()
 
-    # Add CoAP transport dependencies
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(LIBCOAP QUIET libcoap-3)
-        if(LIBCOAP_FOUND)
-            target_link_libraries(coap_integration_test PRIVATE ${LIBCOAP_LIBRARIES})
-            target_include_directories(coap_integration_test PRIVATE ${LIBCOAP_INCLUDE_DIRS})
-            target_compile_definitions(coap_integration_test PRIVATE ${LIBCOAP_CFLAGS_OTHER})
-        endif()
-    endif()
+    # libcoap arrives through network_simulator's INTERFACE when the root
+    # CMakeLists.txt found it under CONFIG_COAP_BACKEND_LIBCOAP. No second
+    # pkg_check_modules(LIBCOAP) here: one used to run whenever the transport
+    # was on, so it linked libcoap into a build that had turned the libcoap
+    # backend off, and refilled the global LIBCOAP_FOUND cache entry the root
+    # gate had just cleared.
 
     # Link OpenSSL for DTLS support
     if(TARGET OpenSSL::SSL)
@@ -4580,50 +4668,18 @@ target_compile_features(state_machine_crash_recovery_property_test PRIVATE cxx_s
 add_test(NAME state_machine_crash_recovery_property_test COMMAND state_machine_crash_recovery_property_test)
 
 
-# Raft multi-node test fixture test
-add_executable(raft_multi_node_fixture_test raft_multi_node_fixture_test.cpp)
-target_link_libraries(raft_multi_node_fixture_test PRIVATE
-    network_simulator
-    Boost::unit_test_framework
-)
-if(TARGET Folly::folly)
-    target_link_libraries(raft_multi_node_fixture_test PRIVATE Folly::folly)
-endif()
-target_compile_features(raft_multi_node_fixture_test PRIVATE cxx_std_23)
-add_test(NAME raft_multi_node_fixture_test COMMAND raft_multi_node_fixture_test)
-set_tests_properties(raft_multi_node_fixture_test PROPERTIES
-    TIMEOUT 60
-    LABELS "unit;raft;fixture"
-)
-
-# Raft cluster initialization test - DISABLED due to simulator network bugs
-# This is an optional enhancement test (task 701) that has issues with the
-# simulator network implementation. The core Raft implementation is complete
-# and all 78 required tests pass.
-#
-# Cluster initialization integration test (disabled due to network simulator issues)
-# This test is known to have memory access violations due to network simulator bugs.
-# The functionality is validated through:
-# 1. raft_cluster_initialization_unit_test (unit tests for initialization logic)
-# 2. Existing property-based tests (election safety, follower behavior, etc.)
-# 3. Single-node integration tests
-# See: BUILD_SYSTEM_FIX_SUMMARY.md and SPEC_EXECUTION_COMPLETE_SUMMARY.md
-# add_executable(raft_cluster_initialization_test raft_cluster_initialization_test.cpp)
-# target_link_libraries(raft_cluster_initialization_test PRIVATE
-#     network_simulator
-#     Boost::unit_test_framework
-#     boost_json
-#     Boost::context
-# )
-# if(TARGET Folly::folly)
-#     target_link_libraries(raft_cluster_initialization_test PRIVATE Folly::folly)
-# endif()
-# target_compile_features(raft_cluster_initialization_test PRIVATE cxx_std_23)
-# add_test(NAME raft_cluster_initialization_test COMMAND raft_cluster_initialization_test)
-# set_tests_properties(raft_cluster_initialization_test PROPERTIES
-#     TIMEOUT 120
-#     LABELS "integration;raft;cluster"
-# )
+# Raft multi-node tests (raft-consensus tasks 700-713, 730, 731): real nodes
+# over the network simulator, driven by raft_multi_node_test_fixture.hpp.
+foreach(_multi_node_test
+        raft_multi_node_fixture_test
+        raft_multi_node_partition_test
+        raft_multi_node_property_test)
+    add_raft_completion_test(${_multi_node_test} ${_multi_node_test}.cpp)
+    set_tests_properties(${_multi_node_test} PROPERTIES
+        TIMEOUT 300
+        LABELS "integration;raft;multi-node"
+    )
+endforeach()
 
 # Cluster initialization unit test (simplified version without network simulator)
 add_executable(raft_cluster_initialization_unit_test raft_cluster_initialization_unit_test.cpp)
@@ -4643,22 +4699,11 @@ set_tests_properties(raft_cluster_initialization_unit_test PROPERTIES
     LABELS "unit;raft;cluster;initialization"
 )
 
-# Membership management unit test (Task 702)
-add_executable(raft_membership_management_unit_test raft_membership_management_unit_test.cpp)
-target_link_libraries(raft_membership_management_unit_test PRIVATE
-    network_simulator
-    Boost::unit_test_framework
-    boost_json
-    Boost::context
-)
-if(TARGET Folly::folly)
-    target_link_libraries(raft_membership_management_unit_test PRIVATE Folly::folly)
-endif()
-target_compile_features(raft_membership_management_unit_test PRIVATE cxx_std_23)
-add_test(NAME raft_membership_management_unit_test COMMAND raft_membership_management_unit_test)
+# Membership management on a real cluster (raft-consensus task 702)
+add_raft_completion_test(raft_membership_management_unit_test raft_membership_management_unit_test.cpp)
 set_tests_properties(raft_membership_management_unit_test PROPERTIES
-    TIMEOUT 120
-    LABELS "unit;raft;membership;configuration"
+    TIMEOUT 300
+    LABELS "integration;raft;membership;configuration"
 )
 
 # Coverage-targeted tests
@@ -5555,7 +5600,7 @@ else()
 endif()
 
 # ── aws_acm_pca_provider tests (independent of the core AWS SDK component set) ─
-if(TARGET aws-cpp-sdk-acm-pca)
+if(_KYTHIRA_AWS_ACM_PCA_FOUND)
 
 add_executable(aws_acm_pca_provider_unit_test aws_acm_pca_provider_unit_test.cpp)
 target_link_libraries(aws_acm_pca_provider_unit_test PRIVATE
@@ -5605,7 +5650,10 @@ if(TARGET certificate_authority)
         LABELS "integration;certificate_authority;ca;aws;acm-pca;localstack;slow"
         SKIP_RETURN_CODE 77
     )
-    # Opt-in: needs $KYTHIRA_TEST_ACM_PCA_ARN naming an existing CA.
+    # Opt-in, because it creates billable CAs: KYTHIRA_ACM_PCA_REAL_TESTS=1
+    # (the suite creates and deletes its own two CAs) or
+    # $KYTHIRA_TEST_ACM_PCA_ARN naming an existing one. The `real-acm-pca`
+    # label is what Real Cloud Tests' acm-pca bundle selects.
     set_tests_properties(aws_acm_pca_provider_real_test PROPERTIES
         TIMEOUT 600
         LABELS "integration;certificate_authority;ca;aws;acm-pca;real-acm-pca;slow"
@@ -5675,6 +5723,9 @@ endif()
 # the required env vars/credentials are absent, so ctest reports "Not Run"
 # rather than "Failed"). Built only when the option is set, so ordinary CI
 # builds don't pay to compile them. See .github/workflows/real-cloud-tests.yml.
+# Declared, not just read, so scripts/check-build-config.py can tell this
+# option apart from a misspelled or renamed one.
+option(KYTHIRA_GCP_REAL_TESTS "Build the GCP real-cloud integration tests" OFF)
 if(KYTHIRA_GCP_REAL_TESTS)
     add_executable(gcp_quorum_manager_real_gce_test gcp_quorum_manager_real_gce_test.cpp)
     target_link_libraries(gcp_quorum_manager_real_gce_test PRIVATE
@@ -6081,17 +6132,55 @@ set_tests_properties(concepts_future_folly_independence_test PROPERTIES
     LABELS "unit;concepts;folly-independence;stdexec;future-backend"
 )
 
+# The backend suites below need only their own backend: every source
+# includes raft/future_stdexec.hpp or raft/future_boost.hpp (never the
+# Folly-backed raft/future.hpp), and kythira_test_pch links Folly only when
+# it exists. So they are registered outside the Folly gate, and a
+# CONFIG_FOLLY=n build (ci.yml's no-folly job) tests the stdexec and Boost
+# backends instead of skipping them. backend_selection_isolation_property_test
+# reaches Folly only through raft/future_default.hpp's Folly fallback, which
+# a Folly-free build never selects. The few tests that compare a backend
+# against the Folly one stay inside the gate further down.
+if(stdexec_FOUND)
+    add_stdexec_test(single_shot_channel_property_test single_shot_channel_property_test.cpp)
+    add_stdexec_test(stdexec_try_concept_compliance_property_test stdexec_try_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_future_blocking_get_property_test stdexec_future_blocking_get_property_test.cpp)
+    add_stdexec_test(stdexec_future_factory_property_test stdexec_future_factory_property_test.cpp)
+    add_stdexec_test(stdexec_future_transformation_property_test stdexec_future_transformation_property_test.cpp)
+    add_stdexec_test(stdexec_future_scheduling_property_test stdexec_future_scheduling_property_test.cpp)
+    add_stdexec_test(stdexec_future_collector_property_test stdexec_future_collector_property_test.cpp)
+    add_stdexec_test(stdexec_future_concept_compliance_property_test stdexec_future_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_promise_concept_compliance_property_test stdexec_promise_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_semi_promise_concept_compliance_property_test stdexec_semi_promise_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_executor_concept_compliance_property_test stdexec_executor_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_concept_wrappers_unit_test stdexec_concept_wrappers_unit_test.cpp)
+    add_stdexec_test(backend_selection_isolation_property_test backend_selection_isolation_property_test.cpp)
+endif()
+
+# ── boost-future-backend (.kiro/specs/boost-future-backend/) ─────────────────
+# Only present when the boost future backend was actually enabled at
+# configure time (KYTHIRA_BUILD_BOOST_FUTURE_BACKEND or
+# KYTHIRA_DEFAULT_FUTURE_BACKEND=boost, root CMakeLists.txt) — otherwise
+# include/raft/future_boost.hpp's `#ifdef KYTHIRA_HAS_BOOST_FUTURE` guard
+# makes the whole header a no-op and these test files would fail to
+# compile (Try/Promise/Future/etc. wouldn't be defined).
+if(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND OR KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
+    add_boost_future_test(boost_future_concept_compliance_property_test boost_future_concept_compliance_property_test.cpp)
+    add_boost_future_test(boost_future_continuation_and_collector_property_test boost_future_continuation_and_collector_property_test.cpp)
+endif()
+
 # backend_non_interference_compile_fail_test (Property 14 / Property 11 —
-# see the file's own top comment) is always registered, not gated behind
-# stdexec_FOUND or the boost backend flag: raft/future_stdexec.hpp and
-# raft/future_boost.hpp are both safe no-op headers when their respective
-# backend isn't enabled, and the file's own #ifdef KYTHIRA_HAS_STDEXEC /
-# KYTHIRA_HAS_BOOST_FUTURE guards make each backend-pair's checks compile
-# away to nothing in that case — so this target builds and passes trivially
-# in a Folly-only configuration too, and exercises whichever backend pairs
-# are actually enabled otherwise. Links kythira_test_pch (not a raw
+# see the file's own top comment) is not gated behind stdexec_FOUND or the
+# boost backend flag: raft/future_stdexec.hpp and raft/future_boost.hpp are
+# both safe no-op headers when their respective backend isn't enabled, and
+# the file's own #ifdef KYTHIRA_HAS_STDEXEC / KYTHIRA_HAS_BOOST_FUTURE
+# guards make each backend-pair's checks compile away to nothing in that
+# case. It does need Folly: every pair it checks has kythira::Future (the
+# Folly backend) on one side. Links kythira_test_pch (not a raw
 # add_executable like concepts_future_folly_independence_test above) since,
-# unlike that check, this one needs Folly's real include directories.
+# unlike that check, this one needs Folly's real include directories. The
+# three stdexec tests beside it compare the stdexec backend with the Folly
+# one (folly::exception_wrapper, folly::Unit, kythira::FutureFactory).
 if(TARGET Folly::folly)
     add_executable(backend_non_interference_compile_fail_test backend_non_interference_compile_fail_test.cpp)
     target_link_libraries(backend_non_interference_compile_fail_test PRIVATE kythira_test_pch)
@@ -6101,40 +6190,13 @@ if(TARGET Folly::folly)
         LABELS "unit;concepts;stdexec;boost-future;future-backend"
     )
 
-    # Optional: only present when stdexec was found (root CMakeLists.txt).
     if(stdexec_FOUND)
-        add_stdexec_test(single_shot_channel_property_test single_shot_channel_property_test.cpp)
-        add_stdexec_test(stdexec_try_concept_compliance_property_test stdexec_try_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_future_blocking_get_property_test stdexec_future_blocking_get_property_test.cpp)
-        add_stdexec_test(stdexec_future_factory_property_test stdexec_future_factory_property_test.cpp)
-        add_stdexec_test(stdexec_future_transformation_property_test stdexec_future_transformation_property_test.cpp)
-        add_stdexec_test(stdexec_future_scheduling_property_test stdexec_future_scheduling_property_test.cpp)
-        add_stdexec_test(stdexec_future_collector_property_test stdexec_future_collector_property_test.cpp)
         add_stdexec_test(cross_backend_concept_compliance_property_test cross_backend_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_future_concept_compliance_property_test stdexec_future_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_promise_concept_compliance_property_test stdexec_promise_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_semi_promise_concept_compliance_property_test stdexec_semi_promise_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_executor_concept_compliance_property_test stdexec_executor_concept_compliance_property_test.cpp)
-        add_stdexec_test(stdexec_concept_wrappers_unit_test stdexec_concept_wrappers_unit_test.cpp)
         add_stdexec_test(stdexec_concept_wrappers_interoperability_property_test stdexec_concept_wrappers_interoperability_property_test.cpp)
-        add_stdexec_test(backend_selection_isolation_property_test backend_selection_isolation_property_test.cpp)
         add_stdexec_test(unit_type_equivalence_property_test unit_type_equivalence_property_test.cpp)
     endif()
-
-    # ── boost-future-backend (.kiro/specs/boost-future-backend/) ─────────────────
-    # Only present when the boost future backend was actually enabled at
-    # configure time (KYTHIRA_BUILD_BOOST_FUTURE_BACKEND or
-    # KYTHIRA_DEFAULT_FUTURE_BACKEND=boost, root CMakeLists.txt) — otherwise
-    # include/raft/future_boost.hpp's `#ifdef KYTHIRA_HAS_BOOST_FUTURE` guard
-    # makes the whole header a no-op and these test files would fail to
-    # compile (Try/Promise/Future/etc. wouldn't be defined).
-    if(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND OR KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
-        add_boost_future_test(boost_future_concept_compliance_property_test boost_future_concept_compliance_property_test.cpp)
-        add_boost_future_test(boost_future_continuation_and_collector_property_test boost_future_continuation_and_collector_property_test.cpp)
-    endif()
-
 else()
-    message(STATUS "backend_non_interference_compile_fail_test: skipped (requires Folly)")
+    message(STATUS "backend_non_interference_compile_fail_test and the Folly-comparison stdexec tests: skipped (require Folly)")
 endif()
 
 # ── future-backend-performance-benchmark (.kiro/specs/future-backend-performance-benchmark/) ─
@@ -6528,6 +6590,53 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
         TIMEOUT 60 LABELS "oscore;security;unit")
 endif()  # KYTHIRA_BUILD_COAP_TRANSPORT
 
+# ── libcoap client I/O wait modes: paced twins ───────────────────────────────
+# .kiro/specs/coap-client-event-driven-io/ Requirement 6.5: the libcoap
+# client's I/O thread has two wait modes, and CI must run the whole CoAP suite
+# in both from one build. Every CoAP test above runs in the default mode
+# (readiness wherever libcoap has epoll, which is every build the project
+# uses); this registers a `<name>_paced` twin of each that runs the same
+# binary with KYTHIRA_COAP_IO_WAIT_MODE=paced, which the client honours when
+# its config leaves io_wait_mode at automatic.
+#
+# A twin keeps every label except the CoAP ones and gains `paced_io`, so the
+# CI exclusions (slow, performance, ...) still apply to it, and `-L coap` --
+# the coap-flake-measure workflow's default selection, which is a regex --
+# selects exactly what it selected before. libnyoci and cantcoap tests are
+# skipped: their backends have their own loops and ignore the variable.
+# Placed before the timeout scaling below so twins are scaled too.
+if(KYTHIRA_BUILD_COAP_TRANSPORT AND LIBCOAP_FOUND)
+    get_property(_kythira_coap_tests DIRECTORY PROPERTY TESTS)
+    foreach(_test IN LISTS _kythira_coap_tests)
+        if(_test MATCHES "nyoci|cantcoap" OR NOT TARGET ${_test})
+            continue()
+        endif()
+        get_test_property(${_test} LABELS _labels)
+        if(NOT _labels)
+            set(_labels "")
+        endif()
+        # Not every CoAP test is labelled (several predate the labels), so
+        # the name counts as well.
+        if(NOT _test MATCHES "coap" AND NOT _labels MATCHES "coap")
+            continue()
+        endif()
+        set(_twin_labels paced_io)
+        foreach(_label IN LISTS _labels)
+            if(NOT _label MATCHES "coap")
+                list(APPEND _twin_labels ${_label})
+            endif()
+        endforeach()
+        add_test(NAME ${_test}_paced COMMAND ${_test})
+        set_tests_properties(${_test}_paced PROPERTIES
+            LABELS "${_twin_labels}"
+            ENVIRONMENT "KYTHIRA_COAP_IO_WAIT_MODE=paced")
+        get_test_property(${_test} TIMEOUT _timeout)
+        if(_timeout)
+            set_tests_properties(${_test}_paced PROPERTIES TIMEOUT ${_timeout})
+        endif()
+    endforeach()
+endif()
+
 # ── Test-timeout scaling for slow build configurations ───────────────────────
 # A coverage build (-DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug) runs the
 # coap suite several times slower than Release, so per-case Boost timeouts
@@ -6556,3 +6665,6 @@ if(KYTHIRA_TEST_TIMEOUT_SCALE GREATER 1)
         "Test timeouts scaled by ${KYTHIRA_TEST_TIMEOUT_SCALE}x "
         "(Boost per-case budgets and CTest TIMEOUT properties)")
 endif()
+
+# Boost.Test case reports for CI; see cmake/TestReports.cmake.
+kythira_attach_test_reports()

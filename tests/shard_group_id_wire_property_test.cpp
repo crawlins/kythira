@@ -199,7 +199,8 @@ BOOST_AUTO_TEST_CASE(json_round_trips_a_non_zero_group_id_on_every_message) {
         BOOST_CHECK_EQUAL(out.group_id(), kGroup);
     }
     {
-        const fetch_log_entries_response<std::uint64_t, std::uint64_t, log_entry<>, std::uint64_t>
+        const fetch_log_entries_response<std::uint64_t, std::uint64_t, std::uint64_t, log_entry<>,
+                                         std::uint64_t>
             in{._responder_id = 3,
                ._available = true,
                ._prev_log_term = 4,

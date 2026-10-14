@@ -19,6 +19,9 @@
           "iam": "ENABLED"
         }
       }
+    },
+    {
+      "name": "ca-cluster-node-run"
     }
   ],
   "containerDefinitions": [
@@ -26,12 +29,14 @@
       "name": "ca-cluster-node-3",
       "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-cluster-node@sha256:IMAGE_DIGEST",
       "essential": true,
+      "user": "10002:10002",
+      "readonlyRootFilesystem": true,
       "entryPoint": [
         "sh",
         "-c"
       ],
       "command": [
-        "set -e; umask 077; echo \"$CA_CLUSTER_UNSEAL_KEY\" > /tmp/unseal.key; echo \"$CA_CLUSTER_RPC_TLS_CERT\" > /tmp/rpc_bootstrap.crt; echo \"$CA_CLUSTER_RPC_TLS_KEY\" > /tmp/rpc_bootstrap.key; echo \"$CA_CLUSTER_HTTP_TLS_CERT\" > /tmp/http_tls.crt; echo \"$CA_CLUSTER_HTTP_TLS_KEY\" > /tmp/http_tls.key; exec /usr/local/bin/ca_cluster_node --node-id 3 --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node --unseal-key-file /tmp/unseal.key --tls-cert /tmp/http_tls.crt --tls-key /tmp/http_tls.key --rpc-tls-cert /tmp/rpc_bootstrap.crt --rpc-tls-key /tmp/rpc_bootstrap.key --peers 1:ca-node-1.ca-cluster.internal:7000@https://ca-node-1.ca-cluster.internal:8443,2:ca-node-2.ca-cluster.internal:7000@https://ca-node-2.ca-cluster.internal:8443,3:ca-node-3.ca-cluster.internal:7000@https://ca-node-3.ca-cluster.internal:8443"
+        "set -e; umask 077; echo \"$CA_CLUSTER_UNSEAL_KEY\" > /run/ca_cluster_node/unseal.key; echo \"$CA_CLUSTER_RPC_TLS_CERT\" > /run/ca_cluster_node/rpc_bootstrap.crt; echo \"$CA_CLUSTER_RPC_TLS_KEY\" > /run/ca_cluster_node/rpc_bootstrap.key; echo \"$CA_CLUSTER_HTTP_TLS_CERT\" > /run/ca_cluster_node/http_tls.crt; echo \"$CA_CLUSTER_HTTP_TLS_KEY\" > /run/ca_cluster_node/http_tls.key; exec /usr/local/bin/ca_cluster_node --node-id 3 --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node --unseal-key-file /run/ca_cluster_node/unseal.key --tls-cert /run/ca_cluster_node/http_tls.crt --tls-key /run/ca_cluster_node/http_tls.key --rpc-tls-cert /run/ca_cluster_node/rpc_bootstrap.crt --rpc-tls-key /run/ca_cluster_node/rpc_bootstrap.key --peers 1:ca-node-1.ca-cluster.internal:7000@https://ca-node-1.ca-cluster.internal:8443,2:ca-node-2.ca-cluster.internal:7000@https://ca-node-2.ca-cluster.internal:8443,3:ca-node-3.ca-cluster.internal:7000@https://ca-node-3.ca-cluster.internal:8443"
       ],
       "portMappings": [
         {
@@ -47,6 +52,10 @@
         {
           "sourceVolume": "ca-cluster-node-data",
           "containerPath": "/var/lib/ca_cluster_node"
+        },
+        {
+          "sourceVolume": "ca-cluster-node-run",
+          "containerPath": "/run/ca_cluster_node"
         }
       ],
       "secrets": [
@@ -97,6 +106,10 @@
         {
           "name": "CA_CLUSTER_ROOT_FINGERPRINT",
           "value": "FILL_IN_VIA_ca_cluster_node---print-root-fingerprint"
+        },
+        {
+          "name": "TMPDIR",
+          "value": "/run/ca_cluster_node"
         }
       ]
     }

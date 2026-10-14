@@ -77,9 +77,11 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <map>
@@ -88,6 +90,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 namespace kythira {
@@ -416,9 +419,18 @@ public:
 
     static constexpr std::size_t k_rpc_thread_pool_size = 8;
 
+    // The same cap as tcp_rpc_client::k_max_inflight_per_endpoint, for the
+    // same reason: a peer that has gone away holds a pool thread for up to
+    // the RPC timeout per call (longer while its name fails to resolve), and
+    // the leader keeps sending it a heartbeat every interval. Without a cap
+    // those calls take the whole pool and RPCs to live peers queue behind
+    // them until they time out, so a two-of-three majority stops committing.
+    static constexpr std::size_t k_max_inflight_per_endpoint = 2;
+
     explicit client_impl(tls_tcp_rpc_config config)
         : _config(config),
-          _executor(std::make_shared<kythira::executor_default>(k_rpc_thread_pool_size)) {
+          _executor(std::make_shared<kythira::executor_default>(k_rpc_thread_pool_size)),
+          _inflight(std::make_shared<tcp_detail::inflight_limiter>(k_max_inflight_per_endpoint)) {
         ignore_sigpipe_once();
         // Not a member initializer: kept next to the null check and the
         // cleanup that frees it if configuring the context throws.
@@ -448,6 +460,11 @@ public:
     client_impl(client_impl&&) = delete;
     auto operator=(client_impl&&) -> client_impl& = delete;
 
+    // See tcp_rpc_client::note_peer_seen.
+    void note_peer_seen(std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+        tcp_detail::learn_peer_address(_peers, id, from, len);
+    }
+
     void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
         _peers.add_peer(id, std::move(host), port);
     }
@@ -473,6 +490,33 @@ public:
                 network_exception("tls_tcp_rpc_client: unknown peer " + std::to_string(target))));
         }
 
+        auto endpoint = peer->first + ':' + std::to_string(peer->second);
+        if (!_inflight->try_acquire(endpoint)) {
+            return future_factory_default::makeExceptionalFuture<Resp>(std::make_exception_ptr(
+                network_exception("tls_tcp_rpc_client: too many RPCs in flight to " + endpoint)));
+        }
+        // Released by the dispatched task before it settles the call, or
+        // here if the task never runs.
+        struct slot {
+            std::shared_ptr<tcp_detail::inflight_limiter> limiter;
+            std::string endpoint;
+            slot(std::shared_ptr<tcp_detail::inflight_limiter> l, std::string e)
+                : limiter(std::move(l)), endpoint(std::move(e)) {}
+            slot(slot&& o) noexcept
+                : limiter(std::move(o.limiter)), endpoint(std::move(o.endpoint)) {}
+            slot(const slot&) = delete;
+            auto operator=(const slot&) -> slot& = delete;
+            auto operator=(slot&&) -> slot& = delete;
+            ~slot() { release(); }
+            void release() {
+                if (limiter) {
+                    limiter->release(endpoint);
+                    limiter.reset();
+                }
+            }
+        };
+        slot held{_inflight, std::move(endpoint)};
+
         // SSL_new() and the trust-policy snapshot stay synchronous, still
         // under _ctx_mu exactly as before — only the blocking network I/O
         // that follows (connect/handshake/send/recv) moves to the
@@ -496,57 +540,68 @@ public:
         std::uint16_t port = peer->second;
 
         _executor->submit([promise = std::move(promise), raw_ssl, host, port, payload, timeout,
-                           policy_snapshot, deser, target]() mutable {
-            ssl_conn_guard sslg{raw_ssl};
+                           policy_snapshot, deser, target, held = std::move(held)]() mutable {
+            // The in-flight slot is released BEFORE the promise is settled,
+            // as in tcp_rpc_client::call_endpoint: a caller whose .get() had
+            // already returned could otherwise issue its next call while the
+            // slot was still held and be refused with "too many RPCs in
+            // flight".
+            auto slot_for_this_call = std::move(held);
+            auto outcome = [&]() -> std::variant<Resp, std::exception_ptr> {
+                try {
+                    ssl_conn_guard sslg{raw_ssl};
 
-            int fd = tcp_detail::connect_to(host, port, timeout);
-            if (fd < 0) {
-                promise.setException(std::make_exception_ptr(network_exception(
-                    "tls_tcp_rpc_client: connect failed to " + host + ":" + std::to_string(port))));
-                return;
-            }
-            fd_guard fdg{fd};
+                    int fd = tcp_detail::connect_to(host, port, timeout);
+                    if (fd < 0) {
+                        return std::make_exception_ptr(network_exception(
+                            "tls_tcp_rpc_client: connect failed to " + host + ":" +
+                            std::to_string(port) + ": " + std::strerror(errno)));
+                    }
+                    fd_guard fdg{fd};
 
-            SSL_set_fd(raw_ssl, fd);
-            if (SSL_connect(raw_ssl) != 1) {
-                promise.setException(std::make_exception_ptr(
-                    network_exception("tls_tcp_rpc_client: TLS handshake failed connecting to " +
-                                      host + ":" + std::to_string(port))));
-                return;
-            }
+                    SSL_set_fd(raw_ssl, fd);
+                    if (SSL_connect(raw_ssl) != 1) {
+                        return std::make_exception_ptr(network_exception(
+                            "tls_tcp_rpc_client: TLS handshake failed connecting to " + host + ":" +
+                            std::to_string(port)));
+                    }
 
-            X509* presented = SSL_get1_peer_certificate(raw_ssl);
-            // The server must also BE the node we dialled, not merely some
-            // cluster member (an on-path node answering for another).
-            bool trusted =
-                policy_snapshot.accepts(presented) && policy_snapshot.binds(presented, target);
-            if (presented != nullptr) {
-                X509_free(presented);
-            }
-            if (!trusted) {
-                promise.setException(std::make_exception_ptr(network_exception(
-                    "tls_tcp_rpc_client: peer certificate rejected by trust policy: " + host + ":" +
-                    std::to_string(port))));
-                return;
-            }
+                    X509* presented = SSL_get1_peer_certificate(raw_ssl);
+                    // The server must also BE the node we dialled, not merely
+                    // some cluster member (an on-path node answering for
+                    // another).
+                    bool trusted = policy_snapshot.accepts(presented) &&
+                                   policy_snapshot.binds(presented, target);
+                    if (presented != nullptr) {
+                        X509_free(presented);
+                    }
+                    if (!trusted) {
+                        return std::make_exception_ptr(network_exception(
+                            "tls_tcp_rpc_client: peer certificate rejected by trust policy: " +
+                            host + ":" + std::to_string(port)));
+                    }
 
-            if (!frame_send(raw_ssl, tcp_detail::bytes_to_str(payload))) {
-                promise.setException(
-                    std::make_exception_ptr(network_exception("tls_tcp_rpc_client: send failed")));
-                return;
-            }
+                    if (!frame_send(raw_ssl, tcp_detail::bytes_to_str(payload))) {
+                        return std::make_exception_ptr(
+                            network_exception("tls_tcp_rpc_client: send failed"));
+                    }
 
-            auto resp = frame_recv(raw_ssl);
-            if (!resp) {
-                promise.setException(
-                    std::make_exception_ptr(network_exception("tls_tcp_rpc_client: recv failed")));
-                return;
-            }
+                    auto resp = frame_recv(raw_ssl);
+                    if (!resp) {
+                        return std::make_exception_ptr(
+                            network_exception("tls_tcp_rpc_client: recv failed"));
+                    }
+                    return deser(tcp_detail::str_to_bytes(*resp));
+                } catch (...) {
+                    return std::current_exception();
+                }
+            }();
+            slot_for_this_call.release();
 
-            try {
-                promise.setValue(deser(tcp_detail::str_to_bytes(*resp)));
-            } catch (...) {
-                promise.setException(std::current_exception());
+            if (auto* error = std::get_if<std::exception_ptr>(&outcome)) {
+                promise.setException(*error);
+            } else {
+                promise.setValue(std::move(std::get<Resp>(outcome)));
             }
         });
 
@@ -559,6 +614,7 @@ private:
     std::mutex _ctx_mu;  // guards _ctx's loaded identity AND _config.trust_policy
     tls_tcp_rpc_config _config;
     std::shared_ptr<kythira::executor_default> _executor;
+    std::shared_ptr<tcp_detail::inflight_limiter> _inflight;
 };
 
 // ── server_impl (Requirement 1.1, 1.2) ──────────────────────────────────────
@@ -575,6 +631,10 @@ public:
     using ae_fn = std::function<append_entries_response<>(const append_entries_request<>&)>;
     using is_fn = std::function<install_snapshot_response<>(const install_snapshot_request<>&)>;
     using fl_fn = std::function<fetch_log_entries_response<>(const fetch_log_entries_request<>&)>;
+    // Called with the node an RPC comes from and the address it came from,
+    // once the certificate has bound the connection to that node.
+    using peer_seen_fn =
+        std::function<void(std::uint64_t node_id, const sockaddr_storage& from, socklen_t len)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
     server_impl(std::uint16_t port, tls_tcp_rpc_config config,
@@ -623,6 +683,9 @@ public:
     void register_install_snapshot_handler(is_fn h) { _is = std::move(h); }
     // Satisfies kythira::network_server_with_log_fetch (peer-to-peer catch-up).
     void register_fetch_log_entries_handler(fl_fn h) { _fl = std::move(h); }
+    // See tcp_rpc_server::set_peer_seen_handler. Here the sender is the node
+    // the connection's certificate binds it to, so the address is trusted.
+    void set_peer_seen_handler(peer_seen_fn h) { _peer_seen = std::move(h); }
 
     void start() {
         if (_running.exchange(true)) {
@@ -763,36 +826,42 @@ private:
                 if (!sender_ok(req.candidate_id())) {
                     return;
                 }
+                peer_seen(req.candidate_id(), fd);
                 resp = _ser.serialize(_rv(req));
             } else if (type == "request_pre_vote_request" && _pv) {
                 auto req = _ser.deserialize_request_pre_vote_request(bytes);
                 if (!sender_ok(req.candidate_id())) {
                     return;
                 }
+                peer_seen(req.candidate_id(), fd);
                 resp = _ser.serialize(_pv(req));
             } else if (type == "timeout_now_request" && _tn) {
                 auto req = _ser.deserialize_timeout_now_request(bytes);
                 if (!sender_ok(req.leader_id())) {
                     return;
                 }
+                peer_seen(req.leader_id(), fd);
                 resp = _ser.serialize(_tn(req));
             } else if (type == "append_entries_request" && _ae) {
                 auto req = _ser.deserialize_append_entries_request(bytes);
                 if (!sender_ok(req.leader_id())) {
                     return;
                 }
+                peer_seen(req.leader_id(), fd);
                 resp = _ser.serialize(_ae(req));
             } else if (type == "install_snapshot_request" && _is) {
                 auto req = _ser.deserialize_install_snapshot_request(bytes);
                 if (!sender_ok(req.leader_id())) {
                     return;
                 }
+                peer_seen(req.leader_id(), fd);
                 resp = _ser.serialize(_is(req));
             } else if (type == "fetch_log_entries_request" && _fl) {
                 auto req = _ser.deserialize_fetch_log_entries_request(bytes);
                 if (!sender_ok(req.requester_id())) {
                     return;
                 }
+                peer_seen(req.requester_id(), fd);
                 resp = _ser.serialize(_fl(req));
             } else {
                 return;
@@ -800,6 +869,17 @@ private:
             t.enter(phase::reply);
             frame_send(raw_ssl, tcp_detail::bytes_to_str(resp));
         } catch (...) {
+        }
+    }
+
+    void peer_seen(std::uint64_t node_id, int fd) const {
+        if (!_peer_seen) {
+            return;
+        }
+        sockaddr_storage from{};
+        socklen_t len = sizeof(from);
+        if (::getpeername(fd, reinterpret_cast<sockaddr*>(&from), &len) == 0) {
+            _peer_seen(node_id, from, len);
         }
     }
 
@@ -822,6 +902,7 @@ private:
     ae_fn _ae;
     is_fn _is;
     fl_fn _fl;
+    peer_seen_fn _peer_seen;
     serializer_t _ser;
 };
 
@@ -839,6 +920,19 @@ public:
 
     void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
         _impl->add_peer(id, std::move(host), port);
+    }
+
+    void note_peer_seen(std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+        _impl->note_peer_seen(id, from, len);
+    }
+
+    // See tcp_rpc_client::peer_seen_handler(); shares the implementation, so
+    // it outlives any copy of this handle.
+    [[nodiscard]] auto peer_seen_handler() const
+        -> std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)> {
+        return [impl = _impl](std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+            impl->note_peer_seen(id, from, len);
+        };
     }
 
     auto reload_identity(std::string cert_path, std::string key_path) -> void {
@@ -931,6 +1025,9 @@ public:
 
     void register_request_vote_handler(tls_detail::server_impl::rv_fn h) {
         _impl->register_request_vote_handler(std::move(h));
+    }
+    void set_peer_seen_handler(tls_detail::server_impl::peer_seen_fn h) {
+        _impl->set_peer_seen_handler(std::move(h));
     }
     void register_request_pre_vote_handler(tls_detail::server_impl::pv_fn h) {
         _impl->register_request_pre_vote_handler(std::move(h));
