@@ -431,6 +431,18 @@ public:
     /// Useful in tests and immediately after `submit_command` to bypass the
     /// normal heartbeat interval.
     auto replicate_to_followers() -> void;
+
+    /// @brief Replicate to the followers that have something new to learn.
+    ///
+    /// The form of `replicate_to_followers()` for a host that calls it on
+    /// every tick (`multi_raft`). A follower is skipped while the last
+    /// AppendEntries sent to it already carried every entry in the log and
+    /// the current commit index, and is younger than one heartbeat
+    /// interval. Without that, a 2 ms tick re-sent the same in-flight
+    /// entries to every follower of every group on every tick whether or
+    /// not anything had changed, and the transport, not the protocol, was
+    /// what kept the rate down.
+    auto replicate_to_followers_if_due() -> void;
     /// @}
 
     /// @name Administration entries (multi-Raft, `.kiro/specs/multi-raft/` §5.1)
@@ -793,6 +805,17 @@ private:
     // For each server, index of highest log entry known to be replicated on server
     // (initialized to 0, increases monotonically)
     std::unordered_map<node_id_type, log_index_type> _match_index;
+
+    // What the last AppendEntries sent to each follower covered, and when:
+    // replicate_to_followers_if_due() skips a follower this already covers.
+    // Cleared on election; a follower's entry is dropped when its RPC fails,
+    // so the next tick sends again.
+    struct append_sent {
+        log_index_type _last_index;
+        log_index_type _commit_index;
+        std::chrono::steady_clock::time_point _at;
+    };
+    std::unordered_map<node_id_type, append_sent> _last_append_sent;
 
     // Track unresponsive followers for monitoring
     std::unordered_set<node_id_type> _unresponsive_followers;
@@ -1360,6 +1383,7 @@ private:
 
     // Replication helpers
     auto send_append_entries_to(node_id_type target) -> void;
+    auto replicate_to_followers_impl(bool only_due) -> void;
     auto send_heartbeat_with_retry(node_id_type target) -> void;
     auto send_install_snapshot_to(node_id_type target) -> void;
     auto send_install_snapshot_chunk(node_id_type target, std::shared_ptr<const snapshot_type> snap,
@@ -7088,6 +7112,7 @@ auto node<Types>::become_leader() -> void {
     }
 
     // Initialize leader-specific state
+    _last_append_sent.clear();
     auto last_log_idx = get_last_log_index();
     auto init_peer = [&](const node_id_type& peer_id) {
         if (peer_id != _node_id) {
@@ -7352,6 +7377,18 @@ auto node<Types>::get_log_entry(log_index_type index) const -> std::optional<log
 template<raft_types Types>
 
 auto node<Types>::replicate_to_followers() -> void {
+    replicate_to_followers_impl(false);
+}
+
+template<raft_types Types>
+
+auto node<Types>::replicate_to_followers_if_due() -> void {
+    replicate_to_followers_impl(true);
+}
+
+template<raft_types Types>
+
+auto node<Types>::replicate_to_followers_impl(bool only_due) -> void {
     // Snapshot the follower list and decide send vs. snapshot while holding _mutex.
     // The actual I/O must happen WITHOUT _mutex because the Folly callbacks (inline
     // executor) re-acquire it, which would deadlock.
@@ -7360,12 +7397,15 @@ auto node<Types>::replicate_to_followers() -> void {
         bool needs_snapshot;
     };
     std::vector<follower_action> actions;
+    bool any_follower = false;
 
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if (_state != kythira::server_state::leader) {
             return;
         }
+        const auto now = std::chrono::steady_clock::now();
+        const auto last_log_index = get_last_log_index();
 
         _logger.debug("Replicating to followers",
                       {{"node_id", node_id_to_string(_node_id)},
@@ -7379,6 +7419,15 @@ auto node<Types>::replicate_to_followers() -> void {
             if (peer_id == _node_id) {
                 continue;
             }
+            any_follower = true;
+            if (only_due) {
+                const auto sent = _last_append_sent.find(peer_id);
+                if (sent != _last_append_sent.end() && sent->second._last_index >= last_log_index &&
+                    sent->second._commit_index >= _commit_index &&
+                    now - sent->second._at < _heartbeat_interval) {
+                    continue;
+                }
+            }
             auto first_log_index = _log.empty() ? log_index_type{1} : _log.front().index();
             // nextIndex one past the snapshot boundary needs no snapshot:
             // prevLogIndex is the boundary, whose term term_at() knows.
@@ -7389,7 +7438,10 @@ auto node<Types>::replicate_to_followers() -> void {
     // _mutex released — safe to do blocking I/O now.
 
     if (actions.empty()) {
-        _logger.debug("No followers to replicate to", {{"node_id", node_id_to_string(_node_id)}});
+        if (!any_follower) {
+            _logger.debug("No followers to replicate to",
+                          {{"node_id", node_id_to_string(_node_id)}});
+        }
         std::lock_guard<std::mutex> lock(_mutex);
         advance_commit_index();
         return;
@@ -7475,6 +7527,9 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
 
             request = append_entries_request_type{_current_term, _node_id,        prev_log_index,
                                                   prev_log_term, entries_to_send, _commit_index};
+            _last_append_sent[target] =
+                append_sent{prev_log_index + entries_to_send.size(), _commit_index,
+                            std::chrono::steady_clock::now()};
 
             _logger.debug("Sending AppendEntries",
                           {{"node_id", node_id_to_string(_node_id)},
@@ -7557,6 +7612,7 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                     }
 
                     _unresponsive_followers.insert(target);
+                    _last_append_sent.erase(target);
                     note_peer_rpc_failure(target);
 
                     _metrics.set_metric_name("raft_append_entries_failed");
