@@ -162,6 +162,98 @@ permissions:
   contents: read
 
 jobs:
+  # ── Run plan ─────────────────────────────────────────────────────────────
+  # Every job below is gated by an `if:` on the master switch and its own
+  # toggle, and a job whose `if:` is false reports "skipped", which GitHub
+  # renders as success. With the master switch off, a whole run therefore
+  # reads as a green tick having touched no cloud at all. This job has no
+  # gate, so it always runs and says what the run will and will not do:
+  #
+  #   * it writes the plan (each job, on or off) to the run summary;
+  #   * a manual dispatch that selects nothing fails, because whoever
+  #     dispatched it asked for a run and got none;
+  #   * a scheduled run with the master switch (REAL_CLOUD_TESTS_ENABLED) off
+  #     warns instead of failing: switching the schedule off is a deliberate
+  #     setting, and a red run every Monday would bury real failures;
+  #   * a scheduled run with the master switch on but every job's toggle off
+  #     fails, since that contradiction is a misconfiguration.
+  #
+  # The expressions repeat each job's own `if:` (minus always()); keep them
+  # in step when a gate changes.
+  run-plan:
+    name: Real Cloud Tests run plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      MASTER: ${{ github.event.inputs.run_real_cloud_tests == 'true' || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true') }}
+      AWS: ${{ github.event.inputs.aws_enabled == 'true' || (github.event.inputs.aws_enabled == null && vars.REAL_CLOUD_TESTS_AWS_ENABLED == 'true') }}
+      AWS_ASG: ${{ github.event.inputs.aws_bundle_ec2_quorum == 'true' || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_ASG_QUORUM_ENABLED == 'true') }}
+      AWS_EC2_LAUNCH_OPTIONS: ${{ github.event.inputs.aws_bundle_ec2_quorum == 'true' || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_EC2_LAUNCH_OPTIONS_ENABLED == 'true') }}
+      AMI_BUILD: ${{ github.event.inputs.aws_bundle_ami_build == 'true' || (github.event.inputs.aws_bundle_ami_build == null && vars.REAL_CLOUD_TESTS_AWS_AMI_BUILD_ENABLED == 'true') }}
+      AZURE: ${{ github.event.inputs.azure_enabled == 'true' || (github.event.inputs.azure_enabled == null && vars.REAL_CLOUD_TESTS_AZURE_ENABLED == 'true') }}
+      GCP: ${{ github.event.inputs.gcp_enabled == 'true' || (github.event.inputs.gcp_enabled == null && vars.REAL_CLOUD_TESTS_GCP_ENABLED == 'true') }}
+      OCI: ${{ github.event.inputs.oci_enabled == 'true' || (github.event.inputs.oci_enabled == null && vars.REAL_CLOUD_TESTS_OCI_ENABLED == 'true') }}
+      ALIBABA: ${{ github.event.inputs.alibaba_enabled == 'true' || (github.event.inputs.alibaba_enabled == null && vars.REAL_CLOUD_TESTS_ALIBABA_ENABLED == 'true') }}
+      AWS_MONITORING: ${{ github.event.inputs.aws_monitoring_enabled == 'true' || (github.event.inputs.aws_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_AWS_MONITORING_ENABLED == 'true') }}
+      AZURE_MONITORING: ${{ github.event.inputs.azure_monitoring_enabled == 'true' || (github.event.inputs.azure_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_AZURE_MONITORING_ENABLED == 'true') }}
+      # No dispatch input (the 25-input cap), so only the variable decides.
+      GCP_MONITORING: ${{ vars.REAL_CLOUD_TESTS_GCP_MONITORING_ENABLED == 'true' }}
+      # No dispatch input (the 25-input cap), so only the variable decides.
+      OCI_MONITORING: ${{ vars.REAL_CLOUD_TESTS_OCI_MONITORING_ENABLED == 'true' }}
+      ALIBABA_MONITORING: ${{ github.event.inputs.alibaba_monitoring_enabled == 'true' || (github.event.inputs.alibaba_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_ALIBABA_MONITORING_ENABLED == 'true') }}
+      EVENT: ${{ github.event_name }}
+    steps:
+      - name: Report what this run will do
+        run: |
+          # "job|toggle": the AWS sub-jobs also need the AWS toggle.
+          rows=(
+            "aws|$AWS"
+            "aws-asg|$([ "$AWS" = true ] && [ "$AWS_ASG" = true ] && echo true || echo false)"
+            "aws-ec2-launch-options|$([ "$AWS" = true ] && [ "$AWS_EC2_LAUNCH_OPTIONS" = true ] && echo true || echo false)"
+            "ami-build|$([ "$AWS" = true ] && [ "$AMI_BUILD" = true ] && echo true || echo false)"
+            "azure|$AZURE"
+            "gcp|$GCP"
+            "oci|$OCI"
+            "alibaba|$ALIBABA"
+            "aws-monitoring|$AWS_MONITORING"
+            "azure-monitoring|$AZURE_MONITORING"
+            "gcp-monitoring|$GCP_MONITORING"
+            "oci-monitoring|$OCI_MONITORING"
+            "alibaba-monitoring|$ALIBABA_MONITORING"
+          )
+          selected=0
+          {
+            echo "### Real cloud run plan ($EVENT)"
+            echo ""
+            echo "Master switch: **$MASTER**"
+            echo ""
+            echo "| Job | Runs |"
+            echo "|---|---|"
+            for row in "${rows[@]}"; do
+              job=${row%%|*} on=${row#*|}
+              [ "$MASTER" = true ] || on=false
+              [ "$on" = true ] && selected=$((selected + 1))
+              echo "| $job | $([ "$on" = true ] && echo yes || echo 'no (skipped)') |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$MASTER" != true ]; then
+            msg="the master switch is off, so no real-cloud test runs and every job below reports skipped"
+            if [ "$EVENT" = workflow_dispatch ]; then
+              echo "::error::Nothing to run: $msg. Tick run_real_cloud_tests when dispatching."
+              exit 1
+            fi
+            echo "::warning::Nothing ran: $msg (repository variable REAL_CLOUD_TESTS_ENABLED is not 'true')."
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Nothing ran.** The green jobs below are skipped, not passed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$selected" -eq 0 ]; then
+            echo "::error::Nothing to run: the master switch is on but every provider and monitoring toggle is off."
+            exit 1
+          fi
+          echo "$selected job(s) selected; see the run summary."
+
   # ── AWS ──────────────────────────────────────────────────────────────────
   # Runs on both x86_64 and native arm64 runners so the Graviton/arm64 branch
   # in tests/aws_quorum_manager_real_ec2_test.cpp (instance-type fallback,
@@ -190,6 +282,9 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      # The leak audit asks the Actions API whether the run that owns a VPC
+      # is still in progress (see "Audit for leaked instances").
+      actions: read
     if: |
       (github.event.inputs.run_real_cloud_tests == 'true'
         || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
@@ -348,7 +443,7 @@ jobs:
           path: vcpkg_installed
           # runner.arch keeps the x64 and arm64 legs' caches isolated from
           # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -707,6 +802,7 @@ jobs:
         if: always()
         env:
           AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
             echo "No AWS credentials in the environment (the credentials step failed or never ran) — nothing to audit with."
@@ -716,6 +812,57 @@ jobs:
             echo "::error::THE AUDIT DID NOT RUN ($1). This is not a clean result: instances may have outlived teardown and be billing now. Check EC2 in ${AWS_DEFAULT_REGION} for instances tagged kythira:managed-by=ec2_quorum_manager." >&2
             exit 1
           }
+
+          # ── Which networks belong to another run that is still going ──
+          #
+          # Everything below lists the whole region, and this job is not
+          # serialised across runs: the weekly schedule fires hours late and
+          # lands on top of manual dispatches. Both legs of run 38274506641,
+          # dispatched on 2026-10-12 while that week's scheduled run was still
+          # going, failed on kyt-71B1ED54-...-vpc and its NAT gateway, which
+          # were 33 seconds old and still pending: another run's live network.
+          # Run 38274506641 had no EC2 bundle enabled and created no VPC.
+          #
+          # The real-EC2 fixtures stamp each VPC with kythira:github-run-id at
+          # CreateVpc (aws_real_ec2_test_support.hpp). A VPC stamped with
+          # another run's id is skipped only while the Actions API says that
+          # run has not completed; that run's own audit owns it. Everything
+          # else still counts: this run's VPCs, a completed run's VPC (its
+          # audit already failed on it, and it is still a leak), an unstamped
+          # VPC, and any run whose status cannot be read, because an audit
+          # that guesses "probably fine" is the one that missed 19 VPCs.
+          inflight_vpcs='[]'
+          checked_runs=' '
+          # Reads a JSON array of {id, run} VPCs and adds to inflight_vpcs the
+          # ids of those whose foreign run is still in progress. Each run is
+          # looked up once.
+          note_inflight() {
+            local listing="$1" run status
+            for run in $(printf '%s' "${listing}" \
+                | jq -r --arg me "${GITHUB_RUN_ID}" '[.[]?.run | select(. != null and . != $me)] | unique | .[]'); do
+              case "${checked_runs}" in *" ${run} "*) continue ;; esac
+              checked_runs="${checked_runs}${run} "
+              if ! status=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run}" --jq .status 2>/dev/null); then
+                echo "::warning::Could not read the status of run ${run}, which owns a VPC here; counting its VPCs as leaked."
+                continue
+              fi
+              [ "${status}" != "completed" ] || continue
+              echo "Skipping VPCs of run ${run} (${status}): ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${run}"
+              inflight_vpcs=$(printf '%s' "${listing}" \
+                | jq --arg r "${run}" --argjson acc "${inflight_vpcs}" '$acc + [.[] | select(.run == $r) | .id]') \
+                || return 1
+            done
+          }
+          stamped=$(aws ec2 describe-vpcs \
+            --filters 'Name=tag-key,Values=kythira:github-run-id' \
+            --query 'Vpcs[].{id:VpcId,run:Tags[?Key==`kythira:github-run-id`]|[0].Value}' \
+            --output json) || audit_failed "the DescribeVpcs call for run-stamped VPCs failed"
+          note_inflight "${stamped}" || audit_failed "the in-flight VPC list could not be built"
+          # Drops entries whose `.vpc` is a network another live run owns.
+          not_inflight() {
+            jq --argjson skip "${inflight_vpcs}" '[.[]? | select(.vpc as $v | $skip | index($v) | not)]'
+          }
+
           # Scoped by the tag the producer itself applies, not by name: a name
           # prefix would also match anything an operator created by hand.
           #
@@ -725,11 +872,20 @@ jobs:
           # 2026-09-29 -- so this filter could not see it even when tagging had
           # succeeded, and i-0c7193ec59f352ab2 ran ~44h while this step printed
           # "instances: clean". A tag the audit never reads is not coverage.
+          #
+          # shutting-down is left out, here and in the leaked-VPC query below.
+          # EC2 stops billing an instance once it enters shutting-down, so it
+          # is not a leak, and it is also the one state the in-flight filter
+          # cannot attribute: the instance has already left its VPC and
+          # reports VpcId null. Run 38493981760 failed on exactly that: the
+          # node another live run had just killed in its replacement case.
           leaked=$(aws ec2 describe-instances \
             --filters 'Name=tag:kythira:managed-by,Values=ec2_quorum_manager,aws_quorum_manager_real_ec2_test' \
-                      'Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped' \
-            --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,cluster:Tags[?Key==`kythira:cluster`]|[0].Value}' \
+                      'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+            --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,vpc:VpcId,cluster:Tags[?Key==`kythira:cluster`]|[0].Value}' \
             --output json) || audit_failed "the DescribeInstances call failed"
+          leaked=$(printf '%s' "${leaked}" | not_inflight) \
+            || audit_failed "the instance listing could not be filtered by owning run"
           count=$(printf '%s' "${leaked}" | jq 'if . == null then 0 else length end') \
             || audit_failed "DescribeInstances returned a response this step could not parse"
           [ -n "${count}" ] || audit_failed "the parsed instance count was empty"
@@ -765,6 +921,8 @@ jobs:
             --filter 'Name=tag:Name,Values=kyt-*' 'Name=state,Values=available,pending' \
             --query 'NatGateways[].{id:NatGatewayId,state:State,vpc:VpcId,created:CreateTime}' \
             --output json) || audit_failed "the DescribeNatGateways call failed"
+          nat=$(printf '%s' "${nat}" | not_inflight) \
+            || audit_failed "the NAT gateway listing could not be filtered by owning run"
           nat_count=$(printf '%s' "${nat}" | jq 'if . == null then 0 else length end') \
             || audit_failed "DescribeNatGateways returned a response this step could not parse"
           [ -n "${nat_count}" ] || audit_failed "the parsed NAT gateway count was empty"
@@ -800,11 +958,11 @@ jobs:
           # wildcard so it can never claim a VPC these tests did not make.
           vpcs=$(aws ec2 describe-vpcs \
             --filters 'Name=tag:Name,Values=kyt-*-vpc' \
-            --query 'Vpcs[].{id:VpcId,cidr:CidrBlock,name:Tags[?Key==`Name`]|[0].Value}' \
+            --query 'Vpcs[].{id:VpcId,cidr:CidrBlock,name:Tags[?Key==`Name`]|[0].Value,run:Tags[?Key==`kythira:github-run-id`]|[0].Value}' \
             --output json) || audit_failed "the DescribeVpcs call failed — if this is an authorization error, re-run provision-oidc-role.sh to pick up the ec2:DescribeVpcs grant"
           ca_vpcs=$(aws ec2 describe-vpcs \
             --filters 'Name=cidr,Values=10.220.0.0/16,10.221.0.0/16' \
-            --query 'Vpcs[?IsDefault==`false`].{id:VpcId,cidr:CidrBlock,name:`ca-cluster-node (untagged)`}' \
+            --query 'Vpcs[?IsDefault==`false`].{id:VpcId,cidr:CidrBlock,name:`ca-cluster-node (untagged)`,run:Tags[?Key==`kythira:github-run-id`]|[0].Value}' \
             --output json) || audit_failed "the DescribeVpcs call for the ca-cluster-node CIDRs failed"
           # unique_by(.id), because the two filters now overlap. Before the
           # ca-cluster-node fixtures tagged what they create they matched only the
@@ -821,6 +979,10 @@ jobs:
           vpcs=$(printf '%s\n%s' "${vpcs}" "${ca_vpcs}" \
             | jq -s 'add // [] | unique_by(.id)') \
             || audit_failed "the two VPC listings could not be combined"
+          # Again, for a VPC another run created after the stamped listing above.
+          note_inflight "${vpcs}" || audit_failed "the in-flight VPC list could not be built"
+          vpcs=$(printf '%s' "${vpcs}" | jq 'map(.vpc = .id)' | not_inflight | jq 'map(del(.vpc))') \
+            || audit_failed "the VPC listing could not be filtered by owning run"
           vpc_count=$(printf '%s' "${vpcs}" | jq 'if . == null then 0 else length end') \
             || audit_failed "DescribeVpcs returned a response this step could not parse"
           [ -n "${vpc_count}" ] || audit_failed "the parsed VPC count was empty"
@@ -855,7 +1017,7 @@ jobs:
             vpc_csv=$(printf '%s' "${leaked_vpc_ids}" | tr -s ' ' ',' | sed 's/^,//; s/,$//')
             stragglers=$(aws ec2 describe-instances \
               --filters "Name=vpc-id,Values=${vpc_csv}" \
-                        'Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped' \
+                        'Name=instance-state-name,Values=pending,running,stopping,stopped' \
               --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime,vpc:VpcId,managedBy:Tags[?Key==`kythira:managed-by`]|[0].Value}' \
               --output json) || audit_failed "the DescribeInstances call scoped to leaked VPCs failed"
             straggler_count=$(printf '%s' "${stragglers}" | jq 'if . == null then 0 else length end') \
@@ -1051,7 +1213,7 @@ jobs:
           path: vcpkg_installed
           # runner.arch keeps the x64 and arm64 legs' caches isolated from
           # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1327,7 +1489,7 @@ jobs:
           path: vcpkg_installed
           # runner.arch keeps the x64 and arm64 legs' caches isolated from
           # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1582,7 +1744,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ matrix.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1813,7 +1975,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-azure-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-azure-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -2498,7 +2660,7 @@ jobs:
           # job restore an aws-populated cache that lacks google-cloud-cpp,
           # leaving KYTHIRA_HAS_GCP_SDK false and the real-GCE/CAS test binaries
           # unbuilt.
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -2930,7 +3092,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -3431,7 +3593,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Export Actions cache credentials for vcpkg
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0

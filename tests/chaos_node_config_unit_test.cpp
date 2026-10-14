@@ -31,6 +31,11 @@ constexpr const char* k_vars[] = {
     "KYTHIRA_CLUSTER",
     "PEER_ADDRESS_TEMPLATE",
     "QUORUM_CHECK_INTERVAL_MS",
+    "RPC_TLS_CERT",
+    "RPC_TLS_KEY",
+    "RPC_TLS_CA",
+    "QUORUM_MANAGER",
+    "OTLP_ENDPOINT",
 };
 
 // Clears every variable under test, and again on destruction.
@@ -144,6 +149,52 @@ BOOST_FIXTURE_TEST_CASE(quorum_check_interval_is_parsed, clean_env) {
     auto cfg = node_config::from_env();
     BOOST_REQUIRE(cfg.quorum_check_interval.has_value());
     BOOST_TEST(cfg.quorum_check_interval->count() == 5000);
+}
+
+BOOST_FIXTURE_TEST_CASE(rpc_tls_is_off_by_default, clean_env) {
+    ::setenv("NODE_ID", "1", 1);
+    ::setenv("PEERS", "2:b:7000", 1);
+    BOOST_TEST(!node_config::from_env().rpc_tls());
+}
+
+BOOST_FIXTURE_TEST_CASE(rpc_tls_takes_all_three_paths, clean_env) {
+    ::setenv("NODE_ID", "1", 1);
+    ::setenv("PEERS", "2:b:7000", 1);
+    ::setenv("RPC_TLS_CERT", "/ca/node1/cert.pem", 1);
+    ::setenv("RPC_TLS_KEY", "/ca/node1/key.pem", 1);
+    // A cert and key with no root to check peers against would trust nobody
+    // (or, worse, anybody), so a partial set is refused.
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+
+    ::setenv("RPC_TLS_CA", "/ca/root_ca.pem", 1);
+    auto cfg = node_config::from_env();
+    BOOST_TEST(cfg.rpc_tls());
+    BOOST_TEST(cfg.rpc_tls_cert_path == "/ca/node1/cert.pem");
+    BOOST_TEST(cfg.rpc_tls_key_path == "/ca/node1/key.pem");
+    BOOST_TEST(cfg.rpc_tls_ca_path == "/ca/root_ca.pem");
+}
+
+BOOST_FIXTURE_TEST_CASE(rpc_tls_refuses_combinations_it_cannot_honour, clean_env) {
+    ::setenv("NODE_ID", "4", 1);
+    ::setenv("PEERS", "1:a:7000", 1);
+    ::setenv("RPC_TLS_CERT", "c", 1);
+    ::setenv("RPC_TLS_KEY", "k", 1);
+    ::setenv("RPC_TLS_CA", "r", 1);
+
+    ::setenv("JOIN", "1", 1);
+    ::setenv("SELF_ADDRESS", "d:7000", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+    ::unsetenv("JOIN");
+
+    ::setenv("QUORUM_MANAGER", "docker", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+    ::unsetenv("QUORUM_MANAGER");
+
+    ::setenv("OTLP_ENDPOINT", "http://collector:4318", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+    ::unsetenv("OTLP_ENDPOINT");
+
+    BOOST_CHECK_NO_THROW(node_config::from_env());
 }
 
 BOOST_AUTO_TEST_CASE(split_host_port_rejects_malformed) {

@@ -369,18 +369,17 @@ BOOST_AUTO_TEST_CASE(revoke_on_revocable_ca_succeeds) {
     BOOST_CHECK_NO_THROW(std::move(provider.revoke(serial, "KEY_COMPROMISE")).get());
 }
 
-// ...and surfaces the AWS error, not a local fallback, when it has neither.
-BOOST_AUTO_TEST_CASE(revoke_on_bare_ca_surfaces_aws_error) {
+// ...and AWS accepts it even when the CA has neither. The first real run
+// (Real Cloud Tests run 38065882804, 2026-10-10, both architectures)
+// showed RevokeCertificate succeeding on a CA with no CRL or OCSP: AWS
+// records the revocation but has nowhere to publish it, so no relying party
+// would ever see it. That is why ca_service checks revocation_configured()
+// and answers 501 before it calls revoke(); this case pins the AWS behavior
+// that gate exists for.
+BOOST_AUTO_TEST_CASE(revoke_on_bare_ca_is_accepted_by_aws) {
     aws_acm_pca_provider provider{make_config(cas().bare_arn)};
     auto serial = acm_pca::hex_serial(bare_leaf().certificate_pem);
-    try {
-        std::move(provider.revoke(serial, "KEY_COMPROMISE")).get();
-        BOOST_ERROR("revoke on a CA with no revocation configuration succeeded");
-    } catch (const std::runtime_error& ex) {
-        const std::string what = ex.what();
-        BOOST_TEST_MESSAGE("bare-CA revoke error: " << what);
-        BOOST_TEST(what.find("acm-pca RevokeCertificate: ") != std::string::npos);
-    }
+    BOOST_CHECK_NO_THROW(std::move(provider.revoke(serial, "KEY_COMPROMISE")).get());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

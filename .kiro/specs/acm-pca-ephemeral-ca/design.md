@@ -92,7 +92,7 @@ the last case.
 | `sign_csr_issues_certificate_chaining_to_root` | revocable | chain verifies against the root |
 | `revocation_configured_distinguishes_cas` | both | `true` / `false` |
 | `revoke_on_revocable_ca_succeeds` | revocable | no throw, `KEY_COMPROMISE` |
-| `revoke_on_bare_ca_surfaces_aws_error` | bare | `std::runtime_error` carrying the AWS message (Req 10.7) |
+| `revoke_on_bare_ca_is_accepted_by_aws` | bare | no throw: AWS records the revocation but publishes it nowhere, which is why ca_service answers 501 first (Req 10.7). The design originally expected an AWS error; the first real run showed otherwise. |
 
 Leaf issuance count is 2: one on each CA, because the bare-CA case needs its
 own certificate to revoke. With the two self-issued roots, that is 4

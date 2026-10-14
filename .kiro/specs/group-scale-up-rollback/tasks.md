@@ -88,18 +88,19 @@ gap and `design.md` for the planner and per-cloud calls.
   - [x] 8.3 Report the rollback `resize` result instead of discarding it
   - _Requirements: 1.1, 1.3, 2.1-2.5, 3.1-3.4, 4.7, 5.1-5.4, 7.4_
 
-- [ ] 9. Real-cloud timeout cases
-  - [ ] 9.1 Add one timeout-rollback case each to the ASG, VMSS and MIG
-    real-cloud suites; dispatch under the real-cloud cost rules
+- [x] 9. Real-cloud timeout cases
+  - [x] 9.1 Add one timeout-rollback case each to the ASG, VMSS and MIG
+    real-cloud suites; dispatch under the real-cloud cost rules. Passed:
+    VMSS run 163, MIG run 165, ASG run 171 (37801934552, x64 and arm64)
   - [x] 9.2 Abandon an ASG launch a lifecycle hook holds: the first real
     ASG run (37475165001) showed the terminate refused for as long as the
     hook holds the launch
   - _Requirements: 7.1, 8.5_
 
-- [ ] 10. Documentation
-  - [ ] 10.1 Provider READMEs: rollback behaviour, scale-in protection and
+- [x] 10. Documentation
+  - [x] 10.1 Provider READMEs: rollback behaviour, scale-in protection and
     how to clear it, one manager per group
-  - [ ] 10.2 Point the five provider specs' timeout-rollback criteria to
+  - [x] 10.2 Point the five provider specs' timeout-rollback criteria to
     this spec; update the Alibaba RAM, Azure role and GCP permission docs
   - _Requirements: 4.7, 7.2, 7.3, 7.4, 7.5_
 
@@ -133,3 +134,10 @@ gap and `design.md` for the planner and per-cloud calls.
   member listed about 6s after the capacity PATCH and adoptable 24-29s
   after it. The MIG cases have not run in CI yet: the workflow sets no
   `GCP_TEST_MIG_A`, and no script provisions the MIG.
+- Task 10 found the five provider specs' timeout criteria already pointing
+  here (they landed with tasks 4-8), and the Alibaba CI policy already
+  listing `ess:SetInstancesProtection` and `ess:RemoveInstances`. It added
+  the rollback, protection and one-manager-per-group sections to the five
+  `docker/*_quorum_manager/README.md` operator guides, the ESS RAM actions
+  to the Alibaba guide, and `autoscaling:SetInstanceProtection` to the AWS
+  guide's ASG IAM row, which 6.4 had missed.

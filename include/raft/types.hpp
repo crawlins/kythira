@@ -773,7 +773,10 @@ struct raft_configuration {
 
     // ── Log and snapshot ──────────────────────────────────────────────────────
     std::size_t _max_entries_per_append{100};  ///< Maximum entries in one AppendEntries RPC.
-    std::size_t _snapshot_threshold_bytes{10'000'000};  ///< Log size that triggers snapshotting.
+    /// Command bytes applied since the last snapshot at which the node
+    /// snapshots its state machine and compacts the log on its own. Every
+    /// replica, leader or follower, counts and snapshots independently.
+    std::size_t _snapshot_threshold_bytes{10'000'000};
     std::size_t _snapshot_chunk_size{1'000'000};  ///< Chunk size for InstallSnapshot transfers.
 
     // ── Retry policies ────────────────────────────────────────────────────────
@@ -1188,11 +1191,12 @@ template<typename Data>
 requires std::ranges::range<Data> && std::same_as<std::ranges::range_value_t<Data>, std::byte>
 class json_rpc_serializer;
 
-template<typename FutureType, typename Serializer, typename Data>
+// `NodeId`: see include/raft/simulator_network.hpp.
+template<typename FutureType, typename Serializer, typename Data, typename NodeId = std::uint64_t>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_client;
 
-template<typename FutureType, typename Serializer, typename Data>
+template<typename FutureType, typename Serializer, typename Data, typename NodeId = std::uint64_t>
 requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_server;
 

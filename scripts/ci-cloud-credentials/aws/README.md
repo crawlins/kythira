@@ -454,8 +454,12 @@ Packer's documented example policy. In particular it does **not** grant:
   an AMI or snapshot is shared with another AWS account, and with
   `ec2:CreateImage` on any instance they would let CI copy any instance's
   disk out of the account. The template sets no `ami_users`,
-  `snapshot_users` or `ami_description`, which are the only things Packer
-  calls them for.
+  `snapshot_users`, `ami_description` or `imds_support`, which are the
+  only things Packer calls them for. Setting `imds_support` is what broke
+  the scheduled AMI build on 2026-10-12, so IMDSv2 is enforced at launch
+  rather than as an image attribute. A tag condition would not make the
+  grant safe: `ec2:CreateImage` can tag a new image of any instance at
+  creation, so a tag on the image proves nothing about where it came from.
 - `ec2:ModifyInstanceAttribute`. Together with `ec2:StopInstances` and the
   `ec2-quorum-manager` bundle's `ec2:StartInstances`, it would let CI
   rewrite any instance's user data and reboot it into that code. Packer

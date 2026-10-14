@@ -461,21 +461,23 @@ BOOST_AUTO_TEST_CASE(write_latency_by_group_count,
     BOOST_TEST_MESSAGE("  beast row: NOT RUN (KYTHIRA_BENCH_HAS_BEAST undefined)");
 #endif
 #if defined(KYTHIRA_BENCH_HAS_COAP)
-    // Both CoAP passes are expected to stop somewhere, and where is the
-    // finding (`doc/multi_raft_performance_comparison.md`, "The CoAP row").
+    // Both CoAP passes may stop, so a stop is reported rather than failed
+    // (`doc/multi_raft_performance_comparison.md`, "The CoAP row" and "The
+    // CoAP row after the event-driven client").
     //
-    // At the standard tick first, like every other row. The client drains
-    // replies once per 5 ms, the servers receive a fraction of what a 2 ms
-    // tick sends, and the backlog starves elections: no leader at 8 or 64
-    // groups, and no completed write at 1.
+    // At the standard tick first, like every other row. While the client
+    // drained replies once per 5 ms, the servers received a fraction of what
+    // a 2 ms tick sends and the backlog starved elections: no leader at 8 or
+    // 64 groups, and no completed write at 1. With the readiness loop every
+    // cell committed every write on the development machine, one group
+    // slowly; this has not been measured on a CI runner.
     sweep("coap", rows::write_coap_json, standard_tick, true);
     // Then with the tick at 10 ms per group, so the offered AppendEntries rate
-    // per peer is the same at every N. These rows are what the per-group
-    // latency and `lock_wait_us` figures come from, and they are **not
-    // comparable** to the HTTP rows above, which ran at 2 ms. One group still
-    // stops here, for a different reason: with all sixteen writers on one
-    // group its AppendEntries carry eight or more entries, pass the 1 KiB
-    // block size, and go block-wise.
+    // per peer is the same at every N. These rows are **not comparable** to
+    // the HTTP rows above, which ran at 2 ms. One group is the slow case
+    // here, for a different reason: with all sixteen writers on one group its
+    // AppendEntries carry dozens of entries, pass the 1 KiB block size, and
+    // go block-wise.
     sweep(
         "coap (tick at 10 ms per group)", rows::write_coap_json,
         [](std::size_t groups) {

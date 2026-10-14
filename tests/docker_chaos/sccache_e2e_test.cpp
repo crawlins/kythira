@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #define BOOST_TEST_MODULE sccache_e2e_test
+#include <boost/test/results_collector.hpp>
+#include <boost/test/tree/observer.hpp>
 #include <boost/test/unit_test.hpp>
 
 #include "os_faults.hpp"
@@ -23,6 +25,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <initializer_list>
+#include <iostream>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -285,8 +288,23 @@ int next_salt() {
 
 }  // namespace
 
+// Prints the gateways' logs when a test case fails. The gateway decides
+// whether a shard has a reachable leader, and whether a command is allowed,
+// so without its log a failure is just sccache reporting "retry".
+struct GatewayLogsOnFailure : boost::unit_test::test_observer {
+    void test_unit_finish(const boost::unit_test::test_unit& tu, unsigned long) override {
+        if (tu.p_type != boost::unit_test::TUT_CASE ||
+            boost::unit_test::results_collector.results(tu.p_id).passed()) {
+            return;
+        }
+        std::cerr << "── gateway logs after " << tu.full_name() << " failed ──\n"
+                  << gateway_logs() << "\n";
+    }
+};
+
 struct SccacheE2eFixture {
     SccacheE2eFixture() {
+        boost::unit_test::framework::register_observer(_observer);
         os::try_exec(os::real_exec, compose_cmd({"down", "--remove-orphans"}));
         os::checked_exec(os::real_exec, compose_cmd({"up", "-d", "kv1", "kv2", "kv3"}));
         if (!wait_cluster_ready(90s)) {
@@ -296,11 +314,15 @@ struct SccacheE2eFixture {
         }
     }
     ~SccacheE2eFixture() {
+        boost::unit_test::framework::deregister_observer(_observer);
         try {
             os::real_exec(compose_cmd({"down", "--remove-orphans"}));
         } catch (...) {
         }
     }
+
+private:
+    GatewayLogsOnFailure _observer;
 };
 
 BOOST_TEST_GLOBAL_FIXTURE(SccacheE2eFixture);

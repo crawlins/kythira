@@ -10,6 +10,9 @@ project(network_simulator VERSION 0.1.0 LANGUAGES CXX)
 # cmake/Kconfig.cmake and .kiro/specs/kconfig-integration/ for the design.
 include(cmake/Kconfig.cmake)
 
+# Opt-in per-test Boost.Test reports for CI (KYTHIRA_TEST_REPORT_DIR).
+include(cmake/TestReports.cmake)
+
 # C++23 standard required
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -2189,3 +2192,5 @@ else()
         COMMAND ${CMAKE_COMMAND} -E false
     )
 endif()
+
+kythira_attach_test_reports()

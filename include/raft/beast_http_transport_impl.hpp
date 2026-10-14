@@ -5,6 +5,7 @@
 
 #include <raft/beast_http_transport.hpp>
 #include <raft/asio_listeners.hpp>
+#include <raft/bounded_resolver.hpp>
 #include <raft/coap_utils.hpp>
 #include <raft/exceptions.hpp>
 #include <raft/transport_conformance_types.hpp>
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <exception>
 #include <format>
 #include <fstream>
@@ -732,66 +734,124 @@ auto boost_beast_client<Types>::disable_auto_reload() -> void {
     }
 }
 
+namespace beast_detail {
+
+// The host and port a node URL names, as the resolver wants them. An IPv6
+// literal is bracketed ("[::1]:7000"); its own colons are not the port
+// separator.
+struct url_authority {
+    std::string host;
+    std::string port;
+};
+
+inline auto authority_of(const std::string& url) -> url_authority {
+    bool is_https = url.starts_with("https://");
+    std::string authority = url.substr(is_https ? 8 : 7);
+    authority = authority.substr(0, authority.find('/'));
+    url_authority out;
+    out.port = is_https ? "443" : "80";
+    if (authority.starts_with('[') && authority.find(']') != std::string::npos) {
+        auto close = authority.find(']');
+        out.host = authority.substr(1, close - 1);
+        if (close + 1 < authority.size() && authority[close + 1] == ':') {
+            out.port = authority.substr(close + 2);
+        }
+    } else {
+        auto colon = authority.find(':');
+        out.host = authority.substr(0, colon);
+        if (colon != std::string::npos) {
+            out.port = authority.substr(colon + 1);
+        }
+    }
+    return out;
+}
+
+// What note_peer_seen() does, on a URL table of its own so the server's
+// handler can outlive the client.
+inline auto learn_url_address(const std::unordered_map<std::uint64_t, std::string>& urls,
+                              std::uint64_t id, const sockaddr_storage& from, socklen_t len)
+    -> void {
+    auto url_it = urls.find(id);
+    if (url_it == urls.end()) {
+        return;
+    }
+    auto where = authority_of(url_it->second);
+    unsigned long port = 0;
+    try {
+        port = std::stoul(where.port);
+    } catch (const std::exception&) {
+        return;
+    }
+    if (port == 0 || port > 65535) {
+        return;
+    }
+    if (auto a = kythira::net_resolve::address_from(from, len, static_cast<std::uint16_t>(port),
+                                                    SOCK_STREAM)) {
+        kythira::net_resolve::learn(where.host, where.port, SOCK_STREAM, *a);
+    }
+}
+
+}  // namespace beast_detail
+
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::resolve_target(std::uint64_t target) -> const resolved_target& {
-    if (auto cached = _resolved_targets.find(target); cached != _resolved_targets.end()) {
-        return cached->second;
-    }
+auto boost_beast_client<Types>::note_peer_seen(std::uint64_t id, const sockaddr_storage& from,
+                                               socklen_t len) -> void {
+    // _node_id_to_url is immutable after construction, so read without the lock.
+    beast_detail::learn_url_address(_node_id_to_url, id, from, len);
+}
 
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_client<Types>::peer_seen_handler() const
+    -> std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)> {
+    return [urls = _node_id_to_url](std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+        beast_detail::learn_url_address(urls, id, from, len);
+    };
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_client<Types>::resolve_target(std::uint64_t target,
+                                               std::chrono::milliseconds timeout)
+    -> resolved_target {
+    // Immutable after construction, so read without the lock.
     auto url_it = _node_id_to_url.find(target);
     if (url_it == _node_id_to_url.end()) {
         throw std::runtime_error(std::format("No URL mapping found for node {}", target));
     }
     const std::string& url = url_it->second;
-    bool is_https = url.starts_with("https://");
-    std::string authority = url.substr(is_https ? 8 : 7);
-    authority = authority.substr(0, authority.find('/'));
-    // An IPv6 literal is bracketed ("[::1]:7000"); its own colons are not
-    // the port separator.
-    std::string host;
-    std::string port_str = is_https ? "443" : "80";
-    if (authority.starts_with('[') && authority.find(']') != std::string::npos) {
-        auto close = authority.find(']');
-        host = authority.substr(1, close - 1);
-        if (close + 1 < authority.size() && authority[close + 1] == ':') {
-            port_str = authority.substr(close + 2);
-        }
-    } else {
-        auto colon = authority.find(':');
-        host = authority.substr(0, colon);
-        if (colon != std::string::npos) {
-            port_str = authority.substr(colon + 1);
-        }
-    }
+    auto [host, port_str] = beast_detail::authority_of(url);
 
-    // Synchronous DNS resolution on the calling thread, once per target rather
-    // than once per connection. Not spiked, not required by requirements.md (a
-    // gap discovered during implementation): fully async resolution would need
-    // a fourth async_*_kf-style primitive for marginal benefit.
-    net::ip::tcp::resolver resolver(_ioc);
-    auto results = resolver.resolve(host, port_str);
-    if (results.empty()) {
+    // Synchronous, on the calling thread, but outside _mutex and bounded by
+    // the RPC's own timeout; see resolved_target.
+    auto results = kythira::net_resolve::resolve(host, port_str, SOCK_STREAM, timeout);
+    if (!results) {
         throw std::runtime_error(std::format("Failed to resolve {}:{}", host, port_str));
     }
 
     // Every address, not just the first: connect() tries them in order, so a
     // name such as "localhost" reaches a server on either 127.0.0.1 or ::1.
     std::vector<net::ip::tcp::endpoint> endpoints;
-    for (const auto& entry : results) {
-        endpoints.push_back(entry.endpoint());
+    for (const auto& entry : *results) {
+        net::ip::tcp::endpoint ep;
+        std::memcpy(ep.data(), &entry.addr, entry.len);
+        ep.resize(entry.len);
+        endpoints.push_back(ep);
     }
-    auto [it, ok] =
-        _resolved_targets.emplace(target, resolved_target{std::move(endpoints), std::move(host)});
-    return it->second;
+    resolved_target where{std::move(endpoints), host, host, std::move(port_str)};
+    return where;
 }
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::make_connection(std::uint64_t target) -> pooled_connection {
-    const auto& where = resolve_target(target);
+auto boost_beast_client<Types>::make_connection(std::uint64_t target,
+                                                std::chrono::milliseconds timeout)
+    -> pooled_connection {
+    auto where = resolve_target(target, timeout);
     const bool is_https = _node_id_to_url.at(target).starts_with("https://");
 
+    std::lock_guard<std::mutex> lock(_mutex);
     std::shared_ptr<beast_detail::beast_connection> connection;
     if (is_https) {
         if (!_ssl_ctx.has_value()) {
@@ -818,44 +878,53 @@ auto boost_beast_client<Types>::make_connection(std::uint64_t target) -> pooled_
     metric.add_one();
     metric.emit();
 
-    return pooled_connection{std::move(connection), where.endpoints, where.host_header,
-                             std::chrono::steady_clock::now(), _tls_generation};
+    return pooled_connection{std::move(connection),
+                             where.endpoints,
+                             where.host_header,
+                             where.host,
+                             where.port,
+                             std::chrono::steady_clock::now(),
+                             _tls_generation};
 }
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::acquire_connection(std::uint64_t target) -> pooled_connection {
-    std::lock_guard<std::mutex> lock(_mutex);
+auto boost_beast_client<Types>::acquire_connection(std::uint64_t target,
+                                                   std::chrono::milliseconds timeout)
+    -> pooled_connection {
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
 
-    auto it = _idle_connections.find(target);
-    if (it != _idle_connections.end()) {
-        auto& idle = it->second;
-        while (!idle.empty()) {
-            auto conn = std::move(idle.back());
-            idle.pop_back();
+        auto it = _idle_connections.find(target);
+        if (it != _idle_connections.end()) {
+            auto& idle = it->second;
+            while (!idle.empty()) {
+                auto conn = std::move(idle.back());
+                idle.pop_back();
 
-            // Requirement 9.2: an idle-beyond-timeout connection is dropped
-            // rather than reused, checked lazily on the next attempted use
-            // (matching Property 5/the http-transport precedent this mirrors
-            // -- no background sweep thread). Dropping is now safe outright:
-            // nothing else can be holding this connection, because it was
-            // idle, and an in-flight RPC would have leased it.
-            const auto idle_for = std::chrono::steady_clock::now() - conn.last_used;
-            if (idle_for > _config.keep_alive_timeout || !conn.connection->is_open()) {
-                continue;
+                // Requirement 9.2: an idle-beyond-timeout connection is dropped
+                // rather than reused, checked lazily on the next attempted use
+                // (matching Property 5/the http-transport precedent this mirrors
+                // -- no background sweep thread). Dropping is now safe outright:
+                // nothing else can be holding this connection, because it was
+                // idle, and an in-flight RPC would have leased it.
+                const auto idle_for = std::chrono::steady_clock::now() - conn.last_used;
+                if (idle_for > _config.keep_alive_timeout || !conn.connection->is_open()) {
+                    continue;
+                }
+
+                auto metric = _metrics;
+                metric.set_metric_name("beast_http.client.connection.reused");
+                metric.add_dimension("target_node_id", std::to_string(target));
+                metric.add_one();
+                metric.emit();
+                conn.last_used = std::chrono::steady_clock::now();
+                return conn;
             }
-
-            auto metric = _metrics;
-            metric.set_metric_name("beast_http.client.connection.reused");
-            metric.add_dimension("target_node_id", std::to_string(target));
-            metric.add_one();
-            metric.emit();
-            conn.last_used = std::chrono::steady_clock::now();
-            return conn;
         }
     }
 
-    return make_connection(target);
+    return make_connection(target, timeout);
 }
 
 template<typename Types>
@@ -938,8 +1007,8 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         // can wait until this RPC's own connect/handshake/send/read has
         // truly finished before it lets the pool/_ssl_ctx destruct.
         auto in_flight = std::make_shared<in_flight_guard>(this);
-        auto lease =
-            std::make_shared<connection_lease>(this, target, acquire_connection(target), in_flight);
+        auto lease = std::make_shared<connection_lease>(
+            this, target, acquire_connection(target, timeout), in_flight);
         lease->connection()->set_timeout(timeout);  // Property 4: bounds the
                                                     // whole chain below, not
                                                     // each step individually.
@@ -1002,7 +1071,15 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
             if (already_open) {
                 return beast_ready_unit_future().thenValue(std::move(proceed));
             }
+            // A connect that fails has tried every address the name resolved
+            // to: a peer that restarted at a new address (Podman) is only
+            // found once the resolver stops handing out the old one.
             return connection->connect(lease->endpoints(), lease->host_header())
+                .thenError([lease, dialled_at = std::chrono::steady_clock::now()](
+                               std::exception_ptr e) -> kythira::unit {
+                    lease->mark_unreachable(dialled_at);
+                    std::rethrow_exception(e);
+                })
                 .thenValue(std::move(proceed));
         }();
 
@@ -1491,8 +1568,16 @@ private:
         std::string response_body;
         unsigned status_code = 200;
         std::string response_media_type;
+        // Who sent it, for the server's peer-seen handler. Unavailable on a
+        // socket that already closed, which dispatch() then treats as unknown.
+        boost::system::error_code ep_ec;
+        auto remote = beast::get_lowest_layer(_stream).socket().remote_endpoint(ep_ec);
+        std::optional<net::ip::tcp::endpoint> from;
+        if (!ep_ec) {
+            from = remote;
+        }
         _server->dispatch(target, body, request_media_type, accepted, response_body, status_code,
-                          response_media_type);
+                          response_media_type, from);
 
         // Heap-allocated and kept alive via the thenValue continuation's
         // capture, not a stack local: beast_http::async_write (inside
@@ -1906,14 +1991,19 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
                                          const std::string& request_media_type,
                                          const std::vector<std::string>& accepted,
                                          std::string& response_body, unsigned& status_code,
-                                         std::string& response_media_type) -> void {
+                                         std::string& response_media_type,
+                                         const std::optional<net::ip::tcp::endpoint>& from)
+    -> void {
     // Error bodies are plain text on every path below; the success path
     // overwrites this with whatever was negotiated.
     response_media_type = "text/plain";
 
+    // `sender` names the node a decoded request says it is from, for the
+    // peer-seen handler; see set_peer_seen_handler().
     auto handle = [&]<typename Request, typename Response>(
                       const std::function<Response(const Request&)>& handler,
-                      std::string_view rpc_type, bool extension_rpc = false) {
+                      std::string_view rpc_type, std::uint64_t (*sender)(const Request&),
+                      bool extension_rpc = false) {
         auto start_time = std::chrono::steady_clock::now();
         auto received_metric = _metrics;
         received_metric.set_metric_name("beast_http.server.request.received");
@@ -1969,6 +2059,11 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
             response_body = std::format("Bad Request: {}", e.what());
             return;
         }
+        if (_peer_seen && from) {
+            sockaddr_storage addr{};
+            std::memcpy(&addr, from->data(), from->size());
+            _peer_seen(sender(request), addr, static_cast<socklen_t>(from->size()));
+        }
         try {
             Response response = handler(request);
             // Encoded in the negotiated type, which need not match the request's
@@ -1996,26 +2091,32 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
     if (target == beast_endpoint_request_vote) {
         handle
             .template operator()<kythira::request_vote_request<>, kythira::request_vote_response<>>(
-                _request_vote_handler, "request_vote");
+                _request_vote_handler, "request_vote",
+                [](const kythira::request_vote_request<>& r) { return r.candidate_id(); });
     } else if (target == beast_endpoint_append_entries) {
         handle.template
         operator()<kythira::append_entries_request<>, kythira::append_entries_response<>>(
-            _append_entries_handler, "append_entries");
+            _append_entries_handler, "append_entries",
+            [](const kythira::append_entries_request<>& r) { return r.leader_id(); });
     } else if (target == beast_endpoint_install_snapshot) {
         handle.template
         operator()<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
-            _install_snapshot_handler, "install_snapshot");
+            _install_snapshot_handler, "install_snapshot",
+            [](const kythira::install_snapshot_request<>& r) { return r.leader_id(); });
     } else if (target == beast_endpoint_fetch_log_entries) {
         handle.template
         operator()<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
-            _fetch_log_entries_handler, "fetch_log_entries");
+            _fetch_log_entries_handler, "fetch_log_entries",
+            [](const kythira::fetch_log_entries_request<>& r) { return r.requester_id(); });
     } else if (target == beast_endpoint_request_pre_vote) {
         handle.template
         operator()<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
-            _request_pre_vote_handler, "request_pre_vote", true);
+            _request_pre_vote_handler, "request_pre_vote",
+            [](const kythira::request_pre_vote_request<>& r) { return r.candidate_id(); }, true);
     } else if (target == beast_endpoint_timeout_now) {
         handle.template operator()<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
-            _timeout_now_handler, "timeout_now", true);
+            _timeout_now_handler, "timeout_now",
+            [](const kythira::timeout_now_request<>& r) { return r.leader_id(); }, true);
     } else {
         status_code = 404;
         response_body = "Not Found";

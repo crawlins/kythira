@@ -19,6 +19,16 @@ target_link_libraries(chaos_node PRIVATE
     httplib::httplib
 )
 
+# RPC_TLS_* (mutual TLS on Raft RPC) needs tls_tcp_rpc.hpp's OpenSSL side,
+# whose trust checks live in certificate_authority, and httplib's TLS API,
+# which tls_tcp_rpc.hpp calls unconditionally and which exists only under
+# CONFIG_HTTP_TRANSPORT_TLS (KYTHIRA_HTTP_TLS). Without both the node still
+# builds and refuses RPC_TLS_* at startup.
+if(TARGET certificate_authority AND KYTHIRA_HTTP_TLS)
+    target_link_libraries(chaos_node PRIVATE certificate_authority)
+    target_compile_definitions(chaos_node PRIVATE KYTHIRA_CHAOS_NODE_RPC_TLS)
+endif()
+
 if(CHAOS_TESTS_ENABLED)
     target_compile_definitions(chaos_node PRIVATE
         FIU_ENABLE

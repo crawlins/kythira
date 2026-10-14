@@ -201,7 +201,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'

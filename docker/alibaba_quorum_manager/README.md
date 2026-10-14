@@ -57,6 +57,47 @@ not against these numbers and not against local-disk intuition. If your election
 timeout is shorter than a round trip, the node cannot persist its vote before
 the election it is voting in has already timed out.
 
+## Timeout rollback and scale-in protection
+
+When `provision_timeout` expires before the new instance is adoptable, the
+manager undoes the scale-up without letting the group's `RemovalPolicies`
+pick a victim (`.kiro/specs/group-scale-up-rollback/`). It removes every
+instance that was not in the group before the increment, by id, with
+`RemoveInstances(DecreaseDesiredCapacity=true)`, first waiting (within
+`provision_timeout`) for any scaling activity in progress to finish, since
+ESS refuses removals during one. Only when the group lists no new instance
+does it write DesiredCapacity back to its old value, and it then re-lists
+the group and names any existing member that left. The timeout error ends
+with what the rollback did.
+
+Every instance the manager adopts is put in ESS's `Protected` lifecycle
+state with `SetInstancesProtection`, and the constructor protects any
+adopted member of the cluster that is not, so no capacity change, from this
+manager or anything else, makes ESS choose a voter. ESS also skips health
+checks on protected members, which suits a manager that judges liveness
+itself; the manager counts `Protected` as in service. `decommission_node`
+still removes a protected node: `RemoveInstances` is ESS's documented way
+to remove one. Instances the manager has not tagged are never protected. To
+scale the group in by hand, clear protection on the instances you want
+removed first:
+
+```sh
+aliyun ess SetInstancesProtection --RegionId ap-southeast-1 \
+    --ScalingGroupId <asg> --InstanceId.1 <i-xxx> --ProtectedFromScaleIn false
+```
+
+Run one manager per scaling group, and do not scale it with other tooling
+while the manager runs. An instance something else launches during a
+provision looks new to the manager and is removed if that provision times
+out.
+
+The RAM policy needs, besides read access to ESS and ECS,
+`ess:ModifyScalingGroup`, `ess:RemoveInstances`, `ess:SetInstancesProtection`
+and `ecs:TagResources`. Without `ess:SetInstancesProtection` the
+constructor throws as soon as the group holds an adopted member that is not
+protected. `scripts/ci-cloud-credentials/alibaba/policies/ess-quorum-manager.json`
+is CI's full list.
+
 ## Credentials
 
 Three modes, all through `alibaba_client_config`:

@@ -34,6 +34,8 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace kythira {
@@ -62,10 +64,10 @@ public:
         const request_vote_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         raft_pb::RequestVoteRequest msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
-        msg.set_term(static_cast<std::uint64_t>(req.term()));
+        msg.set_term(to_wire(req.term(), "term"));
         *msg.mutable_candidate_id() = to_node_id_value<NodeId>(req.candidate_id());
-        msg.set_last_log_index(static_cast<std::uint64_t>(req.last_log_index()));
-        msg.set_last_log_term(static_cast<std::uint64_t>(req.last_log_term()));
+        msg.set_last_log_index(to_wire(req.last_log_index(), "last_log_index"));
+        msg.set_last_log_term(to_wire(req.last_log_term(), "last_log_term"));
         return encode(message_tag::request_vote_request, msg);
     }
 
@@ -74,7 +76,7 @@ public:
     [[nodiscard]] auto serialize(const request_vote_response<TermId, GroupId>& resp) const -> Data {
         raft_pb::RequestVoteResponse msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
-        msg.set_term(static_cast<std::uint64_t>(resp.term()));
+        msg.set_term(to_wire(resp.term(), "term"));
         msg.set_vote_granted(resp.vote_granted());
         return encode(message_tag::request_vote_response, msg);
     }
@@ -86,10 +88,10 @@ public:
         const request_pre_vote_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         raft_pb::RequestPreVoteRequest msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
-        msg.set_term(static_cast<std::uint64_t>(req.term()));
+        msg.set_term(to_wire(req.term(), "term"));
         *msg.mutable_candidate_id() = to_node_id_value<NodeId>(req.candidate_id());
-        msg.set_last_log_index(static_cast<std::uint64_t>(req.last_log_index()));
-        msg.set_last_log_term(static_cast<std::uint64_t>(req.last_log_term()));
+        msg.set_last_log_index(to_wire(req.last_log_index(), "last_log_index"));
+        msg.set_last_log_term(to_wire(req.last_log_term(), "last_log_term"));
         return encode(message_tag::request_pre_vote_request, msg);
     }
 
@@ -99,7 +101,7 @@ public:
         -> Data {
         raft_pb::RequestPreVoteResponse msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
-        msg.set_term(static_cast<std::uint64_t>(resp.term()));
+        msg.set_term(to_wire(resp.term(), "term"));
         msg.set_vote_granted(resp.vote_granted());
         return encode(message_tag::request_pre_vote_response, msg);
     }
@@ -111,9 +113,9 @@ public:
         const timeout_now_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         raft_pb::TimeoutNowRequest msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
-        msg.set_term(static_cast<std::uint64_t>(req.term()));
+        msg.set_term(to_wire(req.term(), "term"));
         *msg.mutable_leader_id() = to_node_id_value<NodeId>(req.leader_id());
-        msg.set_last_log_index(static_cast<std::uint64_t>(req.last_log_index()));
+        msg.set_last_log_index(to_wire(req.last_log_index(), "last_log_index"));
         return encode(message_tag::timeout_now_request, msg);
     }
 
@@ -122,7 +124,7 @@ public:
     [[nodiscard]] auto serialize(const timeout_now_response<TermId, GroupId>& resp) const -> Data {
         raft_pb::TimeoutNowResponse msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
-        msg.set_term(static_cast<std::uint64_t>(resp.term()));
+        msg.set_term(to_wire(resp.term(), "term"));
         msg.set_success(resp.success());
         return encode(message_tag::timeout_now_response, msg);
     }
@@ -136,11 +138,11 @@ public:
         -> Data {
         raft_pb::AppendEntriesRequest msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
-        msg.set_term(static_cast<std::uint64_t>(req.term()));
+        msg.set_term(to_wire(req.term(), "term"));
         *msg.mutable_leader_id() = to_node_id_value<NodeId>(req.leader_id());
-        msg.set_prev_log_index(static_cast<std::uint64_t>(req.prev_log_index()));
-        msg.set_prev_log_term(static_cast<std::uint64_t>(req.prev_log_term()));
-        msg.set_leader_commit(static_cast<std::uint64_t>(req.leader_commit()));
+        msg.set_prev_log_index(to_wire(req.prev_log_index(), "prev_log_index"));
+        msg.set_prev_log_term(to_wire(req.prev_log_term(), "prev_log_term"));
+        msg.set_leader_commit(to_wire(req.leader_commit(), "leader_commit"));
         for (const auto& entry : req.entries()) {
             to_proto_log_entry(entry, *msg.add_entries());
         }
@@ -154,13 +156,13 @@ public:
         const append_entries_response<TermId, LogIndex, GroupId>& resp) const -> Data {
         raft_pb::AppendEntriesResponse msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
-        msg.set_term(static_cast<std::uint64_t>(resp.term()));
+        msg.set_term(to_wire(resp.term(), "term"));
         msg.set_success(resp.success());
         if (const auto& ci = resp.conflict_index()) {
-            msg.set_conflict_index(static_cast<std::uint64_t>(*ci));
+            msg.set_conflict_index(to_wire(*ci, "conflict_index"));
         }
         if (const auto& ct = resp.conflict_term()) {
-            msg.set_conflict_term(static_cast<std::uint64_t>(*ct));
+            msg.set_conflict_term(to_wire(*ct, "conflict_term"));
         }
         return encode(message_tag::append_entries_response, msg);
     }
@@ -172,11 +174,11 @@ public:
         const install_snapshot_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         raft_pb::InstallSnapshotRequest msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
-        msg.set_term(static_cast<std::uint64_t>(req.term()));
+        msg.set_term(to_wire(req.term(), "term"));
         *msg.mutable_leader_id() = to_node_id_value<NodeId>(req.leader_id());
-        msg.set_last_included_index(static_cast<std::uint64_t>(req.last_included_index()));
-        msg.set_last_included_term(static_cast<std::uint64_t>(req.last_included_term()));
-        msg.set_offset(static_cast<std::uint64_t>(req.offset()));
+        msg.set_last_included_index(to_wire(req.last_included_index(), "last_included_index"));
+        msg.set_last_included_term(to_wire(req.last_included_term(), "last_included_term"));
+        msg.set_offset(to_wire(req.offset(), "offset"));
         msg.set_data(bytes_to_proto_string(req.data()));
         msg.set_done(req.done());
         return encode(message_tag::install_snapshot_request, msg);
@@ -188,7 +190,7 @@ public:
         -> Data {
         raft_pb::InstallSnapshotResponse msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
-        msg.set_term(static_cast<std::uint64_t>(resp.term()));
+        msg.set_term(to_wire(resp.term(), "term"));
         return encode(message_tag::install_snapshot_response, msg);
     }
 
@@ -242,8 +244,8 @@ public:
         raft_pb::FetchLogEntriesRequest msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(req.group_id());
         *msg.mutable_requester_id() = to_node_id_value<NodeId>(req.requester_id());
-        msg.set_from_index(static_cast<std::uint64_t>(req.from_index()));
-        msg.set_to_index(static_cast<std::uint64_t>(req.to_index()));
+        msg.set_from_index(to_wire(req.from_index(), "from_index"));
+        msg.set_to_index(to_wire(req.to_index(), "to_index"));
         return encode(message_tag::fetch_log_entries_request, msg);
     }
 
@@ -260,10 +262,10 @@ public:
         // raft_messages.proto).
         *msg.mutable_responder() = to_node_id_value<NodeId>(resp.responder_id());
         if constexpr (std::unsigned_integral<NodeId>) {
-            msg.set_responder_id(static_cast<std::uint64_t>(resp.responder_id()));
+            msg.set_responder_id(to_wire(resp.responder_id(), "responder_id"));
         }
         msg.set_available(resp.available());
-        msg.set_prev_log_term(static_cast<std::uint64_t>(resp.prev_log_term()));
+        msg.set_prev_log_term(to_wire(resp.prev_log_term(), "prev_log_term"));
         for (const auto& entry : resp.entries()) {
             to_proto_log_entry(entry, *msg.add_entries());
         }
@@ -281,10 +283,10 @@ public:
 
         request_vote_request<NodeId, TermId, LogIndex, GroupId> req;
         req._group_id = from_group_id_value<GroupId>(msg.group_id());
-        req._term = static_cast<TermId>(msg.term());
+        req._term = from_wire<TermId>(msg.term(), "term");
         req._candidate_id = from_node_id_value<NodeId>(msg.candidate_id());
-        req._last_log_index = static_cast<LogIndex>(msg.last_log_index());
-        req._last_log_term = static_cast<TermId>(msg.last_log_term());
+        req._last_log_index = from_wire<LogIndex>(msg.last_log_index(), "last_log_index");
+        req._last_log_term = from_wire<TermId>(msg.last_log_term(), "last_log_term");
         return req;
     }
 
@@ -296,7 +298,7 @@ public:
 
         request_vote_response<TermId, GroupId> resp;
         resp._group_id = from_group_id_value<GroupId>(msg.group_id());
-        resp._term = static_cast<TermId>(msg.term());
+        resp._term = from_wire<TermId>(msg.term(), "term");
         resp._vote_granted = msg.vote_granted();
         return resp;
     }
@@ -311,10 +313,10 @@ public:
 
         request_pre_vote_request<NodeId, TermId, LogIndex, GroupId> req;
         req._group_id = from_group_id_value<GroupId>(msg.group_id());
-        req._term = static_cast<TermId>(msg.term());
+        req._term = from_wire<TermId>(msg.term(), "term");
         req._candidate_id = from_node_id_value<NodeId>(msg.candidate_id());
-        req._last_log_index = static_cast<LogIndex>(msg.last_log_index());
-        req._last_log_term = static_cast<TermId>(msg.last_log_term());
+        req._last_log_index = from_wire<LogIndex>(msg.last_log_index(), "last_log_index");
+        req._last_log_term = from_wire<TermId>(msg.last_log_term(), "last_log_term");
         return req;
     }
 
@@ -327,7 +329,7 @@ public:
 
         request_pre_vote_response<TermId, GroupId> resp;
         resp._group_id = from_group_id_value<GroupId>(msg.group_id());
-        resp._term = static_cast<TermId>(msg.term());
+        resp._term = from_wire<TermId>(msg.term(), "term");
         resp._vote_granted = msg.vote_granted();
         return resp;
     }
@@ -341,9 +343,9 @@ public:
 
         timeout_now_request<NodeId, TermId, LogIndex, GroupId> req;
         req._group_id = from_group_id_value<GroupId>(msg.group_id());
-        req._term = static_cast<TermId>(msg.term());
+        req._term = from_wire<TermId>(msg.term(), "term");
         req._leader_id = from_node_id_value<NodeId>(msg.leader_id());
-        req._last_log_index = static_cast<LogIndex>(msg.last_log_index());
+        req._last_log_index = from_wire<LogIndex>(msg.last_log_index(), "last_log_index");
         return req;
     }
 
@@ -355,7 +357,7 @@ public:
 
         timeout_now_response<TermId, GroupId> resp;
         resp._group_id = from_group_id_value<GroupId>(msg.group_id());
-        resp._term = static_cast<TermId>(msg.term());
+        resp._term = from_wire<TermId>(msg.term(), "term");
         resp._success = msg.success();
         return resp;
     }
@@ -370,11 +372,11 @@ public:
 
         append_entries_request<NodeId, TermId, LogIndex, LogEntry, GroupId> req;
         req._group_id = from_group_id_value<GroupId>(msg.group_id());
-        req._term = static_cast<TermId>(msg.term());
+        req._term = from_wire<TermId>(msg.term(), "term");
         req._leader_id = from_node_id_value<NodeId>(msg.leader_id());
-        req._prev_log_index = static_cast<LogIndex>(msg.prev_log_index());
-        req._prev_log_term = static_cast<TermId>(msg.prev_log_term());
-        req._leader_commit = static_cast<LogIndex>(msg.leader_commit());
+        req._prev_log_index = from_wire<LogIndex>(msg.prev_log_index(), "prev_log_index");
+        req._prev_log_term = from_wire<TermId>(msg.prev_log_term(), "prev_log_term");
+        req._leader_commit = from_wire<LogIndex>(msg.leader_commit(), "leader_commit");
         req._entries.reserve(static_cast<std::size_t>(msg.entries_size()));
         for (const auto& proto_entry : msg.entries()) {
             req._entries.push_back(from_proto_log_entry<TermId, LogIndex, LogEntry>(proto_entry));
@@ -392,13 +394,13 @@ public:
 
         append_entries_response<TermId, LogIndex, GroupId> resp;
         resp._group_id = from_group_id_value<GroupId>(msg.group_id());
-        resp._term = static_cast<TermId>(msg.term());
+        resp._term = from_wire<TermId>(msg.term(), "term");
         resp._success = msg.success();
         if (msg.has_conflict_index()) {
-            resp._conflict_index = static_cast<LogIndex>(msg.conflict_index());
+            resp._conflict_index = from_wire<LogIndex>(msg.conflict_index(), "conflict_index");
         }
         if (msg.has_conflict_term()) {
-            resp._conflict_term = static_cast<TermId>(msg.conflict_term());
+            resp._conflict_term = from_wire<TermId>(msg.conflict_term(), "conflict_term");
         }
         return resp;
     }
@@ -413,11 +415,12 @@ public:
 
         install_snapshot_request<NodeId, TermId, LogIndex, GroupId> req;
         req._group_id = from_group_id_value<GroupId>(msg.group_id());
-        req._term = static_cast<TermId>(msg.term());
+        req._term = from_wire<TermId>(msg.term(), "term");
         req._leader_id = from_node_id_value<NodeId>(msg.leader_id());
-        req._last_included_index = static_cast<LogIndex>(msg.last_included_index());
-        req._last_included_term = static_cast<TermId>(msg.last_included_term());
-        req._offset = static_cast<std::size_t>(msg.offset());
+        req._last_included_index =
+            from_wire<LogIndex>(msg.last_included_index(), "last_included_index");
+        req._last_included_term = from_wire<TermId>(msg.last_included_term(), "last_included_term");
+        req._offset = from_wire<std::size_t>(msg.offset(), "offset");
         req._data = proto_string_to_bytes(msg.data());
         req._done = msg.done();
         return req;
@@ -432,7 +435,7 @@ public:
 
         install_snapshot_response<TermId, GroupId> resp;
         resp._group_id = from_group_id_value<GroupId>(msg.group_id());
-        resp._term = static_cast<TermId>(msg.term());
+        resp._term = from_wire<TermId>(msg.term(), "term");
         return resp;
     }
 
@@ -500,8 +503,8 @@ public:
         fetch_log_entries_request<NodeId, TermId, LogIndex, GroupId> req;
         req._group_id = from_group_id_value<GroupId>(msg.group_id());
         req._requester_id = from_node_id_value<NodeId>(msg.requester_id());
-        req._from_index = static_cast<LogIndex>(msg.from_index());
-        req._to_index = static_cast<LogIndex>(msg.to_index());
+        req._from_index = from_wire<LogIndex>(msg.from_index(), "from_index");
+        req._to_index = from_wire<LogIndex>(msg.to_index(), "to_index");
         return req;
     }
 
@@ -520,13 +523,13 @@ public:
             resp._responder_id = from_node_id_value<NodeId>(msg.responder());
         } else if constexpr (std::unsigned_integral<NodeId>) {
             // An older peer sends only the legacy numeric field.
-            resp._responder_id = static_cast<NodeId>(msg.responder_id());
+            resp._responder_id = from_wire<NodeId>(msg.responder_id(), "responder_id");
         } else {
             throw serialization_exception(
                 "FetchLogEntriesResponse: no responder for a textual node id");
         }
         resp._available = msg.available();
-        resp._prev_log_term = static_cast<TermId>(msg.prev_log_term());
+        resp._prev_log_term = from_wire<TermId>(msg.prev_log_term(), "prev_log_term");
         resp._entries.reserve(static_cast<std::size_t>(msg.entries_size()));
         for (const auto& proto_entry : msg.entries()) {
             resp._entries.push_back(from_proto_log_entry<TermId, LogIndex, LogEntry>(proto_entry));
@@ -661,6 +664,38 @@ private:
         return msg;
     }
 
+    // ── Checked integer conversions ─────────────────────────────────────────
+
+    /// @brief Widen an integral field to the proto's `uint64` wire type.
+    ///
+    /// Every integer in `raft_messages.proto` is `uint64`. A plain cast would
+    /// send a negative signed value as a huge unsigned one, which a peer then
+    /// reads as a different term or index; refusing it here keeps a bad value
+    /// from reaching the wire at all.
+    template<std::integral T>
+    [[nodiscard]] static auto to_wire(T value, const char* field) -> std::uint64_t {
+        if (!std::in_range<std::uint64_t>(value)) {
+            throw serialization_exception(std::string("protobuf encode: field ") + field +
+                                          ": value out of range for uint64");
+        }
+        return static_cast<std::uint64_t>(value);
+    }
+
+    /// @brief Narrow a decoded wire integer into its target field type.
+    ///
+    /// The wire carries any `uint64` (or, for the entry type enum, any int32),
+    /// whatever the receiver's `TermId`/`LogIndex`/`NodeId` width. A value the
+    /// target cannot hold fails the decode, as the JSON, CBOR and Ion
+    /// serializers do, instead of being silently truncated.
+    template<std::integral Target, std::integral Source>
+    [[nodiscard]] static auto from_wire(Source value, const char* field) -> Target {
+        if (!std::in_range<Target>(value)) {
+            throw serialization_exception(std::string("protobuf decode: field ") + field +
+                                          ": value out of range for target type");
+        }
+        return static_cast<Target>(value);
+    }
+
     // ── NodeId <-> NodeIdValue oneof wrapper (Requirement 3) ─────────────────
 
     /// @brief Encode a `NodeId` (either `std::uint64_t` or `std::string`) into
@@ -673,7 +708,7 @@ private:
         } else if constexpr (composite_node_id<NodeId>) {
             v.set_text(id.to_string());
         } else {
-            v.set_numeric(static_cast<std::uint64_t>(id));
+            v.set_numeric(to_wire(id, "numeric"));
         }
         return v;
     }
@@ -701,7 +736,7 @@ private:
             if (v.value_case() != raft_pb::NodeIdValue::kNumeric) {
                 throw serialization_exception("NodeIdValue: expected numeric, got string");
             }
-            return static_cast<NodeId>(v.numeric());
+            return from_wire<NodeId>(v.numeric(), "numeric id");
         }
     }
 
@@ -719,7 +754,7 @@ private:
         if constexpr (std::same_as<GroupId, std::string>) {
             v.set_text(id);
         } else {
-            v.set_numeric(static_cast<std::uint64_t>(id));
+            v.set_numeric(to_wire(id, "numeric"));
         }
         return v;
     }
@@ -747,7 +782,7 @@ private:
             if (v.value_case() != raft_pb::GroupIdValue::kNumeric) {
                 throw serialization_exception("GroupIdValue: expected numeric, got string");
             }
-            return static_cast<GroupId>(v.numeric());
+            return from_wire<GroupId>(v.numeric(), "numeric id");
         }
     }
 
@@ -756,8 +791,8 @@ private:
     /// @brief Convert a kythira log entry into its protobuf representation.
     template<typename Entry>
     void to_proto_log_entry(const Entry& entry, raft_pb::LogEntry& out) const {
-        out.set_term(static_cast<std::uint64_t>(entry.term()));
-        out.set_index(static_cast<std::uint64_t>(entry.index()));
+        out.set_term(to_wire(entry.term(), "term"));
+        out.set_index(to_wire(entry.index(), "index"));
         out.set_command(bytes_to_proto_string(entry.command()));
         out.set_type(static_cast<raft_pb::EntryType>(static_cast<int>(entry.type())));
     }
@@ -767,10 +802,11 @@ private:
     [[nodiscard]] auto from_proto_log_entry(const raft_pb::LogEntry& proto_entry) const
         -> LogEntry {
         LogEntry entry;
-        entry._term = static_cast<TermId>(proto_entry.term());
-        entry._index = static_cast<LogIndex>(proto_entry.index());
+        entry._term = from_wire<TermId>(proto_entry.term(), "term");
+        entry._index = from_wire<LogIndex>(proto_entry.index(), "index");
         entry._command = proto_string_to_bytes(proto_entry.command());
-        entry._type = static_cast<entry_type>(static_cast<int>(proto_entry.type()));
+        entry._type = static_cast<entry_type>(from_wire<std::underlying_type_t<entry_type>>(
+            static_cast<int>(proto_entry.type()), "type"));
         return entry;
     }
 

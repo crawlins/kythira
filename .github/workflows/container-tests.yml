@@ -195,7 +195,7 @@ jobs:
           path: vcpkg_installed
           # Same key as ci.yml's g++-13 build-and-test legs, so a warm entry
           # from main is restored instead of paying a cold vcpkg build.
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -246,6 +246,10 @@ jobs:
       - name: docker-otlp-collector-tests
         if: success() || failure()
         run: cmake --build build --target docker-otlp-collector-tests -j"$(nproc)"
+
+      - name: docker-mtls-chaos-tests (4 mTLS scenarios)
+        if: success() || failure()
+        run: cmake --build build --target docker-mtls-chaos-tests -j"$(nproc)"
 
       - name: docker-dns-discovery-tests
         if: success() || failure()
