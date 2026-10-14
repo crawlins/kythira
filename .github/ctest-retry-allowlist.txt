@@ -24,7 +24,6 @@
 # ca_cluster_node bootstrap-election fix). See the TODO.md entry
 # "Retry-rescued flakes on the allowlist".
 
-ca_cluster_node_test                               3/200, uncaught SIGSEGV ~0.1s in, clang only
 chaos_state_machine_safety_test                    1/54
 certificate_authority_property_test                1/54
 simulator_property_test                            1/54

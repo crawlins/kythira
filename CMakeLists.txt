@@ -825,6 +825,10 @@ if(httplib_FOUND)
     # TSan/glibc-internal-thread interaction bug, not a defect in this
     # codebase or in cpp-httplib's own request-handling logic (every other
     # symbol on the crashing stack is glibc/TSan runtime, nothing of ours).
+    # (A separate, real use-after-scope in that same code path, where
+    # cpp-httplib returned while the resolver thread still owned its
+    # stack-local request, is patched in vcpkg-overlays/cpp-httplib for every
+    # configuration.)
     # Stripping the define here forces cpp-httplib back onto plain, blocking
     # getaddrinfo() -- no extra thread, so nothing for TSan to lose track of --
     # for the TSan build specifically; every other configuration (including

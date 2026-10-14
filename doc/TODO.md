@@ -1539,12 +1539,10 @@ unverified completion claim.
       `property_17_issuance_survives_leader_failover` sent its revoke once,
       so a further leadership change between the two survivors turned it
       into a 503 (it now retries on the current leader; revocation is
-      idempotent). The third is open: three clang++-18 jobs saw the test
-      binary die of an uncaught SIGSEGV about 0.1 s in, with no Boost output
-      at all (buffered stdout died with the process), which Boost would
-      normally catch and report. 60 local clang -O2 runs and an ASan/UBSan
-      run did not reproduce it. The binary now unbuffers stdout and logs
-      test-unit entry and exit, so the next occurrence names the test case.
+      idempotent). The third, an uncaught SIGSEGV about 0.1 s in with no
+      Boost output, is fixed (October 14): cpp-httplib's
+      `getaddrinfo_with_timeout()` returned while glibc's resolver thread
+      still owned its stack-local `gaicb`. See the CHANGELOG, October 14.
     **Re-measured late October 7, 2026** over 865 test jobs in 119 `ci.yml`
     runs (2026-10-06 00:00Z to 2026-10-07 22:20Z; the log tool returns the
     last 5000 lines, which still holds `check-test-run.sh`'s retry report):

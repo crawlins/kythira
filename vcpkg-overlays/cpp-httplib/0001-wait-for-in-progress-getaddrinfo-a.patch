@@ -1,0 +1,33 @@
+diff --git a/httplib.h b/httplib.h
+index f50e440..db70a31 100644
+--- a/httplib.h
++++ b/httplib.h
+@@ -6922,7 +6922,28 @@ inline int getaddrinfo_with_timeout(const char *node, const char *service,
+     if (request.ar_result) { freeaddrinfo(request.ar_result); }
+   });
+ 
++  // gai_suspend() can return 0 while the request is still in progress: glibc
++  // ends its futex wait on any wake-up, spurious ones included, and only
++  // gai_error() says whether the request finished. Returning on that path
++  // would abandon the stack-local gaicb to the resolver worker, which later
++  // writes its result into whatever frame has replaced this one. Keep
++  // waiting, for the rest of the timeout, until gai_error() reports an end.
++  const auto deadline =
++      std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec);
+   int wait_result = gai_suspend(requests, 1, &timeout);
++  while ((wait_result == 0 || wait_result == EAI_ALLDONE) &&
++         gai_error(&request) == EAI_INPROGRESS) {
++    const auto left = deadline - std::chrono::steady_clock::now();
++    if (left <= std::chrono::steady_clock::duration::zero()) {
++      wait_result = EAI_AGAIN;
++      break;
++    }
++    const auto left_ns =
++        std::chrono::duration_cast<std::chrono::nanoseconds>(left).count();
++    timeout.tv_sec = static_cast<time_t>(left_ns / 1000000000);
++    timeout.tv_nsec = static_cast<long>(left_ns % 1000000000);
++    wait_result = gai_suspend(requests, 1, &timeout);
++  }
+ 
+   if (wait_result == 0 || wait_result == EAI_ALLDONE) {
+     int gai_result = gai_error(&request);

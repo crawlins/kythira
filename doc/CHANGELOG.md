@@ -5,6 +5,31 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 14, 2026)
 
+- **cpp-httplib no longer abandons a DNS lookup to glibc's resolver
+  thread.** `ca_cluster_node_test` died of a silent SIGSEGV about 0.1 s
+  in, during its first `/healthz` poll, in 4 of 20 clang++-18 jobs
+  surveyed on October 14 (all on arm64; a `--repeat until-pass` retry hid
+  it). The vcpkg cpp-httplib port turns on
+  `CPPHTTPLIB_USE_NON_BLOCKING_GETADDRINFO`, so every client lookup goes
+  through `getaddrinfo_a()` and `gai_suspend()`. glibc's `gai_suspend()`
+  can return 0 while the request is still running: its futex wait ends
+  on any wake-up. cpp-httplib (0.58.0, and still upstream at 0.61.0)
+  treated that as finished and returned, leaving its stack-local `gaicb`
+  to the resolver thread, which then read the request and wrote its
+  result into whatever frame had replaced it. A local loop of the same
+  calls on x64 saw that early return about once per 20,000 lookups, with
+  the result landing in the abandoned request 2 ms later. glibc's
+  resolver thread runs with every signal blocked, so a fault there kills
+  the process outright, bypassing Boost.Test's handler, which is why the
+  test printed nothing. The same early return also failed the lookup
+  with `EAI_INPROGRESS`. A new overlay port, `vcpkg-overlays/cpp-httplib`
+  (0.58.0 plus one patch), keeps waiting for the rest of the timeout
+  while `gai_error()` still reports the request in progress; the cancel
+  path already waited. 12 million patched lookups returned no request in
+  progress and no failures. This applies to every httplib client in
+  Kythira, not only the test. `ca_cluster_node_test` is off the retry
+  allowlist.
+
 - **Binary Ion checks every declared length before decoding.** A
   158-byte `install_snapshot_request` whose blob header declared 1 GiB
   made the decoder allocate the full gigabyte before ion-c reported the
