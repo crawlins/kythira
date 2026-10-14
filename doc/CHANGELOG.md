@@ -5,6 +5,38 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 14, 2026)
 
+- **The CoAP row of the multi-Raft matrix now runs at the standard 2 ms
+  tick.** Re-measured after the libcoap client's I/O thread stopped
+  pacing on a 5 ms sleep ([PR #392](https://github.com/crawlins/kythira/pull/392),
+  which replaced the loop [PR #227](https://github.com/crawlins/kythira/pull/227)
+  introduced). At 8 and 64 groups on 2 ms the cells that used to stop
+  with no leader now commit every write, at 1787.1 and 1804.7 ops/sec
+  (p50 4.61 and 7.64 ms), and servers receive 96.5% and 100% of the
+  AppendEntries sent, up from 38% and 26%. One group commits every write
+  too, slowly (152.0 ops/sec), still block-wise. The 10 ms-per-group
+  cells went from 56.2 and 270.0 to 2334.1 and 2509.2 ops/sec. Lock wait
+  in `send_rpc()` regressed with #392 alone. Its median was no longer 0,
+  and p95 at one group went from 14.6 ms to 166 ms, because reply
+  callbacks, and the Raft work they trigger, ran on the I/O thread under
+  the client's lock. They now run on a per-client completion thread. That
+  showed the lock had been rate-limiting `multi_raft`'s 2 ms tick, which
+  re-sent AppendEntries to every follower of every group on every tick.
+  The tick now skips followers the last AppendEntries already covers
+  (`node::replicate_to_followers_if_due()`), which cuts sends by about
+  two thirds at 64 groups. With both changes, lock-wait p95 is lower than
+  #392 alone in every cell (3.5 ms at 64 groups on 2 ms, under the
+  pre-change 4.7 ms). It is still above the pre-change figure at 1 and 8
+  groups, and throughput is unchanged. The design's yield remedy was
+  measured and not kept, because it cost two-thirds of the 2 ms
+  throughput. The numbers, the hypothesis verdicts and what binds each
+  cell are in
+  [multi_raft_performance_comparison.md](multi_raft_performance_comparison.md),
+  "The CoAP row after the event-driven client". The CoAP flake
+  measurement was clean before and after (0 failures in 20 runs each).
+  `KYTHIRA_COAP_SEND_PROBE` now also prints client sends against server
+  receipts per second, and how long the I/O thread's drain steps hold the
+  lock.
+
 - **The AWS leak audit ignores instances that are already shutting
   down.** EC2 stops billing an instance when it enters `shutting-down`,
   and by then the instance reports no VPC, so the in-flight filter added

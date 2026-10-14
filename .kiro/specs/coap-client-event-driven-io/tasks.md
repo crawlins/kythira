@@ -1,14 +1,15 @@
 # Implementation Plan — Event-Driven I/O for the libcoap Client
 
-## Status: In progress — tasks 1–6 done; 7 and 8 need CI and the benchmark machine
+## Status: Complete — tasks 1–9 done
 
-**Last Updated**: October 2, 2026
+**Last Updated**: October 14, 2026
 
 This plan implements `.kiro/specs/coap-client-event-driven-io/design.md`. Four
-phases, 8 tasks. Phase 1 is a gate: the design rests on six claims about
-libcoap (design §1) that come from reading its source, and the task 14 record
-exists because readings of this transport have been wrong before. Nothing in
-phases 2–4 starts until task 1 has confirmed or corrected them.
+phases, 8 tasks, and a ninth found by task 7. Phase 1 is a gate: the design
+rests on six claims about libcoap (design §1) that come from reading its
+source, and the task 14 record exists because readings of this transport
+have been wrong before. Nothing in phases 2–4 starts until task 1 has
+confirmed or corrected them.
 
 ## Overview
 
@@ -178,7 +179,7 @@ does not, and can start before #385 lands.
     backend (no Folly there): every CoAP test that builds without Folly, in
     both modes. The Folly-only tests run on CI.
 
-- [ ] 7. Flake and lock-wait regression check
+- [x] 7. Flake and lock-wait regression check
   - Run the coap-flake-measure workflow before (on `main`) and after, same
     selection, same runner class, 20 iterations each as PR #227 did.
   - Collect the send probe's `lock_wait_us` for the task 14 cells and compare
@@ -189,8 +190,19 @@ does not, and can start before #385 lands.
   - Verify: no increase in failures; lock wait median 0 µs and p95 no worse
     per cell.
   - _Requirements: 3.4, 7.2, 7.4_
+  - **Result (October 14, 2026).** Flakes: 0 failures in 20 runs on both
+    sides (runs 38488696828 and 38488699758). Lock wait: **the check
+    failed** with PR #392 alone. p50 was no longer 0, and p95 rose at 1
+    and 8 groups. The §4 yield was measured in two variants and neither
+    was kept, because it cost about two-thirds of the 2 ms throughput.
+    §2's defaults were left unchanged. Task 9 fixed the cause. After it,
+    p95 is lower than PR #392 alone in every cell and meets the
+    pre-change figure at 64 groups on 2 ms. It is still above that figure
+    at 1 and 8 groups, and p50 is not 0. Figures are in
+    `doc/multi_raft_performance_comparison.md`, "The CoAP row after the
+    event-driven client".
 
-- [ ] 8. Re-run the CoAP cells of the multi-Raft matrix and record them
+- [x] 8. Re-run the CoAP cells of the multi-Raft matrix and record them
   - The task 14 CoAP cells at 1, 8 and 64 groups on the standard 2 ms tick,
     same machine description, 1920 operations at 16 in flight, five
     repetitions; also the 10 ms-per-group pass for comparison.
@@ -205,6 +217,25 @@ does not, and can start before #385 lands.
   - Add a `doc/CHANGELOG.md` entry linking PR #227 and the new numbers.
   - Verify: the section exists with measured numbers and verdicts.
   - _Requirements: 8.1, 8.2, 8.3, 8.4_
+
+- [x] 9. Run response completions off the I/O thread and outside `_mutex`
+  - Found by task 7: `handle_response()` and `handle_nack()` fulfilled the
+    request's promise inside `coap_io_process()`, under `_mutex`, and its
+    continuations ran inline there. Drain steps held the lock for 220–510 µs
+    on average and up to 49 ms. That was the lock-wait regression.
+  - The callbacks are now queued under the lock and run in order on a
+    per-client completion thread.
+  - Running them after the step on the I/O thread was tried first. It
+    showed that the lock had been throttling `multi_raft`'s tick, which
+    re-sent AppendEntries to every follower of every group on every tick.
+    With the throttle gone, 64 groups on 2 ms collapsed. So the tick now
+    calls `node::replicate_to_followers_if_due()`, which skips a follower
+    the last AppendEntries already covers.
+  - Verify: the task 8 cells were re-run. Throughput is within run spread of
+    task 8 in every cell. Lock wait p95 is lower than task 8 in every cell
+    and meets the pre-change figure at 64 groups on 2 ms, but not at 1 or 8
+    groups. The raft, multi_raft and CoAP suites pass.
+  - _Requirements: 3.4_
 
 ---
 
