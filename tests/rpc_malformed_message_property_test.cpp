@@ -6,6 +6,8 @@
 
 #include <raft/json_serializer.hpp>
 
+#include "allocation_probe.hpp"
+
 #include <random>
 #include <string>
 #include <vector>
@@ -474,4 +476,40 @@ BOOST_AUTO_TEST_CASE(property_structural_defects_rejected_and_optionals_default)
     const auto cj = serializer.deserialize_cluster_join_response(
         string_to_bytes(R"({"type":"cluster_join_response","accepted":true})"));
     BOOST_TEST(!cj.redirect.has_value());
+}
+
+/**
+ * Feature: json-serializer-input-validation, parity audit Z3
+ *
+ * Property: JSON carries no declared lengths: every string and array is
+ * delimited in the text, so the decoder's allocations follow the input. A
+ * valid append_entries_request with random entries and commands never makes
+ * a single allocation larger than a small multiple of its size. This pins
+ * that down so a future reserve() from a field value cannot slip in.
+ */
+BOOST_AUTO_TEST_CASE(property_decode_allocation_proportional_to_input) {
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<std::size_t> entry_dist(0, 2000);
+    std::uniform_int_distribution<std::size_t> command_dist(0, 64);
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
+
+    for (std::size_t i = 0; i < property_test_iterations / 10; ++i) {
+        kythira::append_entries_request<> req{};
+        req._term = 4;
+        req._leader_id = 1;
+        const auto entries = entry_dist(rng);
+        for (std::size_t e = 0; e < entries; ++e) {
+            kythira::log_entry<> entry{};
+            entry._term = 4;
+            entry._index = e + 1;
+            entry._command = generate_random_bytes(rng, command_dist(rng));
+            req._entries.push_back(std::move(entry));
+        }
+        const auto body = serializer.serialize(req);
+
+        kythira::test::allocation_probe probe;
+        const auto decoded = serializer.deserialize_append_entries_request(body);
+        BOOST_CHECK_EQUAL(decoded._entries.size(), entries);
+        BOOST_CHECK_LE(kythira::test::allocation_probe::largest(), 16 * body.size() + 4096);
+    }
 }
