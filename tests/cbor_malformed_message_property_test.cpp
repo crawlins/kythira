@@ -6,6 +6,8 @@
 
 #include <raft/cbor_serializer.hpp>
 
+#include "allocation_probe.hpp"
+
 #include <random>
 #include <string>
 #include <string_view>
@@ -160,11 +162,14 @@ BOOST_AUTO_TEST_CASE(property_oversized_length_header_rejected) {
 
     std::size_t rejection_count = 0;
     for (const auto& data : hostile) {
+        kythira::test::allocation_probe probe;
         try {
             [[maybe_unused]] auto result = serializer.deserialize_append_entries_request(data);
         } catch (const std::exception&) {
             ++rejection_count;
         }
+        // Nothing may be sized from the declared length before it is checked.
+        BOOST_CHECK_LE(kythira::test::allocation_probe::largest(), 4096U);
     }
 
     BOOST_CHECK_EQUAL(rejection_count, hostile.size());

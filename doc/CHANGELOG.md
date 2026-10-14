@@ -5,6 +5,23 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 14, 2026)
 
+- **Binary Ion checks every declared length before decoding.** A
+  158-byte `install_snapshot_request` whose blob header declared 1 GiB
+  made the decoder allocate the full gigabyte before ion-c reported the
+  missing bytes: ion-c bounds a value by its container only when it steps
+  in, and a top-level container by nothing, so `ion_reader_get_lob_size`
+  returned the declared size unchecked. Ints and strings were sized the
+  same way inside ion-c. `ion_rpc_serializer` now walks a binary body's
+  framing first (type descriptors, lengths, struct field ids, annotation
+  headers) and rejects any value that declares more than its parent holds,
+  the counterpart of CBOR's `require_available` (parity audit Z3). Text
+  Ion declares no lengths. JSON has no declared lengths either, and
+  libprotobuf already checks each one against its parse limit; new tests
+  pin both down. The serializer malformed-message tests gained an
+  allocation probe (`tests/allocation_probe.hpp`) that records the
+  largest single `operator new` request, so they now fail if a decoder
+  sizes anything from an unchecked length.
+
 - **The real-EC2 ca-cluster-node test follows a leader redirect when
   issuing.** On October 14 run 38567059904 failed with `issuing
   failover-during failed: 308`: leadership moved between finding the

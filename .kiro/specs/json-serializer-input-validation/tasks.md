@@ -143,4 +143,9 @@ Spec written October 2, 2026 from the sibling-implementation parity audit
   `uint64` conversions are range-checked (audit Z2). Covered by
   `ion_serializer_range_property_test` and
   `protobuf_serializer_range_property_test`.
-- CBOR-only declared-length preflight (audit Z3).
+- Done (2026-10-14): declared-length preflight on every serializer (audit
+  Z3). Binary Ion now walks its framing and rejects any value declaring
+  more bytes than its parent holds before ion-c sizes anything from it;
+  JSON declares no lengths and libprotobuf bounds each one by its parse
+  limit. Covered by the oversize-length and allocation-probe cases in the
+  four `*malformed_message_property_test` binaries.

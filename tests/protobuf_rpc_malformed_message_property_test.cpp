@@ -6,9 +6,13 @@
 
 #include <raft/protobuf_serializer.hpp>
 
+#include "allocation_probe.hpp"
+
+#include <cstdint>
 #include <functional>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 #include <cstddef>
 
@@ -239,4 +243,64 @@ BOOST_AUTO_TEST_CASE(property_truncated_payload_rejection) {
     Data tag_only_rvr{std::byte{0x00}};  // message_tag::request_vote_request
     BOOST_CHECK(rejected([&](const Data& d) { (void)s.deserialize_request_vote_request(d); },
                          tag_only_rvr));
+}
+
+/**
+ * Feature: json-serializer-input-validation, parity audit Z3
+ *
+ * Property: A length-delimited field (bytes, string or embedded message)
+ * whose varint length runs past the payload is rejected before anything is
+ * sized from it. libprotobuf checks each declared length against the bytes
+ * left in the parse limit, so this needs no preflight of Kythira's own; the
+ * test pins that down. Wire tags: field 6 bytes (0x32) of
+ * InstallSnapshotRequest, field 5 LogEntry (0x2A) of AppendEntriesRequest,
+ * field 2 string (0x12) of ClusterJoinRequest.
+ */
+BOOST_AUTO_TEST_CASE(property_oversized_declared_length_rejected) {
+    serializer_t s;
+    // 0x7FFFFFF0 as a varint: just under protobuf's 2 GiB message cap.
+    const Data huge{std::byte{0xF0}, std::byte{0xFF}, std::byte{0xFF}, std::byte{0xFF},
+                    std::byte{0x07}};
+    auto with = [&](std::uint8_t message_tag, std::uint8_t field_key) {
+        Data d{static_cast<std::byte>(message_tag), static_cast<std::byte>(field_key)};
+        d.insert(d.end(), huge.begin(), huge.end());
+        d.insert(d.end(), {std::byte{1}, std::byte{2}, std::byte{3}});
+        return d;
+    };
+
+    const std::vector<std::pair<Data, std::function<void(const Data&)>>> cases = {
+        {with(6, 0x32), [&](const Data& d) { (void)s.deserialize_install_snapshot_request(d); }},
+        {with(4, 0x2A), [&](const Data& d) { (void)s.deserialize_append_entries_request(d); }},
+        {with(8, 0x12), [&](const Data& d) { (void)s.deserialize_cluster_join_request(d); }},
+    };
+    for (const auto& [data, call] : cases) {
+        kythira::test::allocation_probe probe;
+        BOOST_CHECK(rejected(call, data));
+        BOOST_CHECK_LE(kythira::test::allocation_probe::largest(), 4096U);
+    }
+}
+
+/**
+ * Feature: json-serializer-input-validation, parity audit Z3
+ *
+ * Property: Decoding a valid install_snapshot_request never makes a single
+ * allocation larger than a small multiple of its size.
+ */
+BOOST_AUTO_TEST_CASE(property_decode_allocation_proportional_to_input) {
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<std::size_t> size_dist(0, 64 * 1024);
+    serializer_t s;
+
+    for (std::size_t i = 0; i < property_test_iterations / 10; ++i) {
+        kythira::install_snapshot_request<> req{};
+        req._term = 3;
+        req._leader_id = 1;
+        req._data = generate_random_bytes(rng, size_dist(rng));
+        const auto body = s.serialize(req);
+
+        kythira::test::allocation_probe probe;
+        const auto decoded = s.deserialize_install_snapshot_request(body);
+        BOOST_CHECK(decoded._data == req._data);
+        BOOST_CHECK_LE(kythira::test::allocation_probe::largest(), 16 * body.size() + 4096);
+    }
 }
