@@ -697,7 +697,7 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
                 g._leader_since_ns.store(0, std::memory_order_relaxed);
                 publish_report(g);
             }
-            g._node->replicate_to_followers();
+            g._node->replicate_to_followers_if_due();
         });
         report._send_duration = clock::now() - t0;
     }
