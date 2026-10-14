@@ -248,6 +248,16 @@ in the task 14 cells must not regress. If it does, the remedy is a
 `std::this_thread::yield()` between steps *only when the probe shows a waiter*,
 not lowering the budget blindly — and the change records which it was.
 
+**Outcome (tasks 7 and 9, October 14, 2026).** Lock wait did regress. The
+yield was measured and not kept, because it cost about two-thirds of the
+2 ms throughput. The cause was not lock churn between steps but what ran
+inside a step: reply callbacks, and the Raft work they trigger, ran inline
+under `_mutex`. They now run on a per-client completion thread. That in
+turn exposed `multi_raft`'s per-tick re-sends, which the lock had been
+rate-limiting. The tick now calls `node::replicate_to_followers_if_due()`.
+Figures are in `doc/multi_raft_performance_comparison.md`, "The CoAP row
+after the event-driven client".
+
 ---
 
 ## 5. Configuration

@@ -34,17 +34,21 @@ auto write_coap_json(const write_row_spec& spec, const row_observer& observer) -
 /// reason is a measured property of the transport rather than a preference.
 ///
 /// `multi_raft` sends one AppendEntries per group per follower on every tick,
-/// and the libcoap client's I/O thread drains replies only once per 5 ms. At
-/// 2 ms the servers receive a fraction of what is sent and the rest queues in
-/// libcoap: the standard-tick smoke check commits its PUTs and then times out
-/// on a GET queued behind tens of thousands of stale re-sends. Shortening the
-/// pacing to 1 ms, as an experiment, cleared the backlog; the spec forbids
-/// making that change here. 20 ms keeps the four standard groups inside what
-/// the client drains, and is the cadence `multi_raft_coap_test` already uses
-/// for the same reason (`doc/multi_raft_performance_comparison.md`, "The CoAP
-/// row"). What this proves is what Requirement 17.14 asks -- that a KV cluster
-/// over CoAP elects, commits and reads back -- not that it does so at the
-/// standard row's cadence, which it does not.
+/// and when this row was written the libcoap client's I/O thread drained
+/// replies only once per 5 ms. At 2 ms the servers received a fraction of what
+/// was sent and the rest queued in libcoap: the standard-tick smoke check
+/// committed its PUTs and then timed out on a GET queued behind tens of
+/// thousands of stale re-sends. 20 ms kept the four standard groups inside
+/// what the client drained, and is the cadence `multi_raft_coap_test` uses for
+/// the same reason (`doc/multi_raft_performance_comparison.md`, "The CoAP
+/// row").
+///
+/// The client now waits on readiness and drains every ready reply
+/// (`.kiro/specs/coap-client-event-driven-io/`), and the group-count sweep
+/// commits every write at 8 and 64 groups on 2 ms ("The CoAP row after the
+/// event-driven client"). This check stays at 20 ms until it has been run at
+/// 2 ms on CI. What it proves is what Requirement 17.14 asks -- that a KV
+/// cluster over CoAP elects, commits and reads back.
 auto smoke_coap_json(const row_observer& observer) -> void {
     auto options = standard_cluster_options();
     options._tick_interval = std::chrono::milliseconds{20};
