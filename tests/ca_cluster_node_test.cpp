@@ -379,12 +379,14 @@ auto post_with_retry_on_not_ready(httplib::Client& client, const std::string& pa
 
 constexpr const char* k_auth_token = "cluster-test-token";
 
-// This binary has died of an uncaught SIGSEGV within 0.1 s of starting, on
-// clang++-18 CI legs only (3 of 200 jobs, October 6-7 2026), with no Boost
-// output at all: ctest pipes stdout, so Boost's fully buffered progress
-// lines died with the process and only the node subprocesses' own lines
-// survived. Unbuffer stdout and log test-unit entry and exit so the next
-// occurrence names the test case and how far it got.
+// This binary used to die of an uncaught SIGSEGV within 0.1 s of starting
+// (October 2026, clang++-18 legs, mostly arm64), with no Boost output at all:
+// ctest pipes stdout, so Boost's fully buffered progress lines died with the
+// process. Unbuffered output named the case (the first /healthz poll), and
+// the cause turned out to be cpp-httplib abandoning a getaddrinfo_a() request
+// to glibc's resolver thread (patched in vcpkg-overlays/cpp-httplib). Keep
+// stdout unbuffered and log test-unit entry and exit so any future crash
+// still names the test case and how far it got.
 struct unbuffered_progress_log {
     unbuffered_progress_log() {
         std::setvbuf(stdout, nullptr, _IONBF, 0);

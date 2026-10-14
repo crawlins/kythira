@@ -15,6 +15,7 @@
     }
   ],
   "overlay-ports": [
+    "./vcpkg-overlays/cpp-httplib",
     "./vcpkg-overlays/lakers",
     "./vcpkg-overlays/stdexec",
     "./vcpkg-overlays/ion-c",
