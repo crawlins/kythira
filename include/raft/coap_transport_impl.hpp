@@ -105,6 +105,66 @@ inline auto session_peer_endpoint(const coap_session_t* session) -> std::string 
     return std::string{reinterpret_cast<const char*>(text.data()), length};
 }
 
+/// KYTHIRA_COAP_SEND_PROBE's rate line: RPCs sent by every client and RPC
+/// requests handled by every server in the process, as one aggregate line
+/// per second on the same "[stall-probe]" stream:
+///
+///     [stall-probe] rpc_rates window_ms=1003 client_sends=2911 server_requests=2907
+///
+/// Sends against receipts is the figure that showed the paced client
+/// queueing most of what a 2 ms tick offered (doc/multi_raft_performance_
+/// comparison.md, hypothesis C3), and .kiro/specs/coap-client-event-driven-io/
+/// task 8 records it again. Process-wide on purpose: the multi-Raft row runs
+/// every host in one process and compares the totals. The line is emitted by
+/// whichever send or receipt first finds the window a second old, so an idle
+/// process prints nothing.
+class probe_rpc_rates {
+public:
+    static auto enabled() -> bool {
+        static const bool on = std::getenv("KYTHIRA_COAP_SEND_PROBE") != nullptr;
+        return on;
+    }
+    static auto record_send() -> void {
+        instance()._sends.fetch_add(1, std::memory_order_relaxed);
+        instance().maybe_emit();
+    }
+    static auto record_request() -> void {
+        instance()._requests.fetch_add(1, std::memory_order_relaxed);
+        instance().maybe_emit();
+    }
+
+private:
+    static auto instance() -> probe_rpc_rates& {
+        static probe_rpc_rates rates;
+        return rates;
+    }
+    static auto now_ns() -> std::int64_t {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
+    auto maybe_emit() -> void {
+        const auto now = now_ns();
+        auto start = _window_start.load(std::memory_order_relaxed);
+        if (now - start < 1'000'000'000 ||
+            !_window_start.compare_exchange_strong(start, now, std::memory_order_relaxed)) {
+            return;
+        }
+        // Counts that land between these exchanges and the CAS above go to
+        // the next window; at a second per window that is noise.
+        const auto sends = _sends.exchange(0, std::memory_order_relaxed);
+        const auto requests = _requests.exchange(0, std::memory_order_relaxed);
+        std::cout << ("[stall-probe] rpc_rates window_ms=" +
+                      std::to_string((now - start) / 1'000'000) + " client_sends=" +
+                      std::to_string(sends) + " server_requests=" + std::to_string(requests) + "\n")
+                  << std::flush;
+    }
+
+    std::atomic<std::uint64_t> _sends{0};
+    std::atomic<std::uint64_t> _requests{0};
+    std::atomic<std::int64_t> _window_start{now_ns()};
+};
+
 }  // namespace coap_detail
 #endif
 
@@ -3058,6 +3118,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                           " lock_wait_us=" + us(probe_entered, probe_locked) +
                           " send_path_us=" + us(probe_entered, probe_sent) + "\n")
                       << std::flush;
+            coap_detail::probe_rpc_rates::record_send();
         }
         if (mid == COAP_INVALID_MID) {
             // Remove from pending requests
@@ -4417,6 +4478,11 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
     -> void {
     // Generic RPC resource handler with comprehensive error handling
     try {
+#ifdef LIBCOAP_AVAILABLE
+        if (coap_detail::probe_rpc_rates::enabled()) {
+            coap_detail::probe_rpc_rates::record_request();
+        }
+#endif
         // Only at the limit is there anything to reclaim. This used to run
         // unconditionally, so every request logged a resource-exhaustion
         // warning, reset the memory pool and switched exhaustion mode on.
@@ -7867,6 +7933,8 @@ auto coap_client<Types>::run_io_loop(const std::stop_token& stop_token) -> void 
     std::uint64_t probe_steps = 0;
     std::uint64_t probe_budget_hits = 0;
     std::size_t probe_max_steps = 0;
+    std::uint64_t probe_hold_us = 0;
+    std::uint64_t probe_max_step_us = 0;
     auto probe_window_start = std::chrono::steady_clock::now();
     const auto probe_bucket = [](std::size_t steps) {
         std::size_t b = 0;
@@ -7890,12 +7958,15 @@ auto coap_client<Types>::run_io_loop(const std::stop_token& stop_token) -> void 
                                          .count()) +
                       " passes=" + std::to_string(probe_passes) +
                       " steps=" + std::to_string(probe_steps) +
-                      " budget_hits=" + std::to_string(probe_budget_hits) + " max_steps=" +
-                      std::to_string(probe_max_steps) + " steps_hist=" + hist + "\n")
+                      " budget_hits=" + std::to_string(probe_budget_hits) +
+                      " max_steps=" + std::to_string(probe_max_steps) + " steps_hist=" + hist +
+                      " hold_us=" + std::to_string(probe_hold_us) +
+                      " max_step_us=" + std::to_string(probe_max_step_us) + "\n")
                   << std::flush;
         probe_hist.fill(0);
         probe_passes = probe_steps = probe_budget_hits = 0;
         probe_max_steps = 0;
+        probe_hold_us = probe_max_step_us = 0;
         probe_window_start = now;
     };
 
@@ -7905,7 +7976,20 @@ auto coap_client<Types>::run_io_loop(const std::stop_token& stop_token) -> void 
         bool more = true;
         while (more && steps < budget) {
             const auto dispatched_before = _io_dispatches.load(std::memory_order_relaxed);
-            io_drain_step();
+            if (probe_enabled) {
+                // How long each step held _mutex: the other side of
+                // send_rpc()'s lock_wait_us.
+                const auto step_start = std::chrono::steady_clock::now();
+                io_drain_step();
+                const auto step_us = static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - step_start)
+                        .count());
+                probe_hold_us += step_us;
+                probe_max_step_us = std::max(probe_max_step_us, step_us);
+            } else {
+                io_drain_step();
+            }
             ++steps;
             more = readiness ? ready_now()
                              : _io_dispatches.load(std::memory_order_relaxed) != dispatched_before;
