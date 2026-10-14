@@ -654,29 +654,47 @@ auto build_peers_arg(const std::vector<std::string>& public_ips) -> std::string 
 struct http_reply {
     int status = 0;
     std::string body;
+    // Where a 308 points (curl's %{redirect_url}); empty otherwise.
+    std::string location;
 };
 
 // Runs curl against the node's own HTTP port over SSH and splits off the
-// status code curl appends on its own last line. Over SSH rather than from
-// the runner for the reason given at the leader wait in the test body.
+// redirect target and status code curl appends on its own last two lines.
+// Over SSH rather than from the runner for the reason given at the leader
+// wait in the test body.
 auto curl_on(const std::string& ip, const std::string& private_key_pem,
              const std::string& curl_args) -> http_reply {
-    auto out = ssh_execute(ip, private_key_pem,
-                           "curl -s -w '\\n%{http_code}' -H 'Authorization: Bearer " +
-                               std::string(TEST_AUTH_TOKEN) + "' " + curl_args,
-                           std::chrono::seconds(30));
+    auto out =
+        ssh_execute(ip, private_key_pem,
+                    "curl -s -w '\\n%{redirect_url}\\n%{http_code}' -H 'Authorization: Bearer " +
+                        std::string(TEST_AUTH_TOKEN) + "' " + curl_args,
+                    std::chrono::seconds(30));
     http_reply r;
     auto nl = out.rfind('\n');
-    if (nl == std::string::npos) {
+    if (nl == std::string::npos || nl == 0) {
         return r;  // curl itself failed; status 0
     }
-    r.body = out.substr(0, nl);
+    auto loc_nl = out.rfind('\n', nl - 1);
+    if (loc_nl == std::string::npos) {
+        return r;
+    }
+    r.body = out.substr(0, loc_nl);
+    r.location = out.substr(loc_nl + 1, nl - loc_nl - 1);
     try {
         r.status = std::stoi(out.substr(nl + 1));
     } catch (const std::exception&) {
         r.status = 0;
     }
     return r;
+}
+
+// The host part of a redirect target such as http://203.0.113.7:8443/v1/x,
+// or empty if there is none.
+auto redirect_host(const std::string& url) -> std::string {
+    auto start = url.find("://");
+    start = (start == std::string::npos) ? 0 : start + 3;
+    auto end = url.find_first_of(":/", start);
+    return url.substr(start, end == std::string::npos ? std::string::npos : end - start);
 }
 
 // The leader is the one node that answers /v1/root-ca with 200; followers
@@ -740,8 +758,25 @@ auto issue_certificate(const std::string& ip, const std::string& private_key_pem
     boost::json::object body;
     body["csr_pem"] = csr.csr_pem;
     body["dns_names"] = boost::json::array{boost::json::string(common_name + ".example.com")};
-    auto r = post_json_with_retry(ip, private_key_pem, "/v1/certificates",
+    // Leadership can move between find_leader() and this POST: run
+    // 38567059904 lost it seconds after a failover and got a 308 pointing at
+    // the new leader. Issuance only needs *a* leader, so follow the redirect
+    // (each node's Location carries the leader's address from --peers).
+    // ledger_probe() deliberately does not: it must read one node's ledger.
+    std::string target = ip;
+    auto r = post_json_with_retry(target, private_key_pem, "/v1/certificates",
                                   boost::json::serialize(body), std::chrono::seconds(180));
+    for (int hop = 0; r.status == 308 && hop < 3; ++hop) {
+        auto next = redirect_host(r.location);
+        if (next.empty() || next == target) {
+            break;
+        }
+        std::cerr << "[ca_cluster_node_real_ec2_test] issuing " << common_name
+                  << ": leader moved, following 308 to " << next << "\n";
+        target = next;
+        r = post_json_with_retry(target, private_key_pem, "/v1/certificates",
+                                 boost::json::serialize(body), std::chrono::seconds(180));
+    }
     BOOST_REQUIRE_MESSAGE(r.status == 200,
                           "issuing " << common_name << " failed: " << r.status << " " << r.body);
 
