@@ -6364,9 +6364,21 @@ endif()
 # alone until August 10, 2026, which is why setting that symbol n produced a
 # byte-identical build. The Folly conditions inside are untouched -- they are a
 # separate requirement and still apply.
+#
+# libnyoci itself is linked here, first, rather than through
+# network_simulator: libnyoci.a and libcoap-3.a both define
+# coap_insert_option, and only an archive order with libnyoci ahead of
+# libcoap makes every linker (mold included) bind libnyoci's references to
+# libnyoci's own copy without pulling libcoap's (root CMakeLists.txt,
+# LIBNYOCI_FOUND block).
+set(_kythira_libnyoci)
+if(TARGET PkgConfig::LIBNYOCI)
+    set(_kythira_libnyoci PkgConfig::LIBNYOCI)
+endif()
 if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_executable(coap_libnyoci_concept_conformance_test coap_libnyoci_concept_conformance_test.cpp)
     target_link_libraries(coap_libnyoci_concept_conformance_test PRIVATE
+        ${_kythira_libnyoci}
         network_simulator
         Boost::unit_test_framework
         boost_json
@@ -6387,6 +6399,7 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     # request in the clear.
     add_executable(coap_libnyoci_helpers_test coap_libnyoci_helpers_test.cpp)
     target_link_libraries(coap_libnyoci_helpers_test PRIVATE
+        ${_kythira_libnyoci}
         network_simulator
         Boost::unit_test_framework
         boost_json
@@ -6406,6 +6419,7 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     # what actually bound each test; TIMEOUT here must stay above their sum.
     add_executable(coap_libnyoci_integration_test coap_libnyoci_integration_test.cpp)
     target_link_libraries(coap_libnyoci_integration_test PRIVATE
+        ${_kythira_libnyoci}
         network_simulator
         Boost::unit_test_framework
         boost_json
@@ -6424,6 +6438,7 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     # the PSK-mismatch case deliberately waits out a failed handshake.
     add_executable(coap_libnyoci_dtls_test coap_libnyoci_dtls_test.cpp)
     target_link_libraries(coap_libnyoci_dtls_test PRIVATE
+        ${_kythira_libnyoci}
         network_simulator
         Boost::unit_test_framework
         boost_json
@@ -6445,6 +6460,7 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     # raft/oscore.hpp exists.
     add_executable(coap_libnyoci_oscore_test coap_libnyoci_oscore_test.cpp)
     target_link_libraries(coap_libnyoci_oscore_test PRIVATE
+        ${_kythira_libnyoci}
         network_simulator
         Boost::unit_test_framework
         boost_json
@@ -6528,7 +6544,12 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     foreach(_kythira_parity_backend libnyoci cantcoap)
         set(_kythira_parity_test coap_${_kythira_parity_backend}_security_parity_test)
         add_executable(${_kythira_parity_test} ${_kythira_parity_test}.cpp)
+        set(_kythira_parity_backend_lib)
+        if(_kythira_parity_backend STREQUAL "libnyoci")
+            set(_kythira_parity_backend_lib ${_kythira_libnyoci})
+        endif()
         target_link_libraries(${_kythira_parity_test} PRIVATE
+            ${_kythira_parity_backend_lib}
             network_simulator
             Boost::unit_test_framework
             boost_json
@@ -6549,6 +6570,7 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     endforeach()
     unset(_kythira_parity_test)
     unset(_kythira_parity_backend)
+    unset(_kythira_parity_backend_lib)
 
     # ── OSCORE (RFC 8613) ────────────────────────────────────────────────────────
     # The conformance suite for include/raft/oscore.hpp, checked against every test

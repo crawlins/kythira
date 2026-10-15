@@ -1049,7 +1049,21 @@ if(LIBCOAP_FOUND)
 endif()
 
 if(LIBNYOCI_FOUND)
-    target_link_libraries(network_simulator INTERFACE PkgConfig::LIBNYOCI)
+    # libnyoci is deliberately NOT linked through network_simulator. Its
+    # coap.o and libcoap's coap_pdu.c.o both define coap_insert_option, so
+    # any binary carrying both archives links only by archive-order luck:
+    # ld.bfd scans libcoap-3.a before anything needs it and then takes
+    # libnyoci's copy, while mold (like lld) resolves lazily across all
+    # archives, pulls libcoap's member for libnyoci's reference and stops
+    # on the duplicate -- or, without the duplicate, would have bound
+    # libnyoci's call to libcoap's function. Only the coap_libnyoci_*
+    # tests use this backend, and tests/CMakeLists.txt links
+    # PkgConfig::LIBNYOCI into each of them ahead of network_simulator.
+    # Backs LIBNYOCI_AVAILABLE project-wide, exactly as the LIBCOAP_AVAILABLE
+    # line above does -- without it coap_transport_libnyoci_impl.hpp compiles
+    # to its stub and every coap_libnyoci_* test silently skips, which is the
+    # failure mode that hid the libcoap backend from its own test suite for as
+    # long as it did.
     # Backs LIBNYOCI_AVAILABLE project-wide, exactly as the LIBCOAP_AVAILABLE
     # line above does -- without it coap_transport_libnyoci_impl.hpp compiles
     # to its stub and every coap_libnyoci_* test silently skips, which is the
