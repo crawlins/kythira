@@ -6879,9 +6879,16 @@ auto node<Types>::start_pre_vote() -> void {
 
     // Single-node cluster: no one to pre-vote against — go straight to a
     // real election (which itself becomes leader immediately when
-    // vote_futures is empty).
+    // vote_futures is empty). become_candidate() writes the term, vote and
+    // state, so it runs under _mutex, as check_election_timeout() calls it.
     if (peer_ids.empty()) {
-        become_candidate();
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_state == kythira::server_state::leader || is_learner()) {
+                return;
+            }
+            become_candidate();
+        }
         start_election();
         return;
     }
@@ -7022,17 +7029,20 @@ auto node<Types>::start_pre_vote() -> void {
             // Re-check state fresh under lock: time has passed since the
             // snapshot above (real network I/O happened), so someone else
             // may have already become leader, or we may have heard from
-            // one and stepped down.
+            // one and stepped down. The candidacy starts under the same
+            // lock: become_candidate() writes the term, vote and state that
+            // RPC handlers on other threads read under _mutex, and this
+            // continuation runs on whichever thread settled the last
+            // pre-vote. Only start_election() runs unlocked, as it must.
             {
                 std::lock_guard<std::mutex> lock(_mutex);
                 if (_state == kythira::server_state::leader) {
                     return;
                 }
+                _logger.debug("Pre-vote round reached quorum, starting a real election",
+                              {{"node_id", node_id_to_string(node_id)}});
+                become_candidate();
             }
-
-            _logger.debug("Pre-vote round reached quorum, starting a real election",
-                          {{"node_id", node_id_to_string(node_id)}});
-            become_candidate();
             start_election();
         })
         .thenError([this, node_id, stop_flag = _stop_flag,
