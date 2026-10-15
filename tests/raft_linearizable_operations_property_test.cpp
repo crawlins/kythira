@@ -292,8 +292,8 @@ BOOST_AUTO_TEST_CASE(reads_observe_writes_in_order) {
         std::vector<kythira::future_default<std::vector<std::byte>>> write_futures;
 
         for (std::size_t i = 0; i < num_writes; ++i) {
-            std::vector<std::byte> command(sizeof(std::size_t));
-            std::memcpy(command.data(), &i, sizeof(std::size_t));
+            auto command = test_raft_types::state_machine_type::make_put_command(
+                "key-" + std::to_string(i), "value-" + std::to_string(i));
 
             auto future = node.submit_command(command, rpc_timeout);
             write_futures.push_back(std::move(future));
@@ -454,7 +454,7 @@ BOOST_AUTO_TEST_CASE(read_after_write_observes_write) {
         BOOST_REQUIRE(node.is_leader());
 
         // Submit a write
-        std::vector<std::byte> command{std::byte{42}};
+        auto command = test_raft_types::state_machine_type::make_put_command("key", "value");
         auto write_future = node.submit_command(command, rpc_timeout);
 
         // Wait for write to complete
