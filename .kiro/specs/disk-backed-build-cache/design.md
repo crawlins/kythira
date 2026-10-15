@@ -65,8 +65,9 @@ replica on that node.
 
 ```
 DATA_DIR/
-  chunks/ab/cd/abcd…(64 hex)   chunk bytes, nothing else
+  chunks/ab/cd/abcd…(64 hex)   one large chunk's bytes, nothing else
   chunks/tmp/                  in-progress writes, wiped on start
+  packs/pack.<n>               small chunks, appended; Component 1a
   raft/<group>/                Component 4
 ```
 
@@ -84,12 +85,48 @@ DATA_DIR/
 Reference counts live in the state machine, not on disk. The store has no
 idea who uses a chunk, and that keeps it testable on its own.
 
+**Inodes.** One file per chunk makes the file count follow the key count, so
+a workload of small values would run out of inodes long before bytes. Two
+rules bound it. First, chunks under the pack threshold go to pack files
+(Component 1a), so loose files number at most the disk budget divided by the
+threshold: 1.6 million at a 100 GiB budget and 64 KiB, and far fewer in
+practice, because sccache objects average 0.85 MiB. Second, the free-space
+check that gates writes (Requirement 6.3) reads `f_favail` as well as
+`f_bavail` from the same `statvfs` call.
+
 **Shared across shards.** Two replicas on one node may reference the same
 chunk, which is likely after a split. Counts are therefore kept per node in a
 `chunk_refcounts` object that every replica's state machine updates under the
 store's own mutex. A chunk is removed when the node-wide count reaches zero.
 Each replica's snapshot carries only its own references (Component 3), and
 the node-wide count is rebuilt on start by summing the restored replicas.
+
+## Component 1a: Pack files
+
+Part of `cache_chunk_store`, invisible to its callers. `put`, `open` and
+`remove` take a SHA and decide the location by size.
+
+- A pack is an append-only file of records
+  `{ 32-byte sha, u32 BE len, bytes, u32 crc32 }`. One pack is open for
+  appends at a time and is closed at 64 MiB.
+- Appends are batched and fsynced before `put` returns, as loose chunks are.
+  A torn tail is truncated on open.
+- RAM holds `sha → (pack, offset, len)` for packed chunks, about 48 bytes
+  each. It is rebuilt on start by scanning the packs. That is a sequential
+  read of the packed bytes only, at most the disk budget divided by the
+  threshold times the threshold, and in practice a small share of it.
+- `remove` marks the record dead in RAM and adds its length to the pack's dead
+  count. Dead records are recorded in a per-pack `.dead` sidecar, appended and
+  fsynced, so a restart does not resurrect them.
+- When a closed pack's live bytes fall below half its size, a background task
+  copies its live records into the open pack, updates the locations, and
+  unlinks the old pack and its sidecar. Copying is idempotent by SHA, so a
+  crash mid-compaction leaves duplicates that the next scan ignores (the
+  first live location wins).
+
+None of this touches replicated state. `get_state()` names chunks by hash and
+never by location, so two replicas may pack the same chunks differently and
+remain identical (correctness property 1).
 
 ## Component 2: Log entries
 
@@ -110,6 +147,10 @@ touch     (0x07)  key empty; u32 BE n; n x { u32 BE keylen, key }
   6.2). It is not proposed through the log. It travels on the forwarding link
   as an advisory message, batched once per policy tick. The opcode is
   reserved here so the format stays one namespace.
+- The same advisory batch carries the sending node's free bytes and free
+  inodes. A leader refuses writes while any voter of the shard reports
+  either below its floor (Requirement 6.6), because a follower that runs out
+  mid-apply stops rather than diverge.
 - `put_chunk` for a chunk the replica already has costs a hash check and no
   write.
 
@@ -289,6 +330,8 @@ Failures are not cached; `redis_auth_limiter` rate-limits them as on RESP.
 | `KYTHIRA_CACHE_MAX_VALUE_BYTES` | 2 GiB | Largest value over HTTP and RESP |
 | `KYTHIRA_CACHE_MAX_DISK_BYTES` | none, required | Disk budget per node |
 | `KYTHIRA_CACHE_MIN_FREE_BYTES` | 1 GiB | Free-space floor below which writes are refused |
+| `KYTHIRA_CACHE_MIN_FREE_INODES` | 10000 | Free-inode floor below which writes are refused |
+| `KYTHIRA_CACHE_PACK_THRESHOLD_BYTES` | 64 KiB | Chunks smaller than this go to pack files |
 | `KYTHIRA_CACHE_ORPHAN_GRACE_ENTRIES` | 100000 | Log entries an uncommitted chunk survives |
 | `KYTHIRA_CACHE_FETCH_BYTES_PER_SEC` | 50000000 | Peer fetch rate limit |
 | `KYTHIRA_CACHE_HTTP_LISTEN` / `_HTTPS_LISTEN` | empty | Front-end listeners |
@@ -316,7 +359,8 @@ and no static IPs. The chaos scenarios run it through `container_runtime()` and
 2. **Atomic visibility.** A key read from any replica is either its previous
    value or the complete new value, hash-correct, and never a mix.
 3. **No unreferenced growth.** After the orphan grace period, every chunk
-   file on disk is referenced by a committed manifest or by a pending entry.
+   file and every live pack record on disk is referenced by a committed
+   manifest or by a pending entry.
 4. **Split/absorb law.** Unchanged from `splittable_state_machine.hpp`, over
    the manifest format.
 5. **Bounded RAM.** Resident memory grows with key count and connections, not
@@ -330,7 +374,7 @@ Each property gets a property test in the style of the existing
 | Condition | Behaviour |
 |---|---|
 | Chunk write fails in `apply` | Fatal log, process exits, replica rejoins on restart |
-| Free space below floor | 507 on `PUT`, `-ERR` on `SET`, reads continue |
+| Free space or inodes below floor, here or on any voter of the shard | 507 on `PUT`, `-ERR` on `SET`, reads continue |
 | Chunk missing on a follower | Forward the read to the leader |
 | Chunk missing on the leader | Miss (404 or nil), queue a fetch |
 | Hash mismatch on read | Miss before headers, abort after; drop the chunk and queue a repair |

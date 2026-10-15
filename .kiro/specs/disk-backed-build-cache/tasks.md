@@ -2,7 +2,9 @@
 
 ## Status: 0/12 tasks complete
 
-**Last Updated**: October 15, 2026 (spec written; nothing implemented).
+**Last Updated**: October 15, 2026 (spec written, then amended the same day
+for inode limits: a free-inode floor, small-value pack files, voter
+free-space reports and an inode chaos case; nothing implemented).
 
 ## Overview
 
@@ -57,13 +59,18 @@ Reference material to read before starting:
   - _Requirements: 1.1–1.6_
 
 - [ ] 2. `cache_chunk_store` and `chunk_refcounts`
-  - `include/raft/cache_chunk_store.hpp` per design.md Component 1: the
-    two-level layout, temp-write-fsync-rename, idempotent `put`, streaming
-    `verify`, a `tmp/` wipe on open.
+  - `include/raft/cache_chunk_store.hpp` per design.md Components 1 and 1a:
+    the two-level layout, temp-write-fsync-rename, idempotent `put`, streaming
+    `verify`, a `tmp/` wipe on open, and pack files for chunks under the pack
+    threshold (append, `.dead` sidecar, start-up scan, compaction below half
+    live).
+  - A `statvfs` probe that returns free bytes and free inodes together.
   - Unit tests: concurrent `put` of the same SHA, crash simulation
     (libfiu between write and rename leaves no named chunk), a corrupted file
-    failing `verify`.
-  - _Requirements: 2.1, 2.5, 3.3, 10.1_
+    failing `verify`, a torn pack tail truncated on open, a crash
+    mid-compaction leaving no lost or resurrected chunk, and 100,000 small
+    `put`s creating a bounded number of files.
+  - _Requirements: 2.1, 2.5, 3.3, 6.7, 6.8, 10.1_
 
 - [ ] 3. `cache_kv_state_machine` and codec version 2
   - Add `put_chunk`, `commit` and `touch` to `redis_kv_commands.hpp` under
@@ -112,10 +119,12 @@ Reference material to read before starting:
   - `cmd/redis_gateway_node`: `KYTHIRA_CACHE_*` parsing in `config.cpp`,
     selection of `memory` versus `file` in `run_host.hpp`, start-up orphan
     collection, eviction against `KYTHIRA_CACHE_MAX_DISK_BYTES`, the
-    free-space floor, follower `touch` batches, and the `INFO` fields.
+    free-space and free-inode floors, follower `touch` batches carrying each
+    node's free bytes and inodes, the leader refusing writes while any voter
+    is below a floor, and the `INFO` fields.
   - Existing `redis_gateway_node` tests must pass with
     `KYTHIRA_CACHE_PERSISTENCE=memory`.
-  - _Requirements: 2.6, 5.2, 5.4, 6.1–6.5_
+  - _Requirements: 2.6, 5.2, 5.4, 6.1–6.6_
 
 - [ ] 8. Container image and compose file
   - `docker/cache-cluster/` per design.md "Containers": non-root, a `/data`
@@ -136,9 +145,14 @@ Reference material to read before starting:
 - [ ] 10. Chaos scenarios
   - Kill the leader during a 100 MB `PUT`. Stop and restart all three nodes.
     Replace a node with an empty volume. Flip a byte in a stored chunk
-    (libfiu). Each scenario asserts what Requirements 10.3 and 12.3–12.5
-    state.
-  - _Requirements: 10.3, 12.3–12.5_
+    (libfiu). Fill a small-inode volume with small RESP values: a
+    loop-mounted filesystem needs privileges the container rules forbid, so
+    use a tmpfs mount with `nr_inodes` (`--tmpfs /data:size=…,nr_inodes=…`).
+    Confirm that Docker and rootless Podman both honour the option. If one
+    does not, drive the floor with a libfiu hook on the `statvfs` probe for
+    that runtime instead. Each scenario asserts what Requirements 10.3 and
+    12.3–12.6 state.
+  - _Requirements: 10.3, 12.3–12.6_
 
 - [ ] 11. Documentation
   - `doc/redis-gateway.md`: the variables, HTTP API, WebDAV subset, disk
