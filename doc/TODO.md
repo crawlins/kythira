@@ -1600,6 +1600,14 @@ unverified completion claim.
       and write succeeds, over simulator edges with 0.99 reliability, so
       each operation was a 1% drop. The old binaries failed 4 and 7 of 300
       local runs; with lossless edges, 0 of 300 each.
+    - `redis_gateway_integration_test`: **fixed October 15**, and a real
+      bug. `killing_a_shard_leader_gives_a_retry_error_then_recovers` got
+      `$-1` for a key it had SET before the kill: in `leader` and
+      `linearizable` read modes the gateway served GET from any node that
+      called itself leader, and a just-elected one had not yet applied its
+      predecessor's acknowledged writes. DEL and the immutable-value check
+      read the same stale state. 2 of 52 local runs failed before, 0 of 32
+      after.
   - **Assert each job's configuration actually took effect. DONE** (October
     7, 2026). Every `ci.yml` leg that configures a build now runs
     `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`

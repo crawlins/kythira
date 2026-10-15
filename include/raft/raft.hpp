@@ -30,6 +30,7 @@
 #include <iterator>
 #include <vector>
 #include <optional>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <map>
@@ -516,6 +517,29 @@ public:
     /// belongs in the admin-entry handler, which is handed the same reference.
     template<typename F> auto with_state_machine(F&& f) -> decltype(auto) {
         std::lock_guard<std::mutex> lock(_mutex);
+        return std::forward<F>(f)(_state_machine);
+    }
+
+    /// @brief `with_state_machine`, but only on a leader whose applied state
+    /// already holds every write a previous leader acknowledged.
+    ///
+    /// A newly elected leader knows which entries are committed only once an
+    /// entry of its own term commits (Raft §5.4.2, thesis §6.4); until it has
+    /// applied that entry (the election no-op), its state machine can lack a
+    /// write the old leader acknowledged. Reading it then answers as if the
+    /// write never happened. Returns `std::nullopt` instead, without calling
+    /// `f`, when this node is not the leader or has not yet applied an entry
+    /// of its current term; the caller should treat that as "retry". The
+    /// check and `f` run under one hold of `_mutex`, so they agree. Same
+    /// rules for `f` as `with_state_machine`, and `f` must return a value.
+    template<typename F>
+    auto with_leader_state_machine(F&& f)
+        -> std::optional<std::invoke_result_t<F, state_machine_type&>> {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_state != kythira::server_state::leader ||
+            term_at(_last_applied) != std::optional<term_id_type>{_current_term}) {
+            return std::nullopt;
+        }
         return std::forward<F>(f)(_state_machine);
     }
 
