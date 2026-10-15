@@ -3287,6 +3287,9 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                 serialized_request, endpoint_uri, resource_path, confirmable);
             pending_msg->oscore = std::move(oscore_state);
 
+            if (pending_msg->deadline != std::chrono::steady_clock::time_point::max()) {
+                _request_deadlines.emplace(pending_msg->deadline, token);
+            }
             _pending_requests[token] = std::move(pending_msg);
         }
 
@@ -8265,6 +8268,53 @@ auto coap_client<Types>::next_multicast_deadline_locked() const
 
 template<typename Types>
 requires kythira::transport_types<Types>
+auto coap_client<Types>::expire_overdue_requests() -> void {
+    {
+        std::lock_guard lock(_mutex);
+        const auto now = std::chrono::steady_clock::now();
+        while (!_request_deadlines.empty() && _request_deadlines.top().first <= now) {
+            const auto [deadline, token] = _request_deadlines.top();
+            _request_deadlines.pop();
+            const auto it = _pending_requests.find(token);
+            // Already answered or NACKed, or the token now belongs to a
+            // later request with its own entry.
+            if (it == _pending_requests.end() || it->second->deadline != deadline) {
+                continue;
+            }
+            _logger.warning("CoAP request timed out",
+                            {{"token", token},
+                             {"target_endpoint", it->second->target_endpoint},
+                             {"resource_path", it->second->resource_path},
+                             {"timeout_ms", std::to_string(it->second->timeout.count())}});
+            // libcoap keeps the exchange and may still retransmit it; a late
+            // response or NACK then finds no pending request and is dropped.
+            defer_reject(*it->second, std::make_exception_ptr(coap_timeout_error(
+                                          "CoAP request timed out after " +
+                                          std::to_string(it->second->timeout.count()) + " ms")));
+            _pending_requests.erase(it);
+        }
+    }
+    run_deferred_completions();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::next_request_deadline_locked() const
+    -> std::optional<std::chrono::milliseconds> {
+    if (_request_deadlines.empty()) {
+        return std::nullopt;
+    }
+    // May be an entry for a request that already finished; waking for it
+    // costs one pass that pops it.
+    const auto remaining = _request_deadlines.top().first - std::chrono::steady_clock::now();
+    if (remaining <= std::chrono::steady_clock::duration::zero()) {
+        return std::chrono::milliseconds{0};
+    }
+    return std::chrono::ceil<std::chrono::milliseconds>(remaining);
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
 auto coap_client<Types>::signal_io_wake() noexcept -> void {
     const int fd = _io_wake_fd.get();
     if (fd < 0) {
@@ -8536,6 +8586,9 @@ auto coap_client<Types>::run_io_loop(const std::stop_token& stop_token) -> void 
         // Closes multicast collection windows. Takes _mutex itself and
         // fulfils promises outside it.
         cleanup_expired_multicast_requests();
+        // Fails unicast requests whose per-RPC timeout has run out. Same
+        // locking as the line above.
+        expire_overdue_requests();
 
         if (!readiness) {
             std::this_thread::sleep_for(_config.io_paced_interval);
@@ -8575,6 +8628,9 @@ auto coap_client<Types>::run_io_loop(const std::stop_token& stop_token) -> void 
             }
             if (const auto multicast = next_multicast_deadline_locked()) {
                 timeout = std::min(timeout, *multicast);
+            }
+            if (const auto request = next_request_deadline_locked()) {
+                timeout = std::min(timeout, *request);
             }
         }
         // coap_io_prepare_epoll() runs due timers, and a timer that gives

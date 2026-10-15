@@ -29,14 +29,20 @@ constexpr std::uint64_t max_node_id = 100;
 // so a fixed literal well outside the ephemeral range (32768-60999) and
 // distinct from every other coap_*_test.cpp's assigned literal is safe.
 constexpr const char* test_coap_endpoint = "coap://127.0.0.1:61020";
-// Scaled, because this is handed *into* the code under test -- in the first
-// case it is purely the budget of BOOST_TEST(future.wait(...)) waiting on the
-// nack handler, and elsewhere it is that budget and the RPC's own deadline
-// both. Scaling each case's timeout() never reaches it, so at CI's
+// The budget of each BOOST_TEST(future.wait(...)). Scaled by hand, because
+// scaling each case's timeout() never reaches it, so at CI's
 // KYTHIRA_TEST_TIMEOUT_SCALE=4 a case gets 240s while the wait inside it would
 // keep 5s. Costs nothing when the build is fast: wait() returns as soon as the
 // future resolves.
 constexpr auto test_timeout = kythira::testing::scaled_deadline(5000);
+// The per-RPC timeout handed to the sends whose futures are then waited on
+// for test_timeout. Nothing listens on test_coap_endpoint, so each future
+// resolves on a NACK (the ICMP port-unreachable) or, failing that, on this
+// timeout -- which must be well inside test_timeout. The two used to be the
+// same value, so a send whose ICMP error never surfaced as a NACK (seen on
+// the second and third sends of test_accept_option_handling in CI) raced
+// its own deadline against the wait and usually lost.
+constexpr auto rpc_timeout = std::chrono::milliseconds{1000};
 
 // Define test types for CoAP transport
 struct test_transport_types {
@@ -196,7 +202,7 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format,
     request._last_log_index = 0;
     request._last_log_term = 0;
 
-    auto future = client.send_request_vote(1, request, test_timeout);
+    auto future = client.send_request_vote(1, request, rpc_timeout);
     // The server here is constructed but never start()-ed, so this request
     // gets no response; the future resolves via the nack handler once
     // libcoap reports the delivery failure.
@@ -235,7 +241,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling,
                 request._last_log_index = 0;
                 request._last_log_term = 0;
 
-                auto future = client.send_request_vote(1, request, test_timeout);
+                auto future = client.send_request_vote(1, request, rpc_timeout);
                 BOOST_TEST(future.wait(test_timeout));
 
             } else if (rpc_type == "AppendEntries") {
@@ -246,7 +252,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling,
                 request._prev_log_term = 0;
                 request._leader_commit = 0;
 
-                auto future = client.send_append_entries(1, request, test_timeout);
+                auto future = client.send_append_entries(1, request, rpc_timeout);
                 BOOST_TEST(future.wait(test_timeout));
 
             } else if (rpc_type == "InstallSnapshot") {
@@ -258,7 +264,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling,
                 request._offset = 0;
                 request._done = true;
 
-                auto future = client.send_install_snapshot(1, request, test_timeout);
+                auto future = client.send_install_snapshot(1, request, rpc_timeout);
                 BOOST_TEST(future.wait(test_timeout));
             }
 

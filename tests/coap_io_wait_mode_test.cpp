@@ -14,9 +14,9 @@
 ///
 ///  - a burst of replies is dispatched in a few passes, not one per reply;
 ///  - timers the old 5 ms cadence serviced by accident -- retransmission,
-///    multicast windows -- still fire when the wait cap is far longer than
-///    they are, so a missing deadline fails here instead of hiding behind
-///    the cap;
+///    multicast windows -- and per-RPC timeouts still fire when the wait
+///    cap is far longer than they are, so a missing deadline fails here
+///    instead of hiding behind the cap;
 ///  - a send wakes a waiting thread, an idle thread does not spin, shutdown
 ///    does not wait out the cap, and the lock is free while the thread waits
 ///    (the PR #227 starvation).
@@ -337,6 +337,58 @@ BOOST_AUTO_TEST_CASE(retransmission_still_gives_up_on_schedule,
             // The original and its one retransmission reached the peer
             // (one held request; the peer drops the duplicate by Message ID).
             BOOST_TEST(silent.hold(1, 100ms) == 1u);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_request_fails_at_its_own_timeout,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    // Three CONs to a peer that never answers and never draws an ICMP
+    // error, each with a 300 ms per-RPC timeout. At the default ack_timeout
+    // and max_retransmit libcoap would retransmit for over a minute before
+    // NACKing, so the only thing that can fail them in time is the client
+    // enforcing the timeout it was given. It used to ignore it: a peer that
+    // went away mid-cluster left every RPC to it pending until libcoap gave
+    // up, and since libcoap NACKs just one request per ICMP error, an
+    // unreachable peer did the same to every request after the first
+    // (coap_content_format_property_test's CI flake). The 60 s cap makes a
+    // deadline the wait ignores fail the budget below.
+    constexpr auto rpc_timeout = 300ms;
+    for (const auto mode : both_modes) {
+        BOOST_TEST_CONTEXT("mode " << mode_name(mode)) {
+            held_reply_peer silent;
+            auto config = config_for(mode);
+            config.io_max_wait = 60s;
+            auto client = make_client(silent.endpoint(), config);
+
+            const auto start = std::chrono::steady_clock::now();
+            std::vector<future_default<request_vote_response<>>> pending;
+            for (std::uint64_t term = 1; term <= 3; ++term) {
+                pending.push_back(client->send_request_vote(1, vote_request(term), rpc_timeout));
+            }
+            const auto timed_out = [](future_default<request_vote_response<>> future) {
+                try {
+                    std::move(future).get();
+                } catch (const coap_timeout_error&) {
+                    return true;
+                } catch (...) {
+                }
+                return false;
+            };
+            for (auto& f : pending) {
+                BOOST_REQUIRE(f.wait(kythira::testing::scaled_deadline(5000)));
+                const bool failed_with_timeout = timed_out(std::move(f));
+                BOOST_TEST(failed_with_timeout);
+            }
+            const auto elapsed = std::chrono::steady_clock::now() - start;
+            BOOST_TEST_MESSAGE(
+                mode_name(mode)
+                << ": all failed after "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms");
+            BOOST_TEST(elapsed >= rpc_timeout);
+            // All three reached the peer, so their timeouts ended them, not
+            // a failed send.
+            BOOST_TEST(silent.hold(3, 100ms) == 3u);
         }
     }
 }

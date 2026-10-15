@@ -103,6 +103,11 @@ struct pending_message {
     std::uint16_t message_id;
     std::chrono::steady_clock::time_point send_time;
     std::chrono::milliseconds timeout;
+    /// When the caller's per-RPC timeout runs out: send time plus `timeout`,
+    /// fixed at construction. Unlike `send_time` and `timeout`, which the
+    /// retransmission bookkeeping rewrites, this never moves. `max()` when
+    /// `timeout` is not positive or too large to add, meaning no deadline.
+    std::chrono::steady_clock::time_point deadline;
     std::size_t retransmission_count{0};
     /// Takes the media type the response actually arrived in alongside the
     /// bytes, because only `handle_response` can see the PDU's Content-Format
@@ -128,12 +133,24 @@ struct pending_message {
           message_id(msg_id),
           send_time(std::chrono::steady_clock::now()),
           timeout(to),
+          deadline(deadline_after(send_time, to)),
           resolve_callback(std::move(resolve_cb)),
           reject_callback(std::move(reject_cb)),
           original_payload(std::move(payload)),
           target_endpoint(std::move(endpoint)),
           resource_path(std::move(path)),
           is_confirmable(confirmable) {}
+
+    static auto deadline_after(std::chrono::steady_clock::time_point start,
+                               std::chrono::milliseconds span)
+        -> std::chrono::steady_clock::time_point {
+        constexpr auto never = std::chrono::steady_clock::time_point::max();
+        if (span <= std::chrono::milliseconds::zero() ||
+            span >= std::chrono::duration_cast<std::chrono::milliseconds>(never - start)) {
+            return never;
+        }
+        return start + span;
+    }
 };
 
 struct received_message_info {
