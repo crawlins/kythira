@@ -176,6 +176,112 @@ else()
 endif()
 unset(_kythira_launcher)
 
+# Linker. mold links in parallel; ld.bfd, which every Ubuntu toolchain uses
+# by default, does not. Link steps are about half of all build edges and no
+# compiler cache can skip them (.kiro/specs/mold-linker/ has the measured
+# effect on this tree).
+#
+# add_link_options(), not CMAKE_*_LINKER_FLAGS: the latter propagate into
+# every try_compile(), so switching linkers could change what find_package()
+# and the check_* probes detect. vcpkg packages are built by a separate
+# `vcpkg install` step and never see this.
+#
+# `auto` uses mold if the compiler accepts -fuse-ld=mold and otherwise
+# changes nothing. It does not fall back to lld: a machine without mold gets
+# the build it always had, not a third linker nobody tests. CI asks for mold
+# by name so a missing package fails here instead of linking with ld.bfd.
+#
+# Revert with -DKYTHIRA_LINKER=default.
+set(KYTHIRA_LINKER "auto" CACHE STRING
+    "Linker: auto (mold if usable, else the compiler default), mold, lld or default")
+set_property(CACHE KYTHIRA_LINKER PROPERTY STRINGS auto mold lld default)
+
+include(CheckLinkerFlag)
+
+# Probe -fuse-ld=<name>, re-probing when the linker binary on PATH changes.
+# check_linker_flag() caches its result, so without the path check a tree
+# first configured before mold was installed would stay on ld.bfd forever:
+# the silent no-op the launcher block above also guards against.
+function(kythira_probe_linker name out)
+    string(TOUPPER "${name}" upper)
+    # find_program() does not search again once it has a cached hit, so a
+    # linker uninstalled since the last configure would otherwise be passed
+    # to every link and fail the build rather than falling back.
+    if(KYTHIRA_${upper}_PROGRAM AND NOT EXISTS "${KYTHIRA_${upper}_PROGRAM}")
+        unset(KYTHIRA_${upper}_PROGRAM CACHE)
+    endif()
+    find_program(KYTHIRA_${upper}_PROGRAM NAMES "ld.${name}" "${name}")
+    if(NOT KYTHIRA_${upper}_PROGRAM)
+        set(${out} FALSE PARENT_SCOPE)
+        return()
+    endif()
+    if(NOT "${KYTHIRA_${upper}_PROGRAM}" STREQUAL "${_KYTHIRA_${upper}_PROBED_PATH}")
+        unset(KYTHIRA_LINKER_ACCEPTS_${upper} CACHE)
+        set(_KYTHIRA_${upper}_PROBED_PATH "${KYTHIRA_${upper}_PROGRAM}"
+            CACHE INTERNAL "")
+    endif()
+    check_linker_flag(CXX "-fuse-ld=${name}" KYTHIRA_LINKER_ACCEPTS_${upper})
+    set(${out} "${KYTHIRA_LINKER_ACCEPTS_${upper}}" PARENT_SCOPE)
+endfunction()
+
+set(_kythira_linker "")
+if(KYTHIRA_LINKER STREQUAL "auto")
+    kythira_probe_linker(mold _kythira_linker_ok)
+    if(_kythira_linker_ok)
+        set(_kythira_linker mold)
+    endif()
+elseif(KYTHIRA_LINKER STREQUAL "mold" OR KYTHIRA_LINKER STREQUAL "lld")
+    kythira_probe_linker(${KYTHIRA_LINKER} _kythira_linker_ok)
+    if(NOT _kythira_linker_ok)
+        # Fatal for the same reason as an explicit compiler launcher: CI asked
+        # for mold, and quietly linking with ld.bfd would stay green.
+        message(FATAL_ERROR
+            "KYTHIRA_LINKER=${KYTHIRA_LINKER} but ${CMAKE_CXX_COMPILER} "
+            "does not accept -fuse-ld=${KYTHIRA_LINKER}")
+    endif()
+    set(_kythira_linker ${KYTHIRA_LINKER})
+elseif(NOT KYTHIRA_LINKER STREQUAL "default")
+    message(FATAL_ERROR "KYTHIRA_LINKER must be auto, mold, lld or default, "
+                        "got \"${KYTHIRA_LINKER}\"")
+endif()
+
+if(_kythira_linker)
+    # Applies to every target defined after this point in this directory and
+    # below, which is all of them: no target precedes this block. It does not
+    # reach try_compile() or imported targets.
+    add_link_options("-fuse-ld=${_kythira_linker}")
+    string(TOUPPER "${_kythira_linker}" _kythira_linker_upper)
+    execute_process(COMMAND "${KYTHIRA_${_kythira_linker_upper}_PROGRAM}" --version
+                    OUTPUT_VARIABLE _kythira_linker_version
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    message(STATUS "linker: ${_kythira_linker_version} "
+                   "(${KYTHIRA_${_kythira_linker_upper}_PROGRAM})")
+    unset(_kythira_linker_upper)
+    unset(_kythira_linker_version)
+else()
+    message(STATUS "linker: default")
+endif()
+unset(_kythira_linker)
+unset(_kythira_linker_ok)
+
+# Concurrent link steps (Ninja only). mold uses every core for each link, and
+# a static link of a Folly/Boost/OpenSSL test binary is one of the larger
+# memory consumers on a -j3 runner, so a memory-constrained job can cap how
+# many run at once. Empty, the default, leaves links unpooled as before.
+# CMAKE_JOB_POOL_LINK only applies to targets created after it is set, which
+# is why this sits here and not beside the heavy_tu pool further down.
+set(KYTHIRA_LINK_JOBS "" CACHE STRING
+    "Maximum concurrent link steps (Ninja only); empty means unlimited")
+if(NOT KYTHIRA_LINK_JOBS STREQUAL "")
+    if(NOT KYTHIRA_LINK_JOBS MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR "KYTHIRA_LINK_JOBS must be a positive integer, "
+                            "got \"${KYTHIRA_LINK_JOBS}\"")
+    endif()
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS
+                 kythira_link=${KYTHIRA_LINK_JOBS})
+    set(CMAKE_JOB_POOL_LINK kythira_link)
+endif()
+
 # Code coverage support. CONFIG_COVERAGE (cmake/Kconfig.cmake) pre-seeds this
 # cache entry when Kconfig is engaged; set(... CACHE ...) without FORCE only
 # takes effect if the cache entry doesn't already exist, so an explicit
@@ -1059,11 +1165,6 @@ if(LIBNYOCI_FOUND)
     # libnyoci's call to libcoap's function. Only the coap_libnyoci_*
     # tests use this backend, and tests/CMakeLists.txt links
     # PkgConfig::LIBNYOCI into each of them ahead of network_simulator.
-    # Backs LIBNYOCI_AVAILABLE project-wide, exactly as the LIBCOAP_AVAILABLE
-    # line above does -- without it coap_transport_libnyoci_impl.hpp compiles
-    # to its stub and every coap_libnyoci_* test silently skips, which is the
-    # failure mode that hid the libcoap backend from its own test suite for as
-    # long as it did.
     # Backs LIBNYOCI_AVAILABLE project-wide, exactly as the LIBCOAP_AVAILABLE
     # line above does -- without it coap_transport_libnyoci_impl.hpp compiles
     # to its stub and every coap_libnyoci_* test silently skips, which is the
