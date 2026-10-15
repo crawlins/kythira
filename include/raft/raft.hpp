@@ -1390,6 +1390,13 @@ private:
                                      std::size_t offset, std::size_t chunk_num) -> void;
     auto advance_commit_index() -> void;
     auto apply_committed_entries() -> void;
+    // read_state()'s last step, called under _mutex once leadership is
+    // confirmed: serves the state machine once it holds this term's committed
+    // prefix, waiting on _commit_waiter (bounded by the read's timeout) if not.
+    auto serve_read_after_apply(node_id_type node_id,
+                                std::chrono::steady_clock::time_point start_time,
+                                std::size_t heartbeat_responses, std::chrono::milliseconds timeout)
+        -> future_type;
 
     // Snapshot operations (the no-argument create_snapshot() is public)
     auto create_snapshot(const std::vector<std::byte>& state_machine_state) -> void;
@@ -3581,6 +3588,172 @@ auto node<Types>::submit_command_with_session(client_id_t client_id, serial_numb
 }
 
 template<raft_types Types>
+auto node<Types>::serve_read_after_apply(node_id_type node_id,
+                                         std::chrono::steady_clock::time_point start_time,
+                                         std::size_t heartbeat_responses,
+                                         std::chrono::milliseconds timeout) -> future_type {
+    const char* cluster_type = heartbeat_responses == 0 ? "single_node" : "multi_node";
+
+    // Runs under _mutex, either here or from the apply path that fulfils the
+    // commit waiter below.
+    auto serve = [this, node_id, start_time, heartbeat_responses,
+                  cluster_type]() -> std::vector<std::byte> {
+        try {
+            auto state = _state_machine.get_state();
+
+            // Nanoseconds, kept at full resolution for the metric. The
+            // millisecond cast is for the human-readable log line only:
+            // casting first and widening back recorded every sub-millisecond
+            // read as exactly zero, which is most of them.
+            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start_time);
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+
+            _logger.info("Read request completed successfully",
+                         {{"node_id", node_id_to_string(node_id)},
+                          {"state_size", std::to_string(state.size())},
+                          {"duration_ms", std::to_string(duration.count())},
+                          {"last_applied", std::to_string(_last_applied)},
+                          {"heartbeat_responses", std::to_string(heartbeat_responses)}});
+
+            _metrics.set_metric_name("raft_read_request_success");
+            _metrics.add_dimension("node_id", node_id_to_string(node_id));
+            _metrics.add_dimension("cluster_type", cluster_type);
+            _metrics.add_one();
+            _metrics.emit();
+
+            _metrics.set_metric_name("raft_read_latency");
+            _metrics.add_dimension("node_id", node_id_to_string(node_id));
+            _metrics.add_duration(elapsed);
+            _metrics.emit();
+
+            return state;
+        } catch (const std::exception& e) {
+            _logger.error("Failed to get state from state machine",
+                          {{"node_id", node_id_to_string(node_id)}, {"error", e.what()}});
+
+            _metrics.set_metric_name("raft_read_request_failed");
+            _metrics.add_dimension("node_id", node_id_to_string(node_id));
+            _metrics.add_dimension("reason", "state_machine_error");
+            _metrics.add_one();
+            _metrics.emit();
+
+            throw;
+        }
+    };
+
+    auto fail = [this, node_id](std::string_view reason, std::exception_ptr ep) {
+        _logger.warning("Read request failed before serving state",
+                        {{"node_id", node_id_to_string(node_id)}, {"reason", std::string(reason)}});
+        _metrics.set_metric_name("raft_read_request_failed");
+        _metrics.add_dimension("node_id", node_id_to_string(node_id));
+        _metrics.add_dimension("reason", std::string(reason));
+        _metrics.add_one();
+        _metrics.emit();
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::move(ep));
+        return future;
+    };
+
+    // Bring the commit index and the state machine up to date first: a
+    // single-node leader's no-op otherwise commits only on its next tick, and
+    // the apply path works in batches of at most 100 that can trail the
+    // commit index.
+    advance_commit_index();
+    for (auto applied = _last_applied; _last_applied < _commit_index; applied = _last_applied) {
+        apply_committed_entries();
+        if (_last_applied == applied) {
+            break;
+        }
+    }
+
+    // The read index is the commit index, unless this leader has not yet
+    // committed an entry of its own term: then the committed prefix it knows
+    // may be short of what an earlier leader committed, and the read must wait
+    // for its first entry of this term (the election no-op) instead. Terms
+    // never decrease along the log, so that entry is the lowest index above the
+    // commit index that still carries the current term.
+    log_index_type read_index = _commit_index;
+    if (term_at(_commit_index) != std::optional<term_id_type>{_current_term}) {
+        read_index = get_last_log_index();
+        if (term_at(read_index) != std::optional<term_id_type>{_current_term}) {
+            return fail("no_entry_in_term",
+                        std::make_exception_ptr(std::runtime_error(
+                            "read_state: leader holds no log entry of its own term")));
+        }
+        while (read_index - 1 > _commit_index &&
+               term_at(read_index - 1) == std::optional<term_id_type>{_current_term}) {
+            --read_index;
+        }
+    }
+
+    // The apply loop above made no progress on a committed entry: the state
+    // machine failed it (application_failure_policy::halt) or the entry is
+    // missing, and nothing will move last_applied past it. Waiting would only
+    // run the read into its timeout, so it fails now.
+    if (_last_applied < read_index && read_index <= _commit_index) {
+        return fail("apply_stalled",
+                    std::make_exception_ptr(std::runtime_error(
+                        "read_state: the state machine has stopped applying committed entries "
+                        "at index " +
+                        std::to_string(_last_applied + 1))));
+    }
+
+    if (_last_applied >= read_index) {
+        promise_type promise;
+        auto future = promise.getFuture();
+        try {
+            promise.setValue(serve());
+        } catch (...) {
+            promise.setException(std::current_exception());
+        }
+        return future;
+    }
+
+    const auto remaining = timeout - std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now() - start_time);
+    if (remaining <= std::chrono::milliseconds{0}) {
+        return fail("read_index_timeout",
+                    std::make_exception_ptr(
+                        kythira::commit_timeout_exception<log_index_type>(read_index, timeout)));
+    }
+
+    _logger.debug("Read waiting for the read index to apply",
+                  {{"node_id", node_id_to_string(node_id)},
+                   {"read_index", std::to_string(read_index)},
+                   {"commit_index", std::to_string(_commit_index)},
+                   {"last_applied", std::to_string(_last_applied)}});
+
+    // Both callbacks run under _mutex (apply path, tick timeout sweep, or step
+    // down), so neither may take it, and the continuation a caller chains on
+    // the returned future runs there too, exactly as for submit_command().
+    auto shared_promise = std::make_shared<promise_type>();
+    auto future = shared_promise->getFuture();
+    _commit_waiter.register_operation(
+        read_index,
+        [shared_promise, serve](std::vector<std::byte>) mutable {
+            try {
+                shared_promise->setValue(serve());
+            } catch (...) {
+                shared_promise->setException(std::current_exception());
+            }
+        },
+        [this, node_id, shared_promise](std::exception_ptr ep) mutable {
+            _logger.warning("Read request failed waiting for the read index to apply",
+                            {{"node_id", node_id_to_string(node_id)}});
+            _metrics.set_metric_name("raft_read_request_failed");
+            _metrics.add_dimension("node_id", node_id_to_string(node_id));
+            _metrics.add_dimension("reason", "read_index_not_applied");
+            _metrics.add_one();
+            _metrics.emit();
+            shared_promise->setException(std::move(ep));
+        },
+        remaining);
+    return future;
+}
+
+template<raft_types Types>
 auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
     auto start_time = std::chrono::steady_clock::now();
 
@@ -3634,60 +3807,12 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
 
         // For single-node cluster, return immediately (no need for heartbeat confirmation)
         if (_configuration.nodes().size() == 1) {
-            _logger.debug("Single-node cluster, returning state immediately",
+            _logger.debug("Single-node cluster, serving without heartbeat confirmation",
                           {{"node_id", node_id_to_string(_node_id)},
                            {"commit_index", std::to_string(_commit_index)},
                            {"last_applied", std::to_string(_last_applied)}});
 
-            try {
-                auto state = _state_machine.get_state();
-
-                auto end_time = std::chrono::steady_clock::now();
-                // Nanoseconds, kept at full resolution for the metric. The
-                // millisecond cast below is for the human-readable log line
-                // only: casting first and widening back — which this code did
-                // — recorded every sub-millisecond read as exactly zero, which
-                // is most of them.
-                auto elapsed =
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
-                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
-
-                _logger.debug("Read request completed (single-node)",
-                              {{"node_id", node_id_to_string(_node_id)},
-                               {"state_size", std::to_string(state.size())},
-                               {"duration_ms", std::to_string(duration.count())}});
-
-                _metrics.set_metric_name("raft_read_request_success");
-                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-                _metrics.add_dimension("cluster_type", "single_node");
-                _metrics.add_one();
-                _metrics.emit();
-
-                _metrics.set_metric_name("raft_read_latency");
-                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-                _metrics.add_duration(elapsed);
-                _metrics.emit();
-
-                promise_type promise;
-                auto future = promise.getFuture();
-                promise.setValue(std::move(state));
-                return future;
-
-            } catch (const std::exception& e) {
-                _logger.error("Failed to get state from state machine",
-                              {{"node_id", node_id_to_string(_node_id)}, {"error", e.what()}});
-
-                _metrics.set_metric_name("raft_read_request_failed");
-                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-                _metrics.add_dimension("reason", "state_machine_error");
-                _metrics.add_one();
-                _metrics.emit();
-
-                promise_type promise;
-                auto future = promise.getFuture();
-                promise.setException(std::current_exception());
-                return future;
-            }
+            return serve_read_after_apply(_node_id, start_time, 0, timeout);
         }
 
         // Multi-node: build heartbeat request parameters under the lock so that
@@ -3771,9 +3896,42 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
     return kythira::raft_future_collector<append_entries_response_type>::
         collect_n_successes_with_timeout(std::move(heartbeat_futures), required_follower_acks,
                                          timeout)
-            .thenValue([this, current_term, node_id,
-                        start_time](std::vector<append_entries_response_type> responses)
-                           -> std::vector<std::byte> {
+            .thenError([this, node_id, start_time](
+                           std::exception_ptr ep) -> std::vector<append_entries_response_type> {
+                std::lock_guard<std::mutex> lock(_mutex);
+
+                auto end_time = std::chrono::steady_clock::now();
+                auto duration =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+                std::string error_message;
+                try {
+                    std::rethrow_exception(ep);
+                } catch (const std::exception& e) {
+                    error_message = e.what();
+                } catch (...) {
+                    error_message = "unknown exception";
+                }
+
+                _logger.error("Read request failed",
+                              {{"node_id", node_id_to_string(node_id)},
+                               {"error", error_message},
+                               {"duration_ms", std::to_string(duration.count())}});
+
+                _metrics.set_metric_name("raft_read_request_failed");
+                _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                _metrics.add_dimension("reason", "heartbeat_collection_failed");
+                _metrics.add_one();
+                _metrics.emit();
+
+                // Re-throw the exception
+                std::rethrow_exception(ep);
+
+                // This line is unreachable but needed for compilation
+                return std::vector<append_entries_response_type>{};
+            })
+            .thenValue([this, current_term, node_id, start_time, timeout](
+                           std::vector<append_entries_response_type> responses) -> future_type {
                 std::lock_guard<std::mutex> lock(_mutex);
 
                 _logger.debug("Received majority heartbeat responses",
@@ -3832,89 +3990,16 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
                     }
                 }
 
-                // Leadership confirmed by majority, return current state
-                _logger.debug("Leadership confirmed, returning state",
-                              {{"node_id", node_id_to_string(node_id)},
-                               {"commit_index", std::to_string(_commit_index)},
-                               {"last_applied", std::to_string(_last_applied)}});
-
-                try {
-                    auto state = _state_machine.get_state();
-
-                    auto end_time = std::chrono::steady_clock::now();
-                    // See the single-node path above: full-resolution
-                    // nanoseconds for the metric, milliseconds only for the log
-                    // line.
-                    auto elapsed =
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
-                    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
-
-                    _logger.info("Read request completed successfully",
-                                 {{"node_id", node_id_to_string(node_id)},
-                                  {"state_size", std::to_string(state.size())},
-                                  {"duration_ms", std::to_string(duration.count())},
-                                  {"heartbeat_responses", std::to_string(responses.size())}});
-
-                    _metrics.set_metric_name("raft_read_request_success");
-                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
-                    _metrics.add_dimension("cluster_type", "multi_node");
-                    _metrics.add_one();
-                    _metrics.emit();
-
-                    _metrics.set_metric_name("raft_read_latency");
-                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
-                    _metrics.add_duration(elapsed);
-                    _metrics.emit();
-
-                    return state;
-
-                } catch (const std::exception& e) {
-                    _logger.error(
-                        "Failed to get state from state machine after leadership confirmation",
-                        {{"node_id", node_id_to_string(node_id)}, {"error", e.what()}});
-
-                    _metrics.set_metric_name("raft_read_request_failed");
-                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
-                    _metrics.add_dimension("reason", "state_machine_error");
-                    _metrics.add_one();
-                    _metrics.emit();
-
-                    throw;
-                }
-            })
-            .thenError([this, node_id,
-                        start_time](std::exception_ptr ep) -> std::vector<std::byte> {
-                std::lock_guard<std::mutex> lock(_mutex);
-
-                auto end_time = std::chrono::steady_clock::now();
-                auto duration =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-                std::string error_message;
-                try {
-                    std::rethrow_exception(ep);
-                } catch (const std::exception& e) {
-                    error_message = e.what();
-                } catch (...) {
-                    error_message = "unknown exception";
-                }
-
-                _logger.error("Read request failed",
-                              {{"node_id", node_id_to_string(node_id)},
-                               {"error", error_message},
-                               {"duration_ms", std::to_string(duration.count())}});
-
-                _metrics.set_metric_name("raft_read_request_failed");
-                _metrics.add_dimension("node_id", node_id_to_string(node_id));
-                _metrics.add_dimension("reason", "heartbeat_collection_failed");
-                _metrics.add_one();
-                _metrics.emit();
-
-                // Re-throw the exception
-                std::rethrow_exception(ep);
-
-                // This line is unreachable but needed for compilation
-                return std::vector<std::byte>{};
+                // Leadership is confirmed, but a majority acknowledging this
+                // term says nothing about what the state machine holds. A leader
+                // only knows the full committed prefix once it has committed an
+                // entry of its own term (Raft thesis §6.4): until its election
+                // no-op commits, its commit index can sit below an entry an
+                // earlier leader committed and acknowledged to a client, and
+                // reading now would return state without that write. The
+                // committed prefix must also have reached the state machine,
+                // which applies in batches and can trail the commit index.
+                return serve_read_after_apply(node_id, start_time, responses.size(), timeout);
             });
 }
 
