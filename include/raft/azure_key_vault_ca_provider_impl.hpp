@@ -365,8 +365,8 @@ inline auto azure_key_vault_ca_provider::sign_csr(std::string csr_pem, csr_signi
         auto now = std::chrono::system_clock::now();
         auto cert = detail::build_unsigned_leaf_cert(
             issuer_cert.get(), X509_REQ_get_subject_name(req.get()), csr_pubkey.get(),
-            options.dns_names, options.ip_addresses, options.server_auth, options.client_auth, now,
-            now + options.validity, serial);
+            options.dns_names, options.ip_addresses, options.uri_names, options.server_auth,
+            options.client_auth, now, now + options.validity, serial);
         azure_detail::sign_with_key_vault(cert.get(), issuer_pubkey_evp.get(), _client,
                                           _config.signing_algorithm);
 

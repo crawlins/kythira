@@ -368,9 +368,13 @@ auto rpc_trust_state_of(const raft::testing::ca_state_machine& state,
         std::ranges::all_of(node_ids, [&](std::uint64_t id) { return ready.contains(id); });
     for (const auto& entry : state.ledger()) {
         if (entry.revoked_at.has_value() &&
-            std::ranges::any_of(entry.dns_names, [](const std::string& name) {
-                return raft::testing::is_reserved_peer_dns_name(name);
-            })) {
+            (std::ranges::any_of(entry.dns_names,
+                                 [](const std::string& name) {
+                                     return raft::testing::is_reserved_peer_dns_name(name);
+                                 }) ||
+             std::ranges::any_of(entry.uri_names, [](const std::string& uri) {
+                 return raft::testing::is_reserved_peer_uri(uri);
+             }))) {
             out.revoked_peer_serials.insert(entry.serial);
         }
     }
@@ -479,6 +483,7 @@ auto ledger_entry_for(const raft::testing::pem_material& material,
     entry.subject = extract_subject_cn(material.certificate_pem);
     entry.dns_names = options.dns_names;
     entry.ip_addresses = options.ip_addresses;
+    entry.uri_names = options.uri_names;
     entry.certificate_pem = material.certificate_pem;
     entry.not_before = std::chrono::system_clock::now();
     entry.not_after = entry.not_before + options.validity;

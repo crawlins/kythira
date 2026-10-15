@@ -159,6 +159,7 @@ private:
         leaf.algorithm = _options.algorithm;
         leaf.dns_names = _options.signing.dns_names;
         leaf.ip_addresses = _options.signing.ip_addresses;
+        leaf.uri_names = _options.signing.uri_names;
         leaf.server_auth = _options.signing.server_auth;
         leaf.client_auth = _options.signing.client_auth;
         leaf.validity = _options.signing.validity;

@@ -5,6 +5,26 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **The TLS-TCP Raft transport and the CA's peer identities work with
+  textual node ids.** `basic_tls_tcp_rpc_client`/`basic_tls_tcp_rpc_server`
+  and `basic_tls_rpc_trust_policy` take a `NodeId` (the old names are the
+  numeric instantiations), so a cluster named by `std::string` or composite
+  cloud ids can run over mutual TLS. A numeric node keeps its
+  `ca-cluster-node-<n>` DNS SAN; a textual node is named by a
+  `urn:kythira:node:<canonical text>` URI SAN, percent-encoded, because
+  canonical text is not a valid DNS name, and the trust policy matches
+  only the SAN kind its id type uses. To get there the CA issues URI SANs
+  (`uri_names` on both option structs, validated and built as typed
+  GENERAL_NAMEs like DNS and IP entries), the CSR policy the CSR-signing
+  cloud CAs use admits approved URIs, and ACME refuses them. Peer
+  enrollment reserves the URN prefix as it reserves the DNS one (case- and
+  escape-insensitively), MACs a textual id's canonical text, and leaves
+  numeric MACs byte-for-byte as they were. `record_rpc_tls_ready` gains a
+  version 2 that carries the id as a string, which an older replica
+  rejects rather than misreads; numeric commands and snapshots are
+  unchanged. `.kiro/specs/cloud-composite-node-ids/` tasks 6.2, 6.3 and
+  6.5 for TLS-TCP, and the library half of 7.1.
+
 - **The Redis gateway no longer reads a new leader's stale state.** In
   `leader` read consistency (the default) a GET was answered from the
   shard leader's applied state as soon as a node became leader. A leader

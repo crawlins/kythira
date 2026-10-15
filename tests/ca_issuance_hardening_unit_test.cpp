@@ -399,3 +399,165 @@ BOOST_AUTO_TEST_CASE(csr_policy_rejects_unapproved_requests, *boost::unit_test::
     }
     BOOST_CHECK_THROW(enforce_csr_matches_options("not a csr", approved()), std::invalid_argument);
 }
+
+// ── Textual node ids (.kiro/specs/cloud-composite-node-ids/ Requirement 12) ──
+
+BOOST_AUTO_TEST_CASE(csr_policy_matches_uri_names_exactly, *boost::unit_test::timeout(30)) {
+    auto opts = approved();
+    opts.uri_names = {"urn:kythira:node:docker:c1:n1"};
+    BOOST_CHECK_NO_THROW(enforce_csr_matches_options(
+        csr_with_extensions({{NID_subject_alt_name, "URI:urn:kythira:node:docker:c1:n1"}}), opts));
+    BOOST_CHECK_THROW(
+        enforce_csr_matches_options(
+            csr_with_extensions({{NID_subject_alt_name, "URI:urn:kythira:node:docker:c1:n2"}}),
+            opts),
+        std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(textual_peer_name_is_a_reserved_uri, *boost::unit_test::timeout(30)) {
+    // Canonical composite text keeps its ':' separators; '%' (from the
+    // composite escaping of ':' and '%') and anything outside RFC 3986's
+    // unreserved set is percent-encoded, so the URI decodes back exactly.
+    BOOST_TEST(peer_identity_uri("aws-ec2:us-east-1:i-0abc") ==
+               "urn:kythira:node:aws-ec2:us-east-1:i-0abc");
+    BOOST_TEST(peer_identity_uri("docker:a%3Ab:n 1/x") ==
+               "urn:kythira:node:docker:a%253Ab:n%201%2Fx");
+    BOOST_TEST(peer_identity_name<std::string>("gcp:p:z:n") == "urn:kythira:node:gcp:p:z:n");
+    BOOST_TEST(peer_identity_name<std::uint64_t>(7) == "ca-cluster-node-7");
+    BOOST_TEST(peer_identity_is_uri<kythira::aws_ec2_node_id>);
+    BOOST_TEST(!peer_identity_is_uri<std::uint32_t>);
+
+    BOOST_TEST(is_reserved_peer_uri("urn:kythira:node:x"));
+    BOOST_TEST(is_reserved_peer_uri("urn:kythira:node:"));
+    // Scheme and namespace id fold case; escaped unreserved characters are
+    // the characters themselves.
+    BOOST_TEST(is_reserved_peer_uri("URN:Kythira:NODE:x"));
+    BOOST_TEST(is_reserved_peer_uri("urn:kythira:%6Eode:x"));
+    BOOST_TEST(is_reserved_peer_uri("urn%3Akythira:node:x"));
+    BOOST_TEST(!is_reserved_peer_uri("urn:kythira:nodes:x"));
+    BOOST_TEST(!is_reserved_peer_uri("urn:kythira:node"));
+    BOOST_TEST(!is_reserved_peer_uri("spiffe://kythira/node/x"));
+    BOOST_TEST(!is_reserved_peer_uri("urn:kythira:%6"));
+}
+
+BOOST_AUTO_TEST_CASE(issued_cert_carries_requested_uri_names, *boost::unit_test::timeout(30)) {
+    certificate_authority ca;
+    leaf_certificate_options opts;
+    opts.uri_names = {peer_identity_uri("docker:c1:n1")};
+    auto cert = load(ca.issue(opts).certificate_pem);
+    BOOST_TEST((san_types(cert.get()) == std::vector<int>{GEN_URI}));
+    BOOST_TEST(cert_has_uri_san_in(cert.get(), {"urn:kythira:node:docker:c1:n1"}));
+    // The same text is not a DNS SAN, and a URI is only ever matched as one.
+    BOOST_TEST(!cert_has_dns_san_in(cert.get(), {"urn:kythira:node:docker:c1:n1"}));
+    BOOST_TEST(cert_has_peer_name_in<std::string>(cert.get(), {"urn:kythira:node:docker:c1:n1"}));
+    BOOST_TEST(
+        !cert_has_peer_name_in<std::uint64_t>(cert.get(), {"urn:kythira:node:docker:c1:n1"}));
+    // Renewal copies URI SANs from the presented certificate.
+    BOOST_TEST((options_from_presented_cert(cert.get()).uri_names == opts.uri_names));
+
+    for (const char* bad : {"", "no-scheme", ":empty-scheme", "1x:digit-first", "x:", "x:sp ace",
+                            "x:new\nline", "x:quote\"", "x:a,URI:b<"}) {
+        leaf_certificate_options bad_opts;
+        bad_opts.uri_names = {bad};
+        BOOST_CHECK_THROW((void)ca.issue(bad_opts), std::invalid_argument);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(textual_peer_enrollment, *boost::unit_test::timeout(30)) {
+    const std::string a = "docker:c1:a";
+    const std::string b = "docker:c1:b";
+    const std::set<std::string> ids{a, b};
+    const auto key = derive_peer_enrollment_key("unseal-passphrase");
+    const std::string csr = "-----BEGIN CERTIFICATE REQUEST-----\nabc\n";
+
+    // Requirement 12.3: the MAC is over the canonical text, and the numeric
+    // form is unchanged, so an existing numeric enrollment stays valid.
+    BOOST_TEST(peer_enrollment_mac(key, a, csr) ==
+               hmac_sha256_hex(key, "enroll\n" + a + "\n" + csr));
+    BOOST_TEST(peer_enrollment_mac(key, std::uint64_t{2}, csr) ==
+               hmac_sha256_hex(key, "enroll\n2\n" + csr));
+
+    csr_signing_options peer;
+    peer.uri_names = {peer_identity_name(a)};
+    auto good_mac = peer_enrollment_mac(key, a, csr);
+    auto ok = classify_peer_enrollment<std::string>(peer, a, good_mac, ids, key, csr);
+    BOOST_TEST(ok.allowed);
+    BOOST_TEST(ok.node_id.value() == a);
+
+    // A client asking for a reserved URI without enrolling: refused, by a
+    // textual cluster and a numeric one alike.
+    BOOST_TEST(
+        !classify_peer_enrollment<std::string>(peer, std::nullopt, "", ids, key, csr).allowed);
+    BOOST_TEST(
+        !classify_peer_enrollment<std::uint64_t>(peer, std::nullopt, "", {1, 2}, key, csr).allowed);
+    csr_signing_options sneaky;
+    sneaky.uri_names = {"URN:kythira:node:docker:c1:a"};
+    BOOST_TEST(
+        !classify_peer_enrollment<std::string>(sneaky, std::nullopt, "", ids, key, csr).allowed);
+    // An ordinary URI is untouched.
+    csr_signing_options client;
+    client.uri_names = {"spiffe://example.org/svc"};
+    BOOST_TEST(
+        classify_peer_enrollment<std::string>(client, std::nullopt, "", ids, key, csr).allowed);
+
+    // Wrong node's name, the DNS form, an extra name, a non-member, or a bad
+    // MAC: refused.
+    csr_signing_options other;
+    other.uri_names = {peer_identity_name(b)};
+    BOOST_TEST(!classify_peer_enrollment<std::string>(other, a, good_mac, ids, key, csr).allowed);
+    csr_signing_options both = peer;
+    both.dns_names = {"ca-cluster-node-1"};
+    BOOST_TEST(!classify_peer_enrollment<std::string>(both, a, good_mac, ids, key, csr).allowed);
+    csr_signing_options extra = peer;
+    extra.uri_names.push_back("spiffe://example.org/admin");
+    BOOST_TEST(!classify_peer_enrollment<std::string>(extra, a, good_mac, ids, key, csr).allowed);
+    csr_signing_options outsider;
+    outsider.uri_names = {peer_identity_name(std::string("docker:c1:z"))};
+    BOOST_TEST(!classify_peer_enrollment<std::string>(
+                    outsider, "docker:c1:z",
+                    peer_enrollment_mac(key, std::string("docker:c1:z"), csr), ids, key, csr)
+                    .allowed);
+    BOOST_TEST(!classify_peer_enrollment<std::string>(peer, a, peer_enrollment_mac(key, b, csr),
+                                                      ids, key, csr)
+                    .allowed);
+    // A numeric cluster refuses the URI form even with a valid numeric MAC.
+    csr_signing_options numeric_as_uri;
+    numeric_as_uri.uri_names = {peer_identity_uri("2")};
+    BOOST_TEST(!classify_peer_enrollment<std::uint64_t>(
+                    numeric_as_uri, 2, peer_enrollment_mac(key, 2, csr), {1, 2}, key, csr)
+                    .allowed);
+}
+
+// Requirement 12.2: a textual cluster's trust policy accepts and binds peers
+// by their URI SAN, and only by it.
+BOOST_AUTO_TEST_CASE(textual_rpc_trust_binds_uri_peer_names, *boost::unit_test::timeout(30)) {
+    certificate_authority ca;
+    const std::string a = "docker:c1:a";
+    const std::string b = "docker:c1:b";
+    leaf_certificate_options a_opts;
+    a_opts.uri_names = {peer_identity_name(a)};
+    auto a_cert = load(ca.issue(a_opts).certificate_pem);
+    leaf_certificate_options dns_opts;
+    dns_opts.dns_names = {peer_identity_dns_name(1)};
+    auto dns_cert = load(ca.issue(dns_opts).certificate_pem);
+
+    auto policy =
+        kythira::ca_root_only<std::string>(ca.root_certificate_pem())
+            .binding_peer_node_ids({{peer_identity_name(a), a}, {peer_identity_name(b), b}});
+    BOOST_TEST(policy.accepts(a_cert.get()));
+    BOOST_TEST(policy.binds(a_cert.get(), a));
+    BOOST_TEST(!policy.binds(a_cert.get(), b));
+    BOOST_TEST(policy.authenticated_node_id(a_cert.get()).value() == a);
+    // A CA-issued certificate naming no textual peer is not a peer, even
+    // one carrying a numeric peer name.
+    BOOST_TEST(!policy.accepts(dns_cert.get()));
+
+    // Even a map entry spelled as the DNS name does not make a DNS SAN count
+    // for a textual policy, nor a URI SAN for a numeric one.
+    auto odd_textual = kythira::ca_root_only<std::string>(ca.root_certificate_pem())
+                           .binding_peer_node_ids({{peer_identity_dns_name(1), a}});
+    BOOST_TEST(!odd_textual.accepts(dns_cert.get()));
+    auto odd_numeric = kythira::ca_root_only(ca.root_certificate_pem())
+                           .binding_peer_node_ids({{peer_identity_name(a), 1}});
+    BOOST_TEST(!odd_numeric.accepts(a_cert.get()));
+}

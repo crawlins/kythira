@@ -383,3 +383,93 @@ BOOST_AUTO_TEST_CASE(malformed_snapshot_leaves_state_untouched) {
     BOOST_TEST(sm.ledger().size() == 1);
     BOOST_TEST(!sm.has_root_material());
 }
+
+// ── Textual node ids (.kiro/specs/cloud-composite-node-ids/ Requirement 12.4) ──
+
+namespace {
+
+auto json_of(const std::vector<std::byte>& bytes) -> boost::json::object {
+    return boost::json::parse(
+               std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()))
+        .as_object();
+}
+
+auto bytes_of(const boost::json::object& obj) -> std::vector<std::byte> {
+    auto text = boost::json::serialize(obj);
+    std::vector<std::byte> out(text.size());
+    std::memcpy(out.data(), text.data(), text.size());
+    return out;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(textual_rpc_tls_ready_command_is_versioned) {
+    const std::string a = "docker:c1:a";
+    auto cmd = encode_record_rpc_tls_ready_command(a);
+    auto obj = json_of(cmd);
+    BOOST_TEST(obj.at("version").to_number<int>() == k_rpc_tls_ready_textual_version);
+    BOOST_TEST(obj.at("node_id").as_string() == a);
+    // A replica that predates the version reads node_id as a number, which
+    // boost::json refuses for a string: it rejects the command rather than
+    // recording some other node as ready.
+    BOOST_CHECK_THROW((void)obj.at("node_id").to_number<std::uint64_t>(), std::exception);
+    // The numeric command is unchanged: no version field.
+    BOOST_TEST(!json_of(encode_record_rpc_tls_ready_command(2)).contains("version"));
+
+    ca_state_machine sm;
+    BOOST_TEST(sm.apply(cmd, 1).empty());
+    BOOST_TEST(sm.apply(cmd, 2).empty());  // a repeat is a no-op
+    BOOST_TEST(sm.is_rpc_tls_ready(a));
+    BOOST_TEST(!sm.is_rpc_tls_ready(std::string("docker:c1:b")));
+    BOOST_TEST(sm.rpc_tls_ready_node_ids().empty());
+    BOOST_TEST((sm.rpc_tls_ready_textual_node_ids() == std::set<std::string>{a}));
+
+    // Composite ids go through their canonical text.
+    auto ec2 = kythira::aws_ec2_node_id::parse("aws-ec2:us-east-1:i-0123456789abcdef0").value();
+    sm.apply(encode_record_rpc_tls_ready_command(ec2), 3);
+    BOOST_TEST(sm.is_rpc_tls_ready(ec2));
+    BOOST_TEST(sm.rpc_tls_ready_textual_node_ids().contains(ec2.to_string()));
+    // A numeric 7 and a textual "7" are different ids.
+    sm.apply(encode_record_rpc_tls_ready_command(std::string("7")), 4);
+    BOOST_TEST(!sm.is_rpc_tls_ready(std::uint64_t{7}));
+}
+
+BOOST_AUTO_TEST_CASE(textual_rpc_tls_ready_rejects_unknown_versions) {
+    ca_state_machine sm;
+    auto obj = json_of(encode_record_rpc_tls_ready_command(std::string("docker:c1:a")));
+    obj["version"] = 3;
+    BOOST_CHECK_THROW(sm.apply(bytes_of(obj), 1), std::invalid_argument);
+    obj["version"] = k_rpc_tls_ready_textual_version;
+    obj["node_id"] = "";
+    BOOST_CHECK_THROW(sm.apply(bytes_of(obj), 2), std::invalid_argument);
+    BOOST_TEST(sm.rpc_tls_ready_textual_node_ids().empty());
+}
+
+BOOST_AUTO_TEST_CASE(numeric_state_encodes_as_before) {
+    // Neither new field appears unless used, so a numeric cluster's commands
+    // and snapshots are byte-for-byte what they were.
+    auto sm = bootstrapped_with_revoked_serial();
+    auto state = json_of(sm.get_state());
+    BOOST_TEST(!state.contains("rpc_tls_ready_textual"));
+    BOOST_TEST(!state.at("ledger").as_array()[0].as_object().contains("uri_names"));
+}
+
+BOOST_AUTO_TEST_CASE(textual_state_survives_a_snapshot) {
+    auto sm = bootstrapped_with_revoked_serial();
+    auto entry = make_ledger_entry(11, "peer-a");
+    entry.dns_names.clear();
+    entry.uri_names = {"urn:kythira:node:docker:c1:a"};
+    sm.apply(encode_record_issuance_command(entry), 5);
+    sm.apply(encode_record_rpc_tls_ready_command(std::string("docker:c1:a")), 6);
+
+    ca_state_machine copy;
+    copy.restore_from_snapshot(sm.get_state(), 6);
+    BOOST_TEST(copy.is_rpc_tls_ready(std::string("docker:c1:a")));
+    BOOST_REQUIRE(copy.ledger().size() == 2);
+    BOOST_TEST((copy.ledger()[1].uri_names == entry.uri_names));
+
+    // Dropping a textual ready id is refused like dropping a numeric one.
+    auto snap = forged_snapshot(sm, [](auto& o) { o.erase("rpc_tls_ready_textual"); });
+    BOOST_CHECK_THROW(sm.restore_from_snapshot(snap, 9), std::invalid_argument);
+    BOOST_TEST(sm.is_rpc_tls_ready(std::string("docker:c1:a")));
+}

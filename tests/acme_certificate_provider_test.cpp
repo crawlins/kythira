@@ -336,6 +336,26 @@ BOOST_AUTO_TEST_CASE(construction_requires_trust_anchors) {
     BOOST_CHECK_THROW(acme_certificate_provider{config}, std::invalid_argument);
 }
 
+// ACME has no identifier type a URI SAN could be validated as, so asking
+// for one fails before any request rather than issuing without it.
+BOOST_AUTO_TEST_CASE(uri_names_are_refused, *boost::unit_test::timeout(30)) {
+    acme_test_server server;
+    acme_certificate_provider_config config;
+    config.directory_url = server.directory_url();
+    config.trust_anchors_pem = server.root_certificate_pem();
+    acme_certificate_provider provider(config);
+
+    leaf_certificate_options leaf;
+    leaf.uri_names = {"urn:kythira:node:docker:c1:a"};
+    auto csr = generate_key_and_csr(leaf);
+    csr_signing_options options;
+    options.uri_names = leaf.uri_names;
+    BOOST_CHECK_EXCEPTION((void)provider.sign_csr(csr.csr_pem, options).get(),
+                          std::invalid_argument, [](const std::invalid_argument& e) {
+                              return std::string(e.what()).find("URI") != std::string::npos;
+                          });
+}
+
 // TLS is verified on every https connection, so the only way to skip it is
 // plain http, and that is refused off loopback.
 BOOST_AUTO_TEST_CASE(plain_http_is_refused_off_loopback) {

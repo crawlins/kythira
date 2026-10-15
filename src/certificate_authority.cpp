@@ -107,7 +107,8 @@ auto generate_key_and_csr(leaf_certificate_options options) -> csr_material {
     }
 
     X509_EXTENSION* san_ext =
-        detail::build_san_extension(options.dns_names, options.ip_addresses).release();
+        detail::build_san_extension(options.dns_names, options.ip_addresses, options.uri_names)
+            .release();
 
     STACK_OF(X509_EXTENSION)* exts = sk_X509_EXTENSION_new_null();
     sk_X509_EXTENSION_push(exts, san_ext);

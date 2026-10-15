@@ -102,18 +102,28 @@ namespace kythira {
 /// is `either(fingerprint, root_pem)`, not a separate boolean-flag code
 /// path; cutover (Requirement 6.2) is just replacing that value with
 /// `ca_root_only(root_pem)`.
-struct tls_rpc_trust_policy {
+///
+/// `NodeId` is the type peers are named by. A peer name is the reserved SAN
+/// `raft::testing::peer_identity_name` gives for that type: a DNS SAN
+/// ("ca-cluster-node-<n>") for a numeric id, a URI SAN
+/// ("urn:kythira:node:<canonical text>") for a textual one
+/// (`.kiro/specs/cloud-composite-node-ids/` Requirement 12.2). Only that
+/// kind of SAN is ever matched, so a certificate carrying the right text as
+/// the other kind is not a peer.
+template<typename NodeId = std::uint64_t> struct basic_tls_rpc_trust_policy {
+    using node_id_type = NodeId;
+
     std::optional<std::string> bootstrap_fingerprint_hex;  // Requirement 2.2
     std::optional<std::string> ca_root_pem;                // Requirement 6.2
     // When set, a certificate accepted via `ca_root_pem` must ALSO carry a
-    // DNS SAN from this set. Chaining to the root alone is not enough when
+    // peer name (see above) from this set. Chaining to the root alone is not enough when
     // that root also signs ordinary client/service certificates (as
     // ca_cluster_node's does): without this, any certificate the CA ever
     // issued — to any API client — was a full Raft peer, able to send
     // InstallSnapshot/AppendEntries. ca_cluster_node fills it with the
     // reserved per-node peer names ("ca-cluster-node-<id>"), which only an
     // authenticated peer enrollment can obtain.
-    std::optional<std::set<std::string>> required_peer_dns_names;
+    std::optional<std::set<std::string>> required_peer_names;
     // When set, each peer name maps to the Raft node id it identifies, and a
     // CA-chained peer is bound to that id: the server drops any RPC whose
     // claimed sender (leader_id / candidate_id) is a different node, and the
@@ -122,7 +132,7 @@ struct tls_rpc_trust_policy {
     // leader's AppendEntries/InstallSnapshot, vote as someone else). The
     // shared bootstrap credential identifies no particular node, so a
     // connection accepted through it is not bound.
-    std::optional<std::map<std::string, std::uint64_t>> peer_node_ids;
+    std::optional<std::map<std::string, NodeId>> peer_node_ids;
     // Serials of CA-issued certificates that must no longer be accepted
     // through `ca_root_pem` (revoked peer identities). Chaining to the root
     // says nothing about revocation; without this, a revoked or leaked peer
@@ -155,8 +165,8 @@ struct tls_rpc_trust_policy {
             if (is_revoked(presented)) {
                 return false;
             }
-            return !required_peer_dns_names.has_value() ||
-                   raft::testing::cert_has_dns_san_in(presented, *required_peer_dns_names);
+            return !required_peer_names.has_value() ||
+                   raft::testing::cert_has_peer_name_in<NodeId>(presented, *required_peer_names);
         }
         return false;
     }
@@ -177,15 +187,14 @@ struct tls_rpc_trust_policy {
     /// std::nullopt when unbound (bootstrap credential, no map, or an
     /// ambiguous certificate naming several nodes — which is then refused
     /// by `binds()`).
-    [[nodiscard]] auto authenticated_node_id(X509* presented) const
-        -> std::optional<std::uint64_t> {
+    [[nodiscard]] auto authenticated_node_id(X509* presented) const -> std::optional<NodeId> {
         if (presented == nullptr || !peer_node_ids.has_value() || !ca_root_pem.has_value() ||
             !raft::testing::cert_chains_to_root(presented, *ca_root_pem) || is_revoked(presented)) {
             return std::nullopt;
         }
-        std::optional<std::uint64_t> found;
+        std::optional<NodeId> found;
         for (const auto& [name, id] : *peer_node_ids) {
-            if (raft::testing::cert_has_dns_san_in(presented, {name})) {
+            if (raft::testing::cert_has_peer_name_in<NodeId>(presented, {name})) {
                 if (found.has_value() && *found != id) {
                     return std::nullopt;
                 }
@@ -199,7 +208,7 @@ struct tls_rpc_trust_policy {
     /// `claimed`: always true when this policy binds no identities or the
     /// certificate was accepted through the bootstrap fingerprint; otherwise
     /// the certificate must authenticate exactly as `claimed`.
-    [[nodiscard]] auto binds(X509* presented, std::uint64_t claimed) const -> bool {
+    [[nodiscard]] auto binds(X509* presented, const NodeId& claimed) const -> bool {
         if (!peer_node_ids.has_value()) {
             return true;
         }
@@ -222,14 +231,14 @@ struct tls_rpc_trust_policy {
     /// Returns a copy that requires CA-chained certificates to carry one of
     /// `ids`' names, and binds each such certificate to its node id (see
     /// `peer_node_ids`).
-    [[nodiscard]] auto binding_peer_node_ids(std::map<std::string, std::uint64_t> ids) const
-        -> tls_rpc_trust_policy {
+    [[nodiscard]] auto binding_peer_node_ids(std::map<std::string, NodeId> ids) const
+        -> basic_tls_rpc_trust_policy {
         auto copy = *this;
         std::set<std::string> names;
         for (const auto& [name, id] : ids) {
             names.insert(name);
         }
-        copy.required_peer_dns_names = std::move(names);
+        copy.required_peer_names = std::move(names);
         copy.peer_node_ids = std::move(ids);
         return copy;
     }
@@ -237,43 +246,53 @@ struct tls_rpc_trust_policy {
     /// Returns a copy that refuses CA-chained certificates with any of
     /// `serials` (see `revoked_serials`).
     [[nodiscard]] auto revoking_serials(std::set<std::uint64_t> serials) const
-        -> tls_rpc_trust_policy {
+        -> basic_tls_rpc_trust_policy {
         auto copy = *this;
         copy.revoked_serials = std::move(serials);
         return copy;
     }
 
     /// Returns a copy that additionally requires CA-chained certificates to
-    /// carry one of `names` as a DNS SAN (see `required_peer_dns_names`).
+    /// carry one of `names` as a peer name (see `required_peer_names`).
     [[nodiscard]] auto requiring_peer_names(std::set<std::string> names) const
-        -> tls_rpc_trust_policy {
+        -> basic_tls_rpc_trust_policy {
         auto copy = *this;
-        copy.required_peer_dns_names = std::move(names);
+        copy.required_peer_names = std::move(names);
         return copy;
     }
 };
 
-[[nodiscard]] inline auto pinned_fingerprint(std::string hex) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::move(hex), std::nullopt, std::nullopt, std::nullopt, {}};
+using tls_rpc_trust_policy = basic_tls_rpc_trust_policy<>;
+
+template<typename NodeId = std::uint64_t>
+[[nodiscard]] auto pinned_fingerprint(std::string hex) -> basic_tls_rpc_trust_policy<NodeId> {
+    return basic_tls_rpc_trust_policy<NodeId>{
+        std::move(hex), std::nullopt, std::nullopt, std::nullopt, {}};
 }
 
-[[nodiscard]] inline auto ca_root_only(std::string root_pem) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{std::nullopt, std::move(root_pem), std::nullopt, std::nullopt, {}};
+template<typename NodeId = std::uint64_t>
+[[nodiscard]] auto ca_root_only(std::string root_pem) -> basic_tls_rpc_trust_policy<NodeId> {
+    return basic_tls_rpc_trust_policy<NodeId>{
+        std::nullopt, std::move(root_pem), std::nullopt, std::nullopt, {}};
 }
 
-[[nodiscard]] inline auto either(std::string hex, std::string root_pem) -> tls_rpc_trust_policy {
-    return tls_rpc_trust_policy{
+template<typename NodeId = std::uint64_t>
+[[nodiscard]] auto either(std::string hex, std::string root_pem)
+    -> basic_tls_rpc_trust_policy<NodeId> {
+    return basic_tls_rpc_trust_policy<NodeId>{
         std::move(hex), std::move(root_pem), std::nullopt, std::nullopt, {}};
 }
 
-struct tls_tcp_rpc_config {
+template<typename NodeId = std::uint64_t> struct basic_tls_tcp_rpc_config {
     std::string cert_path;  // this node's currently presented identity
     std::string key_path;
-    tls_rpc_trust_policy trust_policy;
+    basic_tls_rpc_trust_policy<NodeId> trust_policy;
     // Server only: connection caps and the request/reply deadlines, which
     // bound the TLS handshake too. tls_tcp_rpc_client ignores it.
     tcp_server_limits server_limits{};
 };
+
+using tls_tcp_rpc_config = basic_tls_tcp_rpc_config<>;
 
 namespace tls_detail {
 
@@ -413,9 +432,11 @@ struct fd_guard {
 // private pool, not folly::getGlobalCPUExecutor(): the global CPU executor
 // aborts unless folly::init() ran first, which plain Boost.Test unit
 // tests exercising this class directly never do.
-class client_impl {
+template<typename NodeId> class client_impl {
 public:
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
+    using config_t = basic_tls_tcp_rpc_config<NodeId>;
+    using policy_t = basic_tls_rpc_trust_policy<NodeId>;
 
     static constexpr std::size_t k_rpc_thread_pool_size = 8;
 
@@ -427,7 +448,7 @@ public:
     // them until they time out, so a two-of-three majority stops committing.
     static constexpr std::size_t k_max_inflight_per_endpoint = 2;
 
-    explicit client_impl(tls_tcp_rpc_config config)
+    explicit client_impl(config_t config)
         : _config(config),
           _executor(std::make_shared<kythira::executor_default>(k_rpc_thread_pool_size)),
           _inflight(std::make_shared<tcp_detail::inflight_limiter>(k_max_inflight_per_endpoint)) {
@@ -461,12 +482,12 @@ public:
     auto operator=(client_impl&&) -> client_impl& = delete;
 
     // See tcp_rpc_client::note_peer_seen.
-    void note_peer_seen(std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+    void note_peer_seen(const NodeId& id, const sockaddr_storage& from, socklen_t len) {
         tcp_detail::learn_peer_address(_peers, id, from, len);
     }
 
-    void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
-        _peers.add_peer(id, std::move(host), port);
+    void add_peer(NodeId id, std::string host, std::uint16_t port) {
+        _peers.add_peer(std::move(id), std::move(host), port);
     }
 
     auto reload_identity(std::string cert_path, std::string key_path) -> void {
@@ -476,18 +497,19 @@ public:
         _config.key_path = std::move(key_path);
     }
 
-    auto reload_trust_policy(tls_rpc_trust_policy policy) -> void {
+    auto reload_trust_policy(policy_t policy) -> void {
         std::lock_guard<std::mutex> lock(_ctx_mu);
         _config.trust_policy = std::move(policy);
     }
 
     template<typename Resp, typename Deser>
-    auto call(std::uint64_t target, const std::vector<std::byte>& payload,
+    auto call(const NodeId& target, const std::vector<std::byte>& payload,
               std::chrono::milliseconds timeout, Deser deser) -> future_default<Resp> {
         auto peer = _peers.lookup(target);
         if (!peer) {
             return future_factory_default::makeExceptionalFuture<Resp>(std::make_exception_ptr(
-                network_exception("tls_tcp_rpc_client: unknown peer " + std::to_string(target))));
+                network_exception("tls_tcp_rpc_client: unknown peer " +
+                                  node_id_traits<NodeId>::to_text(target))));
         }
 
         auto endpoint = peer->first + ':' + std::to_string(peer->second);
@@ -522,7 +544,7 @@ public:
         // that follows (connect/handshake/send/recv) moves to the
         // background, since that's what a slow/dead peer stalls.
         SSL* raw_ssl = nullptr;
-        tls_rpc_trust_policy policy_snapshot;
+        policy_t policy_snapshot;
         {
             std::lock_guard<std::mutex> lock(_ctx_mu);
             raw_ssl = SSL_new(_ctx);
@@ -609,10 +631,10 @@ public:
     }
 
 private:
-    tcp_detail::peer_registry<std::uint64_t> _peers;
+    tcp_detail::peer_registry<NodeId> _peers;
     SSL_CTX* _ctx{nullptr};
     std::mutex _ctx_mu;  // guards _ctx's loaded identity AND _config.trust_policy
-    tls_tcp_rpc_config _config;
+    config_t _config;
     std::shared_ptr<kythira::executor_default> _executor;
     std::shared_ptr<tcp_detail::inflight_limiter> _inflight;
 };
@@ -623,22 +645,26 @@ private:
 // reload_identity(), Requirement 1.3/6.2/7.2); the trust policy is re-read
 // fresh from _config on every accepted connection, so reload_trust_policy()
 // never touches the SSL_CTX* at all.
-class server_impl {
+template<typename NodeId> class server_impl {
 public:
-    using rv_fn = std::function<request_vote_response<>(const request_vote_request<>&)>;
-    using pv_fn = std::function<request_pre_vote_response<>(const request_pre_vote_request<>&)>;
-    using tn_fn = std::function<timeout_now_response<>(const timeout_now_request<>&)>;
-    using ae_fn = std::function<append_entries_response<>(const append_entries_request<>&)>;
-    using is_fn = std::function<install_snapshot_response<>(const install_snapshot_request<>&)>;
-    using fl_fn = std::function<fetch_log_entries_response<>(const fetch_log_entries_request<>&)>;
+    using rv_fn = std::function<request_vote_response<>(const request_vote_request<NodeId>&)>;
+    using pv_fn =
+        std::function<request_pre_vote_response<>(const request_pre_vote_request<NodeId>&)>;
+    using tn_fn = std::function<timeout_now_response<>(const timeout_now_request<NodeId>&)>;
+    using ae_fn = std::function<append_entries_response<>(const append_entries_request<NodeId>&)>;
+    using is_fn =
+        std::function<install_snapshot_response<>(const install_snapshot_request<NodeId>&)>;
+    using fl_fn =
+        std::function<fetch_log_entries_response<NodeId>(const fetch_log_entries_request<NodeId>&)>;
     // Called with the node an RPC comes from and the address it came from,
     // once the certificate has bound the connection to that node.
     using peer_seen_fn =
-        std::function<void(std::uint64_t node_id, const sockaddr_storage& from, socklen_t len)>;
+        std::function<void(const NodeId& node_id, const sockaddr_storage& from, socklen_t len)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
+    using config_t = basic_tls_tcp_rpc_config<NodeId>;
+    using policy_t = basic_tls_rpc_trust_policy<NodeId>;
 
-    server_impl(std::uint16_t port, tls_tcp_rpc_config config,
-                std::vector<tcp_detail::bind_endpoint> binds)
+    server_impl(std::uint16_t port, config_t config, std::vector<tcp_detail::bind_endpoint> binds)
         : _port(port),
           _binds(std::move(binds)),
           _conns(
@@ -759,7 +785,7 @@ public:
         _config.key_path = std::move(key_path);
     }
 
-    auto reload_trust_policy(tls_rpc_trust_policy policy) -> void {
+    auto reload_trust_policy(policy_t policy) -> void {
         std::lock_guard<std::mutex> lock(_ctx_mu);
         _config.trust_policy = std::move(policy);
     }
@@ -776,7 +802,7 @@ private:
     void handle(tcp_detail::connection_tracker::ticket t) {
         const int fd = t.fd();
         SSL* raw_ssl = nullptr;
-        tls_rpc_trust_policy policy_snapshot;
+        policy_t policy_snapshot;
         {
             std::lock_guard<std::mutex> lock(_ctx_mu);
             raw_ssl = SSL_new(_ctx);
@@ -801,7 +827,7 @@ private:
         bool trusted = policy_snapshot.accepts(presented);
         // Captured now, while the certificate is in hand: the node this
         // connection may speak for (see tls_rpc_trust_policy::binds).
-        auto sender_ok = [&policy_snapshot, presented](std::uint64_t claimed) {
+        auto sender_ok = [&policy_snapshot, presented](const NodeId& claimed) {
             return policy_snapshot.binds(presented, claimed);
         };
         x509_guard presented_guard{presented};
@@ -822,42 +848,42 @@ private:
             // Each RPC is dropped unless its claimed sender is the node this
             // connection authenticated as.
             if (type == "request_vote_request" && _rv) {
-                auto req = _ser.deserialize_request_vote_request(bytes);
+                auto req = _ser.template deserialize_request_vote_request<NodeId>(bytes);
                 if (!sender_ok(req.candidate_id())) {
                     return;
                 }
                 peer_seen(req.candidate_id(), fd);
                 resp = _ser.serialize(_rv(req));
             } else if (type == "request_pre_vote_request" && _pv) {
-                auto req = _ser.deserialize_request_pre_vote_request(bytes);
+                auto req = _ser.template deserialize_request_pre_vote_request<NodeId>(bytes);
                 if (!sender_ok(req.candidate_id())) {
                     return;
                 }
                 peer_seen(req.candidate_id(), fd);
                 resp = _ser.serialize(_pv(req));
             } else if (type == "timeout_now_request" && _tn) {
-                auto req = _ser.deserialize_timeout_now_request(bytes);
+                auto req = _ser.template deserialize_timeout_now_request<NodeId>(bytes);
                 if (!sender_ok(req.leader_id())) {
                     return;
                 }
                 peer_seen(req.leader_id(), fd);
                 resp = _ser.serialize(_tn(req));
             } else if (type == "append_entries_request" && _ae) {
-                auto req = _ser.deserialize_append_entries_request(bytes);
+                auto req = _ser.template deserialize_append_entries_request<NodeId>(bytes);
                 if (!sender_ok(req.leader_id())) {
                     return;
                 }
                 peer_seen(req.leader_id(), fd);
                 resp = _ser.serialize(_ae(req));
             } else if (type == "install_snapshot_request" && _is) {
-                auto req = _ser.deserialize_install_snapshot_request(bytes);
+                auto req = _ser.template deserialize_install_snapshot_request<NodeId>(bytes);
                 if (!sender_ok(req.leader_id())) {
                     return;
                 }
                 peer_seen(req.leader_id(), fd);
                 resp = _ser.serialize(_is(req));
             } else if (type == "fetch_log_entries_request" && _fl) {
-                auto req = _ser.deserialize_fetch_log_entries_request(bytes);
+                auto req = _ser.template deserialize_fetch_log_entries_request<NodeId>(bytes);
                 if (!sender_ok(req.requester_id())) {
                     return;
                 }
@@ -872,7 +898,7 @@ private:
         }
     }
 
-    void peer_seen(std::uint64_t node_id, int fd) const {
+    void peer_seen(const NodeId& node_id, int fd) const {
         if (!_peer_seen) {
             return;
         }
@@ -894,7 +920,7 @@ private:
 
     SSL_CTX* _ctx{nullptr};
     std::mutex _ctx_mu;  // guards _ctx's loaded identity AND _config
-    tls_tcp_rpc_config _config;
+    config_t _config;
 
     rv_fn _rv;
     pv_fn _pv;
@@ -913,24 +939,34 @@ private:
 // See this file's top-of-file comment for why these are copyable
 // shared_ptr-backed handles rather than move-only value types.
 
-class tls_tcp_rpc_client {
-public:
-    explicit tls_tcp_rpc_client(tls_tcp_rpc_config config)
-        : _impl(std::make_shared<tls_detail::client_impl>(std::move(config))) {}
+//
+// `NodeId` is the type peers are named by, as for basic_tcp_rpc_client; the
+// trust policy binds certificates to ids of that type (see
+// basic_tls_rpc_trust_policy). The unprefixed names are the numeric
+// instantiations.
 
-    void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
-        _impl->add_peer(id, std::move(host), port);
+template<typename NodeId = std::uint64_t> class basic_tls_tcp_rpc_client {
+public:
+    using node_id_type = NodeId;
+    using config_type = basic_tls_tcp_rpc_config<NodeId>;
+    using trust_policy_type = basic_tls_rpc_trust_policy<NodeId>;
+
+    explicit basic_tls_tcp_rpc_client(config_type config)
+        : _impl(std::make_shared<tls_detail::client_impl<NodeId>>(std::move(config))) {}
+
+    void add_peer(NodeId id, std::string host, std::uint16_t port) {
+        _impl->add_peer(std::move(id), std::move(host), port);
     }
 
-    void note_peer_seen(std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+    void note_peer_seen(const NodeId& id, const sockaddr_storage& from, socklen_t len) {
         _impl->note_peer_seen(id, from, len);
     }
 
     // See tcp_rpc_client::peer_seen_handler(); shares the implementation, so
     // it outlives any copy of this handle.
     [[nodiscard]] auto peer_seen_handler() const
-        -> std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)> {
-        return [impl = _impl](std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+        -> std::function<void(const NodeId&, const sockaddr_storage&, socklen_t)> {
+        return [impl = _impl](const NodeId& id, const sockaddr_storage& from, socklen_t len) {
             impl->note_peer_seen(id, from, len);
         };
     }
@@ -939,24 +975,24 @@ public:
         _impl->reload_identity(std::move(cert_path), std::move(key_path));
     }
 
-    auto reload_trust_policy(tls_rpc_trust_policy policy) -> void {
+    auto reload_trust_policy(trust_policy_type policy) -> void {
         _impl->reload_trust_policy(std::move(policy));
     }
 
-    auto send_request_vote(std::uint64_t target, const request_vote_request<>& req,
+    auto send_request_vote(const NodeId& target, const request_vote_request<NodeId>& req,
                            std::chrono::milliseconds timeout)
         -> future_default<request_vote_response<>> {
-        return _impl->call<request_vote_response<>>(
+        return _impl->template call<request_vote_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_request_vote_response(d);
             });
     }
 
     // Satisfies kythira::network_client_with_pre_vote (include/raft/network.hpp).
-    auto send_request_pre_vote(std::uint64_t target, const request_pre_vote_request<>& req,
+    auto send_request_pre_vote(const NodeId& target, const request_pre_vote_request<NodeId>& req,
                                std::chrono::milliseconds timeout)
         -> future_default<request_pre_vote_response<>> {
-        return _impl->call<request_pre_vote_response<>>(
+        return _impl->template call<request_pre_vote_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_request_pre_vote_response(d);
             });
@@ -964,10 +1000,10 @@ public:
 
     // Satisfies kythira::network_client_with_timeout_now (leadership transfer,
     // Ongaro's dissertation §3.10).
-    auto send_timeout_now(std::uint64_t target, const timeout_now_request<>& req,
+    auto send_timeout_now(const NodeId& target, const timeout_now_request<NodeId>& req,
                           std::chrono::milliseconds timeout)
         -> future_default<timeout_now_response<>> {
-        return _impl->call<timeout_now_response<>>(
+        return _impl->template call<timeout_now_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_timeout_now_response(d);
             });
@@ -975,76 +1011,82 @@ public:
 
     // Satisfies kythira::network_client_with_log_fetch
     // (`.kiro/specs/peer2peer-log-replication/` Requirement 5.2).
-    auto send_fetch_log_entries(std::uint64_t target, const fetch_log_entries_request<>& req,
+    auto send_fetch_log_entries(const NodeId& target, const fetch_log_entries_request<NodeId>& req,
                                 std::chrono::milliseconds timeout)
-        -> future_default<fetch_log_entries_response<>> {
-        return _impl->call<fetch_log_entries_response<>>(
+        -> future_default<fetch_log_entries_response<NodeId>> {
+        return _impl->template call<fetch_log_entries_response<NodeId>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
-                return _ser.deserialize_fetch_log_entries_response(d);
+                return _ser.template deserialize_fetch_log_entries_response<NodeId>(d);
             });
     }
 
-    auto send_append_entries(std::uint64_t target, const append_entries_request<>& req,
+    auto send_append_entries(const NodeId& target, const append_entries_request<NodeId>& req,
                              std::chrono::milliseconds timeout)
         -> future_default<append_entries_response<>> {
-        return _impl->call<append_entries_response<>>(
+        return _impl->template call<append_entries_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_append_entries_response(d);
             });
     }
 
-    auto send_install_snapshot(std::uint64_t target, const install_snapshot_request<>& req,
+    auto send_install_snapshot(const NodeId& target, const install_snapshot_request<NodeId>& req,
                                std::chrono::milliseconds timeout)
         -> future_default<install_snapshot_response<>> {
-        return _impl->call<install_snapshot_response<>>(
+        return _impl->template call<install_snapshot_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_install_snapshot_response(d);
             });
     }
 
 private:
-    std::shared_ptr<tls_detail::client_impl> _impl;
+    std::shared_ptr<tls_detail::client_impl<NodeId>> _impl;
     json_rpc_serializer<std::vector<std::byte>> _ser;
 };
 
-class tls_tcp_rpc_server {
+template<typename NodeId = std::uint64_t> class basic_tls_tcp_rpc_server {
+    using impl_t = tls_detail::server_impl<NodeId>;
+
 public:
-    tls_tcp_rpc_server(std::uint16_t port, tls_tcp_rpc_config config)
-        : _impl(std::make_shared<tls_detail::server_impl>(port, std::move(config),
-                                                          tcp_detail::ipv4_any_endpoint())) {}
+    using node_id_type = NodeId;
+    using config_type = basic_tls_tcp_rpc_config<NodeId>;
+    using trust_policy_type = basic_tls_rpc_trust_policy<NodeId>;
+
+    basic_tls_tcp_rpc_server(std::uint16_t port, config_type config)
+        : _impl(
+              std::make_shared<impl_t>(port, std::move(config), tcp_detail::ipv4_any_endpoint())) {}
 
     // Listens on `bind_address` only instead of every IPv4 interface: an IPv4
     // or IPv6 literal, or a host name whose addresses all belong to this host
     // (see tcp_detail::resolve_bind_addresses). Throws std::invalid_argument
     // otherwise.
-    tls_tcp_rpc_server(std::uint16_t port, tls_tcp_rpc_config config,
-                       const std::string& bind_address)
-        : _impl(std::make_shared<tls_detail::server_impl>(
+    basic_tls_tcp_rpc_server(std::uint16_t port, config_type config,
+                             const std::string& bind_address)
+        : _impl(std::make_shared<impl_t>(
               port, std::move(config),
               tcp_detail::resolve_bind_addresses(bind_address, "tls_tcp_rpc_server"))) {}
 
-    void register_request_vote_handler(tls_detail::server_impl::rv_fn h) {
+    void register_request_vote_handler(typename impl_t::rv_fn h) {
         _impl->register_request_vote_handler(std::move(h));
     }
-    void set_peer_seen_handler(tls_detail::server_impl::peer_seen_fn h) {
+    void set_peer_seen_handler(typename impl_t::peer_seen_fn h) {
         _impl->set_peer_seen_handler(std::move(h));
     }
-    void register_request_pre_vote_handler(tls_detail::server_impl::pv_fn h) {
+    void register_request_pre_vote_handler(typename impl_t::pv_fn h) {
         _impl->register_request_pre_vote_handler(std::move(h));
     }
     // Satisfies kythira::network_server_with_timeout_now (leadership transfer,
     // Ongaro's dissertation §3.10).
-    void register_timeout_now_handler(tls_detail::server_impl::tn_fn h) {
+    void register_timeout_now_handler(typename impl_t::tn_fn h) {
         _impl->register_timeout_now_handler(std::move(h));
     }
-    void register_append_entries_handler(tls_detail::server_impl::ae_fn h) {
+    void register_append_entries_handler(typename impl_t::ae_fn h) {
         _impl->register_append_entries_handler(std::move(h));
     }
-    void register_install_snapshot_handler(tls_detail::server_impl::is_fn h) {
+    void register_install_snapshot_handler(typename impl_t::is_fn h) {
         _impl->register_install_snapshot_handler(std::move(h));
     }
     // Satisfies kythira::network_server_with_log_fetch (peer-to-peer catch-up).
-    void register_fetch_log_entries_handler(tls_detail::server_impl::fl_fn h) {
+    void register_fetch_log_entries_handler(typename impl_t::fl_fn h) {
         _impl->register_fetch_log_entries_handler(std::move(h));
     }
 
@@ -1059,13 +1101,16 @@ public:
         _impl->reload_identity(std::move(cert_path), std::move(key_path));
     }
 
-    auto reload_trust_policy(tls_rpc_trust_policy policy) -> void {
+    auto reload_trust_policy(trust_policy_type policy) -> void {
         _impl->reload_trust_policy(std::move(policy));
     }
 
 private:
-    std::shared_ptr<tls_detail::server_impl> _impl;
+    std::shared_ptr<impl_t> _impl;
 };
+
+using tls_tcp_rpc_client = basic_tls_tcp_rpc_client<>;
+using tls_tcp_rpc_server = basic_tls_tcp_rpc_server<>;
 
 // ── Concept assertions ────────────────────────────────────────────────────
 
@@ -1093,6 +1138,23 @@ static_assert(kythira::network_client_with_log_fetch<tls_tcp_rpc_client>,
               "tls_tcp_rpc_client must satisfy network_client_with_log_fetch");
 static_assert(kythira::network_server_with_log_fetch<tls_tcp_rpc_server>,
               "tls_tcp_rpc_server must satisfy network_server_with_log_fetch");
+
+// Textual node ids (`.kiro/specs/cloud-composite-node-ids/` task 6.2): the
+// same concepts, checked against `std::string` targets.
+static_assert(kythira::network_client<basic_tls_tcp_rpc_client<std::string>, std::string>);
+static_assert(kythira::network_server<basic_tls_tcp_rpc_server<std::string>, std::string>);
+static_assert(
+    kythira::network_client_with_pre_vote<basic_tls_tcp_rpc_client<std::string>, std::string>);
+static_assert(
+    kythira::network_server_with_pre_vote<basic_tls_tcp_rpc_server<std::string>, std::string>);
+static_assert(
+    kythira::network_client_with_timeout_now<basic_tls_tcp_rpc_client<std::string>, std::string>);
+static_assert(
+    kythira::network_server_with_timeout_now<basic_tls_tcp_rpc_server<std::string>, std::string>);
+static_assert(
+    kythira::network_client_with_log_fetch<basic_tls_tcp_rpc_client<std::string>, std::string>);
+static_assert(
+    kythira::network_server_with_log_fetch<basic_tls_tcp_rpc_server<std::string>, std::string>);
 
 }  // namespace kythira
 

@@ -59,6 +59,10 @@ struct leaf_certificate_options {
     key_algorithm algorithm{key_algorithm::ecdsa_p256};
     std::vector<std::string> dns_names;
     std::vector<std::string> ip_addresses;
+    /// URI SANs, e.g. a textual node id's `urn:kythira:node:<id>` peer name
+    /// (`ca_http_helpers.hpp`). Absolute URIs only; see
+    /// `detail::validate_uri_san`.
+    std::vector<std::string> uri_names;
     bool server_auth{true};
     bool client_auth{false};
     std::chrono::system_clock::time_point not_before{std::chrono::system_clock::now()};
@@ -81,6 +85,7 @@ struct pem_material {
 struct csr_signing_options {
     std::vector<std::string> dns_names;
     std::vector<std::string> ip_addresses;
+    std::vector<std::string> uri_names;  ///< See `leaf_certificate_options::uri_names`.
     bool server_auth{true};
     bool client_auth{false};
     std::chrono::seconds validity{std::chrono::hours(24 * 30)};
@@ -111,7 +116,8 @@ public:
     [[nodiscard]] auto root_certificate_pem() const -> const std::string&;
 
     /// Issues a leaf certificate signed by this instance's root CA. Throws
-    /// `std::invalid_argument` when both `dns_names` and `ip_addresses` are empty.
+    /// `std::invalid_argument` when `dns_names`, `ip_addresses` and `uri_names`
+    /// are all empty.
     [[nodiscard]] auto issue(leaf_certificate_options options) -> pem_material;
 
     /// Same as `issue()`, but with `notBefore`/`notAfter` both shifted into the past

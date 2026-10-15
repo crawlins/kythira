@@ -18,6 +18,7 @@
 /// outside of `apply()`, with only the resulting ciphertext ever crossing
 /// into a command.
 
+#include <raft/composite_node_id.hpp>
 #include <raft/types.hpp>
 
 #include <boost/json.hpp>
@@ -62,6 +63,7 @@ struct ca_ledger_entry {
     std::string subject;
     std::vector<std::string> dns_names;
     std::vector<std::string> ip_addresses;
+    std::vector<std::string> uri_names;
     std::string certificate_pem;  // never a private key
     std::chrono::system_clock::time_point not_before;
     std::chrono::system_clock::time_point not_after;
@@ -343,6 +345,11 @@ namespace ca_state_machine_detail {
     obj["subject"] = e.subject;
     obj["dns_names"] = string_array(e.dns_names);
     obj["ip_addresses"] = string_array(e.ip_addresses);
+    // Only when present, so an entry without URI SANs encodes exactly as it
+    // did before the field existed.
+    if (!e.uri_names.empty()) {
+        obj["uri_names"] = string_array(e.uri_names);
+    }
     obj["certificate_pem"] = e.certificate_pem;
     obj["not_before"] = epoch_seconds(e.not_before);
     obj["not_after"] = epoch_seconds(e.not_after);
@@ -358,6 +365,9 @@ namespace ca_state_machine_detail {
     e.subject = std::string(obj.at("subject").as_string());
     e.dns_names = to_string_vector(obj.at("dns_names").as_array());
     e.ip_addresses = to_string_vector(obj.at("ip_addresses").as_array());
+    if (const auto* v = obj.if_contains("uri_names")) {
+        e.uri_names = to_string_vector(v->as_array());
+    }
     e.certificate_pem = std::string(obj.at("certificate_pem").as_string());
     e.not_before = from_epoch_seconds(obj.at("not_before").to_number<std::int64_t>());
     e.not_after = from_epoch_seconds(obj.at("not_after").to_number<std::int64_t>());
@@ -428,6 +438,11 @@ namespace ca_state_machine_detail {
     return ca_state_machine_detail::bytes_from_json(obj);
 }
 
+/// `record_rpc_tls_ready` command version carrying a textual node id
+/// (`.kiro/specs/cloud-composite-node-ids/` Requirement 12.4). Version 1 is
+/// the original numeric form, which has no "version" field at all.
+inline constexpr int k_rpc_tls_ready_textual_version = 2;
+
 /// Encodes a `record_rpc_tls_ready` command (`.kiro/specs/ca-cluster-rpc-mtls/`,
 /// Requirement 4.3) — a node submits this for its own `node_id` once it has
 /// switched its RPC transport to also present and accept a CA-issued
@@ -438,6 +453,22 @@ namespace ca_state_machine_detail {
     boost::json::object obj;
     obj["type"] = static_cast<int>(ca_command_type::record_rpc_tls_ready);
     obj["node_id"] = node_id;
+    return ca_state_machine_detail::bytes_from_json(obj);
+}
+
+/// The same command for a textual node id: version
+/// `k_rpc_tls_ready_textual_version`, with the id's canonical text as a JSON
+/// string. A replica that predates the version reads "node_id" as a number,
+/// and boost::json refuses to convert a string, so it rejects the command
+/// rather than misreading the id as some number.
+template<typename NodeId>
+requires kythira::node_id_traits<NodeId>::is_textual
+[[nodiscard]] auto encode_record_rpc_tls_ready_command(const NodeId& node_id)
+    -> std::vector<std::byte> {
+    boost::json::object obj;
+    obj["type"] = static_cast<int>(ca_command_type::record_rpc_tls_ready);
+    obj["version"] = k_rpc_tls_ready_textual_version;
+    obj["node_id"] = kythira::node_id_traits<NodeId>::to_text(node_id);
     return ca_state_machine_detail::bytes_from_json(obj);
 }
 
@@ -505,7 +536,21 @@ public:
                 return {};
             }
             case ca_command_type::record_rpc_tls_ready: {
-                _rpc_tls_ready.insert(obj.at("node_id").to_number<std::uint64_t>());
+                const auto* version = obj.if_contains("version");
+                if (version == nullptr) {
+                    _rpc_tls_ready.insert(obj.at("node_id").to_number<std::uint64_t>());
+                    return {};
+                }
+                if (version->to_number<int>() != k_rpc_tls_ready_textual_version) {
+                    throw std::invalid_argument(
+                        "ca_state_machine: unknown record_rpc_tls_ready version");
+                }
+                const auto& text = obj.at("node_id").as_string();
+                if (text.empty()) {
+                    throw std::invalid_argument(
+                        "ca_state_machine: record_rpc_tls_ready with an empty node id");
+                }
+                _rpc_tls_ready_textual.emplace(text);
                 return {};
             }
         }
@@ -527,6 +572,14 @@ public:
             rpc_tls_ready_arr.push_back(id);
         }
         obj["rpc_tls_ready"] = rpc_tls_ready_arr;
+        // Only when present, so a numeric cluster's snapshot is unchanged.
+        if (!_rpc_tls_ready_textual.empty()) {
+            boost::json::array textual;
+            for (const auto& id : _rpc_tls_ready_textual) {
+                textual.emplace_back(id);
+            }
+            obj["rpc_tls_ready_textual"] = std::move(textual);
+        }
         return ca_state_machine_detail::bytes_from_json(obj);
     }
 
@@ -559,6 +612,7 @@ public:
         std::string root_cert_pem;
         std::vector<ca_ledger_entry> ledger;
         std::set<std::uint64_t> rpc_tls_ready;
+        std::set<std::string> rpc_tls_ready_textual;
 
         if (!snapshot.empty()) {
             auto obj = ca_state_machine_detail::json_from_bytes(snapshot).as_object();
@@ -574,6 +628,11 @@ public:
             if (auto* v = obj.if_contains("rpc_tls_ready")) {
                 for (const auto& e : v->as_array()) {
                     rpc_tls_ready.insert(e.to_number<std::uint64_t>());
+                }
+            }
+            if (auto* v = obj.if_contains("rpc_tls_ready_textual")) {
+                for (const auto& e : v->as_array()) {
+                    rpc_tls_ready_textual.emplace(e.as_string());
                 }
             }
         }
@@ -611,6 +670,11 @@ public:
                     reject("it drops rpc_tls_ready for node " + std::to_string(id));
                 }
             }
+            for (const auto& id : _rpc_tls_ready_textual) {
+                if (!rpc_tls_ready_textual.contains(id)) {
+                    reject("it drops rpc_tls_ready for node " + id);
+                }
+            }
         }
 
         _last_applied_index = index;
@@ -619,6 +683,7 @@ public:
         _root_cert_pem = std::move(root_cert_pem);
         _ledger = std::move(ledger);
         _rpc_tls_ready = std::move(rpc_tls_ready);
+        _rpc_tls_ready_textual = std::move(rpc_tls_ready_textual);
     }
 
     // Not part of the state_machine concept; used by ca_cluster_node's HTTP layer.
@@ -638,6 +703,25 @@ public:
         return _rpc_tls_ready;
     }
 
+    /// The textual node ids (canonical text) that have committed
+    /// record_rpc_tls_ready(self). Separate from the numeric set: a cluster
+    /// uses one id kind, and a numeric 7 and a textual "7" are different ids.
+    [[nodiscard]] auto rpc_tls_ready_textual_node_ids() const -> const std::set<std::string>& {
+        return _rpc_tls_ready_textual;
+    }
+
+    /// Whether `node_id` has committed record_rpc_tls_ready(self), for either
+    /// id kind.
+    template<typename NodeId>
+    [[nodiscard]] auto is_rpc_tls_ready(const NodeId& node_id) const -> bool {
+        if constexpr (kythira::node_id_traits<NodeId>::is_textual) {
+            return _rpc_tls_ready_textual.contains(
+                kythira::node_id_traits<NodeId>::to_text(node_id));
+        } else {
+            return _rpc_tls_ready.contains(static_cast<std::uint64_t>(node_id));
+        }
+    }
+
 private:
     [[nodiscard]] static auto error_result(std::string_view error) -> std::vector<std::byte> {
         boost::json::object obj;
@@ -650,6 +734,7 @@ private:
     std::string _root_cert_pem;         // plaintext — the CA cert itself is public
     std::vector<ca_ledger_entry> _ledger;
     std::set<std::uint64_t> _rpc_tls_ready;
+    std::set<std::string> _rpc_tls_ready_textual;
     log_index_t _last_applied_index{0};
 };
 

@@ -63,9 +63,10 @@ namespace csr_policy_detail {
 
 /// Throws std::invalid_argument unless `csr_pem` is a well-formed CSR whose
 /// requested extensions stay within `options`:
-///   - subjectAltName: only DNS names and IP addresses, each one listed in
-///     `options.dns_names` / `options.ip_addresses` (DNS compared
-///     case-insensitively, IPs by address);
+///   - subjectAltName: only DNS names, IP addresses and URIs, each one
+///     listed in `options.dns_names` / `options.ip_addresses` /
+///     `options.uri_names` (DNS compared case-insensitively, IPs by address,
+///     URIs exactly);
 ///   - basicConstraints: if present, must not assert CA:TRUE;
 ///   - keyUsage: must not include keyCertSign or cRLSign;
 ///   - extendedKeyUsage: only serverAuth/clientAuth, and only those
@@ -96,6 +97,7 @@ inline void enforce_csr_matches_options(const std::string& csr_pem,
     for (const auto& ip : options.ip_addresses) {
         allowed_ips.push_back(ip_bytes(ip));
     }
+    const std::vector<std::string>& allowed_uris = options.uri_names;
 
     std::string failure;
     for (int i = 0; exts != nullptr && i < sk_X509_EXTENSION_num(exts) && failure.empty(); ++i) {
@@ -126,8 +128,17 @@ inline void enforce_csr_matches_options(const std::string& csr_pem,
                             allowed_ips.end()) {
                             failure = "requests an unapproved IP address";
                         }
+                    } else if (gn->type == GEN_URI) {
+                        std::string v(reinterpret_cast<const char*>(
+                                          ASN1_STRING_get0_data(gn->d.uniformResourceIdentifier)),
+                                      static_cast<std::size_t>(
+                                          ASN1_STRING_length(gn->d.uniformResourceIdentifier)));
+                        if (std::find(allowed_uris.begin(), allowed_uris.end(), v) ==
+                            allowed_uris.end()) {
+                            failure = "requests unapproved URI \"" + v + "\"";
+                        }
                     } else {
-                        failure = "requests a subjectAltName type other than DNS/IP";
+                        failure = "requests a subjectAltName type other than DNS/IP/URI";
                     }
                 }
                 GENERAL_NAMES_free(names);
