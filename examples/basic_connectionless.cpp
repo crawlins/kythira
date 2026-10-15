@@ -28,7 +28,11 @@ constexpr unsigned short port_1000 = 1000;
 constexpr unsigned short port_2000 = 2000;
 constexpr const char* test_payload = "Hello, Network Simulator!";
 constexpr auto default_latency = 10ms;
-constexpr double high_reliability = 0.99;
+// Lossless, because the scenarios on these edges assert that every message
+// arrives. At 0.99 each send was a one-in-a-hundred coin flip, and the
+// example failed CI's first attempt that often ("Send operation failed").
+// test_reliability_drops is the scenario that demonstrates loss.
+constexpr double reliable = 1.0;
 constexpr double low_reliability = 0.1;
 constexpr auto short_timeout = 50ms;
 constexpr auto long_timeout = 1000ms;
@@ -65,7 +69,7 @@ auto test_basic_send_receive() -> bool {
         // Configure topology
         simulator.add_node(node_a_id);
         simulator.add_node(node_b_id);
-        simulator.add_edge(node_a_id, node_b_id, NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(node_a_id, node_b_id, NetworkEdge(default_latency, reliable));
 
         // Create nodes
         auto node_a = simulator.create_node(node_a_id);
@@ -258,8 +262,8 @@ auto test_multi_hop_routing() -> bool {
         simulator.add_node(node_a_id);
         simulator.add_node(node_b_id);
         simulator.add_node(node_c_id);
-        simulator.add_edge(node_a_id, node_b_id, NetworkEdge(default_latency, high_reliability));
-        simulator.add_edge(node_b_id, node_c_id, NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(node_a_id, node_b_id, NetworkEdge(default_latency, reliable));
+        simulator.add_edge(node_b_id, node_c_id, NetworkEdge(default_latency, reliable));
         // Note: No direct edge from A to C - tests multi-hop routing
 
         // Create nodes
