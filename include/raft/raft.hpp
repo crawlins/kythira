@@ -7779,9 +7779,37 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                     _metrics.add_count(entries_to_send.size());
                     _metrics.emit();
 
+                    // How far this follower trails the leader's log once the
+                    // reply is counted: zero for a caught-up follower, and
+                    // what an operator watches for one that is falling behind.
+                    _metrics.set_metric_name("raft_follower_lag");
+                    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                    _metrics.add_dimension("target", node_id_to_string(target));
+                    _metrics.add_value(
+                        static_cast<double>(get_last_log_index() - _match_index[target]));
+                    _metrics.emit();
+
                     // Try to advance commit index
                     advance_commit_index();
                 } else {
+                    // A rejection of a request sent from a next_index that has
+                    // since moved is stale: a newer reply already moved it on
+                    // (an acknowledgement, or a rejection that backed it off and
+                    // retried). Heartbeats overlap, so a slow follower's
+                    // rejections of earlier rounds keep arriving after it has
+                    // caught up; acting on each pulled next_index back to the
+                    // conflict hint every time, re-sent entries the follower
+                    // already held, and, once the log was compacted past that
+                    // hint, made a caught-up follower take a snapshot.
+                    if (next_idx != _next_index[target]) {
+                        _logger.debug("Ignoring stale AppendEntries rejection",
+                                      {{"node_id", node_id_to_string(_node_id)},
+                                       {"target", node_id_to_string(target)},
+                                       {"request_next_index", std::to_string(next_idx)},
+                                       {"next_index", std::to_string(_next_index[target])}});
+                        return;
+                    }
+
                     // Failure - decrement next_index and retry
                     _logger.debug("AppendEntries rejected, decrementing next_index",
                                   {{"node_id", node_id_to_string(_node_id)},
