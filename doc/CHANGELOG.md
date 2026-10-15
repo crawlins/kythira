@@ -5,6 +5,22 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **The libcoap client enforces its per-RPC timeout.** `send_rpc()`
+  stored the timeout it was given and nothing ever read it, so a request
+  ended only on a reply or a libcoap NACK. libcoap NACKs a silent peer
+  only after its own retransmissions, over a minute at the defaults, and
+  on an ICMP error it NACKs just the first request queued for the
+  session; the rest wait out their retransmissions too. A peer that went
+  down therefore held every RPC to it far past the Raft timeout. The I/O
+  thread now keeps each pending request's deadline in a queue, fails the
+  overdue ones with `coap_timeout_error` ("CoAP request timed out after N
+  ms") and wakes for the next one. `coap_content_format_property_test`
+  failed its first attempt in CI this way (the second and third sends to
+  a closed port timing out a 20 s wait), and now gives each send a 1 s
+  RPC timeout inside that wait. `coap_io_wait_mode_test` gains a case
+  pinning the timeout in both wait modes against a peer that never
+  answers.
+
 - **A stale AppendEntries rejection no longer pulls next_index back.**
   Heartbeats to one follower overlap, so a slow follower's rejections of
   earlier rounds kept arriving after a retry had already caught it up.

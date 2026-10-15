@@ -31,6 +31,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <queue>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
@@ -524,6 +526,15 @@ private:
 
     // Message tracking
     std::unordered_map<std::string, std::unique_ptr<pending_message>> _pending_requests;
+    // Each pending request's deadline and token, earliest first, so the I/O
+    // thread finds the next one to expire without walking every request.
+    // Entries are not removed when a request completes some other way; a
+    // popped entry whose token is gone, or now names a request with a
+    // different deadline, is just dropped. Guarded by _mutex.
+    std::priority_queue<std::pair<std::chrono::steady_clock::time_point, std::string>,
+                        std::vector<std::pair<std::chrono::steady_clock::time_point, std::string>>,
+                        std::greater<>>
+        _request_deadlines;
     // Completions handle_response()/handle_nack() queued during the current
     // drain step; see defer_resolve(). Guarded by _mutex.
     std::vector<std::function<void()>> _deferred_completions;
@@ -672,6 +683,15 @@ private:
     // timeout from now (rounded up, so the window has closed when it
     // expires); nullopt when none is open. Caller holds _mutex.
     auto next_multicast_deadline_locked() const -> std::optional<std::chrono::milliseconds>;
+    // Fails every unicast request whose per-RPC timeout has run out with a
+    // coap_timeout_error. libcoap only gives up on an exchange after its own
+    // retransmissions (over a minute at the defaults), or on a NACK, so without
+    // this the timeout send_rpc() was given bounded nothing. Takes _mutex
+    // itself and runs the completions outside it.
+    auto expire_overdue_requests() -> void;
+    // Time until the earliest pending request's deadline, rounded up;
+    // nullopt when none has one. Caller holds _mutex.
+    auto next_request_deadline_locked() const -> std::optional<std::chrono::milliseconds>;
 
     // I/O thread (coap-client-event-driven-io spec, design §2, §3, §6).
     // Wakes the I/O thread out of its readiness wait. Safe from any thread,

@@ -1580,6 +1580,19 @@ unverified completion claim.
       `leader_transfer_test` 18, `simulator_property_test` 17,
       `integration_test` 15, `chaos_state_machine_safety_test` 13 (all 120 s
       timeouts on 10-06). Strict retries would be red on most runs today.
+    **Re-measured October 15, 2026** over 214 test jobs in 18 `ci.yml` runs
+    (2026-10-09..15): 64 retry rescues in 51 jobs. `beast_server_test` and
+    `ca_cluster_node_test` last needed a retry before their fixes landed
+    (October 13 and 14). The three most frequent rescues not on the
+    allowlist were `coap_content_format_property_test` (6, plus 3 for its
+    `_paced` twin), `basic_connectionless_example_test` (5) and
+    `redis_gateway_integration_test` (4).
+    - `coap_content_format_property_test`: **fixed October 15** (see the
+      CHANGELOG). The libcoap client never enforced the per-RPC timeout it
+      was given, and libcoap NACKs only the first queued request on each
+      ICMP error, so the second and third sends to the test's closed port
+      could wait out libcoap's retransmissions (over a minute) and fail the
+      20 s wait.
   - **Assert each job's configuration actually took effect. DONE** (October
     7, 2026). Every `ci.yml` leg that configures a build now runs
     `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`
