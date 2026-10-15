@@ -150,7 +150,7 @@ jobs:
           for attempt in 1 2 3; do
             if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
                  clang-18 g++-13 cmake ninja-build libfiu-dev ccache \
-                 autoconf autoconf-archive automake libtool; then
+                 autoconf autoconf-archive automake libtool mold; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -182,7 +182,9 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          # A clang++-18 dispatch builds its ports with clang (see below) and
+          # must not restore the g++-built tree, or the other way round.
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc${{ startsWith(github.event.inputs.compiler || 'clang++-18', 'clang') && '-clang++-18' || '' }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         run: |
@@ -195,6 +197,14 @@ jobs:
           # against the bucket; re-exporting here would override it, and x-gha
           # is a backend vcpkg removed some time ago.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # A clang dispatch builds its ports with clang so mold can link the
+          # result; see ci.yml build-and-test's vcpkg step for why, and for
+          # the -latomic.
+          case "$COMPILER" in
+            clang*)
+              export CC=clang-18 CXX=clang++-18
+              export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state" ;;
+          esac
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
           # (same reasoning as ci.yml's build-and-test job).
@@ -204,6 +214,7 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
           TRIPLET: ${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}
+          COMPILER: ${{ github.event.inputs.compiler || 'clang++-18' }}
 
       # Same compiler cache as every ci.yml job (oci-build-cache Req 5.1).
       # Without it CMake's `auto` launcher picks the apt-installed ccache,
@@ -241,6 +252,7 @@ jobs:
               -DCMAKE_BUILD_TYPE=Debug \
               $SCALE_ARG \
               -DKYTHIRA_COMPILER_LAUNCHER="$LAUNCHER" \
+              -DKYTHIRA_LINKER=mold \
               -DCMAKE_CXX_COMPILER="$COMPILER" \
               -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/vcpkg_installed/$TRIPLET"
           else
@@ -248,12 +260,17 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               $SCALE_ARG \
               -DKYTHIRA_COMPILER_LAUNCHER="$LAUNCHER" \
+              -DKYTHIRA_LINKER=mold \
               -DCMAKE_CXX_COMPILER="$COMPILER" \
               -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/vcpkg_installed/$TRIPLET"
           fi
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'

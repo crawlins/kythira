@@ -70,7 +70,8 @@ jobs:
             autoconf \
             autoconf-archive \
             automake \
-            libtool
+            libtool \
+            mold
 
       - name: Verify a container runtime is available
         run: |
@@ -156,6 +157,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
 
       # Each target below builds its own image(s) (DEPENDS) and the scenario
@@ -198,6 +200,10 @@ jobs:
       # effect of unrelated, already-tracked/already-documented gaps.
       - name: Run docker-chaos-tests (chaos_node image + 7 scenario tests)
         run: cmake --build build --target docker-chaos-tests -j$(nproc)
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       # Quorum-management Req 19: the self-healing loop against a real
       # daemon. Each case starts docker-compose.quorum.yml with the host's
