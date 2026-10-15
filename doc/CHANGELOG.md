@@ -5,6 +5,20 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **Replication acknowledgment cases assert something.** The ten
+  `BOOST_CHECK(true)` placeholders in
+  `raft_replication_acknowledgment_collection_property_test` now drive the
+  shared three-node simulator cluster: match indices follow follower
+  acknowledgements, the commit index moves only with a majority that
+  counts the leader, a follower whose replies take 1.5 s does not delay a
+  commit, a follower that answers nothing is reported by log and metric
+  while the cluster keeps committing, an earlier term's entry held by a
+  majority is committed only with the new leader's no-op, commits reach
+  the state machine and the waiting client futures, commit metrics are
+  emitted by the leader alone, and a follower that missed twenty commits
+  catches up and counts toward the majority again. The shared harness
+  gains `cluster::slow()` for per-link latency.
+
 - **A pre-vote that wins starts the candidacy under the node's lock.**
   When a pre-vote round reached a quorum, its continuation checked the
   state under `_mutex`, released it, and only then called
