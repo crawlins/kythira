@@ -389,21 +389,20 @@ unverified completion claim.
     `coap-transport-libnyoci` tasks.md ~337). Also from
     `coap-transport-libnyoci`, with no PR: a two-process cross-backend
     interop test, and Block1 for InstallSnapshot.
-  - **Tests that assert nothing.** One property suite still ends most cases
-    in a `BOOST_CHECK(true)` "Placeholder" and counts toward the passing
-    total: `raft_replicate_to_followers_property_test.cpp` (30).
-    `raft_add_server_implementation_property_test.cpp`,
+  - ~~**Tests that assert nothing.**~~ Done: the six property suites whose
+    cases ended in a `BOOST_CHECK(true)` "Placeholder" now drive real nodes
+    over the simulator: `raft_add_server_implementation_property_test.cpp`,
     `raft_remove_server_implementation_property_test.cpp`,
     `raft_election_vote_collection_implementation_property_test.cpp`,
-    `raft_replication_acknowledgment_collection_property_test.cpp` and
-    `raft_heartbeat_based_read_state_property_test.cpp` were the other
-    five; their cases now drive real nodes over the simulator,
-    using the recording loggers, metrics and `cluster` harness in
+    `raft_replication_acknowledgment_collection_property_test.cpp`,
+    `raft_heartbeat_based_read_state_property_test.cpp` and
+    `raft_replicate_to_followers_property_test.cpp`. They use the recording
+    loggers, metrics and `cluster` harness in
     `tests/raft_membership_test_cluster.hpp` (including
     `hold_in_joint_phase()`, which keeps a change in C_old,new by isolating
-    the new server and one old voter), which is the template for the rest.
-    The election suite builds its own leaderless `election_cluster` on the
-    same pieces. The negative `network_client` `static_assert` in
+    the new server and one old voter); the election suite builds its own
+    leaderless `election_cluster` on the same pieces. The negative
+    `network_client` `static_assert` in
     `network_concept_compliance_property_test.cpp` is enabled again.
   - ~~**No mTLS chaos scenario.**~~ Done: `docker-mtls-chaos-tests`
     (`docker/mtls-chaos-compose.yml`, `tests/docker_chaos/mtls_chaos_test.cpp`)

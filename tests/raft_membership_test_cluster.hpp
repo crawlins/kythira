@@ -129,6 +129,7 @@ struct metric_sink {
     struct entry {
         std::string name;
         std::map<std::string, std::string> dimensions;
+        double value{0};  ///< The add_count()/add_value() argument, if any.
     };
 
     mutable std::mutex mutex;
@@ -154,6 +155,23 @@ struct metric_sink {
         }
         return out;
     }
+
+    /// The values of every `name` metric whose `dimension` is `value`, in order.
+    [[nodiscard]] auto values_where(std::string_view name, const std::string& dimension,
+                                    std::string_view value) const -> std::vector<double> {
+        const std::lock_guard<std::mutex> lock(mutex);
+        std::vector<double> out;
+        for (const auto& e : entries) {
+            if (e.name != name) {
+                continue;
+            }
+            if (auto it = e.dimensions.find(dimension);
+                it != e.dimensions.end() && it->second == value) {
+                out.push_back(e.value);
+            }
+        }
+        return out;
+    }
 };
 
 /// Models `kythira::metrics`. The node builds a metric over several calls
@@ -170,9 +188,9 @@ public:
         pending().dimensions.insert_or_assign(std::string(name), std::string(value));
     }
     auto add_one() -> void {}
-    auto add_count(std::int64_t) -> void {}
+    auto add_count(std::int64_t n) -> void { pending().value = static_cast<double>(n); }
     auto add_duration(std::chrono::nanoseconds) -> void {}
-    auto add_value(double) -> void {}
+    auto add_value(double v) -> void { pending().value = v; }
     auto emit() -> void {
         auto& p = pending();
         if (!p.name.empty()) {
