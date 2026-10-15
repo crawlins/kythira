@@ -310,6 +310,9 @@ auto multi_raft<Types, Key, GroupId>::destroy_group(const GroupId& group, tombst
         std::unique_lock lock(_map_mutex);
         _shard_map.erase_group(group);
     }
+    if (_cfg.on_group_destroyed) {
+        _cfg.on_group_destroyed(group);
+    }
     return true;
 }
 
@@ -317,6 +320,19 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::has_group(const GroupId& group) const -> bool {
     std::shared_lock lock(_registry_mutex);
     return _groups.contains(group);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::is_member_of(const GroupId& group) const -> bool {
+    if (has_group(group)) {
+        return true;
+    }
+    if (is_tombstoned(group)) {
+        return false;
+    }
+    std::shared_lock lock(_map_mutex);
+    const auto desc = _shard_map.find(group);
+    return desc.has_value() && desc->has_replica(_cfg.node_id);
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -2755,8 +2771,15 @@ auto multi_raft<Types, Key, GroupId>::destroy_merged_source(group_state& target,
     // what keeps the node alive until it can be stopped off this thread.
     // Stopped but not reset, for the reason `destroy_group()` gives: the
     // source's own stripe is a different one, and a tick phase can still be
-    // queued there holding it.
-    defer_to_apply_phase(target._group_id, [source]() mutable { source->_node->stop(); });
+    // queued there holding it. The hook is copied rather than reached through
+    // `this`: the deferred teardown must not depend on the host outliving it.
+    defer_to_apply_phase(target._group_id,
+                         [source, source_group, on_destroyed = _cfg.on_group_destroyed]() mutable {
+                             source->_node->stop();
+                             if (on_destroyed) {
+                                 on_destroyed(source_group);
+                             }
+                         });
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
