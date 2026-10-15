@@ -389,15 +389,15 @@ unverified completion claim.
     `coap-transport-libnyoci` tasks.md ~337). Also from
     `coap-transport-libnyoci`, with no PR: a two-process cross-backend
     interop test, and Block1 for InstallSnapshot.
-  - **Tests that assert nothing.** Two property suites still end most cases
-    in a `BOOST_CHECK(true)` "Placeholder" and count toward the passing
-    total: `raft_replicate_to_followers_property_test.cpp` (30) and
-    `raft_heartbeat_based_read_state_property_test.cpp` (8).
+  - **Tests that assert nothing.** One property suite still ends most cases
+    in a `BOOST_CHECK(true)` "Placeholder" and counts toward the passing
+    total: `raft_replicate_to_followers_property_test.cpp` (30).
     `raft_add_server_implementation_property_test.cpp`,
     `raft_remove_server_implementation_property_test.cpp`,
-    `raft_election_vote_collection_implementation_property_test.cpp` and
-    `raft_replication_acknowledgment_collection_property_test.cpp` were
-    the other four; their cases now drive real nodes over the simulator,
+    `raft_election_vote_collection_implementation_property_test.cpp`,
+    `raft_replication_acknowledgment_collection_property_test.cpp` and
+    `raft_heartbeat_based_read_state_property_test.cpp` were the other
+    five; their cases now drive real nodes over the simulator,
     using the recording loggers, metrics and `cluster` harness in
     `tests/raft_membership_test_cluster.hpp` (including
     `hold_in_joint_phase()`, which keeps a change in C_old,new by isolating
