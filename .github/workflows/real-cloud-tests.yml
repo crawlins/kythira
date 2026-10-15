@@ -399,7 +399,8 @@ jobs:
                  autoconf \
                  autoconf-archive \
                  automake \
-                 libtool; then
+                 libtool \
+                 mold; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -443,7 +444,7 @@ jobs:
           path: vcpkg_installed
           # runner.arch keeps the x64 and arm64 legs' caches isolated from
           # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -466,6 +467,9 @@ jobs:
           # google-cloud-cpp, so only the delta is ever built.
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # clang-built ports, for mold: see ci.yml build-and-test's vcpkg step.
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
           # (same reasoning as ci.yml's build-and-test job).
@@ -495,10 +499,15 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
             -DKYTHIRA_AWS_REAL_EC2_TESTS=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'
@@ -1169,7 +1178,8 @@ jobs:
                  autoconf \
                  autoconf-archive \
                  automake \
-                 libtool; then
+                 libtool \
+                 mold; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -1213,7 +1223,7 @@ jobs:
           path: vcpkg_installed
           # runner.arch keeps the x64 and arm64 legs' caches isolated from
           # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1236,6 +1246,9 @@ jobs:
           # google-cloud-cpp, so only the delta is ever built.
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # clang-built ports, for mold: see ci.yml build-and-test's vcpkg step.
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
           # (same reasoning as ci.yml's build-and-test job).
@@ -1265,11 +1278,16 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
             -DKYTHIRA_AWS_REAL_EC2_TESTS=ON
 
       # One target, not the whole tree: nothing else in this job runs.
       - name: Build
         run: cmake --build build -j$(nproc) --target aws_asg_quorum_manager_real_test
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'
@@ -1445,7 +1463,8 @@ jobs:
                  autoconf \
                  autoconf-archive \
                  automake \
-                 libtool; then
+                 libtool \
+                 mold; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -1489,7 +1508,7 @@ jobs:
           path: vcpkg_installed
           # runner.arch keeps the x64 and arm64 legs' caches isolated from
           # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1512,6 +1531,9 @@ jobs:
           # google-cloud-cpp, so only the delta is ever built.
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # clang-built ports, for mold: see ci.yml build-and-test's vcpkg step.
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
           # (same reasoning as ci.yml's build-and-test job).
@@ -1541,11 +1563,16 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
             -DKYTHIRA_AWS_REAL_EC2_TESTS=ON
 
       # One target, not the whole tree: nothing else in this job runs.
       - name: Build
         run: cmake --build build -j$(nproc) --target aws_ec2_launch_options_real_test
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'
@@ -1942,7 +1969,8 @@ jobs:
                  autoconf \
                  autoconf-archive \
                  automake \
-                 libtool; then
+                 libtool \
+                 mold; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -1975,7 +2003,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-azure-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-azure-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -1998,6 +2026,9 @@ jobs:
           # google-cloud-cpp, so only the delta is ever built.
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # clang-built ports, for mold: see ci.yml build-and-test's vcpkg step.
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
           # (same reasoning as ci.yml's build-and-test job).
@@ -2019,10 +2050,15 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
             -DKYTHIRA_AZURE_REAL_TESTS=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'
@@ -2617,7 +2653,7 @@ jobs:
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
                  clang-18 cmake ninja-build libfiu-dev ccache \
-                 autoconf autoconf-archive automake libtool; then
+                 autoconf autoconf-archive automake libtool mold; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -2660,7 +2696,7 @@ jobs:
           # job restore an aws-populated cache that lacks google-cloud-cpp,
           # leaving KYTHIRA_HAS_GCP_SDK false and the real-GCE/CAS test binaries
           # unbuilt.
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -2683,6 +2719,9 @@ jobs:
           # google-cloud-cpp, so only the delta is ever built.
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # clang-built ports, for mold: see ci.yml build-and-test's vcpkg step.
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
           # (same reasoning as ci.yml's build-and-test job).
@@ -2704,10 +2743,15 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
             -DKYTHIRA_GCP_REAL_TESTS=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'
@@ -3044,7 +3088,7 @@ jobs:
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
                  clang-18 cmake ninja-build libfiu-dev ccache \
-                 autoconf autoconf-archive automake libtool; then
+                 autoconf autoconf-archive automake libtool mold; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -3092,7 +3136,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
       # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
@@ -3110,6 +3154,9 @@ jobs:
         run: |
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # clang-built ports, for mold: see ci.yml build-and-test's vcpkg step.
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
           # (same reasoning as ci.yml's build-and-test job).
@@ -3131,6 +3178,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig
 
       # Built as named targets rather than via `ctest`: neither real-OCI binary
@@ -3156,6 +3204,10 @@ jobs:
           [ "${BUNDLE_OBJECT_PERSISTENCE}" = "true" ] && targets="$targets oci_object_storage_persistence_real_test raft_object_backup"
           # shellcheck disable=SC2086
           cmake --build build --target $targets
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'
@@ -3560,7 +3612,7 @@ jobs:
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
                  clang-18 cmake ninja-build libfiu-dev ccache \
-                 autoconf autoconf-archive automake libtool; then
+                 autoconf autoconf-archive automake libtool mold; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -3593,7 +3645,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Export Actions cache credentials for vcpkg
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
@@ -3607,6 +3659,9 @@ jobs:
         run: |
           # From the OCI build cache action (x-aws); x-gha no longer exists.
           echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # clang-built ports, for mold: see ci.yml build-and-test's vcpkg step.
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           # Pin the tool + scripts to vcpkg.json's builtin-baseline, not HEAD
           # (same reasoning as ci.yml's build-and-test job).
@@ -3627,6 +3682,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       - name: Build the real-Alibaba suites
@@ -3636,6 +3692,10 @@ jobs:
           [ "${BUNDLE_OSS_PERSISTENCE}" = "true" ] && targets="$targets alibaba_oss_persistence_real_test raft_object_backup"
           # shellcheck disable=SC2086
           cmake --build build --target $targets
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'

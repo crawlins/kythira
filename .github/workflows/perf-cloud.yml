@@ -154,7 +154,7 @@ jobs:
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
                  g++-13 cmake ninja-build libfiu-dev ccache \
-                 autoconf autoconf-archive automake libtool; then
+                 autoconf autoconf-archive automake libtool mold; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -234,12 +234,17 @@ jobs:
             -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
 
       # One target, not the whole tree. The tree is ~420 test binaries and
       # this job needs exactly one of them.
       - name: Build the benchmark binary
         run: cmake --build build --target multi_raft_http_benchmark_test -j$(nproc)
+
+      # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
 
       - name: sccache statistics
         if: always() && steps.sccache.outputs.launcher == 'sccache'
