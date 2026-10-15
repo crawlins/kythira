@@ -917,22 +917,26 @@ if [[ -n "${LOOPBACK_US}" && -n "${PEERWISE_US}" ]] \
    && python3 -c "import sys; sys.exit(0 if ${LOOPBACK_US} > 0 else 1)" 2>/dev/null; then
     NETWORK_RATIO=$(python3 -c "print('%.2f' % (${PEERWISE_US} / ${LOOPBACK_US}))" 2>/dev/null || echo "")
     if [[ -n "${NETWORK_RATIO}" ]]; then
-        # Requirement 4.5, verbatim: within an order of magnitude of loopback
-        # means this is a container-shaped row and must SAY so. That is the
-        # exact failure the Podman rows demonstrated, and it is silent --
-        # nothing about a container stack reports that the "network" between
-        # two nodes is a memcpy.
-        if python3 -c "import sys; sys.exit(0 if ${NETWORK_RATIO} < 10.0 else 1)"; then
+        # Requirement 4.5 asks the row to say when its "network" is really
+        # containers on one machine -- the failure the Podman rows showed,
+        # and a silent one. It phrased the test as "within an order of
+        # magnitude of loopback", and that constant is wrong: genuinely
+        # separate EC2 instances measured 2.19x, 2.40x, 4.51x and 9.20x
+        # their own loopback, and only three-AZ placements cleared 10x
+        # (doc/TODO.md, multi-machine-placement). The ratio stays on the row
+        # as a measurement; the verdict comes from what this script knows
+        # for certain, which is whether node 1 and node 2 are one instance.
+        if [[ "${INSTANCE_IDS[0]}" == "${INSTANCE_IDS[1]}" ]]; then
             NETWORK_VERDICT="container-shaped"
             echo ""
-            echo "  !!! Requirement 4.5: the inter-node round trip is ${NETWORK_RATIO}x this"
-            echo "  !!! host's own loopback, which is WITHIN AN ORDER OF MAGNITUDE."
-            echo "  !!! This row must be read as a CONTAINER-SHAPED row, not a"
-            echo "  !!! multi-machine one. The row records that verdict."
+            echo "  !!! Requirement 4.5: node 1 and node 2 are the same instance"
+            echo "  !!! (${INSTANCE_IDS[0]}); the inter-node round trip is ${NETWORK_RATIO}x"
+            echo "  !!! loopback. This row must be read as a CONTAINER-SHAPED row,"
+            echo "  !!! not a multi-machine one. The row records that verdict."
             echo ""
         else
             NETWORK_VERDICT="multi-machine"
-            echo "  Requirement 4.5: ${NETWORK_RATIO}x loopback — a real network."
+            echo "  Requirement 4.5: separate instances, ${NETWORK_RATIO}x loopback."
         fi
     fi
 fi
@@ -1074,10 +1078,11 @@ json.dump({
         "loopback_rtt_us": ${LOOPBACK_US:-None},
         "inter_node_rtt_us": ${PEERWISE_US:-None},
         "ratio_to_loopback": ${NETWORK_RATIO:-None},
-        # Requirement 4.5. "container-shaped" means the measured inter-node
-        # round trip is within an order of magnitude of this host's own
-        # loopback, so the row describes containers on one machine however
-        # many machines were paid for.
+        # Requirement 4.5. "container-shaped" means node 1 and node 2 ran on
+        # one instance, so the row describes containers on one machine
+        # however many machines were paid for. ratio_to_loopback is recorded
+        # alongside but no longer decides it: separate instances measured
+        # 2.19x-9.20x, inside the order of magnitude the requirement assumed.
         "verdict": "${NETWORK_VERDICT}",
         "probe_matrix_files": ["probe-node-%d.json" % (i + 1) for i in range(${NODES})],
     },
