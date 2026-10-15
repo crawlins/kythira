@@ -377,3 +377,56 @@ BOOST_AUTO_TEST_CASE(property_read_state_serves_only_committed_state_of_its_term
     BOOST_TEST(!r.failed.load(), r.message());
     BOOST_TEST(r.holds("acknowledged-key"), "a read on the new leader lost an acknowledged write");
 }
+
+BOOST_AUTO_TEST_CASE(property_leader_state_machine_waits_for_its_term,
+                     *boost::unit_test::timeout(60)) {
+    BOOST_TEST_MESSAGE("Property 80.10: with_leader_state_machine refuses a leader not caught up");
+
+    // 80.9's setup: node 2 wins holding an acknowledged put it does not yet
+    // know is committed. with_leader_state_machine() is the local-read
+    // primitive the Redis gateway uses; it must refuse node 2 until node 2
+    // has applied its election no-op, and then show the put.
+    outcome put;
+    cluster c;
+    settle(c);
+    c.submit("acknowledged-key", put);
+    BOOST_REQUIRE(c.pump([&] { return put.done(); }));
+    BOOST_REQUIRE(put.resolved.load());
+    c.isolate(1);
+    const auto put_index = c.leader().last_log_index();
+    BOOST_REQUIRE_MESSAGE(commit_index(c.node(2)) < put_index,
+                          "node 2 learned the commit before node 1 was cut off");
+
+    const auto holds_put = [&] {
+        return c.node(2).with_leader_state_machine(
+            [](auto& sm) { return sm.contains("acknowledged-key"); });
+    };
+    // A follower is refused too.
+    BOOST_TEST(!holds_put().has_value());
+
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            std::this_thread::sleep_for(c.config()._election_timeout_max + 20ms);
+            c.node(2).check_election_timeout();
+            return wait_until([&] { return c.node(2).is_leader(); }, 1000ms);
+        },
+        8000ms));
+
+    // Leader, but nothing of its term applied yet: the plain accessor shows
+    // state without the put, which is the stale read being refused here.
+    BOOST_TEST(!holds_put().has_value(), "a leader with nothing of its term applied was served");
+    BOOST_TEST(
+        !c.node(2).with_state_machine([](auto& sm) { return sm.contains("acknowledged-key"); }),
+        "node 2 already applied the put; the case no longer tests the gap");
+
+    std::optional<bool> served;
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            std::this_thread::sleep_for(c.config()._heartbeat_interval);
+            c.node(2).check_heartbeat_timeout();
+            served = holds_put();
+            return served.has_value();
+        },
+        5000ms));
+    BOOST_TEST(*served, "the caught-up leader's state lost an acknowledged write");
+}

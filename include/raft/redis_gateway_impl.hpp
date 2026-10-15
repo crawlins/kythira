@@ -995,7 +995,22 @@ auto redis_gateway<Host, Logger, Metrics>::read_local(session& s, const std::str
             return r;
         }
     }
-    r._entry = node->with_state_machine([&key](auto& sm) { return sm.lookup(key); });
+    if (_config._read_consistency == redis_read_consistency::any_replica) {
+        r._entry = node->with_state_machine([&key](auto& sm) { return sm.lookup(key); });
+        return r;
+    }
+    // A leader elected a moment ago may not have applied every write its
+    // predecessor acknowledged yet; answering from that state would report
+    // an acknowledged SET as missing. Retry until it has.
+    auto entry = node->with_leader_state_machine([&key](auto& sm) { return sm.lookup(key); });
+    if (!entry) {
+        if (!node->is_leader()) {
+            r._forward_to = node->known_leader();  // stepped down since the check above
+        }
+        r._error = s._writer.error("ERR shard has no reachable leader, retry");
+        return r;
+    }
+    r._entry = std::move(*entry);
     return r;
 }
 
@@ -1665,7 +1680,13 @@ auto redis_gateway<Host, Logger, Metrics>::handle_set(session& s, const resp_com
         // sccache keys are content hashes, so a rewrite is either the same
         // bytes (sccache rewriting its `.sccache_check` probe) or a bug
         // somewhere. The first is a free no-op; the second is refused.
-        auto existing = node->with_state_machine([&key](auto& sm) { return sm.lookup(key); });
+        // Checked against a caught-up leader's state only; see read_local().
+        auto looked_up =
+            node->with_leader_state_machine([&key](auto& sm) { return sm.lookup(key); });
+        if (!looked_up) {
+            return s._writer.error("ERR shard has no reachable leader, retry");
+        }
+        const auto& existing = *looked_up;
         if (existing && !is_expired(*existing)) {
             bool same = existing->_value.size() == value.size() &&
                         (value.empty() ||
@@ -1729,7 +1750,13 @@ auto redis_gateway<Host, Logger, Metrics>::handle_del(session& s, const resp_com
         }
         return error;
     }
-    auto existing = node->with_state_machine([&key](auto& sm) { return sm.lookup(key); });
+    // On a leader that has not caught up, "no such key" could be a key an
+    // earlier leader acknowledged, and answering 0 would skip the delete.
+    auto looked_up = node->with_leader_state_machine([&key](auto& sm) { return sm.lookup(key); });
+    if (!looked_up) {
+        return s._writer.error("ERR shard has no reachable leader, retry");
+    }
+    const auto& existing = *looked_up;
     if (!existing) {
         return s._writer.integer(0);
     }

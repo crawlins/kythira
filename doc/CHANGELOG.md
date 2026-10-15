@@ -5,6 +5,21 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **The Redis gateway no longer reads a new leader's stale state.** In
+  `leader` read consistency (the default) a GET was answered from the
+  shard leader's applied state as soon as a node became leader. A leader
+  elected a moment ago has not yet applied every write its predecessor
+  acknowledged (it learns what is committed only when its own election
+  no-op commits), so a GET right after a failover could answer `$-1` for
+  a key that had been SET. DEL had the same window and answered 0 without
+  deleting, and the immutable-value check could miss an existing value.
+  `node::with_leader_state_machine()` runs a read only on a leader that has
+  applied an entry of its current term and returns nothing otherwise; the
+  gateway answers those cases with its usual retry error.
+  `redis_gateway_integration_test` failed a first attempt this way in CI
+  (4 times between October 9 and 15), and property 80.10 in
+  `raft_heartbeat_based_read_state_property_test` pins the guard.
+
 - **Two network simulator examples no longer fail one run in a
   hundred.** `basic_connectionless` and `connection_oriented` asserted
   that every message, connect, read and write got through, over edges
