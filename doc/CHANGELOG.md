@@ -5,6 +5,29 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **A stale AppendEntries rejection no longer pulls next_index back.**
+  Heartbeats to one follower overlap, so a slow follower's rejections of
+  earlier rounds kept arriving after a retry had already caught it up.
+  The leader acted on each: it moved `next_index` back to the rejection's
+  conflict hint and re-sent entries the follower held, and once the log
+  was compacted past that hint, sent a caught-up follower a full
+  snapshot. A rejection now counts only when it answers a request sent
+  from the follower's current `next_index`; the others are logged as
+  "Ignoring stale AppendEntries rejection" and dropped. The leader also
+  emits `raft_follower_lag` (per target, leader last index minus the
+  follower's match index) on each acknowledgement.
+
+- **Replicate-to-followers cases assert something.** The thirty
+  placeholders in `raft_replicate_to_followers_property_test` now drive
+  the shared three-node simulator cluster: parallel sends, next and match
+  index movement, conflict-hint backtracking over a divergent log,
+  snapshot hand-off to a follower behind the compacted log and
+  AppendEntries from the snapshot boundary, batching and its limit, the
+  leader commit index on the wire, majority commit with the leader
+  counted, step-down on a higher term, retries, metrics and logs, and a
+  thirty-first case for the stale rejection above. No placeholder suites
+  remain. The test metrics recorder now keeps each metric's value.
+
 - **A new leader's read includes every write acknowledged before it.**
   `read_state()` confirmed leadership with a round of heartbeats and then
   returned whatever the state machine held. A leader only knows the whole
