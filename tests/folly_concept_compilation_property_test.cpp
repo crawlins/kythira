@@ -200,6 +200,14 @@ BOOST_AUTO_TEST_CASE(test_void_specialization_handling, *boost::unit_test::timeo
 }
 
 // Helper templates for SFINAE testing (must be at namespace scope)
+//
+// GCC warns -Wmissing-requires on these three: `requires { C<T, int>; }`
+// checks that the concept-id is a well-formed expression, not that T
+// satisfies C, and GCC assumes the latter was meant. The former is meant
+// here: test_concept_expression_wellformedness checks well-formedness (a
+// concept with the wrong arity makes the expression ill-formed and the
+// bool false). Do not "fix" the warning with a nested `requires C<T, int>;`,
+// which would turn three well-formedness checks into satisfaction checks.
 template<typename T> constexpr bool has_try_concept = requires { kythira::try_type<T, int>; };
 
 template<typename T> constexpr bool has_future_concept = requires { kythira::future<T, int>; };

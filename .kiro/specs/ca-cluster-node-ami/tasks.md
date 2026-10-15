@@ -2,6 +2,12 @@
 
 ## Status: Complete — all 8 tasks (statically verified; see note below)
 
+**Update, October 15, 2026:** no longer only statically verified. Real Cloud
+Tests run 37510899453 (October 6, 2026) built both architectures' AMIs
+through the `ami-build` bundle, after PR #465 added the autotools gperf needs
+and raised the job timeout to 180 minutes, and `ca_cluster_node_real_ec2_test`
+passed on them in the same run. The July note below is kept as written.
+
 **Last Updated**: July 15, 2026
 
 All artifacts described below exist in the repository (`packer/ca_cluster_node/`,

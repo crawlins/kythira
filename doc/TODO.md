@@ -1,8 +1,9 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: October 4, 2026 (status header and the stale entries
-listed below re-checked against `main`; the test-count and warning tables
-further down are dated readings and keep their own dates)
+**Last Updated**: October 15, 2026 (spec rows, the CA and AMI entries and
+the object-persistence p99 note re-checked against `main`; the October 4
+pass below and the test-count and warning tables further down are dated
+readings and keep their own dates)
 
 **Re-checked October 4, 2026.** Entries closed or corrected in this pass, each
 verified against the tree rather than against older prose:
@@ -169,7 +170,7 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
 | Folly Concept Wrappers | 55/55 | ✅ Complete — full wrapper ecosystem |
 | Network Simulator | 26/26 | ✅ Complete — connection pooling, lifecycle management |
 | Network Concept Template Fix | all | ✅ Complete — unified single-parameter concepts |
-| Certificate Authority | 35/35 | ✅ Complete — local CA, `ca_service`/`ca_cluster_node`, ACME (RFC 8555/8738), fingerprint-pinned bootstrap; task 31's LocalStack/real-EC2 tests compile-verified only (no AWS access in this environment) |
+| Certificate Authority | 35/35 | ✅ Complete — local CA, `ca_service`/`ca_cluster_node`, ACME (RFC 8555/8738), fingerprint-pinned bootstrap; task 31's real-EC2 failover test passed on x64 and arm64 (Real Cloud Tests run 37510899453, October 6, 2026), and its LocalStack test runs against stock LocalStack in CI |
 | Membership Change | 20/20 | ✅ Complete — joint consensus (Raft §6) add/remove server, joint quorum, config-entry apply path, follower update, node recovery on restart; found already substantially implemented, `tests/node_recovery_unit_test.cpp` added to close the one real gap |
 
 ---
@@ -273,8 +274,8 @@ nothing and would have been answered with 406.
 |------|-------|-------|
 | `coap-transport-multi-raft` | 13/14 | Moved from "Not Started" October 4, 2026. Phases 1-4 and 6 landed in PR #385; tasks 9-11 (per-group OSCORE contexts on the libcoap backend, recipient-side selection, lifecycle and replay window) and 13 (Multi-Raft over CoAP end to end, split and merge under per-group OSCORE) landed October 15, 2026, from draft PR #453. Open: task 7 (`TimeoutNow` on libnyoci and cantcoap ships on both, but its integration cases now run in CI under the `alt-coap-backends` job, which builds both backends). |
 | `tcp-rpc-server-hardening` | 0/6 ticked; **implemented** | **The checkboxes are stale, not the code.** `b15f4e3` (send with `MSG_NOSIGNAL`, read frames incrementally) and `deaac7b` (`include/raft/tcp_connection_tracker.hpp`; bounded, deadlined and drained connections on the TCP, TLS and gossip servers; four suites in the ThreadSanitizer job) are on `main` and cover tasks 1–5, 6.2 and 6.3. The spec still says "implemented in PR #423 (draft) … ticks them when it merges"; it merged and nothing was ticked. **Genuinely open: task 6.1's docker_chaos quorum-scenario run.** |
-| `http-coap-pre-vote-timeout-now` | 0/9 | RequestPreVote and TimeoutNow on the three HTTP transports, RequestPreVote on the three CoAP backends, and a core `rpc_not_implemented` fallback so elections keep working mid-upgrade. Nothing on `main`; the whole spec is in open PR #460. Its CoAP half was gated on PR #385, which has merged. |
-| `http-server-request-limits` | 0/8 | One shared `connection_gate` enforcing `max_concurrent_connections` on all three HTTP servers, plus `max_request_body_size` (413) on Proxygen. Nothing on `main` beyond `7946f77`'s bounded `cpp_httplib_server` worker queue (`include/raft/httplib_task_queue.hpp`), which predates the spec and makes its "cpp-httplib never reads `max_concurrent_connections`" out of date. Open PR #452 carries the rest. |
+| `http-coap-pre-vote-timeout-now` | 8/9 | RequestPreVote and TimeoutNow on the three HTTP transports, RequestPreVote on the three CoAP backends, and a core `rpc_not_implemented` fallback so elections keep working mid-upgrade: on `main` since PR #460 (37/39 sub-tasks). Open: task 6, multi-Raft over HTTP, including 6.3's re-run of the elastic-capacity Docker scenario. |
+| `http-server-request-limits` | **8/8** | Complete: one shared `connection_gate` enforcing `max_concurrent_connections` on all three HTTP servers, plus `max_request_body_size` (413) on Proxygen, merged in PR #452. |
 | `coap-client-event-driven-io` | 0/8 | Replace the libcoap client's fixed `coap_io_process(NO_WAIT)` + 5 ms sleep with a readiness wait and wake fd; task 1 is a gate that confirms six claims about libcoap first. Draft PR #392. |
 | `group-scale-up-rollback` | 8/10 | Tasks 1–8 on `main`: the vendor spike, the shared planner, mock servers that model the cloud's choice, and remove-by-id rollback in all five group managers (ESS and OCI instance pool first, then ASG, VMSS and MIG in `794b7e5`). Task 9's real-cloud timeout cases are written (`498333b`) but not yet dispatched, which the task requires before it is ticked; the AWS CI role must be re-provisioned for the new `PutLifecycleHook` and `SetInstanceProtection` grants first. Task 10 (provider READMEs and cross-references from the five provider specs) is open. |
 | `cloud-composite-node-ids` | 4/10 | Tasks 1, 2, 5 and 9 are on `main`, with most of 3 (AWS managers, numeric and composite; the default flip 3.4 waits). Task 6 is partly done: the simulator, TCP and TLS-TCP transports take a `NodeId`, and TLS-TCP peers authenticate by a `urn:kythira:node:<id>` URI SAN. Task 7.1's library half is done (peer names, enrollment MAC, versioned `record_rpc_tls_ready`); `ca_cluster_node` itself stays numeric until task 8. Open: httplib, Proxygen, Beast, gRPC and CoAP transports, wide certificate serials (7.2), the other managers in composite mode (4), self id and binaries (8), docs and the default flip (10). |
@@ -827,9 +828,13 @@ unverified completion claim.
 
   **7. Requirement 4.5's ratio constant is wrong, now with three more
   witnesses.** Genuinely separate machines read 2.19x, 2.40x and 4.51x their
-  own loopback and are labelled "container-shaped"; only the three-AZ runs
-  (10.17x) trip "multi-machine". The instrument is good and the constant is
+  own loopback and were labelled "container-shaped"; only the three-AZ runs
+  (10.17x) tripped "multi-machine". The instrument is good and the constant is
   mis-set, exactly as `multi-machine-placement` already recorded.
+  **Fixed October 15, 2026:** `run-aws-shape-2.sh` now takes the verdict
+  from whether node 1 and node 2 are the same instance, which it knows, and
+  keeps the ratio on the row as a measurement only. Rows recorded before
+  the fix still carry the old label.
 
   **The task-11 pacing reading is still withdrawn.** A differential estimate
   (delta-p50 / delta-RTT) looked clean on the two single-AZ c6i rows at 2.00
@@ -3525,8 +3530,9 @@ unverified completion claim.
   bootstrap/issuance/revocation, leader reconstructs via `from_existing()`
   and replays the ledger on election); multi-node subprocess test coverage
   including leader failover; packaged for 3-AZ AWS deployment (systemd, ECS
-  task definitions); LocalStack/real-EC2 tests compile-verified only (no AWS
-  access in this environment)
+  task definitions); the real-EC2 failover test passed on x64 and arm64
+  in Real Cloud Tests run 37510899453 (October 6, 2026), and the LocalStack
+  test runs against stock LocalStack in CI
 - [x] **ACME support (RFC 8555/8738)** — `acme_test_server` mock CA,
   `acme_certificate_provider` (JWS order lifecycle, http-01/dns-01
   challenges, `"ip"`-typed identifiers, per-identifier challenge-type
@@ -3593,10 +3599,12 @@ unverified completion claim.
   hand-built AMI; `packer/ca_cluster_node/` (template + `extract-binary.sh`/
   `provision.sh`/`build.sh`), a static-checks CI job, and an on-demand
   `ami-build` CI bundle; spec at `.kiro/specs/ca-cluster-node-ami/`, all 8
-  tasks complete (statically verified — `packer fmt`/`init`/`validate
-  -syntax-only`/`shellcheck` all run and pass locally; see the spec's
-  tasks.md status note for exactly what still needs a container daemon or
-  AWS credentials to exercise)
+  tasks complete. First verified statically (`packer fmt`/`init`/`validate
+  -syntax-only`/`shellcheck`); since then the `ami-build` bundle has built
+  both architectures' AMIs for real, in Real Cloud Tests run 37510899453
+  (October 6, 2026), after PR #465 added the autotools gperf needs and a
+  180-minute timeout, and `ca_cluster_node_real_ec2_test` passed on those
+  AMIs in the same run
 
 ### Cloud Provider Support
 
@@ -3894,10 +3902,11 @@ unimplemented, both fixed in the same change.
   `object-persistence` bundles have passed in dispatched CI runs under their
   least-privilege grants, OCI last at 3/3 (the spec's `tasks.md` Finding 27).
   This paragraph used to say the variables were unset and no run had
-  exercised a bundle. Still true: the suites report p99
-  alongside p50 and only p50 was transcribed into the findings, so the
-  election-timeout sizing table's in-region row is a lower bound on the
-  floor rather than the floor.
+  exercised a bundle. The p99s were transcribed on August 21, 2026 (run
+  32432380565), and `doc/cloud_object_persistence.md`'s election-timeout
+  sizing table is worked from them; at 8 and 20 samples a "p99" is the
+  slowest observed request, so the floors are worst-of-run, not tail
+  estimates.
 
   **What the spec decided**, since these were the open questions:
   - **One engine, five stores.** The Raft-correctness body — layout,

@@ -5,6 +5,20 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **Shape 2 perf rows stop calling separate machines containers.**
+  `scripts/perf-cloud/run-aws-shape-2.sh` labelled a row
+  "container-shaped" whenever the inter-node round trip was under 10x the
+  host's loopback, and separate EC2 instances routinely measure 2-9x, so
+  real multi-machine rows were mislabelled. The verdict now comes from
+  whether the two probed nodes are the same instance; the ratio stays on
+  the row as a measurement. Alongside it, a bookkeeping pass: stale
+  `doc/TODO.md` rows and claims (two spec rows, the CA real-EC2 and AMI
+  entries, the object-persistence p99 note), the contradictory p99 sentence
+  in `doc/cloud_object_persistence.md`, two test comments, and spec status
+  for `tcp-rpc-server-hardening`, `aws-asg-real-cloud-tests`,
+  `stdexec-future-backend`, `acm-pca-ephemeral-ca` and
+  `ca-cluster-node-ami`.
+
 - **The TLS-TCP Raft transport and the CA's peer identities work with
   textual node ids.** `basic_tls_tcp_rpc_client`/`basic_tls_tcp_rpc_server`
   and `basic_tls_rpc_trust_policy` take a `NodeId` (the old names are the

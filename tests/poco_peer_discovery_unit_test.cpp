@@ -271,8 +271,9 @@ BOOST_AUTO_TEST_CASE(find_peers_called_twice, *boost::unit_test::timeout(15)) {
     BOOST_CHECK_NO_THROW(disc.find_peers(std::chrono::milliseconds{100}).get());
 }
 
-// find_peers with short freshness_interval config must not crash (the stale
-// filtering logic is exercised even though no daemon is available).
+// find_peers with short freshness_interval config must not crash. The stale
+// filtering runs whether or not the browse finds any peer (constructing the
+// discovery needs a running Avahi daemon, which CI's DNS job starts).
 BOOST_AUTO_TEST_CASE(find_peers_with_short_freshness_interval, *boost::unit_test::timeout(10)) {
     kythira::poco_peer_discovery::config cfg;
     cfg.freshness_interval = std::chrono::seconds{5};

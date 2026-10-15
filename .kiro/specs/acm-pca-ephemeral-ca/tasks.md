@@ -1,8 +1,19 @@
 # Implementation Plan — ACM Private CA Ephemeral Test CA
 
-## Status: In progress (5/7 tasks; 4 needs an AWS policy simulation, 7 needs Clark's go-ahead)
+## Status: In progress (5/7 tasks; what is left of 4 and 7 needs Clark)
 
-**Last Updated**: October 7, 2026
+**Last Updated**: October 15, 2026
+
+- Task 4: the bundle has been on the live CI role since October 8, and the
+  first Actions run used it successfully. Only the `simulate-custom-policy`
+  check is left, and it needs admin credentials the workflow lacks.
+- Task 7: the Actions half is done. Real Cloud Tests run 38065882804
+  (October 10) passed on both architectures at $0.232 per leg (about
+  $0.46 per dispatch), with clean leak audits; the figures are in
+  `doc/aws_acm_pca_test_cost_estimate.md`. That run showed AWS accepts
+  `RevokeCertificate` on a CA with no CRL or OCSP, and #537 changed the
+  test to expect that. Left: the local run, and the billing-console check
+  that self-issued roots are billed as certificates, both Clark's.
 
 ## Overview
 
