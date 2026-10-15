@@ -98,7 +98,8 @@ documentation implies.
    and one hit: method, path, the headers that matter (`Depth`,
    `Content-Length`, `Content-Type`, `Authorization` scheme) and the status
    codes it accepts. It SHALL include whether it sends `PROPFIND` or `MKCOL`,
-   and what it does when a request fails.
+   what it does when a request fails, and whether its WebDAV backend has a
+   read-only mode like `SCCACHE_S3_RW_MODE` (Requirement 13.4).
 2. THE measurement SHALL record the same for vcpkg's `http` binary source at
    the vcpkg commit CI pins: the URL each `{name}`, `{version}` and `{sha}`
    template expands to, whether it sends `HEAD` before `GET`, whether a `PUT`
@@ -380,7 +381,46 @@ only unit tests.
    with a retryable error before inodes run out, reads still served, and no
    node stopped.
 
-### Requirement 13: Documentation
+### Requirement 13: Measured sccache performance in WebDAV mode
+
+**User Story:** As the maintainer, I want the cluster's sccache performance
+measured on this repository's own build, against the OCI cache's recorded
+numbers, so that "it works" on a toy project is not mistaken for "it is as
+good as what it replaces".
+
+The baseline is `oci-build-cache` task 10 (run 34353211972): hit rates of
+99.82–100% on warm legs, `build-and-test` Build steps of 2.23–4.05 minutes,
+and zero non-cacheable calls in 4,494 requests.
+
+#### Acceptance Criteria
+
+1. THE measurement SHALL build this repository's full tree through sccache's
+   WebDAV backend against a three-node cluster, on at least two build
+   configurations at once (for example `g++-13` and `clang++-18`, both x64),
+   first cold and then warm at the same commit.
+2. ON the warm run, each configuration's sccache hit rate SHALL be at least
+   99%, and its Build step SHALL take no more than 1.2 times the OCI
+   baseline for the same configuration on comparable hardware. Where the
+   hardware differs, the run SHALL also time the same commit against the OCI
+   cache on that hardware, and compare against that instead.
+3. ON both runs, sccache's statistics SHALL show zero cache read errors,
+   zero cache write errors and zero cache timeouts.
+4. A run with a `read_only` ACL user SHALL show hits served and no object
+   written. IF task 1 shows sccache 0.17.0 has a read-only mode for its WebDAV
+   backend, THEN that mode SHALL be set and the run SHALL show zero write
+   attempts. IF it has none, THEN the run SHALL record how many `PUT`s were
+   refused with 403, show that the build still passed, and document the
+   wasted upload cost in `doc/redis-gateway.md`. This is the gap that caused
+   558 refused writes on one OCI run before `SCCACHE_S3_RW_MODE` was set.
+5. THE run SHALL record per-hit latency (sccache's "Average cache read hit")
+   and the cluster's peak RSS, chunk-store bytes and file count after the
+   warm run, so Requirement 2's RAM bound and Requirement 6.7's file bound are
+   checked at real scale.
+6. THE results SHALL be written into tasks.md, with the commit, the commands
+   and the hardware. A threshold that is missed SHALL be recorded as missed
+   and investigated, not moved.
+
+### Requirement 14: Documentation
 
 1. `doc/redis-gateway.md` SHALL document the new variables, the HTTP API, the
    WebDAV subset and the disk layout.

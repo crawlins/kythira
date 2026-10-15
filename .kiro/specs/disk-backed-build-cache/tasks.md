@@ -1,10 +1,11 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 0/12 tasks complete
+## Status: 0/13 tasks complete
 
 **Last Updated**: October 15, 2026 (spec written, then amended the same day
-for inode limits: a free-inode floor, small-value pack files, voter
-free-space reports and an inode chaos case; nothing implemented).
+for inode limits (a free-inode floor, small-value pack files, voter
+free-space reports and an inode chaos case) and for a full-tree sccache
+WebDAV measurement against the OCI cache's numbers; nothing implemented).
 
 ## Overview
 
@@ -38,7 +39,8 @@ Reference material to read before starting:
     { "wave": 4, "tasks": [5, 6], "description": "Chunk fetcher; HTTP front end and auth cache" },
     { "wave": 5, "tasks": [7], "description": "Daemon wiring, configuration, eviction against the disk budget" },
     { "wave": 6, "tasks": [8, 9, 10], "description": "Containers, end-to-end client test, chaos scenarios" },
-    { "wave": 7, "tasks": [11, 12], "description": "Docs, then close-out" }
+    { "wave": 7, "tasks": [11], "description": "Full-tree sccache WebDAV measurement against the OCI baseline" },
+    { "wave": 8, "tasks": [12, 13], "description": "Docs, then close-out" }
   ]
 }
 ```
@@ -154,15 +156,28 @@ Reference material to read before starting:
     12.3–12.6 state.
   - _Requirements: 10.3, 12.3–12.6_
 
-- [ ] 11. Documentation
+- [ ] 11. Full-tree sccache measurement in WebDAV mode
+  - Per Requirement 13. Point sccache 0.17.0's WebDAV backend at the
+    three-node compose cluster. Build this repository's tree on two
+    configurations at once (`g++-13` and `clang++-18`, x64), cold and then
+    warm at one commit. Record hit rate, the Build step time, sccache's full
+    `--show-stats`, the cluster's peak RSS, chunk-store bytes and file count.
+  - Compare against `oci-build-cache` task 10's numbers. If the hardware is
+    not a GitHub-hosted runner, also time the same commit against the OCI
+    cache on that hardware, and compare against that.
+  - Repeat the warm run with a `read_only` user. Use sccache's WebDAV
+    read-only mode if task 1 found one; otherwise count the refused `PUT`s.
+  - _Requirements: 13.1–13.6_
+
+- [ ] 12. Documentation
   - `doc/redis-gateway.md`: the variables, HTTP API, WebDAV subset, disk
     layout, and client settings for sccache and vcpkg with read-only and
     read-write users.
   - `doc/sccache_dogfood_cost_estimate.md`: the home-hosting sizing with disk
     instead of RAM.
-  - _Requirements: 13.1–13.3_
+  - _Requirements: 14.1–14.3_
 
-- [ ] 12. Close-out
+- [ ] 13. Close-out
   - Update `doc/TODO.md`'s row and `doc/CHANGELOG.md`. Record what task 1 and
     task 9 measured against what this spec assumed.
   - _Requirements: all_
